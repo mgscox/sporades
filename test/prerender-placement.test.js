@@ -69,6 +69,13 @@ export default async () => {
     const composedHtml = await readFile(composed.staticFiles.indexHtml, 'utf8');
     assert.ok(composedHtml.includes('<main>literal <!-- sporades:prerender second --></main>'));
     assert.equal(composedHtml.split('<footer>second once</footer>').length - 1, 1);
+    // Explicit empty configuration still diagnoses stale names; omission is opt-out.
+    await writeFile(path.join(root, 'index.html'), '<html><head></head><body><!-- sporades:prerender stale --><script type="module" src="/client/index.tsx"></script></body></html>');
+    const empty = await createBundle(root, {...config, client:{...config.client, prerender:[]}});
+    assert.deepEqual(empty.clientDiagnostics.warnings?.map(({code, fragment}) => ({code, fragment})), [{code:'PRERENDER_UNKNOWN_MARKER', fragment:'stale'}]);
+    assert.ok((await readFile(empty.staticFiles.indexHtml, 'utf8')).includes('<!-- sporades:prerender stale -->'));
+    const omitted = await createBundle(root, {...config, client:{framework:'react', toolchain:'vite'}});
+    assert.equal(omitted.clientDiagnostics.warnings, undefined);
     await writeFile(path.join(root, 'renderer-only.css'), 'body { color: red; }');
     await writeFile(path.join(root, 'second.mjs'), `import './renderer-only.css'; export default () => '<footer>not a second asset graph</footer>';`);
     await assert.rejects(createBundle(root, config), /unsupported secondary output|Could not build client prerender module/);

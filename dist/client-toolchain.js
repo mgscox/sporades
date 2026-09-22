@@ -140,7 +140,7 @@ async function buildVite(options) {
             plugins: [
                 ...frameworkPlugins,
                 sporadesViteClientPlugin(options.devRefresh === true),
-                ...(options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : []),
+                ...(options.prerender !== undefined ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : []),
                 sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
             ],
             build: {

@@ -73259,7 +73259,6 @@ function isRendererSyntaxNode(value) {
 }
 function placeClientPrerenderFragments(html, fragments) {
   const warnings = [];
-  if (fragments.length === 0) return { html, warnings };
   const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
   const counts = new Map(fragments.map((fragment) => [fragment.name, 0]));
   const expand = (fragment) => {
@@ -73267,6 +73266,12 @@ function placeClientPrerenderFragments(html, fragments) {
     return `<!-- sporades:prerender-boundary-start ${fragment.name} -->${fragment.html}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
   };
   const placement = scanClientPrerenderHtml(html);
+  if (fragments.length === 0) {
+    for (const name2 of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
+      warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name2, message: `Unknown prerender marker "${name2}" remains a comment in index.html.` });
+    }
+    return { html, warnings };
+  }
   if (placement.problem) {
     throw prerenderError(
       `Client prerender placement could not safely scan index.html: ${placement.problem}.`,
@@ -73833,7 +73838,7 @@ async function buildVite(options) {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
-        ...options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : [],
+        ...options.prerender !== void 0 ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : [],
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig)
       ],
       build: {
@@ -76088,7 +76093,7 @@ async function createBundle(projectDir, config, options = {}) {
     toolchain,
     indexHtml,
     indexHtmlPath: paths.indexHtml,
-    prerender,
+    prerender: config.client?.prerender === void 0 ? void 0 : prerender,
     clientSource,
     clientSourcePath: paths.clientEntry,
     frameworkConfig: frameworkBundleConfig,
@@ -124924,7 +124929,7 @@ async function manageHost(options) {
         projectDir: options.projectDir
       });
       const outputResult = redactHostPushSshState(result);
-      if (bundle.clientDiagnostics.warnings?.length) {
+      if (outputResult.ok && bundle.clientDiagnostics.warnings?.length) {
         outputResult.data = { ...outputResult.data, warnings: bundle.clientDiagnostics.warnings };
       }
       if (options.json) {

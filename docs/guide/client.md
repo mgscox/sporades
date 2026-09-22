@@ -26,8 +26,8 @@ Declare ordered, uniquely named project-relative render modules in `sporades.jso
     "framework": "react",
     "toolchain": "vite",
     "prerender": [
-      { "name": "landing", "module": "render/landing.ts" },
-      { "name": "footer", "module": "render/footer.ts" }
+      { "name": "landing", "module": "client/render/landing.ts" },
+      { "name": "footer", "module": "client/render/footer.ts" }
     ]
   }
 }

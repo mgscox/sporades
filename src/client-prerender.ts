@@ -789,7 +789,6 @@ export type ClientPrerenderWarning = Readonly<{
 
 export function placeClientPrerenderFragments(html: string, fragments: readonly { name: string; html: string }[]) {
   const warnings: ClientPrerenderWarning[] = [];
-  if (fragments.length === 0) return { html, warnings };
   const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
   const counts = new Map(fragments.map((fragment) => [fragment.name, 0]));
   const expand = (fragment: { name: string; html: string }) => {
@@ -797,6 +796,12 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
     return `<!-- sporades:prerender-boundary-start ${fragment.name} -->${fragment.html}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
   };
   const placement = scanClientPrerenderHtml(html);
+  if (fragments.length === 0) {
+    for (const name of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
+      warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name, message: `Unknown prerender marker "${name}" remains a comment in index.html.` });
+    }
+    return { html, warnings };
+  }
   if (placement.problem) {
     throw prerenderError(
       `Client prerender placement could not safely scan index.html: ${placement.problem}.`,
