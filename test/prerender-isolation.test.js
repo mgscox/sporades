@@ -202,6 +202,16 @@ test('direct CommonJS eval fails explicitly instead of using entry-rooted wrappe
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('CommonJS dynamic with scope fails explicitly before wrapper specialization', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-with-scope-')));
+  try {
+    await writeFile(path.join(root, 'entry.cjs'), 'exports.default = () => { with ({ require: () => "local" }) { const target = "./absent.cjs"; return require(target); } };');
+    await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), /With statements are unsupported/i);
+    await writeFile(path.join(root, 'entry.cjs'), 'exports.default = () => { with ({ value: "local" }) { return value; } };');
+    await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), /With statements are unsupported/i);
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('ESM import.meta aliases and computed accesses preserve each source URL', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-import-meta-alias-')));
   try {
