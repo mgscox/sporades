@@ -986,6 +986,62 @@ test("unresolved absolute renderer imports redact external host paths", async ()
   });
 });
 
+test("unresolved external file URL imports redact local host paths", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    const externalDir = path.join(tempRoot, "caf\u00e9 URL modules");
+    await mkdir(projectDir);
+    await mkdir(externalDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const canonicalProject = await realpath(projectDir);
+    const canonicalExternalDir = await realpath(externalDir);
+    const missingUrl = pathToFileURL(path.join(canonicalExternalDir, "missing-url-renderer.mjs")).href;
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      `import ${JSON.stringify(missingUrl)};\nexport default () => "<main>unreachable</main>";\n`,
+    );
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+      (error) => {
+        assert.match(error.message, /could not build client prerender module/i);
+        assert.match(error.message, /<project>\/missing-url-renderer\.mjs/i);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack });
+        assert.equal(surfaced.includes(canonicalExternalDir), false, "leaked unresolved external file URL pathname");
+        assert.equal(surfaced.includes(pathToFileURL(canonicalExternalDir).href), false, "leaked unresolved external file URL");
+        assert.doesNotMatch(surfaced, /caf(?:é|e%CC%81|%C3%A9)%20URL%20modules/i);
+        return true;
+      },
+    );
+  });
+});
+
+test("failed file URL imports preserve contained context and reject unsafe URL forms", async () => {
+  await withTempDir(async (projectDir) => {
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const canonicalProject = await realpath(projectDir);
+    const containedUrl = pathToFileURL(path.join(canonicalProject, "renderer", "missing-contained.mjs")).href;
+    const cases = [
+      { specifier: containedUrl, expected: /<project>\/renderer\/missing-contained\.mjs/i },
+      { specifier: "file://example.invalid/private/missing.mjs", expected: /example\.invalid/i },
+      { specifier: "file:///%ZZ/missing.mjs", expected: /%ZZ/i },
+    ];
+    for (const testCase of cases) {
+      await writeFile(
+        path.join(projectDir, "render-landing.mjs"),
+        `import ${JSON.stringify(testCase.specifier)};\nexport default () => "<main>unreachable</main>";\n`,
+      );
+      await assert.rejects(
+        renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+        (error) => {
+          assert.match(error.message, testCase.expected);
+          return true;
+        },
+      );
+    }
+  });
+});
+
 test("hoisted renderer build failures redact dependency paths outside the Capsule", async () => {
   await withTempDir(async (tempRoot) => {
     const projectDir = path.join(tempRoot, "capsule");
