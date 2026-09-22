@@ -12,6 +12,8 @@ export type ClientPrerenderWarning = Readonly<{
     fragment: string;
     message: string;
 }>;
+export declare function validateClientPrerenderSourceHtml(html: string): void;
+export declare function validateClientPrerenderOutputHtml(html: string, expectedBoundaries: readonly string[]): void;
 export declare function placeClientPrerenderFragments(html: string, fragments: readonly {
     name: string;
     html: string;
@@ -22,5 +24,7 @@ export declare function placeClientPrerenderFragments(html: string, fragments: r
         fragment: string;
         message: string;
     }>[];
+    placements: number;
+    boundaries: string[];
 };
 //# sourceMappingURL=client-prerender.d.ts.map

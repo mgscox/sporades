@@ -109,6 +109,17 @@ import { importLegacyTeamBillingEvidence, type LegacyTeamBillingEvidence, type T
 import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
 
 import { auth as emittedAuth } from "${repoRoot}/dist/client.js";
+import { prerender, type PrerenderBoundary } from "sporades/client";
+import { prerender as emittedPrerender } from "${repoRoot}/dist/client.js";
+const boundaries: readonly PrerenderBoundary[] = prerender.discover();
+for (const boundary of boundaries) { const name: string = boundary.name; boundary.dismiss(); }
+prerender.dismiss(); prerender.dismiss("landing"); emittedPrerender.dismiss();
+// @ts-expect-error discovery is a readonly snapshot.
+boundaries.push(boundaries[0]);
+// @ts-expect-error the boundary name is readonly.
+boundaries[0].name = "changed";
+// @ts-expect-error private DOM nodes are not public handles.
+boundaries[0].start;
 const ownSessionToken: string | null = auth.sessionToken();
 const emittedSessionToken: string | null = emittedAuth.sessionToken();
 

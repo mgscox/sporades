@@ -62,4 +62,32 @@ sanitized; active markup retains normal browser behavior. Renderer imports do no
 create a second public asset graph: local CSS, images and fonts must already be
 emitted by the ordinary Vite client graph.
 
+### Hand over to the interactive client
+
+Fragments remain visible until the Capsule explicitly dismisses them. After your
+interactive screen is ready, use the framework-neutral client API:
+
+```ts
+import { prerender } from "sporades/client";
+
+const snapshot = prerender.discover();
+for (const boundary of snapshot.filter((item) => item.name === "landing")) {
+  boundary.dismiss();
+}
+prerender.dismiss("footer"); // Every current placement with this name.
+prerender.dismiss(); // Every current fragment, in head and body.
+```
+
+Discovery returns a readonly snapshot with one opaque handle per placement. A
+handle exposes only its name and an idempotent `dismiss()` operation. Unknown
+names and repeated dismissal are harmless. Importing the SDK, connecting, and
+framework mounting do not dismiss anything automatically. Preserve the static
+shell until your replacement content is ready; without JavaScript it stays
+visible. Dismissal removes nodes, not effects of scripts that already ran. This
+is deliberate static-shell replacement, not framework hydration.
+Sporades boundary comments are private and reserved. Actual boundary comments in
+renderer output, source HTML, or an HTML plugin fail the build, even when
+prerender is disabled. This prevents embedded delimiters from truncating dismissal
+or claiming author-owned content. Use only the public discovery and dismissal API.
+
 Next: [authentication](./auth.md), [files](./files.md), or [realtime features](./realtime.md).

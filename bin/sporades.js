@@ -30499,7 +30499,7 @@ var require_decoder = __commonJS({
       window["jpeg-js"].decode = decode;
     }
     function decode(jpegData, userOpts = {}) {
-      var defaultOpts = {
+      var defaultOpts2 = {
         // "undefined" means "Choose whether to transform colors based on the image’s color model."
         colorTransform: void 0,
         useTArray: false,
@@ -30510,7 +30510,7 @@ var require_decoder = __commonJS({
         maxMemoryUsageInMB: 512
         // Don't decode if memory footprint is more than 512MB
       };
-      var opts = { ...defaultOpts, ...userOpts };
+      var opts = { ...defaultOpts2, ...userOpts };
       var arr = new Uint8Array(jpegData);
       var decoder = new JpegImage();
       decoder.opts = opts;
@@ -65297,6 +65297,51 @@ function createClientRuntimeSource(options = {}) {
   return `
 const websocketPath = "/__sporades/ws";
 
+// Static fragments have no transport or automatic lifecycle. The Capsule decides
+// when its interactive content is ready to replace them.
+export const prerender = Object.freeze({
+  discover() {
+    if (typeof document === "undefined") return Object.freeze([]);
+    const walker = document.createTreeWalker(document, 128);
+    const stack = [];
+    const boundaries = [];
+    let sequence = 0;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
+      if (!marker) continue;
+      if (marker[1] === "start") {
+        stack.push({ name: marker[2], start: node, sequence: sequence++ });
+        continue;
+      }
+      const opening = stack.pop();
+      if (!opening || opening.name !== marker[2]) continue;
+      const start = opening.start;
+      const end = node;
+      const handle = Object.freeze({
+        name: opening.name,
+        dismiss() {
+          if (!start.isConnected || !end.isConnected || start.getRootNode() !== end.getRootNode()) return;
+          // HTML parsing can put the closing comment inside an implicit tbody.
+          // A DOM range preserves surrounding content across parent boundaries.
+          // Validate order before mutation so stale/reversed handles are inert.
+          if (!(start.compareDocumentPosition(end) & 4)) return;
+          const range = start.ownerDocument.createRange();
+          range.setStartBefore(start);
+          range.setEndAfter(end);
+          range.deleteContents();
+        },
+      });
+      boundaries.push({ sequence: opening.sequence, handle });
+    }
+    return Object.freeze(boundaries.sort((left, right) => left.sequence - right.sequence).map((entry) => entry.handle));
+  },
+  dismiss(name) {
+    for (const handle of prerender.discover()) {
+      if (name === undefined || handle.name === name) handle.dismiss();
+    }
+  },
+});
+
 export function isAuthenticated() {
   return connect().isAuthenticated();
 }
@@ -74082,6 +74127,9 @@ var UNESCAPED_TEXT = /* @__PURE__ */ new Set([
   TAG_NAMES.NOFRAMES,
   TAG_NAMES.PLAINTEXT
 ]);
+function hasUnescapedText(tn, scriptingEnabled) {
+  return UNESCAPED_TEXT.has(tn) || scriptingEnabled && tn === TAG_NAMES.NOSCRIPT;
+}
 
 // node_modules/parse5/dist/tokenizer/index.js
 var State;
@@ -80647,6 +80695,35 @@ function endTagInForeignContent(p, token) {
   }
 }
 
+// node_modules/parse5/node_modules/entities/dist/escape.js
+function getEscape(char) {
+  return char === 34 ? "&quot;" : char === 38 ? "&amp;" : char === 39 ? "&apos;" : char === 60 ? "&lt;" : char === 62 ? "&gt;" : "&nbsp;";
+}
+function escapeWithRegex(re, data2) {
+  re.lastIndex = 0;
+  if (!re.test(data2))
+    return data2;
+  let out = "";
+  let last = 0;
+  do {
+    const index = re.lastIndex - 1;
+    if (last !== index)
+      out += data2.substring(last, index);
+    const char = data2.charCodeAt(index);
+    out += getEscape(char);
+    last = index + 1;
+  } while (re.test(data2));
+  return out + data2.substring(last);
+}
+var attributeEscapeRegex = /["&\u{A0}]/gu;
+function escapeAttribute(data2) {
+  return escapeWithRegex(attributeEscapeRegex, data2);
+}
+var textEscapeRegex = /[&<>\u{A0}]/gu;
+function escapeText(data2) {
+  return escapeWithRegex(textEscapeRegex, data2);
+}
+
 // node_modules/parse5/dist/serializer/index.js
 var VOID_ELEMENTS = /* @__PURE__ */ new Set([
   TAG_NAMES.AREA,
@@ -80668,6 +80745,92 @@ var VOID_ELEMENTS = /* @__PURE__ */ new Set([
   TAG_NAMES.TRACK,
   TAG_NAMES.WBR
 ]);
+function isVoidElement(node, options) {
+  return options.treeAdapter.isElementNode(node) && options.treeAdapter.getNamespaceURI(node) === NS.HTML && VOID_ELEMENTS.has(options.treeAdapter.getTagName(node));
+}
+var defaultOpts = { treeAdapter: defaultTreeAdapter, scriptingEnabled: true };
+function serialize(node, options) {
+  const opts = { ...defaultOpts, ...options };
+  if (isVoidElement(node, opts)) {
+    return "";
+  }
+  return serializeChildNodes(node, opts);
+}
+function serializeChildNodes(parentNode, options) {
+  let html = "";
+  const container = options.treeAdapter.isElementNode(parentNode) && options.treeAdapter.getTagName(parentNode) === TAG_NAMES.TEMPLATE && options.treeAdapter.getNamespaceURI(parentNode) === NS.HTML ? options.treeAdapter.getTemplateContent(parentNode) : parentNode;
+  const childNodes = options.treeAdapter.getChildNodes(container);
+  if (childNodes) {
+    for (const currentNode of childNodes) {
+      html += serializeNode(currentNode, options);
+    }
+  }
+  return html;
+}
+function serializeNode(node, options) {
+  if (options.treeAdapter.isElementNode(node)) {
+    return serializeElement(node, options);
+  }
+  if (options.treeAdapter.isTextNode(node)) {
+    return serializeTextNode(node, options);
+  }
+  if (options.treeAdapter.isCommentNode(node)) {
+    return serializeCommentNode(node, options);
+  }
+  if (options.treeAdapter.isDocumentTypeNode(node)) {
+    return serializeDocumentTypeNode(node, options);
+  }
+  return "";
+}
+function serializeElement(node, options) {
+  const tn = options.treeAdapter.getTagName(node);
+  return `<${tn}${serializeAttributes(node, options)}>${isVoidElement(node, options) ? "" : `${serializeChildNodes(node, options)}</${tn}>`}`;
+}
+function serializeAttributes(node, { treeAdapter }) {
+  let html = "";
+  for (const attr of treeAdapter.getAttrList(node)) {
+    html += " ";
+    if (attr.namespace) {
+      switch (attr.namespace) {
+        case NS.XML: {
+          html += `xml:${attr.name}`;
+          break;
+        }
+        case NS.XMLNS: {
+          if (attr.name !== "xmlns") {
+            html += "xmlns:";
+          }
+          html += attr.name;
+          break;
+        }
+        case NS.XLINK: {
+          html += `xlink:${attr.name}`;
+          break;
+        }
+        default: {
+          html += `${attr.prefix}:${attr.name}`;
+        }
+      }
+    } else {
+      html += attr.name;
+    }
+    html += `="${escapeAttribute(attr.value)}"`;
+  }
+  return html;
+}
+function serializeTextNode(node, options) {
+  const { treeAdapter } = options;
+  const content2 = treeAdapter.getTextNodeContent(node);
+  const parent = treeAdapter.getParentNode(node);
+  const parentTn = parent && treeAdapter.isElementNode(parent) && treeAdapter.getTagName(parent);
+  return parentTn && treeAdapter.getNamespaceURI(parent) === NS.HTML && hasUnescapedText(parentTn, options.scriptingEnabled) ? content2 : escapeText(content2);
+}
+function serializeCommentNode(node, { treeAdapter }) {
+  return `<!--${treeAdapter.getCommentNodeContent(node)}-->`;
+}
+function serializeDocumentTypeNode(node, { treeAdapter }) {
+  return `<!DOCTYPE ${treeAdapter.getDocumentTypeNodeName(node)}>`;
+}
 
 // node_modules/parse5/dist/index.js
 function parse4(html, options) {
@@ -81412,6 +81575,34 @@ function forEachRendererChild(node, visit) {
 function isRendererSyntaxNode(value) {
   return Boolean(value && typeof value === "object" && typeof value.type === "string");
 }
+function validateClientPrerenderSourceHtml(html) {
+  if (hasReservedPrerenderBoundary(html)) {
+    throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
+  }
+}
+function validateClientPrerenderOutputHtml(html, expectedBoundaries) {
+  if (expectedBoundaries.length === 0) validateClientPrerenderSourceHtml(html);
+  else {
+    const actual = validatePrerenderDomBoundaries(html, expectedBoundaries.length);
+    if (JSON.stringify(actual) !== JSON.stringify(expectedBoundaries)) {
+      throw prerenderError("Final Vite HTML replaced a reserved prerender boundary or its content.", "Keep Sporades-owned fragment ranges unchanged after transformIndexHtml; render final fragment content through its renderer.");
+    }
+  }
+}
+function hasReservedPrerenderBoundary(html) {
+  return countReservedPrerenderBoundaries(parse4(html, { scriptingEnabled: true })) > 0;
+}
+function countReservedPrerenderBoundaries(root) {
+  const pending = [root];
+  let count = 0;
+  while (pending.length) {
+    const node = pending.pop();
+    if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end)\b/.test(node.data.trim())) count++;
+    if ("childNodes" in node) pending.push(...node.childNodes);
+    if ("tagName" in node && node.tagName === "template" && "content" in node) pending.push(node.content);
+  }
+  return count;
+}
 function unknownPrerenderMarkerWarning(name2) {
   const normalized = name2.replace(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/gu, " ").replace(/\s+/g, " ").trim();
   const characters = Array.from(normalized || "[empty]");
@@ -81420,6 +81611,12 @@ function unknownPrerenderMarkerWarning(name2) {
 }
 function placeClientPrerenderFragments(html, fragments) {
   const warnings = [];
+  validateClientPrerenderSourceHtml(html);
+  for (const fragment of fragments) {
+    if (hasReservedPrerenderBoundary(fragment.html)) {
+      throw prerenderError(`Prerender fragment "${fragment.name}" contains a reserved prerender boundary comment.`, "Remove Sporades private boundary comments from renderer output; the Bundle pipeline supplies them.");
+    }
+  }
   const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
   const counts = new Map(fragments.map((fragment) => [fragment.name, 0]));
   const expand = (fragment) => {
@@ -81431,7 +81628,7 @@ function placeClientPrerenderFragments(html, fragments) {
     for (const name2 of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
       warnings.push(unknownPrerenderMarkerWarning(name2));
     }
-    return { html, warnings };
+    return { html, warnings, placements: 0, boundaries: [] };
   }
   if (placement.problem) {
     throw prerenderError(
@@ -81471,7 +81668,126 @@ function placeClientPrerenderFragments(html, fragments) {
     if (count === 0) warnings.push({ code: "PRERENDER_UNUSED_FRAGMENT", fragment: name2, message: `Configured prerender fragment "${name2}" has no placement in index.html.` });
     else if (count > 1) warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name2, message: `Prerender fragment "${name2}" is placed ${count} times in index.html.` });
   }
-  return { html: replaced, warnings };
+  const placements = [...counts.values()].reduce((sum, count) => sum + count, 0);
+  const boundaries = validatePrerenderDomBoundaries(replaced, placements);
+  if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
+    throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
+  }
+  validatePrerenderAuthorDom(html, replaced, new Set(placement.markers.filter((marker) => marker.name === void 0 || byName.has(marker.name)).map((marker) => marker.start)));
+  return { html: replaced, warnings, placements, boundaries };
+}
+function validatePrerenderAuthorDom(source, output, consumedMarkers) {
+  const original = parse4(source, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+  const candidate = parse4(output, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+  const removeOriginalMarkers = (node) => {
+    if (node.nodeName === "#comment" && node.sourceCodeLocation && consumedMarkers.has(node.sourceCodeLocation.startOffset)) {
+      defaultTreeAdapter.detachNode(node);
+      return;
+    }
+    if ("childNodes" in node) for (const child of [...node.childNodes]) removeOriginalMarkers(child);
+  };
+  removeOriginalMarkers(original);
+  const intervals = /* @__PURE__ */ new Map();
+  const boundaries = [];
+  let position = 0;
+  const index = (node) => {
+    const interval = { before: position++, after: 0 };
+    intervals.set(node, interval);
+    if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end) /.test(node.data.trim())) boundaries.push(node);
+    if ("childNodes" in node) for (const child of node.childNodes) index(child);
+    interval.after = position;
+  };
+  index(candidate);
+  boundaries.sort((left, right) => left.sourceCodeLocation.startOffset - right.sourceCodeLocation.startOffset);
+  for (let pair2 = 0; pair2 < boundaries.length; pair2 += 2) {
+    const start = intervals.get(boundaries[pair2]).before;
+    const end = intervals.get(boundaries[pair2 + 1]).after;
+    const removeRange = (node) => {
+      if (!("childNodes" in node)) return;
+      for (const child of [...node.childNodes]) {
+        const interval = intervals.get(child);
+        if (interval.before >= start && interval.after <= end) defaultTreeAdapter.detachNode(child);
+        else removeRange(child);
+      }
+    };
+    removeRange(candidate);
+  }
+  if (serialize(original) !== serialize(candidate)) {
+    throw prerenderError("Client prerender placement is not stable in the parsed HTML document.", "Fragment dismissal must restore the author-owned DOM. Use explicit containers where HTML parsing would otherwise reparent author content.");
+  }
+}
+function validatePrerenderDomBoundaries(html, expectedPlacements) {
+  if (expectedPlacements === 0) return [];
+  const nodes = [];
+  const implicitNodes = [];
+  const boundaries = [];
+  let order = 0;
+  const visit = (node) => {
+    const location = node.sourceCodeLocation;
+    const position = order++;
+    let located;
+    const implicit = !location && "tagName" in node ? { order: position, after: order, tagName: node.tagName } : void 0;
+    if (implicit) implicitNodes.push(implicit);
+    if (location) {
+      const token = "startTag" in location && location.startTag ? location.startTag : location;
+      located = { start: token.startOffset, end: token.endOffset, order: position, after: order, ..."tagName" in node ? { tagName: node.tagName } : {} };
+      if ("tagName" in node && node.tagName === "template" && "content" in node && node.attrs.some((attr) => attr.name === "shadowrootmode" && /^(?:open|closed)$/i.test(attr.value))) {
+        located.shadowHostStart = node.parentNode?.sourceCodeLocation?.startOffset ?? -1;
+      }
+      nodes.push(located);
+      if (node.nodeName === "#comment" && "data" in node) {
+        const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
+        if (marker) boundaries.push({ ...located, kind: marker[1], name: marker[2] });
+      }
+    }
+    if ("childNodes" in node) for (const child of node.childNodes) visit(child);
+    if (located) located.after = order;
+    if (implicit) implicit.after = order;
+  };
+  const document2 = parse4(html, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+  visit(document2);
+  const invalid = () => prerenderError(
+    "Client prerender placement is not stable in the parsed HTML document.",
+    "Use context-valid fragment HTML at each marker (for example, rows inside tables), outside inert templates. The browser must keep fragment content between its boundaries."
+  );
+  if (boundaries.length !== expectedPlacements * 2 || countReservedPrerenderBoundaries(document2) !== expectedPlacements * 2) throw invalid();
+  boundaries.sort((left, right) => left.start - right.start);
+  const ownedRanges = [];
+  for (let index = 0; index < boundaries.length; index += 2) {
+    const start = boundaries[index];
+    const end = boundaries[index + 1];
+    if (start.kind !== "start" || end.kind !== "end" || start.name !== end.name || start.order >= end.order) throw invalid();
+    ownedRanges.push(html.slice(start.start, end.end));
+    for (const node of nodes) {
+      if (node.order === start.order || node.order === end.order) continue;
+      const fromFragment = node.start < end.start && node.end > start.end;
+      const withinBoundary = node.order > start.order && node.order < end.order;
+      if (fromFragment && node.shadowHostStart !== void 0 && !(node.shadowHostStart >= start.end && node.shadowHostStart < end.start)) throw invalid();
+      if (fromFragment !== withinBoundary || fromFragment && node.after > end.order) throw invalid();
+      if (!fromFragment && node.order < start.order && node.after > start.order && node.after <= end.order) throw invalid();
+    }
+    for (const node of implicitNodes) {
+      const containsStart = node.order < start.order && start.order < node.after;
+      const containsEnd = node.order < end.order && end.order < node.after;
+      if (containsStart === containsEnd) continue;
+      const authorChild = node.tagName === "tbody" ? "tr" : node.tagName === "colgroup" ? "col" : void 0;
+      const authorRequiresWrapper = authorChild && nodes.some((child) => child.tagName === authorChild && child.order > node.order && child.order < node.after && !(child.start < end.start && child.end > start.end));
+      if (!authorRequiresWrapper) throw invalid();
+    }
+  }
+  return ownedRanges;
+}
+function prerenderDocumentRootAttributes(html) {
+  const roots = /* @__PURE__ */ new Map();
+  const pending = [parse4(html, { scriptingEnabled: true })];
+  while (pending.length) {
+    const node = pending.pop();
+    if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && (node.tagName === "html" || node.tagName === "body")) {
+      roots.set(node.tagName, JSON.stringify(node.attrs.map((attr) => [attr.namespace ?? "", attr.prefix ?? "", attr.name, attr.value]).sort()));
+    }
+    if ("childNodes" in node) pending.push(...node.childNodes);
+  }
+  return JSON.stringify([...roots].sort());
 }
 function scanClientPrerenderHtml(html) {
   const errors = [];
@@ -81497,7 +81813,7 @@ function scanClientPrerenderHtml(html) {
       }
     }
     if ("childNodes" in node) for (const child of node.childNodes) visit(child);
-    if ("tagName" in node && node.tagName === "template") visit(node.content);
+    if ("tagName" in node && node.tagName === "template" && "content" in node) visit(node.content);
   };
   visit(document2);
   for (const error of errors) {
@@ -81708,6 +82024,7 @@ async function buildClientToolchain(options) {
   return buildEsbuild(options);
 }
 function validateClientToolchainInput(options) {
+  validateClientPrerenderSourceHtml(options.indexHtml);
   if (options.toolchain !== "vite" && options.prerender && options.prerender.length > 0) {
     throw clientToolchainError(
       "Client prerender fragments require the Vite client toolchain.",
@@ -81823,6 +82140,7 @@ async function buildVite(options) {
       frameworkPlugins.push(await loadProjectInfernoToolchain(projectRoot));
     }
     const prerenderWarnings = [];
+    const prerenderState = { boundaries: [] };
     const result = await build2({
       root: projectRoot,
       base: "/",
@@ -81842,7 +82160,7 @@ async function buildVite(options) {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
-        ...options.prerender !== void 0 ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : [],
+        sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, prerenderState, options.prerender !== void 0),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig)
       ],
       build: {
@@ -81881,6 +82199,8 @@ async function buildVite(options) {
       }
     }
     if (!files.has("index.html")) throw new Error("Vite returned no transformed index.html output.");
+    const source = files.get("index.html");
+    validateClientPrerenderOutputHtml(typeof source === "string" ? source : new TextDecoder().decode(source), prerenderState.boundaries);
     return {
       publicFiles: [...files].map(([filePath, contents]) => ({ path: filePath, contents })),
       legacyClientBundle: null,
@@ -81891,7 +82211,7 @@ async function buildVite(options) {
     throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
 }
-function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings) {
+function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, state, diagnoseMarkers) {
   return {
     name: "sporades-prerender",
     enforce: "post",
@@ -81903,7 +82223,8 @@ function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warni
           rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
         }
         const placed = placeClientPrerenderFragments(html, rendered);
-        warnings.push(...placed.warnings);
+        state.boundaries = placed.boundaries;
+        if (diagnoseMarkers) warnings.push(...placed.warnings);
         return placed.html;
       }
     }

@@ -2,6 +2,51 @@ export function createClientRuntimeSource(options = {}) {
     return `
 const websocketPath = "/__sporades/ws";
 
+// Static fragments have no transport or automatic lifecycle. The Capsule decides
+// when its interactive content is ready to replace them.
+export const prerender = Object.freeze({
+  discover() {
+    if (typeof document === "undefined") return Object.freeze([]);
+    const walker = document.createTreeWalker(document, 128);
+    const stack = [];
+    const boundaries = [];
+    let sequence = 0;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
+      if (!marker) continue;
+      if (marker[1] === "start") {
+        stack.push({ name: marker[2], start: node, sequence: sequence++ });
+        continue;
+      }
+      const opening = stack.pop();
+      if (!opening || opening.name !== marker[2]) continue;
+      const start = opening.start;
+      const end = node;
+      const handle = Object.freeze({
+        name: opening.name,
+        dismiss() {
+          if (!start.isConnected || !end.isConnected || start.getRootNode() !== end.getRootNode()) return;
+          // HTML parsing can put the closing comment inside an implicit tbody.
+          // A DOM range preserves surrounding content across parent boundaries.
+          // Validate order before mutation so stale/reversed handles are inert.
+          if (!(start.compareDocumentPosition(end) & 4)) return;
+          const range = start.ownerDocument.createRange();
+          range.setStartBefore(start);
+          range.setEndAfter(end);
+          range.deleteContents();
+        },
+      });
+      boundaries.push({ sequence: opening.sequence, handle });
+    }
+    return Object.freeze(boundaries.sort((left, right) => left.sequence - right.sequence).map((entry) => entry.handle));
+  },
+  dismiss(name) {
+    for (const handle of prerender.discover()) {
+      if (name === undefined || handle.name === name) handle.dismiss();
+    }
+  },
+});
+
 export function isAuthenticated() {
   return connect().isAuthenticated();
 }

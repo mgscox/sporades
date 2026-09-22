@@ -36,7 +36,7 @@ test("ordered prerender placement preserves author HTML, warnings and last succe
 const file = new URL('./order.json', import.meta.url);
 export default async () => {
   const order = JSON.parse(readFileSync(file)); order.push('${name}'); writeFileSync(file, JSON.stringify(order));
-  return '<meta data-fragment="${name}"><span data-fragment="${name}">${name}</span>';
+  return '<meta data-fragment="${name}">${name === "second" ? '<meta name="second-copy" content="second">' : '<span data-fragment="first">first</span>'}';
 };`);
     }
     const config = { name: "placement", client: { framework: "react", toolchain: "vite", prerender: [
@@ -101,6 +101,10 @@ export default async () => {
     const digestedHtml = await readFile(digested.staticFiles.indexHtml, 'utf8');
     assert.ok(digestedHtml.includes('<footer>second once</footer>'));
     assert.equal(await readFile(path.join(path.dirname(digested.staticFiles.indexHtml), 'index-digest.txt'), 'utf8'), createHash('sha256').update(digestedHtml).digest('hex'));
+    for (const replacementName of ['forged', 'second']) {
+      await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'replace-boundaries', generateBundle: { order:'post', handler(_options, bundle) { bundle['index.html'].source = bundle['index.html'].source.replace(/<!-- sporades:prerender-boundary-start second -->[\\s\\S]*?<!-- sporades:prerender-boundary-end second -->/, ${JSON.stringify(`<!-- sporades:prerender-boundary-start ${replacementName} --><p>Author content</p><!-- sporades:prerender-boundary-end ${replacementName} -->`)}); } } }] };`);
+      await assert.rejects(createBundle(root, config), /replaced a reserved prerender boundary or its content/i);
+    }
     await writeFile(path.join(root, 'vite.config.mjs'), 'export default {};');
     // Explicit empty configuration still diagnoses stale names; omission is opt-out.
     await writeFile(path.join(root, 'index.html'), '<html><head></head><body><!-- sporades:prerender stale --><script type="module" src="/client/index.tsx"></script></body></html>');
@@ -109,6 +113,26 @@ export default async () => {
     assert.ok((await readFile(empty.staticFiles.indexHtml, 'utf8')).includes('<!-- sporades:prerender stale -->'));
     const omitted = await createBundle(root, {...config, client:{framework:'react', toolchain:'vite'}});
     assert.equal(omitted.clientDiagnostics.warnings, undefined);
+    // Private browser cleanup boundaries cannot be authored even with prerender off.
+    const boundary = '<!-- sporades:prerender-boundary-start landing --><p>author content</p><!-- sporades:prerender-boundary-end landing -->';
+    for (const client of [{framework:'react', toolchain:'vite'}, {framework:'react', toolchain:'vite', prerender:[]}]) {
+      await writeFile(path.join(root, 'index.html'), `<html><body>${boundary}<script type="module" src="/client/index.tsx"></script></body></html>`);
+      await assert.rejects(createBundle(root, {...config, client}), /reserved prerender boundary comment/i);
+      await writeFile(path.join(root, 'index.html'), '<html><body>AUTHOR_SLOT<script type="module" src="/client/index.tsx"></script></body></html>');
+      await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'author-boundaries', enforce: 'post', transformIndexHtml: { order: 'post', handler: html => html.replace('AUTHOR_SLOT', ${JSON.stringify(boundary)}) } }] };`);
+      await assert.rejects(createBundle(root, {...config, client}), /reserved prerender boundary comment/i);
+      await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'deferred-boundaries', transformIndexHtml: () => ({ tags: [{tag:'section', children:${JSON.stringify(boundary)}, injectTo:'body'}] }) }] };`);
+      await assert.rejects(createBundle(root, {...config, client}), /reserved prerender boundary comment/i);
+      await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'late-boundaries', generateBundle: {order:'post', handler(_options, bundle) {bundle['index.html'].source += ${JSON.stringify(boundary)};} } }] };`);
+      await assert.rejects(createBundle(root, {...config, client}), /reserved prerender boundary comment/i);
+      await assert.rejects(createBundle(root, config), /not stable in the parsed HTML document/i);
+    }
+    for (const suffix of [`<template>${boundary}</template>`, `<template><template>${boundary}</template></template>`, '<!sporades:prerender-boundary-start malformed>']) {
+      await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'late-inert-boundaries', generateBundle: {order:'post', handler(_options, bundle) {bundle['index.html'].source += ${JSON.stringify(suffix)};} } }] };`);
+      await assert.rejects(createBundle(root, config), /not stable in the parsed HTML document/i);
+    }
+    await writeFile(path.join(root, 'vite.config.mjs'), 'export default {};');
+    await writeFile(path.join(root, 'index.html'), '<html><body><script type="module" src="/client/index.tsx"></script></body></html>');
     await writeFile(path.join(root, 'renderer-only.css'), 'body { color: red; }');
     await writeFile(path.join(root, 'second.mjs'), `import './renderer-only.css'; export default () => '<footer>not a second asset graph</footer>';`);
     await assert.rejects(createBundle(root, config), /unsupported secondary output|Could not build client prerender module/);

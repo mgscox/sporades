@@ -36,3 +36,25 @@ unsupported: Annex B hoisting cannot preserve Node's implicit parameter exemptio
 through bundling. Use an explicit assignment instead.
 Renderer-only CSS, image or other asset output is unsupported;
 assets used by static HTML must already belong to the ordinary Vite client graph.
+After placement in `transformIndexHtml`, later Vite output hooks must leave each
+Sporades-owned boundary pair and its enclosed HTML unchanged. Final validation
+rejects replacement ranges; derive final fragment content in the renderer.
+
+Fragment HTML must be valid for its marker's document context. The build checks
+the parsed DOM without rewriting the emitted HTML: content moved outside its
+handover boundaries by HTML parsing fails with a placement diagnostic. For
+example, render rows at a marker inside a table, not a `div` or plain text that
+the browser would move before the table. Markers inside inert `template` content
+are not supported. Valid implicit table wrappers remain supported.
+Close fragment-created elements explicitly: an omitted optional closing tag can
+leave a fragment ancestor spanning its end boundary, which also fails validation.
+Declarative shadow roots must have a host element created inside the same
+fragment. Attaching one to an author-owned host is rejected because removing
+the light-DOM boundaries cannot remove that host's shadow tree.
+
+Fragments also cannot add attributes to the author-owned html or body roots
+through parser-ignored document tags. Reserved boundaries are checked using the
+HTML parser, including bogus declarations that become browser comments.
+Fragments cannot close an author-owned ancestor or leave behind a fragment-only
+implicit wrapper after dismissal. Put sole static table rows in an author-owned
+`tbody`; implicit `tbody` is supported when author rows independently require it.

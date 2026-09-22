@@ -106,8 +106,8 @@ test("marker scanning treats noscript content as raw text when scripting is enab
   const noscript = `<NoScRiPt data-copy="a > b">${marker}</nOsCrIpT>`;
 
   assert.equal(
-    placeClientPrerenderFragment(`<html><body>${noscript}<p>${marker}</p></body></html>`, fragment, rendered),
-    `<html><body>${noscript}<p>${bounded}</p></body></html>`,
+    placeClientPrerenderFragment(`<html><body>${noscript}<div>${marker}</div></body></html>`, fragment, rendered),
+    `<html><body>${noscript}<div>${bounded}</div></body></html>`,
   );
   assert.equal(
     placeClientPrerenderFragment(`<html><body class="shell">${noscript}<p>page</p></body></html>`, fragment, rendered),
@@ -169,9 +169,9 @@ test("marker scanning preserves less-than text and bounds bogus HTML constructs"
 
 test("marker scanning distinguishes prose quotes, malformed raw tags, and HTML CDATA declarations", () => {
   const fragment = { name: "landing", module: "render-landing.mjs" };
-  const rendered = "<main>static fragment</main>";
+  const rendered = "<span>static fragment</span>";
   const marker = "<!-- sporades:prerender landing -->";
-  const bounded = "<!-- sporades:prerender-boundary-start landing --><main>static fragment</main><!-- sporades:prerender-boundary-end landing -->";
+  const bounded = "<!-- sporades:prerender-boundary-start landing --><span>static fragment</span><!-- sporades:prerender-boundary-end landing -->";
   for (const prefix of [
     "<html><body><p>x<y isn't true.</p>",
     '<html><body><p>x<y "is not" true.</p>',

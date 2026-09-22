@@ -690,3 +690,14 @@ export function createLitControllers(): SporadesLitControllers;
 export function createInfernoAdapters(): SporadesInfernoAdapters;
 /** Create lazily observed Svelte-compatible stores for query, mutation, and auth state. */
 export function createSvelteStores(): SporadesSvelteStores;
+/** One placed static fragment. DOM boundaries are private; dismissal is idempotent. */
+export interface PrerenderBoundary {
+  readonly name: string;
+  dismiss(): void;
+}
+/** Deliberate static-shell handover; no operation starts a connection. */
+export interface PrerenderApi {
+  discover(): readonly PrerenderBoundary[];
+  dismiss(name?: string): void;
+}
+export const prerender: PrerenderApi;

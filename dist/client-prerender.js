@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
-import { parse as parseHtml } from "parse5";
+import { parse as parseHtml, serialize as serializeHtml, defaultTreeAdapter } from "parse5";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
 export function readClientPrerenderConfig(value, toolchain) {
     if (value === undefined)
@@ -809,6 +809,38 @@ function isRendererSyntaxNode(value) {
 export function placeClientPrerenderFragment(html, fragment, rendered) {
     return placeClientPrerenderFragments(html, [{ name: fragment.name, html: rendered }]).html;
 }
+export function validateClientPrerenderSourceHtml(html) {
+    if (hasReservedPrerenderBoundary(html)) {
+        throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
+    }
+}
+export function validateClientPrerenderOutputHtml(html, expectedBoundaries) {
+    if (expectedBoundaries.length === 0)
+        validateClientPrerenderSourceHtml(html);
+    else {
+        const actual = validatePrerenderDomBoundaries(html, expectedBoundaries.length);
+        if (JSON.stringify(actual) !== JSON.stringify(expectedBoundaries)) {
+            throw prerenderError("Final Vite HTML replaced a reserved prerender boundary or its content.", "Keep Sporades-owned fragment ranges unchanged after transformIndexHtml; render final fragment content through its renderer.");
+        }
+    }
+}
+function hasReservedPrerenderBoundary(html) {
+    return countReservedPrerenderBoundaries(parseHtml(html, { scriptingEnabled: true })) > 0;
+}
+function countReservedPrerenderBoundaries(root) {
+    const pending = [root];
+    let count = 0;
+    while (pending.length) {
+        const node = pending.pop();
+        if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end)\b/.test(node.data.trim()))
+            count++;
+        if ("childNodes" in node)
+            pending.push(...node.childNodes);
+        if ("tagName" in node && node.tagName === "template" && "content" in node)
+            pending.push(node.content);
+    }
+    return count;
+}
 function unknownPrerenderMarkerWarning(name) {
     const normalized = name.replace(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/gu, " ").replace(/\s+/g, " ").trim();
     const characters = Array.from(normalized || "[empty]");
@@ -817,6 +849,12 @@ function unknownPrerenderMarkerWarning(name) {
 }
 export function placeClientPrerenderFragments(html, fragments) {
     const warnings = [];
+    validateClientPrerenderSourceHtml(html);
+    for (const fragment of fragments) {
+        if (hasReservedPrerenderBoundary(fragment.html)) {
+            throw prerenderError(`Prerender fragment "${fragment.name}" contains a reserved prerender boundary comment.`, "Remove Sporades private boundary comments from renderer output; the Bundle pipeline supplies them.");
+        }
+    }
     const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
     const counts = new Map(fragments.map((fragment) => [fragment.name, 0]));
     const expand = (fragment) => {
@@ -828,7 +866,7 @@ export function placeClientPrerenderFragments(html, fragments) {
         for (const name of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
             warnings.push(unknownPrerenderMarkerWarning(name));
         }
-        return { html, warnings };
+        return { html, warnings, placements: 0, boundaries: [] };
     }
     if (placement.problem) {
         throw prerenderError(`Client prerender placement could not safely scan index.html: ${placement.problem}.`, "Fix the malformed HTML construct in index.html, then retry.");
@@ -867,7 +905,161 @@ export function placeClientPrerenderFragments(html, fragments) {
         else if (count > 1)
             warnings.push({ code: "PRERENDER_DUPLICATE_PLACEMENT", fragment: name, message: `Prerender fragment "${name}" is placed ${count} times in index.html.` });
     }
-    return { html: replaced, warnings };
+    const placements = [...counts.values()].reduce((sum, count) => sum + count, 0);
+    const boundaries = validatePrerenderDomBoundaries(replaced, placements);
+    if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
+        throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
+    }
+    validatePrerenderAuthorDom(html, replaced, new Set(placement.markers.filter((marker) => marker.name === undefined || byName.has(marker.name)).map((marker) => marker.start)));
+    return { html: replaced, warnings, placements, boundaries };
+}
+function validatePrerenderAuthorDom(source, output, consumedMarkers) {
+    const original = parseHtml(source, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+    const candidate = parseHtml(output, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+    const removeOriginalMarkers = (node) => {
+        if (node.nodeName === "#comment" && node.sourceCodeLocation && consumedMarkers.has(node.sourceCodeLocation.startOffset)) {
+            defaultTreeAdapter.detachNode(node);
+            return;
+        }
+        if ("childNodes" in node)
+            for (const child of [...node.childNodes])
+                removeOriginalMarkers(child);
+    };
+    removeOriginalMarkers(original);
+    const intervals = new Map();
+    const boundaries = [];
+    let position = 0;
+    const index = (node) => {
+        const interval = { before: position++, after: 0 };
+        intervals.set(node, interval);
+        if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end) /.test(node.data.trim()))
+            boundaries.push(node);
+        if ("childNodes" in node)
+            for (const child of node.childNodes)
+                index(child);
+        interval.after = position;
+    };
+    index(candidate);
+    boundaries.sort((left, right) => left.sourceCodeLocation.startOffset - right.sourceCodeLocation.startOffset);
+    for (let pair = 0; pair < boundaries.length; pair += 2) {
+        const start = intervals.get(boundaries[pair]).before;
+        const end = intervals.get(boundaries[pair + 1]).after;
+        // Model Range.deleteContents(): remove fully contained nodes but retain
+        // partially selected ancestors. Compare the resulting author DOM, not HTML
+        // spelling, so implied wrappers and parser reparenting cannot escape cleanup.
+        const removeRange = (node) => {
+            if (!("childNodes" in node))
+                return;
+            for (const child of [...node.childNodes]) {
+                const interval = intervals.get(child);
+                if (interval.before >= start && interval.after <= end)
+                    defaultTreeAdapter.detachNode(child);
+                else
+                    removeRange(child);
+            }
+        };
+        removeRange(candidate);
+    }
+    if (serializeHtml(original) !== serializeHtml(candidate)) {
+        throw prerenderError("Client prerender placement is not stable in the parsed HTML document.", "Fragment dismissal must restore the author-owned DOM. Use explicit containers where HTML parsing would otherwise reparent author content.");
+    }
+}
+function validatePrerenderDomBoundaries(html, expectedPlacements) {
+    if (expectedPlacements === 0)
+        return [];
+    const nodes = [];
+    const implicitNodes = [];
+    const boundaries = [];
+    let order = 0;
+    const visit = (node) => {
+        const location = node.sourceCodeLocation;
+        const position = order++;
+        let located;
+        const implicit = !location && "tagName" in node ? { order: position, after: order, tagName: node.tagName } : undefined;
+        if (implicit)
+            implicitNodes.push(implicit);
+        if (location) {
+            // Element ranges include descendants; only the opener identifies where
+            // that node came from. Text ranges also reveal merged foster-parented text.
+            const token = "startTag" in location && location.startTag ? location.startTag : location;
+            located = { start: token.startOffset, end: token.endOffset, order: position, after: order, ...("tagName" in node ? { tagName: node.tagName } : {}) };
+            if ("tagName" in node && node.tagName === "template" && "content" in node && node.attrs.some((attr) => attr.name === "shadowrootmode" && /^(?:open|closed)$/i.test(attr.value))) {
+                // parse5 models declarative shadow roots as inert templates. Browsers
+                // attach their content to the parent, which must be removed with us.
+                located.shadowHostStart = node.parentNode?.sourceCodeLocation?.startOffset ?? -1;
+            }
+            nodes.push(located);
+            if (node.nodeName === "#comment" && "data" in node) {
+                const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
+                if (marker)
+                    boundaries.push({ ...located, kind: marker[1], name: marker[2] });
+            }
+        }
+        // Like document TreeWalker, do not descend into inert template.content.
+        if ("childNodes" in node)
+            for (const child of node.childNodes)
+                visit(child);
+        if (located)
+            located.after = order;
+        if (implicit)
+            implicit.after = order;
+    };
+    const document = parseHtml(html, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+    visit(document);
+    const invalid = () => prerenderError("Client prerender placement is not stable in the parsed HTML document.", "Use context-valid fragment HTML at each marker (for example, rows inside tables), outside inert templates. The browser must keep fragment content between its boundaries.");
+    // Templates are inert to current discovery, but their cloned contents can
+    // become live later. Count all reserved comments, including malformed pairs.
+    if (boundaries.length !== expectedPlacements * 2 || countReservedPrerenderBoundaries(document) !== expectedPlacements * 2)
+        throw invalid();
+    boundaries.sort((left, right) => left.start - right.start);
+    const ownedRanges = [];
+    for (let index = 0; index < boundaries.length; index += 2) {
+        const start = boundaries[index];
+        const end = boundaries[index + 1];
+        if (start.kind !== "start" || end.kind !== "end" || start.name !== end.name || start.order >= end.order)
+            throw invalid();
+        ownedRanges.push(html.slice(start.start, end.end));
+        for (const node of nodes) {
+            if (node.order === start.order || node.order === end.order)
+                continue;
+            const fromFragment = node.start < end.start && node.end > start.end;
+            const withinBoundary = node.order > start.order && node.order < end.order;
+            if (fromFragment && node.shadowHostStart !== undefined && !(node.shadowHostStart >= start.end && node.shadowHostStart < end.start))
+                throw invalid();
+            // A fragment-created ancestor containing the end comment would survive
+            // Range.deleteContents() as a partially contained (possibly empty) node.
+            if (fromFragment !== withinBoundary || (fromFragment && node.after > end.order))
+                throw invalid();
+            if (!fromFragment && node.order < start.order && node.after > start.order && node.after <= end.order)
+                throw invalid();
+        }
+        for (const node of implicitNodes) {
+            const containsStart = node.order < start.order && start.order < node.after;
+            const containsEnd = node.order < end.order && end.order < node.after;
+            if (containsStart === containsEnd)
+                continue;
+            // A partially selected implied wrapper survives Range deletion. Keep it
+            // only when author rows/columns independently require that same wrapper.
+            const authorChild = node.tagName === "tbody" ? "tr" : node.tagName === "colgroup" ? "col" : undefined;
+            const authorRequiresWrapper = authorChild && nodes.some((child) => child.tagName === authorChild && child.order > node.order && child.order < node.after && !(child.start < end.start && child.end > start.end));
+            if (!authorRequiresWrapper)
+                throw invalid();
+        }
+    }
+    return ownedRanges;
+}
+function prerenderDocumentRootAttributes(html) {
+    const roots = new Map();
+    const pending = [parseHtml(html, { scriptingEnabled: true })];
+    while (pending.length) {
+        const node = pending.pop();
+        if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && (node.tagName === "html" || node.tagName === "body")) {
+            roots.set(node.tagName, JSON.stringify(node.attrs.map((attr) => [attr.namespace ?? "", attr.prefix ?? "", attr.name, attr.value]).sort()));
+        }
+        if ("childNodes" in node)
+            pending.push(...node.childNodes);
+    }
+    return JSON.stringify([...roots].sort());
 }
 function scanClientPrerenderHtml(html) {
     const errors = [];
@@ -900,7 +1092,7 @@ function scanClientPrerenderHtml(html) {
         if ("childNodes" in node)
             for (const child of node.childNodes)
                 visit(child);
-        if ("tagName" in node && node.tagName === "template")
+        if ("tagName" in node && node.tagName === "template" && "content" in node)
             visit(node.content);
     };
     visit(document);
