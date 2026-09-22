@@ -139,3 +139,29 @@ exports.default = async () => {
     }
   } finally { await rm(root, {recursive:true, force:true}); }
 });
+
+test('CommonJS module.require stays module-relative and writable in helpers', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-module-require-')));
+  try {
+    await mkdir(path.join(root, 'nested'));
+    await writeFile(path.join(root, 'nested/value.cjs'), 'module.exports = "adjacent";');
+    await writeFile(path.join(root, 'entry.mjs'), 'import render from "./nested/helper.cjs"; export default render;');
+    await writeFile(path.join(root, 'nested/typed.ts'), 'const value: string = "typed"; export default value;');
+    await writeFile(path.join(root, 'nested/helper.cjs'), 'module.exports = () => { const target = "./value.cjs"; const alias = module; const original = alias.require(target) + "|" + module.require("./typed.ts").default; module.require = () => "replaced"; return original + "|" + module.require(target); };');
+    assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), 'adjacent|typed|replaced');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('TypeScript CommonJS helper syntax selects module-local wrappers', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-typescript-cjs-')));
+  try {
+    await mkdir(path.join(root, 'nested'));
+    await writeFile(path.join(root, 'package.json'), '{"type":"module"}');
+    await writeFile(path.join(root, 'nested/value.cjs'), 'module.exports = "adjacent";');
+    for (const extension of ['ts', 'tsx']) {
+      await writeFile(path.join(root, `nested/helper.${extension}`), 'const target: string = "./value.cjs"; const path = require("node:path"); module.exports = () => path.basename(__dirname) + "/" + path.basename(__filename) + "|" + require(target);');
+      await writeFile(path.join(root, 'entry.mjs'), `import render from "./nested/helper.${extension}"; export default render;`);
+      assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), `nested/helper.${extension}|adjacent`);
+    }
+  } finally { await rm(root, {recursive:true, force:true}); }
+});

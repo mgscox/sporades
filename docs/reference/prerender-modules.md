@@ -5,8 +5,12 @@ returning an HTML string or a promise of one. Modules are trusted build code;
 Sporades does not supply a Server runtime, Database, Session or Server-env context.
 
 JavaScript and TypeScript code imports are bundled for Node execution. CommonJS
-helpers retain their module-relative location and require behavior. ESM
-`import.meta.url` refers to the source module. Each renderer executes in a fresh,
+helpers retain their module-relative location and require behavior.
+TypeScript helper module kind is detected after stripping types; CommonJS `.ts`
+and `.tsx` helpers receive the same module-local wrappers as `.cjs` helpers.
+Direct `module.require()` calls preserve locality, literal code dependencies and
+method reassignment alongside ordinary `require()`.
+ESM `import.meta.url` refers to the source module. Each renderer executes in a fresh,
 disposable Worker so cached dependencies and global state cannot carry over from
 the CLI or previous builds. Workers provide lifecycle isolation, not a security
 sandbox; trusted code retains filesystem and network access.
