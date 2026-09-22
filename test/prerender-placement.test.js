@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -69,14 +70,19 @@ export default async () => {
     const composedHtml = await readFile(composed.staticFiles.indexHtml, 'utf8');
     assert.ok(composedHtml.includes('<main>literal <!-- sporades:prerender second --></main>'));
     assert.equal(composedHtml.split('<footer>second once</footer>').length - 1, 1);
-    // Vite inserts returned tag descriptors after its final HTML hook.
+    // Vite composes descriptors after each hook; placement precedes derived assets.
     await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'author-tags', transformIndexHtml: () => ({ tags: [{ tag: 'section', attrs: { id: 'plugin-slot' }, children: '<!-- sporades:prerender -->', injectTo: 'body' }] }) }] };`);
     await writeFile(path.join(root, 'index.html'), '<html><head></head><body><script type="module" src="/client/index.tsx"></script></body></html>');
     const tags = await createBundle(root, config);
     const tagHtml = await readFile(tags.staticFiles.indexHtml, 'utf8');
-    assert.match(tagHtml, /<section id="plugin-slot">\s*<!-- sporades:prerender-boundary-start first -->/);
+    assert.match(tagHtml, /<section id="plugin-slot">[\s\S]*<main>literal/);
     assert.equal(tagHtml.split('<footer>second once</footer>').length - 1, 1);
     assert.equal(tags.clientDiagnostics.warnings, undefined);
+    await writeFile(path.join(root, 'vite.config.mjs'), `import {createHash} from 'node:crypto'; export default { plugins: [{ name: 'html-digest', generateBundle: { order:'post', handler(_options, bundle) { const html = bundle['index.html'].source; this.emitFile({type:'asset', fileName:'index-digest.txt', source:createHash('sha256').update(html).digest('hex')}); } } }] };`);
+    const digested = await createBundle(root, config);
+    const digestedHtml = await readFile(digested.staticFiles.indexHtml, 'utf8');
+    assert.ok(digestedHtml.includes('<footer>second once</footer>'));
+    assert.equal(await readFile(path.join(path.dirname(digested.staticFiles.indexHtml), 'index-digest.txt'), 'utf8'), createHash('sha256').update(digestedHtml).digest('hex'));
     await writeFile(path.join(root, 'vite.config.mjs'), 'export default {};');
     // Explicit empty configuration still diagnoses stale names; omission is opt-out.
     await writeFile(path.join(root, 'index.html'), '<html><head></head><body><!-- sporades:prerender stale --><script type="module" src="/client/index.tsx"></script></body></html>');
