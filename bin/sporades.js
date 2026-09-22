@@ -66884,6 +66884,7 @@ import { lstat as lstat2, readFile as readFile2, realpath as realpath2 } from "n
 import { createRequire } from "node:module";
 import path3 from "node:path";
 import { pathToFileURL as pathToFileURL2 } from "node:url";
+import { Worker as Worker2 } from "node:worker_threads";
 
 // node_modules/acorn/dist/acorn.mjs
 var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
@@ -72690,22 +72691,17 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     );
   }
   let bundledSource;
+  let bundleFormat = "cjs";
   try {
     const { build: build2 } = await import("esbuild");
-    const result = await build2({
-      absWorkingDir: projectRoot,
-      bundle: true,
-      entryNames: "renderer",
-      entryPoints: { renderer: canonicalModulePath },
-      format: "cjs",
-      logLevel: "silent",
-      outdir: path3.join(projectRoot, ".sporades-prerender-output"),
-      platform: "node",
-      plugins: [preserveRendererImportMetaUrl(build2, projectRoot)],
-      sourcemap: false,
-      target: "node22",
-      write: false
-    });
+    let result;
+    try {
+      result = await buildRendererBundle(build2, projectRoot, canonicalModulePath, bundleFormat);
+    } catch (error) {
+      if (!isCommonJsTopLevelAwaitBuildFailure(error)) throw error;
+      bundleFormat = "esm";
+      result = await buildRendererBundle(build2, projectRoot, canonicalModulePath, bundleFormat);
+    }
     const outputs = result.outputFiles ?? [];
     const javascript = outputs.filter((output) => output.path.endsWith(".js"));
     if (outputs.length !== 1 || javascript.length !== 1 || !javascript[0]?.text) {
@@ -72718,6 +72714,30 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
       `Fix ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module }
     );
+  }
+  if (bundleFormat === "esm") {
+    const outcome = await executeEsmBundledRenderer(bundledSource, canonicalModulePath, fragment.module, projectRoots);
+    if (outcome.kind === "not-function") {
+      throw prerenderError(
+        `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
+        `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`
+      );
+    }
+    if (outcome.kind === "non-string") {
+      throw prerenderError(
+        `Client prerender renderer for ${fragment.name} returned a non-string result.`,
+        `Return an HTML string or Promise<string> from ${fragment.module}.`,
+        { fragment: fragment.name, resultType: outcome.resultType }
+      );
+    }
+    if (outcome.kind === "failure") {
+      throw prerenderError(
+        `Client prerender renderer for ${fragment.name} failed: ${outcome.message}`,
+        `Fix the renderer in ${fragment.module}, then retry.`,
+        { fragment: fragment.name, module: fragment.module }
+      );
+    }
+    return outcome.rendered;
   }
   let renderer;
   const initialRequireCache = new Set(Object.keys(createRequire(canonicalModulePath).cache));
@@ -72759,6 +72779,26 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   }
   return rendered;
 }
+async function buildRendererBundle(build2, projectRoot, canonicalModulePath, format) {
+  return build2({
+    absWorkingDir: projectRoot,
+    bundle: true,
+    entryNames: "renderer",
+    entryPoints: { renderer: canonicalModulePath },
+    format,
+    logLevel: "silent",
+    outdir: path3.join(projectRoot, ".sporades-prerender-output"),
+    platform: "node",
+    plugins: [preserveRendererImportMetaUrl(build2, projectRoot)],
+    sourcemap: false,
+    target: "node22",
+    write: false
+  });
+}
+function isCommonJsTopLevelAwaitBuildFailure(error) {
+  if (!error || typeof error !== "object" || !("errors" in error) || !Array.isArray(error.errors)) return false;
+  return error.errors.some((diagnostic) => diagnostic && typeof diagnostic === "object" && "text" in diagnostic && typeof diagnostic.text === "string" && diagnostic.text.includes("Top-level await") && diagnostic.text.includes('"cjs" output format'));
+}
 function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
   const packageModeCache = /* @__PURE__ */ new Map();
   const loaders = /* @__PURE__ */ new Map([
@@ -72774,9 +72814,40 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
   return {
     name: "sporades-renderer-import-meta-url",
     setup(pluginBuild) {
-      pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
+      const commonJsNamespace = "sporades-renderer-commonjs";
+      const resolutionBypass = "sporadesRendererResolutionBypass";
+      pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
+        if (args.pluginData?.[resolutionBypass]) return void 0;
+        const resolved = await pluginBuild.resolve(args.path, {
+          importer: args.importer,
+          kind: args.kind,
+          namespace: args.namespace === commonJsNamespace ? "file" : args.namespace,
+          pluginData: { [resolutionBypass]: true },
+          resolveDir: args.resolveDir,
+          with: args.with
+        });
+        if (resolved.errors.length > 0) return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : void 0;
+        let namespace = resolved.namespace;
+        if (!resolved.external && namespace === "file" && [".js", ".jsx"].includes(path3.extname(resolved.path))) {
+          const contents = await readFile2(resolved.path, "utf8");
+          if (await rendererModuleUsesCommonJs(resolved.path, contents, projectRoot, packageModeCache) && await rendererNeedsCommonJsBoundaryNamespace(resolved.path)) {
+            namespace = commonJsNamespace;
+          }
+        }
+        if (namespace !== commonJsNamespace && args.namespace !== commonJsNamespace) return void 0;
+        return {
+          external: resolved.external,
+          namespace,
+          path: resolved.path,
+          pluginData: resolved.pluginData,
+          sideEffects: resolved.sideEffects,
+          suffix: resolved.suffix,
+          warnings: resolved.warnings
+        };
+      });
+      const loadRendererModule = async (args) => {
         const contents = await readFile2(args.path, "utf8");
-        const commonJsModule = await rendererModuleUsesCommonJs(args.path, projectRoot, packageModeCache);
+        const commonJsModule = await rendererModuleUsesCommonJs(args.path, contents, projectRoot, packageModeCache);
         const preservesImportMetaUrl = contents.includes("import.meta.url");
         if (!preservesImportMetaUrl && (!commonJsModule || !/\b(?:require|__dirname|__filename)\b/.test(contents))) return void 0;
         const loader = loaders.get(path3.extname(args.path));
@@ -72809,24 +72880,72 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
           resolveDir: path3.dirname(args.path),
           watchFiles: [args.path]
         };
-      });
+      };
+      pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, loadRendererModule);
+      pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: commonJsNamespace }, loadRendererModule);
     }
   };
 }
-async function rendererModuleUsesCommonJs(modulePath, projectRoot, packageModeCache) {
+async function rendererModuleUsesCommonJs(modulePath, contents, projectRoot, packageModeCache) {
   const extension = path3.extname(modulePath);
   if (extension === ".cjs" || extension === ".cts") return true;
   if (extension !== ".js" && extension !== ".jsx") return false;
   const mode = await nearestRendererPackageMode(path3.dirname(modulePath), projectRoot, packageModeCache);
-  return mode !== "module";
+  if (mode === "module") return false;
+  if (mode === "commonjs") return true;
+  return defaultRendererJavaScriptUsesCommonJs(contents);
+}
+function defaultRendererJavaScriptUsesCommonJs(contents) {
+  try {
+    RendererSyntaxParser.parse(contents, {
+      allowHashBang: true,
+      allowReturnOutsideFunction: true,
+      ecmaVersion: "latest",
+      sourceType: "script"
+    });
+    return true;
+  } catch {
+    try {
+      RendererSyntaxParser.parse(contents, {
+        allowHashBang: true,
+        ecmaVersion: "latest",
+        sourceType: "module"
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  }
+}
+async function rendererNeedsCommonJsBoundaryNamespace(modulePath) {
+  let directory = path3.dirname(modulePath);
+  while (true) {
+    if (path3.basename(directory) === "node_modules") return true;
+    try {
+      await readFile2(path3.join(directory, "package.json"), "utf8");
+      return false;
+    } catch (error) {
+      if (!isMissingRendererPackageJson(error)) throw error;
+    }
+    const parent = path3.dirname(directory);
+    if (parent === directory) return false;
+    directory = parent;
+  }
 }
 function nearestRendererPackageMode(directory, projectRoot, cache) {
   const cached = cache.get(directory);
   if (cached) return cached;
   const pending = (async () => {
     if (path3.basename(directory) === "node_modules") return "default";
+    const packagePath = path3.join(directory, "package.json");
     try {
-      const parsed = JSON.parse(await readFile2(path3.join(directory, "package.json"), "utf8"));
+      const source = await readFile2(packagePath, "utf8");
+      let parsed;
+      try {
+        parsed = JSON.parse(source);
+      } catch {
+        throw new Error(`Invalid renderer package metadata at ${packagePath}.`);
+      }
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         const type = parsed.type;
         if (type === "module" || type === "commonjs") return type;
@@ -73304,6 +73423,52 @@ function executeBundledRenderer(source, modulePath, displayPath) {
   execute(moduleRecord.exports, createRequire(modulePath), moduleRecord, modulePath, path3.dirname(modulePath));
   const exported = moduleRecord.exports;
   return exported && typeof exported === "object" && "default" in exported ? exported.default : void 0;
+}
+async function executeEsmBundledRenderer(source, modulePath, displayPath, projectRoots) {
+  const bootstrap = String.raw`
+const { parentPort, workerData } = require("node:worker_threads");
+const { createRequire } = require("node:module");
+globalThis.require = createRequire(workerData.modulePath);
+function safeMessage(error) {
+  try {
+    return error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
+  } catch {
+    return "Thrown error message unavailable.";
+  }
+}
+(async () => {
+  try {
+    const encoded = Buffer.from(workerData.source + "\n//# sourceURL=" + workerData.displayPath + "\n").toString("base64");
+    const namespace = await import("data:text/javascript;base64," + encoded);
+    if (typeof namespace.default !== "function") return parentPort.postMessage({ kind: "not-function" });
+    const rendered = await namespace.default();
+    if (typeof rendered !== "string") {
+      return parentPort.postMessage({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
+    }
+    parentPort.postMessage({ kind: "success", rendered });
+  } catch (error) {
+    parentPort.postMessage({ kind: "failure", message: safeMessage(error) });
+  }
+})();`;
+  const worker = new Worker2(bootstrap, {
+    eval: true,
+    workerData: { source, modulePath, displayPath: displayPath.replaceAll("\\", "/") }
+  });
+  try {
+    const outcome = await new Promise((resolve, reject) => {
+      worker.once("message", (message) => resolve(message));
+      worker.once("error", reject);
+      worker.once("exit", (code) => {
+        if (code !== 0) reject(new Error(`renderer worker exited with code ${code}`));
+      });
+    });
+    if (outcome.kind !== "failure") return outcome;
+    return { kind: "failure", message: boundedMessage(outcome.message, projectRoots) };
+  } catch (error) {
+    return { kind: "failure", message: boundedMessage(error, projectRoots) };
+  } finally {
+    await worker.terminate();
+  }
 }
 function boundedMessage(error, projectRoots = []) {
   let message;
