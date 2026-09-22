@@ -81479,9 +81479,10 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
   const visit = (node) => {
     const location = node.sourceCodeLocation;
     const position = order++;
+    let located;
     if (location) {
       const token = "startTag" in location && location.startTag ? location.startTag : location;
-      const located = { start: token.startOffset, end: token.endOffset, order: position };
+      located = { start: token.startOffset, end: token.endOffset, order: position, after: order };
       nodes.push(located);
       if (node.nodeName === "#comment" && "data" in node) {
         const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
@@ -81489,6 +81490,7 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
       }
     }
     if ("childNodes" in node) for (const child of node.childNodes) visit(child);
+    if (located) located.after = order;
   };
   visit(parse4(html, { sourceCodeLocationInfo: true, scriptingEnabled: true }));
   const invalid = () => prerenderError(
@@ -81505,7 +81507,7 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
       if (node.order === start.order || node.order === end.order) continue;
       const fromFragment = node.start < end.start && node.end > start.end;
       const withinBoundary = node.order > start.order && node.order < end.order;
-      if (fromFragment !== withinBoundary) throw invalid();
+      if (fromFragment !== withinBoundary || fromFragment && node.after > end.order) throw invalid();
     }
   }
 }

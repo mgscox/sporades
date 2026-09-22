@@ -48,6 +48,7 @@ test('placement rejects content foster-parented outside its handover boundaries'
     assert.throws(() => placeClientPrerenderFragments(source, [{ name: 'rows', html }]), /not stable in the parsed HTML document/i);
   }
   assert.throws(() => placeClientPrerenderFragments('<html><body><template><!-- sporades:prerender rows --></template></body></html>', [{ name:'rows', html:'<p>Inert</p>' }]), /not stable in the parsed HTML document/i);
+  assert.throws(() => placeClientPrerenderFragments('<html><body><ul><!-- sporades:prerender rows --><li>Author item</li></ul></body></html>', [{ name:'rows', html:'<li id="static">Loading' }]), /not stable in the parsed HTML document/i);
 });
 
 test('prerender handover exposes opaque snapshots and deliberate idempotent dismissal in head and body', async () => {

@@ -31,3 +31,5 @@ handover boundaries by HTML parsing fails with a placement diagnostic. For
 example, render rows at a marker inside a table, not a `div` or plain text that
 the browser would move before the table. Markers inside inert `template` content
 are not supported. Valid implicit table wrappers remain supported.
+Close fragment-created elements explicitly: an omitted optional closing tag can
+leave a fragment ancestor spanning its end boundary, which also fails validation.
