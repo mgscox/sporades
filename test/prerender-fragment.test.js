@@ -122,6 +122,23 @@ test("fallback scanning rejects unterminated tags and declarations before insert
   }
 });
 
+test("marker scanning preserves less-than text and bounds bogus HTML constructs", () => {
+  const fragment = { name: "landing", module: "render-landing.mjs" };
+  const rendered = "<main>static fragment</main>";
+  const marker = "<!-- sporades:prerender landing -->";
+  const bounded = "<!-- sporades:prerender-boundary-start landing --><main>static fragment</main><!-- sporades:prerender-boundary-end landing -->";
+  for (const text of ["1 < 2", "<3", "a<b"]) {
+    const source = `<html><body>${text}${marker}<p>page</p></body></html>`;
+    const expected = `<html><body>${text}${bounded}<p>page</p></body></html>`;
+    assert.equal(placeClientPrerenderFragment(source, fragment, rendered), expected, text);
+  }
+  for (const bogus of ['<!x " >', '<? " >', '</3 " >']) {
+    const source = `<html><body>${bogus}${marker}tail"><p>page</p></body></html>`;
+    const expected = `<html><body>${bogus}${bounded}tail"><p>page</p></body></html>`;
+    assert.equal(placeClientPrerenderFragment(source, fragment, rendered), expected, bogus);
+  }
+});
+
 test("a prerender module can use a local CommonJS dependency that requires a Node builtin", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
