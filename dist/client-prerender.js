@@ -612,7 +612,48 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
     const rootScope = { functionScope: true, bindings: new Set() };
     const scopes = new WeakMap();
     collectRendererScopes(syntax, rootScope, scopes);
+    const noTargets = new WeakSet();
+    const blockFunctions = new Map();
     visitRendererSyntax(syntax, (node) => {
+        if (node.type !== "VariableDeclaration" || node.kind === "var")
+            return;
+        const scope = scopes.get(node) ?? rootScope;
+        if (scope === rootScope)
+            return;
+        for (const declaration of node.declarations) {
+            if (isRendererSyntaxNode(declaration.id) && declaration.id.type === "Identifier"
+                && isRendererSyntaxNode(declaration.init) && declaration.init.type === "FunctionExpression") {
+                const names = blockFunctions.get(scope) ?? new Set();
+                names.add(String(declaration.id.name));
+                blockFunctions.set(scope, names);
+            }
+        }
+    });
+    visitRendererSyntax(syntax, (node, parent, key) => {
+        const scope = scopes.get(node) ?? rootScope;
+        if (node.type === "VariableDeclaration" && node.kind === "var" && scope !== rootScope && nearestRendererFunctionScope(scope) === rootScope) {
+            for (const declaration of node.declarations) {
+                if (!isRendererSyntaxNode(declaration.id) || !["require", "module", "exports", "__dirname", "__filename", "arguments"].includes(String(declaration.id.name))
+                    || !isRendererSyntaxNode(declaration.init) || declaration.init.type !== "Identifier")
+                    continue;
+                const name = String(declaration.init.name);
+                for (let bindingScope = scope; bindingScope && bindingScope !== rootScope; bindingScope = bindingScope.parent) {
+                    if (!bindingScope.bindings.has(name))
+                        continue;
+                    // esbuild lowers Annex B block functions to a block-local function
+                    // plus a var assignment. At module scope that loses Node's implicit
+                    // wrapper-parameter exemption, so do not silently publish wrong HTML.
+                    if (blockFunctions.get(bindingScope)?.has(name))
+                        throw new Error("Module-scope CommonJS wrapper bindings cannot be redeclared from block-local functions in prerender modules; use an explicit assignment instead of Annex B hoisting.");
+                    break;
+                }
+            }
+        }
+        if (node.type === "Identifier" && node.name === "arguments"
+            && !rendererScopeBinds(scopes.get(node) ?? rootScope, "arguments")
+            && isRendererIdentifierReference(node, parent, key, noTargets, noTargets)) {
+            throw new Error("Top-level CommonJS arguments are unsupported in prerender modules; use explicit module-local wrapper bindings instead.");
+        }
         if (node.type === "WithStatement") {
             throw new Error("With statements are unsupported in CommonJS prerender modules; use explicit bindings so module-local wrapper semantics can be preserved.");
         }
@@ -764,13 +805,13 @@ function collectRendererScopes(node, scope, scopes) {
     let activeScope = scope;
     if (node.type === "FunctionDeclaration") {
         addRendererBinding(scope, node.id);
-        activeScope = { parent: scope, functionScope: true, bindings: new Set() };
+        activeScope = { parent: scope, functionScope: true, bindings: new Set(["arguments"]) };
         addRendererBinding(activeScope, node.id);
         for (const parameter of node.params ?? [])
             addRendererBinding(activeScope, parameter);
     }
     else if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
-        activeScope = { parent: scope, functionScope: true, bindings: new Set() };
+        activeScope = { parent: scope, functionScope: true, bindings: new Set(node.type === "FunctionExpression" ? ["arguments"] : []) };
         addRendererBinding(activeScope, node.id);
         for (const parameter of node.params ?? [])
             addRendererBinding(activeScope, parameter);
@@ -803,7 +844,7 @@ function collectRendererScopes(node, scope, scopes) {
                 const declared = { functionScope: true, bindings: new Set() };
                 addRendererBinding(declared, declaration.id);
                 for (const name of declared.bindings)
-                    if (!["require", "module", "exports", "__dirname", "__filename"].includes(name))
+                    if (!["require", "module", "exports", "__dirname", "__filename", "arguments"].includes(name))
                         declarationScope.bindings.add(name);
             }
             else
@@ -814,7 +855,13 @@ function collectRendererScopes(node, scope, scopes) {
         for (const specifier of node.specifiers ?? [])
             addRendererBinding(activeScope, specifier.local);
     }
-    forEachRendererChild(node, (child) => collectRendererScopes(child, activeScope, scopes));
+    const isFunction = node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression";
+    // Parameter initializers cannot see body var/function declarations. A body
+    // environment still inherits parameters, but must not add bindings to them.
+    const bodyScope = isFunction
+        ? { parent: activeScope, functionScope: true, bindings: new Set() }
+        : undefined;
+    forEachRendererChild(node, (child) => collectRendererScopes(child, bodyScope && child === node.body ? bodyScope : activeScope, scopes));
 }
 function addRendererBinding(scope, pattern) {
     if (!pattern || typeof pattern !== "object")
@@ -1308,8 +1355,9 @@ process.once("uncaughtException", (error) => post({ kind: "failure", message: sa
       namespace = await import("data:text/javascript;base64," + encoded);
     }
     if (!namespace) return post({ kind: "not-function" });
-    if (typeof namespace.default !== "function") return post({ kind: "not-function" });
-    const rendered = await namespace.default();
+    const renderer = typeof namespace === "function" ? namespace : namespace.default;
+    if (typeof renderer !== "function") return post({ kind: "not-function" });
+    const rendered = await renderer();
     if (typeof rendered !== "string") {
       return post({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
     }
