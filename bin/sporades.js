@@ -73590,6 +73590,10 @@ function safeMessage(error) {
 })();`;
   const worker = new Worker2(bootstrap, {
     eval: true,
+    // Runtime require(esm) hides ESM descendants from require.cache on the
+    // minimum supported Node release. Keep computed requires CommonJS-only;
+    // literal ESM imports/requires still use the fully tracked bundle graph.
+    execArgv: ["--no-experimental-require-module"],
     workerData: { source, format, modulePath, displayPath: displayPath.replaceAll("\\", "/") }
   });
   try {

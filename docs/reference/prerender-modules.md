@@ -17,3 +17,10 @@ build with an explicit diagnostic: their source-module resolution cannot be
 preserved by the bundled evaluator. Express the supported choices with explicit
 imports instead. Renderer-only CSS, image or other asset output is unsupported;
 assets used by static HTML must already belong to the ordinary Vite client graph.
+
+Computed CommonJS `require(variable)` supports CommonJS dependencies only.
+Runtime `require()` of ESM is disabled in the renderer Worker because Node's
+CommonJS cache does not expose the ESM descendants needed for reliable Dev
+watching. Use a literal import or require for ESM dependencies so the bundler can
+track their complete code graph. This restriction is consistent across supported
+Node releases.

@@ -89,3 +89,18 @@ module.exports = () => initial + '|' + __dirname;
     assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), 'nested/helper.cjs|adjacent|assigned');
   } finally { await rm(root, {recursive:true, force:true}); }
 });
+
+test('computed require cannot hide an ESM import graph from Dev dependency tracking', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-computed-esm-')));
+  try {
+    await writeFile(path.join(root, 'copy.mjs'), 'export default "static copy";');
+    await writeFile(path.join(root, 'view.mjs'), 'import copy from "./copy.mjs"; export default copy;');
+    await writeFile(path.join(root, 'entry.cjs'), 'exports.default = () => { const target = "./view.mjs"; return require(target).default; };');
+    await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), /require\(\).*ES Module.*not supported/is);
+    await writeFile(path.join(root, 'entry.cjs'), 'exports.default = () => require("./view.mjs").default;');
+    const dependencies = new Set();
+    assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}, [root], (file) => dependencies.add(file)), 'static copy');
+    assert.ok(dependencies.has(path.join(root, 'view.mjs')));
+    assert.ok(dependencies.has(path.join(root, 'copy.mjs')));
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
