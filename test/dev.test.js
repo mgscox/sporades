@@ -2812,14 +2812,16 @@ test("sporades dev preserves unusual request targets across HTTP and WebSocket a
     try {
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started.error));
+      const session = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+      assert.match(session.inspectionToken, /^[a-f0-9]{64}$/);
       for (const [target, method, expectedStatus] of [["//", "GET", 404], ["//unrelated.example/", "GET", 404], ["///", "GET", 404], ["/%", "GET", 400], ["/?query=%", "GET", 200], ["http://unrelated.example\\path", "GET", 400], ["http://unrelated.example/", "GET", 200], ["*", "OPTIONS", 404], ["*", "GET", 400]]) {
         const response = await rawHttpResponse(started.data.url, target, { method, headers: { host: "wrong.example" } });
         assert.match(response, new RegExp(`^HTTP/1\\.1 ${expectedStatus} `), `${target}: ${response}`);
         if (target === "*") assert.match(response, /x-content-type-options: nosniff/i, response);
-        assert.equal((await fetch(started.data.url)).status, 200);
+        assert.equal((await fetch(`${started.data.url}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": session.inspectionToken } })).status, 200);
       }
       assert.equal(await rawHttpResponse(started.data.url, "unrelated.example:443", { method: "CONNECT" }), "");
-      assert.equal((await fetch(started.data.url)).status, 200);
+      assert.equal((await fetch(`${started.data.url}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": session.inspectionToken } })).status, 200);
       const page = await fetch(started.data.url, { headers: { "sec-fetch-dest": "document" } });
       const token = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(await page.text())?.[1];
       assert.ok(token);
@@ -2827,7 +2829,7 @@ test("sporades dev preserves unusual request targets across HTTP and WebSocket a
         headers: { connection: "Upgrade", upgrade: "websocket", origin: started.data.url, "sec-websocket-key": randomBytes(16).toString("base64"), "sec-websocket-version": "13" },
       });
       assert.doesNotMatch(rejectedUpgrade, /^HTTP\/1\.1 101 /, rejectedUpgrade);
-      assert.equal((await fetch(started.data.url)).status, 200);
+      assert.equal((await fetch(`${started.data.url}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": session.inspectionToken } })).status, 200);
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));

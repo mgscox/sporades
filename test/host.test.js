@@ -8241,6 +8241,26 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       });
       assert.equal(forgedWithRequiredInspection.status, 404);
       assert.equal(await forgedWithRequiredInspection.text(), "Not found");
+
+      const authenticatedWithRequiredInspection = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
+        headers: { "x-sporades-host-probe": "a".repeat(64) },
+      });
+      assert.equal(authenticatedWithRequiredInspection.status, 503);
+      assert.deepEqual(await authenticatedWithRequiredInspection.json(), {
+        ok: false,
+        data: {
+          runtime: { ready: false, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
+          checks: {
+            sqlite: { ok: true },
+            fileStorage: { ok: true },
+            fileInspection: { ok: false },
+          },
+        },
+        error: {
+          message: "Sporades runtime is not ready.",
+          hint: "Check Hosted Capsule logs and data volume permissions.",
+        },
+      });
       database.clamavRequired = false;
 
       const authenticated = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {

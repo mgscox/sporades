@@ -1207,6 +1207,26 @@ test("canonical hosting docs define runtime health bound compatibility", async (
   assert.match(contract, /no additional sensitive data/i);
 });
 
+test("canonical project configuration docs define the File upload size limit", async () => {
+  const [configuration, runtimeSource] = await Promise.all([
+    readProjectFile("docs/reference/projects-and-configuration.md"),
+    readProjectFile("src/server-runtime-source.ts"),
+  ]);
+  const contract = configuration.match(/`files\.maxSizeBytes`[\s\S]*?(?=\n### |\n`security` controls)/)?.[0];
+  const resolver = runtimeSource.match(/function resolveFileMaxSizeBytes\(config: RuntimeConfig = \{\}\)[\s\S]*?(?=\nexport async function openDevDatabase)/)?.[0];
+  assert.ok(contract, "canonical project configuration docs must define files.maxSizeBytes");
+  assert.ok(resolver, "server runtime must retain an inspectable File size resolver");
+
+  assert.match(contract, /10 MiB/);
+  assert.match(contract, /10 \* 1024 \* 1024 bytes/);
+  assert.match(contract, /positive integer byte count/i);
+  assert.match(contract, /`0`[\s\S]*fractions[\s\S]*non-numeric[\s\S]*`null`[\s\S]*rejected at startup/i);
+  assert.match(contract, /`INVALID_FILE_CONFIG`/);
+  assert.match(resolver, /configured === undefined\) return 10 \* 1024 \* 1024/);
+  assert.match(resolver, /!Number\.isInteger\(configured\) \|\| configured <= 0/);
+  assert.match(resolver, /"INVALID_FILE_CONFIG"/);
+});
+
 test("user guide documents Capsule service reset without blanket Runtime deletion", async () => {
   const userGuide = await readProjectFile("docs/user-guide.md");
 
