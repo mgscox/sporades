@@ -282,7 +282,7 @@ function preserveRendererImportMetaUrl(
           bundle: false,
           define,
           entryPoints: [args.path],
-          format: commonJsModule ? "cjs" : "esm",
+          format: commonJsModule ? undefined : "esm",
           jsx: "preserve",
           logLevel: "silent",
           outdir: path.join(projectRoot, ".sporades-prerender-transform"),
@@ -296,7 +296,7 @@ function preserveRendererImportMetaUrl(
           throw new Error("the import.meta.url transform produced unsupported output");
         }
         if (checksImports) {
-          const syntax = RendererSyntaxParser.parse(javascript[0].text, { ecmaVersion: "latest", sourceType: commonJsModule ? "script" : "module", allowReturnOutsideFunction: commonJsModule }) as unknown as RendererSyntaxNode;
+          const syntax = parseRendererSyntax(javascript[0].text, commonJsModule);
           visitRendererSyntax(syntax, (node) => {
             if (node.type === "ImportExpression" && isRendererSyntaxNode(node.source) && !isStaticRendererRequireSpecifier(node.source)) {
               throw new Error("Prerender dynamic import specifiers must be string literals; use explicit imports so dependencies resolve from their owning module.");
@@ -473,13 +473,17 @@ type RendererLexicalScope = {
 
 const RendererSyntaxParser = Parser.extend(jsx());
 
+function parseRendererSyntax(contents: string, commonJs: boolean): RendererSyntaxNode {
+  if (commonJs) {
+    try {
+      return RendererSyntaxParser.parse(contents, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true }) as unknown as RendererSyntaxNode;
+    } catch { /* TypeScript CommonJS modules can retain ESM declarations until bundling. */ }
+  }
+  return RendererSyntaxParser.parse(contents, { ecmaVersion: "latest", sourceType: "module" }) as unknown as RendererSyntaxNode;
+}
+
 function specializeCommonJsRendererModule(contents: string, modulePath: string, moduleUrl: string) {
-  const syntax = RendererSyntaxParser.parse(contents, {
-    allowHashBang: true,
-    allowReturnOutsideFunction: true,
-    ecmaVersion: "latest",
-    sourceType: "script",
-  }) as unknown as RendererSyntaxNode;
+  const syntax = parseRendererSyntax(contents, true);
   const rootScope: RendererLexicalScope = { functionScope: true, bindings: new Set() };
   const scopes = new WeakMap<object, RendererLexicalScope>();
   collectRendererScopes(syntax, rootScope, scopes);
@@ -488,7 +492,18 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
   const deleteOperands = new WeakSet<object>();
   collectRendererDeleteOperands(syntax, deleteOperands);
   const writtenWrapperNames = new Set<string>();
+  const wrapperDeclarations = new WeakSet<object>();
   visitRendererSyntax(syntax, (node) => {
+    if (node.type === "VariableDeclaration" && node.kind === "var" && nearestRendererFunctionScope(scopes.get(node) ?? rootScope) === rootScope) {
+      for (const declaration of (node.declarations as RendererSyntaxNode[])) {
+        const declared: RendererLexicalScope = { functionScope: true, bindings: new Set() };
+        addRendererBinding(declared, declaration.id);
+        for (const name of declared.bindings) {
+          if (["require", "__dirname", "__filename"].includes(name) && !rootScope.bindings.has(name)) writtenWrapperNames.add(name);
+        }
+        markRendererAssignmentTarget(declaration.id, wrapperDeclarations);
+      }
+    }
     if (
       node.type === "Identifier"
       && assignmentTargets.has(node)
@@ -531,7 +546,7 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
       return;
     }
     if (node.type === "Identifier" && node.name === "require" && !handledRequireCalls.has(node)
-      && !rendererScopeBinds(scope, "require") && isRendererIdentifierReference(node, parent, key, emptyTargets, emptyTargets)) {
+      && !rendererScopeBinds(scope, "require") && (wrapperDeclarations.has(node) || isRendererIdentifierReference(node, parent, key, emptyTargets, emptyTargets))) {
       const value = writableRequire ? writableRequireName : helperName;
       const shorthand = parent?.type === "Property" && parent.shorthand === true && parent.value === node;
       replacements.push({ start: node.start, end: node.end, value: shorthand ? `require: ${value}` : value });
@@ -625,7 +640,13 @@ function collectRendererScopes(
   scopes.set(node, activeScope);
   if (node.type === "VariableDeclaration") {
     const declarationScope = node.kind === "var" ? nearestRendererFunctionScope(activeScope) : activeScope;
-    for (const declaration of (node.declarations as RendererSyntaxNode[] | undefined) ?? []) addRendererBinding(declarationScope, declaration.id);
+    for (const declaration of (node.declarations as RendererSyntaxNode[] | undefined) ?? []) {
+      if (node.kind === "var" && !declarationScope.parent) {
+        const declared: RendererLexicalScope = { functionScope: true, bindings: new Set() };
+        addRendererBinding(declared, declaration.id);
+        for (const name of declared.bindings) if (!["require", "__dirname", "__filename"].includes(name)) declarationScope.bindings.add(name);
+      } else addRendererBinding(declarationScope, declaration.id);
+    }
   } else if (node.type === "ImportDeclaration") {
     for (const specifier of (node.specifiers as RendererSyntaxNode[] | undefined) ?? []) addRendererBinding(activeScope, specifier.local);
   }
@@ -821,12 +842,24 @@ function scanClientPrerenderHtml(html: string) {
   const lowerHtml = foldAsciiCase(html);
   const rawTextElements = new Set(["iframe", "noembed", "noframes", "noscript", "plaintext", "script", "style", "textarea", "title", "xmp"]);
   const markers: Array<{ start: number; end: number; name?: string }> = [];
+  const foreignElements: string[] = [];
   let bodyEnd: number | undefined;
   let problem: string | undefined;
   let cursor = 0;
   while (cursor < html.length) {
     const tagStart = html.indexOf("<", cursor);
     if (tagStart === -1) break;
+    // In SVG/MathML this is character data, not a bogus HTML declaration.
+    // Its payload can contain both > and comment-shaped text.
+    if (foreignElements.length > 0 && html.startsWith("<![CDATA[", tagStart)) {
+      const cdataEnd = html.indexOf("]]>", tagStart + 9);
+      if (cdataEnd === -1) {
+        problem = "unterminated foreign-content CDATA section";
+        break;
+      }
+      cursor = cdataEnd + 3;
+      continue;
+    }
     if (html.startsWith("<!--", tagStart)) {
       const commentEnd = findHtmlCommentEnd(html, tagStart);
       if (!commentEnd) {
@@ -885,6 +918,12 @@ function scanClientPrerenderHtml(html: string) {
       break;
     }
     if (!closing && name === "body" && bodyEnd === undefined) bodyEnd = tagEnd;
+    if (closing) {
+      const foreignIndex = foreignElements.lastIndexOf(name);
+      if (foreignIndex !== -1) foreignElements.length = foreignIndex;
+    } else if ((name === "svg" || name === "math") && !/\/\s*>$/.test(html.slice(tagStart, tagEnd))) {
+      foreignElements.push(name);
+    }
     cursor = tagEnd;
 
     if (!closing && rawTextElements.has(name)) {

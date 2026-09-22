@@ -71,3 +71,21 @@ test('computed dynamic imports fail clearly rather than resolving against the CL
     assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), 'adjacent');
   } finally { await rm(root, {recursive:true, force:true}); }
 });
+
+test('root var declarations redeclare initialized CommonJS wrapper parameters', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-wrapper-vars-')));
+  try {
+    await mkdir(path.join(root, 'nested'));
+    await writeFile(path.join(root, 'entry.mjs'), `import render from './nested/helper.cjs'; export default render;`);
+    await writeFile(path.join(root, 'nested/value.cjs'), 'module.exports = "adjacent";');
+    await writeFile(path.join(root, 'nested/helper.cjs'), `
+var __dirname, __filename, require;
+const path = require('node:path');
+const target = './value.cjs';
+const initial = path.basename(__dirname) + '/' + path.basename(__filename) + '|' + require(target);
+var __dirname = 'assigned';
+module.exports = () => initial + '|' + __dirname;
+`);
+    assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), 'nested/helper.cjs|adjacent|assigned');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
