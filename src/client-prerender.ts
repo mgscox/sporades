@@ -943,7 +943,17 @@ function scanClientPrerenderHtml(html: string) {
     }
     const tagKind = html[tagStart + 1];
     if (tagKind === "!" || tagKind === "?") {
-      const declarationEnd = html.indexOf(">", tagStart + 2);
+      let declarationEnd = html.indexOf(">", tagStart + 2);
+      if (/^<!doctype\s/i.test(html.slice(tagStart, tagStart + 10))) {
+        let quote: string | undefined;
+        declarationEnd = -1;
+        for (let index = tagStart + 9; index < html.length; index += 1) {
+          const character = html[index];
+          if (quote) { if (character === quote) quote = undefined; }
+          else if (character === "\"" || character === "'") quote = character;
+          else if (character === ">") { declarationEnd = index; break; }
+        }
+      }
       if (declarationEnd === -1) {
         problem = "unterminated HTML declaration";
         break;
