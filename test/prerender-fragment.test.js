@@ -152,6 +152,36 @@ test("a transitive ESM prerender module retains its own import.meta.url", async 
   });
 });
 
+test("TypeScript renderer import.meta.url preserves project tsconfig semantics", async () => {
+  await withTempDir(async (projectDir) => {
+    await writeFile(path.join(projectDir, "tsconfig.json"), `${JSON.stringify({
+      compilerOptions: {
+        experimentalDecorators: true,
+        useDefineForClassFields: false,
+      },
+    }, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "render-landing.ts"),
+      `function legacyField(target: object, propertyKey: string) {
+  if (!target || propertyKey !== "message") throw new Error("project tsconfig decorator semantics lost");
+}
+class ViewModel {
+  @legacyField
+  message = "project tsconfig preserved";
+}
+export default () => \`<main>\${new ViewModel().message}:\${new URL(".", import.meta.url).protocol}</main>\`;
+`,
+    );
+    const fragment = { name: "landing", module: "render-landing.ts" };
+    const canonicalProject = await realpath(projectDir);
+
+    assert.equal(
+      await renderClientPrerenderFragment(canonicalProject, fragment),
+      "<main>project tsconfig preserved:file:</main>",
+    );
+  });
+});
+
 test("renderer import.meta.url failures redact encoded project URL forms", async () => {
   await withTempDir(async (dir) => {
     const projectDir = path.join(dir, "caf\u00e9 space#percent% capsule");
