@@ -242,7 +242,16 @@ function preserveRendererImportMetaUrl(
           resolveDir: args.resolveDir,
           with: args.with,
         });
-        if (resolved.errors.length > 0) return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
+        if (resolved.errors.length > 0) {
+          if (
+            path.isAbsolute(args.path)
+            && path.resolve(args.path) !== path.resolve(projectRoot)
+            && !isCanonicalDescendant(projectRoot, args.path)
+          ) {
+            rendererDependencyRoots.add(path.dirname(args.path));
+          }
+          return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
+        }
         if (
           !resolved.external
           && resolved.namespace === "file"

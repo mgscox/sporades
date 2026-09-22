@@ -72828,7 +72828,12 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           resolveDir: args.resolveDir,
           with: args.with
         });
-        if (resolved.errors.length > 0) return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : void 0;
+        if (resolved.errors.length > 0) {
+          if (path3.isAbsolute(args.path) && path3.resolve(args.path) !== path3.resolve(projectRoot) && !isCanonicalDescendant(projectRoot, args.path)) {
+            rendererDependencyRoots.add(path3.dirname(args.path));
+          }
+          return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : void 0;
+        }
         if (!resolved.external && resolved.namespace === "file" && !isCanonicalDescendant(projectRoot, resolved.path)) {
           rendererDependencyRoots.add(path3.dirname(resolved.path));
         }
