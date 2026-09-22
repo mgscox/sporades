@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { renderClientPrerenderFragment } from '../dist/client-prerender.js';
 
@@ -87,5 +88,50 @@ var __dirname = 'assigned';
 module.exports = () => initial + '|' + __dirname;
 `);
     assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), 'nested/helper.cjs|adjacent|assigned');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('computed external require failures redact runtime paths and file URLs', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-runtime-redaction-')));
+  const external = await realpath(await mkdtemp(path.join(tmpdir(), 'private-renderer-location-')));
+  try {
+    const missing = path.join(external, 'missing helper.cjs');
+    for (const target of [missing, pathToFileURL(missing).href]) {
+      await writeFile(path.join(root, 'entry.cjs'), `exports.default = () => { const target = ${JSON.stringify(target)}; return require(target); };`);
+      await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), (error) => {
+        assert.doesNotMatch(error.message, /private-renderer-location-/);
+        assert.ok(error.message.includes('<project>'), error.message);
+        return true;
+      });
+    }
+    const throwing = path.join(external, 'throwing.cjs');
+    await writeFile(throwing, 'throw new Error("Failed helper " + __filename);');
+    await writeFile(path.join(root, 'entry.cjs'), `exports.default = () => { const target = ${JSON.stringify(throwing)}; return require(target); };`);
+    await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), (error) => {
+      assert.doesNotMatch(error.message, /private-renderer-location-/);
+      assert.match(error.message, /throwing\.cjs/);
+      return true;
+    });
+    await writeFile(path.join(root, 'entry.cjs'), `exports.default = () => new Promise(() => process.nextTick(() => { const target = ${JSON.stringify(missing)}; require(target); }));`);
+    await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), (error) => {
+      assert.doesNotMatch(error.message, /private-renderer-location-/);
+      assert.ok(error.message.includes('<project>'), error.message);
+      return true;
+    });
+  } finally { await rm(root, {recursive:true, force:true}); await rm(external, {recursive:true, force:true}); }
+});
+
+test('renderer parentPort progress cannot impersonate bootstrap completion', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-renderer-channel-')));
+  try {
+    await writeFile(path.join(root, 'entry.cjs'), `
+const { parentPort } = require('node:worker_threads');
+parentPort.postMessage({ progress: 'loading' });
+exports.default = async () => {
+  parentPort.postMessage({ kind:'success', rendered:'wrong channel' });
+  await new Promise((resolve) => setImmediate(resolve));
+  return '<main>Actual renderer result</main>';
+};`);
+    assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), '<main>Actual renderer result</main>');
   } finally { await rm(root, {recursive:true, force:true}); }
 });
