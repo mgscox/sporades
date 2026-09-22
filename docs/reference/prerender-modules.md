@@ -20,7 +20,10 @@ Use literal import specifiers, including `import("./helper.mjs")` when asynchron
 loading is useful. Computed dynamic imports such as `import(variable)` fail the
 build with an explicit diagnostic: their source-module resolution cannot be
 preserved by the bundled evaluator. Express the supported choices with explicit
-imports instead. Renderer-only CSS, image or other asset output is unsupported;
+imports instead.
+Direct CommonJS `eval()` is also rejected because string-hidden code cannot retain
+the owning module's wrapper bindings through bundling. Use explicit code instead.
+Renderer-only CSS, image or other asset output is unsupported;
 assets used by static HTML must already belong to the ordinary Vite client graph.
 
 Fragment HTML must be valid for its marker's document context. The build checks
