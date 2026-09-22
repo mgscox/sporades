@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 import { createBundle } from "../dist/bundle-pipeline.js";
 import { readProjectConfig } from "../dist/cli/project-config.js";
+import { validateClientToolchainInput } from "../dist/client-toolchain.js";
 import { discardPublicTree } from "../dist/public-tree.js";
 
 async function withTempDir(fn) {
@@ -36,19 +37,64 @@ async function publicFiles(root, current = root) {
   return files.sort();
 }
 
+const viteConfig = {
+  framework: "react",
+  toolchain: "vite",
+  prerender: [{ name: "landing", module: "render-landing.mjs" }],
+};
+
+test("a prerender module can use a local CommonJS dependency that requires a Node builtin", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const dependencyDir = path.join(projectDir, "node_modules", "renderer-cjs");
+    await mkdir(dependencyDir, { recursive: true });
+    await writeFile(path.join(dependencyDir, "package.json"), '{"name":"renderer-cjs","main":"index.cjs"}\n');
+    await writeFile(
+      path.join(dependencyDir, "index.cjs"),
+      'const { format } = require("node:util");\nmodule.exports = () => format("<main>%s</main>", "CJS builtin works");\n',
+    );
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "renderer-cjs";\nexport default () => render();\n',
+    );
+
+    const bundle = await createBundle(projectDir, { name: "cjs-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /<main>CJS builtin works<\/main>/);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("prerender placement preserves replacement-pattern dollar sequences byte for byte", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'export default () => "<main>$&amp;|$\'|$`|$$|literal dollars</main>";\n',
+    );
+
+    const bundle = await createBundle(projectDir, { name: "dollar-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      const emittedHtml = await readFile(bundle.staticFiles.indexHtml, "utf8");
+      assert.match(emittedHtml, /<main>\$&amp;\|\$'\|\$`\|\$\$\|literal dollars<\/main>/);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("one configured Vite prerender fragment reaches the normalized public tree", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
     await writeMinimalViteCapsule(projectDir, sourceHtml);
     await writeFile(path.join(projectDir, "render-landing.mjs"), 'export default () => "<main><h1>Useful before JavaScript</h1></main>";\n');
-    const config = {
-      name: "prerender-capsule",
-      client: {
-        framework: "react",
-        toolchain: "vite",
-        prerender: [{ name: "landing", module: "render-landing.mjs" }],
-      },
-    };
+    const config = { name: "prerender-capsule", client: structuredClone(viteConfig) };
     await writeFile(path.join(projectDir, "sporades.json"), `${JSON.stringify(config, null, 2)}\n`);
     assert.deepEqual((await readProjectConfig(projectDir)).client.prerender, config.client.prerender);
     const duplicateConfig = structuredClone(config);
@@ -59,7 +105,31 @@ test("one configured Vite prerender fragment reaches the normalized public tree"
       assert.match(error.hint, /unique name/i);
       return true;
     });
+    const multipleConfig = structuredClone(config);
+    multipleConfig.client.prerender.push({ name: "footer", module: "render-footer.mjs" });
+    await writeFile(path.join(projectDir, "sporades.json"), `${JSON.stringify(multipleConfig, null, 2)}\n`);
+    await assert.rejects(readProjectConfig(projectDir), (error) => {
+      assert.match(error.message, /supports one configured prerender fragment/i);
+      assert.match(error.hint, /ordered multi-fragment builds are not available yet/i);
+      return true;
+    });
+    for (const invalidModule of ["../escape.mjs", "./dot.mjs", "/absolute.mjs", "nested\\windows.mjs"]) {
+      const invalidConfig = structuredClone(config);
+      invalidConfig.client.prerender[0].module = invalidModule;
+      await writeFile(path.join(projectDir, "sporades.json"), `${JSON.stringify(invalidConfig, null, 2)}\n`);
+      await assert.rejects(readProjectConfig(projectDir), (error) => {
+        assert.match(error.message, /invalid client prerender module for landing/i);
+        assert.match(error.hint, /project-relative module path/i);
+        return true;
+      });
+    }
     await writeFile(path.join(projectDir, "sporades.json"), `${JSON.stringify(config, null, 2)}\n`);
+    assert.throws(() => validateClientToolchainInput({
+      frameworkConfig: { framework: "react", entry: "index.tsx", loader: "tsx", jsxImportSource: "react", jsxRuntimeImport: "react/jsx-runtime" },
+      toolchain: "esbuild",
+      indexHtml: '<script type="module" src="/client/index.tsx"></script>',
+      prerender: config.client.prerender,
+    }), /prerender fragments require the Vite client toolchain/i);
 
     const bundle = await createBundle(projectDir, config, { publishLegacy: false });
     try {
@@ -82,8 +152,9 @@ test("one configured Vite prerender fragment reaches the normalized public tree"
     await writeFile(path.join(projectDir, ".env.sporades.server"), "PRERENDER_SERVER_SECRET=server-env-secret\n");
     await writeFile(
       path.join(projectDir, "render-landing.mjs"),
-      `export default async () => {
+      `export default async (...args) => {
   const leaked = [
+    args.length ? "runtime-context-injected" : null,
     process.env.PRERENDER_SERVER_SECRET,
     process.env.VITE_PRERENDER_SECRET,
     import.meta.env?.VITE_PRERENDER_SECRET,
@@ -98,7 +169,7 @@ test("one configured Vite prerender fragment reaches the normalized public tree"
     assert.equal(await readFile(path.join(projectDir, "index.html"), "utf8"), fallbackSource);
     const publishedPaths = await publicFiles(published.staticFiles.publicDir);
     const publicOutput = (await Promise.all(publishedPaths.map((file) => readFile(path.join(published.staticFiles.publicDir, file), "utf8")))).join("\n");
-    assert.doesNotMatch(publicOutput, /project-env-secret|project-local-env-secret|server-env-secret|PRERENDER_SERVER_SECRET/);
+    assert.doesNotMatch(publicOutput, /runtime-context-injected|project-env-secret|project-local-env-secret|server-env-secret|PRERENDER_SERVER_SECRET/);
 
     const treesDir = path.join(projectDir, ".sporades", "build", ".public-trees");
     const treeState = (await readdir(treesDir)).sort();
@@ -128,6 +199,12 @@ test("one configured Vite prerender fragment reaches the normalized public tree"
         source: "export default () => ({ html: '<p>not a string</p>' });\n",
         message: /renderer for landing returned a non-string result/,
       },
+      {
+        label: "non-function default export",
+        module: "render-landing.mjs",
+        source: 'export default "not a renderer";\n',
+        message: /must default-export a zero-argument renderer/,
+      },
     ];
     for (const failure of failureCases) {
       config.client.prerender[0].module = failure.module;
@@ -141,6 +218,22 @@ test("one configured Vite prerender fragment reaches the normalized public tree"
       });
       assert.deepEqual((await readdir(treesDir)).sort(), treeState, `${failure.label} created partial public output`);
       assert.equal(await readFile(published.staticFiles.indexHtml, "utf8"), activeHtml, `${failure.label} replaced the active public tree`);
+    }
+
+    const externalRenderer = path.join(path.dirname(projectDir), `external-renderer-${path.basename(projectDir)}.mjs`);
+    await writeFile(externalRenderer, 'export default () => "<p>escaped</p>";\n');
+    await symlink(externalRenderer, path.join(projectDir, "symlink-renderer.mjs"));
+    config.client.prerender[0].module = "symlink-renderer.mjs";
+    try {
+      await assert.rejects(createBundle(projectDir, config), (error) => {
+        assert.match(error.message, /could not load client prerender module for landing/i);
+        assert.doesNotMatch(JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics }), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        return true;
+      });
+      assert.deepEqual((await readdir(treesDir)).sort(), treeState, "symlink module failure created partial public output");
+      assert.equal(await readFile(published.staticFiles.indexHtml, "utf8"), activeHtml, "symlink module failure replaced the active public tree");
+    } finally {
+      await rm(externalRenderer, { force: true });
     }
 
     config.client.prerender[0].module = "render-landing.mjs";
