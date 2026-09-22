@@ -6,7 +6,7 @@ import { MessageChannel, Worker } from "node:worker_threads";
 
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
-import { parse as parseHtml, type DefaultTreeAdapterTypes } from "parse5";
+import { parse as parseHtml, serialize as serializeHtml, defaultTreeAdapter, type DefaultTreeAdapterTypes } from "parse5";
 
 import type { ClientToolchainName } from "./client-capabilities.js";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
@@ -115,7 +115,10 @@ export async function renderClientPrerenderFragment(
   {
     const outcome = await executeBundledRenderer(bundledSource, bundleFormat, canonicalModulePath, fragment.module, boundedRendererRoots);
     for (const dependency of outcome.dependencies ?? []) {
-      if (typeof dependency === "string" && path.isAbsolute(dependency)) onDependency?.(dependency);
+      if (typeof dependency === "string" && path.isAbsolute(dependency)) {
+        onDependency?.(dependency);
+        await recordRendererLocalPackageBoundaries(dependency, projectRoot, onDependency);
+      }
     }
     for (const request of outcome.packageImports ?? []) {
       if (request.specifier.startsWith("#")) await recordRendererPackageImport(request.specifier, path.dirname(request.filename), onDependency);
@@ -210,6 +213,10 @@ function preserveRendererImportMetaUrl(
         if ((args.pluginData as { [resolutionBypass]?: boolean } | undefined)?.[resolutionBypass]) return undefined;
         if (args.path.startsWith("#")) await recordRendererPackageImport(args.path, args.resolveDir || projectRoot, onDependency);
         else recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency);
+        const localPath = rendererLocalFilePath(args.path)
+          ?? (args.path.startsWith(".") ? path.resolve(args.resolveDir || projectRoot, args.path) : undefined);
+        // Record absent and malformed boundaries before resolution can fail.
+        if (localPath) await recordRendererLocalPackageBoundaries(localPath, projectRoot, onDependency);
         const resolved = await pluginBuild.resolve(args.path, {
           importer: args.importer,
           kind: args.kind,
@@ -257,7 +264,10 @@ function preserveRendererImportMetaUrl(
           }
           return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
         }
-        if (!resolved.external && resolved.namespace === "file") onDependency?.(resolved.path);
+        if (!resolved.external && resolved.namespace === "file") {
+          onDependency?.(resolved.path);
+          await recordRendererLocalPackageBoundaries(resolved.path, projectRoot, onDependency);
+        }
         if (
           !resolved.external
           && resolved.namespace === "file"
@@ -289,11 +299,10 @@ function preserveRendererImportMetaUrl(
       const loadRendererModule = async (args: import("esbuild").OnLoadArgs): Promise<import("esbuild").OnLoadResult | undefined> => {
         const contents = await readFile(args.path, "utf8");
         const commonJsModule = await rendererModuleUsesCommonJs(args.path, contents, projectRoot, packageModeCache);
-        const preservesImportMetaUrl = contents.includes("import.meta.url");
         const loader = loaders.get(path.extname(args.path));
         if (!loader) return undefined;
         const checksImports = contents.includes("import");
-        const requiresTransform = checksImports || preservesImportMetaUrl || (commonJsModule && /\b(?:require|module|eval|__dirname|__filename)\b/.test(contents));
+        const requiresTransform = checksImports || (commonJsModule && /\b(?:require|module|eval|__dirname|__filename)\b/.test(contents));
         if (!requiresTransform) {
           if (args.namespace !== commonJsNamespace) return undefined;
           return {
@@ -304,7 +313,7 @@ function preserveRendererImportMetaUrl(
           };
         }
         const moduleUrl = pathToFileURL(args.path).href;
-        const define: Record<string, string> = { "import.meta.url": JSON.stringify(moduleUrl) };
+        const define: Record<string, string> = { "import.meta": JSON.stringify({ url: moduleUrl }) };
         const result = await esbuildBuild({
           absWorkingDir: projectRoot,
           bundle: false,
@@ -334,7 +343,7 @@ function preserveRendererImportMetaUrl(
         const specialized = commonJsModule
           ? specializeCommonJsRendererModule(javascript[0].text, args.path, moduleUrl)
           : { contents: javascript[0].text, changed: false };
-        if (commonJsModule && !preservesImportMetaUrl && !specialized.changed && args.namespace !== commonJsNamespace) return undefined;
+        if (commonJsModule && !checksImports && !specialized.changed && args.namespace !== commonJsNamespace) return undefined;
         return {
           contents: specialized.contents,
           loader: rendererTransformOutputLoader(loader),
@@ -510,6 +519,24 @@ async function recordRendererPackageImport(specifier: string, directory: string,
   }
 }
 
+async function recordRendererLocalPackageBoundaries(modulePath: string, projectRoot: string, onDependency?: (file: string) => void) {
+  if (!onDependency) return;
+  let directory = path.dirname(modulePath);
+  while (path.basename(directory) !== "node_modules") {
+    const manifest = path.join(directory, "package.json");
+    onDependency(manifest);
+    try {
+      await readFile(manifest, "utf8");
+      return;
+    } catch (error) {
+      if (!isMissingRendererPackageJson(error)) return;
+    }
+    const parent = path.dirname(directory);
+    if (directory === path.resolve(projectRoot) || parent === directory) return;
+    directory = parent;
+  }
+}
+
 function nearestRendererPackageMode(
   directory: string,
   projectRoot: string,
@@ -583,7 +610,7 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
   const scopes = new WeakMap<object, RendererLexicalScope>();
   collectRendererScopes(syntax, rootScope, scopes);
   visitRendererSyntax(syntax, (node) => {
-    if (node.type === "CallExpression" && !node.optional && isRendererSyntaxNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "eval" && !rendererScopeBinds(scopes.get(node) ?? rootScope, "eval")) {
+    if (node.type === "CallExpression" && !node.optional && isRendererSyntaxNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "eval") {
       throw new Error("Direct eval is unsupported in CommonJS prerender modules; use explicit code so module-local wrapper bindings can be preserved.");
     }
   });
@@ -992,7 +1019,52 @@ export function placeClientPrerenderFragments(html: string, fragments: readonly 
   if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
     throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
   }
+  validatePrerenderAuthorDom(html, replaced, new Set(placement.markers.filter((marker) => marker.name === undefined || byName.has(marker.name)).map((marker) => marker.start)));
   return { html: replaced, warnings, placements };
+}
+
+function validatePrerenderAuthorDom(source: string, output: string, consumedMarkers: ReadonlySet<number>) {
+  const original = parseHtml(source, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+  const candidate = parseHtml(output, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+  const removeOriginalMarkers = (node: DefaultTreeAdapterTypes.Node) => {
+    if (node.nodeName === "#comment" && node.sourceCodeLocation && consumedMarkers.has(node.sourceCodeLocation.startOffset)) {
+      defaultTreeAdapter.detachNode(node as DefaultTreeAdapterTypes.CommentNode);
+      return;
+    }
+    if ("childNodes" in node) for (const child of [...node.childNodes]) removeOriginalMarkers(child);
+  };
+  removeOriginalMarkers(original);
+  const intervals = new Map<DefaultTreeAdapterTypes.Node, {before:number; after:number}>();
+  const boundaries: DefaultTreeAdapterTypes.CommentNode[] = [];
+  let position = 0;
+  const index = (node: DefaultTreeAdapterTypes.Node) => {
+    const interval = {before:position++, after:0};
+    intervals.set(node, interval);
+    if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end) /.test(node.data.trim())) boundaries.push(node);
+    if ("childNodes" in node) for (const child of node.childNodes) index(child);
+    interval.after = position;
+  };
+  index(candidate);
+  boundaries.sort((left, right) => left.sourceCodeLocation!.startOffset - right.sourceCodeLocation!.startOffset);
+  for (let pair = 0; pair < boundaries.length; pair += 2) {
+    const start = intervals.get(boundaries[pair]!)!.before;
+    const end = intervals.get(boundaries[pair + 1]!)!.after;
+    // Model Range.deleteContents(): remove fully contained nodes but retain
+    // partially selected ancestors. Compare the resulting author DOM, not HTML
+    // spelling, so implied wrappers and parser reparenting cannot escape cleanup.
+    const removeRange = (node: DefaultTreeAdapterTypes.Node) => {
+      if (!("childNodes" in node)) return;
+      for (const child of [...node.childNodes]) {
+        const interval = intervals.get(child)!;
+        if (interval.before >= start && interval.after <= end) defaultTreeAdapter.detachNode(child);
+        else removeRange(child);
+      }
+    };
+    removeRange(candidate);
+  }
+  if (serializeHtml(original) !== serializeHtml(candidate)) {
+    throw prerenderError("Client prerender placement is not stable in the parsed HTML document.", "Fragment dismissal must restore the author-owned DOM. Use explicit containers where HTML parsing would otherwise reparent author content.");
+  }
 }
 
 function validatePrerenderDomBoundaries(html: string, expectedPlacements: number) {
@@ -1083,8 +1155,8 @@ function scanClientPrerenderHtml(html: string) {
     if (node.nodeName === "#comment" && "data" in node && location) {
       const source = html.slice(location.startOffset, location.endOffset);
       if (!source.startsWith("<!--") && !source.endsWith(">")) problem = "unterminated HTML declaration";
-      const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(node.data);
-      if (marker) markers.push({ start: location.startOffset, end: location.endOffset, name: marker[1] });
+      const marker = /^\s*sporades:prerender(?:\s+([\s\S]*?))?\s*$/.exec(node.data);
+      if (marker) markers.push({ start: location.startOffset, end: location.endOffset, name: marker[1]?.trim() || undefined });
     }
     if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && location && "startTag" in location && location.startTag) {
       if (node.tagName === "body") bodyEnd = location.startTag.endOffset;

@@ -4285,6 +4285,24 @@ test("Dev watches prerender modules and transitive code while retaining the last
         await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
         assert.ok((await page()).includes(`Repointed ${packageName}`));
       }
+      const localPackage = path.join(projectDir, 'render/local-package');
+      await mkdir(localPackage);
+      await writeFile(path.join(localPackage, 'copy.js'), 'module.exports = "Local package boundary";');
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "./local-package/copy.js"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(path.join(localPackage, 'package.json'), '{"type":"commonjs"}');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Local package boundary/);
+      await writeFile(path.join(localPackage, 'package.json'), '{"type":"module"}');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      assert.match(await page(), /Local package boundary/);
+      await writeFile(path.join(localPackage, 'package.json'), '{"type":"commonjs"}');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      await writeFile(path.join(localPackage, 'package.json'), '{malformed');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(path.join(localPackage, 'package.json'), '{"type":"commonjs"}');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Local package boundary/);
       await writeFile(path.join(projectDir, 'render/landing.ts'), `import copy from ${JSON.stringify(absolute)}; export default () => copy;`);
       await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
       await writeFile(absolute, 'module.exports = "Recovered absolute dependency";');
