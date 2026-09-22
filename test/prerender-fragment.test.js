@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { createBundle } from "../dist/bundle-pipeline.js";
-import { placeClientPrerenderFragment, renderClientPrerenderFragment } from "../dist/client-prerender.js";
+import { placeClientPrerenderFragment, rendererTransformOutputLoader, renderClientPrerenderFragment } from "../dist/client-prerender.js";
 import { readProjectConfig } from "../dist/cli/project-config.js";
 import { validateClientToolchainInput } from "../dist/client-toolchain.js";
 import { discardPublicTree } from "../dist/public-tree.js";
@@ -44,6 +44,13 @@ const viteConfig = {
   toolchain: "vite",
   prerender: [{ name: "landing", module: "render-landing.mjs" }],
 };
+
+test("precompiled renderer output uses only honest JavaScript-family loaders", () => {
+  assert.deepEqual(
+    ["js", "jsx", "ts", "tsx"].map((loader) => rendererTransformOutputLoader(loader)),
+    ["js", "jsx", "js", "jsx"],
+  );
+});
 
 test("fallback placement finds the real opening body without rewriting surrounding HTML", () => {
   const fragment = { name: "landing", module: "render-landing.mjs" };
