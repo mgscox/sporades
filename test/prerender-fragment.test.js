@@ -274,6 +274,35 @@ export default () => {
   });
 });
 
+test("TSX renderer import.meta.url applies JSX settings from nearest extended tsconfig", async () => {
+  await withTempDir(async (projectDir) => {
+    const rendererDir = path.join(projectDir, "renderer");
+    const runtimeDir = path.join(rendererDir, "runtime");
+    await mkdir(runtimeDir, { recursive: true });
+    await writeFile(path.join(projectDir, "tsconfig.base.json"), `${JSON.stringify({
+      compilerOptions: {
+        jsx: "react-jsx",
+        jsxImportSource: "./runtime",
+      },
+    }, null, 2)}\n`);
+    await writeFile(path.join(rendererDir, "tsconfig.json"), `${JSON.stringify({ extends: "../tsconfig.base.json" }, null, 2)}\n`);
+    await writeFile(
+      path.join(runtimeDir, "jsx-runtime.js"),
+      'export function jsx(tag, props) { return `<${tag}>${props.children ?? ""}</${tag}>`; }\nexport const jsxs = jsx;\nexport const Fragment = Symbol("Fragment");\n',
+    );
+    await writeFile(
+      path.join(rendererDir, "render-landing.tsx"),
+      'export default (): string => <main>{`extended TSX config:${new URL(".", import.meta.url).protocol}`}</main>;\n',
+    );
+    const canonicalProject = await realpath(projectDir);
+
+    assert.equal(
+      await renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "renderer/render-landing.tsx" }),
+      "<main>extended TSX config:file:</main>",
+    );
+  });
+});
+
 test("renderer import.meta.url failures redact encoded project URL forms", async () => {
   await withTempDir(async (dir) => {
     const projectDir = path.join(dir, "caf\u00e9 space#percent% capsule");
