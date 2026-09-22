@@ -1,6 +1,6 @@
 import { preservedDeployFilePath } from "../dist/deploy-files.js";
 import assert from "node:assert/strict";
-import { chmod, chown, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, chown, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -19,6 +19,9 @@ import { installProjectSvelteToolchain } from "./support/project-svelte-toolchai
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
 import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
+import { installPrerenderFixture } from "./support/prerender-capsule.js";
+import { createBundle } from "../dist/bundle-pipeline.js";
+import { summarizePublicTree } from "../dist/public-tree.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -5603,6 +5606,53 @@ process.exit(0);
         autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
       },
     });
+  });
+});
+
+test("Hosted releases package, install, inspect and switch the same prerender public tree", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(['create', 'prerender-hosted', '--framework', 'react', '--toolchain', 'vite', '--no-install', '--no-git', '--json'], {cwd:dir});
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, 'prerender-hosted');
+    await installFakeReact(projectDir);
+    const config = await installPrerenderFixture(projectDir);
+    const fixture = await writeHostedCapsuleInstallFixture(dir);
+    const docker = await installFakeDocker(path.join(dir, 'fake-prerender-docker'));
+    const request = { host: {alias:'personal', domain:fixture.domain, scheme:'https', remoteRoot:fixture.remoteRoot}, capsule:{subname:fixture.subname} };
+    const retained = [];
+    for (const [index, label] of ['Useful before JavaScript', 'New static release'].entries()) {
+      await writeFile(path.join(projectDir, 'render/copy.ts'), `export const copy = ${JSON.stringify(label)};`);
+      const bundle = await createBundle(projectDir, config);
+      const staging = path.join(dir, `prerender-release-${index}`);
+      await mkdir(staging);
+      await cp(bundle.staticFiles.publicDir, path.join(staging, 'public'), {recursive:true});
+      await copyFile(bundle.paths.serverBundle, path.join(staging, 'server.mjs'));
+      await copyFile(path.join(projectDir, 'sporades.json'), path.join(staging, 'sporades.json'));
+      const publicFiles = (await summarizePublicTree(bundle.staticFiles.publicDir)).paths;
+      const releaseId = `20260922T12000${index}Z-feedface`;
+      const releaseDir = path.join(fixture.capsuleDir, 'releases', releaseId);
+      const archive = path.join(fixture.remoteRoot, 'incoming', `${releaseId}.tar.gz`);
+      const files = ['server.mjs', 'sporades.json', ...publicFiles.map((file) => `public/${file}`)];
+      await createTarGz(archive, staging, files);
+      const release = {...fixture.release, id:releaseId, restart:false, remoteArchive:archive, files, directories:{...fixture.release.directories, release:releaseDir}};
+      const installed = await runHostHelper({...request, action:'capsule.release.install', release}, {cwd:dir, env:docker.env});
+      assert.equal(installed.code, 0, installed.stderr);
+      assert.equal(JSON.parse(installed.stdout).ok, true, installed.stdout);
+      assert.equal(await readlink(path.join(fixture.capsuleDir, 'current')), releaseDir);
+      const html = await readFile(path.join(releaseDir, 'public/index.html'), 'utf8');
+      assert.ok(html.includes(label)); assert.match(html, /Static fallback remains/);
+      for (const file of publicFiles) {
+        const expected = await readFile(path.join(bundle.staticFiles.publicDir, file));
+        assert.deepEqual(await readFile(path.join(releaseDir, 'public', file)), expected);
+        assert.doesNotMatch(expected.toString(), /(?:server|project)-env-prerender-must-not-ship/);
+      }
+      retained.push({releaseDir, html});
+      for (const prior of retained) assert.equal(await readFile(path.join(prior.releaseDir, 'public/index.html'), 'utf8'), prior.html);
+      const inspected = await runHostHelper({...request, action:'capsule.release.list'}, {cwd:dir, env:docker.env});
+      assert.equal(inspected.code, 0, inspected.stderr);
+      assert.equal(JSON.parse(inspected.stdout).ok, true, inspected.stdout);
+      assert.ok(inspected.stdout.includes(releaseId));
+    }
   });
 });
 

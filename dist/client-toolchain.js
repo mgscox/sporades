@@ -140,7 +140,7 @@ async function buildVite(options) {
             plugins: [
                 ...frameworkPlugins,
                 sporadesViteClientPlugin(options.devRefresh === true),
-                ...(options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : []),
+                ...(options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings, options.onDependency)] : []),
                 sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
             ],
             build: {
@@ -194,7 +194,7 @@ async function buildVite(options) {
         throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
     }
 }
-function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings) {
+function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, onDependency) {
     return {
         name: "sporades-prerender",
         enforce: "post",
@@ -203,7 +203,7 @@ function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warni
             async handler(html) {
                 const rendered = [];
                 for (const fragment of fragments) {
-                    rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
+                    rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots, onDependency) });
                 }
                 const placed = placeClientPrerenderFragments(html, rendered);
                 warnings.push(...placed.warnings);

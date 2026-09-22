@@ -174,6 +174,20 @@ This removes the usual split between a development path and a production path.
 When a Capsule works in a Dev session, the same bundled server and client code
 are what `sporades deploy` and `sporades host push` package.
 
+### Static prerendering
+
+The Vite adapter executes configured trusted render modules during the existing
+Bundle pipeline, after project HTML transforms. A single placement pass expands
+ordered markers in emitted HTML without rewriting author source or adding element
+wrappers. The resulting document passes the same public-tree checks and atomic
+publication as every other Vite output. Dev tracks renderer and transitive code
+dependencies through its existing watcher; failed rebuilds retain the last
+successful tree. Container and Hosted release handling consume those bytes without
+another renderer. Browser cleanup is explicit through `prerender` snapshot handles.
+
+See [ADR-0055](./adr/0055-prerender-fragments-share-the-normalized-public-tree.md)
+for the trust, asset, failure and handover boundaries.
+
 ## Runtime Modes
 
 ### Dev Session

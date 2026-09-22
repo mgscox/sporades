@@ -32,6 +32,7 @@ export declare function buildClientToolchain(options: {
     indexHtml: string;
     indexHtmlPath: string;
     prerender?: readonly ClientPrerenderFragment[];
+    onDependency?: (file: string) => void;
     devRefresh?: boolean;
 }): Promise<ClientToolchainOutput>;
 export declare function validateClientToolchainInput(options: {

@@ -2157,7 +2157,8 @@ async function startDevSession(options: LooseRecord) {
   let security = resolveEffectiveSecurityPolicy(config, session);
   const restartPolicy = restartPolicyForMode("dev");
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
-  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false });
+  let clientDependencies = new Set<string>();
+  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, onClientDependency: (file) => clientDependencies.add(file) });
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
   const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
     wait: true,
@@ -2525,7 +2526,8 @@ async function startDevSession(options: LooseRecord) {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
       const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
-      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false });
+      const nextClientDependencies = new Set<string>();
+      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, onClientDependency: (file) => { nextClientDependencies.add(file); clientDependencies.add(file); } });
       const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
         wait: true,
         emit: (data, error) => emitDevEvent(options, data, error),
@@ -2582,6 +2584,7 @@ async function startDevSession(options: LooseRecord) {
       }
       const previousBundle = bundle;
       bundle = rebuild;
+      clientDependencies = nextClientDependencies;
       rebuild.releasePublicTreeLease().catch((error) => {
         reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
       });
@@ -2662,7 +2665,7 @@ async function startDevSession(options: LooseRecord) {
         },
       );
     }
-  });
+  }, () => [...clientDependencies]);
   emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
 
   let shutdownStarted = false;
@@ -2909,13 +2912,18 @@ async function importCapsuleDefinition(moduleSource: WithImplicitCoercion<string
   return module.default ?? null;
 }
 
-function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<void>; (arg0: any): any; }) {
-  const watchedPaths = [
+function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<void>; (arg0: any): any; }, clientDependencies: () => readonly string[] = () => []) {
+  const baseWatchedPaths = [
     { path: path.join(projectDir, "server"), affectsServerRuntime: true },
     { path: path.join(projectDir, "client"), affectsServerRuntime: false },
     { path: path.join(projectDir, "shared"), affectsServerRuntime: true },
     { path: path.join(projectDir, "index.html"), affectsServerRuntime: false },
     { path: path.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true },
+  ];
+  const watchedPaths = () => [
+    ...baseWatchedPaths,
+    ...clientDependencies().filter((file) => !baseWatchedPaths.some((base) => file === base.path || file.startsWith(`${base.path}${path.sep}`)))
+      .map((file) => ({ path: file, affectsServerRuntime: false })),
   ];
   const watchers = [];
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2940,7 +2948,7 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
     }
     const currentChange = pendingChange ?? { affectsServerRuntime: true };
     pendingChange = null;
-    const currentSignature = readDevInputSignature(watchedPaths);
+    const currentSignature = readDevInputSignature(watchedPaths());
     if (currentSignature === lastHandledSignature) {
       return;
     }
@@ -2949,7 +2957,7 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
     try {
       await onChange(currentChange);
       lastHandledSignature = currentSignature;
-      for (const watchedPath of watchedPaths) handledSignatures.set(watchedPath.path, readDevInputSignature([watchedPath]));
+      for (const watchedPath of watchedPaths()) handledSignatures.set(watchedPath.path, readDevInputSignature([watchedPath]));
     } finally {
       rebuildInFlight = false;
       if (pendingChange) {
@@ -2958,14 +2966,14 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
     }
   };
 
-  const observe = (watchedPath: (typeof watchedPaths)[number]) => {
+  const observe = (watchedPath: ReturnType<typeof watchedPaths>[number]) => {
     const signature = readDevInputSignature([watchedPath]);
     if (observedSignatures.get(watchedPath.path) === signature) return;
     observedSignatures.set(watchedPath.path, signature);
     schedule(watchedPath);
   };
 
-  for (const watchedPath of watchedPaths) {
+  for (const watchedPath of watchedPaths()) {
     const signature = readDevInputSignature([watchedPath]);
     observedSignatures.set(watchedPath.path, signature);
     handledSignatures.set(watchedPath.path, signature);
@@ -2977,9 +2985,9 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
       }
     }
   }
-  lastHandledSignature = readDevInputSignature(watchedPaths);
+  lastHandledSignature = readDevInputSignature(watchedPaths());
   const signaturePoll = setInterval(() => {
-    for (const watchedPath of watchedPaths) {
+    for (const watchedPath of watchedPaths()) {
       observe(watchedPath);
       if (handledSignatures.get(watchedPath.path) !== readDevInputSignature([watchedPath])) schedule(watchedPath);
     }
@@ -3013,7 +3021,7 @@ function collectPathSignature(filePath: string, entries: any[]) {
   try {
     stats = statSync(filePath, { bigint: true });
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT" || errorDetails(error).code === "ENOTDIR") {
       entries.push(`${filePath}:missing`);
       return;
     }

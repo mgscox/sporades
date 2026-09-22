@@ -72715,8 +72715,9 @@ function readClientPrerenderConfig(value, toolchain) {
   });
   return fragments;
 }
-async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots = [projectRoot]) {
+async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots = [projectRoot], onDependency) {
   const modulePath = path3.resolve(projectRoot, ...fragment.module.split("/"));
+  onDependency?.(modulePath);
   let canonicalModulePath;
   try {
     const metadata = await lstat2(modulePath);
@@ -72738,11 +72739,11 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     const { build: build2 } = await import("esbuild");
     let result;
     try {
-      result = await buildRendererBundle(build2, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases);
+      result = await buildRendererBundle(build2, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases, onDependency);
     } catch (error) {
       if (!isCommonJsTopLevelAwaitBuildFailure(error)) throw error;
       bundleFormat = "esm";
-      result = await buildRendererBundle(build2, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases);
+      result = await buildRendererBundle(build2, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases, onDependency);
     }
     const outputs = result.outputFiles ?? [];
     const javascript = outputs.filter((output) => output.path.endsWith(".js"));
@@ -72760,6 +72761,9 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   const boundedRendererRoots = [...projectRoots, ...rendererDependencyRoots];
   {
     const outcome = await executeBundledRenderer(bundledSource, bundleFormat, canonicalModulePath, fragment.module, boundedRendererRoots);
+    for (const dependency of outcome.dependencies ?? []) {
+      if (typeof dependency === "string" && path3.isAbsolute(dependency)) onDependency?.(dependency);
+    }
     if (outcome.kind === "not-function") {
       throw prerenderError(
         `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
@@ -72783,7 +72787,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     return outcome.rendered;
   }
 }
-async function buildRendererBundle(build2, projectRoot, canonicalModulePath, format, rendererDependencyRoots, rendererDependencyAliases) {
+async function buildRendererBundle(build2, projectRoot, canonicalModulePath, format, rendererDependencyRoots, rendererDependencyAliases, onDependency) {
   return build2({
     absWorkingDir: projectRoot,
     bundle: true,
@@ -72793,7 +72797,7 @@ async function buildRendererBundle(build2, projectRoot, canonicalModulePath, for
     logLevel: "silent",
     outdir: path3.join(projectRoot, ".sporades-prerender-output"),
     platform: "node",
-    plugins: [preserveRendererImportMetaUrl(build2, projectRoot, rendererDependencyRoots, rendererDependencyAliases)],
+    plugins: [preserveRendererImportMetaUrl(build2, projectRoot, rendererDependencyRoots, rendererDependencyAliases, onDependency)],
     sourcemap: false,
     target: "node22",
     write: false
@@ -72803,7 +72807,7 @@ function isCommonJsTopLevelAwaitBuildFailure(error) {
   if (!error || typeof error !== "object" || !("errors" in error) || !Array.isArray(error.errors)) return false;
   return error.errors.some((diagnostic) => diagnostic && typeof diagnostic === "object" && "text" in diagnostic && typeof diagnostic.text === "string" && diagnostic.text.includes("Top-level await") && diagnostic.text.includes('"cjs" output format'));
 }
-function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDependencyRoots, rendererDependencyAliases) {
+function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDependencyRoots, rendererDependencyAliases, onDependency) {
   const packageModeCache = /* @__PURE__ */ new Map();
   const loaders = /* @__PURE__ */ new Map([
     [".cjs", "js"],
@@ -72831,6 +72835,10 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           with: args.with
         });
         if (resolved.errors.length > 0) {
+          if (args.path.startsWith(".")) {
+            const candidate = path3.resolve(args.resolveDir, args.path);
+            for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".json", "/index.ts", "/index.js"]) onDependency?.(`${candidate}${suffix}`);
+          }
           const failedPath = rendererLocalFilePath(args.path);
           const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : void 0;
           if (failedPath) {
@@ -72854,6 +72862,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           }
           return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : void 0;
         }
+        if (!resolved.external && resolved.namespace === "file") onDependency?.(resolved.path);
         if (!resolved.external && resolved.namespace === "file" && !isCanonicalDescendant(projectRoot, resolved.path)) {
           addRendererDependencyRoot(rendererDependencyRoots, resolved.path);
         }
@@ -73516,6 +73525,9 @@ const { parentPort, workerData } = require("node:worker_threads");
 const { createRequire } = require("node:module");
 const { dirname } = require("node:path");
 globalThis.require = createRequire(workerData.modulePath);
+function post(outcome) {
+  parentPort.postMessage({ ...outcome, dependencies: Object.keys(require.cache) });
+}
 function safeMessage(error) {
   try {
     return error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
@@ -73536,15 +73548,15 @@ function safeMessage(error) {
       const encoded = Buffer.from(source).toString("base64");
       namespace = await import("data:text/javascript;base64," + encoded);
     }
-    if (!namespace) return parentPort.postMessage({ kind: "not-function" });
-    if (typeof namespace.default !== "function") return parentPort.postMessage({ kind: "not-function" });
+    if (!namespace) return post({ kind: "not-function" });
+    if (typeof namespace.default !== "function") return post({ kind: "not-function" });
     const rendered = await namespace.default();
     if (typeof rendered !== "string") {
-      return parentPort.postMessage({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
+      return post({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
     }
-    parentPort.postMessage({ kind: "success", rendered });
+    post({ kind: "success", rendered });
   } catch (error) {
-    parentPort.postMessage({ kind: "failure", message: safeMessage(error) });
+    post({ kind: "failure", message: safeMessage(error) });
   }
 })();`;
   const worker = new Worker2(bootstrap, {
@@ -73575,7 +73587,7 @@ function safeMessage(error) {
       worker.once("exit", onExit);
     });
     if (outcome.kind !== "failure") return outcome;
-    return { kind: "failure", message: boundedMessage(outcome.message, projectRoots) };
+    return { ...outcome, kind: "failure", message: boundedMessage(outcome.message, projectRoots) };
   } catch (error) {
     return { kind: "failure", message: boundedMessage(error, projectRoots) };
   } finally {
@@ -73780,7 +73792,7 @@ async function buildVite(options) {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
-        ...options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : [],
+        ...options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings, options.onDependency)] : [],
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig)
       ],
       build: {
@@ -73829,7 +73841,7 @@ async function buildVite(options) {
     throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
 }
-function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings) {
+function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, onDependency) {
   return {
     name: "sporades-prerender",
     enforce: "post",
@@ -73838,7 +73850,7 @@ function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warni
       async handler(html) {
         const rendered = [];
         for (const fragment of fragments) {
-          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
+          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots, onDependency) });
         }
         const placed = placeClientPrerenderFragments(html, rendered);
         warnings.push(...placed.warnings);
@@ -76036,6 +76048,7 @@ async function createBundle(projectDir, config, options = {}) {
     indexHtml,
     indexHtmlPath: paths.indexHtml,
     prerender,
+    onDependency: options.onClientDependency,
     clientSource,
     clientSourcePath: paths.clientEntry,
     frameworkConfig: frameworkBundleConfig,
@@ -123440,7 +123453,8 @@ async function startDevSession(options) {
   let security = resolveEffectiveSecurityPolicy(config, session);
   const restartPolicy = restartPolicyForMode("dev");
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4e3;
-  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false });
+  let clientDependencies = /* @__PURE__ */ new Set();
+  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, onClientDependency: (file) => clientDependencies.add(file) });
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
   const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
     wait: true,
@@ -123784,7 +123798,11 @@ async function startDevSession(options) {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
       const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
-      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false });
+      const nextClientDependencies = /* @__PURE__ */ new Set();
+      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, onClientDependency: (file) => {
+        nextClientDependencies.add(file);
+        clientDependencies.add(file);
+      } });
       const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
         wait: true,
         emit: (data2, error) => emitDevEvent(options, data2, error)
@@ -123825,6 +123843,7 @@ async function startDevSession(options) {
       }
       const previousBundle = bundle;
       bundle = rebuild;
+      clientDependencies = nextClientDependencies;
       rebuild.releasePublicTreeLease().catch((error) => {
         reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
       });
@@ -123905,7 +123924,7 @@ async function startDevSession(options) {
         }
       );
     }
-  });
+  }, () => [...clientDependencies]);
   emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {} });
   let shutdownStarted = false;
   const shutdown = async () => {
@@ -124107,13 +124126,17 @@ async function importCapsuleDefinition(moduleSource) {
   const module = await import(`data:text/javascript;base64,${encodedModule}`);
   return module.default ?? null;
 }
-function watchDevInputs(projectDir, onChange) {
-  const watchedPaths = [
+function watchDevInputs(projectDir, onChange, clientDependencies = () => []) {
+  const baseWatchedPaths = [
     { path: path15.join(projectDir, "server"), affectsServerRuntime: true },
     { path: path15.join(projectDir, "client"), affectsServerRuntime: false },
     { path: path15.join(projectDir, "shared"), affectsServerRuntime: true },
     { path: path15.join(projectDir, "index.html"), affectsServerRuntime: false },
     { path: path15.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
+  ];
+  const watchedPaths = () => [
+    ...baseWatchedPaths,
+    ...clientDependencies().filter((file) => !baseWatchedPaths.some((base) => file === base.path || file.startsWith(`${base.path}${path15.sep}`))).map((file) => ({ path: file, affectsServerRuntime: false }))
   ];
   const watchers = [];
   let debounceTimer = null;
@@ -124136,7 +124159,7 @@ function watchDevInputs(projectDir, onChange) {
     }
     const currentChange = pendingChange ?? { affectsServerRuntime: true };
     pendingChange = null;
-    const currentSignature = readDevInputSignature(watchedPaths);
+    const currentSignature = readDevInputSignature(watchedPaths());
     if (currentSignature === lastHandledSignature) {
       return;
     }
@@ -124144,7 +124167,7 @@ function watchDevInputs(projectDir, onChange) {
     try {
       await onChange(currentChange);
       lastHandledSignature = currentSignature;
-      for (const watchedPath of watchedPaths) handledSignatures.set(watchedPath.path, readDevInputSignature([watchedPath]));
+      for (const watchedPath of watchedPaths()) handledSignatures.set(watchedPath.path, readDevInputSignature([watchedPath]));
     } finally {
       rebuildInFlight = false;
       if (pendingChange) {
@@ -124158,7 +124181,7 @@ function watchDevInputs(projectDir, onChange) {
     observedSignatures.set(watchedPath.path, signature);
     schedule(watchedPath);
   };
-  for (const watchedPath of watchedPaths) {
+  for (const watchedPath of watchedPaths()) {
     const signature = readDevInputSignature([watchedPath]);
     observedSignatures.set(watchedPath.path, signature);
     handledSignatures.set(watchedPath.path, signature);
@@ -124170,9 +124193,9 @@ function watchDevInputs(projectDir, onChange) {
       }
     }
   }
-  lastHandledSignature = readDevInputSignature(watchedPaths);
+  lastHandledSignature = readDevInputSignature(watchedPaths());
   const signaturePoll = setInterval(() => {
-    for (const watchedPath of watchedPaths) {
+    for (const watchedPath of watchedPaths()) {
       observe(watchedPath);
       if (handledSignatures.get(watchedPath.path) !== readDevInputSignature([watchedPath])) schedule(watchedPath);
     }
@@ -124199,7 +124222,7 @@ function collectPathSignature(filePath, entries) {
   try {
     stats = statSync(filePath, { bigint: true });
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT" || errorDetails(error).code === "ENOTDIR") {
       entries.push(`${filePath}:missing`);
       return;
     }

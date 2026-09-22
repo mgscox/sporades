@@ -100,6 +100,17 @@ _Avoid_: LetsEncrypt certificate, public certificate
 The domain-scoped Host server directory that contains optional preinstalled Cloudflare origin certificate material for a Hosted domain.
 _Avoid_: cert folder, SSL directory
 
+**Prerender fragment**:
+Trusted static HTML returned by an explicitly configured project render module
+during a Vite client build. It is placed in emitted HTML through author markers
+or body fallback, bounded by private comments, and carried by the normalized
+public tree. It is not SSR, personalized runtime content or hydration.
+
+**Prerender boundary**:
+One placed fragment instance. Browser discovery exposes only its configured name
+and an idempotent dismissal operation through an opaque snapshot handle. The
+Capsule owns the readiness decision; Sporades never dismisses automatically.
+
 ## Server runtime
 
 **sporades/server**:

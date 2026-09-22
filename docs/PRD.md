@@ -559,6 +559,38 @@ The SDK hides raw WebSocket frames from app code. Client-origin App messages
 must be mediated by declared server message handlers; Sporades does not relay
 arbitrary client packets directly to other clients.
 
+## Static Prerender Fragments
+
+Vite Capsules may declare an ordered `client.prerender` array of uniquely named,
+project-relative render modules. Each trusted module returns a string or promise
+of HTML with no runtime context. Modules execute sequentially during the Bundle
+pipeline, after project HTML plugins and before normalized public-tree validation.
+The author-owned source HTML remains unchanged.
+
+Named comments place selected fragments; a bare `<!-- sporades:prerender -->`
+places all fragments in declaration order. If no marker exists, all fragments are
+inserted after the opening body, which is required for fallback. Repeated
+placements, unused configured fragments and unknown names produce human and
+structured warnings; unknown markers stay comments. Configuration and renderer
+failures reject the candidate and retain the last successful public tree.
+
+Private comments delimit each instance without element wrappers. The public
+`prerender.discover()` API returns a readonly snapshot of opaque named handles;
+each handle supports idempotent dismissal. `prerender.dismiss(name?)` removes all
+instances of a name or all current instances. Nothing dismisses automatically.
+Static content remains useful without JavaScript, and dismissal is replacement,
+not framework hydration. Private delimiter comments are reserved.
+
+Renderers are trusted filesystem/network-capable build code, not sandboxed SSR.
+Server env and project environment files are not injected. The existing Vite
+client graph owns assets; renderers do not create another public asset graph.
+Code imports participate in Dev rebuilding, including new missing dependencies
+discovered during a failed rebuild. Dev, Container and Hosted consumers use the
+same immutable public tree; there is no request-time renderer. See the
+[configuration reference](./reference/projects-and-configuration.md#static-prerender-configuration-vite),
+[module-loading contract](./reference/prerender-modules.md), and
+[handover guide](./guide/client.md#hand-over-to-the-interactive-client).
+
 ## Data and Migrations
 
 Sporades uses SQLite through Node `>=22.13 <23` or `>=24` built-in `node:sqlite`. Dev sessions store the

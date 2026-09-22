@@ -37,8 +37,9 @@ export function readClientPrerenderConfig(value, toolchain) {
     });
     return fragments;
 }
-export async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots = [projectRoot]) {
+export async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots = [projectRoot], onDependency) {
     const modulePath = path.resolve(projectRoot, ...fragment.module.split("/"));
+    onDependency?.(modulePath);
     let canonicalModulePath;
     try {
         const metadata = await lstat(modulePath);
@@ -59,13 +60,13 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
         const { build } = await import("esbuild");
         let result;
         try {
-            result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases);
+            result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases, onDependency);
         }
         catch (error) {
             if (!isCommonJsTopLevelAwaitBuildFailure(error))
                 throw error;
             bundleFormat = "esm";
-            result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases);
+            result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases, onDependency);
         }
         const outputs = result.outputFiles ?? [];
         const javascript = outputs.filter((output) => output.path.endsWith(".js"));
@@ -80,6 +81,10 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
     const boundedRendererRoots = [...projectRoots, ...rendererDependencyRoots];
     {
         const outcome = await executeBundledRenderer(bundledSource, bundleFormat, canonicalModulePath, fragment.module, boundedRendererRoots);
+        for (const dependency of outcome.dependencies ?? []) {
+            if (typeof dependency === "string" && path.isAbsolute(dependency))
+                onDependency?.(dependency);
+        }
         if (outcome.kind === "not-function") {
             throw prerenderError(`Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`, `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`);
         }
@@ -92,7 +97,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
         return outcome.rendered;
     }
 }
-async function buildRendererBundle(build, projectRoot, canonicalModulePath, format, rendererDependencyRoots, rendererDependencyAliases) {
+async function buildRendererBundle(build, projectRoot, canonicalModulePath, format, rendererDependencyRoots, rendererDependencyAliases, onDependency) {
     return build({
         absWorkingDir: projectRoot,
         bundle: true,
@@ -102,7 +107,7 @@ async function buildRendererBundle(build, projectRoot, canonicalModulePath, form
         logLevel: "silent",
         outdir: path.join(projectRoot, ".sporades-prerender-output"),
         platform: "node",
-        plugins: [preserveRendererImportMetaUrl(build, projectRoot, rendererDependencyRoots, rendererDependencyAliases)],
+        plugins: [preserveRendererImportMetaUrl(build, projectRoot, rendererDependencyRoots, rendererDependencyAliases, onDependency)],
         sourcemap: false,
         target: "node22",
         write: false,
@@ -118,7 +123,7 @@ function isCommonJsTopLevelAwaitBuildFailure(error) {
         && diagnostic.text.includes("Top-level await")
         && diagnostic.text.includes('"cjs" output format')));
 }
-function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDependencyRoots, rendererDependencyAliases) {
+function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDependencyRoots, rendererDependencyAliases, onDependency) {
     const packageModeCache = new Map();
     const loaders = new Map([
         [".cjs", "js"],
@@ -147,6 +152,13 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                     with: args.with,
                 });
                 if (resolved.errors.length > 0) {
+                    if (args.path.startsWith(".")) {
+                        const candidate = path.resolve(args.resolveDir, args.path);
+                        // Retain missing code edges so creating a previously absent import can
+                        // recover a failed Dev rebuild without editing the renderer again.
+                        for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".json", "/index.ts", "/index.js"])
+                            onDependency?.(`${candidate}${suffix}`);
+                    }
                     const failedPath = rendererLocalFilePath(args.path);
                     const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : undefined;
                     if (failedPath) {
@@ -175,6 +187,8 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                     }
                     return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
                 }
+                if (!resolved.external && resolved.namespace === "file")
+                    onDependency?.(resolved.path);
                 if (!resolved.external
                     && resolved.namespace === "file"
                     && !isCanonicalDescendant(projectRoot, resolved.path)) {
@@ -971,6 +985,9 @@ const { parentPort, workerData } = require("node:worker_threads");
 const { createRequire } = require("node:module");
 const { dirname } = require("node:path");
 globalThis.require = createRequire(workerData.modulePath);
+function post(outcome) {
+  parentPort.postMessage({ ...outcome, dependencies: Object.keys(require.cache) });
+}
 function safeMessage(error) {
   try {
     return error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
@@ -991,15 +1008,15 @@ function safeMessage(error) {
       const encoded = Buffer.from(source).toString("base64");
       namespace = await import("data:text/javascript;base64," + encoded);
     }
-    if (!namespace) return parentPort.postMessage({ kind: "not-function" });
-    if (typeof namespace.default !== "function") return parentPort.postMessage({ kind: "not-function" });
+    if (!namespace) return post({ kind: "not-function" });
+    if (typeof namespace.default !== "function") return post({ kind: "not-function" });
     const rendered = await namespace.default();
     if (typeof rendered !== "string") {
-      return parentPort.postMessage({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
+      return post({ kind: "non-string", resultType: rendered === null ? "null" : typeof rendered });
     }
-    parentPort.postMessage({ kind: "success", rendered });
+    post({ kind: "success", rendered });
   } catch (error) {
-    parentPort.postMessage({ kind: "failure", message: safeMessage(error) });
+    post({ kind: "failure", message: safeMessage(error) });
   }
 })();`;
     const worker = new Worker(bootstrap, {
@@ -1032,7 +1049,7 @@ function safeMessage(error) {
         });
         if (outcome.kind !== "failure")
             return outcome;
-        return { kind: "failure", message: boundedMessage(outcome.message, projectRoots) };
+        return { ...outcome, kind: "failure", message: boundedMessage(outcome.message, projectRoots) };
     }
     catch (error) {
         return { kind: "failure", message: boundedMessage(error, projectRoots) };

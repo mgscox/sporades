@@ -42,6 +42,7 @@ export async function buildClientToolchain(options: {
   indexHtml: string;
   indexHtmlPath: string;
   prerender?: readonly ClientPrerenderFragment[];
+  onDependency?: (file: string) => void;
   devRefresh?: boolean;
 }): Promise<ClientToolchainOutput> {
   validateClientToolchainInput(options);
@@ -156,6 +157,7 @@ async function buildVite(options: {
   indexHtml: string;
   indexHtmlPath: string;
   prerender?: readonly ClientPrerenderFragment[];
+  onDependency?: (file: string) => void;
   devRefresh?: boolean;
 }) {
   const { build } = await import("vite");
@@ -199,7 +201,7 @@ async function buildVite(options: {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
-        ...(options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings)] : []),
+        ...(options.prerender?.length ? [sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender, prerenderWarnings, options.onDependency)] : []),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
       ],
       build: {
@@ -249,7 +251,7 @@ async function buildVite(options: {
   }
 }
 
-function sporadesVitePrerenderPlugin(projectRoot: string, projectRoots: string[], fragments: readonly ClientPrerenderFragment[], warnings: ClientPrerenderWarning[]): VitePlugin {
+function sporadesVitePrerenderPlugin(projectRoot: string, projectRoots: string[], fragments: readonly ClientPrerenderFragment[], warnings: ClientPrerenderWarning[], onDependency?: (file: string) => void): VitePlugin {
   return {
     name: "sporades-prerender",
     enforce: "post",
@@ -258,7 +260,7 @@ function sporadesVitePrerenderPlugin(projectRoot: string, projectRoots: string[]
       async handler(html) {
         const rendered = [];
         for (const fragment of fragments) {
-          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
+          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots, onDependency) });
         }
         const placed = placeClientPrerenderFragments(html, rendered);
         warnings.push(...placed.warnings);

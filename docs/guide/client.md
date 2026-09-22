@@ -61,6 +61,9 @@ build. This is static generation, not SSR or hydration. Returned HTML is not
 sanitized; active markup retains normal browser behavior. Renderer imports do not
 create a second public asset graph: local CSS, images and fonts must already be
 emitted by the ordinary Vite client graph.
+See the [render-module contract](../reference/prerender-modules.md) for CommonJS,
+ESM, Worker isolation and literal dynamic-import requirements. Dev tracks renderer
+modules and their transitive code imports through its existing rebuild watcher.
 
 ### Hand over to the interactive client
 

@@ -21,6 +21,7 @@ import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
 import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
 import { installProjectTailwindToolchain } from "./support/project-tailwind-toolchain.js";
 import { CLIENT_CAPABILITIES } from "../dist/client-capabilities.js";
+import { installPrerenderFixture } from "./support/prerender-capsule.js";
 import { mountLitTemplate } from "./support/lit-template-harness.js";
 import { mountSvelteTemplate } from "./support/svelte-template-harness.js";
 import { mountSolidTemplate } from "./support/solid-template-harness.js";
@@ -4186,6 +4187,54 @@ test("Vue Vite rejects a symlinked node_modules root before resolving compiler p
       return true;
     });
     await assert.rejects(access(path.join(projectDir, ".sporades")), (error) => error.code === "ENOENT");
+  });
+});
+
+test("Dev watches prerender modules and transitive code while retaining the last successful static shell", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "prerender-dev", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, 'prerender-dev');
+    await installFakeReact(projectDir);
+    const config = await installPrerenderFixture(projectDir);
+    config.dev.port = 0;
+    await writeFile(path.join(projectDir, 'sporades.json'), JSON.stringify(config));
+    const child = startCli(['dev', '--json'], {cwd:projectDir});
+    const events = captureJsonEvents(child);
+    let socket;
+    try {
+      const started = await events.next((event) => event.data?.event === 'started');
+      const page = () => fetch(started.data.url).then((response) => response.text());
+      assert.match(await page(), /Useful before JavaScript/);
+      socket = await openSocket(started.data.url); await subscribeDevRefresh(socket);
+      const refresh = readSocketMessage(socket);
+      await writeFile(path.join(projectDir, 'render/copy.ts'), 'export const copy = "Transitive edit";');
+      const rebuilt = await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.equal(rebuilt.data.build.phase, 'client');
+      assert.equal((await refresh).type, 'refresh');
+      assert.match(await page(), /Transitive edit/);
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'export default () => "<main>Renderer edit</main>";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Renderer edit/);
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'export default () => { throw new Error("failed prerender edit"); };');
+      const failed = await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      assert.match(failed.error.message, /failed prerender edit/);
+      assert.match(await page(), /Renderer edit/);
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import { copy } from "./new-copy.ts"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(path.join(projectDir, 'render/new-copy.ts'), 'export const copy = "Recovered new dependency";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      const final = await page();
+      assert.match(final, /Recovered new dependency/);
+      assert.doesNotMatch(final, /(?:server|project)-env-prerender-must-not-ship/);
+    } catch (error) {
+      error.message += `\nCaptured events: ${JSON.stringify(events.events)}`;
+      throw error;
+    } finally {
+      socket?.close();
+      const exited = new Promise((resolve) => child.once('exit', resolve));
+      child.kill('SIGTERM'); await exited;
+    }
   });
 });
 
