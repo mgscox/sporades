@@ -68,6 +68,16 @@ test("fallback placement finds the real opening body without rewriting surroundi
   }
 });
 
+test("fallback placement keeps Unicode byte offsets while matching HTML tags case-insensitively", () => {
+  const fragment = { name: "landing", module: "render-landing.mjs" };
+  const rendered = "<main>static fragment</main>";
+  const bounded = "<!-- sporades:prerender-boundary-start landing --><main>static fragment</main><!-- sporades:prerender-boundary-end landing -->";
+  const source = '<!doctype html><HTML><HEAD><TITLE>İstanbul & CAFÉ</TITLE></HEAD><BoDy data-label="A > B"><p>page</p></bOdY></HTML>\n';
+  const expected = `<!doctype html><HTML><HEAD><TITLE>İstanbul & CAFÉ</TITLE></HEAD><BoDy data-label="A > B">${bounded}<p>page</p></bOdY></HTML>\n`;
+
+  assert.equal(placeClientPrerenderFragment(source, fragment, rendered), expected);
+});
+
 test("a prerender module can use a local CommonJS dependency that requires a Node builtin", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
