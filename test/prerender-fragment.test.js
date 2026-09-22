@@ -110,6 +110,18 @@ test("fallback scanning recovers abrupt comments and rejects unterminated constr
   );
 });
 
+test("fallback scanning rejects unterminated tags and declarations before insertion", () => {
+  const fragment = { name: "landing", module: "render-landing.mjs" };
+  const rendered = "<main>static fragment</main>";
+  for (const [source, message] of [
+    ['<html><body><div class="unterminated', /unterminated HTML tag/i],
+    ["<html><body><!doctype", /unterminated HTML declaration/i],
+    ["<html><body><?processing", /unterminated HTML declaration/i],
+  ]) {
+    assert.throws(() => placeClientPrerenderFragment(source, fragment, rendered), message, source);
+  }
+});
+
 test("a prerender module can use a local CommonJS dependency that requires a Node builtin", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
