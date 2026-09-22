@@ -48,6 +48,10 @@ the browser would move before the table. Markers inside inert `template` content
 are not supported. Valid implicit table wrappers remain supported.
 Close fragment-created elements explicitly: an omitted optional closing tag can
 leave a fragment ancestor spanning its end boundary, which also fails validation.
+Declarative shadow roots must have a host element created inside the same
+fragment. Attaching one to an author-owned host is rejected because removing
+the light-DOM boundaries cannot remove that host's shadow tree.
+
 Fragments also cannot add attributes to the author-owned html or body roots
 through parser-ignored document tags. Reserved boundaries are checked using the
 HTML parser, including bogus declarations that become browser comments.

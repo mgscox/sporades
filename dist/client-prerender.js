@@ -983,6 +983,11 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
             // that node came from. Text ranges also reveal merged foster-parented text.
             const token = "startTag" in location && location.startTag ? location.startTag : location;
             located = { start: token.startOffset, end: token.endOffset, order: position, after: order, ...("tagName" in node ? { tagName: node.tagName } : {}) };
+            if ("tagName" in node && node.tagName === "template" && "content" in node && node.attrs.some((attr) => attr.name === "shadowrootmode" && /^(?:open|closed)$/i.test(attr.value))) {
+                // parse5 models declarative shadow roots as inert templates. Browsers
+                // attach their content to the parent, which must be removed with us.
+                located.shadowHostStart = node.parentNode?.sourceCodeLocation?.startOffset ?? -1;
+            }
             nodes.push(located);
             if (node.nodeName === "#comment" && "data" in node) {
                 const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
@@ -1019,6 +1024,8 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
                 continue;
             const fromFragment = node.start < end.start && node.end > start.end;
             const withinBoundary = node.order > start.order && node.order < end.order;
+            if (fromFragment && node.shadowHostStart !== undefined && !(node.shadowHostStart >= start.end && node.shadowHostStart < end.start))
+                throw invalid();
             // A fragment-created ancestor containing the end comment would survive
             // Range.deleteContents() as a partially contained (possibly empty) node.
             if (fromFragment !== withinBoundary || (fromFragment && node.after > end.order))

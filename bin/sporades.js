@@ -81731,6 +81731,9 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
     if (location) {
       const token = "startTag" in location && location.startTag ? location.startTag : location;
       located = { start: token.startOffset, end: token.endOffset, order: position, after: order, ..."tagName" in node ? { tagName: node.tagName } : {} };
+      if ("tagName" in node && node.tagName === "template" && "content" in node && node.attrs.some((attr) => attr.name === "shadowrootmode" && /^(?:open|closed)$/i.test(attr.value))) {
+        located.shadowHostStart = node.parentNode?.sourceCodeLocation?.startOffset ?? -1;
+      }
       nodes.push(located);
       if (node.nodeName === "#comment" && "data" in node) {
         const marker = /^sporades:prerender-boundary-(start|end) ([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(node.data.trim());
@@ -81759,6 +81762,7 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
       if (node.order === start.order || node.order === end.order) continue;
       const fromFragment = node.start < end.start && node.end > start.end;
       const withinBoundary = node.order > start.order && node.order < end.order;
+      if (fromFragment && node.shadowHostStart !== void 0 && !(node.shadowHostStart >= start.end && node.shadowHostStart < end.start)) throw invalid();
       if (fromFragment !== withinBoundary || fromFragment && node.after > end.order) throw invalid();
       if (!fromFragment && node.order < start.order && node.after > start.order && node.after <= end.order) throw invalid();
     }

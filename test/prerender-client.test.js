@@ -32,6 +32,18 @@ test('renderer output and source HTML cannot introduce reserved boundary comment
   assert.ok(placeClientPrerenderFragments(`<html><body>${script}</body></html>`, [{name:'landing', html:'<main>Static shell</main>'}]).html.includes(script));
 });
 
+test('declarative shadow roots must belong to a fragment-owned host', () => {
+  const source = '<html><body><div id="author"><!-- sporades:prerender landing --></div></body></html>';
+  for (const mode of ['open', 'closed', 'OPEN']) {
+    const template = `<template shadowrootmode="${mode}"><p>Static shadow</p></template>`;
+    assert.throws(() => placeClientPrerenderFragments(source, [{name:'landing', html:template}]), /not stable in the parsed HTML document/i);
+    const owned = `<div id="owned">${template}</div>`;
+    assert.ok(placeClientPrerenderFragments(source, [{name:'landing', html:owned}]).html.includes(owned));
+  }
+  const inert = '<template shadowrootmode="invalid"><p>Inert</p></template>';
+  assert.ok(placeClientPrerenderFragments(source, [{name:'landing', html:inert}]).html.includes(inert));
+});
+
 test('handover dismisses browser-reparented table boundaries without touching author rows', async () => {
   const window = new Window();
   const previousDocument = globalThis.document;
