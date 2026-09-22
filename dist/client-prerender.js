@@ -204,12 +204,11 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
             const loadRendererModule = async (args) => {
                 const contents = await readFile(args.path, "utf8");
                 const commonJsModule = await rendererModuleUsesCommonJs(args.path, contents, projectRoot, packageModeCache);
-                const preservesImportMetaUrl = contents.includes("import.meta.url");
                 const loader = loaders.get(path.extname(args.path));
                 if (!loader)
                     return undefined;
                 const checksImports = contents.includes("import");
-                const requiresTransform = checksImports || preservesImportMetaUrl || (commonJsModule && /\b(?:require|module|eval|__dirname|__filename)\b/.test(contents));
+                const requiresTransform = checksImports || (commonJsModule && /\b(?:require|module|eval|__dirname|__filename)\b/.test(contents));
                 if (!requiresTransform) {
                     if (args.namespace !== commonJsNamespace)
                         return undefined;
@@ -221,7 +220,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                     };
                 }
                 const moduleUrl = pathToFileURL(args.path).href;
-                const define = { "import.meta.url": JSON.stringify(moduleUrl) };
+                const define = { "import.meta": JSON.stringify({ url: moduleUrl }) };
                 const result = await esbuildBuild({
                     absWorkingDir: projectRoot,
                     bundle: false,
@@ -251,7 +250,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 const specialized = commonJsModule
                     ? specializeCommonJsRendererModule(javascript[0].text, args.path, moduleUrl)
                     : { contents: javascript[0].text, changed: false };
-                if (commonJsModule && !preservesImportMetaUrl && !specialized.changed && args.namespace !== commonJsNamespace)
+                if (commonJsModule && !checksImports && !specialized.changed && args.namespace !== commonJsNamespace)
                     return undefined;
                 return {
                     contents: specialized.contents,
@@ -426,7 +425,7 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
     const scopes = new WeakMap();
     collectRendererScopes(syntax, rootScope, scopes);
     visitRendererSyntax(syntax, (node) => {
-        if (node.type === "CallExpression" && !node.optional && isRendererSyntaxNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "eval" && !rendererScopeBinds(scopes.get(node) ?? rootScope, "eval")) {
+        if (node.type === "CallExpression" && !node.optional && isRendererSyntaxNode(node.callee) && node.callee.type === "Identifier" && node.callee.name === "eval") {
             throw new Error("Direct eval is unsupported in CommonJS prerender modules; use explicit code so module-local wrapper bindings can be preserved.");
         }
     });

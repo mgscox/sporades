@@ -11,7 +11,8 @@ TypeScript helper module kind is detected after stripping types; CommonJS `.ts`
 and `.tsx` helpers receive the same module-local wrappers as `.cjs` helpers.
 Direct `module.require()` calls preserve locality, literal code dependencies and
 method reassignment alongside ordinary `require()`.
-ESM `import.meta.url` refers to the source module. Each renderer executes in a fresh,
+ESM `import.meta.url`, including aliased or computed access through `import.meta`,
+refers to the source module. Each renderer executes in a fresh,
 disposable Worker so cached dependencies and global state cannot carry over from
 the CLI or previous builds. Workers provide lifecycle isolation, not a security
 sandbox; trusted code retains filesystem and network access.
@@ -21,7 +22,9 @@ loading is useful. Computed dynamic imports such as `import(variable)` fail the
 build with an explicit diagnostic: their source-module resolution cannot be
 preserved by the bundled evaluator. Express the supported choices with explicit
 imports instead.
-Direct CommonJS `eval()` is also rejected because string-hidden code cannot retain
-the owning module's wrapper bindings through bundling. Use explicit code instead.
+Direct CommonJS `eval(...)` call syntax is also rejected, including shadowed
+bindings that could receive the native evaluator, because string-hidden code
+cannot retain the owning module's wrapper bindings through bundling. Use explicit
+code instead. Ordinary method calls such as `object.eval(...)` are unaffected.
 Renderer-only CSS, image or other asset output is unsupported;
 assets used by static HTML must already belong to the ordinary Vite client graph.
