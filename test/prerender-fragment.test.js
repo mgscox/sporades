@@ -106,8 +106,8 @@ test("marker scanning treats noscript content as raw text when scripting is enab
   const noscript = `<NoScRiPt data-copy="a > b">${marker}</nOsCrIpT>`;
 
   assert.equal(
-    placeClientPrerenderFragment(`<html><body>${noscript}<p>${marker}</p></body></html>`, fragment, rendered),
-    `<html><body>${noscript}<p>${bounded}</p></body></html>`,
+    placeClientPrerenderFragment(`<html><body>${noscript}<div>${marker}</div></body></html>`, fragment, rendered),
+    `<html><body>${noscript}<div>${bounded}</div></body></html>`,
   );
   assert.equal(
     placeClientPrerenderFragment(`<html><body class="shell">${noscript}<p>page</p></body></html>`, fragment, rendered),
@@ -157,7 +157,9 @@ test("marker scanning preserves less-than text and bounds bogus HTML constructs"
     const expected = `<html><body>${text}${bounded}<p>page</p></body></html>`;
     assert.equal(placeClientPrerenderFragment(source, fragment, rendered), expected, text);
   }
-  assert.throws(() => placeClientPrerenderFragment(`<html><body>a<b${marker}<p>page</p></body></html>`, fragment, rendered), /not stable in the parsed HTML document/i);
+  // Without whitespace, this is an HTML start tag, not less-than prose.
+  const swallowedMarker = `<html><body>a<b${marker}<p>page</p></body></html>`;
+  assert.equal(placeClientPrerenderFragment(swallowedMarker, fragment, rendered), swallowedMarker.replace('<body>', `<body>${bounded}`));
   for (const bogus of ['<!x " >', '<? " >', '</3 " >']) {
     const source = `<html><body>${bogus}${marker}tail"><p>page</p></body></html>`;
     const expected = `<html><body>${bogus}${bounded}tail"><p>page</p></body></html>`;
@@ -167,9 +169,9 @@ test("marker scanning preserves less-than text and bounds bogus HTML constructs"
 
 test("marker scanning distinguishes prose quotes, malformed raw tags, and HTML CDATA declarations", () => {
   const fragment = { name: "landing", module: "render-landing.mjs" };
-  const rendered = "<main>static fragment</main>";
+  const rendered = "<span>static fragment</span>";
   const marker = "<!-- sporades:prerender landing -->";
-  const bounded = "<!-- sporades:prerender-boundary-start landing --><main>static fragment</main><!-- sporades:prerender-boundary-end landing -->";
+  const bounded = "<!-- sporades:prerender-boundary-start landing --><span>static fragment</span><!-- sporades:prerender-boundary-end landing -->";
   for (const prefix of [
     "<html><body><p>x<y isn't true.</p>",
     '<html><body><p>x<y "is not" true.</p>',
@@ -206,12 +208,31 @@ test("foreign-content CDATA preserves marker-shaped text and keeps body fallback
   }
 });
 
-test("doctype identifiers preserve quoted greater-than and marker-shaped text", () => {
+test("foreign integration points use HTML comment semantics for placement", () => {
+  const fragment = {name:'landing', module:'renderer.mjs'};
+  const marker = '<!-- sporades:prerender landing -->';
+  for (const [open, close] of [
+    ['<svg><foreignObject><div>', '</div></foreignObject></svg>'],
+    ['<math><mtext><div>', '</div></mtext></math>'],
+    ['<math><annotation-xml encoding="text/html"><div>', '</div></annotation-xml></math>'],
+  ]) {
+    const source = `<html><body>${open}<![CDATA[x> ${marker}]]>${close}</body></html>`;
+    const output = placeClientPrerenderFragment(source, fragment, '<p>Placed in HTML</p>');
+    assert.ok(output.indexOf('<p>Placed in HTML</p>') > output.indexOf('<div>'));
+    assert.ok(!output.includes(marker));
+  }
+});
+
+test("doctype tokenization preserves valid identifiers and rejects abrupt quoted declarations", () => {
   const fragment = { name: "landing", module: "render-landing.mjs" };
   const marker = "<!-- sporades:prerender landing -->";
   const rendered = "<main>static fragment</main>";
   const bounded = `<!-- sporades:prerender-boundary-start landing -->${rendered}<!-- sporades:prerender-boundary-end landing -->`;
   for (const identifier of [`SYSTEM "x>${marker}"`, `PUBLIC 'x>${marker}' "system>identifier"`]) {
+    const declaration = `<!DOCTYPE html ${identifier}>`;
+    assert.throws(() => placeClientPrerenderFragment(`${declaration}<html><body>author</body></html>`, fragment, rendered), /malformed HTML declaration/i);
+  }
+  for (const identifier of ['SYSTEM "example"', 'PUBLIC "public" "system"']) {
     const declaration = `<!DOCTYPE html ${identifier}>`;
     assert.equal(placeClientPrerenderFragment(`${declaration}<html><body>author</body></html>`, fragment, rendered), `${declaration}<html><body>${bounded}author</body></html>`);
   }

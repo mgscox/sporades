@@ -20,7 +20,7 @@ test("ordered prerender placement preserves author HTML, warnings and last succe
 const file = new URL('./order.json', import.meta.url);
 export default async () => {
   const order = JSON.parse(readFileSync(file)); order.push('${name}'); writeFileSync(file, JSON.stringify(order));
-  return '<meta data-fragment="${name}"><span data-fragment="${name}">${name}</span>';
+  return '<meta data-fragment="${name}">${name === "second" ? '<meta name="second-copy" content="second">' : '<span data-fragment="first">first</span>'}';
 };`);
     }
     const config = { name: "placement", client: { framework: "react", toolchain: "vite", prerender: [

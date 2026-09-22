@@ -56,6 +56,8 @@ test('handover dismisses browser-reparented table boundaries without touching au
 });
 
 test('placement rejects content foster-parented outside its handover boundaries', () => {
+  assert.throws(() => placeClientPrerenderFragments('<html><body><form id="author"><!-- sporades:prerender rows --><input name="kept"></form></body></html>', [{name:'rows', html:'<form><p>Static</p></form>'}]), /not stable in the parsed HTML document/i);
+  assert.throws(() => placeClientPrerenderFragments('<html><body><table><!-- sporades:prerender rows -->\n</table></body></html>', [{name:'rows', html:'<tr><td>Only static row</td></tr>'}]), /not stable in the parsed HTML document/i);
   const source = '<html><body><table><!-- sporades:prerender rows --><tr><td>author row</td></tr></table></body></html>';
   for (const html of ['<div>Loading</div>', 'Loading']) {
     assert.throws(() => placeClientPrerenderFragments(source, [{ name: 'rows', html }]), /not stable in the parsed HTML document/i);
