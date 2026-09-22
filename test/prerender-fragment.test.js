@@ -202,6 +202,49 @@ export default () => \`<main>\${new ViewModel().message}:\${new URL(".", import.
   });
 });
 
+test("TypeScript renderer import.meta.url discovers nearest extended tsconfig", async () => {
+  await withTempDir(async (projectDir) => {
+    const rendererDir = path.join(projectDir, "renderer");
+    await mkdir(rendererDir);
+    await writeFile(path.join(projectDir, "tsconfig.base.json"), `${JSON.stringify({
+      compilerOptions: {
+        experimentalDecorators: true,
+        useDefineForClassFields: false,
+        verbatimModuleSyntax: true,
+      },
+    }, null, 2)}\n`);
+    await writeFile(path.join(rendererDir, "tsconfig.json"), `${JSON.stringify({ extends: "../tsconfig.base.json" }, null, 2)}\n`);
+    const sideEffectFlag = `__sporades_extended_tsconfig_${path.basename(projectDir).replace(/[^A-Za-z0-9_]/g, "_")}`;
+    await writeFile(
+      path.join(rendererDir, "side-effect.mjs"),
+      `globalThis[${JSON.stringify(sideEffectFlag)}] = true;\nexport const registration = true;\n`,
+    );
+    await writeFile(
+      path.join(rendererDir, "render-landing.ts"),
+      `import { registration } from "./side-effect.mjs";
+function legacyField(target: object, propertyKey: string) {
+  if (!target || propertyKey !== "message") throw new Error("nearest extended tsconfig semantics lost");
+}
+class ViewModel {
+  @legacyField
+  message = "nearest extended tsconfig preserved";
+}
+export default () => {
+  const importPreserved = (globalThis as any)[${JSON.stringify(sideEffectFlag)}] === true;
+  delete (globalThis as any)[${JSON.stringify(sideEffectFlag)}];
+  return \`<main>\${new ViewModel().message}:\${new URL(".", import.meta.url).protocol}:\${importPreserved}</main>\`;
+};
+`,
+    );
+    const canonicalProject = await realpath(projectDir);
+
+    assert.equal(
+      await renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "renderer/render-landing.ts" }),
+      "<main>nearest extended tsconfig preserved:file::true</main>",
+    );
+  });
+});
+
 test("renderer import.meta.url failures redact encoded project URL forms", async () => {
   await withTempDir(async (dir) => {
     const projectDir = path.join(dir, "caf\u00e9 space#percent% capsule");
