@@ -400,7 +400,18 @@ test("one configured Vite prerender fragment reaches the normalized public tree"
       assert.match(error.hint, /ordered multi-fragment builds are not available yet/i);
       return true;
     });
-    for (const invalidModule of ["../escape.mjs", "./dot.mjs", "/absolute.mjs", "nested\\windows.mjs"]) {
+    for (const invalidModule of [
+      "../escape.mjs",
+      "./dot.mjs",
+      "/absolute.mjs",
+      "D:drive-relative.mjs",
+      "D:/drive-qualified.mjs",
+      "//server/share/renderer.mjs",
+      "//?/D:/device-renderer.mjs",
+      "nested\\windows.mjs",
+      "\\\\server\\share\\renderer.mjs",
+      "\\\\?\\D:\\device-renderer.mjs",
+    ]) {
       const invalidConfig = structuredClone(config);
       invalidConfig.client.prerender[0].module = invalidModule;
       await writeFile(path.join(projectDir, "sporades.json"), `${JSON.stringify(invalidConfig, null, 2)}\n`);
@@ -408,7 +419,7 @@ test("one configured Vite prerender fragment reaches the normalized public tree"
         assert.match(error.message, /invalid client prerender module for landing/i);
         assert.match(error.hint, /project-relative module path/i);
         return true;
-      });
+      }, invalidModule);
     }
     await writeFile(path.join(projectDir, "sporades.json"), `${JSON.stringify(config, null, 2)}\n`);
     assert.throws(() => validateClientToolchainInput({
