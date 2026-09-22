@@ -60629,38 +60629,46 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     }
     bundledSource = javascript[0].text;
   } catch (error) {
-    if (hasHint(error)) throw error;
     throw prerenderError(
       `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, projectRoots)}`,
       `Fix ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module }
     );
   }
+  let renderer;
   try {
-    const renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
-    if (typeof renderer !== "function") {
-      throw prerenderError(
-        `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
-        `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`
-      );
-    }
-    const rendered = await renderer();
-    if (typeof rendered !== "string") {
-      throw prerenderError(
-        `Client prerender renderer for ${fragment.name} returned a non-string result.`,
-        `Return an HTML string or Promise<string> from ${fragment.module}.`,
-        { fragment: fragment.name, resultType: rendered === null ? "null" : typeof rendered }
-      );
-    }
-    return rendered;
+    renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
   } catch (error) {
-    if (hasHint(error)) throw error;
     throw prerenderError(
       `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`,
       `Fix the renderer in ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module }
     );
   }
+  if (typeof renderer !== "function") {
+    throw prerenderError(
+      `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
+      `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`
+    );
+  }
+  let rendered;
+  try {
+    rendered = await renderer();
+  } catch (error) {
+    throw prerenderError(
+      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`,
+      `Fix the renderer in ${fragment.module}, then retry.`,
+      { fragment: fragment.name, module: fragment.module }
+    );
+  }
+  if (typeof rendered !== "string") {
+    throw prerenderError(
+      `Client prerender renderer for ${fragment.name} returned a non-string result.`,
+      `Return an HTML string or Promise<string> from ${fragment.module}.`,
+      { fragment: fragment.name, resultType: rendered === null ? "null" : typeof rendered }
+    );
+  }
+  return rendered;
 }
 function placeClientPrerenderFragment(html, fragment, rendered) {
   const escapedName = fragment.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -60780,9 +60788,6 @@ function prerenderError(message, hint, diagnostics) {
   if (diagnostics) error.diagnostics = diagnostics;
   return error;
 }
-function hasHint(error) {
-  return Boolean(error && typeof error === "object" && typeof error.hint === "string");
-}
 
 // src/client-toolchain.ts
 async function buildClientToolchain(options) {
@@ -60881,7 +60886,7 @@ async function buildEsbuild(options) {
       ]
     };
   } catch (error) {
-    if (hasHint2(error)) throw error;
+    if (hasHint(error)) throw error;
     throw clientToolchainError(`Client bundle failed: ${boundedBuildMessage(error)}`, `Fix client/${options.frameworkConfig.entry} and save again.`);
   }
 }
@@ -60969,7 +60974,7 @@ async function buildVite(options) {
       diagnostics: { framework: options.frameworkConfig.framework, toolchain: "vite", refresh: "full-page" }
     };
   } catch (error) {
-    if (hasHint2(error)) throw error;
+    if (hasHint(error)) throw error;
     throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
 }
@@ -61311,7 +61316,7 @@ function clientToolchainError(message, hint, diagnostics) {
 function errorDetails2(error) {
   return error && typeof error === "object" ? error : { message: String(error) };
 }
-function hasHint2(error) {
+function hasHint(error) {
   return Boolean(error && typeof error === "object" && typeof error.hint === "string");
 }
 

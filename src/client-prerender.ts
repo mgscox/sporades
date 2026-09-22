@@ -99,7 +99,6 @@ export async function renderClientPrerenderFragment(
     }
     bundledSource = javascript[0].text;
   } catch (error) {
-    if (hasHint(error)) throw error;
     throw prerenderError(
       `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, projectRoots)}`,
       `Fix ${fragment.module}, then retry.`,
@@ -107,31 +106,41 @@ export async function renderClientPrerenderFragment(
     );
   }
 
+  let renderer: unknown;
   try {
-    const renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
-    if (typeof renderer !== "function") {
-      throw prerenderError(
-        `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
-        `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`,
-      );
-    }
-    const rendered = await renderer();
-    if (typeof rendered !== "string") {
-      throw prerenderError(
-        `Client prerender renderer for ${fragment.name} returned a non-string result.`,
-        `Return an HTML string or Promise<string> from ${fragment.module}.`,
-        { fragment: fragment.name, resultType: rendered === null ? "null" : typeof rendered },
-      );
-    }
-    return rendered;
+    renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
   } catch (error) {
-    if (hasHint(error)) throw error;
     throw prerenderError(
       `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`,
       `Fix the renderer in ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module },
     );
   }
+  if (typeof renderer !== "function") {
+    throw prerenderError(
+      `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
+      `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`,
+    );
+  }
+
+  let rendered: unknown;
+  try {
+    rendered = await renderer();
+  } catch (error) {
+    throw prerenderError(
+      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`,
+      `Fix the renderer in ${fragment.module}, then retry.`,
+      { fragment: fragment.name, module: fragment.module },
+    );
+  }
+  if (typeof rendered !== "string") {
+    throw prerenderError(
+      `Client prerender renderer for ${fragment.name} returned a non-string result.`,
+      `Return an HTML string or Promise<string> from ${fragment.module}.`,
+      { fragment: fragment.name, resultType: rendered === null ? "null" : typeof rendered },
+    );
+  }
+  return rendered;
 }
 
 export function placeClientPrerenderFragment(html: string, fragment: ClientPrerenderFragment, rendered: string): string {
@@ -264,8 +273,4 @@ function prerenderError(message: string, hint: string, diagnostics?: unknown) {
   error.hint = hint;
   if (diagnostics) error.diagnostics = diagnostics;
   return error;
-}
-
-function hasHint(error: unknown): error is Error & { hint: string } {
-  return Boolean(error && typeof error === "object" && typeof (error as { hint?: unknown }).hint === "string");
 }
