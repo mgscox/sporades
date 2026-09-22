@@ -84,7 +84,7 @@ export async function renderClientPrerenderFragment(
   let bundledSource: string;
   let bundleFormat: "cjs" | "esm" = "cjs";
   const rendererDependencyRoots = new Set<string>();
-  const rendererDependencyAliases = new Set<string>();
+  const rendererDependencyAliases = new Map<string, string>();
   try {
     const { build } = await import("esbuild");
     let result: import("esbuild").BuildResult;
@@ -183,7 +183,7 @@ async function buildRendererBundle(
   canonicalModulePath: string,
   format: "cjs" | "esm",
   rendererDependencyRoots: Set<string>,
-  rendererDependencyAliases: Set<string>,
+  rendererDependencyAliases: Map<string, string>,
 ) {
   return build({
     absWorkingDir: projectRoot,
@@ -217,7 +217,7 @@ function preserveRendererImportMetaUrl(
   esbuildBuild: typeof import("esbuild").build,
   projectRoot: string,
   rendererDependencyRoots: Set<string>,
-  rendererDependencyAliases: Set<string>,
+  rendererDependencyAliases: Map<string, string>,
 ): import("esbuild").Plugin {
   const packageModeCache = new Map<string, Promise<"module" | "commonjs" | "default">>();
   const loaders = new Map<string, import("esbuild").Loader>([
@@ -247,16 +247,20 @@ function preserveRendererImportMetaUrl(
         });
         if (resolved.errors.length > 0) {
           const failedPath = rendererLocalFilePath(args.path);
-          if (
-            failedPath
-            && path.resolve(failedPath) !== path.resolve(projectRoot)
-            && !isCanonicalDescendant(projectRoot, failedPath)
-          ) {
-            const added = addRendererDependencyRoot(rendererDependencyRoots, failedPath);
-            if (added && args.path.startsWith("file:")) {
+          const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : undefined;
+          if (failedPath && failedDirectory) {
+            const external = path.resolve(failedPath) !== path.resolve(projectRoot)
+              && !isCanonicalDescendant(projectRoot, failedPath);
+            if (/^file:/i.test(args.path)) {
               const rawParent = rendererRawLocalFileUrlParent(args.path);
-              if (rawParent) rendererDependencyAliases.add(rawParent);
+              if (rawParent) {
+                const replacement = external
+                  ? "<project>"
+                  : rendererProjectDiagnosticPrefix(projectRoot, failedDirectory);
+                rendererDependencyAliases.set(rawParent, replacement);
+              }
             }
+            if (external) rendererDependencyRoots.add(failedDirectory);
           }
           return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
         }
@@ -343,7 +347,7 @@ function preserveRendererImportMetaUrl(
 
 function rendererLocalFilePath(specifier: string) {
   if (path.isAbsolute(specifier)) return specifier;
-  if (!specifier.startsWith("file:")) return undefined;
+  if (!/^file:/i.test(specifier)) return undefined;
   try {
     return fileURLToPath(specifier);
   } catch {
@@ -352,10 +356,20 @@ function rendererLocalFilePath(specifier: string) {
 }
 
 function addRendererDependencyRoot(roots: Set<string>, filePath: string) {
-  const directory = path.dirname(filePath);
-  if (directory === path.parse(directory).root) return false;
+  const directory = rendererDependencyDirectory(filePath);
+  if (!directory) return false;
   roots.add(directory);
   return true;
+}
+
+function rendererDependencyDirectory(filePath: string) {
+  const directory = path.dirname(filePath);
+  return directory === path.parse(directory).root ? undefined : directory;
+}
+
+function rendererProjectDiagnosticPrefix(projectRoot: string, directory: string) {
+  const relative = path.relative(projectRoot, directory).split(path.sep).join("/");
+  return relative ? `<project>/${relative}` : "<project>";
 }
 
 function rendererRawLocalFileUrlParent(specifier: string) {
@@ -364,7 +378,8 @@ function rendererRawLocalFileUrlParent(specifier: string) {
   const finalSlash = rawPath.lastIndexOf("/");
   if (finalSlash === -1) return undefined;
   const parent = rawPath.slice(0, finalSlash);
-  return parent === "file:" || parent === "file:/" || parent === "file://" ? undefined : parent;
+  const lowerParent = parent.toLowerCase();
+  return lowerParent === "file:" || lowerParent === "file:/" || lowerParent === "file://" ? undefined : parent;
 }
 
 async function rendererModuleUsesCommonJs(
@@ -1081,7 +1096,11 @@ function safeMessage(error) {
   }
 }
 
-function boundedMessage(error: unknown, projectRoots: string[] = [], exactAliases: string[] = []) {
+function boundedMessage(
+  error: unknown,
+  projectRoots: string[] = [],
+  exactAliases: ReadonlyArray<readonly [string, string]> = [],
+) {
   let message: string;
   try {
     message = error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
@@ -1089,14 +1108,15 @@ function boundedMessage(error: unknown, projectRoots: string[] = [], exactAliase
     message = "Thrown error message unavailable.";
   }
   let redacted = message;
-  for (const alias of [...new Set(exactAliases)].filter(Boolean).sort((left, right) => right.length - left.length)) {
-    redacted = redactUrlPathAlias(redacted, alias);
+  const aliases = [...new Map(exactAliases).entries()].sort(([left], [right]) => right.length - left.length);
+  for (const [alias, replacement] of aliases) {
+    if (alias) redacted = redactUrlPathAlias(redacted, alias, replacement);
   }
   redacted = redactBuildProjectRoots(redacted, projectRoots);
   return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
 
-function redactUrlPathAlias(value: string, alias: string) {
+function redactUrlPathAlias(value: string, alias: string, replacement: string) {
   let redacted = "";
   let cursor = 0;
   while (cursor < value.length) {
@@ -1105,7 +1125,7 @@ function redactUrlPathAlias(value: string, alias: string) {
     const end = match + alias.length;
     redacted += value.slice(cursor, end);
     if (end === value.length || value[end] === "/") {
-      redacted = `${redacted.slice(0, -alias.length)}<project>`;
+      redacted = `${redacted.slice(0, -alias.length)}${replacement}`;
     }
     cursor = end;
   }

@@ -72693,7 +72693,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   let bundledSource;
   let bundleFormat = "cjs";
   const rendererDependencyRoots = /* @__PURE__ */ new Set();
-  const rendererDependencyAliases = /* @__PURE__ */ new Set();
+  const rendererDependencyAliases = /* @__PURE__ */ new Map();
   try {
     const { build: build2 } = await import("esbuild");
     let result;
@@ -72831,12 +72831,17 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
         });
         if (resolved.errors.length > 0) {
           const failedPath = rendererLocalFilePath(args.path);
-          if (failedPath && path3.resolve(failedPath) !== path3.resolve(projectRoot) && !isCanonicalDescendant(projectRoot, failedPath)) {
-            const added = addRendererDependencyRoot(rendererDependencyRoots, failedPath);
-            if (added && args.path.startsWith("file:")) {
+          const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : void 0;
+          if (failedPath && failedDirectory) {
+            const external = path3.resolve(failedPath) !== path3.resolve(projectRoot) && !isCanonicalDescendant(projectRoot, failedPath);
+            if (/^file:/i.test(args.path)) {
               const rawParent = rendererRawLocalFileUrlParent(args.path);
-              if (rawParent) rendererDependencyAliases.add(rawParent);
+              if (rawParent) {
+                const replacement = external ? "<project>" : rendererProjectDiagnosticPrefix(projectRoot, failedDirectory);
+                rendererDependencyAliases.set(rawParent, replacement);
+              }
             }
+            if (external) rendererDependencyRoots.add(failedDirectory);
           }
           return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : void 0;
         }
@@ -72913,7 +72918,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
 }
 function rendererLocalFilePath(specifier) {
   if (path3.isAbsolute(specifier)) return specifier;
-  if (!specifier.startsWith("file:")) return void 0;
+  if (!/^file:/i.test(specifier)) return void 0;
   try {
     return fileURLToPath(specifier);
   } catch {
@@ -72921,10 +72926,18 @@ function rendererLocalFilePath(specifier) {
   }
 }
 function addRendererDependencyRoot(roots, filePath) {
-  const directory = path3.dirname(filePath);
-  if (directory === path3.parse(directory).root) return false;
+  const directory = rendererDependencyDirectory(filePath);
+  if (!directory) return false;
   roots.add(directory);
   return true;
+}
+function rendererDependencyDirectory(filePath) {
+  const directory = path3.dirname(filePath);
+  return directory === path3.parse(directory).root ? void 0 : directory;
+}
+function rendererProjectDiagnosticPrefix(projectRoot, directory) {
+  const relative = path3.relative(projectRoot, directory).split(path3.sep).join("/");
+  return relative ? `<project>/${relative}` : "<project>";
 }
 function rendererRawLocalFileUrlParent(specifier) {
   const suffixStart = specifier.search(/[?#]/);
@@ -72932,7 +72945,8 @@ function rendererRawLocalFileUrlParent(specifier) {
   const finalSlash = rawPath.lastIndexOf("/");
   if (finalSlash === -1) return void 0;
   const parent = rawPath.slice(0, finalSlash);
-  return parent === "file:" || parent === "file:/" || parent === "file://" ? void 0 : parent;
+  const lowerParent = parent.toLowerCase();
+  return lowerParent === "file:" || lowerParent === "file:/" || lowerParent === "file://" ? void 0 : parent;
 }
 async function rendererModuleUsesCommonJs(modulePath, contents, projectRoot, packageModeCache) {
   const extension = path3.extname(modulePath);
@@ -73541,13 +73555,14 @@ function boundedMessage(error, projectRoots = [], exactAliases = []) {
     message = "Thrown error message unavailable.";
   }
   let redacted = message;
-  for (const alias of [...new Set(exactAliases)].filter(Boolean).sort((left, right) => right.length - left.length)) {
-    redacted = redactUrlPathAlias(redacted, alias);
+  const aliases = [...new Map(exactAliases).entries()].sort(([left], [right]) => right.length - left.length);
+  for (const [alias, replacement] of aliases) {
+    if (alias) redacted = redactUrlPathAlias(redacted, alias, replacement);
   }
   redacted = redactBuildProjectRoots(redacted, projectRoots);
   return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
-function redactUrlPathAlias(value, alias) {
+function redactUrlPathAlias(value, alias, replacement) {
   let redacted = "";
   let cursor = 0;
   while (cursor < value.length) {
@@ -73556,7 +73571,7 @@ function redactUrlPathAlias(value, alias) {
     const end = match + alias.length;
     redacted += value.slice(cursor, end);
     if (end === value.length || value[end] === "/") {
-      redacted = `${redacted.slice(0, -alias.length)}<project>`;
+      redacted = `${redacted.slice(0, -alias.length)}${replacement}`;
     }
     cursor = end;
   }

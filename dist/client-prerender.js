@@ -58,7 +58,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
     let bundledSource;
     let bundleFormat = "cjs";
     const rendererDependencyRoots = new Set();
-    const rendererDependencyAliases = new Set();
+    const rendererDependencyAliases = new Map();
     try {
         const { build } = await import("esbuild");
         let result;
@@ -179,15 +179,21 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 });
                 if (resolved.errors.length > 0) {
                     const failedPath = rendererLocalFilePath(args.path);
-                    if (failedPath
-                        && path.resolve(failedPath) !== path.resolve(projectRoot)
-                        && !isCanonicalDescendant(projectRoot, failedPath)) {
-                        const added = addRendererDependencyRoot(rendererDependencyRoots, failedPath);
-                        if (added && args.path.startsWith("file:")) {
+                    const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : undefined;
+                    if (failedPath && failedDirectory) {
+                        const external = path.resolve(failedPath) !== path.resolve(projectRoot)
+                            && !isCanonicalDescendant(projectRoot, failedPath);
+                        if (/^file:/i.test(args.path)) {
                             const rawParent = rendererRawLocalFileUrlParent(args.path);
-                            if (rawParent)
-                                rendererDependencyAliases.add(rawParent);
+                            if (rawParent) {
+                                const replacement = external
+                                    ? "<project>"
+                                    : rendererProjectDiagnosticPrefix(projectRoot, failedDirectory);
+                                rendererDependencyAliases.set(rawParent, replacement);
+                            }
                         }
+                        if (external)
+                            rendererDependencyRoots.add(failedDirectory);
                     }
                     return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
                 }
@@ -274,7 +280,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
 function rendererLocalFilePath(specifier) {
     if (path.isAbsolute(specifier))
         return specifier;
-    if (!specifier.startsWith("file:"))
+    if (!/^file:/i.test(specifier))
         return undefined;
     try {
         return fileURLToPath(specifier);
@@ -284,11 +290,19 @@ function rendererLocalFilePath(specifier) {
     }
 }
 function addRendererDependencyRoot(roots, filePath) {
-    const directory = path.dirname(filePath);
-    if (directory === path.parse(directory).root)
+    const directory = rendererDependencyDirectory(filePath);
+    if (!directory)
         return false;
     roots.add(directory);
     return true;
+}
+function rendererDependencyDirectory(filePath) {
+    const directory = path.dirname(filePath);
+    return directory === path.parse(directory).root ? undefined : directory;
+}
+function rendererProjectDiagnosticPrefix(projectRoot, directory) {
+    const relative = path.relative(projectRoot, directory).split(path.sep).join("/");
+    return relative ? `<project>/${relative}` : "<project>";
 }
 function rendererRawLocalFileUrlParent(specifier) {
     const suffixStart = specifier.search(/[?#]/);
@@ -297,7 +311,8 @@ function rendererRawLocalFileUrlParent(specifier) {
     if (finalSlash === -1)
         return undefined;
     const parent = rawPath.slice(0, finalSlash);
-    return parent === "file:" || parent === "file:/" || parent === "file://" ? undefined : parent;
+    const lowerParent = parent.toLowerCase();
+    return lowerParent === "file:" || lowerParent === "file:/" || lowerParent === "file://" ? undefined : parent;
 }
 async function rendererModuleUsesCommonJs(modulePath, contents, projectRoot, packageModeCache) {
     const extension = path.extname(modulePath);
@@ -1017,13 +1032,15 @@ function boundedMessage(error, projectRoots = [], exactAliases = []) {
         message = "Thrown error message unavailable.";
     }
     let redacted = message;
-    for (const alias of [...new Set(exactAliases)].filter(Boolean).sort((left, right) => right.length - left.length)) {
-        redacted = redactUrlPathAlias(redacted, alias);
+    const aliases = [...new Map(exactAliases).entries()].sort(([left], [right]) => right.length - left.length);
+    for (const [alias, replacement] of aliases) {
+        if (alias)
+            redacted = redactUrlPathAlias(redacted, alias, replacement);
     }
     redacted = redactBuildProjectRoots(redacted, projectRoots);
     return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
-function redactUrlPathAlias(value, alias) {
+function redactUrlPathAlias(value, alias, replacement) {
     let redacted = "";
     let cursor = 0;
     while (cursor < value.length) {
@@ -1033,7 +1050,7 @@ function redactUrlPathAlias(value, alias) {
         const end = match + alias.length;
         redacted += value.slice(cursor, end);
         if (end === value.length || value[end] === "/") {
-            redacted = `${redacted.slice(0, -alias.length)}<project>`;
+            redacted = `${redacted.slice(0, -alias.length)}${replacement}`;
         }
         cursor = end;
     }
