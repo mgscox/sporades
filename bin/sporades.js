@@ -73109,6 +73109,9 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
       value: (needsModuleRequire ? `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});
 ` : "") + (needsModuleRequireMethod ? `const ${helperName}Module = () => module;
 ${helperName}Module().require = ${helperName};
+${helperName}Module().filename = ${JSON.stringify(modulePath)};
+${helperName}Module().id = ${JSON.stringify(modulePath)};
+${helperName}Module().path = ${JSON.stringify(path3.dirname(modulePath))};
 ` : "") + (writableRequire && needsModuleRequire ? `var ${writableRequireName} = ${helperName};
 ` : "") + writableLocations.map((name2) => `var ${name2} = ${JSON.stringify(name2 === "__dirname" ? path3.dirname(modulePath) : modulePath)};
 `).join("")
