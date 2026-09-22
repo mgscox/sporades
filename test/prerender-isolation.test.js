@@ -258,6 +258,38 @@ test('configured CommonJS entry modules accept conventional and transpiled defau
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('CommonJS Annex B nested bindings match native behavior and unsafe module-scope shadows reject', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-annex-b-')));
+  const nativeRequire = createRequire(path.join(root, 'entry.cjs'));
+  try {
+    await writeFile(path.join(root, 'value.cjs'), 'module.exports = "adjacent";');
+    for (const nested of [true, false]) {
+      for (const condition of ['true', 'false']) {
+        const block = `if (${condition}) { function require() { return 'local'; } }`;
+        const call = `const target = './value.cjs'; return require(target);`;
+        const source = nested ? `module.exports = () => { ${block} ${call} };` : `${block} module.exports = () => { ${call} };`;
+        const entry = path.join(root, 'entry.cjs');
+        await writeFile(entry, source);
+        delete nativeRequire.cache[entry];
+        const native = nativeRequire(entry);
+        if (!nested) {
+          assert.equal(native(), 'adjacent', 'Node exempts existing wrapper parameters from Annex B reassignment');
+          await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), /Module-scope CommonJS wrapper bindings cannot be redeclared/i);
+        } else if (condition === 'false') {
+          assert.throws(native, /require is not a function/);
+          await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), /require\d* is not a function/);
+        } else {
+          assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), native());
+        }
+      }
+    }
+  } finally {
+    delete nativeRequire.cache[path.join(root, 'entry.cjs')];
+    delete nativeRequire.cache[path.join(root, 'value.cjs')];
+    await rm(root, {recursive:true, force:true});
+  }
+});
+
 test('ESM import.meta aliases and computed accesses preserve each source URL', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-import-meta-alias-')));
   try {

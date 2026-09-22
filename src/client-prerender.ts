@@ -495,7 +495,37 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
   const scopes = new WeakMap<object, RendererLexicalScope>();
   collectRendererScopes(syntax, rootScope, scopes);
   const noTargets = new WeakSet<object>();
+  const blockFunctions = new Map<RendererLexicalScope, Set<string>>();
+  visitRendererSyntax(syntax, (node) => {
+    if (node.type !== "VariableDeclaration" || node.kind === "var") return;
+    const scope = scopes.get(node) ?? rootScope;
+    if (scope === rootScope) return;
+    for (const declaration of node.declarations as RendererSyntaxNode[]) {
+      if (isRendererSyntaxNode(declaration.id) && declaration.id.type === "Identifier"
+        && isRendererSyntaxNode(declaration.init) && declaration.init.type === "FunctionExpression") {
+        const names = blockFunctions.get(scope) ?? new Set<string>();
+        names.add(String(declaration.id.name));
+        blockFunctions.set(scope, names);
+      }
+    }
+  });
   visitRendererSyntax(syntax, (node, parent, key) => {
+    const scope = scopes.get(node) ?? rootScope;
+    if (node.type === "VariableDeclaration" && node.kind === "var" && scope !== rootScope && nearestRendererFunctionScope(scope) === rootScope) {
+      for (const declaration of node.declarations as RendererSyntaxNode[]) {
+        if (!isRendererSyntaxNode(declaration.id) || !["require", "module", "exports", "__dirname", "__filename", "arguments"].includes(String(declaration.id.name))
+          || !isRendererSyntaxNode(declaration.init) || declaration.init.type !== "Identifier") continue;
+        const name = String(declaration.init.name);
+        for (let bindingScope: RendererLexicalScope | undefined = scope; bindingScope && bindingScope !== rootScope; bindingScope = bindingScope.parent) {
+          if (!bindingScope.bindings.has(name)) continue;
+          // esbuild lowers Annex B block functions to a block-local function
+          // plus a var assignment. At module scope that loses Node's implicit
+          // wrapper-parameter exemption, so do not silently publish wrong HTML.
+          if (blockFunctions.get(bindingScope)?.has(name)) throw new Error("Module-scope CommonJS wrapper bindings cannot be redeclared from block-local functions in prerender modules; use an explicit assignment instead of Annex B hoisting.");
+          break;
+        }
+      }
+    }
     if (node.type === "Identifier" && node.name === "arguments"
       && !rendererScopeBinds(scopes.get(node) ?? rootScope, "arguments")
       && isRendererIdentifierReference(node, parent, key, noTargets, noTargets)) {
