@@ -988,11 +988,26 @@ function safeMessage(error) {
   });
   try {
     const outcome = await new Promise<EsmRendererOutcome>((resolve, reject) => {
-      worker.once("message", (message: EsmRendererOutcome) => resolve(message));
-      worker.once("error", reject);
-      worker.once("exit", (code) => {
-        if (code !== 0) reject(new Error(`renderer worker exited with code ${code}`));
+      let settled = false;
+      const cleanup = () => {
+        worker.off("message", onMessage);
+        worker.off("error", onError);
+        worker.off("exit", onExit);
+      };
+      const settle = (complete: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        complete();
+      };
+      const onMessage = (message: EsmRendererOutcome) => settle(() => resolve(message));
+      const onError = (error: Error) => settle(() => reject(error));
+      const onExit = (code: number) => settle(() => {
+        reject(new Error(`renderer worker exited before returning a result (code ${code})`));
       });
+      worker.once("message", onMessage);
+      worker.once("error", onError);
+      worker.once("exit", onExit);
     });
     if (outcome.kind !== "failure") return outcome;
     return { kind: "failure", message: boundedMessage(outcome.message, projectRoots) };
