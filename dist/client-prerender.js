@@ -2,7 +2,8 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { parse } from "acorn";
+import { Parser } from "acorn";
+import jsx from "acorn-jsx";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
 export function readClientPrerenderConfig(value, toolchain) {
     if (value === undefined)
@@ -109,6 +110,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
     return rendered;
 }
 function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
+    const packageModeCache = new Map();
     const loaders = new Map([
         [".cjs", "js"],
         [".cts", "ts"],
@@ -124,7 +126,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
         setup(pluginBuild) {
             pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
                 const contents = await readFile(args.path, "utf8");
-                const commonJsModule = [".cjs", ".cts"].includes(path.extname(args.path));
+                const commonJsModule = await rendererModuleUsesCommonJs(args.path, projectRoot, packageModeCache);
                 const preservesImportMetaUrl = contents.includes("import.meta.url");
                 if (!preservesImportMetaUrl && (!commonJsModule || !/\b(?:require|__dirname|__filename)\b/.test(contents)))
                     return undefined;
@@ -166,11 +168,54 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
         },
     };
 }
+async function rendererModuleUsesCommonJs(modulePath, projectRoot, packageModeCache) {
+    const extension = path.extname(modulePath);
+    if (extension === ".cjs" || extension === ".cts")
+        return true;
+    if (extension !== ".js" && extension !== ".jsx")
+        return false;
+    const mode = await nearestRendererPackageMode(path.dirname(modulePath), projectRoot, packageModeCache);
+    return mode !== "module";
+}
+function nearestRendererPackageMode(directory, projectRoot, cache) {
+    const cached = cache.get(directory);
+    if (cached)
+        return cached;
+    const pending = (async () => {
+        if (path.basename(directory) === "node_modules")
+            return "default";
+        try {
+            const parsed = JSON.parse(await readFile(path.join(directory, "package.json"), "utf8"));
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                const type = parsed.type;
+                if (type === "module" || type === "commonjs")
+                    return type;
+            }
+            return "default";
+        }
+        catch (error) {
+            if (!isMissingRendererPackageJson(error))
+                throw error;
+        }
+        if (path.resolve(directory) === path.resolve(projectRoot))
+            return "default";
+        const parent = path.dirname(directory);
+        if (parent === directory)
+            return "default";
+        return nearestRendererPackageMode(parent, projectRoot, cache);
+    })();
+    cache.set(directory, pending);
+    return pending;
+}
+function isMissingRendererPackageJson(error) {
+    return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
 export function rendererTransformOutputLoader(loader) {
     return loader === "jsx" || loader === "tsx" ? "jsx" : "js";
 }
+const RendererSyntaxParser = Parser.extend(jsx());
 function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
-    const syntax = parse(contents, {
+    const syntax = RendererSyntaxParser.parse(contents, {
         allowHashBang: true,
         allowReturnOutsideFunction: true,
         ecmaVersion: "latest",

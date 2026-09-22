@@ -41,7 +41,6392 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// ../sporades/node_modules/tslib/tslib.es6.js
+// node_modules/acorn-jsx/xhtml.js
+var require_xhtml = __commonJS({
+  "node_modules/acorn-jsx/xhtml.js"(exports, module) {
+    module.exports = {
+      quot: '"',
+      amp: "&",
+      apos: "'",
+      lt: "<",
+      gt: ">",
+      nbsp: "\xA0",
+      iexcl: "\xA1",
+      cent: "\xA2",
+      pound: "\xA3",
+      curren: "\xA4",
+      yen: "\xA5",
+      brvbar: "\xA6",
+      sect: "\xA7",
+      uml: "\xA8",
+      copy: "\xA9",
+      ordf: "\xAA",
+      laquo: "\xAB",
+      not: "\xAC",
+      shy: "\xAD",
+      reg: "\xAE",
+      macr: "\xAF",
+      deg: "\xB0",
+      plusmn: "\xB1",
+      sup2: "\xB2",
+      sup3: "\xB3",
+      acute: "\xB4",
+      micro: "\xB5",
+      para: "\xB6",
+      middot: "\xB7",
+      cedil: "\xB8",
+      sup1: "\xB9",
+      ordm: "\xBA",
+      raquo: "\xBB",
+      frac14: "\xBC",
+      frac12: "\xBD",
+      frac34: "\xBE",
+      iquest: "\xBF",
+      Agrave: "\xC0",
+      Aacute: "\xC1",
+      Acirc: "\xC2",
+      Atilde: "\xC3",
+      Auml: "\xC4",
+      Aring: "\xC5",
+      AElig: "\xC6",
+      Ccedil: "\xC7",
+      Egrave: "\xC8",
+      Eacute: "\xC9",
+      Ecirc: "\xCA",
+      Euml: "\xCB",
+      Igrave: "\xCC",
+      Iacute: "\xCD",
+      Icirc: "\xCE",
+      Iuml: "\xCF",
+      ETH: "\xD0",
+      Ntilde: "\xD1",
+      Ograve: "\xD2",
+      Oacute: "\xD3",
+      Ocirc: "\xD4",
+      Otilde: "\xD5",
+      Ouml: "\xD6",
+      times: "\xD7",
+      Oslash: "\xD8",
+      Ugrave: "\xD9",
+      Uacute: "\xDA",
+      Ucirc: "\xDB",
+      Uuml: "\xDC",
+      Yacute: "\xDD",
+      THORN: "\xDE",
+      szlig: "\xDF",
+      agrave: "\xE0",
+      aacute: "\xE1",
+      acirc: "\xE2",
+      atilde: "\xE3",
+      auml: "\xE4",
+      aring: "\xE5",
+      aelig: "\xE6",
+      ccedil: "\xE7",
+      egrave: "\xE8",
+      eacute: "\xE9",
+      ecirc: "\xEA",
+      euml: "\xEB",
+      igrave: "\xEC",
+      iacute: "\xED",
+      icirc: "\xEE",
+      iuml: "\xEF",
+      eth: "\xF0",
+      ntilde: "\xF1",
+      ograve: "\xF2",
+      oacute: "\xF3",
+      ocirc: "\xF4",
+      otilde: "\xF5",
+      ouml: "\xF6",
+      divide: "\xF7",
+      oslash: "\xF8",
+      ugrave: "\xF9",
+      uacute: "\xFA",
+      ucirc: "\xFB",
+      uuml: "\xFC",
+      yacute: "\xFD",
+      thorn: "\xFE",
+      yuml: "\xFF",
+      OElig: "\u0152",
+      oelig: "\u0153",
+      Scaron: "\u0160",
+      scaron: "\u0161",
+      Yuml: "\u0178",
+      fnof: "\u0192",
+      circ: "\u02C6",
+      tilde: "\u02DC",
+      Alpha: "\u0391",
+      Beta: "\u0392",
+      Gamma: "\u0393",
+      Delta: "\u0394",
+      Epsilon: "\u0395",
+      Zeta: "\u0396",
+      Eta: "\u0397",
+      Theta: "\u0398",
+      Iota: "\u0399",
+      Kappa: "\u039A",
+      Lambda: "\u039B",
+      Mu: "\u039C",
+      Nu: "\u039D",
+      Xi: "\u039E",
+      Omicron: "\u039F",
+      Pi: "\u03A0",
+      Rho: "\u03A1",
+      Sigma: "\u03A3",
+      Tau: "\u03A4",
+      Upsilon: "\u03A5",
+      Phi: "\u03A6",
+      Chi: "\u03A7",
+      Psi: "\u03A8",
+      Omega: "\u03A9",
+      alpha: "\u03B1",
+      beta: "\u03B2",
+      gamma: "\u03B3",
+      delta: "\u03B4",
+      epsilon: "\u03B5",
+      zeta: "\u03B6",
+      eta: "\u03B7",
+      theta: "\u03B8",
+      iota: "\u03B9",
+      kappa: "\u03BA",
+      lambda: "\u03BB",
+      mu: "\u03BC",
+      nu: "\u03BD",
+      xi: "\u03BE",
+      omicron: "\u03BF",
+      pi: "\u03C0",
+      rho: "\u03C1",
+      sigmaf: "\u03C2",
+      sigma: "\u03C3",
+      tau: "\u03C4",
+      upsilon: "\u03C5",
+      phi: "\u03C6",
+      chi: "\u03C7",
+      psi: "\u03C8",
+      omega: "\u03C9",
+      thetasym: "\u03D1",
+      upsih: "\u03D2",
+      piv: "\u03D6",
+      ensp: "\u2002",
+      emsp: "\u2003",
+      thinsp: "\u2009",
+      zwnj: "\u200C",
+      zwj: "\u200D",
+      lrm: "\u200E",
+      rlm: "\u200F",
+      ndash: "\u2013",
+      mdash: "\u2014",
+      lsquo: "\u2018",
+      rsquo: "\u2019",
+      sbquo: "\u201A",
+      ldquo: "\u201C",
+      rdquo: "\u201D",
+      bdquo: "\u201E",
+      dagger: "\u2020",
+      Dagger: "\u2021",
+      bull: "\u2022",
+      hellip: "\u2026",
+      permil: "\u2030",
+      prime: "\u2032",
+      Prime: "\u2033",
+      lsaquo: "\u2039",
+      rsaquo: "\u203A",
+      oline: "\u203E",
+      frasl: "\u2044",
+      euro: "\u20AC",
+      image: "\u2111",
+      weierp: "\u2118",
+      real: "\u211C",
+      trade: "\u2122",
+      alefsym: "\u2135",
+      larr: "\u2190",
+      uarr: "\u2191",
+      rarr: "\u2192",
+      darr: "\u2193",
+      harr: "\u2194",
+      crarr: "\u21B5",
+      lArr: "\u21D0",
+      uArr: "\u21D1",
+      rArr: "\u21D2",
+      dArr: "\u21D3",
+      hArr: "\u21D4",
+      forall: "\u2200",
+      part: "\u2202",
+      exist: "\u2203",
+      empty: "\u2205",
+      nabla: "\u2207",
+      isin: "\u2208",
+      notin: "\u2209",
+      ni: "\u220B",
+      prod: "\u220F",
+      sum: "\u2211",
+      minus: "\u2212",
+      lowast: "\u2217",
+      radic: "\u221A",
+      prop: "\u221D",
+      infin: "\u221E",
+      ang: "\u2220",
+      and: "\u2227",
+      or: "\u2228",
+      cap: "\u2229",
+      cup: "\u222A",
+      "int": "\u222B",
+      there4: "\u2234",
+      sim: "\u223C",
+      cong: "\u2245",
+      asymp: "\u2248",
+      ne: "\u2260",
+      equiv: "\u2261",
+      le: "\u2264",
+      ge: "\u2265",
+      sub: "\u2282",
+      sup: "\u2283",
+      nsub: "\u2284",
+      sube: "\u2286",
+      supe: "\u2287",
+      oplus: "\u2295",
+      otimes: "\u2297",
+      perp: "\u22A5",
+      sdot: "\u22C5",
+      lceil: "\u2308",
+      rceil: "\u2309",
+      lfloor: "\u230A",
+      rfloor: "\u230B",
+      lang: "\u2329",
+      rang: "\u232A",
+      loz: "\u25CA",
+      spades: "\u2660",
+      clubs: "\u2663",
+      hearts: "\u2665",
+      diams: "\u2666"
+    };
+  }
+});
+
+// node_modules/acorn/dist/acorn.js
+var require_acorn = __commonJS({
+  "node_modules/acorn/dist/acorn.js"(exports, module) {
+    (function(global2, factory) {
+      typeof exports === "object" && typeof module !== "undefined" ? factory(exports) : typeof define === "function" && define.amd ? define(["exports"], factory) : (global2 = typeof globalThis !== "undefined" ? globalThis : global2 || self, factory(global2.acorn = {}));
+    })(exports, (function(exports2) {
+      "use strict";
+      var astralIdentifierCodes2 = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
+      var astralIdentifierStartCodes2 = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 8, 70, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 7, 25, 39, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 5, 57, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 200, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 24, 43, 261, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 110, 18, 195, 2637, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 33, 24, 3, 24, 45, 74, 6, 0, 67, 12, 65, 1, 2, 0, 15, 4, 10, 7381, 42, 31, 98, 114, 8702, 3, 2, 6, 2, 1, 2, 290, 16, 0, 30, 2, 3, 0, 15, 3, 9, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 339, 3, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 30, 7, 5, 262, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 208, 30, 2, 2, 2, 1, 2, 6, 3, 4, 10, 1, 225, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4381, 3, 5773, 3, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 8489];
+      var nonASCIIidentifierChars2 = "\u200C\u200D\xB7\u0300-\u036F\u0387\u0483-\u0487\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7\u0610-\u061A\u064B-\u0669\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED\u06F0-\u06F9\u0711\u0730-\u074A\u07A6-\u07B0\u07C0-\u07C9\u07EB-\u07F3\u07FD\u0816-\u0819\u081B-\u0823\u0825-\u0827\u0829-\u082D\u0859-\u085B\u0897-\u089F\u08CA-\u08E1\u08E3-\u0903\u093A-\u093C\u093E-\u094F\u0951-\u0957\u0962\u0963\u0966-\u096F\u0981-\u0983\u09BC\u09BE-\u09C4\u09C7\u09C8\u09CB-\u09CD\u09D7\u09E2\u09E3\u09E6-\u09EF\u09FE\u0A01-\u0A03\u0A3C\u0A3E-\u0A42\u0A47\u0A48\u0A4B-\u0A4D\u0A51\u0A66-\u0A71\u0A75\u0A81-\u0A83\u0ABC\u0ABE-\u0AC5\u0AC7-\u0AC9\u0ACB-\u0ACD\u0AE2\u0AE3\u0AE6-\u0AEF\u0AFA-\u0AFF\u0B01-\u0B03\u0B3C\u0B3E-\u0B44\u0B47\u0B48\u0B4B-\u0B4D\u0B55-\u0B57\u0B62\u0B63\u0B66-\u0B6F\u0B82\u0BBE-\u0BC2\u0BC6-\u0BC8\u0BCA-\u0BCD\u0BD7\u0BE6-\u0BEF\u0C00-\u0C04\u0C3C\u0C3E-\u0C44\u0C46-\u0C48\u0C4A-\u0C4D\u0C55\u0C56\u0C62\u0C63\u0C66-\u0C6F\u0C81-\u0C83\u0CBC\u0CBE-\u0CC4\u0CC6-\u0CC8\u0CCA-\u0CCD\u0CD5\u0CD6\u0CE2\u0CE3\u0CE6-\u0CEF\u0CF3\u0D00-\u0D03\u0D3B\u0D3C\u0D3E-\u0D44\u0D46-\u0D48\u0D4A-\u0D4D\u0D57\u0D62\u0D63\u0D66-\u0D6F\u0D81-\u0D83\u0DCA\u0DCF-\u0DD4\u0DD6\u0DD8-\u0DDF\u0DE6-\u0DEF\u0DF2\u0DF3\u0E31\u0E34-\u0E3A\u0E47-\u0E4E\u0E50-\u0E59\u0EB1\u0EB4-\u0EBC\u0EC8-\u0ECE\u0ED0-\u0ED9\u0F18\u0F19\u0F20-\u0F29\u0F35\u0F37\u0F39\u0F3E\u0F3F\u0F71-\u0F84\u0F86\u0F87\u0F8D-\u0F97\u0F99-\u0FBC\u0FC6\u102B-\u103E\u1040-\u1049\u1056-\u1059\u105E-\u1060\u1062-\u1064\u1067-\u106D\u1071-\u1074\u1082-\u108D\u108F-\u109D\u135D-\u135F\u1369-\u1371\u1712-\u1715\u1732-\u1734\u1752\u1753\u1772\u1773\u17B4-\u17D3\u17DD\u17E0-\u17E9\u180B-\u180D\u180F-\u1819\u18A9\u1920-\u192B\u1930-\u193B\u1946-\u194F\u19D0-\u19DA\u1A17-\u1A1B\u1A55-\u1A5E\u1A60-\u1A7C\u1A7F-\u1A89\u1A90-\u1A99\u1AB0-\u1ABD\u1ABF-\u1ADD\u1AE0-\u1AEB\u1B00-\u1B04\u1B34-\u1B44\u1B50-\u1B59\u1B6B-\u1B73\u1B80-\u1B82\u1BA1-\u1BAD\u1BB0-\u1BB9\u1BE6-\u1BF3\u1C24-\u1C37\u1C40-\u1C49\u1C50-\u1C59\u1CD0-\u1CD2\u1CD4-\u1CE8\u1CED\u1CF4\u1CF7-\u1CF9\u1DC0-\u1DFF\u200C\u200D\u203F\u2040\u2054\u20D0-\u20DC\u20E1\u20E5-\u20F0\u2CEF-\u2CF1\u2D7F\u2DE0-\u2DFF\u302A-\u302F\u3099\u309A\u30FB\uA620-\uA629\uA66F\uA674-\uA67D\uA69E\uA69F\uA6F0\uA6F1\uA802\uA806\uA80B\uA823-\uA827\uA82C\uA880\uA881\uA8B4-\uA8C5\uA8D0-\uA8D9\uA8E0-\uA8F1\uA8FF-\uA909\uA926-\uA92D\uA947-\uA953\uA980-\uA983\uA9B3-\uA9C0\uA9D0-\uA9D9\uA9E5\uA9F0-\uA9F9\uAA29-\uAA36\uAA43\uAA4C\uAA4D\uAA50-\uAA59\uAA7B-\uAA7D\uAAB0\uAAB2-\uAAB4\uAAB7\uAAB8\uAABE\uAABF\uAAC1\uAAEB-\uAAEF\uAAF5\uAAF6\uABE3-\uABEA\uABEC\uABED\uABF0-\uABF9\uFB1E\uFE00-\uFE0F\uFE20-\uFE2F\uFE33\uFE34\uFE4D-\uFE4F\uFF10-\uFF19\uFF3F\uFF65";
+      var nonASCIIidentifierStartChars2 = "\xAA\xB5\xBA\xC0-\xD6\xD8-\xF6\xF8-\u02C1\u02C6-\u02D1\u02E0-\u02E4\u02EC\u02EE\u0370-\u0374\u0376\u0377\u037A-\u037D\u037F\u0386\u0388-\u038A\u038C\u038E-\u03A1\u03A3-\u03F5\u03F7-\u0481\u048A-\u052F\u0531-\u0556\u0559\u0560-\u0588\u05D0-\u05EA\u05EF-\u05F2\u0620-\u064A\u066E\u066F\u0671-\u06D3\u06D5\u06E5\u06E6\u06EE\u06EF\u06FA-\u06FC\u06FF\u0710\u0712-\u072F\u074D-\u07A5\u07B1\u07CA-\u07EA\u07F4\u07F5\u07FA\u0800-\u0815\u081A\u0824\u0828\u0840-\u0858\u0860-\u086A\u0870-\u0887\u0889-\u088F\u08A0-\u08C9\u0904-\u0939\u093D\u0950\u0958-\u0961\u0971-\u0980\u0985-\u098C\u098F\u0990\u0993-\u09A8\u09AA-\u09B0\u09B2\u09B6-\u09B9\u09BD\u09CE\u09DC\u09DD\u09DF-\u09E1\u09F0\u09F1\u09FC\u0A05-\u0A0A\u0A0F\u0A10\u0A13-\u0A28\u0A2A-\u0A30\u0A32\u0A33\u0A35\u0A36\u0A38\u0A39\u0A59-\u0A5C\u0A5E\u0A72-\u0A74\u0A85-\u0A8D\u0A8F-\u0A91\u0A93-\u0AA8\u0AAA-\u0AB0\u0AB2\u0AB3\u0AB5-\u0AB9\u0ABD\u0AD0\u0AE0\u0AE1\u0AF9\u0B05-\u0B0C\u0B0F\u0B10\u0B13-\u0B28\u0B2A-\u0B30\u0B32\u0B33\u0B35-\u0B39\u0B3D\u0B5C\u0B5D\u0B5F-\u0B61\u0B71\u0B83\u0B85-\u0B8A\u0B8E-\u0B90\u0B92-\u0B95\u0B99\u0B9A\u0B9C\u0B9E\u0B9F\u0BA3\u0BA4\u0BA8-\u0BAA\u0BAE-\u0BB9\u0BD0\u0C05-\u0C0C\u0C0E-\u0C10\u0C12-\u0C28\u0C2A-\u0C39\u0C3D\u0C58-\u0C5A\u0C5C\u0C5D\u0C60\u0C61\u0C80\u0C85-\u0C8C\u0C8E-\u0C90\u0C92-\u0CA8\u0CAA-\u0CB3\u0CB5-\u0CB9\u0CBD\u0CDC-\u0CDE\u0CE0\u0CE1\u0CF1\u0CF2\u0D04-\u0D0C\u0D0E-\u0D10\u0D12-\u0D3A\u0D3D\u0D4E\u0D54-\u0D56\u0D5F-\u0D61\u0D7A-\u0D7F\u0D85-\u0D96\u0D9A-\u0DB1\u0DB3-\u0DBB\u0DBD\u0DC0-\u0DC6\u0E01-\u0E30\u0E32\u0E33\u0E40-\u0E46\u0E81\u0E82\u0E84\u0E86-\u0E8A\u0E8C-\u0EA3\u0EA5\u0EA7-\u0EB0\u0EB2\u0EB3\u0EBD\u0EC0-\u0EC4\u0EC6\u0EDC-\u0EDF\u0F00\u0F40-\u0F47\u0F49-\u0F6C\u0F88-\u0F8C\u1000-\u102A\u103F\u1050-\u1055\u105A-\u105D\u1061\u1065\u1066\u106E-\u1070\u1075-\u1081\u108E\u10A0-\u10C5\u10C7\u10CD\u10D0-\u10FA\u10FC-\u1248\u124A-\u124D\u1250-\u1256\u1258\u125A-\u125D\u1260-\u1288\u128A-\u128D\u1290-\u12B0\u12B2-\u12B5\u12B8-\u12BE\u12C0\u12C2-\u12C5\u12C8-\u12D6\u12D8-\u1310\u1312-\u1315\u1318-\u135A\u1380-\u138F\u13A0-\u13F5\u13F8-\u13FD\u1401-\u166C\u166F-\u167F\u1681-\u169A\u16A0-\u16EA\u16EE-\u16F8\u1700-\u1711\u171F-\u1731\u1740-\u1751\u1760-\u176C\u176E-\u1770\u1780-\u17B3\u17D7\u17DC\u1820-\u1878\u1880-\u18A8\u18AA\u18B0-\u18F5\u1900-\u191E\u1950-\u196D\u1970-\u1974\u1980-\u19AB\u19B0-\u19C9\u1A00-\u1A16\u1A20-\u1A54\u1AA7\u1B05-\u1B33\u1B45-\u1B4C\u1B83-\u1BA0\u1BAE\u1BAF\u1BBA-\u1BE5\u1C00-\u1C23\u1C4D-\u1C4F\u1C5A-\u1C7D\u1C80-\u1C8A\u1C90-\u1CBA\u1CBD-\u1CBF\u1CE9-\u1CEC\u1CEE-\u1CF3\u1CF5\u1CF6\u1CFA\u1D00-\u1DBF\u1E00-\u1F15\u1F18-\u1F1D\u1F20-\u1F45\u1F48-\u1F4D\u1F50-\u1F57\u1F59\u1F5B\u1F5D\u1F5F-\u1F7D\u1F80-\u1FB4\u1FB6-\u1FBC\u1FBE\u1FC2-\u1FC4\u1FC6-\u1FCC\u1FD0-\u1FD3\u1FD6-\u1FDB\u1FE0-\u1FEC\u1FF2-\u1FF4\u1FF6-\u1FFC\u2071\u207F\u2090-\u209C\u2102\u2107\u210A-\u2113\u2115\u2118-\u211D\u2124\u2126\u2128\u212A-\u2139\u213C-\u213F\u2145-\u2149\u214E\u2160-\u2188\u2C00-\u2CE4\u2CEB-\u2CEE\u2CF2\u2CF3\u2D00-\u2D25\u2D27\u2D2D\u2D30-\u2D67\u2D6F\u2D80-\u2D96\u2DA0-\u2DA6\u2DA8-\u2DAE\u2DB0-\u2DB6\u2DB8-\u2DBE\u2DC0-\u2DC6\u2DC8-\u2DCE\u2DD0-\u2DD6\u2DD8-\u2DDE\u3005-\u3007\u3021-\u3029\u3031-\u3035\u3038-\u303C\u3041-\u3096\u309B-\u309F\u30A1-\u30FA\u30FC-\u30FF\u3105-\u312F\u3131-\u318E\u31A0-\u31BF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\uA48C\uA4D0-\uA4FD\uA500-\uA60C\uA610-\uA61F\uA62A\uA62B\uA640-\uA66E\uA67F-\uA69D\uA6A0-\uA6EF\uA717-\uA71F\uA722-\uA788\uA78B-\uA7DC\uA7F1-\uA801\uA803-\uA805\uA807-\uA80A\uA80C-\uA822\uA840-\uA873\uA882-\uA8B3\uA8F2-\uA8F7\uA8FB\uA8FD\uA8FE\uA90A-\uA925\uA930-\uA946\uA960-\uA97C\uA984-\uA9B2\uA9CF\uA9E0-\uA9E4\uA9E6-\uA9EF\uA9FA-\uA9FE\uAA00-\uAA28\uAA40-\uAA42\uAA44-\uAA4B\uAA60-\uAA76\uAA7A\uAA7E-\uAAAF\uAAB1\uAAB5\uAAB6\uAAB9-\uAABD\uAAC0\uAAC2\uAADB-\uAADD\uAAE0-\uAAEA\uAAF2-\uAAF4\uAB01-\uAB06\uAB09-\uAB0E\uAB11-\uAB16\uAB20-\uAB26\uAB28-\uAB2E\uAB30-\uAB5A\uAB5C-\uAB69\uAB70-\uABE2\uAC00-\uD7A3\uD7B0-\uD7C6\uD7CB-\uD7FB\uF900-\uFA6D\uFA70-\uFAD9\uFB00-\uFB06\uFB13-\uFB17\uFB1D\uFB1F-\uFB28\uFB2A-\uFB36\uFB38-\uFB3C\uFB3E\uFB40\uFB41\uFB43\uFB44\uFB46-\uFBB1\uFBD3-\uFD3D\uFD50-\uFD8F\uFD92-\uFDC7\uFDF0-\uFDFB\uFE70-\uFE74\uFE76-\uFEFC\uFF21-\uFF3A\uFF41-\uFF5A\uFF66-\uFFBE\uFFC2-\uFFC7\uFFCA-\uFFCF\uFFD2-\uFFD7\uFFDA-\uFFDC";
+      var reservedWords2 = {
+        3: "abstract boolean byte char class double enum export extends final float goto implements import int interface long native package private protected public short static super synchronized throws transient volatile",
+        5: "class enum extends super const export import",
+        6: "enum",
+        strict: "implements interface let package private protected public static yield",
+        strictBind: "eval arguments"
+      };
+      var ecma5AndLessKeywords2 = "break case catch continue debugger default do else finally for function if return switch throw try var while with null true false instanceof typeof void delete new in this";
+      var keywords$12 = {
+        5: ecma5AndLessKeywords2,
+        "5module": ecma5AndLessKeywords2 + " export import",
+        6: ecma5AndLessKeywords2 + " const class extends export import super"
+      };
+      var keywordRelationalOperator2 = /^in(stanceof)?$/;
+      var nonASCIIidentifierStart2 = new RegExp("[" + nonASCIIidentifierStartChars2 + "]");
+      var nonASCIIidentifier2 = new RegExp("[" + nonASCIIidentifierStartChars2 + nonASCIIidentifierChars2 + "]");
+      function isInAstralSet2(code, set) {
+        var pos = 65536;
+        for (var i2 = 0; i2 < set.length; i2 += 2) {
+          pos += set[i2];
+          if (pos > code) {
+            return false;
+          }
+          pos += set[i2 + 1];
+          if (pos >= code) {
+            return true;
+          }
+        }
+        return false;
+      }
+      function isIdentifierStart2(code, astral) {
+        if (code < 65) {
+          return code === 36;
+        }
+        if (code < 91) {
+          return true;
+        }
+        if (code < 97) {
+          return code === 95;
+        }
+        if (code < 123) {
+          return true;
+        }
+        if (code <= 65535) {
+          return code >= 170 && nonASCIIidentifierStart2.test(String.fromCharCode(code));
+        }
+        if (astral === false) {
+          return false;
+        }
+        return isInAstralSet2(code, astralIdentifierStartCodes2);
+      }
+      function isIdentifierChar2(code, astral) {
+        if (code < 48) {
+          return code === 36;
+        }
+        if (code < 58) {
+          return true;
+        }
+        if (code < 65) {
+          return false;
+        }
+        if (code < 91) {
+          return true;
+        }
+        if (code < 97) {
+          return code === 95;
+        }
+        if (code < 123) {
+          return true;
+        }
+        if (code <= 65535) {
+          return code >= 170 && nonASCIIidentifier2.test(String.fromCharCode(code));
+        }
+        if (astral === false) {
+          return false;
+        }
+        return isInAstralSet2(code, astralIdentifierStartCodes2) || isInAstralSet2(code, astralIdentifierCodes2);
+      }
+      var TokenType3 = function TokenType4(label, conf) {
+        if (conf === void 0) conf = {};
+        this.label = label;
+        this.keyword = conf.keyword;
+        this.beforeExpr = !!conf.beforeExpr;
+        this.startsExpr = !!conf.startsExpr;
+        this.isLoop = !!conf.isLoop;
+        this.isAssign = !!conf.isAssign;
+        this.prefix = !!conf.prefix;
+        this.postfix = !!conf.postfix;
+        this.binop = conf.binop || null;
+        this.updateContext = null;
+      };
+      function binop2(name2, prec) {
+        return new TokenType3(name2, { beforeExpr: true, binop: prec });
+      }
+      var beforeExpr2 = { beforeExpr: true }, startsExpr2 = { startsExpr: true };
+      var keywords2 = {};
+      function kw2(name2, options) {
+        if (options === void 0) options = {};
+        options.keyword = name2;
+        return keywords2[name2] = new TokenType3(name2, options);
+      }
+      var types$12 = {
+        num: new TokenType3("num", startsExpr2),
+        regexp: new TokenType3("regexp", startsExpr2),
+        string: new TokenType3("string", startsExpr2),
+        name: new TokenType3("name", startsExpr2),
+        privateId: new TokenType3("privateId", startsExpr2),
+        eof: new TokenType3("eof"),
+        // Punctuation token types.
+        bracketL: new TokenType3("[", { beforeExpr: true, startsExpr: true }),
+        bracketR: new TokenType3("]"),
+        braceL: new TokenType3("{", { beforeExpr: true, startsExpr: true }),
+        braceR: new TokenType3("}"),
+        parenL: new TokenType3("(", { beforeExpr: true, startsExpr: true }),
+        parenR: new TokenType3(")"),
+        comma: new TokenType3(",", beforeExpr2),
+        semi: new TokenType3(";", beforeExpr2),
+        colon: new TokenType3(":", beforeExpr2),
+        dot: new TokenType3("."),
+        question: new TokenType3("?", beforeExpr2),
+        questionDot: new TokenType3("?."),
+        arrow: new TokenType3("=>", beforeExpr2),
+        template: new TokenType3("template"),
+        invalidTemplate: new TokenType3("invalidTemplate"),
+        ellipsis: new TokenType3("...", beforeExpr2),
+        backQuote: new TokenType3("`", startsExpr2),
+        dollarBraceL: new TokenType3("${", { beforeExpr: true, startsExpr: true }),
+        // Operators. These carry several kinds of properties to help the
+        // parser use them properly (the presence of these properties is
+        // what categorizes them as operators).
+        //
+        // `binop`, when present, specifies that this operator is a binary
+        // operator, and will refer to its precedence.
+        //
+        // `prefix` and `postfix` mark the operator as a prefix or postfix
+        // unary operator.
+        //
+        // `isAssign` marks all of `=`, `+=`, `-=` etcetera, which act as
+        // binary operators with a very low precedence, that should result
+        // in AssignmentExpression nodes.
+        eq: new TokenType3("=", { beforeExpr: true, isAssign: true }),
+        assign: new TokenType3("_=", { beforeExpr: true, isAssign: true }),
+        incDec: new TokenType3("++/--", { prefix: true, postfix: true, startsExpr: true }),
+        prefix: new TokenType3("!/~", { beforeExpr: true, prefix: true, startsExpr: true }),
+        logicalOR: binop2("||", 1),
+        logicalAND: binop2("&&", 2),
+        bitwiseOR: binop2("|", 3),
+        bitwiseXOR: binop2("^", 4),
+        bitwiseAND: binop2("&", 5),
+        equality: binop2("==/!=/===/!==", 6),
+        relational: binop2("</>/<=/>=", 7),
+        bitShift: binop2("<</>>/>>>", 8),
+        plusMin: new TokenType3("+/-", { beforeExpr: true, binop: 9, prefix: true, startsExpr: true }),
+        modulo: binop2("%", 10),
+        star: binop2("*", 10),
+        slash: binop2("/", 10),
+        starstar: new TokenType3("**", { beforeExpr: true }),
+        coalesce: binop2("??", 1),
+        // Keyword token types.
+        _break: kw2("break"),
+        _case: kw2("case", beforeExpr2),
+        _catch: kw2("catch"),
+        _continue: kw2("continue"),
+        _debugger: kw2("debugger"),
+        _default: kw2("default", beforeExpr2),
+        _do: kw2("do", { isLoop: true, beforeExpr: true }),
+        _else: kw2("else", beforeExpr2),
+        _finally: kw2("finally"),
+        _for: kw2("for", { isLoop: true }),
+        _function: kw2("function", startsExpr2),
+        _if: kw2("if"),
+        _return: kw2("return", beforeExpr2),
+        _switch: kw2("switch"),
+        _throw: kw2("throw", beforeExpr2),
+        _try: kw2("try"),
+        _var: kw2("var"),
+        _const: kw2("const"),
+        _while: kw2("while", { isLoop: true }),
+        _with: kw2("with"),
+        _new: kw2("new", { beforeExpr: true, startsExpr: true }),
+        _this: kw2("this", startsExpr2),
+        _super: kw2("super", startsExpr2),
+        _class: kw2("class", startsExpr2),
+        _extends: kw2("extends", beforeExpr2),
+        _export: kw2("export"),
+        _import: kw2("import", startsExpr2),
+        _null: kw2("null", startsExpr2),
+        _true: kw2("true", startsExpr2),
+        _false: kw2("false", startsExpr2),
+        _in: kw2("in", { beforeExpr: true, binop: 7 }),
+        _instanceof: kw2("instanceof", { beforeExpr: true, binop: 7 }),
+        _typeof: kw2("typeof", { beforeExpr: true, prefix: true, startsExpr: true }),
+        _void: kw2("void", { beforeExpr: true, prefix: true, startsExpr: true }),
+        _delete: kw2("delete", { beforeExpr: true, prefix: true, startsExpr: true })
+      };
+      var lineBreak2 = /\r\n?|\n|\u2028|\u2029/;
+      var lineBreakG2 = new RegExp(lineBreak2.source, "g");
+      function isNewLine2(code) {
+        return code === 10 || code === 13 || code === 8232 || code === 8233;
+      }
+      function nextLineBreak2(code, from, end) {
+        if (end === void 0) end = code.length;
+        for (var i2 = from; i2 < end; i2++) {
+          var next = code.charCodeAt(i2);
+          if (isNewLine2(next)) {
+            return i2 < end - 1 && next === 13 && code.charCodeAt(i2 + 1) === 10 ? i2 + 2 : i2 + 1;
+          }
+        }
+        return -1;
+      }
+      var nonASCIIwhitespace2 = /[\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]/;
+      var skipWhiteSpace2 = /(?:\s|\/\/.*|\/\*[^]*?\*\/)*/g;
+      var ref2 = Object.prototype;
+      var hasOwnProperty2 = ref2.hasOwnProperty;
+      var toString2 = ref2.toString;
+      var hasOwn2 = Object.hasOwn || (function(obj, propName) {
+        return hasOwnProperty2.call(obj, propName);
+      });
+      var isArray2 = Array.isArray || (function(obj) {
+        return toString2.call(obj) === "[object Array]";
+      });
+      var regexpCache2 = /* @__PURE__ */ Object.create(null);
+      function wordsRegexp2(words) {
+        return regexpCache2[words] || (regexpCache2[words] = new RegExp("^(?:" + words.replace(/ /g, "|") + ")$"));
+      }
+      function codePointToString2(code) {
+        if (code <= 65535) {
+          return String.fromCharCode(code);
+        }
+        code -= 65536;
+        return String.fromCharCode((code >> 10) + 55296, (code & 1023) + 56320);
+      }
+      var loneSurrogate2 = /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF])/;
+      var Position3 = function Position4(line, col) {
+        this.line = line;
+        this.column = col;
+      };
+      Position3.prototype.offset = function offset2(n) {
+        return new Position3(this.line, this.column + n);
+      };
+      var SourceLocation3 = function SourceLocation4(p, start, end) {
+        this.start = start;
+        this.end = end;
+        if (p.sourceFile !== null) {
+          this.source = p.sourceFile;
+        }
+      };
+      function getLineInfo2(input, offset2) {
+        for (var line = 1, cur = 0; ; ) {
+          var nextBreak = nextLineBreak2(input, cur, offset2);
+          if (nextBreak < 0) {
+            return new Position3(line, offset2 - cur);
+          }
+          ++line;
+          cur = nextBreak;
+        }
+      }
+      var defaultOptions2 = {
+        // `ecmaVersion` indicates the ECMAScript version to parse. Must be
+        // either 3, 5, 6 (or 2015), 7 (2016), 8 (2017), 9 (2018), 10
+        // (2019), 11 (2020), 12 (2021), 13 (2022), 14 (2023), or `"latest"`
+        // (the latest version the library supports). This influences
+        // support for strict mode, the set of reserved words, and support
+        // for new syntax features.
+        ecmaVersion: null,
+        // `sourceType` indicates the mode the code should be parsed in.
+        // Can be either `"script"`, `"module"` or `"commonjs"`. This influences global
+        // strict mode and parsing of `import` and `export` declarations.
+        sourceType: "script",
+        // When set to true, enable strict parsing mode even if `sourceType`
+        // is `"script"`.
+        strict: false,
+        // `onInsertedSemicolon` can be a callback that will be called when
+        // a semicolon is automatically inserted. It will be passed the
+        // position of the inserted semicolon as an offset, and if
+        // `locations` is enabled, it is given the location as a `{line,
+        // column}` object as second argument.
+        onInsertedSemicolon: null,
+        // `onTrailingComma` is similar to `onInsertedSemicolon`, but for
+        // trailing commas.
+        onTrailingComma: null,
+        // By default, reserved words are only enforced if ecmaVersion >= 5.
+        // Set `allowReserved` to a boolean value to explicitly turn this on
+        // an off. When this option has the value "never", reserved words
+        // and keywords can also not be used as property names.
+        allowReserved: null,
+        // When enabled, a return at the top level is not considered an
+        // error.
+        allowReturnOutsideFunction: false,
+        // When enabled, import/export statements are not constrained to
+        // appearing at the top of the program, and an import.meta expression
+        // in a script isn't considered an error.
+        allowImportExportEverywhere: false,
+        // By default, await identifiers are allowed to appear at the top-level scope only if ecmaVersion >= 2022.
+        // When enabled, await identifiers are allowed to appear at the top-level scope,
+        // but they are still not allowed in non-async functions.
+        allowAwaitOutsideFunction: null,
+        // When enabled, super identifiers are not constrained to
+        // appearing in methods and do not raise an error when they appear elsewhere.
+        allowSuperOutsideMethod: null,
+        // When enabled, hashbang directive in the beginning of file is
+        // allowed and treated as a line comment. Enabled by default when
+        // `ecmaVersion` >= 2023.
+        allowHashBang: false,
+        // By default, the parser will verify that private properties are
+        // only used in places where they are valid and have been declared.
+        // Set this to false to turn such checks off.
+        checkPrivateFields: true,
+        // When `locations` is on, `loc` properties holding objects with
+        // `start` and `end` properties in `{line, column}` form (with
+        // line being 1-based and column 0-based) will be attached to the
+        // nodes.
+        locations: false,
+        // A function can be passed as `onToken` option, which will
+        // cause Acorn to call that function with object in the same
+        // format as tokens returned from `tokenizer().getToken()`. Note
+        // that you are not allowed to call the parser from the
+        // callback—that will corrupt its internal state.
+        onToken: null,
+        // A function can be passed as `onComment` option, which will
+        // cause Acorn to call that function with `(block, text, start,
+        // end)` parameters whenever a comment is skipped. `block` is a
+        // boolean indicating whether this is a block (`/* */`) comment,
+        // `text` is the content of the comment, and `start` and `end` are
+        // character offsets that denote the start and end of the comment.
+        // When the `locations` option is on, two more parameters are
+        // passed, the full `{line, column}` locations of the start and
+        // end of the comments. Note that you are not allowed to call the
+        // parser from the callback—that will corrupt its internal state.
+        // When this option has an array as value, objects representing the
+        // comments are pushed to it.
+        onComment: null,
+        // Nodes have their start and end characters offsets recorded in
+        // `start` and `end` properties (directly on the node, rather than
+        // the `loc` object, which holds line/column data. To also add a
+        // [semi-standardized][range] `range` property holding a `[start,
+        // end]` array with the same numbers, set the `ranges` option to
+        // `true`.
+        //
+        // [range]: https://bugzilla.mozilla.org/show_bug.cgi?id=745678
+        ranges: false,
+        // It is possible to parse multiple files into a single AST by
+        // passing the tree produced by parsing the first file as
+        // `program` option in subsequent parses. This will add the
+        // toplevel forms of the parsed file to the `Program` (top) node
+        // of an existing parse tree.
+        program: null,
+        // When `locations` is on, you can pass this to record the source
+        // file in every node's `loc` object.
+        sourceFile: null,
+        // This value, if given, is stored in every node, whether
+        // `locations` is on or off.
+        directSourceFile: null,
+        // When enabled, parenthesized expressions are represented by
+        // (non-standard) ParenthesizedExpression nodes
+        preserveParens: false
+      };
+      var warnedAboutEcmaVersion2 = false;
+      function getOptions2(opts) {
+        var options = {};
+        for (var opt in defaultOptions2) {
+          options[opt] = opts && hasOwn2(opts, opt) ? opts[opt] : defaultOptions2[opt];
+        }
+        if (options.ecmaVersion === "latest") {
+          options.ecmaVersion = 1e8;
+        } else if (options.ecmaVersion == null) {
+          if (!warnedAboutEcmaVersion2 && typeof console === "object" && console.warn) {
+            warnedAboutEcmaVersion2 = true;
+            console.warn("Since Acorn 8.0.0, options.ecmaVersion is required.\nDefaulting to 2020, but this will stop working in the future.");
+          }
+          options.ecmaVersion = 11;
+        } else if (options.ecmaVersion >= 2015) {
+          options.ecmaVersion -= 2009;
+        }
+        if (options.allowReserved == null) {
+          options.allowReserved = options.ecmaVersion < 5;
+        }
+        if (!opts || opts.allowHashBang == null) {
+          options.allowHashBang = options.ecmaVersion >= 14;
+        }
+        if (isArray2(options.onToken)) {
+          var tokens = options.onToken;
+          options.onToken = function(token) {
+            return tokens.push(token);
+          };
+        }
+        if (isArray2(options.onComment)) {
+          options.onComment = pushComment2(options, options.onComment);
+        }
+        if (options.sourceType === "commonjs" && options.allowAwaitOutsideFunction) {
+          throw new Error("Cannot use allowAwaitOutsideFunction with sourceType: commonjs");
+        }
+        return options;
+      }
+      function pushComment2(options, array) {
+        return function(block, text2, start, end, startLoc, endLoc) {
+          var comment2 = {
+            type: block ? "Block" : "Line",
+            value: text2,
+            start,
+            end
+          };
+          if (options.locations) {
+            comment2.loc = new SourceLocation3(this, startLoc, endLoc);
+          }
+          if (options.ranges) {
+            comment2.range = [start, end];
+          }
+          array.push(comment2);
+        };
+      }
+      var SCOPE_TOP2 = 1, SCOPE_FUNCTION2 = 2, SCOPE_ASYNC2 = 4, SCOPE_GENERATOR2 = 8, SCOPE_ARROW2 = 16, SCOPE_SIMPLE_CATCH2 = 32, SCOPE_SUPER2 = 64, SCOPE_DIRECT_SUPER2 = 128, SCOPE_CLASS_STATIC_BLOCK2 = 256, SCOPE_CLASS_FIELD_INIT2 = 512, SCOPE_SWITCH2 = 1024, SCOPE_VAR2 = SCOPE_TOP2 | SCOPE_FUNCTION2 | SCOPE_CLASS_STATIC_BLOCK2;
+      function functionFlags2(async, generator) {
+        return SCOPE_FUNCTION2 | (async ? SCOPE_ASYNC2 : 0) | (generator ? SCOPE_GENERATOR2 : 0);
+      }
+      var BIND_NONE2 = 0, BIND_VAR2 = 1, BIND_LEXICAL2 = 2, BIND_FUNCTION2 = 3, BIND_SIMPLE_CATCH2 = 4, BIND_OUTSIDE2 = 5;
+      var Parser5 = function Parser6(options, input, startPos) {
+        this.options = options = getOptions2(options);
+        this.sourceFile = options.sourceFile;
+        this.keywords = wordsRegexp2(keywords$12[options.ecmaVersion >= 6 ? 6 : options.sourceType === "module" ? "5module" : 5]);
+        var reserved = "";
+        if (options.allowReserved !== true) {
+          reserved = reservedWords2[options.ecmaVersion >= 6 ? 6 : options.ecmaVersion === 5 ? 5 : 3];
+          if (options.sourceType === "module") {
+            reserved += " await";
+          }
+        }
+        this.reservedWords = wordsRegexp2(reserved);
+        var reservedStrict = (reserved ? reserved + " " : "") + reservedWords2.strict;
+        this.reservedWordsStrict = wordsRegexp2(reservedStrict);
+        this.reservedWordsStrictBind = wordsRegexp2(reservedStrict + " " + reservedWords2.strictBind);
+        this.input = String(input);
+        this.containsEsc = false;
+        if (startPos) {
+          this.pos = startPos;
+          this.lineStart = this.input.lastIndexOf("\n", startPos - 1) + 1;
+          this.curLine = this.input.slice(0, this.lineStart).split(lineBreak2).length;
+        } else {
+          this.pos = this.lineStart = 0;
+          this.curLine = 1;
+        }
+        this.type = types$12.eof;
+        this.value = null;
+        this.start = this.end = this.pos;
+        this.startLoc = this.endLoc = this.curPosition();
+        this.lastTokEndLoc = this.lastTokStartLoc = null;
+        this.lastTokStart = this.lastTokEnd = this.pos;
+        this.context = this.initialContext();
+        this.exprAllowed = true;
+        this.inModule = options.sourceType === "module";
+        this.strict = this.inModule || options.strict === true || this.strictDirective(this.pos);
+        this.potentialArrowAt = -1;
+        this.potentialArrowInForAwait = false;
+        this.yieldPos = this.awaitPos = this.awaitIdentPos = 0;
+        this.labels = [];
+        this.undefinedExports = /* @__PURE__ */ Object.create(null);
+        if (this.pos === 0 && options.allowHashBang && this.input.slice(0, 2) === "#!") {
+          this.skipLineComment(2);
+        }
+        this.scopeStack = [];
+        this.enterScope(
+          this.options.sourceType === "commonjs" ? SCOPE_FUNCTION2 : SCOPE_TOP2
+        );
+        this.regexpState = null;
+        this.privateNameStack = [];
+      };
+      var prototypeAccessors2 = { inFunction: { configurable: true }, inGenerator: { configurable: true }, inAsync: { configurable: true }, canAwait: { configurable: true }, allowReturn: { configurable: true }, allowSuper: { configurable: true }, allowDirectSuper: { configurable: true }, treatFunctionsAsVar: { configurable: true }, allowNewDotTarget: { configurable: true }, allowUsing: { configurable: true }, inClassStaticBlock: { configurable: true } };
+      Parser5.prototype.parse = function parse6() {
+        var this$1$1 = this;
+        var node = this.options.program || this.startNode();
+        this.nextToken();
+        return this.catchStackOverflow(function() {
+          return this$1$1.parseTopLevel(node);
+        });
+      };
+      prototypeAccessors2.inFunction.get = function() {
+        return (this.currentVarScope().flags & SCOPE_FUNCTION2) > 0;
+      };
+      prototypeAccessors2.inGenerator.get = function() {
+        return (this.currentVarScope().flags & SCOPE_GENERATOR2) > 0;
+      };
+      prototypeAccessors2.inAsync.get = function() {
+        return (this.currentVarScope().flags & SCOPE_ASYNC2) > 0;
+      };
+      prototypeAccessors2.canAwait.get = function() {
+        for (var i2 = this.scopeStack.length - 1; i2 >= 0; i2--) {
+          var ref3 = this.scopeStack[i2];
+          var flags = ref3.flags;
+          if (flags & (SCOPE_CLASS_STATIC_BLOCK2 | SCOPE_CLASS_FIELD_INIT2)) {
+            return false;
+          }
+          if (flags & SCOPE_FUNCTION2) {
+            return (flags & SCOPE_ASYNC2) > 0;
+          }
+        }
+        return this.inModule && this.options.ecmaVersion >= 13 || this.options.allowAwaitOutsideFunction;
+      };
+      prototypeAccessors2.allowReturn.get = function() {
+        if (this.inFunction) {
+          return true;
+        }
+        if (this.options.allowReturnOutsideFunction && this.currentVarScope().flags & SCOPE_TOP2) {
+          return true;
+        }
+        return false;
+      };
+      prototypeAccessors2.allowSuper.get = function() {
+        var ref3 = this.currentThisScope();
+        var flags = ref3.flags;
+        return (flags & SCOPE_SUPER2) > 0 || this.options.allowSuperOutsideMethod;
+      };
+      prototypeAccessors2.allowDirectSuper.get = function() {
+        return (this.currentThisScope().flags & SCOPE_DIRECT_SUPER2) > 0;
+      };
+      prototypeAccessors2.treatFunctionsAsVar.get = function() {
+        return this.treatFunctionsAsVarInScope(this.currentScope());
+      };
+      prototypeAccessors2.allowNewDotTarget.get = function() {
+        for (var i2 = this.scopeStack.length - 1; i2 >= 0; i2--) {
+          var ref3 = this.scopeStack[i2];
+          var flags = ref3.flags;
+          if (flags & (SCOPE_CLASS_STATIC_BLOCK2 | SCOPE_CLASS_FIELD_INIT2) || flags & SCOPE_FUNCTION2 && !(flags & SCOPE_ARROW2)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      prototypeAccessors2.allowUsing.get = function() {
+        var ref3 = this.currentScope();
+        var flags = ref3.flags;
+        if (flags & SCOPE_SWITCH2) {
+          return false;
+        }
+        if (!this.inModule && flags & SCOPE_TOP2) {
+          return false;
+        }
+        return true;
+      };
+      prototypeAccessors2.inClassStaticBlock.get = function() {
+        return (this.currentVarScope().flags & SCOPE_CLASS_STATIC_BLOCK2) > 0;
+      };
+      Parser5.extend = function extend2() {
+        var plugins = [], len = arguments.length;
+        while (len--) plugins[len] = arguments[len];
+        var cls = this;
+        for (var i2 = 0; i2 < plugins.length; i2++) {
+          cls = plugins[i2](cls);
+        }
+        return cls;
+      };
+      Parser5.parse = function parse6(input, options) {
+        return new this(options, input).parse();
+      };
+      Parser5.parseExpressionAt = function parseExpressionAt3(input, pos, options) {
+        var parser2 = new this(options, input, pos);
+        parser2.nextToken();
+        return parser2.parseExpression();
+      };
+      Parser5.tokenizer = function tokenizer4(input, options) {
+        return new this(options, input);
+      };
+      Object.defineProperties(Parser5.prototype, prototypeAccessors2);
+      var pp$92 = Parser5.prototype;
+      var literal3 = /^(?:'((?:\\[^]|[^'\\])*?)'|"((?:\\[^]|[^"\\])*?)")/;
+      pp$92.strictDirective = function(start) {
+        if (this.options.ecmaVersion < 5) {
+          return false;
+        }
+        for (; ; ) {
+          skipWhiteSpace2.lastIndex = start;
+          start += skipWhiteSpace2.exec(this.input)[0].length;
+          var match = literal3.exec(this.input.slice(start));
+          if (!match) {
+            return false;
+          }
+          if ((match[1] || match[2]) === "use strict") {
+            skipWhiteSpace2.lastIndex = start + match[0].length;
+            var spaceAfter = skipWhiteSpace2.exec(this.input), end = spaceAfter.index + spaceAfter[0].length;
+            var next = this.input.charAt(end);
+            return next === ";" || next === "}" || lineBreak2.test(spaceAfter[0]) && !(/[(`.[+\-/*%<>=,?^&]/.test(next) || next === "!" && this.input.charAt(end + 1) === "=");
+          }
+          start += match[0].length;
+          skipWhiteSpace2.lastIndex = start;
+          start += skipWhiteSpace2.exec(this.input)[0].length;
+          if (this.input[start] === ";") {
+            start++;
+          }
+        }
+      };
+      pp$92.eat = function(type) {
+        if (this.type === type) {
+          this.next();
+          return true;
+        } else {
+          return false;
+        }
+      };
+      pp$92.isContextual = function(name2) {
+        return this.type === types$12.name && this.value === name2 && !this.containsEsc;
+      };
+      pp$92.eatContextual = function(name2) {
+        if (!this.isContextual(name2)) {
+          return false;
+        }
+        this.next();
+        return true;
+      };
+      pp$92.catchStackOverflow = function(f) {
+        try {
+          return f();
+        } catch (e) {
+          if (e instanceof Error && (/\bstack\b.*\b(exceeded|overflow)\b/i.test(e.message) || /\btoo much recursion\b/i.test(e.message))) {
+            this.raise(this.start, "Not enough stack space to parse input");
+          } else {
+            throw e;
+          }
+        }
+      };
+      pp$92.expectContextual = function(name2) {
+        if (!this.eatContextual(name2)) {
+          this.unexpected();
+        }
+      };
+      pp$92.canInsertSemicolon = function() {
+        return this.type === types$12.eof || this.type === types$12.braceR || lineBreak2.test(this.input.slice(this.lastTokEnd, this.start));
+      };
+      pp$92.insertSemicolon = function() {
+        if (this.canInsertSemicolon()) {
+          if (this.options.onInsertedSemicolon) {
+            this.options.onInsertedSemicolon(this.lastTokEnd, this.lastTokEndLoc);
+          }
+          return true;
+        }
+      };
+      pp$92.semicolon = function() {
+        if (!this.eat(types$12.semi) && !this.insertSemicolon()) {
+          this.unexpected();
+        }
+      };
+      pp$92.afterTrailingComma = function(tokType, notNext) {
+        if (this.type === tokType) {
+          if (this.options.onTrailingComma) {
+            this.options.onTrailingComma(this.lastTokStart, this.lastTokStartLoc);
+          }
+          if (!notNext) {
+            this.next();
+          }
+          return true;
+        }
+      };
+      pp$92.expect = function(type) {
+        this.eat(type) || this.unexpected();
+      };
+      pp$92.unexpected = function(pos) {
+        this.raise(pos != null ? pos : this.start, "Unexpected token");
+      };
+      var DestructuringErrors3 = function DestructuringErrors4() {
+        this.shorthandAssign = this.trailingComma = this.parenthesizedAssign = this.parenthesizedBind = this.doubleProto = -1;
+      };
+      pp$92.checkPatternErrors = function(refDestructuringErrors, isAssign) {
+        if (!refDestructuringErrors) {
+          return;
+        }
+        if (refDestructuringErrors.trailingComma > -1) {
+          this.raiseRecoverable(refDestructuringErrors.trailingComma, "Comma is not permitted after the rest element");
+        }
+        var parens = isAssign ? refDestructuringErrors.parenthesizedAssign : refDestructuringErrors.parenthesizedBind;
+        if (parens > -1) {
+          this.raiseRecoverable(parens, isAssign ? "Assigning to rvalue" : "Parenthesized pattern");
+        }
+      };
+      pp$92.checkExpressionErrors = function(refDestructuringErrors, andThrow) {
+        if (!refDestructuringErrors) {
+          return false;
+        }
+        var shorthandAssign = refDestructuringErrors.shorthandAssign;
+        var doubleProto = refDestructuringErrors.doubleProto;
+        if (!andThrow) {
+          return shorthandAssign >= 0 || doubleProto >= 0;
+        }
+        if (shorthandAssign >= 0) {
+          this.raise(shorthandAssign, "Shorthand property assignments are valid only in destructuring patterns");
+        }
+        if (doubleProto >= 0) {
+          this.raiseRecoverable(doubleProto, "Redefinition of __proto__ property");
+        }
+      };
+      pp$92.checkYieldAwaitInDefaultParams = function() {
+        if (this.yieldPos && (!this.awaitPos || this.yieldPos < this.awaitPos)) {
+          this.raise(this.yieldPos, "Yield expression cannot be a default value");
+        }
+        if (this.awaitPos) {
+          this.raise(this.awaitPos, "Await expression cannot be a default value");
+        }
+      };
+      pp$92.isSimpleAssignTarget = function(expr) {
+        if (expr.type === "ParenthesizedExpression") {
+          return this.isSimpleAssignTarget(expr.expression);
+        }
+        return expr.type === "Identifier" || expr.type === "MemberExpression";
+      };
+      var pp$82 = Parser5.prototype;
+      pp$82.parseTopLevel = function(node) {
+        var exports$1 = /* @__PURE__ */ Object.create(null);
+        if (!node.body) {
+          node.body = [];
+        }
+        while (this.type !== types$12.eof) {
+          var stmt = this.parseStatement(null, true, exports$1);
+          node.body.push(stmt);
+        }
+        if (this.inModule) {
+          for (var i2 = 0, list2 = Object.keys(this.undefinedExports); i2 < list2.length; i2 += 1) {
+            var name2 = list2[i2];
+            this.raiseRecoverable(this.undefinedExports[name2].start, "Export '" + name2 + "' is not defined");
+          }
+        }
+        this.adaptDirectivePrologue(node.body);
+        this.next();
+        node.sourceType = this.options.sourceType === "commonjs" ? "script" : this.options.sourceType;
+        return this.finishNode(node, "Program");
+      };
+      var loopLabel2 = { kind: "loop" }, switchLabel2 = { kind: "switch" };
+      pp$82.isLet = function(context) {
+        if (this.options.ecmaVersion < 6 || !this.isContextual("let")) {
+          return false;
+        }
+        skipWhiteSpace2.lastIndex = this.pos;
+        var skip = skipWhiteSpace2.exec(this.input);
+        var next = this.pos + skip[0].length, nextCh = this.fullCharCodeAt(next);
+        if (nextCh === 91 || nextCh === 92) {
+          return true;
+        }
+        if (context) {
+          return false;
+        }
+        if (nextCh === 123) {
+          return true;
+        }
+        if (isIdentifierStart2(nextCh)) {
+          var start = next;
+          do {
+            next += nextCh <= 65535 ? 1 : 2;
+          } while (isIdentifierChar2(nextCh = this.fullCharCodeAt(next)));
+          if (nextCh === 92) {
+            return true;
+          }
+          var ident = this.input.slice(start, next);
+          if (!keywordRelationalOperator2.test(ident)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      pp$82.isAsyncFunction = function() {
+        if (this.options.ecmaVersion < 8 || !this.isContextual("async")) {
+          return false;
+        }
+        skipWhiteSpace2.lastIndex = this.pos;
+        var skip = skipWhiteSpace2.exec(this.input);
+        var next = this.pos + skip[0].length, after;
+        return !lineBreak2.test(this.input.slice(this.pos, next)) && this.input.slice(next, next + 8) === "function" && (next + 8 === this.input.length || !(isIdentifierChar2(after = this.fullCharCodeAt(next + 8)) || after === 92));
+      };
+      pp$82.isUsingKeyword = function(isAwaitUsing, isFor) {
+        if (this.options.ecmaVersion < 17 || !this.isContextual(isAwaitUsing ? "await" : "using")) {
+          return false;
+        }
+        skipWhiteSpace2.lastIndex = this.pos;
+        var skip = skipWhiteSpace2.exec(this.input);
+        var next = this.pos + skip[0].length;
+        if (lineBreak2.test(this.input.slice(this.pos, next))) {
+          return false;
+        }
+        if (isAwaitUsing) {
+          var usingEndPos = next + 5, after;
+          if (this.input.slice(next, usingEndPos) !== "using" || usingEndPos === this.input.length || isIdentifierChar2(after = this.fullCharCodeAt(usingEndPos)) || after === 92) {
+            return false;
+          }
+          skipWhiteSpace2.lastIndex = usingEndPos;
+          var skipAfterUsing = skipWhiteSpace2.exec(this.input);
+          next = usingEndPos + skipAfterUsing[0].length;
+          if (skipAfterUsing && lineBreak2.test(this.input.slice(usingEndPos, next))) {
+            return false;
+          }
+        }
+        var ch = this.fullCharCodeAt(next);
+        if (!isIdentifierStart2(ch) && ch !== 92) {
+          return false;
+        }
+        var idStart = next;
+        do {
+          next += ch <= 65535 ? 1 : 2;
+        } while (isIdentifierChar2(ch = this.fullCharCodeAt(next)));
+        if (ch === 92) {
+          return true;
+        }
+        var id2 = this.input.slice(idStart, next);
+        if (keywordRelationalOperator2.test(id2)) {
+          return false;
+        }
+        if (isFor && !isAwaitUsing && id2 === "of") {
+          skipWhiteSpace2.lastIndex = next;
+          var skipAfterOf = skipWhiteSpace2.exec(this.input);
+          next = next + skipAfterOf[0].length;
+          if (this.input.charCodeAt(next) !== 61 || // Check for ==, === and => operators
+          (ch = this.input.charCodeAt(next + 1)) === 61 || ch === 62) {
+            return false;
+          }
+        }
+        return true;
+      };
+      pp$82.isAwaitUsing = function(isFor) {
+        return this.isUsingKeyword(true, isFor);
+      };
+      pp$82.isUsing = function(isFor) {
+        return this.isUsingKeyword(false, isFor);
+      };
+      pp$82.parseStatement = function(context, topLevel, exports$1) {
+        var starttype = this.type, node = this.startNode(), kind;
+        if (this.isLet(context)) {
+          starttype = types$12._var;
+          kind = "let";
+        }
+        switch (starttype) {
+          case types$12._break:
+          case types$12._continue:
+            return this.parseBreakContinueStatement(node, starttype.keyword);
+          case types$12._debugger:
+            return this.parseDebuggerStatement(node);
+          case types$12._do:
+            return this.parseDoStatement(node);
+          case types$12._for:
+            return this.parseForStatement(node);
+          case types$12._function:
+            if (context && (this.strict || context !== "if" && context !== "label") && this.options.ecmaVersion >= 6) {
+              this.unexpected();
+            }
+            return this.parseFunctionStatement(node, false, !context);
+          case types$12._class:
+            if (context) {
+              this.unexpected();
+            }
+            return this.parseClass(node, true);
+          case types$12._if:
+            return this.parseIfStatement(node);
+          case types$12._return:
+            return this.parseReturnStatement(node);
+          case types$12._switch:
+            return this.parseSwitchStatement(node);
+          case types$12._throw:
+            return this.parseThrowStatement(node);
+          case types$12._try:
+            return this.parseTryStatement(node);
+          case types$12._const:
+          case types$12._var:
+            kind = kind || this.value;
+            if (context && kind !== "var") {
+              this.unexpected();
+            }
+            return this.parseVarStatement(node, kind);
+          case types$12._while:
+            return this.parseWhileStatement(node);
+          case types$12._with:
+            return this.parseWithStatement(node);
+          case types$12.braceL:
+            return this.parseBlock(true, node);
+          case types$12.semi:
+            return this.parseEmptyStatement(node);
+          case types$12._export:
+          case types$12._import:
+            if (this.options.ecmaVersion > 10 && starttype === types$12._import) {
+              skipWhiteSpace2.lastIndex = this.pos;
+              var skip = skipWhiteSpace2.exec(this.input);
+              var next = this.pos + skip[0].length, nextCh = this.input.charCodeAt(next);
+              if (nextCh === 40 || nextCh === 46) {
+                return this.parseExpressionStatement(node, this.parseExpression());
+              }
+            }
+            if (!this.options.allowImportExportEverywhere) {
+              if (!topLevel) {
+                this.raise(this.start, "'import' and 'export' may only appear at the top level");
+              }
+              if (!this.inModule) {
+                this.raise(this.start, "'import' and 'export' may appear only with 'sourceType: module'");
+              }
+            }
+            return starttype === types$12._import ? this.parseImport(node) : this.parseExport(node, exports$1);
+          // If the statement does not start with a statement keyword or a
+          // brace, it's an ExpressionStatement or LabeledStatement. We
+          // simply start parsing an expression, and afterwards, if the
+          // next token is a colon and the expression was a simple
+          // Identifier node, we switch to interpreting it as a label.
+          default:
+            if (this.isAsyncFunction()) {
+              if (context) {
+                this.unexpected();
+              }
+              this.next();
+              return this.parseFunctionStatement(node, true, !context);
+            }
+            var usingKind = this.isAwaitUsing(false) ? "await using" : this.isUsing(false) ? "using" : null;
+            if (usingKind) {
+              if (!this.allowUsing) {
+                this.raise(this.start, "Using declaration cannot appear in the top level when source type is `script` or in the bare case statement");
+              }
+              if (context) {
+                this.raise(this.start, "Using declaration is not allowed in single-statement positions");
+              }
+              if (usingKind === "await using") {
+                if (!this.canAwait) {
+                  this.raise(this.start, "Await using cannot appear outside of async function");
+                }
+                this.next();
+              }
+              this.next();
+              this.parseVar(node, false, usingKind);
+              this.semicolon();
+              return this.finishNode(node, "VariableDeclaration");
+            }
+            var maybeName = this.value, expr = this.parseExpression();
+            if (starttype === types$12.name && expr.type === "Identifier" && this.eat(types$12.colon)) {
+              return this.parseLabeledStatement(node, maybeName, expr, context);
+            } else {
+              return this.parseExpressionStatement(node, expr);
+            }
+        }
+      };
+      pp$82.parseBreakContinueStatement = function(node, keyword2) {
+        var isBreak = keyword2 === "break";
+        this.next();
+        if (this.eat(types$12.semi) || this.insertSemicolon()) {
+          node.label = null;
+        } else if (this.type !== types$12.name) {
+          this.unexpected();
+        } else {
+          node.label = this.parseIdent();
+          this.semicolon();
+        }
+        var i2 = 0;
+        for (; i2 < this.labels.length; ++i2) {
+          var lab = this.labels[i2];
+          if (node.label == null || lab.name === node.label.name) {
+            if (lab.kind != null && (isBreak || lab.kind === "loop")) {
+              break;
+            }
+            if (node.label && isBreak) {
+              break;
+            }
+          }
+        }
+        if (i2 === this.labels.length) {
+          this.raise(node.start, "Unsyntactic " + keyword2);
+        }
+        return this.finishNode(node, isBreak ? "BreakStatement" : "ContinueStatement");
+      };
+      pp$82.parseDebuggerStatement = function(node) {
+        this.next();
+        this.semicolon();
+        return this.finishNode(node, "DebuggerStatement");
+      };
+      pp$82.parseDoStatement = function(node) {
+        this.next();
+        this.labels.push(loopLabel2);
+        node.body = this.parseStatement("do");
+        this.labels.pop();
+        this.expect(types$12._while);
+        node.test = this.parseParenExpression();
+        if (this.options.ecmaVersion >= 6) {
+          this.eat(types$12.semi);
+        } else {
+          this.semicolon();
+        }
+        return this.finishNode(node, "DoWhileStatement");
+      };
+      pp$82.parseForStatement = function(node) {
+        this.next();
+        var awaitAt = this.options.ecmaVersion >= 9 && this.canAwait && this.eatContextual("await") ? this.lastTokStart : -1;
+        this.labels.push(loopLabel2);
+        this.enterScope(0);
+        this.expect(types$12.parenL);
+        if (this.type === types$12.semi) {
+          if (awaitAt > -1) {
+            this.unexpected(awaitAt);
+          }
+          return this.parseFor(node, null);
+        }
+        var isLet = this.isLet();
+        if (this.type === types$12._var || this.type === types$12._const || isLet) {
+          var init$1 = this.startNode(), kind = isLet ? "let" : this.value;
+          this.next();
+          this.parseVar(init$1, true, kind);
+          this.finishNode(init$1, "VariableDeclaration");
+          return this.parseForAfterInit(node, init$1, awaitAt);
+        }
+        var startsWithLet = this.isContextual("let"), isForOf = false;
+        var usingKind = this.isUsing(true) ? "using" : this.isAwaitUsing(true) ? "await using" : null;
+        if (usingKind) {
+          var init$2 = this.startNode();
+          this.next();
+          if (usingKind === "await using") {
+            if (!this.canAwait) {
+              this.raise(this.start, "Await using cannot appear outside of async function");
+            }
+            this.next();
+          }
+          this.parseVar(init$2, true, usingKind);
+          this.finishNode(init$2, "VariableDeclaration");
+          return this.parseForAfterInit(node, init$2, awaitAt);
+        }
+        var containsEsc = this.containsEsc;
+        var refDestructuringErrors = new DestructuringErrors3();
+        var initPos = this.start;
+        var init = awaitAt > -1 ? this.parseExprSubscripts(refDestructuringErrors, "await") : this.parseExpression(true, refDestructuringErrors);
+        if (this.type === types$12._in || (isForOf = this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
+          if (awaitAt > -1) {
+            if (this.type === types$12._in) {
+              this.unexpected(awaitAt);
+            }
+            node.await = true;
+          } else if (isForOf && this.options.ecmaVersion >= 8) {
+            if (init.start === initPos && !containsEsc && init.type === "Identifier" && init.name === "async") {
+              this.unexpected();
+            } else if (this.options.ecmaVersion >= 9) {
+              node.await = false;
+            }
+          }
+          if (startsWithLet && isForOf) {
+            this.raise(init.start, "The left-hand side of a for-of loop may not start with 'let'.");
+          }
+          this.toAssignable(init, false, refDestructuringErrors);
+          this.checkLValPattern(init);
+          return this.parseForIn(node, init);
+        } else {
+          this.checkExpressionErrors(refDestructuringErrors, true);
+        }
+        if (awaitAt > -1) {
+          this.unexpected(awaitAt);
+        }
+        return this.parseFor(node, init);
+      };
+      pp$82.parseForAfterInit = function(node, init, awaitAt) {
+        if ((this.type === types$12._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) && init.declarations.length === 1) {
+          if (this.type === types$12._in) {
+            if ((init.kind === "using" || init.kind === "await using") && !init.declarations[0].init) {
+              this.raise(this.start, "Using declaration is not allowed in for-in loops");
+            }
+            if (this.options.ecmaVersion >= 9 && awaitAt > -1) {
+              this.unexpected(awaitAt);
+            }
+          } else if (this.options.ecmaVersion >= 9) {
+            node.await = awaitAt > -1;
+          }
+          return this.parseForIn(node, init);
+        }
+        if (awaitAt > -1) {
+          this.unexpected(awaitAt);
+        }
+        return this.parseFor(node, init);
+      };
+      pp$82.parseFunctionStatement = function(node, isAsync, declarationPosition) {
+        this.next();
+        return this.parseFunction(node, FUNC_STATEMENT2 | (declarationPosition ? 0 : FUNC_HANGING_STATEMENT2), false, isAsync);
+      };
+      pp$82.parseIfStatement = function(node) {
+        this.next();
+        node.test = this.parseParenExpression();
+        node.consequent = this.parseStatement("if");
+        node.alternate = this.eat(types$12._else) ? this.parseStatement("if") : null;
+        return this.finishNode(node, "IfStatement");
+      };
+      pp$82.parseReturnStatement = function(node) {
+        if (!this.allowReturn) {
+          this.raise(this.start, "'return' outside of function");
+        }
+        this.next();
+        if (this.eat(types$12.semi) || this.insertSemicolon()) {
+          node.argument = null;
+        } else {
+          node.argument = this.parseExpression();
+          this.semicolon();
+        }
+        return this.finishNode(node, "ReturnStatement");
+      };
+      pp$82.parseSwitchStatement = function(node) {
+        this.next();
+        node.discriminant = this.parseParenExpression();
+        node.cases = [];
+        this.expect(types$12.braceL);
+        this.labels.push(switchLabel2);
+        this.enterScope(SCOPE_SWITCH2);
+        var cur;
+        for (var sawDefault = false; this.type !== types$12.braceR; ) {
+          if (this.type === types$12._case || this.type === types$12._default) {
+            var isCase = this.type === types$12._case;
+            if (cur) {
+              this.finishNode(cur, "SwitchCase");
+            }
+            node.cases.push(cur = this.startNode());
+            cur.consequent = [];
+            this.next();
+            if (isCase) {
+              cur.test = this.parseExpression();
+            } else {
+              if (sawDefault) {
+                this.raiseRecoverable(this.lastTokStart, "Multiple default clauses");
+              }
+              sawDefault = true;
+              cur.test = null;
+            }
+            this.expect(types$12.colon);
+          } else {
+            if (!cur) {
+              this.unexpected();
+            }
+            cur.consequent.push(this.parseStatement(null));
+          }
+        }
+        this.exitScope();
+        if (cur) {
+          this.finishNode(cur, "SwitchCase");
+        }
+        this.next();
+        this.labels.pop();
+        return this.finishNode(node, "SwitchStatement");
+      };
+      pp$82.parseThrowStatement = function(node) {
+        this.next();
+        if (lineBreak2.test(this.input.slice(this.lastTokEnd, this.start))) {
+          this.raise(this.lastTokEnd, "Illegal newline after throw");
+        }
+        node.argument = this.parseExpression();
+        this.semicolon();
+        return this.finishNode(node, "ThrowStatement");
+      };
+      var empty$12 = [];
+      pp$82.parseCatchClauseParam = function() {
+        var param = this.parseBindingAtom();
+        var simple = param.type === "Identifier";
+        this.enterScope(simple ? SCOPE_SIMPLE_CATCH2 : 0);
+        this.checkLValPattern(param, simple ? BIND_SIMPLE_CATCH2 : BIND_LEXICAL2);
+        this.expect(types$12.parenR);
+        return param;
+      };
+      pp$82.parseTryStatement = function(node) {
+        this.next();
+        node.block = this.parseBlock();
+        node.handler = null;
+        if (this.type === types$12._catch) {
+          var clause = this.startNode();
+          this.next();
+          if (this.eat(types$12.parenL)) {
+            clause.param = this.parseCatchClauseParam();
+          } else {
+            if (this.options.ecmaVersion < 10) {
+              this.unexpected();
+            }
+            clause.param = null;
+            this.enterScope(0);
+          }
+          clause.body = this.parseBlock(false);
+          this.exitScope();
+          node.handler = this.finishNode(clause, "CatchClause");
+        }
+        node.finalizer = this.eat(types$12._finally) ? this.parseBlock() : null;
+        if (!node.handler && !node.finalizer) {
+          this.raise(node.start, "Missing catch or finally clause");
+        }
+        return this.finishNode(node, "TryStatement");
+      };
+      pp$82.parseVarStatement = function(node, kind, allowMissingInitializer) {
+        this.next();
+        this.parseVar(node, false, kind, allowMissingInitializer);
+        this.semicolon();
+        return this.finishNode(node, "VariableDeclaration");
+      };
+      pp$82.parseWhileStatement = function(node) {
+        this.next();
+        node.test = this.parseParenExpression();
+        this.labels.push(loopLabel2);
+        node.body = this.parseStatement("while");
+        this.labels.pop();
+        return this.finishNode(node, "WhileStatement");
+      };
+      pp$82.parseWithStatement = function(node) {
+        if (this.strict) {
+          this.raise(this.start, "'with' in strict mode");
+        }
+        this.next();
+        node.object = this.parseParenExpression();
+        node.body = this.parseStatement("with");
+        return this.finishNode(node, "WithStatement");
+      };
+      pp$82.parseEmptyStatement = function(node) {
+        this.next();
+        return this.finishNode(node, "EmptyStatement");
+      };
+      pp$82.parseLabeledStatement = function(node, maybeName, expr, context) {
+        for (var i$1 = 0, list2 = this.labels; i$1 < list2.length; i$1 += 1) {
+          var label = list2[i$1];
+          if (label.name === maybeName) {
+            this.raise(expr.start, "Label '" + maybeName + "' is already declared");
+          }
+        }
+        var kind = this.type.isLoop ? "loop" : this.type === types$12._switch ? "switch" : null;
+        for (var i2 = this.labels.length - 1; i2 >= 0; i2--) {
+          var label$1 = this.labels[i2];
+          if (label$1.statementStart === node.start) {
+            label$1.statementStart = this.start;
+            label$1.kind = kind;
+          } else {
+            break;
+          }
+        }
+        this.labels.push({ name: maybeName, kind, statementStart: this.start });
+        node.body = this.parseStatement(context ? context.indexOf("label") === -1 ? context + "label" : context : "label");
+        this.labels.pop();
+        node.label = expr;
+        return this.finishNode(node, "LabeledStatement");
+      };
+      pp$82.parseExpressionStatement = function(node, expr) {
+        node.expression = expr;
+        this.semicolon();
+        return this.finishNode(node, "ExpressionStatement");
+      };
+      pp$82.parseBlock = function(createNewLexicalScope, node, exitStrict) {
+        if (createNewLexicalScope === void 0) createNewLexicalScope = true;
+        if (node === void 0) node = this.startNode();
+        node.body = [];
+        this.expect(types$12.braceL);
+        if (createNewLexicalScope) {
+          this.enterScope(0);
+        }
+        while (this.type !== types$12.braceR) {
+          var stmt = this.parseStatement(null);
+          node.body.push(stmt);
+        }
+        if (exitStrict) {
+          this.strict = false;
+        }
+        this.next();
+        if (createNewLexicalScope) {
+          this.exitScope();
+        }
+        return this.finishNode(node, "BlockStatement");
+      };
+      pp$82.parseFor = function(node, init) {
+        node.init = init;
+        this.expect(types$12.semi);
+        node.test = this.type === types$12.semi ? null : this.parseExpression();
+        this.expect(types$12.semi);
+        node.update = this.type === types$12.parenR ? null : this.parseExpression();
+        this.expect(types$12.parenR);
+        node.body = this.parseStatement("for");
+        this.exitScope();
+        this.labels.pop();
+        return this.finishNode(node, "ForStatement");
+      };
+      pp$82.parseForIn = function(node, init) {
+        var isForIn = this.type === types$12._in;
+        this.next();
+        if (init.type === "VariableDeclaration" && init.declarations[0].init != null && (!isForIn || this.options.ecmaVersion < 8 || this.strict || init.kind !== "var" || init.declarations[0].id.type !== "Identifier")) {
+          this.raise(
+            init.start,
+            (isForIn ? "for-in" : "for-of") + " loop variable declaration may not have an initializer"
+          );
+        }
+        node.left = init;
+        node.right = isForIn ? this.parseExpression() : this.parseMaybeAssign();
+        this.expect(types$12.parenR);
+        node.body = this.parseStatement("for");
+        this.exitScope();
+        this.labels.pop();
+        return this.finishNode(node, isForIn ? "ForInStatement" : "ForOfStatement");
+      };
+      pp$82.parseVar = function(node, isFor, kind, allowMissingInitializer) {
+        node.declarations = [];
+        node.kind = kind;
+        for (; ; ) {
+          var decl = this.startNode();
+          this.parseVarId(decl, kind);
+          if (this.eat(types$12.eq)) {
+            decl.init = this.parseMaybeAssign(isFor);
+          } else if (!allowMissingInitializer && kind === "const" && !(this.type === types$12._in || this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
+            this.unexpected();
+          } else if (!allowMissingInitializer && (kind === "using" || kind === "await using") && this.options.ecmaVersion >= 17 && this.type !== types$12._in && !this.isContextual("of")) {
+            this.raise(this.lastTokEnd, "Missing initializer in " + kind + " declaration");
+          } else if (!allowMissingInitializer && decl.id.type !== "Identifier" && !(isFor && (this.type === types$12._in || this.isContextual("of")))) {
+            this.raise(this.lastTokEnd, "Complex binding patterns require an initialization value");
+          } else {
+            decl.init = null;
+          }
+          node.declarations.push(this.finishNode(decl, "VariableDeclarator"));
+          if (!this.eat(types$12.comma)) {
+            break;
+          }
+        }
+        return node;
+      };
+      pp$82.parseVarId = function(decl, kind) {
+        decl.id = kind === "using" || kind === "await using" ? this.parseIdent() : this.parseBindingAtom();
+        this.checkLValPattern(decl.id, kind === "var" ? BIND_VAR2 : BIND_LEXICAL2, false);
+      };
+      var FUNC_STATEMENT2 = 1, FUNC_HANGING_STATEMENT2 = 2, FUNC_NULLABLE_ID2 = 4;
+      pp$82.parseFunction = function(node, statement, allowExpressionBody, isAsync, forInit) {
+        this.initFunction(node);
+        if (this.options.ecmaVersion >= 9 || this.options.ecmaVersion >= 6 && !isAsync) {
+          if (this.type === types$12.star && statement & FUNC_HANGING_STATEMENT2) {
+            this.unexpected();
+          }
+          node.generator = this.eat(types$12.star);
+        }
+        if (this.options.ecmaVersion >= 8) {
+          node.async = !!isAsync;
+        }
+        if (statement & FUNC_STATEMENT2) {
+          node.id = statement & FUNC_NULLABLE_ID2 && this.type !== types$12.name ? null : this.parseIdent();
+          if (node.id && !(statement & FUNC_HANGING_STATEMENT2)) {
+            this.checkLValSimple(node.id, this.strict || node.generator || node.async ? this.treatFunctionsAsVar ? BIND_VAR2 : BIND_LEXICAL2 : BIND_FUNCTION2);
+          }
+        }
+        var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+        this.yieldPos = 0;
+        this.awaitPos = 0;
+        this.awaitIdentPos = 0;
+        this.enterScope(functionFlags2(node.async, node.generator));
+        if (!(statement & FUNC_STATEMENT2)) {
+          node.id = this.type === types$12.name ? this.parseIdent() : null;
+        }
+        this.parseFunctionParams(node);
+        this.parseFunctionBody(node, allowExpressionBody, false, forInit);
+        this.yieldPos = oldYieldPos;
+        this.awaitPos = oldAwaitPos;
+        this.awaitIdentPos = oldAwaitIdentPos;
+        return this.finishNode(node, statement & FUNC_STATEMENT2 ? "FunctionDeclaration" : "FunctionExpression");
+      };
+      pp$82.parseFunctionParams = function(node) {
+        this.expect(types$12.parenL);
+        node.params = this.parseBindingList(types$12.parenR, false, this.options.ecmaVersion >= 8);
+        this.checkYieldAwaitInDefaultParams();
+      };
+      pp$82.parseClass = function(node, isStatement) {
+        this.next();
+        var oldStrict = this.strict;
+        this.strict = true;
+        this.parseClassId(node, isStatement);
+        this.parseClassSuper(node);
+        var privateNameMap = this.enterClassBody();
+        var classBody = this.startNode();
+        var hadConstructor = false;
+        classBody.body = [];
+        this.expect(types$12.braceL);
+        while (this.type !== types$12.braceR) {
+          var element = this.parseClassElement(node.superClass !== null);
+          if (element) {
+            classBody.body.push(element);
+            if (element.type === "MethodDefinition" && element.kind === "constructor") {
+              if (hadConstructor) {
+                this.raiseRecoverable(element.start, "Duplicate constructor in the same class");
+              }
+              hadConstructor = true;
+            } else if (element.key && element.key.type === "PrivateIdentifier" && isPrivateNameConflicted2(privateNameMap, element)) {
+              this.raiseRecoverable(element.key.start, "Identifier '#" + element.key.name + "' has already been declared");
+            }
+          }
+        }
+        this.strict = oldStrict;
+        this.next();
+        node.body = this.finishNode(classBody, "ClassBody");
+        this.exitClassBody();
+        return this.finishNode(node, isStatement ? "ClassDeclaration" : "ClassExpression");
+      };
+      pp$82.parseClassElement = function(constructorAllowsSuper) {
+        if (this.eat(types$12.semi)) {
+          return null;
+        }
+        var ecmaVersion2 = this.options.ecmaVersion;
+        var node = this.startNode();
+        var keyName = "";
+        var isGenerator = false;
+        var isAsync = false;
+        var kind = "method";
+        var isStatic = false;
+        if (this.eatContextual("static")) {
+          if (ecmaVersion2 >= 13 && this.eat(types$12.braceL)) {
+            this.parseClassStaticBlock(node);
+            return node;
+          }
+          if (this.isClassElementNameStart() || this.type === types$12.star) {
+            isStatic = true;
+          } else {
+            keyName = "static";
+          }
+        }
+        node.static = isStatic;
+        if (!keyName && ecmaVersion2 >= 8 && this.eatContextual("async")) {
+          if ((this.isClassElementNameStart() || this.type === types$12.star) && !this.canInsertSemicolon()) {
+            isAsync = true;
+          } else {
+            keyName = "async";
+          }
+        }
+        if (!keyName && (ecmaVersion2 >= 9 || !isAsync) && this.eat(types$12.star)) {
+          isGenerator = true;
+        }
+        if (!keyName && !isAsync && !isGenerator) {
+          var lastValue = this.value;
+          if (this.eatContextual("get") || this.eatContextual("set")) {
+            if (this.isClassElementNameStart()) {
+              kind = lastValue;
+            } else {
+              keyName = lastValue;
+            }
+          }
+        }
+        if (keyName) {
+          node.computed = false;
+          node.key = this.startNodeAt(this.lastTokStart, this.lastTokStartLoc);
+          node.key.name = keyName;
+          this.finishNode(node.key, "Identifier");
+        } else {
+          this.parseClassElementName(node);
+        }
+        if (ecmaVersion2 < 13 || this.type === types$12.parenL || kind !== "method" || isGenerator || isAsync) {
+          var isConstructor = !node.static && checkKeyName2(node, "constructor");
+          var allowsDirectSuper = isConstructor && constructorAllowsSuper;
+          if (isConstructor && kind !== "method") {
+            this.raise(node.key.start, "Constructor can't have get/set modifier");
+          }
+          node.kind = isConstructor ? "constructor" : kind;
+          this.parseClassMethod(node, isGenerator, isAsync, allowsDirectSuper);
+        } else {
+          this.parseClassField(node);
+        }
+        return node;
+      };
+      pp$82.isClassElementNameStart = function() {
+        return this.type === types$12.name || this.type === types$12.privateId || this.type === types$12.num || this.type === types$12.string || this.type === types$12.bracketL || this.type.keyword;
+      };
+      pp$82.parseClassElementName = function(element) {
+        if (this.type === types$12.privateId) {
+          if (this.value === "constructor") {
+            this.raise(this.start, "Classes can't have an element named '#constructor'");
+          }
+          element.computed = false;
+          element.key = this.parsePrivateIdent();
+        } else {
+          this.parsePropertyName(element);
+        }
+      };
+      pp$82.parseClassMethod = function(method, isGenerator, isAsync, allowsDirectSuper) {
+        var key = method.key;
+        if (method.kind === "constructor") {
+          if (isGenerator) {
+            this.raise(key.start, "Constructor can't be a generator");
+          }
+          if (isAsync) {
+            this.raise(key.start, "Constructor can't be an async method");
+          }
+        } else if (method.static && checkKeyName2(method, "prototype")) {
+          this.raise(key.start, "Classes may not have a static property named prototype");
+        }
+        var value = method.value = this.parseMethod(isGenerator, isAsync, allowsDirectSuper);
+        if (method.kind === "get" && value.params.length !== 0) {
+          this.raiseRecoverable(value.start, "getter should have no params");
+        }
+        if (method.kind === "set" && value.params.length !== 1) {
+          this.raiseRecoverable(value.start, "setter should have exactly one param");
+        }
+        if (method.kind === "set" && value.params[0].type === "RestElement") {
+          this.raiseRecoverable(value.params[0].start, "Setter cannot use rest params");
+        }
+        return this.finishNode(method, "MethodDefinition");
+      };
+      pp$82.parseClassField = function(field) {
+        if (checkKeyName2(field, "constructor")) {
+          this.raise(field.key.start, "Classes can't have a field named 'constructor'");
+        } else if (field.static && checkKeyName2(field, "prototype")) {
+          this.raise(field.key.start, "Classes can't have a static field named 'prototype'");
+        }
+        if (this.eat(types$12.eq)) {
+          this.enterScope(SCOPE_CLASS_FIELD_INIT2 | SCOPE_SUPER2);
+          field.value = this.parseMaybeAssign();
+          this.exitScope();
+        } else {
+          field.value = null;
+        }
+        this.semicolon();
+        return this.finishNode(field, "PropertyDefinition");
+      };
+      pp$82.parseClassStaticBlock = function(node) {
+        node.body = [];
+        var oldLabels = this.labels;
+        this.labels = [];
+        this.enterScope(SCOPE_CLASS_STATIC_BLOCK2 | SCOPE_SUPER2);
+        while (this.type !== types$12.braceR) {
+          var stmt = this.parseStatement(null);
+          node.body.push(stmt);
+        }
+        this.next();
+        this.exitScope();
+        this.labels = oldLabels;
+        return this.finishNode(node, "StaticBlock");
+      };
+      pp$82.parseClassId = function(node, isStatement) {
+        if (this.type === types$12.name) {
+          node.id = this.parseIdent();
+          if (isStatement) {
+            this.checkLValSimple(node.id, BIND_LEXICAL2, false);
+          }
+        } else {
+          if (isStatement === true) {
+            this.unexpected();
+          }
+          node.id = null;
+        }
+      };
+      pp$82.parseClassSuper = function(node) {
+        node.superClass = this.eat(types$12._extends) ? this.parseExprSubscripts(null, false) : null;
+      };
+      pp$82.enterClassBody = function() {
+        var element = { declared: /* @__PURE__ */ Object.create(null), used: [] };
+        this.privateNameStack.push(element);
+        return element.declared;
+      };
+      pp$82.exitClassBody = function() {
+        var ref3 = this.privateNameStack.pop();
+        var declared = ref3.declared;
+        var used = ref3.used;
+        if (!this.options.checkPrivateFields) {
+          return;
+        }
+        var len = this.privateNameStack.length;
+        var parent = len === 0 ? null : this.privateNameStack[len - 1];
+        for (var i2 = 0; i2 < used.length; ++i2) {
+          var id2 = used[i2];
+          if (!hasOwn2(declared, id2.name)) {
+            if (parent) {
+              parent.used.push(id2);
+            } else {
+              this.raiseRecoverable(id2.start, "Private field '#" + id2.name + "' must be declared in an enclosing class");
+            }
+          }
+        }
+      };
+      function isPrivateNameConflicted2(privateNameMap, element) {
+        var name2 = element.key.name;
+        var curr = privateNameMap[name2];
+        var next = "true";
+        if (element.type === "MethodDefinition" && (element.kind === "get" || element.kind === "set")) {
+          next = (element.static ? "s" : "i") + element.kind;
+        }
+        if (curr === "iget" && next === "iset" || curr === "iset" && next === "iget" || curr === "sget" && next === "sset" || curr === "sset" && next === "sget") {
+          privateNameMap[name2] = "true";
+          return false;
+        } else if (!curr) {
+          privateNameMap[name2] = next;
+          return false;
+        } else {
+          return true;
+        }
+      }
+      function checkKeyName2(node, name2) {
+        var computed = node.computed;
+        var key = node.key;
+        return !computed && (key.type === "Identifier" && key.name === name2 || key.type === "Literal" && key.value === name2);
+      }
+      pp$82.parseExportAllDeclaration = function(node, exports$1) {
+        if (this.options.ecmaVersion >= 11) {
+          if (this.eatContextual("as")) {
+            node.exported = this.parseModuleExportName();
+            this.checkExport(exports$1, node.exported, this.lastTokStart);
+          } else {
+            node.exported = null;
+          }
+        }
+        this.expectContextual("from");
+        if (this.type !== types$12.string) {
+          this.unexpected();
+        }
+        node.source = this.parseExprAtom();
+        if (this.options.ecmaVersion >= 16) {
+          node.attributes = this.parseWithClause();
+        }
+        this.semicolon();
+        return this.finishNode(node, "ExportAllDeclaration");
+      };
+      pp$82.parseExport = function(node, exports$1) {
+        this.next();
+        if (this.eat(types$12.star)) {
+          return this.parseExportAllDeclaration(node, exports$1);
+        }
+        if (this.eat(types$12._default)) {
+          this.checkExport(exports$1, "default", this.lastTokStart);
+          node.declaration = this.parseExportDefaultDeclaration();
+          return this.finishNode(node, "ExportDefaultDeclaration");
+        }
+        if (this.shouldParseExportStatement()) {
+          node.declaration = this.parseExportDeclaration(node);
+          if (node.declaration.type === "VariableDeclaration") {
+            this.checkVariableExport(exports$1, node.declaration.declarations);
+          } else {
+            this.checkExport(exports$1, node.declaration.id, node.declaration.id.start);
+          }
+          node.specifiers = [];
+          node.source = null;
+          if (this.options.ecmaVersion >= 16) {
+            node.attributes = [];
+          }
+        } else {
+          node.declaration = null;
+          node.specifiers = this.parseExportSpecifiers(exports$1);
+          if (this.eatContextual("from")) {
+            if (this.type !== types$12.string) {
+              this.unexpected();
+            }
+            node.source = this.parseExprAtom();
+            if (this.options.ecmaVersion >= 16) {
+              node.attributes = this.parseWithClause();
+            }
+          } else {
+            for (var i2 = 0, list2 = node.specifiers; i2 < list2.length; i2 += 1) {
+              var spec = list2[i2];
+              this.checkUnreserved(spec.local);
+              this.checkLocalExport(spec.local);
+              if (spec.local.type === "Literal") {
+                this.raise(spec.local.start, "A string literal cannot be used as an exported binding without `from`.");
+              }
+            }
+            node.source = null;
+            if (this.options.ecmaVersion >= 16) {
+              node.attributes = [];
+            }
+          }
+          this.semicolon();
+        }
+        return this.finishNode(node, "ExportNamedDeclaration");
+      };
+      pp$82.parseExportDeclaration = function(node) {
+        return this.parseStatement(null);
+      };
+      pp$82.parseExportDefaultDeclaration = function() {
+        var isAsync;
+        if (this.type === types$12._function || (isAsync = this.isAsyncFunction())) {
+          var fNode = this.startNode();
+          this.next();
+          if (isAsync) {
+            this.next();
+          }
+          return this.parseFunction(fNode, FUNC_STATEMENT2 | FUNC_NULLABLE_ID2, false, isAsync);
+        } else if (this.type === types$12._class) {
+          var cNode = this.startNode();
+          return this.parseClass(cNode, "nullableID");
+        } else {
+          var declaration = this.parseMaybeAssign();
+          this.semicolon();
+          return declaration;
+        }
+      };
+      pp$82.checkExport = function(exports$1, name2, pos) {
+        if (!exports$1) {
+          return;
+        }
+        if (typeof name2 !== "string") {
+          name2 = name2.type === "Identifier" ? name2.name : name2.value;
+        }
+        if (hasOwn2(exports$1, name2)) {
+          this.raiseRecoverable(pos, "Duplicate export '" + name2 + "'");
+        }
+        exports$1[name2] = true;
+      };
+      pp$82.checkPatternExport = function(exports$1, pat) {
+        var type = pat.type;
+        if (type === "Identifier") {
+          this.checkExport(exports$1, pat, pat.start);
+        } else if (type === "ObjectPattern") {
+          for (var i2 = 0, list2 = pat.properties; i2 < list2.length; i2 += 1) {
+            var prop = list2[i2];
+            this.checkPatternExport(exports$1, prop);
+          }
+        } else if (type === "ArrayPattern") {
+          for (var i$1 = 0, list$1 = pat.elements; i$1 < list$1.length; i$1 += 1) {
+            var elt = list$1[i$1];
+            if (elt) {
+              this.checkPatternExport(exports$1, elt);
+            }
+          }
+        } else if (type === "Property") {
+          this.checkPatternExport(exports$1, pat.value);
+        } else if (type === "AssignmentPattern") {
+          this.checkPatternExport(exports$1, pat.left);
+        } else if (type === "RestElement") {
+          this.checkPatternExport(exports$1, pat.argument);
+        }
+      };
+      pp$82.checkVariableExport = function(exports$1, decls) {
+        if (!exports$1) {
+          return;
+        }
+        for (var i2 = 0, list2 = decls; i2 < list2.length; i2 += 1) {
+          var decl = list2[i2];
+          this.checkPatternExport(exports$1, decl.id);
+        }
+      };
+      pp$82.shouldParseExportStatement = function() {
+        return this.type.keyword === "var" || this.type.keyword === "const" || this.type.keyword === "class" || this.type.keyword === "function" || this.isLet() || this.isAsyncFunction();
+      };
+      pp$82.parseExportSpecifier = function(exports$1) {
+        var node = this.startNode();
+        node.local = this.parseModuleExportName();
+        node.exported = this.eatContextual("as") ? this.parseModuleExportName() : node.local;
+        this.checkExport(
+          exports$1,
+          node.exported,
+          node.exported.start
+        );
+        return this.finishNode(node, "ExportSpecifier");
+      };
+      pp$82.parseExportSpecifiers = function(exports$1) {
+        var nodes = [], first = true;
+        this.expect(types$12.braceL);
+        while (!this.eat(types$12.braceR)) {
+          if (!first) {
+            this.expect(types$12.comma);
+            if (this.afterTrailingComma(types$12.braceR)) {
+              break;
+            }
+          } else {
+            first = false;
+          }
+          nodes.push(this.parseExportSpecifier(exports$1));
+        }
+        return nodes;
+      };
+      pp$82.parseImport = function(node) {
+        this.next();
+        if (this.type === types$12.string) {
+          node.specifiers = empty$12;
+          node.source = this.parseExprAtom();
+        } else {
+          node.specifiers = this.parseImportSpecifiers();
+          this.expectContextual("from");
+          node.source = this.type === types$12.string ? this.parseExprAtom() : this.unexpected();
+        }
+        if (this.options.ecmaVersion >= 16) {
+          node.attributes = this.parseWithClause();
+        }
+        this.semicolon();
+        return this.finishNode(node, "ImportDeclaration");
+      };
+      pp$82.parseImportSpecifier = function() {
+        var node = this.startNode();
+        node.imported = this.parseModuleExportName();
+        if (this.eatContextual("as")) {
+          node.local = this.parseIdent();
+        } else {
+          this.checkUnreserved(node.imported);
+          node.local = node.imported;
+        }
+        this.checkLValSimple(node.local, BIND_LEXICAL2);
+        return this.finishNode(node, "ImportSpecifier");
+      };
+      pp$82.parseImportDefaultSpecifier = function() {
+        var node = this.startNode();
+        node.local = this.parseIdent();
+        this.checkLValSimple(node.local, BIND_LEXICAL2);
+        return this.finishNode(node, "ImportDefaultSpecifier");
+      };
+      pp$82.parseImportNamespaceSpecifier = function() {
+        var node = this.startNode();
+        this.next();
+        this.expectContextual("as");
+        node.local = this.parseIdent();
+        this.checkLValSimple(node.local, BIND_LEXICAL2);
+        return this.finishNode(node, "ImportNamespaceSpecifier");
+      };
+      pp$82.parseImportSpecifiers = function() {
+        var nodes = [], first = true;
+        if (this.type === types$12.name) {
+          nodes.push(this.parseImportDefaultSpecifier());
+          if (!this.eat(types$12.comma)) {
+            return nodes;
+          }
+        }
+        if (this.type === types$12.star) {
+          nodes.push(this.parseImportNamespaceSpecifier());
+          return nodes;
+        }
+        this.expect(types$12.braceL);
+        while (!this.eat(types$12.braceR)) {
+          if (!first) {
+            this.expect(types$12.comma);
+            if (this.afterTrailingComma(types$12.braceR)) {
+              break;
+            }
+          } else {
+            first = false;
+          }
+          nodes.push(this.parseImportSpecifier());
+        }
+        return nodes;
+      };
+      pp$82.parseWithClause = function() {
+        var nodes = [];
+        if (!this.eat(types$12._with)) {
+          return nodes;
+        }
+        this.expect(types$12.braceL);
+        var attributeKeys = {};
+        var first = true;
+        while (!this.eat(types$12.braceR)) {
+          if (!first) {
+            this.expect(types$12.comma);
+            if (this.afterTrailingComma(types$12.braceR)) {
+              break;
+            }
+          } else {
+            first = false;
+          }
+          var attr = this.parseImportAttribute();
+          var keyName = attr.key.type === "Identifier" ? attr.key.name : attr.key.value;
+          if (hasOwn2(attributeKeys, keyName)) {
+            this.raiseRecoverable(attr.key.start, "Duplicate attribute key '" + keyName + "'");
+          }
+          attributeKeys[keyName] = true;
+          nodes.push(attr);
+        }
+        return nodes;
+      };
+      pp$82.parseImportAttribute = function() {
+        var node = this.startNode();
+        node.key = this.type === types$12.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+        this.expect(types$12.colon);
+        if (this.type !== types$12.string) {
+          this.unexpected();
+        }
+        node.value = this.parseExprAtom();
+        return this.finishNode(node, "ImportAttribute");
+      };
+      pp$82.parseModuleExportName = function() {
+        if (this.options.ecmaVersion >= 13 && this.type === types$12.string) {
+          var stringLiteral = this.parseLiteral(this.value);
+          if (loneSurrogate2.test(stringLiteral.value)) {
+            this.raise(stringLiteral.start, "An export name cannot include a lone surrogate.");
+          }
+          return stringLiteral;
+        }
+        return this.parseIdent(true);
+      };
+      pp$82.adaptDirectivePrologue = function(statements) {
+        for (var i2 = 0; i2 < statements.length && this.isDirectiveCandidate(statements[i2]); ++i2) {
+          statements[i2].directive = statements[i2].expression.raw.slice(1, -1);
+        }
+      };
+      pp$82.isDirectiveCandidate = function(statement) {
+        return this.options.ecmaVersion >= 5 && statement.type === "ExpressionStatement" && statement.expression.type === "Literal" && typeof statement.expression.value === "string" && // Reject parenthesized strings.
+        (this.input[statement.start] === '"' || this.input[statement.start] === "'");
+      };
+      var pp$72 = Parser5.prototype;
+      pp$72.toAssignable = function(node, isBinding, refDestructuringErrors) {
+        if (this.options.ecmaVersion >= 6 && node) {
+          switch (node.type) {
+            case "Identifier":
+              if (this.inAsync && node.name === "await") {
+                this.raise(node.start, "Cannot use 'await' as identifier inside an async function");
+              }
+              break;
+            case "ObjectPattern":
+            case "ArrayPattern":
+            case "AssignmentPattern":
+            case "RestElement":
+              break;
+            case "ObjectExpression":
+              node.type = "ObjectPattern";
+              if (refDestructuringErrors) {
+                this.checkPatternErrors(refDestructuringErrors, true);
+              }
+              for (var i2 = 0, list2 = node.properties; i2 < list2.length; i2 += 1) {
+                var prop = list2[i2];
+                this.toAssignable(prop, isBinding);
+                if (prop.type === "RestElement" && (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")) {
+                  this.raise(prop.argument.start, "Unexpected token");
+                }
+              }
+              break;
+            case "Property":
+              if (node.kind !== "init") {
+                this.raise(node.key.start, "Object pattern can't contain getter or setter");
+              }
+              this.toAssignable(node.value, isBinding);
+              break;
+            case "ArrayExpression":
+              node.type = "ArrayPattern";
+              if (refDestructuringErrors) {
+                this.checkPatternErrors(refDestructuringErrors, true);
+              }
+              this.toAssignableList(node.elements, isBinding);
+              break;
+            case "SpreadElement":
+              node.type = "RestElement";
+              this.toAssignable(node.argument, isBinding);
+              if (node.argument.type === "AssignmentPattern") {
+                this.raise(node.argument.start, "Rest elements cannot have a default value");
+              }
+              break;
+            case "AssignmentExpression":
+              if (node.operator !== "=") {
+                this.raise(node.left.end, "Only '=' operator can be used for specifying default value.");
+              }
+              node.type = "AssignmentPattern";
+              delete node.operator;
+              this.toAssignable(node.left, isBinding);
+              break;
+            case "ParenthesizedExpression":
+              this.toAssignable(node.expression, isBinding, refDestructuringErrors);
+              break;
+            case "ChainExpression":
+              this.raiseRecoverable(node.start, "Optional chaining cannot appear in left-hand side");
+              break;
+            case "MemberExpression":
+              if (!isBinding) {
+                break;
+              }
+            default:
+              this.raise(node.start, "Assigning to rvalue");
+          }
+        } else if (refDestructuringErrors) {
+          this.checkPatternErrors(refDestructuringErrors, true);
+        }
+        return node;
+      };
+      pp$72.toAssignableList = function(exprList, isBinding) {
+        var end = exprList.length;
+        for (var i2 = 0; i2 < end; i2++) {
+          var elt = exprList[i2];
+          if (elt) {
+            this.toAssignable(elt, isBinding);
+          }
+        }
+        if (end) {
+          var last = exprList[end - 1];
+          if (this.options.ecmaVersion === 6 && isBinding && last && last.type === "RestElement" && last.argument.type !== "Identifier") {
+            this.unexpected(last.argument.start);
+          }
+        }
+        return exprList;
+      };
+      pp$72.parseSpread = function(refDestructuringErrors) {
+        var node = this.startNode();
+        this.next();
+        node.argument = this.parseMaybeAssign(false, refDestructuringErrors);
+        return this.finishNode(node, "SpreadElement");
+      };
+      pp$72.parseRestBinding = function() {
+        var node = this.startNode();
+        this.next();
+        if (this.options.ecmaVersion === 6 && this.type !== types$12.name) {
+          this.unexpected();
+        }
+        node.argument = this.parseBindingAtom();
+        return this.finishNode(node, "RestElement");
+      };
+      pp$72.parseBindingAtom = function() {
+        if (this.options.ecmaVersion >= 6) {
+          switch (this.type) {
+            case types$12.bracketL:
+              var node = this.startNode();
+              this.next();
+              node.elements = this.parseBindingList(types$12.bracketR, true, true);
+              return this.finishNode(node, "ArrayPattern");
+            case types$12.braceL:
+              return this.parseObj(true);
+          }
+        }
+        return this.parseIdent();
+      };
+      pp$72.parseBindingList = function(close, allowEmpty, allowTrailingComma, allowModifiers) {
+        var elts = [], first = true;
+        while (!this.eat(close)) {
+          if (first) {
+            first = false;
+          } else {
+            this.expect(types$12.comma);
+          }
+          if (allowEmpty && this.type === types$12.comma) {
+            elts.push(null);
+          } else if (allowTrailingComma && this.afterTrailingComma(close)) {
+            break;
+          } else if (this.type === types$12.ellipsis) {
+            var rest = this.parseRestBinding();
+            this.parseBindingListItem(rest);
+            elts.push(rest);
+            if (this.type === types$12.comma) {
+              this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+            }
+            this.expect(close);
+            break;
+          } else {
+            elts.push(this.parseAssignableListItem(allowModifiers));
+          }
+        }
+        return elts;
+      };
+      pp$72.parseAssignableListItem = function(allowModifiers) {
+        var elem = this.parseMaybeDefault(this.start, this.startLoc);
+        this.parseBindingListItem(elem);
+        return elem;
+      };
+      pp$72.parseBindingListItem = function(param) {
+        return param;
+      };
+      pp$72.parseMaybeDefault = function(startPos, startLoc, left) {
+        left = left || this.parseBindingAtom();
+        if (this.options.ecmaVersion < 6 || !this.eat(types$12.eq)) {
+          return left;
+        }
+        var node = this.startNodeAt(startPos, startLoc);
+        node.left = left;
+        node.right = this.parseMaybeAssign();
+        return this.finishNode(node, "AssignmentPattern");
+      };
+      pp$72.checkLValSimple = function(expr, bindingType, checkClashes) {
+        if (bindingType === void 0) bindingType = BIND_NONE2;
+        var isBind = bindingType !== BIND_NONE2;
+        switch (expr.type) {
+          case "Identifier":
+            if (this.strict && this.reservedWordsStrictBind.test(expr.name)) {
+              this.raiseRecoverable(expr.start, (isBind ? "Binding " : "Assigning to ") + expr.name + " in strict mode");
+            }
+            if (isBind) {
+              if (bindingType === BIND_LEXICAL2 && expr.name === "let") {
+                this.raiseRecoverable(expr.start, "let is disallowed as a lexically bound name");
+              }
+              if (checkClashes) {
+                if (hasOwn2(checkClashes, expr.name)) {
+                  this.raiseRecoverable(expr.start, "Argument name clash");
+                }
+                checkClashes[expr.name] = true;
+              }
+              if (bindingType !== BIND_OUTSIDE2) {
+                this.declareName(expr.name, bindingType, expr.start);
+              }
+            }
+            break;
+          case "ChainExpression":
+            this.raiseRecoverable(expr.start, "Optional chaining cannot appear in left-hand side");
+            break;
+          case "MemberExpression":
+            if (isBind) {
+              this.raiseRecoverable(expr.start, "Binding member expression");
+            }
+            break;
+          case "ParenthesizedExpression":
+            if (isBind) {
+              this.raiseRecoverable(expr.start, "Binding parenthesized expression");
+            }
+            return this.checkLValSimple(expr.expression, bindingType, checkClashes);
+          default:
+            this.raise(expr.start, (isBind ? "Binding" : "Assigning to") + " rvalue");
+        }
+      };
+      pp$72.checkLValPattern = function(expr, bindingType, checkClashes) {
+        if (bindingType === void 0) bindingType = BIND_NONE2;
+        switch (expr.type) {
+          case "ObjectPattern":
+            for (var i2 = 0, list2 = expr.properties; i2 < list2.length; i2 += 1) {
+              var prop = list2[i2];
+              this.checkLValInnerPattern(prop, bindingType, checkClashes);
+            }
+            break;
+          case "ArrayPattern":
+            for (var i$1 = 0, list$1 = expr.elements; i$1 < list$1.length; i$1 += 1) {
+              var elem = list$1[i$1];
+              if (elem) {
+                this.checkLValInnerPattern(elem, bindingType, checkClashes);
+              }
+            }
+            break;
+          default:
+            this.checkLValSimple(expr, bindingType, checkClashes);
+        }
+      };
+      pp$72.checkLValInnerPattern = function(expr, bindingType, checkClashes) {
+        if (bindingType === void 0) bindingType = BIND_NONE2;
+        switch (expr.type) {
+          case "Property":
+            this.checkLValInnerPattern(expr.value, bindingType, checkClashes);
+            break;
+          case "AssignmentPattern":
+            this.checkLValPattern(expr.left, bindingType, checkClashes);
+            break;
+          case "RestElement":
+            this.checkLValPattern(expr.argument, bindingType, checkClashes);
+            break;
+          default:
+            this.checkLValPattern(expr, bindingType, checkClashes);
+        }
+      };
+      var TokContext3 = function TokContext4(token, isExpr, preserveSpace, override, generator) {
+        this.token = token;
+        this.isExpr = !!isExpr;
+        this.preserveSpace = !!preserveSpace;
+        this.override = override;
+        this.generator = !!generator;
+      };
+      var types2 = {
+        b_stat: new TokContext3("{", false),
+        b_expr: new TokContext3("{", true),
+        b_tmpl: new TokContext3("${", false),
+        p_stat: new TokContext3("(", false),
+        p_expr: new TokContext3("(", true),
+        q_tmpl: new TokContext3("`", true, true, function(p) {
+          return p.tryReadTemplateToken();
+        }),
+        f_stat: new TokContext3("function", false),
+        f_expr: new TokContext3("function", true),
+        f_expr_gen: new TokContext3("function", true, false, null, true),
+        f_gen: new TokContext3("function", false, false, null, true)
+      };
+      var pp$62 = Parser5.prototype;
+      pp$62.initialContext = function() {
+        return [types2.b_stat];
+      };
+      pp$62.curContext = function() {
+        return this.context[this.context.length - 1];
+      };
+      pp$62.braceIsBlock = function(prevType) {
+        var parent = this.curContext();
+        if (parent === types2.f_expr || parent === types2.f_stat) {
+          return true;
+        }
+        if (prevType === types$12.colon && (parent === types2.b_stat || parent === types2.b_expr)) {
+          return !parent.isExpr;
+        }
+        if (prevType === types$12._return || prevType === types$12.name && this.exprAllowed) {
+          return lineBreak2.test(this.input.slice(this.lastTokEnd, this.start));
+        }
+        if (prevType === types$12._else || prevType === types$12.semi || prevType === types$12.eof || prevType === types$12.parenR || prevType === types$12.arrow) {
+          return true;
+        }
+        if (prevType === types$12.braceL) {
+          return parent === types2.b_stat;
+        }
+        if (prevType === types$12._var || prevType === types$12._const || prevType === types$12.name) {
+          return false;
+        }
+        return !this.exprAllowed;
+      };
+      pp$62.inGeneratorContext = function() {
+        for (var i2 = this.context.length - 1; i2 >= 1; i2--) {
+          var context = this.context[i2];
+          if (context.token === "function") {
+            return context.generator;
+          }
+        }
+        return false;
+      };
+      pp$62.updateContext = function(prevType) {
+        var update, type = this.type;
+        if (type.keyword && prevType === types$12.dot) {
+          this.exprAllowed = false;
+        } else if (update = type.updateContext) {
+          update.call(this, prevType);
+        } else {
+          this.exprAllowed = type.beforeExpr;
+        }
+      };
+      pp$62.overrideContext = function(tokenCtx) {
+        if (this.curContext() !== tokenCtx) {
+          this.context[this.context.length - 1] = tokenCtx;
+        }
+      };
+      types$12.parenR.updateContext = types$12.braceR.updateContext = function() {
+        if (this.context.length === 1) {
+          this.exprAllowed = true;
+          return;
+        }
+        var out = this.context.pop();
+        if (out === types2.b_stat && this.curContext().token === "function") {
+          out = this.context.pop();
+        }
+        this.exprAllowed = !out.isExpr;
+      };
+      types$12.braceL.updateContext = function(prevType) {
+        this.context.push(this.braceIsBlock(prevType) ? types2.b_stat : types2.b_expr);
+        this.exprAllowed = true;
+      };
+      types$12.dollarBraceL.updateContext = function() {
+        this.context.push(types2.b_tmpl);
+        this.exprAllowed = true;
+      };
+      types$12.parenL.updateContext = function(prevType) {
+        var statementParens = prevType === types$12._if || prevType === types$12._for || prevType === types$12._with || prevType === types$12._while;
+        this.context.push(statementParens ? types2.p_stat : types2.p_expr);
+        this.exprAllowed = true;
+      };
+      types$12.incDec.updateContext = function() {
+      };
+      types$12._function.updateContext = types$12._class.updateContext = function(prevType) {
+        if (prevType.beforeExpr && prevType !== types$12._else && !(prevType === types$12.semi && this.curContext() !== types2.p_stat) && !(prevType === types$12._return && lineBreak2.test(this.input.slice(this.lastTokEnd, this.start))) && !((prevType === types$12.colon || prevType === types$12.braceL) && this.curContext() === types2.b_stat)) {
+          this.context.push(types2.f_expr);
+        } else {
+          this.context.push(types2.f_stat);
+        }
+        this.exprAllowed = false;
+      };
+      types$12.colon.updateContext = function() {
+        if (this.curContext().token === "function") {
+          this.context.pop();
+        }
+        this.exprAllowed = true;
+      };
+      types$12.backQuote.updateContext = function() {
+        if (this.curContext() === types2.q_tmpl) {
+          this.context.pop();
+        } else {
+          this.context.push(types2.q_tmpl);
+        }
+        this.exprAllowed = false;
+      };
+      types$12.star.updateContext = function(prevType) {
+        if (prevType === types$12._function) {
+          var index = this.context.length - 1;
+          if (this.context[index] === types2.f_expr) {
+            this.context[index] = types2.f_expr_gen;
+          } else {
+            this.context[index] = types2.f_gen;
+          }
+        }
+        this.exprAllowed = true;
+      };
+      types$12.name.updateContext = function(prevType) {
+        var allowed = false;
+        if (this.options.ecmaVersion >= 6 && prevType !== types$12.dot) {
+          if (this.value === "of" && !this.exprAllowed || this.value === "yield" && this.inGeneratorContext()) {
+            allowed = true;
+          }
+        }
+        this.exprAllowed = allowed;
+      };
+      var pp$52 = Parser5.prototype;
+      pp$52.checkPropClash = function(prop, propHash, refDestructuringErrors) {
+        if (this.options.ecmaVersion >= 9 && prop.type === "SpreadElement") {
+          return;
+        }
+        if (this.options.ecmaVersion >= 6 && (prop.computed || prop.method || prop.shorthand)) {
+          return;
+        }
+        var key = prop.key;
+        var name2;
+        switch (key.type) {
+          case "Identifier":
+            name2 = key.name;
+            break;
+          case "Literal":
+            name2 = String(key.value);
+            break;
+          default:
+            return;
+        }
+        var kind = prop.kind;
+        if (this.options.ecmaVersion >= 6) {
+          if (name2 === "__proto__" && kind === "init") {
+            if (propHash.proto) {
+              if (refDestructuringErrors) {
+                if (refDestructuringErrors.doubleProto < 0) {
+                  refDestructuringErrors.doubleProto = key.start;
+                }
+              } else {
+                this.raiseRecoverable(key.start, "Redefinition of __proto__ property");
+              }
+            }
+            propHash.proto = true;
+          }
+          return;
+        }
+        name2 = "$" + name2;
+        var other = propHash[name2];
+        if (other) {
+          var redefinition;
+          if (kind === "init") {
+            redefinition = this.strict && other.init || other.get || other.set;
+          } else {
+            redefinition = other.init || other[kind];
+          }
+          if (redefinition) {
+            this.raiseRecoverable(key.start, "Redefinition of property");
+          }
+        } else {
+          other = propHash[name2] = {
+            init: false,
+            get: false,
+            set: false
+          };
+        }
+        other[kind] = true;
+      };
+      pp$52.parseExpression = function(forInit, refDestructuringErrors) {
+        var this$1$1 = this;
+        return this.catchStackOverflow(function() {
+          var startPos = this$1$1.start, startLoc = this$1$1.startLoc;
+          var expr = this$1$1.parseMaybeAssign(forInit, refDestructuringErrors);
+          if (this$1$1.type === types$12.comma) {
+            var node = this$1$1.startNodeAt(startPos, startLoc);
+            node.expressions = [expr];
+            while (this$1$1.eat(types$12.comma)) {
+              node.expressions.push(this$1$1.parseMaybeAssign(forInit, refDestructuringErrors));
+            }
+            return this$1$1.finishNode(node, "SequenceExpression");
+          }
+          return expr;
+        });
+      };
+      pp$52.parseMaybeAssign = function(forInit, refDestructuringErrors, afterLeftParse) {
+        if (this.isContextual("yield")) {
+          if (this.inGenerator) {
+            return this.parseYield(forInit);
+          } else {
+            this.exprAllowed = false;
+          }
+        }
+        var ownDestructuringErrors = false, oldParenAssign = -1, oldTrailingComma = -1, oldDoubleProto = -1;
+        if (refDestructuringErrors) {
+          oldParenAssign = refDestructuringErrors.parenthesizedAssign;
+          oldTrailingComma = refDestructuringErrors.trailingComma;
+          oldDoubleProto = refDestructuringErrors.doubleProto;
+          refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = -1;
+        } else {
+          refDestructuringErrors = new DestructuringErrors3();
+          ownDestructuringErrors = true;
+        }
+        var startPos = this.start, startLoc = this.startLoc;
+        if (this.type === types$12.parenL || this.type === types$12.name) {
+          this.potentialArrowAt = this.start;
+          this.potentialArrowInForAwait = forInit === "await";
+        }
+        var left = this.parseMaybeConditional(forInit, refDestructuringErrors);
+        if (afterLeftParse) {
+          left = afterLeftParse.call(this, left, startPos, startLoc);
+        }
+        if (this.type.isAssign) {
+          var node = this.startNodeAt(startPos, startLoc);
+          node.operator = this.value;
+          if (this.type === types$12.eq) {
+            left = this.toAssignable(left, false, refDestructuringErrors);
+          }
+          if (!ownDestructuringErrors) {
+            refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = refDestructuringErrors.doubleProto = -1;
+          }
+          if (refDestructuringErrors.shorthandAssign >= left.start) {
+            refDestructuringErrors.shorthandAssign = -1;
+          }
+          if (this.type === types$12.eq) {
+            this.checkLValPattern(left);
+          } else {
+            this.checkLValSimple(left);
+          }
+          node.left = left;
+          this.next();
+          node.right = this.parseMaybeAssign(forInit);
+          if (oldDoubleProto > -1) {
+            refDestructuringErrors.doubleProto = oldDoubleProto;
+          }
+          return this.finishNode(node, "AssignmentExpression");
+        } else {
+          if (ownDestructuringErrors) {
+            this.checkExpressionErrors(refDestructuringErrors, true);
+          }
+        }
+        if (oldParenAssign > -1) {
+          refDestructuringErrors.parenthesizedAssign = oldParenAssign;
+        }
+        if (oldTrailingComma > -1) {
+          refDestructuringErrors.trailingComma = oldTrailingComma;
+        }
+        return left;
+      };
+      pp$52.parseMaybeConditional = function(forInit, refDestructuringErrors) {
+        var startPos = this.start, startLoc = this.startLoc;
+        var expr = this.parseExprOps(forInit, refDestructuringErrors);
+        if (this.checkExpressionErrors(refDestructuringErrors)) {
+          return expr;
+        }
+        if (!(expr.type === "ArrowFunctionExpression" && expr.start === startPos) && this.eat(types$12.question)) {
+          var node = this.startNodeAt(startPos, startLoc);
+          node.test = expr;
+          node.consequent = this.parseMaybeAssign();
+          this.expect(types$12.colon);
+          node.alternate = this.parseMaybeAssign(forInit);
+          return this.finishNode(node, "ConditionalExpression");
+        }
+        return expr;
+      };
+      pp$52.parseExprOps = function(forInit, refDestructuringErrors) {
+        var startPos = this.start, startLoc = this.startLoc;
+        var expr = this.parseMaybeUnary(refDestructuringErrors, false, false, forInit);
+        if (this.checkExpressionErrors(refDestructuringErrors)) {
+          return expr;
+        }
+        return expr.start === startPos && expr.type === "ArrowFunctionExpression" ? expr : this.parseExprOp(expr, startPos, startLoc, -1, forInit);
+      };
+      pp$52.parseExprOp = function(left, leftStartPos, leftStartLoc, minPrec, forInit) {
+        var prec = this.type.binop;
+        if (prec != null && (!forInit || this.type !== types$12._in)) {
+          if (prec > minPrec) {
+            var logical = this.type === types$12.logicalOR || this.type === types$12.logicalAND;
+            var coalesce = this.type === types$12.coalesce;
+            if (coalesce) {
+              prec = types$12.logicalAND.binop;
+            }
+            var op = this.value;
+            this.next();
+            var startPos = this.start, startLoc = this.startLoc;
+            var right = this.parseExprOp(this.parseMaybeUnary(null, false, false, forInit), startPos, startLoc, prec, forInit);
+            var node = this.buildBinary(leftStartPos, leftStartLoc, left, right, op, logical || coalesce);
+            if (logical && this.type === types$12.coalesce || coalesce && (this.type === types$12.logicalOR || this.type === types$12.logicalAND)) {
+              this.raiseRecoverable(this.start, "Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses");
+            }
+            return this.parseExprOp(node, leftStartPos, leftStartLoc, minPrec, forInit);
+          }
+        }
+        return left;
+      };
+      pp$52.buildBinary = function(startPos, startLoc, left, right, op, logical) {
+        if (right.type === "PrivateIdentifier") {
+          this.raise(right.start, "Private identifier can only be left side of binary expression");
+        }
+        var node = this.startNodeAt(startPos, startLoc);
+        node.left = left;
+        node.operator = op;
+        node.right = right;
+        return this.finishNode(node, logical ? "LogicalExpression" : "BinaryExpression");
+      };
+      pp$52.parseMaybeUnary = function(refDestructuringErrors, sawUnary, incDec, forInit) {
+        var startPos = this.start, startLoc = this.startLoc, expr;
+        if (this.isContextual("await") && this.canAwait) {
+          expr = this.parseAwait(forInit);
+          sawUnary = true;
+        } else if (this.type.prefix) {
+          var node = this.startNode(), update = this.type === types$12.incDec;
+          node.operator = this.value;
+          node.prefix = true;
+          this.next();
+          node.argument = this.parseMaybeUnary(null, true, update, forInit);
+          this.checkExpressionErrors(refDestructuringErrors, true);
+          if (update) {
+            this.checkLValSimple(node.argument);
+          } else if (this.strict && node.operator === "delete" && isLocalVariableAccess2(node.argument)) {
+            this.raiseRecoverable(node.start, "Deleting local variable in strict mode");
+          } else if (node.operator === "delete" && isPrivateFieldAccess2(node.argument)) {
+            this.raiseRecoverable(node.start, "Private fields can not be deleted");
+          } else {
+            sawUnary = true;
+          }
+          expr = this.finishNode(node, update ? "UpdateExpression" : "UnaryExpression");
+        } else if (!sawUnary && this.type === types$12.privateId) {
+          if ((forInit || this.privateNameStack.length === 0) && this.options.checkPrivateFields) {
+            this.unexpected();
+          }
+          expr = this.parsePrivateIdent();
+          if (this.type !== types$12._in) {
+            this.unexpected();
+          }
+        } else {
+          expr = this.parseExprSubscripts(refDestructuringErrors, forInit);
+          if (this.checkExpressionErrors(refDestructuringErrors)) {
+            return expr;
+          }
+          while (this.type.postfix && !this.canInsertSemicolon()) {
+            var node$1 = this.startNodeAt(startPos, startLoc);
+            node$1.operator = this.value;
+            node$1.prefix = false;
+            node$1.argument = expr;
+            this.checkLValSimple(expr);
+            this.next();
+            expr = this.finishNode(node$1, "UpdateExpression");
+          }
+        }
+        if (!incDec && this.eat(types$12.starstar)) {
+          if (sawUnary) {
+            this.unexpected(this.lastTokStart);
+          } else {
+            return this.buildBinary(startPos, startLoc, expr, this.parseMaybeUnary(null, false, false, forInit), "**", false);
+          }
+        } else {
+          return expr;
+        }
+      };
+      function isLocalVariableAccess2(node) {
+        return node.type === "Identifier" || node.type === "ParenthesizedExpression" && isLocalVariableAccess2(node.expression);
+      }
+      function isPrivateFieldAccess2(node) {
+        return node.type === "MemberExpression" && node.property.type === "PrivateIdentifier" || node.type === "ChainExpression" && isPrivateFieldAccess2(node.expression) || node.type === "ParenthesizedExpression" && isPrivateFieldAccess2(node.expression);
+      }
+      pp$52.parseExprSubscripts = function(refDestructuringErrors, forInit) {
+        var startPos = this.start, startLoc = this.startLoc;
+        var expr = this.parseExprAtom(refDestructuringErrors, forInit);
+        if (expr.type === "ArrowFunctionExpression" && this.input.slice(this.lastTokStart, this.lastTokEnd) !== ")") {
+          return expr;
+        }
+        var result = this.parseSubscripts(expr, startPos, startLoc, false, forInit);
+        if (refDestructuringErrors && result.type === "MemberExpression") {
+          if (refDestructuringErrors.parenthesizedAssign >= result.start) {
+            refDestructuringErrors.parenthesizedAssign = -1;
+          }
+          if (refDestructuringErrors.parenthesizedBind >= result.start) {
+            refDestructuringErrors.parenthesizedBind = -1;
+          }
+          if (refDestructuringErrors.trailingComma >= result.start) {
+            refDestructuringErrors.trailingComma = -1;
+          }
+        }
+        return result;
+      };
+      pp$52.parseSubscripts = function(base, startPos, startLoc, noCalls, forInit) {
+        var maybeAsyncArrow = this.options.ecmaVersion >= 8 && base.type === "Identifier" && base.name === "async" && this.lastTokEnd === base.end && !this.canInsertSemicolon() && base.end - base.start === 5 && this.potentialArrowAt === base.start;
+        var optionalChained = false;
+        while (true) {
+          var element = this.parseSubscript(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit);
+          if (element.optional) {
+            optionalChained = true;
+          }
+          if (element === base || element.type === "ArrowFunctionExpression") {
+            if (optionalChained) {
+              var chainNode = this.startNodeAt(startPos, startLoc);
+              chainNode.expression = element;
+              element = this.finishNode(chainNode, "ChainExpression");
+            }
+            return element;
+          }
+          base = element;
+        }
+      };
+      pp$52.shouldParseAsyncArrow = function() {
+        return !this.canInsertSemicolon() && this.eat(types$12.arrow);
+      };
+      pp$52.parseSubscriptAsyncArrow = function(startPos, startLoc, exprList, forInit) {
+        return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, true, forInit);
+      };
+      pp$52.parseSubscript = function(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit) {
+        var optionalSupported = this.options.ecmaVersion >= 11;
+        var optional = optionalSupported && this.eat(types$12.questionDot);
+        if (noCalls && optional) {
+          this.raise(this.lastTokStart, "Optional chaining cannot appear in the callee of new expressions");
+        }
+        var computed = this.eat(types$12.bracketL);
+        if (computed || optional && this.type !== types$12.parenL && this.type !== types$12.backQuote || this.eat(types$12.dot)) {
+          var node = this.startNodeAt(startPos, startLoc);
+          node.object = base;
+          if (computed) {
+            node.property = this.parseExpression();
+            this.expect(types$12.bracketR);
+          } else if (this.type === types$12.privateId && base.type !== "Super") {
+            node.property = this.parsePrivateIdent();
+          } else {
+            node.property = this.parseIdent(this.options.allowReserved !== "never");
+          }
+          node.computed = !!computed;
+          if (optionalSupported) {
+            node.optional = optional;
+          }
+          base = this.finishNode(node, "MemberExpression");
+        } else if (!noCalls && this.eat(types$12.parenL)) {
+          var refDestructuringErrors = new DestructuringErrors3(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+          this.yieldPos = 0;
+          this.awaitPos = 0;
+          this.awaitIdentPos = 0;
+          var exprList = this.parseExprList(types$12.parenR, this.options.ecmaVersion >= 8, false, refDestructuringErrors);
+          if (maybeAsyncArrow && !optional && this.shouldParseAsyncArrow()) {
+            this.checkPatternErrors(refDestructuringErrors, false);
+            this.checkYieldAwaitInDefaultParams();
+            if (this.awaitIdentPos > 0) {
+              this.raise(this.awaitIdentPos, "Cannot use 'await' as identifier inside an async function");
+            }
+            this.yieldPos = oldYieldPos;
+            this.awaitPos = oldAwaitPos;
+            this.awaitIdentPos = oldAwaitIdentPos;
+            return this.parseSubscriptAsyncArrow(startPos, startLoc, exprList, forInit);
+          }
+          this.checkExpressionErrors(refDestructuringErrors, true);
+          this.yieldPos = oldYieldPos || this.yieldPos;
+          this.awaitPos = oldAwaitPos || this.awaitPos;
+          this.awaitIdentPos = oldAwaitIdentPos || this.awaitIdentPos;
+          var node$1 = this.startNodeAt(startPos, startLoc);
+          node$1.callee = base;
+          node$1.arguments = exprList;
+          if (optionalSupported) {
+            node$1.optional = optional;
+          }
+          base = this.finishNode(node$1, "CallExpression");
+        } else if (this.type === types$12.backQuote) {
+          if (optional || optionalChained) {
+            this.raise(this.start, "Optional chaining cannot appear in the tag of tagged template expressions");
+          }
+          var node$2 = this.startNodeAt(startPos, startLoc);
+          node$2.tag = base;
+          node$2.quasi = this.parseTemplate({ isTagged: true });
+          base = this.finishNode(node$2, "TaggedTemplateExpression");
+        }
+        return base;
+      };
+      pp$52.parseExprAtom = function(refDestructuringErrors, forInit, forNew) {
+        if (this.type === types$12.slash) {
+          this.readRegexp();
+        }
+        var node, canBeArrow = this.potentialArrowAt === this.start;
+        switch (this.type) {
+          case types$12._super:
+            if (!this.allowSuper) {
+              this.raise(this.start, "'super' keyword outside a method");
+            }
+            node = this.startNode();
+            this.next();
+            if (this.type === types$12.parenL && !this.allowDirectSuper) {
+              this.raise(node.start, "super() call outside constructor of a subclass");
+            }
+            if (this.type !== types$12.dot && this.type !== types$12.bracketL && this.type !== types$12.parenL) {
+              this.unexpected();
+            }
+            return this.finishNode(node, "Super");
+          case types$12._this:
+            node = this.startNode();
+            this.next();
+            return this.finishNode(node, "ThisExpression");
+          case types$12.name:
+            var startPos = this.start, startLoc = this.startLoc, containsEsc = this.containsEsc;
+            var id2 = this.parseIdent(false);
+            if (this.options.ecmaVersion >= 8 && !containsEsc && id2.name === "async" && !this.canInsertSemicolon() && this.eat(types$12._function)) {
+              this.overrideContext(types2.f_expr);
+              return this.parseFunction(this.startNodeAt(startPos, startLoc), 0, false, true, forInit);
+            }
+            if (canBeArrow && !this.canInsertSemicolon()) {
+              if (this.eat(types$12.arrow)) {
+                return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id2], false, forInit);
+              }
+              if (this.options.ecmaVersion >= 8 && id2.name === "async" && this.type === types$12.name && !containsEsc && (!this.potentialArrowInForAwait || this.value !== "of" || this.containsEsc)) {
+                id2 = this.parseIdent(false);
+                if (this.canInsertSemicolon() || !this.eat(types$12.arrow)) {
+                  this.unexpected();
+                }
+                return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id2], true, forInit);
+              }
+            }
+            return id2;
+          case types$12.regexp:
+            var value = this.value;
+            node = this.parseLiteral(value.value);
+            node.regex = { pattern: value.pattern, flags: value.flags };
+            return node;
+          case types$12.num:
+          case types$12.string:
+            return this.parseLiteral(this.value);
+          case types$12._null:
+          case types$12._true:
+          case types$12._false:
+            node = this.startNode();
+            node.value = this.type === types$12._null ? null : this.type === types$12._true;
+            node.raw = this.type.keyword;
+            this.next();
+            return this.finishNode(node, "Literal");
+          case types$12.parenL:
+            var start = this.start, expr = this.parseParenAndDistinguishExpression(canBeArrow, forInit);
+            if (refDestructuringErrors) {
+              if (refDestructuringErrors.parenthesizedAssign < 0 && !this.isSimpleAssignTarget(expr)) {
+                refDestructuringErrors.parenthesizedAssign = start;
+              }
+              if (refDestructuringErrors.parenthesizedBind < 0) {
+                refDestructuringErrors.parenthesizedBind = start;
+              }
+            }
+            return expr;
+          case types$12.bracketL:
+            node = this.startNode();
+            this.next();
+            node.elements = this.parseExprList(types$12.bracketR, true, true, refDestructuringErrors);
+            return this.finishNode(node, "ArrayExpression");
+          case types$12.braceL:
+            this.overrideContext(types2.b_expr);
+            return this.parseObj(false, refDestructuringErrors);
+          case types$12._function:
+            node = this.startNode();
+            this.next();
+            return this.parseFunction(node, 0);
+          case types$12._class:
+            return this.parseClass(this.startNode(), false);
+          case types$12._new:
+            return this.parseNew();
+          case types$12.backQuote:
+            return this.parseTemplate();
+          case types$12._import:
+            if (this.options.ecmaVersion >= 11) {
+              return this.parseExprImport(forNew);
+            } else {
+              return this.unexpected();
+            }
+          default:
+            return this.parseExprAtomDefault();
+        }
+      };
+      pp$52.parseExprAtomDefault = function() {
+        this.unexpected();
+      };
+      pp$52.parseExprImport = function(forNew) {
+        var node = this.startNode();
+        if (this.containsEsc) {
+          this.raiseRecoverable(this.start, "Escape sequence in keyword import");
+        }
+        this.next();
+        if (this.type === types$12.parenL && !forNew) {
+          return this.parseDynamicImport(node);
+        } else if (this.type === types$12.dot) {
+          var meta2 = this.startNodeAt(node.start, node.loc && node.loc.start);
+          meta2.name = "import";
+          node.meta = this.finishNode(meta2, "Identifier");
+          return this.parseImportMeta(node);
+        } else {
+          this.unexpected();
+        }
+      };
+      pp$52.parseDynamicImport = function(node) {
+        this.next();
+        node.source = this.parseMaybeAssign();
+        if (this.options.ecmaVersion >= 16) {
+          if (!this.eat(types$12.parenR)) {
+            this.expect(types$12.comma);
+            if (!this.afterTrailingComma(types$12.parenR)) {
+              node.options = this.parseMaybeAssign();
+              if (!this.eat(types$12.parenR)) {
+                this.expect(types$12.comma);
+                if (!this.afterTrailingComma(types$12.parenR)) {
+                  this.unexpected();
+                }
+              }
+            } else {
+              node.options = null;
+            }
+          } else {
+            node.options = null;
+          }
+        } else {
+          if (!this.eat(types$12.parenR)) {
+            var errorPos = this.start;
+            if (this.eat(types$12.comma) && this.eat(types$12.parenR)) {
+              this.raiseRecoverable(errorPos, "Trailing comma is not allowed in import()");
+            } else {
+              this.unexpected(errorPos);
+            }
+          }
+        }
+        return this.finishNode(node, "ImportExpression");
+      };
+      pp$52.parseImportMeta = function(node) {
+        this.next();
+        var containsEsc = this.containsEsc;
+        node.property = this.parseIdent(true);
+        if (node.property.name !== "meta") {
+          this.raiseRecoverable(node.property.start, "The only valid meta property for import is 'import.meta'");
+        }
+        if (containsEsc) {
+          this.raiseRecoverable(node.start, "'import.meta' must not contain escaped characters");
+        }
+        if (this.options.sourceType !== "module" && !this.options.allowImportExportEverywhere) {
+          this.raiseRecoverable(node.start, "Cannot use 'import.meta' outside a module");
+        }
+        return this.finishNode(node, "MetaProperty");
+      };
+      pp$52.parseLiteral = function(value) {
+        var node = this.startNode();
+        node.value = value;
+        node.raw = this.input.slice(this.start, this.end);
+        if (node.raw.charCodeAt(node.raw.length - 1) === 110) {
+          node.bigint = node.value != null ? node.value.toString() : node.raw.slice(0, -1).replace(/_/g, "");
+        }
+        this.next();
+        return this.finishNode(node, "Literal");
+      };
+      pp$52.parseParenExpression = function() {
+        this.expect(types$12.parenL);
+        var val = this.parseExpression();
+        this.expect(types$12.parenR);
+        return val;
+      };
+      pp$52.shouldParseArrow = function(exprList) {
+        return !this.canInsertSemicolon();
+      };
+      pp$52.parseParenAndDistinguishExpression = function(canBeArrow, forInit) {
+        var startPos = this.start, startLoc = this.startLoc, val, allowTrailingComma = this.options.ecmaVersion >= 8;
+        if (this.options.ecmaVersion >= 6) {
+          this.next();
+          var innerStartPos = this.start, innerStartLoc = this.startLoc;
+          var exprList = [], first = true, lastIsComma = false;
+          var refDestructuringErrors = new DestructuringErrors3(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, spreadStart;
+          this.yieldPos = 0;
+          this.awaitPos = 0;
+          while (this.type !== types$12.parenR) {
+            first ? first = false : this.expect(types$12.comma);
+            if (allowTrailingComma && this.afterTrailingComma(types$12.parenR, true)) {
+              lastIsComma = true;
+              break;
+            } else if (this.type === types$12.ellipsis) {
+              spreadStart = this.start;
+              exprList.push(this.parseParenItem(this.parseRestBinding()));
+              if (this.type === types$12.comma) {
+                this.raiseRecoverable(
+                  this.start,
+                  "Comma is not permitted after the rest element"
+                );
+              }
+              break;
+            } else {
+              exprList.push(this.parseMaybeAssign(false, refDestructuringErrors, this.parseParenItem));
+            }
+          }
+          var innerEndPos = this.lastTokEnd, innerEndLoc = this.lastTokEndLoc;
+          this.expect(types$12.parenR);
+          if (canBeArrow && this.shouldParseArrow(exprList) && this.eat(types$12.arrow)) {
+            this.checkPatternErrors(refDestructuringErrors, false);
+            this.checkYieldAwaitInDefaultParams();
+            this.yieldPos = oldYieldPos;
+            this.awaitPos = oldAwaitPos;
+            return this.parseParenArrowList(startPos, startLoc, exprList, forInit);
+          }
+          if (!exprList.length || lastIsComma) {
+            this.unexpected(this.lastTokStart);
+          }
+          if (spreadStart) {
+            this.unexpected(spreadStart);
+          }
+          this.checkExpressionErrors(refDestructuringErrors, true);
+          this.yieldPos = oldYieldPos || this.yieldPos;
+          this.awaitPos = oldAwaitPos || this.awaitPos;
+          if (exprList.length > 1) {
+            val = this.startNodeAt(innerStartPos, innerStartLoc);
+            val.expressions = exprList;
+            this.finishNodeAt(val, "SequenceExpression", innerEndPos, innerEndLoc);
+          } else {
+            val = exprList[0];
+          }
+        } else {
+          val = this.parseParenExpression();
+        }
+        if (this.options.preserveParens) {
+          var par = this.startNodeAt(startPos, startLoc);
+          par.expression = val;
+          return this.finishNode(par, "ParenthesizedExpression");
+        } else {
+          return val;
+        }
+      };
+      pp$52.parseParenItem = function(item) {
+        return item;
+      };
+      pp$52.parseParenArrowList = function(startPos, startLoc, exprList, forInit) {
+        return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, false, forInit);
+      };
+      var empty2 = [];
+      pp$52.parseNew = function() {
+        if (this.containsEsc) {
+          this.raiseRecoverable(this.start, "Escape sequence in keyword new");
+        }
+        var node = this.startNode();
+        this.next();
+        if (this.options.ecmaVersion >= 6 && this.type === types$12.dot) {
+          var meta2 = this.startNodeAt(node.start, node.loc && node.loc.start);
+          meta2.name = "new";
+          node.meta = this.finishNode(meta2, "Identifier");
+          this.next();
+          var containsEsc = this.containsEsc;
+          node.property = this.parseIdent(true);
+          if (node.property.name !== "target") {
+            this.raiseRecoverable(node.property.start, "The only valid meta property for new is 'new.target'");
+          }
+          if (containsEsc) {
+            this.raiseRecoverable(node.start, "'new.target' must not contain escaped characters");
+          }
+          if (!this.allowNewDotTarget) {
+            this.raiseRecoverable(node.start, "'new.target' can only be used in functions and class static block");
+          }
+          return this.finishNode(node, "MetaProperty");
+        }
+        var startPos = this.start, startLoc = this.startLoc;
+        node.callee = this.parseSubscripts(this.parseExprAtom(null, false, true), startPos, startLoc, true, false);
+        if (node.callee.type === "Super") {
+          this.raiseRecoverable(startPos, "Invalid use of 'super'");
+        }
+        if (this.eat(types$12.parenL)) {
+          node.arguments = this.parseExprList(types$12.parenR, this.options.ecmaVersion >= 8, false);
+        } else {
+          node.arguments = empty2;
+        }
+        return this.finishNode(node, "NewExpression");
+      };
+      pp$52.parseTemplateElement = function(ref3) {
+        var isTagged = ref3.isTagged;
+        var elem = this.startNode();
+        if (this.type === types$12.invalidTemplate) {
+          if (!isTagged) {
+            this.raiseRecoverable(this.start, "Bad escape sequence in untagged template literal");
+          }
+          elem.value = {
+            raw: this.value.replace(/\r\n?/g, "\n"),
+            cooked: null
+          };
+        } else {
+          elem.value = {
+            raw: this.input.slice(this.start, this.end).replace(/\r\n?/g, "\n"),
+            cooked: this.value
+          };
+        }
+        this.next();
+        elem.tail = this.type === types$12.backQuote;
+        return this.finishNode(elem, "TemplateElement");
+      };
+      pp$52.parseTemplate = function(ref3) {
+        if (ref3 === void 0) ref3 = {};
+        var isTagged = ref3.isTagged;
+        if (isTagged === void 0) isTagged = false;
+        var node = this.startNode();
+        this.next();
+        node.expressions = [];
+        var curElt = this.parseTemplateElement({ isTagged });
+        node.quasis = [curElt];
+        while (!curElt.tail) {
+          if (this.type === types$12.eof) {
+            this.raise(this.pos, "Unterminated template literal");
+          }
+          this.expect(types$12.dollarBraceL);
+          node.expressions.push(this.parseExpression());
+          this.expect(types$12.braceR);
+          node.quasis.push(curElt = this.parseTemplateElement({ isTagged }));
+        }
+        this.next();
+        return this.finishNode(node, "TemplateLiteral");
+      };
+      pp$52.isAsyncProp = function(prop) {
+        return !prop.computed && prop.key.type === "Identifier" && prop.key.name === "async" && (this.type === types$12.name || this.type === types$12.num || this.type === types$12.string || this.type === types$12.bracketL || this.type.keyword || this.options.ecmaVersion >= 9 && this.type === types$12.star) && !lineBreak2.test(this.input.slice(this.lastTokEnd, this.start));
+      };
+      pp$52.parseObj = function(isPattern, refDestructuringErrors) {
+        var node = this.startNode(), first = true, propHash = {};
+        node.properties = [];
+        this.next();
+        while (!this.eat(types$12.braceR)) {
+          if (!first) {
+            this.expect(types$12.comma);
+            if (this.options.ecmaVersion >= 5 && this.afterTrailingComma(types$12.braceR)) {
+              break;
+            }
+          } else {
+            first = false;
+          }
+          var prop = this.parseProperty(isPattern, refDestructuringErrors);
+          if (!isPattern) {
+            this.checkPropClash(prop, propHash, refDestructuringErrors);
+          }
+          node.properties.push(prop);
+        }
+        return this.finishNode(node, isPattern ? "ObjectPattern" : "ObjectExpression");
+      };
+      pp$52.parseProperty = function(isPattern, refDestructuringErrors) {
+        var prop = this.startNode(), isGenerator, isAsync, startPos, startLoc;
+        if (this.options.ecmaVersion >= 9 && this.eat(types$12.ellipsis)) {
+          if (isPattern) {
+            prop.argument = this.parseIdent(false);
+            if (this.type === types$12.comma) {
+              this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+            }
+            return this.finishNode(prop, "RestElement");
+          }
+          prop.argument = this.parseMaybeAssign(false, refDestructuringErrors);
+          if (this.type === types$12.comma && refDestructuringErrors && refDestructuringErrors.trailingComma < 0) {
+            refDestructuringErrors.trailingComma = this.start;
+          }
+          return this.finishNode(prop, "SpreadElement");
+        }
+        if (this.options.ecmaVersion >= 6) {
+          prop.method = false;
+          prop.shorthand = false;
+          if (isPattern || refDestructuringErrors) {
+            startPos = this.start;
+            startLoc = this.startLoc;
+          }
+          if (!isPattern) {
+            isGenerator = this.eat(types$12.star);
+          }
+        }
+        var containsEsc = this.containsEsc;
+        this.parsePropertyName(prop);
+        if (!isPattern && !containsEsc && this.options.ecmaVersion >= 8 && !isGenerator && this.isAsyncProp(prop)) {
+          isAsync = true;
+          isGenerator = this.options.ecmaVersion >= 9 && this.eat(types$12.star);
+          this.parsePropertyName(prop);
+        } else {
+          isAsync = false;
+        }
+        this.parsePropertyValue(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc);
+        return this.finishNode(prop, "Property");
+      };
+      pp$52.parseGetterSetter = function(prop) {
+        var kind = prop.key.name;
+        this.parsePropertyName(prop);
+        prop.value = this.parseMethod(false);
+        prop.kind = kind;
+        var paramCount = prop.kind === "get" ? 0 : 1;
+        if (prop.value.params.length !== paramCount) {
+          var start = prop.value.start;
+          if (prop.kind === "get") {
+            this.raiseRecoverable(start, "getter should have no params");
+          } else {
+            this.raiseRecoverable(start, "setter should have exactly one param");
+          }
+        } else {
+          if (prop.kind === "set" && prop.value.params[0].type === "RestElement") {
+            this.raiseRecoverable(prop.value.params[0].start, "Setter cannot use rest params");
+          }
+        }
+      };
+      pp$52.parsePropertyValue = function(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc) {
+        if ((isGenerator || isAsync) && this.type === types$12.colon) {
+          this.unexpected();
+        }
+        if (this.eat(types$12.colon)) {
+          prop.value = isPattern ? this.parseMaybeDefault(this.start, this.startLoc) : this.parseMaybeAssign(false, refDestructuringErrors);
+          prop.kind = "init";
+        } else if (this.options.ecmaVersion >= 6 && this.type === types$12.parenL) {
+          if (isPattern) {
+            this.unexpected();
+          }
+          prop.method = true;
+          prop.value = this.parseMethod(isGenerator, isAsync);
+          prop.kind = "init";
+        } else if (!isPattern && !containsEsc && this.options.ecmaVersion >= 5 && !prop.computed && prop.key.type === "Identifier" && (prop.key.name === "get" || prop.key.name === "set") && (this.type !== types$12.comma && this.type !== types$12.braceR && this.type !== types$12.eq)) {
+          if (isGenerator || isAsync) {
+            this.unexpected();
+          }
+          this.parseGetterSetter(prop);
+        } else if (this.options.ecmaVersion >= 6 && !prop.computed && prop.key.type === "Identifier") {
+          if (isGenerator || isAsync) {
+            this.unexpected();
+          }
+          this.checkUnreserved(prop.key);
+          if (prop.key.name === "await" && !this.awaitIdentPos) {
+            this.awaitIdentPos = startPos;
+          }
+          if (isPattern) {
+            prop.value = this.parseMaybeDefault(startPos, startLoc, this.copyNode(prop.key));
+          } else if (this.type === types$12.eq && refDestructuringErrors) {
+            if (refDestructuringErrors.shorthandAssign < 0) {
+              refDestructuringErrors.shorthandAssign = this.start;
+            }
+            prop.value = this.parseMaybeDefault(startPos, startLoc, this.copyNode(prop.key));
+          } else {
+            prop.value = this.copyNode(prop.key);
+          }
+          prop.kind = "init";
+          prop.shorthand = true;
+        } else {
+          this.unexpected();
+        }
+      };
+      pp$52.parsePropertyName = function(prop) {
+        if (this.options.ecmaVersion >= 6) {
+          if (this.eat(types$12.bracketL)) {
+            prop.computed = true;
+            prop.key = this.parseMaybeAssign();
+            this.expect(types$12.bracketR);
+            return prop.key;
+          } else {
+            prop.computed = false;
+          }
+        }
+        return prop.key = this.type === types$12.num || this.type === types$12.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+      };
+      pp$52.initFunction = function(node) {
+        node.id = null;
+        if (this.options.ecmaVersion >= 6) {
+          node.generator = node.expression = false;
+        }
+        if (this.options.ecmaVersion >= 8) {
+          node.async = false;
+        }
+      };
+      pp$52.parseMethod = function(isGenerator, isAsync, allowDirectSuper) {
+        var node = this.startNode(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+        this.initFunction(node);
+        if (this.options.ecmaVersion >= 6) {
+          node.generator = isGenerator;
+        }
+        if (this.options.ecmaVersion >= 8) {
+          node.async = !!isAsync;
+        }
+        this.yieldPos = 0;
+        this.awaitPos = 0;
+        this.awaitIdentPos = 0;
+        this.enterScope(functionFlags2(isAsync, node.generator) | SCOPE_SUPER2 | (allowDirectSuper ? SCOPE_DIRECT_SUPER2 : 0));
+        this.expect(types$12.parenL);
+        node.params = this.parseBindingList(types$12.parenR, false, this.options.ecmaVersion >= 8);
+        this.checkYieldAwaitInDefaultParams();
+        this.parseFunctionBody(node, false, true, false);
+        this.yieldPos = oldYieldPos;
+        this.awaitPos = oldAwaitPos;
+        this.awaitIdentPos = oldAwaitIdentPos;
+        return this.finishNode(node, "FunctionExpression");
+      };
+      pp$52.parseArrowExpression = function(node, params, isAsync, forInit) {
+        var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+        this.enterScope(functionFlags2(isAsync, false) | SCOPE_ARROW2);
+        this.initFunction(node);
+        if (this.options.ecmaVersion >= 8) {
+          node.async = !!isAsync;
+        }
+        this.yieldPos = 0;
+        this.awaitPos = 0;
+        this.awaitIdentPos = 0;
+        node.params = this.toAssignableList(params, true);
+        this.parseFunctionBody(node, true, false, forInit);
+        this.yieldPos = oldYieldPos;
+        this.awaitPos = oldAwaitPos;
+        this.awaitIdentPos = oldAwaitIdentPos;
+        return this.finishNode(node, "ArrowFunctionExpression");
+      };
+      pp$52.parseFunctionBody = function(node, isArrowFunction, isMethod, forInit) {
+        var isExpression = isArrowFunction && this.type !== types$12.braceL;
+        var oldStrict = this.strict, useStrict = false;
+        if (isExpression) {
+          node.body = this.parseMaybeAssign(forInit);
+          node.expression = true;
+          this.checkParams(node, false);
+        } else {
+          var nonSimple = this.options.ecmaVersion >= 7 && !this.isSimpleParamList(node.params);
+          if (!oldStrict || nonSimple) {
+            useStrict = this.strictDirective(this.end);
+            if (useStrict && nonSimple) {
+              this.raiseRecoverable(node.start, "Illegal 'use strict' directive in function with non-simple parameter list");
+            }
+          }
+          var oldLabels = this.labels;
+          this.labels = [];
+          if (useStrict) {
+            this.strict = true;
+          }
+          this.checkParams(node, !oldStrict && !useStrict && !isArrowFunction && !isMethod && this.isSimpleParamList(node.params));
+          if (this.strict && node.id) {
+            this.checkLValSimple(node.id, BIND_OUTSIDE2);
+          }
+          node.body = this.parseBlock(false, void 0, useStrict && !oldStrict);
+          node.expression = false;
+          this.adaptDirectivePrologue(node.body.body);
+          this.labels = oldLabels;
+        }
+        this.exitScope();
+      };
+      pp$52.isSimpleParamList = function(params) {
+        for (var i2 = 0, list2 = params; i2 < list2.length; i2 += 1) {
+          var param = list2[i2];
+          if (param.type !== "Identifier") {
+            return false;
+          }
+        }
+        return true;
+      };
+      pp$52.checkParams = function(node, allowDuplicates) {
+        var nameHash = /* @__PURE__ */ Object.create(null);
+        for (var i2 = 0, list2 = node.params; i2 < list2.length; i2 += 1) {
+          var param = list2[i2];
+          this.checkLValInnerPattern(param, BIND_VAR2, allowDuplicates ? null : nameHash);
+        }
+      };
+      pp$52.parseExprList = function(close, allowTrailingComma, allowEmpty, refDestructuringErrors) {
+        var elts = [], first = true;
+        while (!this.eat(close)) {
+          if (!first) {
+            this.expect(types$12.comma);
+            if (allowTrailingComma && this.afterTrailingComma(close)) {
+              break;
+            }
+          } else {
+            first = false;
+          }
+          var elt = void 0;
+          if (allowEmpty && this.type === types$12.comma) {
+            elt = null;
+          } else if (this.type === types$12.ellipsis) {
+            elt = this.parseSpread(refDestructuringErrors);
+            if (refDestructuringErrors && this.type === types$12.comma && refDestructuringErrors.trailingComma < 0) {
+              refDestructuringErrors.trailingComma = this.start;
+            }
+          } else {
+            elt = this.parseMaybeAssign(false, refDestructuringErrors);
+          }
+          elts.push(elt);
+        }
+        return elts;
+      };
+      pp$52.checkUnreserved = function(ref3) {
+        var start = ref3.start;
+        var end = ref3.end;
+        var name2 = ref3.name;
+        if (this.inGenerator && name2 === "yield") {
+          this.raiseRecoverable(start, "Cannot use 'yield' as identifier inside a generator");
+        }
+        if (this.inAsync && name2 === "await") {
+          this.raiseRecoverable(start, "Cannot use 'await' as identifier inside an async function");
+        }
+        if (!(this.currentThisScope().flags & SCOPE_VAR2) && name2 === "arguments") {
+          this.raiseRecoverable(start, "Cannot use 'arguments' in class field initializer");
+        }
+        if (this.inClassStaticBlock && (name2 === "arguments" || name2 === "await")) {
+          this.raise(start, "Cannot use " + name2 + " in class static initialization block");
+        }
+        if (this.keywords.test(name2)) {
+          this.raise(start, "Unexpected keyword '" + name2 + "'");
+        }
+        if (this.options.ecmaVersion < 6 && this.input.slice(start, end).indexOf("\\") !== -1) {
+          return;
+        }
+        var re = this.strict ? this.reservedWordsStrict : this.reservedWords;
+        if (re.test(name2)) {
+          if (!this.inAsync && name2 === "await") {
+            this.raiseRecoverable(start, "Cannot use keyword 'await' outside an async function");
+          }
+          this.raiseRecoverable(start, "The keyword '" + name2 + "' is reserved");
+        }
+      };
+      pp$52.parseIdent = function(liberal) {
+        var node = this.parseIdentNode();
+        this.next(!!liberal);
+        this.finishNode(node, "Identifier");
+        if (!liberal) {
+          this.checkUnreserved(node);
+          if (node.name === "await" && !this.awaitIdentPos) {
+            this.awaitIdentPos = node.start;
+          }
+        }
+        return node;
+      };
+      pp$52.parseIdentNode = function() {
+        var node = this.startNode();
+        if (this.type === types$12.name) {
+          node.name = this.value;
+        } else if (this.type.keyword) {
+          node.name = this.type.keyword;
+          if ((node.name === "class" || node.name === "function") && (this.lastTokEnd !== this.lastTokStart + 1 || this.input.charCodeAt(this.lastTokStart) !== 46)) {
+            this.context.pop();
+          }
+          this.type = types$12.name;
+        } else {
+          this.unexpected();
+        }
+        return node;
+      };
+      pp$52.parsePrivateIdent = function() {
+        var node = this.startNode();
+        if (this.type === types$12.privateId) {
+          node.name = this.value;
+        } else {
+          this.unexpected();
+        }
+        this.next();
+        this.finishNode(node, "PrivateIdentifier");
+        if (this.options.checkPrivateFields) {
+          if (this.privateNameStack.length === 0) {
+            this.raise(node.start, "Private field '#" + node.name + "' must be declared in an enclosing class");
+          } else {
+            this.privateNameStack[this.privateNameStack.length - 1].used.push(node);
+          }
+        }
+        return node;
+      };
+      pp$52.parseYield = function(forInit) {
+        if (!this.yieldPos) {
+          this.yieldPos = this.start;
+        }
+        var node = this.startNode();
+        this.next();
+        if (this.type === types$12.semi || this.canInsertSemicolon() || this.type !== types$12.star && !this.type.startsExpr) {
+          node.delegate = false;
+          node.argument = null;
+        } else {
+          node.delegate = this.eat(types$12.star);
+          node.argument = this.parseMaybeAssign(forInit);
+        }
+        return this.finishNode(node, "YieldExpression");
+      };
+      pp$52.parseAwait = function(forInit) {
+        if (!this.awaitPos) {
+          this.awaitPos = this.start;
+        }
+        var node = this.startNode();
+        this.next();
+        node.argument = this.parseMaybeUnary(null, true, false, forInit);
+        return this.finishNode(node, "AwaitExpression");
+      };
+      var pp$42 = Parser5.prototype;
+      pp$42.raise = function(pos, message) {
+        var loc = getLineInfo2(this.input, pos);
+        message += " (" + loc.line + ":" + loc.column + ")";
+        if (this.sourceFile) {
+          message += " in " + this.sourceFile;
+        }
+        var err = new SyntaxError(message);
+        err.pos = pos;
+        err.loc = loc;
+        err.raisedAt = this.pos;
+        throw err;
+      };
+      pp$42.raiseRecoverable = pp$42.raise;
+      pp$42.curPosition = function() {
+        if (this.options.locations) {
+          return new Position3(this.curLine, this.pos - this.lineStart);
+        }
+      };
+      var pp$32 = Parser5.prototype;
+      var Scope3 = function Scope4(flags) {
+        this.flags = flags;
+        this.var = [];
+        this.lexical = [];
+        this.functions = [];
+      };
+      pp$32.enterScope = function(flags) {
+        this.scopeStack.push(new Scope3(flags));
+      };
+      pp$32.exitScope = function() {
+        this.scopeStack.pop();
+      };
+      pp$32.treatFunctionsAsVarInScope = function(scope) {
+        return scope.flags & SCOPE_FUNCTION2 || !this.inModule && scope.flags & SCOPE_TOP2;
+      };
+      pp$32.declareName = function(name2, bindingType, pos) {
+        var redeclared = false;
+        if (bindingType === BIND_LEXICAL2) {
+          var scope = this.currentScope();
+          redeclared = scope.lexical.indexOf(name2) > -1 || scope.functions.indexOf(name2) > -1 || scope.var.indexOf(name2) > -1;
+          scope.lexical.push(name2);
+          if (this.inModule && scope.flags & SCOPE_TOP2) {
+            delete this.undefinedExports[name2];
+          }
+        } else if (bindingType === BIND_SIMPLE_CATCH2) {
+          var scope$1 = this.currentScope();
+          scope$1.lexical.push(name2);
+        } else if (bindingType === BIND_FUNCTION2) {
+          var scope$2 = this.currentScope();
+          if (this.treatFunctionsAsVar) {
+            redeclared = scope$2.lexical.indexOf(name2) > -1;
+          } else {
+            redeclared = scope$2.lexical.indexOf(name2) > -1 || scope$2.var.indexOf(name2) > -1;
+          }
+          scope$2.functions.push(name2);
+        } else {
+          for (var i2 = this.scopeStack.length - 1; i2 >= 0; --i2) {
+            var scope$3 = this.scopeStack[i2];
+            if (scope$3.lexical.indexOf(name2) > -1 && !(scope$3.flags & SCOPE_SIMPLE_CATCH2 && scope$3.lexical[0] === name2) || !this.treatFunctionsAsVarInScope(scope$3) && scope$3.functions.indexOf(name2) > -1) {
+              redeclared = true;
+              break;
+            }
+            scope$3.var.push(name2);
+            if (this.inModule && scope$3.flags & SCOPE_TOP2) {
+              delete this.undefinedExports[name2];
+            }
+            if (scope$3.flags & SCOPE_VAR2) {
+              break;
+            }
+          }
+        }
+        if (redeclared) {
+          this.raiseRecoverable(pos, "Identifier '" + name2 + "' has already been declared");
+        }
+      };
+      pp$32.checkLocalExport = function(id2) {
+        if (this.scopeStack[0].lexical.indexOf(id2.name) === -1 && this.scopeStack[0].var.indexOf(id2.name) === -1) {
+          this.undefinedExports[id2.name] = id2;
+        }
+      };
+      pp$32.currentScope = function() {
+        return this.scopeStack[this.scopeStack.length - 1];
+      };
+      pp$32.currentVarScope = function() {
+        for (var i2 = this.scopeStack.length - 1; ; i2--) {
+          var scope = this.scopeStack[i2];
+          if (scope.flags & (SCOPE_VAR2 | SCOPE_CLASS_FIELD_INIT2 | SCOPE_CLASS_STATIC_BLOCK2)) {
+            return scope;
+          }
+        }
+      };
+      pp$32.currentThisScope = function() {
+        for (var i2 = this.scopeStack.length - 1; ; i2--) {
+          var scope = this.scopeStack[i2];
+          if (scope.flags & (SCOPE_VAR2 | SCOPE_CLASS_FIELD_INIT2 | SCOPE_CLASS_STATIC_BLOCK2) && !(scope.flags & SCOPE_ARROW2)) {
+            return scope;
+          }
+        }
+      };
+      var Node4 = function Node5(parser2, pos, loc) {
+        this.type = "";
+        this.start = pos;
+        this.end = 0;
+        if (parser2.options.locations) {
+          this.loc = new SourceLocation3(parser2, loc);
+        }
+        if (parser2.options.directSourceFile) {
+          this.sourceFile = parser2.options.directSourceFile;
+        }
+        if (parser2.options.ranges) {
+          this.range = [pos, 0];
+        }
+      };
+      var pp$22 = Parser5.prototype;
+      pp$22.startNode = function() {
+        return new Node4(this, this.start, this.startLoc);
+      };
+      pp$22.startNodeAt = function(pos, loc) {
+        return new Node4(this, pos, loc);
+      };
+      function finishNodeAt2(node, type, pos, loc) {
+        node.type = type;
+        node.end = pos;
+        if (this.options.locations) {
+          node.loc.end = loc;
+        }
+        if (this.options.ranges) {
+          node.range[1] = pos;
+        }
+        return node;
+      }
+      pp$22.finishNode = function(node, type) {
+        return finishNodeAt2.call(this, node, type, this.lastTokEnd, this.lastTokEndLoc);
+      };
+      pp$22.finishNodeAt = function(node, type, pos, loc) {
+        return finishNodeAt2.call(this, node, type, pos, loc);
+      };
+      pp$22.copyNode = function(node) {
+        var newNode = new Node4(this, node.start, this.startLoc);
+        for (var prop in node) {
+          newNode[prop] = node[prop];
+        }
+        return newNode;
+      };
+      var scriptValuesAddedInUnicode2 = "Berf Beria_Erfe Gara Garay Gukh Gurung_Khema Hrkt Katakana_Or_Hiragana Kawi Kirat_Rai Krai Nag_Mundari Nagm Ol_Onal Onao Sidetic Sidt Sunu Sunuwar Tai_Yo Tayo Todhri Todr Tolong_Siki Tols Tulu_Tigalari Tutg Unknown Zzzz";
+      var ecma9BinaryProperties2 = "ASCII ASCII_Hex_Digit AHex Alphabetic Alpha Any Assigned Bidi_Control Bidi_C Bidi_Mirrored Bidi_M Case_Ignorable CI Cased Changes_When_Casefolded CWCF Changes_When_Casemapped CWCM Changes_When_Lowercased CWL Changes_When_NFKC_Casefolded CWKCF Changes_When_Titlecased CWT Changes_When_Uppercased CWU Dash Default_Ignorable_Code_Point DI Deprecated Dep Diacritic Dia Emoji Emoji_Component Emoji_Modifier Emoji_Modifier_Base Emoji_Presentation Extender Ext Grapheme_Base Gr_Base Grapheme_Extend Gr_Ext Hex_Digit Hex IDS_Binary_Operator IDSB IDS_Trinary_Operator IDST ID_Continue IDC ID_Start IDS Ideographic Ideo Join_Control Join_C Logical_Order_Exception LOE Lowercase Lower Math Noncharacter_Code_Point NChar Pattern_Syntax Pat_Syn Pattern_White_Space Pat_WS Quotation_Mark QMark Radical Regional_Indicator RI Sentence_Terminal STerm Soft_Dotted SD Terminal_Punctuation Term Unified_Ideograph UIdeo Uppercase Upper Variation_Selector VS White_Space space XID_Continue XIDC XID_Start XIDS";
+      var ecma10BinaryProperties2 = ecma9BinaryProperties2 + " Extended_Pictographic";
+      var ecma11BinaryProperties2 = ecma10BinaryProperties2;
+      var ecma12BinaryProperties2 = ecma11BinaryProperties2 + " EBase EComp EMod EPres ExtPict";
+      var ecma13BinaryProperties2 = ecma12BinaryProperties2;
+      var ecma14BinaryProperties2 = ecma13BinaryProperties2;
+      var unicodeBinaryProperties2 = {
+        9: ecma9BinaryProperties2,
+        10: ecma10BinaryProperties2,
+        11: ecma11BinaryProperties2,
+        12: ecma12BinaryProperties2,
+        13: ecma13BinaryProperties2,
+        14: ecma14BinaryProperties2
+      };
+      var ecma14BinaryPropertiesOfStrings2 = "Basic_Emoji Emoji_Keycap_Sequence RGI_Emoji_Modifier_Sequence RGI_Emoji_Flag_Sequence RGI_Emoji_Tag_Sequence RGI_Emoji_ZWJ_Sequence RGI_Emoji";
+      var unicodeBinaryPropertiesOfStrings2 = {
+        9: "",
+        10: "",
+        11: "",
+        12: "",
+        13: "",
+        14: ecma14BinaryPropertiesOfStrings2
+      };
+      var unicodeGeneralCategoryValues2 = "Cased_Letter LC Close_Punctuation Pe Connector_Punctuation Pc Control Cc cntrl Currency_Symbol Sc Dash_Punctuation Pd Decimal_Number Nd digit Enclosing_Mark Me Final_Punctuation Pf Format Cf Initial_Punctuation Pi Letter L Letter_Number Nl Line_Separator Zl Lowercase_Letter Ll Mark M Combining_Mark Math_Symbol Sm Modifier_Letter Lm Modifier_Symbol Sk Nonspacing_Mark Mn Number N Open_Punctuation Ps Other C Other_Letter Lo Other_Number No Other_Punctuation Po Other_Symbol So Paragraph_Separator Zp Private_Use Co Punctuation P punct Separator Z Space_Separator Zs Spacing_Mark Mc Surrogate Cs Symbol S Titlecase_Letter Lt Unassigned Cn Uppercase_Letter Lu";
+      var ecma9ScriptValues2 = "Adlam Adlm Ahom Anatolian_Hieroglyphs Hluw Arabic Arab Armenian Armn Avestan Avst Balinese Bali Bamum Bamu Bassa_Vah Bass Batak Batk Bengali Beng Bhaiksuki Bhks Bopomofo Bopo Brahmi Brah Braille Brai Buginese Bugi Buhid Buhd Canadian_Aboriginal Cans Carian Cari Caucasian_Albanian Aghb Chakma Cakm Cham Cham Cherokee Cher Common Zyyy Coptic Copt Qaac Cuneiform Xsux Cypriot Cprt Cyrillic Cyrl Deseret Dsrt Devanagari Deva Duployan Dupl Egyptian_Hieroglyphs Egyp Elbasan Elba Ethiopic Ethi Georgian Geor Glagolitic Glag Gothic Goth Grantha Gran Greek Grek Gujarati Gujr Gurmukhi Guru Han Hani Hangul Hang Hanunoo Hano Hatran Hatr Hebrew Hebr Hiragana Hira Imperial_Aramaic Armi Inherited Zinh Qaai Inscriptional_Pahlavi Phli Inscriptional_Parthian Prti Javanese Java Kaithi Kthi Kannada Knda Katakana Kana Kayah_Li Kali Kharoshthi Khar Khmer Khmr Khojki Khoj Khudawadi Sind Lao Laoo Latin Latn Lepcha Lepc Limbu Limb Linear_A Lina Linear_B Linb Lisu Lisu Lycian Lyci Lydian Lydi Mahajani Mahj Malayalam Mlym Mandaic Mand Manichaean Mani Marchen Marc Masaram_Gondi Gonm Meetei_Mayek Mtei Mende_Kikakui Mend Meroitic_Cursive Merc Meroitic_Hieroglyphs Mero Miao Plrd Modi Mongolian Mong Mro Mroo Multani Mult Myanmar Mymr Nabataean Nbat New_Tai_Lue Talu Newa Newa Nko Nkoo Nushu Nshu Ogham Ogam Ol_Chiki Olck Old_Hungarian Hung Old_Italic Ital Old_North_Arabian Narb Old_Permic Perm Old_Persian Xpeo Old_South_Arabian Sarb Old_Turkic Orkh Oriya Orya Osage Osge Osmanya Osma Pahawh_Hmong Hmng Palmyrene Palm Pau_Cin_Hau Pauc Phags_Pa Phag Phoenician Phnx Psalter_Pahlavi Phlp Rejang Rjng Runic Runr Samaritan Samr Saurashtra Saur Sharada Shrd Shavian Shaw Siddham Sidd SignWriting Sgnw Sinhala Sinh Sora_Sompeng Sora Soyombo Soyo Sundanese Sund Syloti_Nagri Sylo Syriac Syrc Tagalog Tglg Tagbanwa Tagb Tai_Le Tale Tai_Tham Lana Tai_Viet Tavt Takri Takr Tamil Taml Tangut Tang Telugu Telu Thaana Thaa Thai Thai Tibetan Tibt Tifinagh Tfng Tirhuta Tirh Ugaritic Ugar Vai Vaii Warang_Citi Wara Yi Yiii Zanabazar_Square Zanb";
+      var ecma10ScriptValues2 = ecma9ScriptValues2 + " Dogra Dogr Gunjala_Gondi Gong Hanifi_Rohingya Rohg Makasar Maka Medefaidrin Medf Old_Sogdian Sogo Sogdian Sogd";
+      var ecma11ScriptValues2 = ecma10ScriptValues2 + " Elymaic Elym Nandinagari Nand Nyiakeng_Puachue_Hmong Hmnp Wancho Wcho";
+      var ecma12ScriptValues2 = ecma11ScriptValues2 + " Chorasmian Chrs Diak Dives_Akuru Khitan_Small_Script Kits Yezi Yezidi";
+      var ecma13ScriptValues2 = ecma12ScriptValues2 + " Cypro_Minoan Cpmn Old_Uyghur Ougr Tangsa Tnsa Toto Vithkuqi Vith";
+      var ecma14ScriptValues2 = ecma13ScriptValues2 + " " + scriptValuesAddedInUnicode2;
+      var unicodeScriptValues2 = {
+        9: ecma9ScriptValues2,
+        10: ecma10ScriptValues2,
+        11: ecma11ScriptValues2,
+        12: ecma12ScriptValues2,
+        13: ecma13ScriptValues2,
+        14: ecma14ScriptValues2
+      };
+      var data2 = {};
+      function buildUnicodeData2(ecmaVersion2) {
+        var d = data2[ecmaVersion2] = {
+          binary: wordsRegexp2(unicodeBinaryProperties2[ecmaVersion2] + " " + unicodeGeneralCategoryValues2),
+          binaryOfStrings: wordsRegexp2(unicodeBinaryPropertiesOfStrings2[ecmaVersion2]),
+          nonBinary: {
+            General_Category: wordsRegexp2(unicodeGeneralCategoryValues2),
+            Script: wordsRegexp2(unicodeScriptValues2[ecmaVersion2])
+          }
+        };
+        d.nonBinary.Script_Extensions = d.nonBinary.Script;
+        d.nonBinary.gc = d.nonBinary.General_Category;
+        d.nonBinary.sc = d.nonBinary.Script;
+        d.nonBinary.scx = d.nonBinary.Script_Extensions;
+      }
+      for (var i = 0, list = [9, 10, 11, 12, 13, 14]; i < list.length; i += 1) {
+        var ecmaVersion = list[i];
+        buildUnicodeData2(ecmaVersion);
+      }
+      var pp$12 = Parser5.prototype;
+      var BranchID3 = function BranchID4(parent, base) {
+        this.parent = parent;
+        this.base = base || this;
+      };
+      BranchID3.prototype.separatedFrom = function separatedFrom2(alt) {
+        for (var self2 = this; self2; self2 = self2.parent) {
+          for (var other = alt; other; other = other.parent) {
+            if (self2.base === other.base && self2 !== other) {
+              return true;
+            }
+          }
+        }
+        return false;
+      };
+      BranchID3.prototype.sibling = function sibling2() {
+        return new BranchID3(this.parent, this.base);
+      };
+      var RegExpValidationState3 = function RegExpValidationState4(parser2) {
+        this.parser = parser2;
+        this.validFlags = "gim" + (parser2.options.ecmaVersion >= 6 ? "uy" : "") + (parser2.options.ecmaVersion >= 9 ? "s" : "") + (parser2.options.ecmaVersion >= 13 ? "d" : "") + (parser2.options.ecmaVersion >= 15 ? "v" : "");
+        this.unicodeProperties = data2[parser2.options.ecmaVersion >= 14 ? 14 : parser2.options.ecmaVersion];
+        this.source = "";
+        this.flags = "";
+        this.start = 0;
+        this.switchU = false;
+        this.switchV = false;
+        this.switchN = false;
+        this.pos = 0;
+        this.lastIntValue = 0;
+        this.lastStringValue = "";
+        this.lastAssertionIsQuantifiable = false;
+        this.numCapturingParens = 0;
+        this.maxBackReference = 0;
+        this.groupNames = /* @__PURE__ */ Object.create(null);
+        this.backReferenceNames = [];
+        this.branchID = null;
+      };
+      RegExpValidationState3.prototype.reset = function reset2(start, pattern, flags) {
+        var unicodeSets = flags.indexOf("v") !== -1;
+        var unicode = flags.indexOf("u") !== -1;
+        this.start = start | 0;
+        this.source = pattern + "";
+        this.flags = flags;
+        if (unicodeSets && this.parser.options.ecmaVersion >= 15) {
+          this.switchU = true;
+          this.switchV = true;
+          this.switchN = true;
+        } else {
+          this.switchU = unicode && this.parser.options.ecmaVersion >= 6;
+          this.switchV = false;
+          this.switchN = unicode && this.parser.options.ecmaVersion >= 9;
+        }
+      };
+      RegExpValidationState3.prototype.raise = function raise2(message) {
+        this.parser.raiseRecoverable(this.start, "Invalid regular expression: /" + this.source + "/: " + message);
+      };
+      RegExpValidationState3.prototype.at = function at2(i2, forceU) {
+        if (forceU === void 0) forceU = false;
+        var s = this.source;
+        var l = s.length;
+        if (i2 >= l) {
+          return -1;
+        }
+        var c = s.charCodeAt(i2);
+        if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i2 + 1 >= l) {
+          return c;
+        }
+        var next = s.charCodeAt(i2 + 1);
+        return next >= 56320 && next <= 57343 ? (c << 10) + next - 56613888 : c;
+      };
+      RegExpValidationState3.prototype.nextIndex = function nextIndex2(i2, forceU) {
+        if (forceU === void 0) forceU = false;
+        var s = this.source;
+        var l = s.length;
+        if (i2 >= l) {
+          return l;
+        }
+        var c = s.charCodeAt(i2), next;
+        if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i2 + 1 >= l || (next = s.charCodeAt(i2 + 1)) < 56320 || next > 57343) {
+          return i2 + 1;
+        }
+        return i2 + 2;
+      };
+      RegExpValidationState3.prototype.current = function current2(forceU) {
+        if (forceU === void 0) forceU = false;
+        return this.at(this.pos, forceU);
+      };
+      RegExpValidationState3.prototype.lookahead = function lookahead2(forceU) {
+        if (forceU === void 0) forceU = false;
+        return this.at(this.nextIndex(this.pos, forceU), forceU);
+      };
+      RegExpValidationState3.prototype.advance = function advance2(forceU) {
+        if (forceU === void 0) forceU = false;
+        this.pos = this.nextIndex(this.pos, forceU);
+      };
+      RegExpValidationState3.prototype.eat = function eat2(ch, forceU) {
+        if (forceU === void 0) forceU = false;
+        if (this.current(forceU) === ch) {
+          this.advance(forceU);
+          return true;
+        }
+        return false;
+      };
+      RegExpValidationState3.prototype.eatChars = function eatChars2(chs, forceU) {
+        if (forceU === void 0) forceU = false;
+        var pos = this.pos;
+        for (var i2 = 0, list2 = chs; i2 < list2.length; i2 += 1) {
+          var ch = list2[i2];
+          var current2 = this.at(pos, forceU);
+          if (current2 === -1 || current2 !== ch) {
+            return false;
+          }
+          pos = this.nextIndex(pos, forceU);
+        }
+        this.pos = pos;
+        return true;
+      };
+      pp$12.validateRegExpFlags = function(state) {
+        var validFlags = state.validFlags;
+        var flags = state.flags;
+        var u = false;
+        var v = false;
+        for (var i2 = 0; i2 < flags.length; i2++) {
+          var flag = flags.charAt(i2);
+          if (validFlags.indexOf(flag) === -1) {
+            this.raise(state.start, "Invalid regular expression flag");
+          }
+          if (flags.indexOf(flag, i2 + 1) > -1) {
+            this.raise(state.start, "Duplicate regular expression flag");
+          }
+          if (flag === "u") {
+            u = true;
+          }
+          if (flag === "v") {
+            v = true;
+          }
+        }
+        if (this.options.ecmaVersion >= 15 && u && v) {
+          this.raise(state.start, "Invalid regular expression flag");
+        }
+      };
+      function hasProp2(obj) {
+        for (var _ in obj) {
+          return true;
+        }
+        return false;
+      }
+      pp$12.validateRegExpPattern = function(state) {
+        this.regexp_pattern(state);
+        if (!state.switchN && this.options.ecmaVersion >= 9 && hasProp2(state.groupNames)) {
+          state.switchN = true;
+          this.regexp_pattern(state);
+        }
+      };
+      pp$12.regexp_pattern = function(state) {
+        state.pos = 0;
+        state.lastIntValue = 0;
+        state.lastStringValue = "";
+        state.lastAssertionIsQuantifiable = false;
+        state.numCapturingParens = 0;
+        state.maxBackReference = 0;
+        state.groupNames = /* @__PURE__ */ Object.create(null);
+        state.backReferenceNames.length = 0;
+        state.branchID = null;
+        this.regexp_disjunction(state);
+        if (state.pos !== state.source.length) {
+          if (state.eat(
+            41
+            /* ) */
+          )) {
+            state.raise("Unmatched ')'");
+          }
+          if (state.eat(
+            93
+            /* ] */
+          ) || state.eat(
+            125
+            /* } */
+          )) {
+            state.raise("Lone quantifier brackets");
+          }
+        }
+        if (state.maxBackReference > state.numCapturingParens) {
+          state.raise("Invalid escape");
+        }
+        for (var i2 = 0, list2 = state.backReferenceNames; i2 < list2.length; i2 += 1) {
+          var name2 = list2[i2];
+          if (!state.groupNames[name2]) {
+            state.raise("Invalid named capture referenced");
+          }
+        }
+      };
+      pp$12.regexp_disjunction = function(state) {
+        var trackDisjunction = this.options.ecmaVersion >= 16;
+        if (trackDisjunction) {
+          state.branchID = new BranchID3(state.branchID, null);
+        }
+        this.regexp_alternative(state);
+        while (state.eat(
+          124
+          /* | */
+        )) {
+          if (trackDisjunction) {
+            state.branchID = state.branchID.sibling();
+          }
+          this.regexp_alternative(state);
+        }
+        if (trackDisjunction) {
+          state.branchID = state.branchID.parent;
+        }
+        if (this.regexp_eatQuantifier(state, true)) {
+          state.raise("Nothing to repeat");
+        }
+        if (state.eat(
+          123
+          /* { */
+        )) {
+          state.raise("Lone quantifier brackets");
+        }
+      };
+      pp$12.regexp_alternative = function(state) {
+        while (state.pos < state.source.length && this.regexp_eatTerm(state)) {
+        }
+      };
+      pp$12.regexp_eatTerm = function(state) {
+        if (this.regexp_eatAssertion(state)) {
+          if (state.lastAssertionIsQuantifiable && this.regexp_eatQuantifier(state)) {
+            if (state.switchU) {
+              state.raise("Invalid quantifier");
+            }
+          }
+          return true;
+        }
+        if (state.switchU ? this.regexp_eatAtom(state) : this.regexp_eatExtendedAtom(state)) {
+          this.regexp_eatQuantifier(state);
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatAssertion = function(state) {
+        var start = state.pos;
+        state.lastAssertionIsQuantifiable = false;
+        if (state.eat(
+          94
+          /* ^ */
+        ) || state.eat(
+          36
+          /* $ */
+        )) {
+          return true;
+        }
+        if (state.eat(
+          92
+          /* \ */
+        )) {
+          if (state.eat(
+            66
+            /* B */
+          ) || state.eat(
+            98
+            /* b */
+          )) {
+            return true;
+          }
+          state.pos = start;
+        }
+        if (state.eat(
+          40
+          /* ( */
+        ) && state.eat(
+          63
+          /* ? */
+        )) {
+          var lookbehind = false;
+          if (this.options.ecmaVersion >= 9) {
+            lookbehind = state.eat(
+              60
+              /* < */
+            );
+          }
+          if (state.eat(
+            61
+            /* = */
+          ) || state.eat(
+            33
+            /* ! */
+          )) {
+            this.regexp_disjunction(state);
+            if (!state.eat(
+              41
+              /* ) */
+            )) {
+              state.raise("Unterminated group");
+            }
+            state.lastAssertionIsQuantifiable = !lookbehind;
+            return true;
+          }
+        }
+        state.pos = start;
+        return false;
+      };
+      pp$12.regexp_eatQuantifier = function(state, noError) {
+        if (noError === void 0) noError = false;
+        if (this.regexp_eatQuantifierPrefix(state, noError)) {
+          state.eat(
+            63
+            /* ? */
+          );
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatQuantifierPrefix = function(state, noError) {
+        return state.eat(
+          42
+          /* * */
+        ) || state.eat(
+          43
+          /* + */
+        ) || state.eat(
+          63
+          /* ? */
+        ) || this.regexp_eatBracedQuantifier(state, noError);
+      };
+      pp$12.regexp_eatBracedQuantifier = function(state, noError) {
+        var start = state.pos;
+        if (state.eat(
+          123
+          /* { */
+        )) {
+          var min = 0, max = -1;
+          if (this.regexp_eatDecimalDigits(state)) {
+            min = state.lastIntValue;
+            if (state.eat(
+              44
+              /* , */
+            ) && this.regexp_eatDecimalDigits(state)) {
+              max = state.lastIntValue;
+            }
+            if (state.eat(
+              125
+              /* } */
+            )) {
+              if (max !== -1 && max < min && !noError) {
+                state.raise("numbers out of order in {} quantifier");
+              }
+              return true;
+            }
+          }
+          if (state.switchU && !noError) {
+            state.raise("Incomplete quantifier");
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatAtom = function(state) {
+        return this.regexp_eatPatternCharacters(state) || state.eat(
+          46
+          /* . */
+        ) || this.regexp_eatReverseSolidusAtomEscape(state) || this.regexp_eatCharacterClass(state) || this.regexp_eatUncapturingGroup(state) || this.regexp_eatCapturingGroup(state);
+      };
+      pp$12.regexp_eatReverseSolidusAtomEscape = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          92
+          /* \ */
+        )) {
+          if (this.regexp_eatAtomEscape(state)) {
+            return true;
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatUncapturingGroup = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          40
+          /* ( */
+        )) {
+          if (state.eat(
+            63
+            /* ? */
+          )) {
+            if (this.options.ecmaVersion >= 16) {
+              var addModifiers = this.regexp_eatModifiers(state);
+              var hasHyphen = state.eat(
+                45
+                /* - */
+              );
+              if (addModifiers || hasHyphen) {
+                for (var i2 = 0; i2 < addModifiers.length; i2++) {
+                  var modifier = addModifiers.charAt(i2);
+                  if (addModifiers.indexOf(modifier, i2 + 1) > -1) {
+                    state.raise("Duplicate regular expression modifiers");
+                  }
+                }
+                if (hasHyphen) {
+                  var removeModifiers = this.regexp_eatModifiers(state);
+                  if (!addModifiers && !removeModifiers && state.current() === 58) {
+                    state.raise("Invalid regular expression modifiers");
+                  }
+                  for (var i$1 = 0; i$1 < removeModifiers.length; i$1++) {
+                    var modifier$1 = removeModifiers.charAt(i$1);
+                    if (removeModifiers.indexOf(modifier$1, i$1 + 1) > -1 || addModifiers.indexOf(modifier$1) > -1) {
+                      state.raise("Duplicate regular expression modifiers");
+                    }
+                  }
+                }
+              }
+            }
+            if (state.eat(
+              58
+              /* : */
+            )) {
+              this.regexp_disjunction(state);
+              if (state.eat(
+                41
+                /* ) */
+              )) {
+                return true;
+              }
+              state.raise("Unterminated group");
+            }
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatCapturingGroup = function(state) {
+        if (state.eat(
+          40
+          /* ( */
+        )) {
+          if (this.options.ecmaVersion >= 9) {
+            this.regexp_groupSpecifier(state);
+          } else if (state.current() === 63) {
+            state.raise("Invalid group");
+          }
+          this.regexp_disjunction(state);
+          if (state.eat(
+            41
+            /* ) */
+          )) {
+            state.numCapturingParens += 1;
+            return true;
+          }
+          state.raise("Unterminated group");
+        }
+        return false;
+      };
+      pp$12.regexp_eatModifiers = function(state) {
+        var modifiers = "";
+        var ch = 0;
+        while ((ch = state.current()) !== -1 && isRegularExpressionModifier2(ch)) {
+          modifiers += codePointToString2(ch);
+          state.advance();
+        }
+        return modifiers;
+      };
+      function isRegularExpressionModifier2(ch) {
+        return ch === 105 || ch === 109 || ch === 115;
+      }
+      pp$12.regexp_eatExtendedAtom = function(state) {
+        return state.eat(
+          46
+          /* . */
+        ) || this.regexp_eatReverseSolidusAtomEscape(state) || this.regexp_eatCharacterClass(state) || this.regexp_eatUncapturingGroup(state) || this.regexp_eatCapturingGroup(state) || this.regexp_eatInvalidBracedQuantifier(state) || this.regexp_eatExtendedPatternCharacter(state);
+      };
+      pp$12.regexp_eatInvalidBracedQuantifier = function(state) {
+        if (this.regexp_eatBracedQuantifier(state, true)) {
+          state.raise("Nothing to repeat");
+        }
+        return false;
+      };
+      pp$12.regexp_eatSyntaxCharacter = function(state) {
+        var ch = state.current();
+        if (isSyntaxCharacter2(ch)) {
+          state.lastIntValue = ch;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      function isSyntaxCharacter2(ch) {
+        return ch === 36 || ch >= 40 && ch <= 43 || ch === 46 || ch === 63 || ch >= 91 && ch <= 94 || ch >= 123 && ch <= 125;
+      }
+      pp$12.regexp_eatPatternCharacters = function(state) {
+        var start = state.pos;
+        var ch = 0;
+        while ((ch = state.current()) !== -1 && !isSyntaxCharacter2(ch)) {
+          state.advance();
+        }
+        return state.pos !== start;
+      };
+      pp$12.regexp_eatExtendedPatternCharacter = function(state) {
+        var ch = state.current();
+        if (ch !== -1 && ch !== 36 && !(ch >= 40 && ch <= 43) && ch !== 46 && ch !== 63 && ch !== 91 && ch !== 94 && ch !== 124) {
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_groupSpecifier = function(state) {
+        if (state.eat(
+          63
+          /* ? */
+        )) {
+          if (!this.regexp_eatGroupName(state)) {
+            state.raise("Invalid group");
+          }
+          var trackDisjunction = this.options.ecmaVersion >= 16;
+          var known = state.groupNames[state.lastStringValue];
+          if (known) {
+            if (trackDisjunction) {
+              for (var i2 = 0, list2 = known; i2 < list2.length; i2 += 1) {
+                var altID = list2[i2];
+                if (!altID.separatedFrom(state.branchID)) {
+                  state.raise("Duplicate capture group name");
+                }
+              }
+            } else {
+              state.raise("Duplicate capture group name");
+            }
+          }
+          if (trackDisjunction) {
+            (known || (state.groupNames[state.lastStringValue] = [])).push(state.branchID);
+          } else {
+            state.groupNames[state.lastStringValue] = true;
+          }
+        }
+      };
+      pp$12.regexp_eatGroupName = function(state) {
+        state.lastStringValue = "";
+        if (state.eat(
+          60
+          /* < */
+        )) {
+          if (this.regexp_eatRegExpIdentifierName(state) && state.eat(
+            62
+            /* > */
+          )) {
+            return true;
+          }
+          state.raise("Invalid capture group name");
+        }
+        return false;
+      };
+      pp$12.regexp_eatRegExpIdentifierName = function(state) {
+        state.lastStringValue = "";
+        if (this.regexp_eatRegExpIdentifierStart(state)) {
+          state.lastStringValue += codePointToString2(state.lastIntValue);
+          while (this.regexp_eatRegExpIdentifierPart(state)) {
+            state.lastStringValue += codePointToString2(state.lastIntValue);
+          }
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatRegExpIdentifierStart = function(state) {
+        var start = state.pos;
+        var forceU = this.options.ecmaVersion >= 11;
+        var ch = state.current(forceU);
+        state.advance(forceU);
+        if (ch === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(state, forceU)) {
+          ch = state.lastIntValue;
+        }
+        if (isRegExpIdentifierStart2(ch)) {
+          state.lastIntValue = ch;
+          return true;
+        }
+        state.pos = start;
+        return false;
+      };
+      function isRegExpIdentifierStart2(ch) {
+        return isIdentifierStart2(ch, true) || ch === 36 || ch === 95;
+      }
+      pp$12.regexp_eatRegExpIdentifierPart = function(state) {
+        var start = state.pos;
+        var forceU = this.options.ecmaVersion >= 11;
+        var ch = state.current(forceU);
+        state.advance(forceU);
+        if (ch === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(state, forceU)) {
+          ch = state.lastIntValue;
+        }
+        if (isRegExpIdentifierPart2(ch)) {
+          state.lastIntValue = ch;
+          return true;
+        }
+        state.pos = start;
+        return false;
+      };
+      function isRegExpIdentifierPart2(ch) {
+        return isIdentifierChar2(ch, true) || ch === 36 || ch === 95 || ch === 8204 || ch === 8205;
+      }
+      pp$12.regexp_eatAtomEscape = function(state) {
+        if (this.regexp_eatBackReference(state) || this.regexp_eatCharacterClassEscape(state) || this.regexp_eatCharacterEscape(state) || state.switchN && this.regexp_eatKGroupName(state)) {
+          return true;
+        }
+        if (state.switchU) {
+          if (state.current() === 99) {
+            state.raise("Invalid unicode escape");
+          }
+          state.raise("Invalid escape");
+        }
+        return false;
+      };
+      pp$12.regexp_eatBackReference = function(state) {
+        var start = state.pos;
+        if (this.regexp_eatDecimalEscape(state)) {
+          var n = state.lastIntValue;
+          if (state.switchU) {
+            if (n > state.maxBackReference) {
+              state.maxBackReference = n;
+            }
+            return true;
+          }
+          if (n <= state.numCapturingParens) {
+            return true;
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatKGroupName = function(state) {
+        if (state.eat(
+          107
+          /* k */
+        )) {
+          if (this.regexp_eatGroupName(state)) {
+            state.backReferenceNames.push(state.lastStringValue);
+            return true;
+          }
+          state.raise("Invalid named reference");
+        }
+        return false;
+      };
+      pp$12.regexp_eatCharacterEscape = function(state) {
+        return this.regexp_eatControlEscape(state) || this.regexp_eatCControlLetter(state) || this.regexp_eatZero(state) || this.regexp_eatHexEscapeSequence(state) || this.regexp_eatRegExpUnicodeEscapeSequence(state, false) || !state.switchU && this.regexp_eatLegacyOctalEscapeSequence(state) || this.regexp_eatIdentityEscape(state);
+      };
+      pp$12.regexp_eatCControlLetter = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          99
+          /* c */
+        )) {
+          if (this.regexp_eatControlLetter(state)) {
+            return true;
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatZero = function(state) {
+        if (state.current() === 48 && !isDecimalDigit2(state.lookahead())) {
+          state.lastIntValue = 0;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatControlEscape = function(state) {
+        var ch = state.current();
+        if (ch === 116) {
+          state.lastIntValue = 9;
+          state.advance();
+          return true;
+        }
+        if (ch === 110) {
+          state.lastIntValue = 10;
+          state.advance();
+          return true;
+        }
+        if (ch === 118) {
+          state.lastIntValue = 11;
+          state.advance();
+          return true;
+        }
+        if (ch === 102) {
+          state.lastIntValue = 12;
+          state.advance();
+          return true;
+        }
+        if (ch === 114) {
+          state.lastIntValue = 13;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatControlLetter = function(state) {
+        var ch = state.current();
+        if (isControlLetter2(ch)) {
+          state.lastIntValue = ch % 32;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      function isControlLetter2(ch) {
+        return ch >= 65 && ch <= 90 || ch >= 97 && ch <= 122;
+      }
+      pp$12.regexp_eatRegExpUnicodeEscapeSequence = function(state, forceU) {
+        if (forceU === void 0) forceU = false;
+        var start = state.pos;
+        var switchU = forceU || state.switchU;
+        if (state.eat(
+          117
+          /* u */
+        )) {
+          if (this.regexp_eatFixedHexDigits(state, 4)) {
+            var lead = state.lastIntValue;
+            if (switchU && lead >= 55296 && lead <= 56319) {
+              var leadSurrogateEnd = state.pos;
+              if (state.eat(
+                92
+                /* \ */
+              ) && state.eat(
+                117
+                /* u */
+              ) && this.regexp_eatFixedHexDigits(state, 4)) {
+                var trail = state.lastIntValue;
+                if (trail >= 56320 && trail <= 57343) {
+                  state.lastIntValue = (lead - 55296) * 1024 + (trail - 56320) + 65536;
+                  return true;
+                }
+              }
+              state.pos = leadSurrogateEnd;
+              state.lastIntValue = lead;
+            }
+            return true;
+          }
+          if (switchU && state.eat(
+            123
+            /* { */
+          ) && this.regexp_eatHexDigits(state) && state.eat(
+            125
+            /* } */
+          ) && isValidUnicode2(state.lastIntValue)) {
+            return true;
+          }
+          if (switchU) {
+            state.raise("Invalid unicode escape");
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      function isValidUnicode2(ch) {
+        return ch >= 0 && ch <= 1114111;
+      }
+      pp$12.regexp_eatIdentityEscape = function(state) {
+        if (state.switchU) {
+          if (this.regexp_eatSyntaxCharacter(state)) {
+            return true;
+          }
+          if (state.eat(
+            47
+            /* / */
+          )) {
+            state.lastIntValue = 47;
+            return true;
+          }
+          return false;
+        }
+        var ch = state.current();
+        if (ch !== 99 && (!state.switchN || ch !== 107)) {
+          state.lastIntValue = ch;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatDecimalEscape = function(state) {
+        state.lastIntValue = 0;
+        var ch = state.current();
+        if (ch >= 49 && ch <= 57) {
+          do {
+            state.lastIntValue = 10 * state.lastIntValue + (ch - 48);
+            state.advance();
+          } while ((ch = state.current()) >= 48 && ch <= 57);
+          return true;
+        }
+        return false;
+      };
+      var CharSetNone2 = 0;
+      var CharSetOk2 = 1;
+      var CharSetString2 = 2;
+      pp$12.regexp_eatCharacterClassEscape = function(state) {
+        var ch = state.current();
+        if (isCharacterClassEscape2(ch)) {
+          state.lastIntValue = -1;
+          state.advance();
+          return CharSetOk2;
+        }
+        var negate = false;
+        if (state.switchU && this.options.ecmaVersion >= 9 && ((negate = ch === 80) || ch === 112)) {
+          state.lastIntValue = -1;
+          state.advance();
+          var result;
+          if (state.eat(
+            123
+            /* { */
+          ) && (result = this.regexp_eatUnicodePropertyValueExpression(state)) && state.eat(
+            125
+            /* } */
+          )) {
+            if (negate && result === CharSetString2) {
+              state.raise("Invalid property name");
+            }
+            return result;
+          }
+          state.raise("Invalid property name");
+        }
+        return CharSetNone2;
+      };
+      function isCharacterClassEscape2(ch) {
+        return ch === 100 || ch === 68 || ch === 115 || ch === 83 || ch === 119 || ch === 87;
+      }
+      pp$12.regexp_eatUnicodePropertyValueExpression = function(state) {
+        var start = state.pos;
+        if (this.regexp_eatUnicodePropertyName(state) && state.eat(
+          61
+          /* = */
+        )) {
+          var name2 = state.lastStringValue;
+          if (this.regexp_eatUnicodePropertyValue(state)) {
+            var value = state.lastStringValue;
+            this.regexp_validateUnicodePropertyNameAndValue(state, name2, value);
+            return CharSetOk2;
+          }
+        }
+        state.pos = start;
+        if (this.regexp_eatLoneUnicodePropertyNameOrValue(state)) {
+          var nameOrValue = state.lastStringValue;
+          return this.regexp_validateUnicodePropertyNameOrValue(state, nameOrValue);
+        }
+        return CharSetNone2;
+      };
+      pp$12.regexp_validateUnicodePropertyNameAndValue = function(state, name2, value) {
+        if (!hasOwn2(state.unicodeProperties.nonBinary, name2)) {
+          state.raise("Invalid property name");
+        }
+        if (!state.unicodeProperties.nonBinary[name2].test(value)) {
+          state.raise("Invalid property value");
+        }
+      };
+      pp$12.regexp_validateUnicodePropertyNameOrValue = function(state, nameOrValue) {
+        if (state.unicodeProperties.binary.test(nameOrValue)) {
+          return CharSetOk2;
+        }
+        if (state.switchV && state.unicodeProperties.binaryOfStrings.test(nameOrValue)) {
+          return CharSetString2;
+        }
+        state.raise("Invalid property name");
+      };
+      pp$12.regexp_eatUnicodePropertyName = function(state) {
+        var ch = 0;
+        state.lastStringValue = "";
+        while (isUnicodePropertyNameCharacter2(ch = state.current())) {
+          state.lastStringValue += codePointToString2(ch);
+          state.advance();
+        }
+        return state.lastStringValue !== "";
+      };
+      function isUnicodePropertyNameCharacter2(ch) {
+        return isControlLetter2(ch) || ch === 95;
+      }
+      pp$12.regexp_eatUnicodePropertyValue = function(state) {
+        var ch = 0;
+        state.lastStringValue = "";
+        while (isUnicodePropertyValueCharacter2(ch = state.current())) {
+          state.lastStringValue += codePointToString2(ch);
+          state.advance();
+        }
+        return state.lastStringValue !== "";
+      };
+      function isUnicodePropertyValueCharacter2(ch) {
+        return isUnicodePropertyNameCharacter2(ch) || isDecimalDigit2(ch);
+      }
+      pp$12.regexp_eatLoneUnicodePropertyNameOrValue = function(state) {
+        return this.regexp_eatUnicodePropertyValue(state);
+      };
+      pp$12.regexp_eatCharacterClass = function(state) {
+        if (state.eat(
+          91
+          /* [ */
+        )) {
+          var negate = state.eat(
+            94
+            /* ^ */
+          );
+          var result = this.regexp_classContents(state);
+          if (!state.eat(
+            93
+            /* ] */
+          )) {
+            state.raise("Unterminated character class");
+          }
+          if (negate && result === CharSetString2) {
+            state.raise("Negated character class may contain strings");
+          }
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_classContents = function(state) {
+        if (state.current() === 93) {
+          return CharSetOk2;
+        }
+        if (state.switchV) {
+          return this.regexp_classSetExpression(state);
+        }
+        this.regexp_nonEmptyClassRanges(state);
+        return CharSetOk2;
+      };
+      pp$12.regexp_nonEmptyClassRanges = function(state) {
+        while (this.regexp_eatClassAtom(state)) {
+          var left = state.lastIntValue;
+          if (state.eat(
+            45
+            /* - */
+          ) && this.regexp_eatClassAtom(state)) {
+            var right = state.lastIntValue;
+            if (state.switchU && (left === -1 || right === -1)) {
+              state.raise("Invalid character class");
+            }
+            if (left !== -1 && right !== -1 && left > right) {
+              state.raise("Range out of order in character class");
+            }
+          }
+        }
+      };
+      pp$12.regexp_eatClassAtom = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          92
+          /* \ */
+        )) {
+          if (this.regexp_eatClassEscape(state)) {
+            return true;
+          }
+          if (state.switchU) {
+            var ch$1 = state.current();
+            if (ch$1 === 99 || isOctalDigit2(ch$1)) {
+              state.raise("Invalid class escape");
+            }
+            state.raise("Invalid escape");
+          }
+          state.pos = start;
+        }
+        var ch = state.current();
+        if (ch !== 93) {
+          state.lastIntValue = ch;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatClassEscape = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          98
+          /* b */
+        )) {
+          state.lastIntValue = 8;
+          return true;
+        }
+        if (state.switchU && state.eat(
+          45
+          /* - */
+        )) {
+          state.lastIntValue = 45;
+          return true;
+        }
+        if (!state.switchU && state.eat(
+          99
+          /* c */
+        )) {
+          if (this.regexp_eatClassControlLetter(state)) {
+            return true;
+          }
+          state.pos = start;
+        }
+        return this.regexp_eatCharacterClassEscape(state) || this.regexp_eatCharacterEscape(state);
+      };
+      pp$12.regexp_classSetExpression = function(state) {
+        var result = CharSetOk2, subResult;
+        if (this.regexp_eatClassSetRange(state)) ;
+        else if (subResult = this.regexp_eatClassSetOperand(state)) {
+          if (subResult === CharSetString2) {
+            result = CharSetString2;
+          }
+          var start = state.pos;
+          while (state.eatChars(
+            [38, 38]
+            /* && */
+          )) {
+            if (state.current() !== 38 && (subResult = this.regexp_eatClassSetOperand(state))) {
+              if (subResult !== CharSetString2) {
+                result = CharSetOk2;
+              }
+              continue;
+            }
+            state.raise("Invalid character in character class");
+          }
+          if (start !== state.pos) {
+            return result;
+          }
+          while (state.eatChars(
+            [45, 45]
+            /* -- */
+          )) {
+            if (this.regexp_eatClassSetOperand(state)) {
+              continue;
+            }
+            state.raise("Invalid character in character class");
+          }
+          if (start !== state.pos) {
+            return result;
+          }
+        } else {
+          state.raise("Invalid character in character class");
+        }
+        for (; ; ) {
+          if (this.regexp_eatClassSetRange(state)) {
+            continue;
+          }
+          subResult = this.regexp_eatClassSetOperand(state);
+          if (!subResult) {
+            return result;
+          }
+          if (subResult === CharSetString2) {
+            result = CharSetString2;
+          }
+        }
+      };
+      pp$12.regexp_eatClassSetRange = function(state) {
+        var start = state.pos;
+        if (this.regexp_eatClassSetCharacter(state)) {
+          var left = state.lastIntValue;
+          if (state.eat(
+            45
+            /* - */
+          ) && this.regexp_eatClassSetCharacter(state)) {
+            var right = state.lastIntValue;
+            if (left !== -1 && right !== -1 && left > right) {
+              state.raise("Range out of order in character class");
+            }
+            return true;
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatClassSetOperand = function(state) {
+        if (this.regexp_eatClassSetCharacter(state)) {
+          return CharSetOk2;
+        }
+        return this.regexp_eatClassStringDisjunction(state) || this.regexp_eatNestedClass(state);
+      };
+      pp$12.regexp_eatNestedClass = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          91
+          /* [ */
+        )) {
+          var negate = state.eat(
+            94
+            /* ^ */
+          );
+          var result = this.regexp_classContents(state);
+          if (state.eat(
+            93
+            /* ] */
+          )) {
+            if (negate && result === CharSetString2) {
+              state.raise("Negated character class may contain strings");
+            }
+            return result;
+          }
+          state.pos = start;
+        }
+        if (state.eat(
+          92
+          /* \ */
+        )) {
+          var result$1 = this.regexp_eatCharacterClassEscape(state);
+          if (result$1) {
+            return result$1;
+          }
+          state.pos = start;
+        }
+        return null;
+      };
+      pp$12.regexp_eatClassStringDisjunction = function(state) {
+        var start = state.pos;
+        if (state.eatChars(
+          [92, 113]
+          /* \q */
+        )) {
+          if (state.eat(
+            123
+            /* { */
+          )) {
+            var result = this.regexp_classStringDisjunctionContents(state);
+            if (state.eat(
+              125
+              /* } */
+            )) {
+              return result;
+            }
+          } else {
+            state.raise("Invalid escape");
+          }
+          state.pos = start;
+        }
+        return null;
+      };
+      pp$12.regexp_classStringDisjunctionContents = function(state) {
+        var result = this.regexp_classString(state);
+        while (state.eat(
+          124
+          /* | */
+        )) {
+          if (this.regexp_classString(state) === CharSetString2) {
+            result = CharSetString2;
+          }
+        }
+        return result;
+      };
+      pp$12.regexp_classString = function(state) {
+        var count = 0;
+        while (this.regexp_eatClassSetCharacter(state)) {
+          count++;
+        }
+        return count === 1 ? CharSetOk2 : CharSetString2;
+      };
+      pp$12.regexp_eatClassSetCharacter = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          92
+          /* \ */
+        )) {
+          if (this.regexp_eatCharacterEscape(state) || this.regexp_eatClassSetReservedPunctuator(state)) {
+            return true;
+          }
+          if (state.eat(
+            98
+            /* b */
+          )) {
+            state.lastIntValue = 8;
+            return true;
+          }
+          state.pos = start;
+          return false;
+        }
+        var ch = state.current();
+        if (ch < 0 || ch === state.lookahead() && isClassSetReservedDoublePunctuatorCharacter2(ch)) {
+          return false;
+        }
+        if (isClassSetSyntaxCharacter2(ch)) {
+          return false;
+        }
+        state.advance();
+        state.lastIntValue = ch;
+        return true;
+      };
+      function isClassSetReservedDoublePunctuatorCharacter2(ch) {
+        return ch === 33 || ch >= 35 && ch <= 38 || ch >= 42 && ch <= 44 || ch === 46 || ch >= 58 && ch <= 64 || ch === 94 || ch === 96 || ch === 126;
+      }
+      function isClassSetSyntaxCharacter2(ch) {
+        return ch === 40 || ch === 41 || ch === 45 || ch === 47 || ch >= 91 && ch <= 93 || ch >= 123 && ch <= 125;
+      }
+      pp$12.regexp_eatClassSetReservedPunctuator = function(state) {
+        var ch = state.current();
+        if (isClassSetReservedPunctuator2(ch)) {
+          state.lastIntValue = ch;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      function isClassSetReservedPunctuator2(ch) {
+        return ch === 33 || ch === 35 || ch === 37 || ch === 38 || ch === 44 || ch === 45 || ch >= 58 && ch <= 62 || ch === 64 || ch === 96 || ch === 126;
+      }
+      pp$12.regexp_eatClassControlLetter = function(state) {
+        var ch = state.current();
+        if (isDecimalDigit2(ch) || ch === 95) {
+          state.lastIntValue = ch % 32;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatHexEscapeSequence = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          120
+          /* x */
+        )) {
+          if (this.regexp_eatFixedHexDigits(state, 2)) {
+            return true;
+          }
+          if (state.switchU) {
+            state.raise("Invalid escape");
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatDecimalDigits = function(state) {
+        var start = state.pos;
+        var ch = 0;
+        state.lastIntValue = 0;
+        while (isDecimalDigit2(ch = state.current())) {
+          state.lastIntValue = 10 * state.lastIntValue + (ch - 48);
+          state.advance();
+        }
+        return state.pos !== start;
+      };
+      function isDecimalDigit2(ch) {
+        return ch >= 48 && ch <= 57;
+      }
+      pp$12.regexp_eatHexDigits = function(state) {
+        var start = state.pos;
+        var ch = 0;
+        state.lastIntValue = 0;
+        while (isHexDigit2(ch = state.current())) {
+          state.lastIntValue = 16 * state.lastIntValue + hexToInt2(ch);
+          state.advance();
+        }
+        return state.pos !== start;
+      };
+      function isHexDigit2(ch) {
+        return ch >= 48 && ch <= 57 || ch >= 65 && ch <= 70 || ch >= 97 && ch <= 102;
+      }
+      function hexToInt2(ch) {
+        if (ch >= 65 && ch <= 70) {
+          return 10 + (ch - 65);
+        }
+        if (ch >= 97 && ch <= 102) {
+          return 10 + (ch - 97);
+        }
+        return ch - 48;
+      }
+      pp$12.regexp_eatLegacyOctalEscapeSequence = function(state) {
+        if (this.regexp_eatOctalDigit(state)) {
+          var n1 = state.lastIntValue;
+          if (this.regexp_eatOctalDigit(state)) {
+            var n2 = state.lastIntValue;
+            if (n1 <= 3 && this.regexp_eatOctalDigit(state)) {
+              state.lastIntValue = n1 * 64 + n2 * 8 + state.lastIntValue;
+            } else {
+              state.lastIntValue = n1 * 8 + n2;
+            }
+          } else {
+            state.lastIntValue = n1;
+          }
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatOctalDigit = function(state) {
+        var ch = state.current();
+        if (isOctalDigit2(ch)) {
+          state.lastIntValue = ch - 48;
+          state.advance();
+          return true;
+        }
+        state.lastIntValue = 0;
+        return false;
+      };
+      function isOctalDigit2(ch) {
+        return ch >= 48 && ch <= 55;
+      }
+      pp$12.regexp_eatFixedHexDigits = function(state, length) {
+        var start = state.pos;
+        state.lastIntValue = 0;
+        for (var i2 = 0; i2 < length; ++i2) {
+          var ch = state.current();
+          if (!isHexDigit2(ch)) {
+            state.pos = start;
+            return false;
+          }
+          state.lastIntValue = 16 * state.lastIntValue + hexToInt2(ch);
+          state.advance();
+        }
+        return true;
+      };
+      var Token4 = function Token5(p) {
+        this.type = p.type;
+        this.value = p.value;
+        this.start = p.start;
+        this.end = p.end;
+        if (p.options.locations) {
+          this.loc = new SourceLocation3(p, p.startLoc, p.endLoc);
+        }
+        if (p.options.ranges) {
+          this.range = [p.start, p.end];
+        }
+      };
+      var pp2 = Parser5.prototype;
+      pp2.next = function(ignoreEscapeSequenceInKeyword) {
+        if (!ignoreEscapeSequenceInKeyword && this.type.keyword && this.containsEsc) {
+          this.raiseRecoverable(this.start, "Escape sequence in keyword " + this.type.keyword);
+        }
+        if (this.options.onToken) {
+          this.options.onToken(new Token4(this));
+        }
+        this.lastTokEnd = this.end;
+        this.lastTokStart = this.start;
+        this.lastTokEndLoc = this.endLoc;
+        this.lastTokStartLoc = this.startLoc;
+        this.nextToken();
+      };
+      pp2.getToken = function() {
+        this.next();
+        return new Token4(this);
+      };
+      if (typeof Symbol !== "undefined") {
+        pp2[Symbol.iterator] = function() {
+          var this$1$1 = this;
+          return {
+            next: function() {
+              var token = this$1$1.getToken();
+              return {
+                done: token.type === types$12.eof,
+                value: token
+              };
+            }
+          };
+        };
+      }
+      pp2.nextToken = function() {
+        var curContext = this.curContext();
+        if (!curContext || !curContext.preserveSpace) {
+          this.skipSpace();
+        }
+        this.start = this.pos;
+        if (this.options.locations) {
+          this.startLoc = this.curPosition();
+        }
+        if (this.pos >= this.input.length) {
+          return this.finishToken(types$12.eof);
+        }
+        if (curContext.override) {
+          return curContext.override(this);
+        } else {
+          this.readToken(this.fullCharCodeAtPos());
+        }
+      };
+      pp2.readToken = function(code) {
+        if (isIdentifierStart2(code, this.options.ecmaVersion >= 6) || code === 92) {
+          return this.readWord();
+        }
+        return this.getTokenFromCode(code);
+      };
+      pp2.fullCharCodeAt = function(pos) {
+        var code = this.input.charCodeAt(pos);
+        if (code <= 55295 || code >= 56320) {
+          return code;
+        }
+        var next = this.input.charCodeAt(pos + 1);
+        return next <= 56319 || next >= 57344 ? code : (code << 10) + next - 56613888;
+      };
+      pp2.fullCharCodeAtPos = function() {
+        return this.fullCharCodeAt(this.pos);
+      };
+      pp2.skipBlockComment = function() {
+        var startLoc = this.options.onComment && this.curPosition();
+        var start = this.pos, end = this.input.indexOf("*/", this.pos += 2);
+        if (end === -1) {
+          this.raise(this.pos - 2, "Unterminated comment");
+        }
+        this.pos = end + 2;
+        if (this.options.locations) {
+          for (var nextBreak = void 0, pos = start; (nextBreak = nextLineBreak2(this.input, pos, this.pos)) > -1; ) {
+            ++this.curLine;
+            pos = this.lineStart = nextBreak;
+          }
+        }
+        if (this.options.onComment) {
+          this.options.onComment(
+            true,
+            this.input.slice(start + 2, end),
+            start,
+            this.pos,
+            startLoc,
+            this.curPosition()
+          );
+        }
+      };
+      pp2.skipLineComment = function(startSkip) {
+        var start = this.pos;
+        var startLoc = this.options.onComment && this.curPosition();
+        var ch = this.input.charCodeAt(this.pos += startSkip);
+        while (this.pos < this.input.length && !isNewLine2(ch)) {
+          ch = this.input.charCodeAt(++this.pos);
+        }
+        if (this.options.onComment) {
+          this.options.onComment(
+            false,
+            this.input.slice(start + startSkip, this.pos),
+            start,
+            this.pos,
+            startLoc,
+            this.curPosition()
+          );
+        }
+      };
+      pp2.skipSpace = function() {
+        loop: while (this.pos < this.input.length) {
+          var ch = this.input.charCodeAt(this.pos);
+          switch (ch) {
+            case 32:
+            case 160:
+              ++this.pos;
+              break;
+            case 13:
+              if (this.input.charCodeAt(this.pos + 1) === 10) {
+                ++this.pos;
+              }
+            case 10:
+            case 8232:
+            case 8233:
+              ++this.pos;
+              if (this.options.locations) {
+                ++this.curLine;
+                this.lineStart = this.pos;
+              }
+              break;
+            case 47:
+              switch (this.input.charCodeAt(this.pos + 1)) {
+                case 42:
+                  this.skipBlockComment();
+                  break;
+                case 47:
+                  this.skipLineComment(2);
+                  break;
+                default:
+                  break loop;
+              }
+              break;
+            default:
+              if (ch > 8 && ch < 14 || ch >= 5760 && nonASCIIwhitespace2.test(String.fromCharCode(ch))) {
+                ++this.pos;
+              } else {
+                break loop;
+              }
+          }
+        }
+      };
+      pp2.finishToken = function(type, val) {
+        this.end = this.pos;
+        if (this.options.locations) {
+          this.endLoc = this.curPosition();
+        }
+        var prevType = this.type;
+        this.type = type;
+        this.value = val;
+        this.updateContext(prevType);
+      };
+      pp2.readToken_dot = function() {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (next >= 48 && next <= 57) {
+          return this.readNumber(true);
+        }
+        var next2 = this.input.charCodeAt(this.pos + 2);
+        if (this.options.ecmaVersion >= 6 && next === 46 && next2 === 46) {
+          this.pos += 3;
+          return this.finishToken(types$12.ellipsis);
+        } else {
+          ++this.pos;
+          return this.finishToken(types$12.dot);
+        }
+      };
+      pp2.readToken_slash = function() {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (this.exprAllowed) {
+          ++this.pos;
+          return this.readRegexp();
+        }
+        if (next === 61) {
+          return this.finishOp(types$12.assign, 2);
+        }
+        return this.finishOp(types$12.slash, 1);
+      };
+      pp2.readToken_mult_modulo_exp = function(code) {
+        var next = this.input.charCodeAt(this.pos + 1);
+        var size = 1;
+        var tokentype = code === 42 ? types$12.star : types$12.modulo;
+        if (this.options.ecmaVersion >= 7 && code === 42 && next === 42) {
+          ++size;
+          tokentype = types$12.starstar;
+          next = this.input.charCodeAt(this.pos + 2);
+        }
+        if (next === 61) {
+          return this.finishOp(types$12.assign, size + 1);
+        }
+        return this.finishOp(tokentype, size);
+      };
+      pp2.readToken_pipe_amp = function(code) {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (next === code) {
+          if (this.options.ecmaVersion >= 12) {
+            var next2 = this.input.charCodeAt(this.pos + 2);
+            if (next2 === 61) {
+              return this.finishOp(types$12.assign, 3);
+            }
+          }
+          return this.finishOp(code === 124 ? types$12.logicalOR : types$12.logicalAND, 2);
+        }
+        if (next === 61) {
+          return this.finishOp(types$12.assign, 2);
+        }
+        return this.finishOp(code === 124 ? types$12.bitwiseOR : types$12.bitwiseAND, 1);
+      };
+      pp2.readToken_caret = function() {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (next === 61) {
+          return this.finishOp(types$12.assign, 2);
+        }
+        return this.finishOp(types$12.bitwiseXOR, 1);
+      };
+      pp2.readToken_plus_min = function(code) {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (next === code) {
+          if (next === 45 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 62 && (this.lastTokEnd === 0 || lineBreak2.test(this.input.slice(this.lastTokEnd, this.pos)))) {
+            this.skipLineComment(3);
+            this.skipSpace();
+            return this.nextToken();
+          }
+          return this.finishOp(types$12.incDec, 2);
+        }
+        if (next === 61) {
+          return this.finishOp(types$12.assign, 2);
+        }
+        return this.finishOp(types$12.plusMin, 1);
+      };
+      pp2.readToken_lt_gt = function(code) {
+        var next = this.input.charCodeAt(this.pos + 1);
+        var size = 1;
+        if (next === code) {
+          size = code === 62 && this.input.charCodeAt(this.pos + 2) === 62 ? 3 : 2;
+          if (this.input.charCodeAt(this.pos + size) === 61) {
+            return this.finishOp(types$12.assign, size + 1);
+          }
+          return this.finishOp(types$12.bitShift, size);
+        }
+        if (next === 33 && code === 60 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 45 && this.input.charCodeAt(this.pos + 3) === 45) {
+          this.skipLineComment(4);
+          this.skipSpace();
+          return this.nextToken();
+        }
+        if (next === 61) {
+          size = 2;
+        }
+        return this.finishOp(types$12.relational, size);
+      };
+      pp2.readToken_eq_excl = function(code) {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (next === 61) {
+          return this.finishOp(types$12.equality, this.input.charCodeAt(this.pos + 2) === 61 ? 3 : 2);
+        }
+        if (code === 61 && next === 62 && this.options.ecmaVersion >= 6) {
+          this.pos += 2;
+          return this.finishToken(types$12.arrow);
+        }
+        return this.finishOp(code === 61 ? types$12.eq : types$12.prefix, 1);
+      };
+      pp2.readToken_question = function() {
+        var ecmaVersion2 = this.options.ecmaVersion;
+        if (ecmaVersion2 >= 11) {
+          var next = this.input.charCodeAt(this.pos + 1);
+          if (next === 46) {
+            var next2 = this.input.charCodeAt(this.pos + 2);
+            if (next2 < 48 || next2 > 57) {
+              return this.finishOp(types$12.questionDot, 2);
+            }
+          }
+          if (next === 63) {
+            if (ecmaVersion2 >= 12) {
+              var next2$1 = this.input.charCodeAt(this.pos + 2);
+              if (next2$1 === 61) {
+                return this.finishOp(types$12.assign, 3);
+              }
+            }
+            return this.finishOp(types$12.coalesce, 2);
+          }
+        }
+        return this.finishOp(types$12.question, 1);
+      };
+      pp2.readToken_numberSign = function() {
+        var ecmaVersion2 = this.options.ecmaVersion;
+        var code = 35;
+        if (ecmaVersion2 >= 13) {
+          ++this.pos;
+          code = this.fullCharCodeAtPos();
+          if (isIdentifierStart2(code, true) || code === 92) {
+            return this.finishToken(types$12.privateId, this.readWord1());
+          }
+        }
+        this.raise(this.pos, "Unexpected character '" + codePointToString2(code) + "'");
+      };
+      pp2.getTokenFromCode = function(code) {
+        switch (code) {
+          // The interpretation of a dot depends on whether it is followed
+          // by a digit or another two dots.
+          case 46:
+            return this.readToken_dot();
+          // Punctuation tokens.
+          case 40:
+            ++this.pos;
+            return this.finishToken(types$12.parenL);
+          case 41:
+            ++this.pos;
+            return this.finishToken(types$12.parenR);
+          case 59:
+            ++this.pos;
+            return this.finishToken(types$12.semi);
+          case 44:
+            ++this.pos;
+            return this.finishToken(types$12.comma);
+          case 91:
+            ++this.pos;
+            return this.finishToken(types$12.bracketL);
+          case 93:
+            ++this.pos;
+            return this.finishToken(types$12.bracketR);
+          case 123:
+            ++this.pos;
+            return this.finishToken(types$12.braceL);
+          case 125:
+            ++this.pos;
+            return this.finishToken(types$12.braceR);
+          case 58:
+            ++this.pos;
+            return this.finishToken(types$12.colon);
+          case 96:
+            if (this.options.ecmaVersion < 6) {
+              break;
+            }
+            ++this.pos;
+            return this.finishToken(types$12.backQuote);
+          case 48:
+            var next = this.input.charCodeAt(this.pos + 1);
+            if (next === 120 || next === 88) {
+              return this.readRadixNumber(16);
+            }
+            if (this.options.ecmaVersion >= 6) {
+              if (next === 111 || next === 79) {
+                return this.readRadixNumber(8);
+              }
+              if (next === 98 || next === 66) {
+                return this.readRadixNumber(2);
+              }
+            }
+          // Anything else beginning with a digit is an integer, octal
+          // number, or float.
+          case 49:
+          case 50:
+          case 51:
+          case 52:
+          case 53:
+          case 54:
+          case 55:
+          case 56:
+          case 57:
+            return this.readNumber(false);
+          // Quotes produce strings.
+          case 34:
+          case 39:
+            return this.readString(code);
+          // Operators are parsed inline in tiny state machines. '=' (61) is
+          // often referred to. `finishOp` simply skips the amount of
+          // characters it is given as second argument, and returns a token
+          // of the type given by its first argument.
+          case 47:
+            return this.readToken_slash();
+          case 37:
+          case 42:
+            return this.readToken_mult_modulo_exp(code);
+          case 124:
+          case 38:
+            return this.readToken_pipe_amp(code);
+          case 94:
+            return this.readToken_caret();
+          case 43:
+          case 45:
+            return this.readToken_plus_min(code);
+          case 60:
+          case 62:
+            return this.readToken_lt_gt(code);
+          case 61:
+          case 33:
+            return this.readToken_eq_excl(code);
+          case 63:
+            return this.readToken_question();
+          case 126:
+            return this.finishOp(types$12.prefix, 1);
+          case 35:
+            return this.readToken_numberSign();
+        }
+        this.raise(this.pos, "Unexpected character '" + codePointToString2(code) + "'");
+      };
+      pp2.finishOp = function(type, size) {
+        var str = this.input.slice(this.pos, this.pos + size);
+        this.pos += size;
+        return this.finishToken(type, str);
+      };
+      pp2.readRegexp = function() {
+        var escaped, inClass, start = this.pos;
+        for (; ; ) {
+          if (this.pos >= this.input.length) {
+            this.raise(start, "Unterminated regular expression");
+          }
+          var ch = this.input.charAt(this.pos);
+          if (lineBreak2.test(ch)) {
+            this.raise(start, "Unterminated regular expression");
+          }
+          if (!escaped) {
+            if (ch === "[") {
+              inClass = true;
+            } else if (ch === "]" && inClass) {
+              inClass = false;
+            } else if (ch === "/" && !inClass) {
+              break;
+            }
+            escaped = ch === "\\";
+          } else {
+            escaped = false;
+          }
+          ++this.pos;
+        }
+        var pattern = this.input.slice(start, this.pos);
+        ++this.pos;
+        var flagsStart = this.pos;
+        var flags = this.readWord1();
+        if (this.containsEsc) {
+          this.unexpected(flagsStart);
+        }
+        var state = this.regexpState || (this.regexpState = new RegExpValidationState3(this));
+        state.reset(start, pattern, flags);
+        this.validateRegExpFlags(state);
+        this.validateRegExpPattern(state);
+        var value = null;
+        try {
+          value = new RegExp(pattern, flags);
+        } catch (e) {
+        }
+        return this.finishToken(types$12.regexp, { pattern, flags, value });
+      };
+      pp2.readInt = function(radix, len, maybeLegacyOctalNumericLiteral) {
+        var allowSeparators = this.options.ecmaVersion >= 12 && len === void 0;
+        var isLegacyOctalNumericLiteral = maybeLegacyOctalNumericLiteral && this.input.charCodeAt(this.pos) === 48;
+        var start = this.pos, total = 0, lastCode = 0;
+        for (var i2 = 0, e = len == null ? Infinity : len; i2 < e; ++i2, ++this.pos) {
+          var code = this.input.charCodeAt(this.pos), val = void 0;
+          if (allowSeparators && code === 95) {
+            if (isLegacyOctalNumericLiteral) {
+              this.raiseRecoverable(this.pos, "Numeric separator is not allowed in legacy octal numeric literals");
+            }
+            if (lastCode === 95) {
+              this.raiseRecoverable(this.pos, "Numeric separator must be exactly one underscore");
+            }
+            if (i2 === 0) {
+              this.raiseRecoverable(this.pos, "Numeric separator is not allowed at the first of digits");
+            }
+            lastCode = code;
+            continue;
+          }
+          if (code >= 97) {
+            val = code - 97 + 10;
+          } else if (code >= 65) {
+            val = code - 65 + 10;
+          } else if (code >= 48 && code <= 57) {
+            val = code - 48;
+          } else {
+            val = Infinity;
+          }
+          if (val >= radix) {
+            break;
+          }
+          lastCode = code;
+          total = total * radix + val;
+        }
+        if (allowSeparators && lastCode === 95) {
+          this.raiseRecoverable(this.pos - 1, "Numeric separator is not allowed at the last of digits");
+        }
+        if (this.pos === start || len != null && this.pos - start !== len) {
+          return null;
+        }
+        return total;
+      };
+      function stringToNumber2(str, isLegacyOctalNumericLiteral) {
+        if (isLegacyOctalNumericLiteral) {
+          return parseInt(str, 8);
+        }
+        return parseFloat(str.replace(/_/g, ""));
+      }
+      function stringToBigInt2(str) {
+        if (typeof BigInt !== "function") {
+          return null;
+        }
+        return BigInt(str.replace(/_/g, ""));
+      }
+      pp2.readRadixNumber = function(radix) {
+        var start = this.pos;
+        this.pos += 2;
+        var val = this.readInt(radix);
+        if (val == null) {
+          this.raise(this.start + 2, "Expected number in radix " + radix);
+        }
+        if (this.options.ecmaVersion >= 11 && this.input.charCodeAt(this.pos) === 110) {
+          val = stringToBigInt2(this.input.slice(start, this.pos));
+          ++this.pos;
+        } else if (isIdentifierStart2(this.fullCharCodeAtPos())) {
+          this.raise(this.pos, "Identifier directly after number");
+        }
+        return this.finishToken(types$12.num, val);
+      };
+      pp2.readNumber = function(startsWithDot) {
+        var start = this.pos;
+        if (!startsWithDot && this.readInt(10, void 0, true) === null) {
+          this.raise(start, "Invalid number");
+        }
+        var octal = this.pos - start >= 2 && this.input.charCodeAt(start) === 48;
+        if (octal && this.strict) {
+          this.raise(start, "Invalid number");
+        }
+        var next = this.input.charCodeAt(this.pos);
+        if (!octal && !startsWithDot && this.options.ecmaVersion >= 11 && next === 110) {
+          var val$1 = stringToBigInt2(this.input.slice(start, this.pos));
+          ++this.pos;
+          if (isIdentifierStart2(this.fullCharCodeAtPos())) {
+            this.raise(this.pos, "Identifier directly after number");
+          }
+          return this.finishToken(types$12.num, val$1);
+        }
+        if (octal && /[89]/.test(this.input.slice(start, this.pos))) {
+          octal = false;
+        }
+        if (next === 46 && !octal) {
+          ++this.pos;
+          this.readInt(10);
+          next = this.input.charCodeAt(this.pos);
+        }
+        if ((next === 69 || next === 101) && !octal) {
+          next = this.input.charCodeAt(++this.pos);
+          if (next === 43 || next === 45) {
+            ++this.pos;
+          }
+          if (this.readInt(10) === null) {
+            this.raise(start, "Invalid number");
+          }
+        }
+        if (isIdentifierStart2(this.fullCharCodeAtPos())) {
+          this.raise(this.pos, "Identifier directly after number");
+        }
+        var val = stringToNumber2(this.input.slice(start, this.pos), octal);
+        return this.finishToken(types$12.num, val);
+      };
+      pp2.readCodePoint = function() {
+        var ch = this.input.charCodeAt(this.pos), code;
+        if (ch === 123) {
+          if (this.options.ecmaVersion < 6) {
+            this.unexpected();
+          }
+          var codePos = ++this.pos;
+          code = this.readHexChar(this.input.indexOf("}", this.pos) - this.pos);
+          ++this.pos;
+          if (code > 1114111) {
+            this.invalidStringToken(codePos, "Code point out of bounds");
+          }
+        } else {
+          code = this.readHexChar(4);
+        }
+        return code;
+      };
+      pp2.readString = function(quote) {
+        var out = "", chunkStart = ++this.pos;
+        for (; ; ) {
+          if (this.pos >= this.input.length) {
+            this.raise(this.start, "Unterminated string constant");
+          }
+          var ch = this.input.charCodeAt(this.pos);
+          if (ch === quote) {
+            break;
+          }
+          if (ch === 92) {
+            out += this.input.slice(chunkStart, this.pos);
+            out += this.readEscapedChar(false);
+            chunkStart = this.pos;
+          } else if (ch === 8232 || ch === 8233) {
+            if (this.options.ecmaVersion < 10) {
+              this.raise(this.start, "Unterminated string constant");
+            }
+            ++this.pos;
+            if (this.options.locations) {
+              this.curLine++;
+              this.lineStart = this.pos;
+            }
+          } else {
+            if (isNewLine2(ch)) {
+              this.raise(this.start, "Unterminated string constant");
+            }
+            ++this.pos;
+          }
+        }
+        out += this.input.slice(chunkStart, this.pos++);
+        return this.finishToken(types$12.string, out);
+      };
+      var INVALID_TEMPLATE_ESCAPE_ERROR2 = {};
+      pp2.tryReadTemplateToken = function() {
+        this.inTemplateElement = true;
+        try {
+          this.readTmplToken();
+        } catch (err) {
+          if (err === INVALID_TEMPLATE_ESCAPE_ERROR2) {
+            this.readInvalidTemplateToken();
+          } else {
+            throw err;
+          }
+        }
+        this.inTemplateElement = false;
+      };
+      pp2.invalidStringToken = function(position, message) {
+        if (this.inTemplateElement && this.options.ecmaVersion >= 9) {
+          throw INVALID_TEMPLATE_ESCAPE_ERROR2;
+        } else {
+          this.raise(position, message);
+        }
+      };
+      pp2.readTmplToken = function() {
+        var out = "", chunkStart = this.pos;
+        for (; ; ) {
+          if (this.pos >= this.input.length) {
+            this.raise(this.start, "Unterminated template");
+          }
+          var ch = this.input.charCodeAt(this.pos);
+          if (ch === 96 || ch === 36 && this.input.charCodeAt(this.pos + 1) === 123) {
+            if (this.pos === this.start && (this.type === types$12.template || this.type === types$12.invalidTemplate)) {
+              if (ch === 36) {
+                this.pos += 2;
+                return this.finishToken(types$12.dollarBraceL);
+              } else {
+                ++this.pos;
+                return this.finishToken(types$12.backQuote);
+              }
+            }
+            out += this.input.slice(chunkStart, this.pos);
+            return this.finishToken(types$12.template, out);
+          }
+          if (ch === 92) {
+            out += this.input.slice(chunkStart, this.pos);
+            out += this.readEscapedChar(true);
+            chunkStart = this.pos;
+          } else if (isNewLine2(ch)) {
+            out += this.input.slice(chunkStart, this.pos);
+            ++this.pos;
+            switch (ch) {
+              case 13:
+                if (this.input.charCodeAt(this.pos) === 10) {
+                  ++this.pos;
+                }
+              case 10:
+                out += "\n";
+                break;
+              default:
+                out += String.fromCharCode(ch);
+                break;
+            }
+            if (this.options.locations) {
+              ++this.curLine;
+              this.lineStart = this.pos;
+            }
+            chunkStart = this.pos;
+          } else {
+            ++this.pos;
+          }
+        }
+      };
+      pp2.readInvalidTemplateToken = function() {
+        for (; this.pos < this.input.length; this.pos++) {
+          switch (this.input[this.pos]) {
+            case "\\":
+              ++this.pos;
+              break;
+            case "$":
+              if (this.input[this.pos + 1] !== "{") {
+                break;
+              }
+            // fall through
+            case "`":
+              return this.finishToken(types$12.invalidTemplate, this.input.slice(this.start, this.pos));
+            case "\r":
+              if (this.input[this.pos + 1] === "\n") {
+                ++this.pos;
+              }
+            // fall through
+            case "\n":
+            case "\u2028":
+            case "\u2029":
+              ++this.curLine;
+              this.lineStart = this.pos + 1;
+              break;
+          }
+        }
+        this.raise(this.start, "Unterminated template");
+      };
+      pp2.readEscapedChar = function(inTemplate) {
+        var ch = this.input.charCodeAt(++this.pos);
+        ++this.pos;
+        switch (ch) {
+          case 110:
+            return "\n";
+          // 'n' -> '\n'
+          case 114:
+            return "\r";
+          // 'r' -> '\r'
+          case 120:
+            return String.fromCharCode(this.readHexChar(2));
+          // 'x'
+          case 117:
+            return codePointToString2(this.readCodePoint());
+          // 'u'
+          case 116:
+            return "	";
+          // 't' -> '\t'
+          case 98:
+            return "\b";
+          // 'b' -> '\b'
+          case 118:
+            return "\v";
+          // 'v' -> '\u000b'
+          case 102:
+            return "\f";
+          // 'f' -> '\f'
+          case 13:
+            if (this.input.charCodeAt(this.pos) === 10) {
+              ++this.pos;
+            }
+          // '\r\n'
+          case 10:
+            if (this.options.locations) {
+              this.lineStart = this.pos;
+              ++this.curLine;
+            }
+            return "";
+          case 56:
+          case 57:
+            if (this.strict) {
+              this.invalidStringToken(
+                this.pos - 1,
+                "Invalid escape sequence"
+              );
+            }
+            if (inTemplate) {
+              var codePos = this.pos - 1;
+              this.invalidStringToken(
+                codePos,
+                "Invalid escape sequence in template string"
+              );
+            }
+          default:
+            if (ch >= 48 && ch <= 55) {
+              var octalStr = this.input.substr(this.pos - 1, 3).match(/^[0-7]+/)[0];
+              var octal = parseInt(octalStr, 8);
+              if (octal > 255) {
+                octalStr = octalStr.slice(0, -1);
+                octal = parseInt(octalStr, 8);
+              }
+              this.pos += octalStr.length - 1;
+              ch = this.input.charCodeAt(this.pos);
+              if ((octalStr !== "0" || ch === 56 || ch === 57) && (this.strict || inTemplate)) {
+                this.invalidStringToken(
+                  this.pos - 1 - octalStr.length,
+                  inTemplate ? "Octal literal in template string" : "Octal literal in strict mode"
+                );
+              }
+              return String.fromCharCode(octal);
+            }
+            if (isNewLine2(ch)) {
+              if (this.options.locations) {
+                this.lineStart = this.pos;
+                ++this.curLine;
+              }
+              return "";
+            }
+            return String.fromCharCode(ch);
+        }
+      };
+      pp2.readHexChar = function(len) {
+        var codePos = this.pos;
+        var n = this.readInt(16, len);
+        if (n === null) {
+          this.invalidStringToken(codePos, "Bad character escape sequence");
+        }
+        return n;
+      };
+      pp2.readWord1 = function() {
+        this.containsEsc = false;
+        var word = "", first = true, chunkStart = this.pos;
+        var astral = this.options.ecmaVersion >= 6;
+        while (this.pos < this.input.length) {
+          var ch = this.fullCharCodeAtPos();
+          if (isIdentifierChar2(ch, astral)) {
+            this.pos += ch <= 65535 ? 1 : 2;
+          } else if (ch === 92) {
+            this.containsEsc = true;
+            word += this.input.slice(chunkStart, this.pos);
+            var escStart = this.pos;
+            if (this.input.charCodeAt(++this.pos) !== 117) {
+              this.invalidStringToken(this.pos, "Expecting Unicode escape sequence \\uXXXX");
+            }
+            ++this.pos;
+            var esc = this.readCodePoint();
+            if (!(first ? isIdentifierStart2 : isIdentifierChar2)(esc, astral)) {
+              this.invalidStringToken(escStart, "Invalid Unicode escape");
+            }
+            word += codePointToString2(esc);
+            chunkStart = this.pos;
+          } else {
+            break;
+          }
+          first = false;
+        }
+        return word + this.input.slice(chunkStart, this.pos);
+      };
+      pp2.readWord = function() {
+        var word = this.readWord1();
+        var type = types$12.name;
+        if (this.keywords.test(word)) {
+          type = keywords2[word];
+        }
+        return this.finishToken(type, word);
+      };
+      var version3 = "8.17.0";
+      Parser5.acorn = {
+        Parser: Parser5,
+        version: version3,
+        defaultOptions: defaultOptions2,
+        Position: Position3,
+        SourceLocation: SourceLocation3,
+        getLineInfo: getLineInfo2,
+        Node: Node4,
+        TokenType: TokenType3,
+        tokTypes: types$12,
+        keywordTypes: keywords2,
+        TokContext: TokContext3,
+        tokContexts: types2,
+        isIdentifierChar: isIdentifierChar2,
+        isIdentifierStart: isIdentifierStart2,
+        Token: Token4,
+        isNewLine: isNewLine2,
+        lineBreak: lineBreak2,
+        lineBreakG: lineBreakG2,
+        nonASCIIwhitespace: nonASCIIwhitespace2
+      };
+      function parse5(input, options) {
+        return Parser5.parse(input, options);
+      }
+      function parseExpressionAt2(input, pos, options) {
+        return Parser5.parseExpressionAt(input, pos, options);
+      }
+      function tokenizer3(input, options) {
+        return Parser5.tokenizer(input, options);
+      }
+      exports2.Node = Node4;
+      exports2.Parser = Parser5;
+      exports2.Position = Position3;
+      exports2.SourceLocation = SourceLocation3;
+      exports2.TokContext = TokContext3;
+      exports2.Token = Token4;
+      exports2.TokenType = TokenType3;
+      exports2.defaultOptions = defaultOptions2;
+      exports2.getLineInfo = getLineInfo2;
+      exports2.isIdentifierChar = isIdentifierChar2;
+      exports2.isIdentifierStart = isIdentifierStart2;
+      exports2.isNewLine = isNewLine2;
+      exports2.keywordTypes = keywords2;
+      exports2.lineBreak = lineBreak2;
+      exports2.lineBreakG = lineBreakG2;
+      exports2.nonASCIIwhitespace = nonASCIIwhitespace2;
+      exports2.parse = parse5;
+      exports2.parseExpressionAt = parseExpressionAt2;
+      exports2.tokContexts = types2;
+      exports2.tokTypes = types$12;
+      exports2.tokenizer = tokenizer3;
+      exports2.version = version3;
+    }));
+  }
+});
+
+// node_modules/acorn-jsx/index.js
+var require_acorn_jsx = __commonJS({
+  "node_modules/acorn-jsx/index.js"(exports, module) {
+    "use strict";
+    var XHTMLEntities = require_xhtml();
+    var hexNumber = /^[\da-fA-F]+$/;
+    var decimalNumber = /^\d+$/;
+    var acornJsxMap = /* @__PURE__ */ new WeakMap();
+    function getJsxTokens(acorn) {
+      acorn = acorn.Parser.acorn || acorn;
+      let acornJsx = acornJsxMap.get(acorn);
+      if (!acornJsx) {
+        const tt = acorn.tokTypes;
+        const TokContext3 = acorn.TokContext;
+        const TokenType3 = acorn.TokenType;
+        const tc_oTag = new TokContext3("<tag", false);
+        const tc_cTag = new TokContext3("</tag", false);
+        const tc_expr = new TokContext3("<tag>...</tag>", true, true);
+        const tokContexts = {
+          tc_oTag,
+          tc_cTag,
+          tc_expr
+        };
+        const tokTypes = {
+          jsxName: new TokenType3("jsxName"),
+          jsxText: new TokenType3("jsxText", { beforeExpr: true }),
+          jsxTagStart: new TokenType3("jsxTagStart", { startsExpr: true }),
+          jsxTagEnd: new TokenType3("jsxTagEnd")
+        };
+        tokTypes.jsxTagStart.updateContext = function() {
+          this.context.push(tc_expr);
+          this.context.push(tc_oTag);
+          this.exprAllowed = false;
+        };
+        tokTypes.jsxTagEnd.updateContext = function(prevType) {
+          let out = this.context.pop();
+          if (out === tc_oTag && prevType === tt.slash || out === tc_cTag) {
+            this.context.pop();
+            this.exprAllowed = this.curContext() === tc_expr;
+          } else {
+            this.exprAllowed = true;
+          }
+        };
+        acornJsx = { tokContexts, tokTypes };
+        acornJsxMap.set(acorn, acornJsx);
+      }
+      return acornJsx;
+    }
+    function getQualifiedJSXName(object) {
+      if (!object)
+        return object;
+      if (object.type === "JSXIdentifier")
+        return object.name;
+      if (object.type === "JSXNamespacedName")
+        return object.namespace.name + ":" + object.name.name;
+      if (object.type === "JSXMemberExpression")
+        return getQualifiedJSXName(object.object) + "." + getQualifiedJSXName(object.property);
+    }
+    module.exports = function(options) {
+      options = options || {};
+      return function(Parser5) {
+        return plugin({
+          allowNamespaces: options.allowNamespaces !== false,
+          allowNamespacedObjects: !!options.allowNamespacedObjects
+        }, Parser5);
+      };
+    };
+    Object.defineProperty(module.exports, "tokTypes", {
+      get: function get_tokTypes() {
+        return getJsxTokens(require_acorn()).tokTypes;
+      },
+      configurable: true,
+      enumerable: true
+    });
+    function plugin(options, Parser5) {
+      const acorn = Parser5.acorn || require_acorn();
+      const acornJsx = getJsxTokens(acorn);
+      const tt = acorn.tokTypes;
+      const tok = acornJsx.tokTypes;
+      const tokContexts = acorn.tokContexts;
+      const tc_oTag = acornJsx.tokContexts.tc_oTag;
+      const tc_cTag = acornJsx.tokContexts.tc_cTag;
+      const tc_expr = acornJsx.tokContexts.tc_expr;
+      const isNewLine2 = acorn.isNewLine;
+      const isIdentifierStart2 = acorn.isIdentifierStart;
+      const isIdentifierChar2 = acorn.isIdentifierChar;
+      return class extends Parser5 {
+        // Expose actual `tokTypes` and `tokContexts` to other plugins.
+        static get acornJsx() {
+          return acornJsx;
+        }
+        // Reads inline JSX contents token.
+        jsx_readToken() {
+          let out = "", chunkStart = this.pos;
+          for (; ; ) {
+            if (this.pos >= this.input.length)
+              this.raise(this.start, "Unterminated JSX contents");
+            let ch = this.input.charCodeAt(this.pos);
+            switch (ch) {
+              case 60:
+              // '<'
+              case 123:
+                if (this.pos === this.start) {
+                  if (ch === 60 && this.exprAllowed) {
+                    ++this.pos;
+                    return this.finishToken(tok.jsxTagStart);
+                  }
+                  return this.getTokenFromCode(ch);
+                }
+                out += this.input.slice(chunkStart, this.pos);
+                return this.finishToken(tok.jsxText, out);
+              case 38:
+                out += this.input.slice(chunkStart, this.pos);
+                out += this.jsx_readEntity();
+                chunkStart = this.pos;
+                break;
+              case 62:
+              // '>'
+              case 125:
+                this.raise(
+                  this.pos,
+                  "Unexpected token `" + this.input[this.pos] + "`. Did you mean `" + (ch === 62 ? "&gt;" : "&rbrace;") + '` or `{"' + this.input[this.pos] + '"}`?'
+                );
+              default:
+                if (isNewLine2(ch)) {
+                  out += this.input.slice(chunkStart, this.pos);
+                  out += this.jsx_readNewLine(true);
+                  chunkStart = this.pos;
+                } else {
+                  ++this.pos;
+                }
+            }
+          }
+        }
+        jsx_readNewLine(normalizeCRLF) {
+          let ch = this.input.charCodeAt(this.pos);
+          let out;
+          ++this.pos;
+          if (ch === 13 && this.input.charCodeAt(this.pos) === 10) {
+            ++this.pos;
+            out = normalizeCRLF ? "\n" : "\r\n";
+          } else {
+            out = String.fromCharCode(ch);
+          }
+          if (this.options.locations) {
+            ++this.curLine;
+            this.lineStart = this.pos;
+          }
+          return out;
+        }
+        jsx_readString(quote) {
+          let out = "", chunkStart = ++this.pos;
+          for (; ; ) {
+            if (this.pos >= this.input.length)
+              this.raise(this.start, "Unterminated string constant");
+            let ch = this.input.charCodeAt(this.pos);
+            if (ch === quote) break;
+            if (ch === 38) {
+              out += this.input.slice(chunkStart, this.pos);
+              out += this.jsx_readEntity();
+              chunkStart = this.pos;
+            } else if (isNewLine2(ch)) {
+              out += this.input.slice(chunkStart, this.pos);
+              out += this.jsx_readNewLine(false);
+              chunkStart = this.pos;
+            } else {
+              ++this.pos;
+            }
+          }
+          out += this.input.slice(chunkStart, this.pos++);
+          return this.finishToken(tt.string, out);
+        }
+        jsx_readEntity() {
+          let str = "", count = 0, entity;
+          let ch = this.input[this.pos];
+          if (ch !== "&")
+            this.raise(this.pos, "Entity must start with an ampersand");
+          let startPos = ++this.pos;
+          while (this.pos < this.input.length && count++ < 10) {
+            ch = this.input[this.pos++];
+            if (ch === ";") {
+              if (str[0] === "#") {
+                if (str[1] === "x") {
+                  str = str.substr(2);
+                  if (hexNumber.test(str))
+                    entity = String.fromCharCode(parseInt(str, 16));
+                } else {
+                  str = str.substr(1);
+                  if (decimalNumber.test(str))
+                    entity = String.fromCharCode(parseInt(str, 10));
+                }
+              } else {
+                entity = XHTMLEntities[str];
+              }
+              break;
+            }
+            str += ch;
+          }
+          if (!entity) {
+            this.pos = startPos;
+            return "&";
+          }
+          return entity;
+        }
+        // Read a JSX identifier (valid tag or attribute name).
+        //
+        // Optimized version since JSX identifiers can't contain
+        // escape characters and so can be read as single slice.
+        // Also assumes that first character was already checked
+        // by isIdentifierStart in readToken.
+        jsx_readWord() {
+          let ch, start = this.pos;
+          do {
+            ch = this.input.charCodeAt(++this.pos);
+          } while (isIdentifierChar2(ch) || ch === 45);
+          return this.finishToken(tok.jsxName, this.input.slice(start, this.pos));
+        }
+        // Parse next token as JSX identifier
+        jsx_parseIdentifier() {
+          let node = this.startNode();
+          if (this.type === tok.jsxName)
+            node.name = this.value;
+          else if (this.type.keyword)
+            node.name = this.type.keyword;
+          else
+            this.unexpected();
+          this.next();
+          return this.finishNode(node, "JSXIdentifier");
+        }
+        // Parse namespaced identifier.
+        jsx_parseNamespacedName() {
+          let startPos = this.start, startLoc = this.startLoc;
+          let name2 = this.jsx_parseIdentifier();
+          if (!options.allowNamespaces || !this.eat(tt.colon)) return name2;
+          var node = this.startNodeAt(startPos, startLoc);
+          node.namespace = name2;
+          node.name = this.jsx_parseIdentifier();
+          return this.finishNode(node, "JSXNamespacedName");
+        }
+        // Parses element name in any form - namespaced, member
+        // or single identifier.
+        jsx_parseElementName() {
+          if (this.type === tok.jsxTagEnd) return "";
+          let startPos = this.start, startLoc = this.startLoc;
+          let node = this.jsx_parseNamespacedName();
+          if (this.type === tt.dot && node.type === "JSXNamespacedName" && !options.allowNamespacedObjects) {
+            this.unexpected();
+          }
+          while (this.eat(tt.dot)) {
+            let newNode = this.startNodeAt(startPos, startLoc);
+            newNode.object = node;
+            newNode.property = this.jsx_parseIdentifier();
+            node = this.finishNode(newNode, "JSXMemberExpression");
+          }
+          return node;
+        }
+        // Parses any type of JSX attribute value.
+        jsx_parseAttributeValue() {
+          switch (this.type) {
+            case tt.braceL:
+              let node = this.jsx_parseExpressionContainer();
+              if (node.expression.type === "JSXEmptyExpression")
+                this.raise(node.start, "JSX attributes must only be assigned a non-empty expression");
+              return node;
+            case tok.jsxTagStart:
+            case tt.string:
+              return this.parseExprAtom();
+            default:
+              this.raise(this.start, "JSX value should be either an expression or a quoted JSX text");
+          }
+        }
+        // JSXEmptyExpression is unique type since it doesn't actually parse anything,
+        // and so it should start at the end of last read token (left brace) and finish
+        // at the beginning of the next one (right brace).
+        jsx_parseEmptyExpression() {
+          let node = this.startNodeAt(this.lastTokEnd, this.lastTokEndLoc);
+          return this.finishNodeAt(node, "JSXEmptyExpression", this.start, this.startLoc);
+        }
+        // Parses JSX expression enclosed into curly brackets.
+        jsx_parseExpressionContainer() {
+          let node = this.startNode();
+          this.next();
+          node.expression = this.type === tt.braceR ? this.jsx_parseEmptyExpression() : this.parseExpression();
+          this.expect(tt.braceR);
+          return this.finishNode(node, "JSXExpressionContainer");
+        }
+        // Parses following JSX attribute name-value pair.
+        jsx_parseAttribute() {
+          let node = this.startNode();
+          if (this.eat(tt.braceL)) {
+            this.expect(tt.ellipsis);
+            node.argument = this.parseMaybeAssign();
+            this.expect(tt.braceR);
+            return this.finishNode(node, "JSXSpreadAttribute");
+          }
+          node.name = this.jsx_parseNamespacedName();
+          node.value = this.eat(tt.eq) ? this.jsx_parseAttributeValue() : null;
+          return this.finishNode(node, "JSXAttribute");
+        }
+        // Parses JSX opening tag starting after '<'.
+        jsx_parseOpeningElementAt(startPos, startLoc) {
+          let node = this.startNodeAt(startPos, startLoc);
+          node.attributes = [];
+          let nodeName = this.jsx_parseElementName();
+          if (nodeName) node.name = nodeName;
+          while (this.type !== tt.slash && this.type !== tok.jsxTagEnd)
+            node.attributes.push(this.jsx_parseAttribute());
+          node.selfClosing = this.eat(tt.slash);
+          this.expect(tok.jsxTagEnd);
+          return this.finishNode(node, nodeName ? "JSXOpeningElement" : "JSXOpeningFragment");
+        }
+        // Parses JSX closing tag starting after '</'.
+        jsx_parseClosingElementAt(startPos, startLoc) {
+          let node = this.startNodeAt(startPos, startLoc);
+          let nodeName = this.jsx_parseElementName();
+          if (nodeName) node.name = nodeName;
+          this.expect(tok.jsxTagEnd);
+          return this.finishNode(node, nodeName ? "JSXClosingElement" : "JSXClosingFragment");
+        }
+        // Parses entire JSX element, including it's opening tag
+        // (starting after '<'), attributes, contents and closing tag.
+        jsx_parseElementAt(startPos, startLoc) {
+          let node = this.startNodeAt(startPos, startLoc);
+          let children = [];
+          let openingElement = this.jsx_parseOpeningElementAt(startPos, startLoc);
+          let closingElement = null;
+          if (!openingElement.selfClosing) {
+            contents: for (; ; ) {
+              switch (this.type) {
+                case tok.jsxTagStart:
+                  startPos = this.start;
+                  startLoc = this.startLoc;
+                  this.next();
+                  if (this.eat(tt.slash)) {
+                    closingElement = this.jsx_parseClosingElementAt(startPos, startLoc);
+                    break contents;
+                  }
+                  children.push(this.jsx_parseElementAt(startPos, startLoc));
+                  break;
+                case tok.jsxText:
+                  children.push(this.parseExprAtom());
+                  break;
+                case tt.braceL:
+                  children.push(this.jsx_parseExpressionContainer());
+                  break;
+                default:
+                  this.unexpected();
+              }
+            }
+            if (getQualifiedJSXName(closingElement.name) !== getQualifiedJSXName(openingElement.name)) {
+              this.raise(
+                closingElement.start,
+                "Expected corresponding JSX closing tag for <" + getQualifiedJSXName(openingElement.name) + ">"
+              );
+            }
+          }
+          let fragmentOrElement = openingElement.name ? "Element" : "Fragment";
+          node["opening" + fragmentOrElement] = openingElement;
+          node["closing" + fragmentOrElement] = closingElement;
+          node.children = children;
+          if (this.type === tt.relational && this.value === "<") {
+            this.raise(this.start, "Adjacent JSX elements must be wrapped in an enclosing tag");
+          }
+          return this.finishNode(node, "JSX" + fragmentOrElement);
+        }
+        // Parse JSX text
+        jsx_parseText() {
+          let node = this.parseLiteral(this.value);
+          node.type = "JSXText";
+          return node;
+        }
+        // Parses entire JSX element from current position.
+        jsx_parseElement() {
+          let startPos = this.start, startLoc = this.startLoc;
+          this.next();
+          return this.jsx_parseElementAt(startPos, startLoc);
+        }
+        parseExprAtom(refShortHandDefaultPos) {
+          if (this.type === tok.jsxText)
+            return this.jsx_parseText();
+          else if (this.type === tok.jsxTagStart)
+            return this.jsx_parseElement();
+          else
+            return super.parseExprAtom(refShortHandDefaultPos);
+        }
+        readToken(code) {
+          let context = this.curContext();
+          if (context === tc_expr) return this.jsx_readToken();
+          if (context === tc_oTag || context === tc_cTag) {
+            if (isIdentifierStart2(code)) return this.jsx_readWord();
+            if (code == 62) {
+              ++this.pos;
+              return this.finishToken(tok.jsxTagEnd);
+            }
+            if ((code === 34 || code === 39) && context == tc_oTag)
+              return this.jsx_readString(code);
+          }
+          if (code === 60 && this.exprAllowed && this.input.charCodeAt(this.pos + 1) !== 33) {
+            ++this.pos;
+            return this.finishToken(tok.jsxTagStart);
+          }
+          return super.readToken(code);
+        }
+        updateContext(prevType) {
+          if (this.type == tt.braceL) {
+            var curContext = this.curContext();
+            if (curContext == tc_oTag) this.context.push(tokContexts.b_expr);
+            else if (curContext == tc_expr) this.context.push(tokContexts.b_tmpl);
+            else super.updateContext(prevType);
+            this.exprAllowed = true;
+          } else if (this.type === tt.slash && prevType === tok.jsxTagStart) {
+            this.context.length -= 2;
+            this.context.push(tc_cTag);
+            this.exprAllowed = false;
+          } else {
+            return super.updateContext(prevType);
+          }
+        }
+      };
+    }
+  }
+});
+
+// node_modules/tslib/tslib.es6.js
 var tslib_es6_exports = {};
 __export(tslib_es6_exports, {
   __assign: () => __assign,
@@ -346,7 +6731,7 @@ function __classPrivateFieldSet(receiver, privateMap, value) {
 }
 var extendStatics, __assign;
 var init_tslib_es6 = __esm({
-  "../sporades/node_modules/tslib/tslib.es6.js"() {
+  "node_modules/tslib/tslib.es6.js"() {
     extendStatics = function(d, b) {
       extendStatics = Object.setPrototypeOf || { __proto__: [] } instanceof Array && function(d2, b2) {
         d2.__proto__ = b2;
@@ -368,9 +6753,9 @@ var init_tslib_es6 = __esm({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/base64.js
+// node_modules/pdf-lib/cjs/utils/base64.js
 var require_base64 = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/base64.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/base64.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.decodeFromBase64DataUri = exports.decodeFromBase64 = exports.encodeToBase64 = void 0;
@@ -437,9 +6822,9 @@ var require_base64 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/strings.js
+// node_modules/pdf-lib/cjs/utils/strings.js
 var require_strings = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/strings.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/strings.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.findLastMatch = exports.parseDate = exports.breakTextIntoLines = exports.charSplit = exports.charAtIndex = exports.mergeLines = exports.lineSplit = exports.isNewlineChar = exports.newlineChars = exports.escapedNewlineChars = exports.cleanText = exports.escapeRegExp = exports.addRandomSuffix = exports.copyStringIntoBuffer = exports.padStart = exports.charFromHexCode = exports.charFromCode = exports.toHexString = exports.toHexStringOfMinLength = exports.toCodePoint = exports.toCharCode = void 0;
@@ -589,9 +6974,9 @@ var require_strings = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/arrays.js
+// node_modules/pdf-lib/cjs/utils/arrays.js
 var require_arrays = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/arrays.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/arrays.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.toUint8Array = exports.canBeConvertedToUint8Array = exports.pluckIndices = exports.range = exports.sum = exports.reverseArray = exports.sortedUniq = exports.byAscendingId = exports.arrayAsString = exports.mergeUint8Arrays = exports.mergeIntoTypedArray = exports.typedArrayFor = exports.last = void 0;
@@ -719,9 +7104,9 @@ var require_arrays = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/async.js
+// node_modules/pdf-lib/cjs/utils/async.js
 var require_async = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/async.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/async.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.waitForTick = void 0;
@@ -735,9 +7120,9 @@ var require_async = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/unicode.js
+// node_modules/pdf-lib/cjs/utils/unicode.js
 var require_unicode = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/unicode.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/unicode.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.hasUtf16BOM = exports.utf16Decode = exports.lowSurrogate = exports.highSurrogate = exports.hasSurrogates = exports.isWithinBMP = exports.utf16Encode = exports.utf8Encode = void 0;
@@ -877,9 +7262,9 @@ var require_unicode = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/numbers.js
+// node_modules/pdf-lib/cjs/utils/numbers.js
 var require_numbers = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/numbers.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/numbers.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.bytesFor = exports.sizeInBytes = exports.numberToString = void 0;
@@ -919,9 +7304,9 @@ var require_numbers = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/errors.js
+// node_modules/pdf-lib/cjs/utils/errors.js
 var require_errors = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/errors.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/errors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.error = void 0;
@@ -931,9 +7316,9 @@ var require_errors = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/utils/common.js
+// node_modules/pako/lib/utils/common.js
 var require_common = __commonJS({
-  "../sporades/node_modules/pako/lib/utils/common.js"(exports) {
+  "node_modules/pako/lib/utils/common.js"(exports) {
     "use strict";
     var TYPED_OK = typeof Uint8Array !== "undefined" && typeof Uint16Array !== "undefined" && typeof Int32Array !== "undefined";
     function _has(obj, key) {
@@ -1022,9 +7407,9 @@ var require_common = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/trees.js
+// node_modules/pako/lib/zlib/trees.js
 var require_trees = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/trees.js"(exports) {
+  "node_modules/pako/lib/zlib/trees.js"(exports) {
     "use strict";
     var utils = require_common();
     var Z_FIXED = 4;
@@ -1664,9 +8049,9 @@ var require_trees = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/adler32.js
+// node_modules/pako/lib/zlib/adler32.js
 var require_adler32 = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/adler32.js"(exports, module) {
+  "node_modules/pako/lib/zlib/adler32.js"(exports, module) {
     "use strict";
     function adler32(adler, buf, len, pos) {
       var s1 = adler & 65535 | 0, s2 = adler >>> 16 & 65535 | 0, n = 0;
@@ -1686,9 +8071,9 @@ var require_adler32 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/crc32.js
+// node_modules/pako/lib/zlib/crc32.js
 var require_crc32 = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/crc32.js"(exports, module) {
+  "node_modules/pako/lib/zlib/crc32.js"(exports, module) {
     "use strict";
     function makeTable() {
       var c, table = [];
@@ -1714,9 +8099,9 @@ var require_crc32 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/messages.js
+// node_modules/pako/lib/zlib/messages.js
 var require_messages = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/messages.js"(exports, module) {
+  "node_modules/pako/lib/zlib/messages.js"(exports, module) {
     "use strict";
     module.exports = {
       2: "need dictionary",
@@ -1741,9 +8126,9 @@ var require_messages = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/deflate.js
+// node_modules/pako/lib/zlib/deflate.js
 var require_deflate = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/deflate.js"(exports) {
+  "node_modules/pako/lib/zlib/deflate.js"(exports) {
     "use strict";
     var utils = require_common();
     var trees = require_trees();
@@ -2790,9 +9175,9 @@ var require_deflate = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/utils/strings.js
+// node_modules/pako/lib/utils/strings.js
 var require_strings2 = __commonJS({
-  "../sporades/node_modules/pako/lib/utils/strings.js"(exports) {
+  "node_modules/pako/lib/utils/strings.js"(exports) {
     "use strict";
     var utils = require_common();
     var STR_APPLY_OK = true;
@@ -2932,9 +9317,9 @@ var require_strings2 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/zstream.js
+// node_modules/pako/lib/zlib/zstream.js
 var require_zstream = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/zstream.js"(exports, module) {
+  "node_modules/pako/lib/zlib/zstream.js"(exports, module) {
     "use strict";
     function ZStream() {
       this.input = null;
@@ -2954,9 +9339,9 @@ var require_zstream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/deflate.js
+// node_modules/pako/lib/deflate.js
 var require_deflate2 = __commonJS({
-  "../sporades/node_modules/pako/lib/deflate.js"(exports) {
+  "node_modules/pako/lib/deflate.js"(exports) {
     "use strict";
     var zlib_deflate = require_deflate();
     var utils = require_common();
@@ -3115,9 +9500,9 @@ var require_deflate2 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/inffast.js
+// node_modules/pako/lib/zlib/inffast.js
 var require_inffast = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/inffast.js"(exports, module) {
+  "node_modules/pako/lib/zlib/inffast.js"(exports, module) {
     "use strict";
     var BAD = 30;
     var TYPE = 12;
@@ -3344,9 +9729,9 @@ var require_inffast = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/inftrees.js
+// node_modules/pako/lib/zlib/inftrees.js
 var require_inftrees = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/inftrees.js"(exports, module) {
+  "node_modules/pako/lib/zlib/inftrees.js"(exports, module) {
     "use strict";
     var utils = require_common();
     var MAXBITS = 15;
@@ -3660,9 +10045,9 @@ var require_inftrees = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/inflate.js
+// node_modules/pako/lib/zlib/inflate.js
 var require_inflate = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/inflate.js"(exports) {
+  "node_modules/pako/lib/zlib/inflate.js"(exports) {
     "use strict";
     var utils = require_common();
     var adler32 = require_adler32();
@@ -4899,9 +11284,9 @@ var require_inflate = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/constants.js
+// node_modules/pako/lib/zlib/constants.js
 var require_constants = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/constants.js"(exports, module) {
+  "node_modules/pako/lib/zlib/constants.js"(exports, module) {
     "use strict";
     module.exports = {
       /* Allowed flush values; see deflate() and inflate() below for details */
@@ -4946,9 +11331,9 @@ var require_constants = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/zlib/gzheader.js
+// node_modules/pako/lib/zlib/gzheader.js
 var require_gzheader = __commonJS({
-  "../sporades/node_modules/pako/lib/zlib/gzheader.js"(exports, module) {
+  "node_modules/pako/lib/zlib/gzheader.js"(exports, module) {
     "use strict";
     function GZheader() {
       this.text = 0;
@@ -4966,9 +11351,9 @@ var require_gzheader = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/lib/inflate.js
+// node_modules/pako/lib/inflate.js
 var require_inflate2 = __commonJS({
-  "../sporades/node_modules/pako/lib/inflate.js"(exports) {
+  "node_modules/pako/lib/inflate.js"(exports) {
     "use strict";
     var zlib_inflate = require_inflate();
     var utils = require_common();
@@ -5140,9 +11525,9 @@ var require_inflate2 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pako/index.js
+// node_modules/pako/index.js
 var require_pako = __commonJS({
-  "../sporades/node_modules/pako/index.js"(exports, module) {
+  "node_modules/pako/index.js"(exports, module) {
     "use strict";
     var assign = require_common().assign;
     var deflate = require_deflate2();
@@ -5154,9 +11539,9 @@ var require_pako = __commonJS({
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/utils.js
+// node_modules/@pdf-lib/standard-fonts/lib/utils.js
 var require_utils = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/utils.js"(exports) {
+  "node_modules/@pdf-lib/standard-fonts/lib/utils.js"(exports) {
     "use strict";
     var __importDefault2 = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -5216,107 +11601,107 @@ var require_utils = __commonJS({
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Courier-Bold.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Courier-Bold.compressed.json
 var require_Courier_Bold_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Courier-Bold.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Courier-Bold.compressed.json"(exports, module) {
     module.exports = "eJyFWdtyGjkQ/RVqnnar8Bb4lpg3jEnCxgEvGDtxKg9iphm01oyILrZxKv++mrGd3az6KC8UnNa0+nrUGr5lI11VVLtskF198FaU1Dns9w9OOkf7/ePDrJu90bWbiorCgpH2RpLZO9WqaCReqZ8lnReJqKTa/SwL8DXJctPs9Lxs4oSS+bAuVVjXC7/tG/lAxYV0+SYbOOOpm402wojckVlQ8+T4wVFdUDHXlaifrTs91Q/Z4PNeMLu7t3/U6746POm+7vW/dLNlWGuUrOlCW+mkrrPBXr/X+4/gciPz25qszQbhyeyKjG2XZb3ewR+9Xi/sMdVO5k+ebHemcaHzW/57p3/y+qQbPk967We//TxoP191hoVeUWexs44q25nUuTZbbYSj4o9OZ6hUZ97osZ05WTJ3AQ37jMOqQtblIt9QG7lWycKJuhCmeJGGhSOxffccyqPj/W728eXX4cFJNxvavAmRyQbH++HnGf34vdc/etXNFq54d50NXh+2X6/C137v+CnQH8gZmYdQfP6WXX8MCppQTYMlditCBL53/wfTQ65EFeNfvQ6erlQsqX21akJc1rGs0EoJE+NbMnlToZFAVEFkQ3iABW2uGH3CUK1ojUTgMWEbjfaWeUp5G6N5aCwRw5vddkOM98EVqRlPrBJ2E8OPZHSM6prJkrtnVrqNIWbtOjQrg8o7Zq2VDwxId5x3xMe0lpzBuVaa0WGpkkCkmgaON/3qBVODpaHQiIybXz3ZliTi3DO2D2PoNIZGMXQWQ+MYehNDb2PoXQxNYujPGHofQ+cx9CGGpjE0i6GLGPorhuYxtIihyxhaxtBVDF3H0McY+hRDNzG0CqfQLTmeNlZBBvr0+TnIKbmUuTS5Z1jUN6xtw8nBtEjLb7wxDOesmB5j+JfpIIYLmIZiWC6GZAz9HUMMvTItzESL6VqG9rZMKGOI4QaGXpjY+xi6i6H7GGKYdMeQPl9foBBW3GHark9Vo5OqgEd9oe+ZOPOnc3NcqmZgiUuomehYnt1xZ8daaSPZ8wBoyb0Jx3jOBLBtGyvbiRNOLXw0Sy+DpNKAAhpxq/gXYhD6NdMda6bwwyTH0kwhypI70p5wdhR7Gjia3JEhpvfDLCRKI7YcqYXJnxgv/g3vSthEhNNSEKIfCQByUkpurWQaNXjqNtqjSfHp0OdLOwSAG31E7h03uLRMvlbEtDPoq0rkhqvhlSFu40I7kfP9VoRLFrH+G7YLcypCQLkJ1delML5SwjPb6DIMmQxL54L1gyq+YIfMyKNNsQ4zHj8UnoMDdoZwfoMqkJxX7A6Cj3czWzLdqcC+GuGM9tCa4RobSp5J2gTnk0D5CVA0Pp1RAqn7hC0o5J3kqvkTsGyY6gwBHlqmHtqBh2x77UI9QimVS75PljgMAjXDEljn0QNjvMlZIAju/pF0NH95VcFshSgnB3Ug+LhMkwYoVKOAUS+T2kZIG2DVcYInLXDTQkKUYHelH6kuGcEcbPE26aRPNklKOEQpNcCQHPp6k4jc5UYbRtkM7T4HcVsAvADWLtEGnq/M9t2G9e2Aw8xEM1CCQ4QDWq28cnKrmDHTAwcvgYNh1HJSqEKumdvVDlPDFOwjU8UyTpZZ4tTBohzYUSMaRAmdggBNgKLmzVsYGLjXbyujb6lm70CGSmnB1PsWJHuSYhQfupq/ioxBTRngkEaRuQEP3ICIPb/kAq/Axo6ZUEaQFFSStxwa/eDpiARDND4kqhIE+BG1Btp7hjKCjh6UKYt2xk7MkmMJ8PCMlGNy5XiSdvc6wYjYtIp5pSGBRTo9Z45R6Asw4bQ8HgrYhEJmTFsk6pWvyPfJOj4HiXNGFFQJw1hOCVaYgChNUOGcA6tD0DZCMSdDczMBDa5TFVWDqWn5i/yB+BByqARcGhx6ziqXVD4Ii2TqZmnLi8AS3L8dGqRoBIzwkM0LmXNpOAOKTNKbKciPBvg8XdZJ6RDoHEKO5meuGdDzmOiQMTrt0d63SVfAIDBJtgIwwaUvN7ps8l1r7v0I5lKPRUEV+rcqfaHlDvJH4FSdVBVCjk8IiXp87Jv/Ib90s/dk6gshTfPv8Zfv/wDUfBK2";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Courier-BoldOblique.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Courier-BoldOblique.compressed.json
 var require_Courier_BoldOblique_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Courier-BoldOblique.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Courier-BoldOblique.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Courier-Oblique.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Courier-Oblique.compressed.json
 var require_Courier_Oblique_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Courier-Oblique.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Courier-Oblique.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Courier.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Courier.compressed.json
 var require_Courier_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Courier.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Courier.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Helvetica-Bold.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Helvetica-Bold.compressed.json
 var require_Helvetica_Bold_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Helvetica-Bold.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Helvetica-Bold.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Helvetica-BoldOblique.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Helvetica-BoldOblique.compressed.json
 var require_Helvetica_BoldOblique_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Helvetica-BoldOblique.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Helvetica-BoldOblique.compressed.json"(exports, module) {
     module.exports = "eJyNnVtzG0eyrf8KA0/7RMhzRIq6+U2+zMX2mJYsEuJMzANEtihsgYQMEITaO/Z/P41CV+bKlaug86JQf6uArsrKXNVX8H8m3y9vb7u7+8m3k4t/btazm+7o+PT0xcnRsxdPXzybPJr8dXl3/+vsthsa/L1bPHT386vZN98tF9dn7xfzPzbdrslmseAmR7smR9Bmdjtf9NxqEKbd/Objbve7Dwzb/7ifLeZXr+5uFkPLb45PBrL+6/xLd/3b/P7q4+Tb+9WmezT5/uNsNbu671a/d7vP/vjlvru77q7fLG9nd2Onv/tu+WXy7b+/OX5++uibk5MXj46Pj08fvXx28p9Hk/Oh8Woxv+t+W67n9/Pl3W5Xjx+D8Pbj/OrTXbdeT759OvCLbrUuzSaPH5/85fHjx8NOfl0OQ9gN5/vl5361G8XRf139n6Pjly+ePtr9+7z8+3L378vH5d/nR6+ul++7o9/79X13uz76x93VcvV5uZrdd9d/OTp6tVgcvdl9z/roTbfuVg8D9YDO10ezo/vV7Lq7na0+HS0/HP0yv1ve95+7b4ZGi6NXfzua3V3/3+XqaD58wXrzfj2/ns9W8279l6GzPw67up7f3fx+9bErc1B68vv98JHZ6rqqQ8PvZ5//Pk7J8+MXjybv6tbTJ8NcvFpf7QK9GsUfOtv+5uTx80eT3++v/z6dfHu8E4f/X+z+f/p4P1//7O5X86shoP/+n8n03eTbk+dDo1+Hrqw/z4Y4/u+jPX7y5Mked1+uFrNb46fDPBb+x2Y5xOv9wpSnT5/tlbvN7fvdRN3cZe16uVjMVsZfDBNT+OdudbXL/yo8PznZC7PbQVoP8THJOlx6UGY89/rzbNXdLboPLYk+VrsxW+++cf3JO/5iHO7nxWadu3A1lO0s7+Jj//ljd5ebD0OZL8VI1ovZ+mMO1p/dapnp8q7L8H4rWt5/XHWi7YflZiXo/EG0Xc+/CNg9dGJuuxBTT4f5nUirq+VieZfxurudR8lmYLGzgUS7PzazRcY3q24oZx/ms+PjmjTdulhNVV4+fzrOvci+Vxl9l9H3Gf3ge372fI9+zJ35q3+wpsLf8nf9PSfMP3KYf8of/Dnv8RcvvRryf+YP/pr7dZYH9Ftu9Tp/15v8wd9zv97mD57nD174rJ2OEz3Nrd5ldJn3+K+cfO+HxexTdx9sw0L+ftBinfLnoqdYKs7WV/P51Xx1tbnNs7bZ2fZ6WH+6vMfib6Ez9rFZHs/73Ooqt7rOrURxfsgfvMnoY+7yPKP/znv8lFt5CduScJv3eJfRMqPPouqz1QsLXOdI3Ofv2uQPPuRK2OZWwkl7R7vjnmL6uau7/IqJcPLicc3KVaP9oWy8ny+um0v99XIrzD2szh6x+3Kc5slxXCvuw+7AEH3Wx6zWjg+L5Wou+LprfMvVZjUs41cewJMnWDbreTl0TdGtRy26rG4280G5Xd7rI4edXL74K3IMvSXOh7lg4vhpOJSThwPXs5ubTqTtnuOhGB1w7OauW3Wi9odjodnNavYZTO1pzazhdKITPujhfT9bH4jwYXWljxVsAqI+nBSMnx8Oseef1/O1kIax3n9cbsKxYlr2Q3L7zK1mD6IeZlebe3XoUrz8w6L7krVGZd3OrlbqcOf9qlM7vl7ez65Cxbk0H2YSA2DKCuvQO9tdDyFVx6ibu5vZanO7mG3EbpY3w2HmJ/F1MxwHzMttyFkXXvlhz5PnI1uurj8Mx3nhwNCPUOIi6wcgkfsezmAPz57aHm4Hp9sscBe2sszEYnu9K/r1Wixgi7hjX3kityOSpRjUUJ/DKfGQ9+Ic4h9pSt0JYgb68h/zxpcmOan+dXH2/Ogo96AuF9fzhzkktH8k9swPmEVxeLcbHzo/9KG+EYN1OfeiMoGh5q/0/YVScdyeiBnVg38m9s5ngj7gZwFpJ37OMHgEnIScVCdWA33+5HkVx6seYlfkOr52xjzwUeq4/Ko64OXRytFoqn6kL4djp1Ktb4vGCuFMVgkZooe5Zk/0w9e499OX9dRz+Wd3dyMy903chZ/FqUF6chwskkOZ+4oXEjuabYz1isfq5z85chbVtx+XKzGqM9q7h4GqwE70qOBP6yJGYbNqoh14xPTiVi5wrDflKGcl+htT0KPY4tFWzQRvN4v7+edFL/rVKP+3cYCWSMPx1v18trief/iQ56pvW8OvcT+esCJZvDYOptmBVactXTXGe9eywVbG/BoD5Ish1T9efhuOGPAanJ0CrZafujs8ETJzXHU383U89PUSjZMNy3Gui3qosd4MVR3ORzzYdAxphdmIzLKV6v9qfOBfVOGnL+uxa7nSFa+DWZx/vP+Y4fdNA1wo37Kx3DdMpmuuji3hVevw4UBWxgD7+XKrNHjf5gqtGWktPa1ldN3ac65j2/fBwxJeMetxQbe4FwZ+H0zaPXG7POCIqWv2dbcbMZLGGr6Ux5leC3zwY1ef4hHOiyen4ONDAq+GRF7n7/ud8/W0Tv6isZD8fHD9/SVOnJ9K2H0dZYrJFtwyYpict2r8l9hti8MQtY+zBSwNtch3pyaxwn0u1BJgvhwPmzzVvjKBjVLoWgO6iWaKAxqnVc2qPhv5XR4gWgbLnltCXA820amMbSz531MnbOEitzk1O7+eXymj/SF+ERyYHTrc/ZUOa627jXl7czivD+7rVeM7XzVNOp4O2AzE73EjPnBA+WNruad9+yVieXZnB2TxSMC+7WAp0ASZXx7c02J5s5vvu6UI97Jtppu8jtUMGr6qUck3Bye3g5XcY95I3zu5jtvFnbt80Oye31ruftzs7kb+59Hk525199tsvtrdQ/735NXubvXk0Tenj//zaNzau0dA+35GNJo6wr8NW099a+8qAeHAUDgL33OWu4BLb+A2VYHu6z+g4DxBGUMW2P7qUED7wkH0Omy9HbZe+laNGaIwehfOQyzO6+gBhdEDh9EDraMHRKMHxUYPbKzrwIqdILkYtl7Y1nTYemZbl8PW8bFv1iEhg74D3gybT3yrfhBQiAVw+D6gNRaAKBagWCyAWSyAjbFw8hAyYRu0Pm7lEfW552MjLE1DVBzGqUidc6VWBcrVENWscVm4VT3L380lbFzVsYm5mE2iijauy9pkrm0TqMCNU5VX/jojqHdDVPTOVeVX9TxHlD3AuDICE7MbmESWYFz7gslsDiawQ5gQbaJi8IqKwDAqQtcwxtZhgvCPqoGJGKK6M67sxMR2ZbKxGNfuYjJbjAnsMyZEs6n4ISfkNrfqBWoEQrjQaAboQoaovo2TCzlnF6oKuJAhciHj0oWqepa/m13IuHIhE7MLmUQuZFy7kMnsQiaQCxknF6r8dUbgQobIhZwrF6rqeY4ou5Bx5UImZhcyiVzIuHYhk9mFTGAXMiG6UMXgQhWBC1WELmSMXcgE4UJVAxcyRMVnXLmQie3KZBcyrl3IZHYhE9iFTIguVPFDTshtbtUL1AiEcCEMDVpR5FTpUSRTIpGdKchgT5GTR0VRGlVoctbYH1tWFJVvxRbZvKJODhZFbWOxDXtZVMnQokiuFsTXDQ7+FjmZHInK6UKT88a8sOdFURlfbJHdL+pkgVHUPhjbsBlGlR0xqtEWgwbeGDgYZODoklFgq4yq8MvQAEwzcjKMKCr7jC2+4itspFHUbhrbsKVGlX01qtFcg/bQqItto33f4ofiJ1zXCXouUjIqlMhvg8RuCyJ4LVJyWpSkz0KDM7kf9liUlMOinv0VVXJXlLS3Ygt2VtTIV1EiVwXptaTgqEjJT4Ok3BQanMvYs5OipHwU9eyiqJKHoqQdFFuwf6LG7ola9E5QwDmBgm8CRddEzJ6JmnBMkMEvkVK1o6S8EvWDXsA+iZJ2SWzBHokaOyRq0R9BeZAZvpVte03bkRKuOI4eLdEQmYpxMkPn7IRVARs0RB5oXBpgVc/yd7P1GVe+Z2I2PZPI8YxruzOZvc4EMjrj5HKVv84I/M0QmZtz5WxVPc8RZU8zrgzNxOxmJpGVGdc+ZjKbmAnsYCZE+6oYvKsiMK6K0LWMsWWZIPyqamBWhqj+jCubMrFdmWxQxrU7mczWZAL7kgnRlCp+yAm5za16gRqBEC5U+4o25Iwq3AUyIhDYiUwCK3JGXuSCNCOTz8T3sx25oPzI1WxIrpEjuaAtyXX2JFfIlFwgVzLhtWDgS87ImEBQzmTyuYgve5MLypxcze7kGtmTC9qfXGeDcoUdypVoUcbBo4yBSRlDl3LINuWK8CkTwaicUYG6oKzK1QP1y2blgnYr19muXGG/ciUalvEHkatb0a5XrBUT4Vq1Y+hazsgIXCDXAoFdyyRwLWfkWi5I1zL5THw/u5YLyrVcza7lGrmWC9q1XGfXcoVcywVyLRNeCwau5YxcCwTlWiafi/iya7mgXMvV7FqukWu5oF3LdXYtV9i1XImuZRxcyxi4ljF0LYfsWq4I1zIRXMsZVagLyrVcPVC/7FouaNdynV3LFXYtV6JrGX8QuboV7XrFWjERrrUaf9HDd1cJmUDF5FeG2a1GAbyqEnKqiqVPjeJZ+l72qIqVQ1Ut+1NVyJ0q1t5UVXamysmXKiZXGvHrRMCRKiE/MqzcaBTPUwzZiSpWPlS17EJVIQ+qWDtQVdl/Kmf3qTx6z0jBeUYCvjMSdJ2K2HMqF44zSuA3lVBlVay8pmrNmmOfqVi7TFXZYypnh6k8+stIH1LWbVObPhM9euEqY66jrRiiwjVOxuKcnaUqYC2GyFuMS3Op6ln+brYX48pfTMwGYxI5jHFtMSazx5hAJmOcXKby1xmBzxgio3GunKaq5zmi7DXGldmYmN3GJLIb49pvTGbDMYEdx4RoORWD51QEplMRuo4xth0ThO9UDYzHENWecWU9JrYrk83HuHYfk9l+TGD/MSEaUMUPOSG3uVUvUCMQ2YW+G+iruBU/W1B1DEAipIXrPcRAFkRBKoziU1gITSG1fB3tquvYtyydHIXuAscEc1q7C4imHBQbCDAbCLBxIHvywxj3U9+KbvoDxh2Q8NYfKO5Ao6P+EOIOzLoLbOwukGibP4wl71vTsLUr9Oe+VUcHCLrsdP97bHVyd2T8yTVDo/9i+AxRDI1TII2raJqYQ2oSxdU4B9cEjrAJMcyGKdaVX2Q0zQhCb4jibzxPQpVoJipO01FeCIzTURFPR+U8HZXL6aiimI4q8XRUnqajCmk6qkDTUTFPx8gvMppmhNNREU9H5WI6RomnY8Q0HX8dZ+KFb9VdAarxBxRCDxw6BLQGHJDFGpiFGdgYYSA1uI524zzxrToCQHUEgMIIgMMIgNYRALIRALMRABtHAKSOwFGdrePHhmymRvbTOFUnvhUH+hNOFSAx0J9oqoDGgf4UpgoYDfQnmCogcaA/wUCd2DgdbeJWHuamMaaNHNMmj4kPyUARo92I0W7CaH+e7E95nvhWPC4qSBwEFZ4OggqNB0EFyQPJotDhUWH1fAZQPBbaoXLc8tS27FjIUT2BQRQOj5zj4RFQe000YDtqcuTHRs782MjYcjcC37JIO4qRdo6RdmqRdsSRdsUj7cwi7cgibWgT4r7J+aHOO36eqFOOnyfpbONnkdWgiPzg04ufJ3xmsSO9LVBlKy7RBaWFNryLH+qCBAoBqSoa1CQHhhpQjEjV4aJGHDmSqchIpXqLKiQ/CVSFpFJBsipqk5rkMuUGuWKpBRUvqVzHJHNJRxmqmwQqdFJVzVOTXP7UgJyAVG0K1Ij9gWSyClLJNaK6aSUSewmpXy8k4TDU4GAhNXyHGh0upORGJEdjiiJ4FAlkV6Qm5/plgtfwyla8fLdH4srdTtgd3o+XnXabUztG3W2VC1knvmklDgzr0nH8Bc1BOo2S4H6N55dJurzzy0Rd2fklv6PqiIJw8B1VUzEc+Abni4gwMPkNThZEiKrWilPQW2KfA8Fha7/1+EvMK4ggCRRHVlU0YxuMaVQgslHA+JLCUSZZxDq2aEVctDrcpG+FkuegXcBjg9FecQ4MUfSdq7hXFSNeGcS6IoyyMY6vCSKyVWvFNOgtsc+B4AgaT7EbjtPKCeZT34q3HAqKd4MKEjcgCk/3HgqNtx0KolsKhdHdhMLCjYRC6nrp6K2Z+RnOOaIw3S5chO+Zhq13Ycuv0JxN0sWZs4m6LrOj9dzXd2nnviOqFgPTYIjmwjhNiHE1KybmqTGJ5sc4T5IJPFMmxOkyTHOG6w6FgWevse6QepG/e5rRu4xgWtNCxDxPcJVolivmqQ4vU8F8R06THkWa+Siq6Y8tcg5EnRIhipwNUeWUiGrMi6hRcqT3OlX0OE0Ovdepmlw09jdt8HcNDvmjX2+UYs6koFM6BY1zCl5EgYxCSvmEEmUTSiqXUM+ZhCrlEUqcRahxDqEWMwgVyh96hy3HiXOn/Q5bbnAh9zOV9J2kkDHq1S4h5WwBlXIFFM6U+qYApIkhyhHjlCDGVXaYmFPDJMoL45wUJnBGmBDTwTDlAr7sQ2HgLGi87EPqRf7uaUbvMoJpT+/GMM8TXiWa7Yp5quO5Oc44KzTxLNP8s6zSgNvkbOAWlBQsc26wzinCeswUVilhSH7bjCmnT5JVFlGji+Z+p03lXVOBDGOFEo3lnG/UgtKOVM4+e7of8s4ZZZwLlGsuqCxzNeeXa5RZLnBOucLZ5ErMI+eUQeFFHo4IZ03rRR6WL8T3TwV7JxjkRX7fJQk5F0yjLDDO819PN2H6DdHsG6fJN67m3sQ89SbRzBvniTeB592EOO2GadbxGgSFgee8cQ2C1Iv83dOM3mUE050uSjDPk10lmuuKearrU2Mw1YZoqo3TVBtXU21inmqTaKqN81SbwFNtQpxqwzTV+OAnhYGnuvHgJ6kX+bunGb3LCKY6PSfJPE91lWiqK6ap/m2c5fHJhN9whpHV2UVGT9a5EB6tc+zP1jmDR+gcwjN0Du0hOkd1BoH5czJlK14xKyg+0ViQuKtSeLquVmi8f1IQ3Q8pjG6CFBbufBQS7yr+BvM2Xk3codigy4Oy+4iI9KA6OahwmxBwHmsnxtqJsS5Ditn9PkDika/C062cQuODXgXJh8OLQk9/FRYfCS8oPtv1G1bHGP3XE3zEtGzFR0wLEo+YFp4eMS00PmJakHzEtCj0iGlh9IhpYeER09eeRj6MOrQ9eTPZ382HrfhsTkHi2ZzC07M5hcZncwqSz+YUhZ7NKaxOEaD42NGb0Z9hq2Y+ouDKLpzHrTze88Z4z+V4z/N4eSJBEeM9p2eR3sBEOvFl5M0EHzJ8M64Url3GpfkNrQ8jrVcxYfYNUUiMq7iYmINjEkXIuA6TyRwrEyhBjFOW4HVoRpQvjevQpJ4L1IiVzCET27HibDJ+OFYpr0zg5DIhZli+1G4Icg2vq1Mrzjp1XX2U6oPEkHqGKJzGVThNzOE0icJpXIfTZA6nCZR6xin1Kn8rEKWec5V6VT0XqBErmXomtmPFqWf8cKxS6pnAqWdCTD18tJ0yBFIPH22nVpx66tH2KqXn2E6kwKE98BybbiLCrJ9j02oj5I3n2LTMqaqfY5Pq26bAyXvoeQfZ5rwpHIy5TurY5GsxTwke1f+fmOdkj3JK+ShT4qcHQWSWYhGk50DkJ1JBNJ8C2TcYpruc/b30rfoNgOoZE6AwKcBhD0Br+AFZOIFZDIGNgQNS89eRv6D6FksYkDjVeEvFCjSearwVZQkKnWq8xQIEFE81dmh3jvfCt+K7GgXFdzUKEu9qFJ7e1Sg0vqtREL2rURi9q1FYeFejkPiuxg5dLRc08nru6m12n3jmW3WUgKqxIMJRAodRIoVTV8B18IBs8MBs8M4+9p8/duWc68TYMoxqmWdr2ZiapZyaZZ4aPp0FRUyanc4CyjNkp7OOVnErD2QVvdyFdXc7z1O+CaW4yfaxaXjFRnrFJnsFP5IKinCRjXCRTXKRbZjwPm7lJO1z5uG7iC8JURDSu4jMVYTUu4gsUazyu4gscGz4XUTG5LV4/H5KiFxXH7+zmP03Hb8z106cj99ZIE9Ox+/EwcUMUa0YJ582rhzBxGwLJpE3GGcbMIEN3ITo4obJKPy1z4UKHZl6xV2uBbZ34+TxzoXRm9iuOWX5ppHvG2fzN4FXgCqkZaAKyxwMXhCMH8oBsTSY1MiBxiJhcitFeLkw3kgFXjgqXwnUGLpeR6oqFpMqwYpiqOGocm0xse2cvMoY10uNyS1jTYuOCdpYtznbeoEa5aRWo3Cgj2tSFDiOUeX1Kaoy1rGJiHhswHGPagpvlFOQo0yhjiKvZOlywKkUeFU7cDlANxErnL4coNXGate4HKBlXvn05QCpou1HgYs+qrwiRlV6YmwinDE2YH+MarLBKKf1Msq0akaRDTOo7GgkxnU0vkjXquW0pkaVV1ZS1foam3zNS+RaG1vwihvVtO5GOa2+Qc5rcHzJrhXOtB5H9esZqNbm2OBgBrbW6djocJqmNTuqBxMxrd9BXTWFg2FrrOihjVrXQwNc3aNwcG3SK31s8rXVJ636UW2s/bHR4SUqHwdE+dAStW3VQN8UDlpDPko4n+ATPed4PAAoPsdznlZ+4Ol64jmu8YDomZ3zsJoDC0/qnOO67aja6BMj9EMo9XoyjrXx6o1zGvWhV29czONvvHrjnCPRevXGhRiTxqs3xik66ZWVkTdeWSFOwTr0ygqJKmxfeWWFdArgwVdWSOVQHnhlhTQKqnx7Q0WQwyvf3giUQtt+eyNIKqwH394IKoX0wNsbQeNwNt/eCAqFUrzakGPFYcyvNjiiADZebXCuQtd+tcElClrr1QYXOFz61QbHFCh+JYBCwSFqvhKQFArY4VcCkqzC99VXAlILCuZXXglIOof24CsBSaVAN56F13HlsItn4YFRqFvPwoOgwnvgWXjQKKTNZ+FB4TA2noUHTqFLj45zVDhc9hPbEC5nFC4XKFwuqHC5msPlGoXLBQ6XKxwuV2K4nFO4TKBwGedwjb8cDMGqhEJVMQWqYhWmquUgVYVCVDEHqHIOT+UxOJVSaEZMgRkpheViDMkL34qnKxcYCkDibO+CQgA0ntddhKEDo2sIFzBkIPEkbYf8Z5nLVpy5guJZlgtncSumQkFivgtPc11onOeC5O8FF4Vmv7B6fgooTu8O7ab1mW/FU5aCaggAiesWhadTmkLj9YeC6KJDYXSlobBxxoDUETiKp7MXk/SI9g7FQXd5cuxKDSI9X52cr3AhBnCexk5MVkdlumN2ccWzc3dB5aVvxVPygsR5eOHp5LvQeMZdkDzNLgqdWxdWcwxQvJR7MclPbe9YvhCxo5sws5ucjZtG6m1k6m1y6vFlBFBEUm5EUm5CUk5H14Ot2Ospuh4gMZApuR7QOJBpcD1g1N0puB6QWEPTCT5wN0XvAiQe85qSdwGND3RNhXeBQo9uTdG7AMUH46ajd536VrwZMEXvAiRuCkzJu4DGy//T4F3A6Fdrp+BdQOK1/Cl41zEQvAo9Ha1r/yNlU7QuQPZ2CaD8C21Tsi6k+HaJ4/gTbdNgXcD87RJjZl0+1GVIuGUukmWjIpayIpa5Iti6QBG1YtYFKBcGXaidknP5vO2c69TGb84FKCaec0w8p5Z4jvhmkyueks48JZ3VlDTSh3rqc933qb4vR8Mbf6npEh0Pmb2RBiy+iAMCvokD2F7FAeZv3AD0V24A1nduANkbac521vfct+KLfJfJ+oCnd/su0foA0cSBYoMBVvMSUO22o5ktsJdofYDizeLLZH3A07HBJVofIDoCuAzWByxcR79E63NUS+gpkFv8ZebL0fte+FY8n7hE70OUzycuyfuQgvcBjqcZl8H7gNFpxuVodDAEczpk6tXMS/I6xPRq5qVwO5T4rc1L9Dtk9Ibm5ST/GPYlWZ7P1yY22oiBbloD3eiBbsRA2fdQUgN150MYX0+9tOv0YAbpJkQS2NP0bYikCndLNyKSkHwu34pICjleuhnBAnhfeseMuXJB9Y4ZS+SHrXfMWGZnTO+YMSePrByM0hC5pXGyTOPKN03M5mkSOahxtlET2EtNiIZqmFzVbzKFUuV7T1wDYHOGyGmNk906F55rYjZel7L7mkYWbJx92AQ24yosxaCTLZsgLctU4VumsXmZ0HAw05ONmcKmbQI7d7qTyILw8CptRPPk5iYcjI/yddNa8Wk5vOnN+GSvN4UMn275VSdU9/yUxs7fvOunGgj/V/f9lJZWAXnnT4m0Fqh7f0KDFQEpLQooqXUB9bw0oEqrA0p6gcAWvEagRssESrRSgASLBVJaL1CiJQMltWqgnhcOVGntQImXD9R4BUEtLiKo0DoSbgYHxxC3iUWBgWkjpTUFJVpWgiRWFtTz4hLUvL6gTEsMSrzKoMYLDWhLHZK03KAmHRUbCFNFmX0VtYa1YpPkrijyAoQar0HqUQGhiZUI1I3+UFqPUPtaANWqhPKBALbWJmxyKIB5hUIxLlJDOU38V0LKlv+uj6F4/8mF3d8k3P+Vh93WNmz5dZ6yFa/zFJSu81TXwx4Zom4Zl32rKnSwom1Gfe4B99d47vTYMey0Ieq0cdnpqkKnK9pm1OcecKeN506HZ5Wg55FT96MoxxCawEAC3zZ43+gfjyuKeXCQ7jA0pDQwlOSwoAEMCuhW0l72iYeDUh5MfcwHRmKIhmFcjqGqMICKthn1uQfcb+O50/bYB/TaGXXbBdlvk6HjxraC9aIf3HcXcuftIQzovDPqvAuy8+HP048dDX+enlkv+sGdl3+eftTGByWg65VQxyuW3Ya/ej12EP7qdSR92jd3V/zV61Gpv0AHvTVE3TUu+4t/JHfsHv6RXEJ97gH3Wf2R3L30fqAL23PZ8uMEQ6qXRfCDm4o24avp7+G9T8cawGXf6O/hvRcHFKDQjdD34fABWPi1ivdjpH2rj1t5DDmOVwP1QOy2PgXtk/oBkasx+LAV93WVgw9CvMV7NXbce9DHmbyijo+0Hgt8zAiGYEj2pqoLgWhExg9/EY0Nj22okzxKdWwzSvbia0YwVEOyh1VdCERDNX74i2io+L4kdZKHqt6XrNJwWrdYzGiwBnG4DnU/TV9IyIN25WtfxwM3pVddToN3JQ9/f3I0WX+eXe0+cjrScsKd/2zNSZYbWvzC4fRscm07LVtX+79dC8hN/Dr493UdqG/ZCB3h0PZ03APu2BDtvfKH/OltRr1A1CPjqVu7ihuDtN85Xko9MfIQPrANW1/CVh+3YkdSfe8pXacfO8IXdk8ifsif32b0JaNeIOqm9KK9RD8+MPaVX08/ifghf36b0ZeMeoGor9JMRkm8JlI7rN4SORHaQ+Prtg3+pcH7FufhtM6qRj1fiBtHJK7BnCTlQX7RVtIvkvaa0igaJ1NV9WtzPAhQeBQgPejv2mr8ReO+gXkoqOWx0Gsh4zj4rZCTiB/y57cZfcmoF4j6q84HR4lfDxg7m94OOCH+IL5iK9gXwXrFqMvyNHDU+Bn9sc/pEf0T4g/iK7aCfRGsV4z6LM/+9tqHCV4kr6SLW/GooKB6LRxR/gHjwtORw57in5R1HH/XuCD69eLC6NeLd2xpRzllKx4yFSROigpPJxqFxpOiguRJUVHopKiweOhVUHw69MMkXIKuiA6dnkQh0Jv9XB37xjhsIONMIYE4APYwIPRpAjrGBkgNAKA6R478pF1cXmheWqjtYKRG4nANxzE7zgM3LY3elRQCk2IcDFMwjFNE8mXgm8Zl4JuDl4EjhDDpH4HQYgzZgZ+A0C1S+No/AKEbxFA2fv5BqxTWqN60wsQhJlUFuv5JzRPfijbDf0hzTz+N7rR33E/oToCifTpPlv0J3QkQ3wNyxR3UmV1VcmR3yvYo/0qGFmgsh34lQzfJI2z8SoZW9bhbv5KhZYpG41cy9uoirM6LsAYv8uq7kOvuIp8HLfJJz6Jx0rNon/TEKwL49fkHIbRAu2r/IMTYoP79l21GvUD09ervz+6l2wle6SxbsdoKEot64akKC42LekFyUS8KLeqF0ZXOwsKVztsJ/tndWxwxIOjdnt5N6k1l24pHXXdpsMDTIdbdJNwwNiT/RsTdJN4eNkZHWXcTvBlcye7g9dS23B7FPRR99+QuPuEVEQWh9XxXFHM4xNNdkevAqGe7osAhyk92BQzByreS71K1M8+xw9+7OyZEsdO/d8dijl36vTvmOnb59+5Y4Njx790RhtjhJRcKBMdOXXKpUvpNoWMpcBwP/KaQbiJiqn9TSKuN+DZ+U0jLKdbyN4WkiHFPS4gMZZqD5hIyNqj3zmAODFH0jau4m5gjbhLF2riOsskcXxM4sibEmOL9xtOI+hwIjmD75uJygnfWlmEd3m35H25ahl0t816WegfoXYRgV3gR90ls1ecP8p7bDrdMVzgVh46kK5xPRPu+8T3cr688NwKHrtg1ebkSKXRLPvsRKHXp4LMfS7xqRwi6glftnsRWff4g96D9FAcdi2MvSIHOkAJ9IqVvfhv3kOXc0XC9kBl0LlwvfELtevFZ7sqBx0bqWQf2IR9MG4Ie4PE1fZD3r46vRwktiRDsviLYfTauZcO4lm3j+jzB84PP+FlA6aygXjBr3WGMekuM9xjpq0x94eqi+3Bfv3T//29On5laP3gdP2S43jMUmt/wjTjGMWrqpm9sEa89Bi3ERYxhFcNiuHZIafVqsNRCZ0WL3dw+E7juUGnxF0tJqzettRq6o1rkya+SF8oQpN2zHrgVJ6yg2ktE1jmA4/X3Z0aug27p4+jG6qFs2aUsR3T9ygR76d2/bBm38kDUlfPCU1EXGk+yC5In2UWhk+zCYvYWFK+c75BdOfew/REarMO419FcVphFiGx+EDZieV9v5ZSN0Mr5Q70wudobHmyEC7KraHcjtNvtPjRDNFHGKe2cc+7RvfwayYqvc0tORXum2uNiiJLSuIymPSFF6Vn5UqDG+GW2mphT1iTKW+M6eU3mDDaB0tg45TI/O8HT8Eduus6B4/w2TknunDPdlUMT5LltRCU+nDRQJveZxDoQ5wKjYs9zeEQMUTIYp2JwzsXAf6niWcTXuSUXQ+VQDIaoGIzLWKc/HkE7WArUGL8sBvW3I1iiYmj97QiWuRjS345gTsWQ/nYETcMfuek6B46LwTgVg3MuBlcOTZDnuxFVDHAFizK5zyQWg7h8VZVwUQVLIgqcGFHl8iA1FUnUqVSCeN36VCqbfL/uqRK4hA7er1NtUjmlG1xaOBhBXWDNG1y6ARfbwRtculEqPH2DS6tchEFNpRjUP1ofW7emIRVnVLlESU2FSvrX0wDqMnJZunwpVFZf3+JUzK3roHs9Xi+qYUKUH0j0gATYuAcILzXSKfC4Vf525/iinyF/1oc43SIP6oWdQlUyTWT3JyjHM3NDlhzE8UJAlOrZ+3ha/iKLo7LP32EOJ+5oZSsWeEHVbACJQi88VXehsaQLohItjO4nFhbuJxYS6/MBrPeFkZ1/PfGteNPxITkV8HQz8gE9CRAZESj+i2vOquUAquNwRD9dtoWhnRpxa95mP942THgrnXeb7Xbb9NitMNZtdtNtttAtDm0/kN0VZL/vULbirY2C4nN1e5RvdBSe7nHsaXquruB416MguqNRGN3M6MdaeeJbMa96rBVAItV6qhWgMdX6UCvA/Cf8nI21AiTmWJ9qpQ/z0Od56PM89I156OU89Hoe+jwPvZiHvjEPpQie2pYVgaNYBM6xCJxaETjiInDFi8CZFYEjKwJDVN91QcSsMkSpZZzyy7hKMhNzpplE6Wacc84ETjwTYvYZphTkyywUCkgHQ5SRxiktnYvcNDEnqEs5S02jVDXO+WoCJ224dvM0IkrfxrUbEnMi52s3xHVKi2s3JFBy52s3kXOaw006yHSklOwoUb6jpFIe9Zz1qFLio8S5jxqnP2qxAlChIsjvgohYQbohpWpAiQoiSKImUM9lEdRcGShTcaDE9YEalwhoUCVIqVBQUrWCei4XVKliUNJFgy24blCj0kGJqke8BjQmxZ8TeI75T8gBIOGJ5T95xgHzedafNL9Aw1PIf+JsAorPG/8JPs4kdppdPOHcfeHhSUkDYQdnTENK/j3yerLZZRLHZTiOy3Eel2lpXK6kcZkUx2WYxmWcxoUvSXWaxvEFKY4xSnmcQU9jjWoab5DjmINE4w4ajP0///v/AGoZ428=";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Helvetica-Oblique.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Helvetica-Oblique.compressed.json
 var require_Helvetica_Oblique_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Helvetica-Oblique.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Helvetica-Oblique.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Helvetica.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Helvetica.compressed.json
 var require_Helvetica_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Helvetica.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Helvetica.compressed.json"(exports, module) {
     module.exports = "eJyNnVtzG8mxrf+KAk/nRGh8eBWleZPnItsaj0ZXWNvhB5BsUdgE0TLAFgjt2P/9AI2uzJUrV7X8olB/q4CuyspaVX0p8H8mP7V3d83yfvLj5MPfu/Xspnl0enH05Nmjs6dHz84mjye/tsv732d3za7AX5rF1+Z+fjXb426xUHh2N19shTBt5jef92f5e3M97+525K/3s8X86vnyZrEre7Q7Xv86f2iu/5jfX32e/Hi/6prHk58+z1azq/tm9bbZf/aXh/tmed1cv2nvZsuhbn/+c/sw+fGfPxw/efL4h5OT88fHR0dHj5+dHv/r8eT9rvBqMV82f7Tr+f28XU5+/GEng/Du8/zqdtms15Mfz3f8Q7Na98UmR0cnf9p90e4kv7e7Juyb81P7Zbvat+LR/7n6v4+Onz09f7z/96L/99n+32dH/b8Xj55ft5fNo7fb9X1zt3701+VVu/rSrmb3zfWfHj16vlg8erP/nvWjN826WX3dUQvVo/n60ezR/Wp23dzNVreP2k+Pfpsv2/vtl+aHXaHFo+cvHs2W1/+vXT2a775g3V2u59fz2WrerP+0q+wvu1Ndz5c3b68+N30f9DV5e7/7yGx1XdRdwZ9mX/4ydMnF8dPHk3+Uo/OT08eT5+urfaBXg/hzY8c/nBxdPJ68vb/+y3QnPun/+2H336dPD7319+Z+Nb/ahfOf/zOZ/mPy48nFTvh9V5H1l9kuiv/7mHDzcLWY3Rk/PT8/8H937S5alwtTzs+fHJRld3e576abZdau28VitjL+dNctPf/SrK72SV6EJ08uDsLsbietd9Hxmp2cQA36/vbanZ4O3zdbNctF86km0cdKNWbr/Teub73iT8+GTy26dQ7O1W5szvIpPm+/fG6WufiuKfP2OvP1Yrb+nIP1rVm1mbbLJsP7jSh5/3nViLKf2m4l6PyrKLuePwjYfG1E3zYhpp4O86VIq6t20YoIrZu7eZSsBxZ7E0i0+Xc3W2R8s2p2g1k0899ds+6NpijHR8dDRs9E+j3P6M+GLkom/pTRz/mDvzg6Pj6gX/2DJQIv8nf9Jcfpr96yvV3u0d/yGV/m9v/mY69k69/zGX/P9XqVv/6PXOp1/q43+YNvcyTe5Q++zx/8YOjZ2dDT01zqHxl9zGf8rxzVy91cdtvcB99wcafFgcqfi6Zy9sRM5Wo+v5qvrrq73B/d3rXXu+kHxkgwuFAZ+9gso8ucElfCgMW4zQ36lEvdZPQ5V3me0X/net3mUouclyJawnWE730Rwz6b9CrXSzi8iH2XP/g1Z+8ml3rIaJvRN6jqmedXTISTJ0clK1eV8jEbzRn7bLyfL66bHJLDXH/dbkScw/TsU8F9v0zz5DguI+7Tfl2IRmuf2arJ49OiXc0FXzeVb7nqVrt5/MoDePzsGIbNet6vW1MTy7JFD6ubbr5T7tp7vXTYy/0Xf0em0Jee/TQXTCygdis5uR64nt3cqDntwHEtRiuOfd81qwbG/umFLYZmN6vZFz/b6XnJrN0FRAMZF1ypb+blbD0S4XF1pRcL1gFR7y8ZDrFZLOZf1vO1kHZtvf/cdmGxaG5f5v2Q3N5zq9lXUdnZVXcv8MHLPy2ah6xVRtbd7GrVihNfrhp14uv2fnYVRpxL811PYgDc0HAcemV3l3O7NbdYpHbLm9mqu1vMOnGa9ma3zrwVXzdbhcWT9ctdyFkXnvuyZ3fdOnz56vrTbqEXVoa+QomTrC9AIvczvIIzPDm3M9ztnK5b4CnsamMmprzr/aBfr8UEtogntpRqI7cVSdvksrvxubsi3uW9mGL+mrrUnSBmoE//MW98apKd6l8Xe89XR7kGZbq4nn+dQ0L7R2LNfMEsBodXO37IV3rqQzZFUgxssu4vvmiYQFPzV/r5wlBxXO+IGY0H/0ylhzr6gF8FpJP4NcPOI+Ai5KQ4sWroRXHwq3LTQ5yKXMfXhTEPvJU6Lr+rCvjwqOVoNFVf6cvm2KVU7duisUI4k1VChsxk89fsiTYU5/HsZxdDnRftt2Z5IzL3TTyFX8WNJmc3OkiE6MOrNpGsKm294rb69U+OnJ3m3ed2JVr1is7uYai4wVviZ2USo7DZaOKMtYjpya2/w7Hu+lXOStSXUtCiWONkq8UE77rF/fzLYivqRQ30JA8NPLsolyaz1f18trief/qU+2pbt4bf43k8YceS5ZfRNBuZdbJk6VQZnsuaDdYy5vcYIJ8M6Yvw/ttuxYA34ewSaNXeNku8EDJzXDU383Vc+voQjZ0N03EeF+Yc3W5Uh+sRD3ZlDbmqRKalyPi4rKTUf9EIP3tW1q79ra54I8zi/Mv95wx/SgZoZq586/R4aON9Zd5oqrNjbRZ8Xls+jGRlDLBfL9PQsFsRXClzhVqP1Kae2jS6rg3KPI7t3KPLEp4xy7qgWdyLGz73waTdEzftiCPW43vXiZZQzC1Ucp3pY4FC71eqcYXztNyw6H18l8CrXSKv8/e9Tfn67FnJV72ifTk6//4WO84vJeyxjjLFZAtuGTFMzmvT2W+x2haHXdQ+zxYwNZRBvr80oVvd1hdjLr+MyyZPte90YGUoNLUG3UQzxQYN3ap6VffdW7lAtAyWNT8rPXi9swn10KONXQRWqC2ti+XPzs3Or+dXymh/jl8EC7Ox5e7vsX+8upV+ezOe10p1b60soZ9XTTpeDlgPUJ3NiEcWlL/Upnt2CrtFLBtqC7K4ErBvGx0KlSrcj55p0d7s+3vZinC3dTPtslSG8u6rKiP5ZvyKFmZyj3klfZdyHrebO8u8aHbPr43xX7r948h/PZ68bFbLP2bz1f4h8j8nz/cPqyePfzg9+tfj4ejgHgEd6hnRYOoIX8Sjg6sEhA1D4VU8ylXAqTdw66pAD+M/oOA8QRlCFtjh7lBAh4GD6HU4erc7Oj7xwxK0wEL7QXm/Ozz3oxIAQCEAwCEAQEsAAFEAQLEAABuGdmC9oyD5sDu6sKNp0D7uG3jkh6VJyKDugLsQ1i4nQ1dJhk4mQ5eToasmQyeSobNYABti4eTr7ujMjjbhaBuPSosAQc0HOhTC0WmIQmKcxqlzHqxFeSEQDVvjcuwW9ZVAlVrKoWxi7kKTqB+N6840mXvUBBrjxmmgF/46IxzyxnjcuyAHf5HBAQyRDRhXXmBiNgSTyBWMa2swmf3BBDYJE6JTFAx2UdA0l0LjMMbuYYKwkKJ1ucPYTIyP5aSwFZMqOVkxGJNrOZmsxoToNwWD6RS0yWgrEHmQ8WxEgx+gERmicBonI3LORlSUFwKRERmXRlTUVwJVaimNyMTc6SZRpxvXnW4yd7oJZETGyYgKf50RGpExNiIXpBEVGYzIEBmRcWVEJmYjMomMyLg2IpPZiExgIzIhGlHBYEQFTXMpNCJjbEQmCCMqWpc7jI3I+FhOCiMyqZKTFSMyuZaTyYhMiEZUMBhRQZuMtgKRERnPRoShQTeKnAIbRfIlEtmcgvyixsmmoii9KhR5VeNjDZHWFUvkXIk6JUwUddbEMpw6USVPiyIZWxBfVzhaXBTY50iVZhfKgONFTrYXReV9sUQ2wKiTC0ZRW2Esw34YVTbFqEZnDBrYY+DTSnk0yiiwW0ZVWGYo0FVSgc0zit8dGsJGoz42NCqGGsuMDo1krVGN/ho0MNnANxW+rXHy3Chm43WCtouUOgQlstwgseGC+EJTMluUpNVCgVea1qsuTRb1nEeoUhahpHMIS3AGoUbWihIZK0ivJUVTRcyWGjRpqFAC7BQpmSlKykpRz0aKKtkoStpEsQRbKGpsoKhF+wQFzBPoVJZF40TMtomaME2QO9nNbJgofSfJhVmiWk/yilFiiZEkTyaJWrRIUMAggW4k3WpK1ohSNsah9eiKhijkxskPnbMZFuWFQGSDxqUHFvWVQJVaSuszMaeESZQPxnUymMyZYAJ5nXEyusJfZ4QWZ4z9zQVpbkUGZzNEtmZceZqJ2dBMIjczrq3MZPYxE9jETIgOVjDYV0HTXAqNyxi7lgnCsorW5Q5jszI+lpPCpkyq5GTFoEyu5WSyJhOiLxUMplTQJqOtQORFxrMRlbqiEzmjgLpAXgQCm5FJLxQjO3JB+pHJrxSrVVZakqu5/12jBHBBZ4DrnAKukC+5QMZkwmvB0JocsjeBIs3JdHAnZ2RPLih/cjUblGvkUC5oi3KdPcoVNilXoksZB5syNhXl0KgcslO5IqzKxE50IZuVC6PpKuzKtVq6VgzL9Wq6JstyJXqWcTAtYxvBtoqRb7mQjatUDI3LGQXXBTIuENi4THqhGBmXC9K4TH6lWK2y0rhczZngGmWCCzoTXOdMcIWMywUyLhNeC4bG5ZCNCxRpXKaDcTkj43JBGZer2bhcI+NyQRuX62xcrrBxuRKNyzgYl7GpKIfG5ZCNyxVhXCZ2ogvZuFwYTVdhXK7V0rViXK5X0zUZlyvRuIyDcRnbCLZVjIzLhWxcq+GHPrwKhVBgCybLMsyGNQgvMiGzKlha1SC+ykRXT5pU0XKfF4V6vGDd30Xl3i6crKlgMqYBv04ETakgtiTj0pAGFeyoEDKjgpUVFS0bUVHIhgrWJlRUtqDC2YAKj/YzUDCfgUxTGTSegth2ChemM0hd6h42nIJHEk+YTVF04lWMpqiVxEsmU3i0mIGCwQxkk8g2E7KWgrOxDOmOzmKIQmicvMU5m0tRXghE9mJc+ktRXwlUqaW0GBNzV5tEfW1cd7bJ3NsmkM8YJ6Mp/HVGaDXG2GtckGZTZHAbQ2Q3xpXfmJgNxyRyHOPackxmzzGBTceE6DoFg+0UNM2l0HiMsfOYIKynaF3uMDYf42M5KezHpEpOVgzI5FpOJgsyIXpQwWBCBW0y2gpEPmQ8GdGfh9w89iPvDEMhfsBD9xgtUQNEAQPFYgXMwgRsiJCTw+96Pf7hxMjw010F/QSFTo1YoQGVV+KoZMFcfBj+XLzgVLxYc/qACfSRn3fouXVPfxQ7s0fFxQGFPgKeurynpY8AWU8As54ANvQEkGKpjtwLfh5swLW9Azzzo9I6QFBlpyWA/rUWuQGVToDwGaIYGqdAGlfRNDGH1CSKq3EOrgkcYRNimA1TrAv/kMMwzaUg9IYo/sZzJ3Du0/lSd/T7CGN3FMTdUTh3R+GyO4oouqNI3B2Fp+4oQuqOIlB3FMzdMfAPOQzTXAq7oyDujsJFdwwSd8eAqTt+HXriqR+VUwEq8QcUQg8cKgS0BByQxRqYhRnYEGEgJbiOZrag6I/iCqpHpQWAxHqq52kp1dO4iuoRrZB6RoujnoV1UU9KCxyV3jp25CuM/iguYnoUV/4HlJc0PU+rmQO1bX8Bx/VNj2jt0jNatuxZG49yndtKBVtZwTbXpJWLrF4RdWzjcr9HcaX/K44JiP5qPy7P7cicyVGJPqKw2D8IfxtG2GH18TccYYBKfgIKkQIOkQJaIgXI4gHM+gzYkJ9ASogczeJRbsEst2BWacFMtmCWWzATLZiJFsxSC2a5BXGl9be8xNqjLnyky83sKm3qZJu63Ca+SABFtLYTre1Ca19ODtfh534U7a9Hwut6nryup9HreiQvFnuFXLBnZdQBipb3cvC3Mz+Kc/9L9DdEecZ/Sf6GFPwNcJz+XwZ/A0aT/svB3+Ao17mtVLCVFWxzTdjfQBF1NH8DFNceLyd4Tfxyki6HX6asBp5c+eUkXf++FFkNCrnyy0m+4H054WvdPdmGbNnmrN7m7A0GjOOCBPoyUtVooSLfPTWNIVL1cKJCPLJIpkFGKo23qEJ6kEAZTSoNSFZF6lORPAq4QB6xVIKGDKk8RkjmIR3ltiqMhkWOeSryvYazE5CqTYEKjbedrYJUco2ogoGQQF5CqrIVKpIdhgqQ2ZCqfYcKsQWRzG5EcjSmKG5rI4ztitRkH79NhhvLx35o95SRxdvJrnyIh/vLygs76u+unvmh3csDhjftHMcffc2S8SfGtxas3zAQgFKf/xb2VB8T4zjU9lST/EEwCEvYcXxGjAMkdxyTVgtV0DleuEuXYsGRU7t0B6nca8HwGePwuSDDh7eOmEH48N5RaWm6eZQEEb6i1cIXdA5fEbc5Fhw+4yJ8YXCGIEYlhZJkHdBQ6ENVweAGIYQ4KinQUVbhDiWqQc+lUuiTEcpopm6oGuFQYJimQjcY4w5wQYa+yB8Eg3AXhIE2xiE2QQS3aLWwBp0DWsRtjgUH0XgK327JC3cb+qN4EdujeK3eI3Fd2/N0XdvTeF3bI7p67RldvfYsXL32JF6rvxr6/syP4rLzVe5vFz7YjPpq6GOPyz92R0/s6KP1/yvsZkDQdKflNoKf0m4jDKj4NHSDIeoL49QhxlWvmJi7xiTqH+PcSSZwT5kQu8sw9RnO3xQG7r3K7E0q9CPO3acRQY/idH5BiPpWTeYkUS+nx34DD3snob8jp06PIvV8FFX3xxI5B6JOiRBFzoaockpENeZF1Cg50k5uFT1Ok7F93KoIJEzatnwqOKRO2s58oTglUXUzs9IpnYLGOQWbziCjkFI+oUTZhJLKJdRzJqFKeYQSZxFqnEOoxQxChfKHtqzmOHHu1Des5gKQN7Rj8zRRyBnax3mRKeVLZRdnVilXQOFMKVuCIE0MUY4YpwQxrrLDxJwaJlFeGOekMIEzwoSYDoYpF3BjH4WBs6CyrY9U6H/c8nYaEfQ87oK7IER9rvbAkUS9XTB3dbzNgT3OCnU8y9T/LKs04DI5G7gEJQXLnBusc4qwHjOFVUoYkt9VY8rpk2SVRVQIkokUyClSILVIgQxjhRKN5ZxvVILSjlTOPtvDA3nnjDLOBco1F1SWuZrzyzXKLBc4p1zhbHIl5pFzyqCwY48jwllT26/HMmRK2MJ2SgyyI2xru2BGGSE3tbFGWWCc+79cbkL3G6LeN06db1z1vYm5602injfOHW8C97sJsdsNU6/jbQgKA/d55SYEqdDjeAviNCLob7wrcUGIelvdkyCJ+rpg7urySih0tSHqauPU1cZVV5uYu9ok6mrj3NUmcFebELvaMHU1vthNYeCurrzWTSp0Nb7yfBoRdDW+BX1BiLpavQNNEnV1wdTVfwy9PLyS/gf2MLLSu8jii78g4D0xwPbqLzB/wxegv+ILsLzjC6j0ILBZaJm9oQIovkXYI/HkrufpcV1P4zO6HtEzt57RQ8aehfcEexIfuP0B/Xb81FBjmdQfxYdKPSoJiig/vu55euh0oPDEFXB8ft0jeh7dM3rfbc/aeJTr3FYq2MoKtrkm/DgUFFFHe/AJKD4d/wNHxxD91xN8A74/im/A90i8Ad/z9AZ8T+Mb8D2Sb8D3Cr0B3zN6A75n4Q34N5PDWw8nfhRdu0fCmHuePLmn0Y57JN9h6hXy6J6V+AOKDvxmMN9TP4qvNr7JluvCextEb7CXAIlR/oZ6CWgc5W9EL4FC4/9N6CVgYfy/CXPEmzA9vBmmAdc+xhH0hsx/oOUWJfS+IUoB4yoPTMzJYBJlhHGdFiZzbphACWKcsgRvMp8Sonyp3GQmFTLHEKWPcZVDJuZEMomyybhOKZM5r0zg5DIhZli+j25omgPxMZfirFM3zQepPFmF1DNEqWdcpZ6JOfVMotQzrlPPZE49Eyj1jFPq4QP2U0KUepXH66RC6hmi1DOuUs/EnHomUeoZ16lnMqeeCZx6JsTUwxcIKEOmORAfcylOPfX2QJHS+34nUuA0HHnfTxcRKanf99NqJT0r7/tpmVNVv+8nVUxb/UZDRZUpHMpgIkeB0zmqMqljEZHasQAneFQraR4LpWSPckr5KFPipxc9ZJZOa6H8WPtEGhDVtzwOBd5OeB/k20naB/mWn3US5uK8zYtwKp62OCYhfSQ0iz8WRProLr/xWrY/pGvZntG1bM/UtWwv5GvZHtO1bM/4WraHfC3bw3gt2yO6ln03GNmZH8WR9C5ZFvA0Zt6hOQGSo+NdsCFg8d3Rd2g4jmaxETPRA3YN/sRRrQNmugNmogP8Mhy+V8V/luNvF+L+0at2AT78DpIRPkdVaERr7eI8sEpzG93ccH2OvITBq92IKDQqCp+3Xz43fb2889pYpBXNaWtVb3XVW9FTfOmOkqi+XbtjudxhfvHuxVZ0KBq0Ev1De7hAWTd385wZXSzUidN0tbh1Om6diBu/6IySiFunur3Lyb+Jh1s6FI3BV86G8+EG61Iy7bBOAnux3mOdVBGytMs6Ccmf8z7rpFCw0k5rFsCz09UPc+Xe6uqHJfLx2tUPy+zo6eqHOXl74TPR7OTyJpDVGx/tX2X6ptX6N9m/CdXu5YnAOJmLr3rCwOfFEH+NqmWaIUxgG3JhLFRqwnBNzBom0tRhvBbGPIkUJc0kRWhF4TSnmDDaTjW7mFZLido8Y3qtrWnGMaGSGWnuKcJKsVoI0lTkgpyPiiwmpSJ1oniankwY7QI1UZlW64LalGV6rQvy5GVKZdRuBNsqVmu+mtXCBUeY26KSvjPKaZ6Lso57LKOiH0ukPohynv+ingMedQ57VNOMmG7KnEmBZ8eRmzK6iJgp9U0ZrVZmzcpNGS3zDKpvykh1Vg1ZnlOjzDNrVP+DjJKzbCwxnlF5xo3ydxIqzb5RZael+wLR7eRNA/3F9fbkuTnKyZ1J/n7I5WxNJdScHYvwzB3V8U4Rs3jQ81we5Lb6wTyvR/k/iI6c42OJ8YSszvex1HiE8twf5dG8zOuAIK/qynj48sqAZL0+CIXUKiEU6KofzSuGKP8HnStXD7HEeOdWVxKx1HjnilVF1Ec9aVNVtnVlPHR5zfF+WGic+VGcI9/jggKQmCvf08IBaJwV34cFAjC69/0eFgJA4hT3fsKvH72fpDePypMBbGvaIcWcWq13SLGY2592SDHnSOQdUizEmKQdUsQpOpWdReHxCMZJ7yySIkVsZGeRLJFjp3cWSZGjWNlZJNUYT72zSIkU2bFNNvBoCYOrNtkIiQJb3WQj9BxUtclGSBxQuclGaDGYapNNliiQ9R0o5QEcxjDtQGFO0dM7UFjMcUs7UJhzxPIOFBZirNIOFOIUpcrOjfe8PaGuUMBqOzcqsgrfyM6NSgkKZnXnRkXn0FZ2blRUCvTolgVWOexhy0JiFOq8ZSEJKrxyy0LSKKRiy0JSOIxpy0LiFLrKG/7OOVz2xw6eK0bhcoHC5YIKl6s5XK5RuFzgcLnC4XIlhss5hcsECpdxDtfwA+7PM6FQFUyBKliFqWg5SEWhEBXMASqcw1N4DE6hFJoBU2AGSmH5MITkqR+VcACKvyX6IYUBePot0Q/YfED0W6IfQrOBhd8S/YDNdfQitOdF7LkexSsuF17Fo5gKPRL93fPU1z2N/dwjecuqV6j3exZvTvUodu8e+W/E9kdxu0GPSggAhYYAT5sSeloaAsiqC8x6DNjQY0BKCxyVK9szIOU20HlBsZObnJh2jweRTsxGJma4fwM452sj8rUR+Wp3ZBy18Sg3o63UuZV1bnPl+E4KKKLadssEUB5TcG/EOgTvSXjPdaFnu5yNXSX1Opl6XU49vpkAikjKTiRlF5JyOrjeuR/F17Wm6HqAxC6IKbke0LgLYhpcDxjtx5iC6wGJ2x+mE3x1coreBUi8JDkl7wIaX4ecCu8ChV58nKJ3AYqvOE4nuOdnit4FKNr3NHkX8GTCU/QuQGS10+BdwMIEO0XvclSc6qmRvX7qR6VNgOI7m9NkVMDT7wNN2agAx1/amwajAkY/lzdFo/KGtaFAm5uhfgl6SkYFNFdO/xL0NBgVsPhL0FM0KkdmVN4fXSjQ5YaoXzmckiMBzQ3RP2I4DY4ETMQ//kbhnmzDONnm8bxN4/bjYGTDD2V9RCdDZg80gcW7wCDgrV/Adr8XmD+kBOg3bQGWO7WA7Bmks72lPT23I5sqHcWp0jlOlU5tqnTEU6UrPlU6s6nSkU2Vhvply5k1wh8FAosLso/J1LBs/pWyj2hryGj6+xh8DQuW+AOy+Dsrk/sTIMOyzAvRZxrRXH/4hqzS3ka3Nz5bAy7i0Ig4NCoO/MBsz+ZhOM3juOsRbVb+OHglfEcrgtDWGtzqBreiYekZGUg++ADa4zBgoqN9decMV3eeAF0coZ2wl65mJZ22kk5YSXpeBJJymU65TEcugw8tEuOGpMcWSZDNVA8uksYNzo8ukpLaxw8vEmc/xe2Fg1ml7YXMlb2q7YUskdHWtheyzJabthcyJ/MtHB3KGA9JE8iLjcvxaqoYtKbxyDWBfcmEZE6mkFMbjxfRxmnE8jMr/hpVy+TgJrCNuzAWKmXorglXN7EWx+TvJlTjmJy+CGD3hsjzjbPxF6EV35umABNGg6UmA9Nq8ahNC6bX4pXmBxN4kkhPOVkQ00WRcM4wVvNbPXuYOmKraR4xoTKZmF613TytmEK2S48jFeYWqweSSpMBqTySVDKHRT6UVGJqvHgsqSSeeUCDyQcpzT8oqSkI9TwLoUoTEUp6LsISPB2hRjMSSjQpgYQOjJitAjWanVCSRoIFhJegzHaCGjsGaslkUaT5CiWassLz6mAc4km2+L5K1dP0hRrPYEH7TjjVPBZkMZWhPhLuNKGhNhbuNK2BBjMbUprcUOL5DbRWnyPNcqh9L6BqrkN5JGC1GQ+LpAsiFHniQ43nPvX6hNDEDAgqToKIR2YFPRVigXHnTxMiapU5EYuMTQ55ZkQxTg77ncJfLav2R5tw5D+X3h/F+3M9SvfhimXi9xa0yWibP8inMZ7PNVgwnqugTUbb/EE+l/F8rvDOE5ww8E2Fbyvfw+ePYq4EdCVUAehG0q38Bj45SvnU5SUcOG9Bm4y2+YN8OuP5XPYuBZzM2Eawrfgsn8+FfEJ7GwFOaGwj2FZ8lk/oQj4h/M37k0A2iWzTp/hE4m/eDwr+WeuTiDYZbfMH+VTqz1ofpMsdvdxbix3FFxv2ZGHn7I/ihNej+PwfhPjM6nKS3pC4nOCfGLxEBwcknrRdkl8DjU/aLoU7g0JP2i6DFwMLP5x4GTrncoJPFy4x/oBSXa9wOXZeyG3Qb1Vkr9JdiPOAb3NJ/T1pz+Z5wLe5ZOV70i9blG8y4VaV1t92mPIn6y+zq30Izwfaf3H+OyJHWSYtRypeeBv6aqMijrT90UPQtkGj3uaBNlDdaYa5Pjghn8Zv2OQvfciltrkUV1TN0YOkU8Mw17ZwqC3uRKQvfciltrkU11btTCySeuu5VE2+9axErLxeHkT+UCm/rZRPDaotGwZdXbads8ItorXGafqqjTzBgyy7lWW5HZUVSFH9Mi41A6TUDtCwIYA3+iQPuvRWl06NQS23ht91Hmqb3nUmDi3Iyy9DD7nUNpfiGqsV2SClt16HauW3XlmACoslnLMHUW4rynGl5bJu0NLLp0Pl8sunLECtxTrQ2YMotxXluNZybXjQPk0O96NO/SguwnpU7j4BEu9K9Dwt1Xoa35XoEb0R0TN6I6Jn4Y2InsS3PT5BxJ3sxsOiWa/7mx9PC4wfanJD6Y2cA9INzW/kHGh6I6fHuf38Rk7PRPvbeJTrrF6/6bmsYJtrol+/6RVRR3r9pke5Q+gvcn/KS6AnURjoYdW0v77ot1n6kd0fcWQ38QDFLZQHoVxmrwSirzVO3+1cnUDsD5UCnay2O1Sr4sTxb8yJPy+n/7Lc7TASTvwo+sUtjgRE+XLmlkYCUhgJgONVzm0YCcDoWuZ2GAlwlOvcVirYygq2uSY8EkARdWzjVeItjoQB5V3rWqC2VPasV1TR6PqO9UqB3FeV/epa5ejU9qtLua0Ko2GRvV3fjK4LjDarkg61nehapiSpbEQ/qHeT4QaxH0XP6JH4qfKe411gp/Gnynskf6q8V+inyntGP1Xes/BT5XeDDR1WNXdoQ4Cwdj1dhsYuc2OXlcYuZWOXubHLamOXorFL0dhlamy8T7gMTV/mpvNScaDhkfhRRBSEygNxEnM48uNw4jow4mE4CRyi9Cg8YggWXuJTIDhs6hJ/kMKvIh1FRLGr/CYSiTl2+ReRiOvY5d9DYoFjl34OKWKIXfgxpBgIjp264VCk/FsRR0rgOI79UoQsImJa+Z0IqVbiW/mVCC2nWOsfiVAixj3/RIQKZeqD6g9EDAXKrW3oA0MUfeMq7ibmiJtEsTauo2wyx9cEjqwJMab5ccAS7/1TIDiC6t7/QdqtF+hu/57QDfp2OLF/ZBOO/FqpDavoNq+iW7mKLosTrkq6MUocKoU3Rgk95PNsBaKK1h9etvJW45nQuN7pVuNQ03SrUfGHSgW2NU4N+s4TSljfcZvUrcYsQXvoVmOmD/K0W02pHaMPO1u+OXcWMdcfb84N1cSbc4Qe8nm2AlGF649L29Hd/Kxy3UmGJpCyqSoP1aps6wo1j+XcysrG+zbfgmQB2hRuQTJ7ECfbKkZ1H3myXC42+jt65+cRla9hbhsaicddjSTCqVmy/Y3EfZMjCb7TkYSy3ZGw7XmM/DKjK4EqYSiPCjMvj/2SMiTGs4ivc8nrXcNn95mLajSV6jWV6jVjvdTUeyn+sTDSKj3Y1HqwqfXgp4xEh95UMjDeAmP1c0ZzgSrxnI/FbV6P27wSm3ktNvNabP47I1HqdjQGC4EqDV6Mf5H9ZbXI7zISbVxWzrmsJO1ytC7LyvhuBaqcuB3r3bbeu22ld9OfqSO51vltJaxtpYlfBCrTDNnMv3PRlUCVAK0qPbMa7RkRsXXlBOvKCdZVO12Pnlqh0Q90AlXq2o1lS1fPlq6SLXxdxXItW7qaVXR6ItwvNC7ivL/JyN+XN7TNpWyRwRyaT9K3XKNvlQh/q2TDNzEL6b99apiXXXiReRy/YZMRrLnya2ht5TW0tv4a2heo6Ol5If7wy9A2fIRO8EV/9/AttXeHol4Ty+tIh8dt9FWmnrm6aD7dly89/P+H8wtTywf7Vc5RxrbSyVqopvjKlf6YW5jQLK+UFu0hl1hX8MgJ1yMnRGtT6nerM/TFYZithlX8sR/F20IrXLsDEjeJVrRiBxpvDa3COh0Y3fFZweociL0wb2h4Ke4UwGGwnBvZLdoOg3QFyzUg2B7A3hyAQ2uAlMYAKm1xFA9CRzlfhINUz0XtY4PXOdmtqU7sYBkOhm8FMuQbEjwP8CH4Tr5g3M2SPPCwT8HL7b7zzA/CuZx32JwuhaLTXdapLutSl9HsCULuyy735TBXOviKzduGg6HmQLyKAyx31GAoGqLxaJwGpXE1Mk3Mw9MkGqPGeaCawKPVhDhkDdO49RubmBx8u/M8Yh/GRmJiGBbZYVpKEVNinhimnDBOiQGvGDNR47aIi0x0o+ToNzFaQMHuA4UsM4mOYDjagmPhDSZGg7Db1KmD2SoKz35RFDcHI8o54KEnhaLTUVVGIp54sqJTRftKetzJvJJI0Wbg3j6FZptJdB1xy35Qwt9qIkTWk/5SE3NlPfIPNZFE1pP/TBMLbD3przQRJuuhP9J0yjRYT8FuPUZiPhkW+WRayidTYj4ZpowxThkDuxKYKNMo4iIT3ShpPSZG6ynYraeQZSbRegxH63EsrMfEaD32Mn7qYLYe8beR6BPuLkaU9cA7AxSKTkdVWY94YYAVnSraetLbAswriRStB14VoNBsM4nWI94TKEp4eo0GFAW2oaiyGUVVWlIsIowpFmB7imoyqSgnq4oyGVYU2baCSplKWrSwIIKRRU45GkWVqbFEzteoU9ZGkbMzqpyjQa1yaVmhyKLGx0KhrTAWIUMMIthi4MsaJ4uMIhklicouYxEyzSB+qaRXMtCgChsNOvhl5NJS+VUiGVK21/qLRLrEd1KXDXfsLSJdZjS9kwWrV4ik9rUS4m2NkzXXXh866HlrldhSVd5kGD7C129DobTqJw7foPfWrdPkTRy/obLhci3+lHhS8Hukp5ZP6BEhVfhOHxu0hXM42v/NXCbxbqBjcauviB8Smdr910L2fz7+WSRlpiUMM2RUyo3e4Q7uaRYH5XBf+OswzR/M5ivO7YDKhA4ovoPtHF+8dmpvWzvyt6ed+evizso+Zif26rShkghPrU1Rb3Kb/N16QLpNjWxTfHXecW5qI5raiKa28SjXua1UsJUVbHNN0nvtrog6+hvsjnLs6fd2N2XdeG5H8f2+TVghOorLQufpLcBNWAA68lWfM1/qOSvrOye2qDNUEuqJtckXfRtMKEBxG88mJRTwtL7dcEIBjmvdTUgoYLSq3QwJBUe5zm2lgq2sYJtrkn6GxxVRR//RHUdxQb3BhDoE/2GC2/ceMPiA4va9hxR84Ol52wMHH3DcNPcQgg+Mtu9ti6v6kY1mR+aqjsTOli27qtO4h2UbXdUZbcLZoqs6iRtStji9HhmKBZrcKNqytM226lw2SuxI2gZbdSTayhuOtsVW/SjXWe0n2rKtOs010duFttFWncWNQdtgq4Z8+TJEHx9InBCiNqUHEsxVg9UDCZao6fmBBAvcHfxAgjHFIS1dKRaiKOekcUpM5yOxECnqUs5T0ypxShlrQi1OrUCVBsosNrHeEM5n4zqpTa61hdPbeKVvU6LDK9OQ60gpAihRxqOk4oN6DhGqFCWUOBKocceiFscAKhQq9bsaOVj6AzweUKIhEaTxYImBEdQ8NlCuxzKNENRGYtlqWm+7HC2ojzaQxwxKethgiZE28uBBqZ4UPIS+lfXquR3FNfi3sF4FlNfg33i9ChTXq47j0vxbXK86o6X5t7Je9aNc57ZSwVZWsM01SetVV0Qdfb3qKF4rfMOZiBHVP81EiYvGqZkoSbkf0kzEnFubZyISWoEqDZS9pGYiliqVrXRanolYoO5LM9HAy/0qhaiJxqkPnYumm5ib7lLuQ9MoLMa53SZwHxahFajSQNmHJtYbwn1oXPehybW2cB8apz7EX0GqYWpq0Kg/oyZCEQrkcEQ5923QKWRB47gEkfsZxbaCR4Ig+zwUGG8o933QdP+HImNt5TwIGuTCv/73/wO+9kRf";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Times-Bold.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Times-Bold.compressed.json
 var require_Times_Bold_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Times-Bold.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Times-Bold.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Times-BoldItalic.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Times-BoldItalic.compressed.json
 var require_Times_BoldItalic_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Times-BoldItalic.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Times-BoldItalic.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Times-Italic.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Times-Italic.compressed.json
 var require_Times_Italic_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Times-Italic.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Times-Italic.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Times-Roman.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Times-Roman.compressed.json
 var require_Times_Roman_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Times-Roman.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Times-Roman.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Symbol.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/Symbol.compressed.json
 var require_Symbol_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Symbol.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Symbol.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/ZapfDingbats.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/ZapfDingbats.compressed.json
 var require_ZapfDingbats_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/ZapfDingbats.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/ZapfDingbats.compressed.json"(exports, module) {
     module.exports = "eJxtmNtu20YQhl+F4FULyMGeD7pz3AY1ChtG7NpFA18w1NomIlECSRcxgrx7SVk7+wOdG8H5OJydf2Z2d5gf9cV+t0v9VK/r+6vXsXlOlbHe28paq229qj/t++m62aXZ4J/m8PRb1z9/baZxefK63Z6eXN5dVMvTCh83u277xr/6kLrnl2XNq7TpXnczuZyabdee98/b2VzM/x4/dd/T5qab2pd6PQ2vaVVfvDRD005puE3Lu7eH1HbN9hTjx4/77/X6y5lcnUmjVzHIVVDicVX/1W/SsO36dLMfu6nb9/X6TAoBD+5euvZbn8axXtuZ36dhPJrVQqgPQoh5hev91LWLkIv94W1Ygq9+aX+tZAx2tfz64284/sblN/rqfLP/mqrbt3FKu7G67Nv9cNgPzZQ2H6rz7bb6vLgZq89pTMO/M/xfEqturJpqSM/d7GJIm2oamk3aNcO3av80O5xh3yyKmm1193ZIT02bqovTKjP+MAf++7zsZvZ3276kYyWWXB0z99S18/PbafPHQ71W4fjn/fxnFO+ZvkrT0LVzTr78qB/+nk38bHM9exgP8zr1z9U7jt6840YW5uSJKcZOCaBBnKgm5mU8MVNYyMwWFvO7Ukagkmgg6sDWQ5yFFqjzUrLEaQ3BEmiwNsMSaZS0vgWfOkPHWQowNeTUc0kumnxZvsgPxlGai6VTGUqAVCTQ6QkWnc77DKEiLktSUBJKqHIQZ86d8gCpHYoiEzMsb1ubYy8vW50DChB5ZhGqrijD0EqUIeiaEHIfCg5Kpuu0ApiToaGPSY0uaQsyr65L2oKi1yFt1PLaQ3lzfXTgXodGoJYzglndSLDMPg1sTPJpQJHJigw0QrGERqD9YhyTOgONQDUyuF1zaxuokc/BW2ztXCMrGZ9WMW1oQZHIXWNBkSCfRZEL5BMUiZw6CzVSFCfUSGZFNjIldoKDkonTKQiJIGzWmFd3BizJJ9SINoLDriOfUCOZS+zg+KGD1qGiLNMLxtJD1/ns00ON6EzyUCM6vbxhoBKaqbG3DFQCNiL1iHccBPV0DHhQH/JW8EW90dkyFKGywCJU0WkVSvSGeiSUODWFFD0HYdPQVoiRgfPMA+/nnRgiAyNYSjpWNQcNSMrtFCUH4ZIRpSCWocFCSuhCEY6hoUClc0WC52BJlCYYLQdhN+hygRRRlo5BKRRLS6oihSqh+ZzzRGG1Mo4Iz1LoP0qsxDGFzk0JE42ji0jCPejomJKCuwil4m5CiRMEUMVSzVLDUstSx1Juc0oVWMpqY295qVltmtWmWW2a1aZZbZrVplltmtWmWW2G1WZYbYbVZlhthtVmWG2G1WZYbYbVZlhtltVmWW2W1WZZbZbVZlltltVmWW2W1QYjQCh7E2aAQHeGhCFgPoNoy8KNb2wxBhmGKBxoUZXlLGsLI6AsftEDHV0wIURVbANLcTKlGGBIKPOAxCmhePCKUwFzAmpDFRQvjA9R06Hq8TONvshgKDCuRAZTXigUxjxNFfKRo3CLhnIJBMFRvMZpqpNBMlQJzGT5WFQMVQI/AikPMIhEU1aDjqJvQwmjSHB05cC9jbYwc5UtAHNLhDw41ha+lEqF4JaH3gmB61SYcqInxTDmQK8v08vjqv4zDf1N0w3Lf4A8/vwPpfK11w==";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Font.js
+// node_modules/@pdf-lib/standard-fonts/lib/Font.js
 var require_Font = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Font.js"(exports) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Font.js"(exports) {
     "use strict";
     var __importDefault2 = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -5410,16 +11795,16 @@ var require_Font = __commonJS({
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/all-encodings.compressed.json
+// node_modules/@pdf-lib/standard-fonts/lib/all-encodings.compressed.json
 var require_all_encodings_compressed = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/all-encodings.compressed.json"(exports, module) {
+  "node_modules/@pdf-lib/standard-fonts/lib/all-encodings.compressed.json"(exports, module) {
     module.exports = "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";
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/Encoding.js
+// node_modules/@pdf-lib/standard-fonts/lib/Encoding.js
 var require_Encoding = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/Encoding.js"(exports) {
+  "node_modules/@pdf-lib/standard-fonts/lib/Encoding.js"(exports) {
     "use strict";
     var __importDefault2 = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -5464,9 +11849,9 @@ var require_Encoding = __commonJS({
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/standard-fonts/lib/index.js
+// node_modules/@pdf-lib/standard-fonts/lib/index.js
 var require_lib = __commonJS({
-  "../sporades/node_modules/@pdf-lib/standard-fonts/lib/index.js"(exports) {
+  "node_modules/@pdf-lib/standard-fonts/lib/index.js"(exports) {
     "use strict";
     function __export2(m) {
       for (var p in m) if (!exports.hasOwnProperty(p)) exports[p] = m[p];
@@ -5477,9 +11862,9 @@ var require_lib = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/objects.js
+// node_modules/pdf-lib/cjs/utils/objects.js
 var require_objects = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/objects.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/objects.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.rectanglesAreEqual = exports.isStandardFont = exports.StandardFontValues = exports.values = void 0;
@@ -5499,9 +11884,9 @@ var require_objects = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/validators.js
+// node_modules/pdf-lib/cjs/utils/validators.js
 var require_validators = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/validators.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/validators.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.assertPositive = exports.assertInteger = exports.assertMultiple = exports.assertRangeOrUndefined = exports.assertRange = exports.assertEachIs = exports.assertOrUndefined = exports.assertIs = exports.createTypeErrorMsg = exports.isType = exports.getType = exports.assertIsSubset = exports.assertIsOneOfOrUndefined = exports.assertIsOneOf = exports.createValueErrorMsg = exports.singleQuote = exports.backtick = void 0;
@@ -5684,9 +12069,9 @@ var require_validators = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/pdfDocEncoding.js
+// node_modules/pdf-lib/cjs/utils/pdfDocEncoding.js
 var require_pdfDocEncoding = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/pdfDocEncoding.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/pdfDocEncoding.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.pdfDocEncodingDecode = void 0;
@@ -5750,9 +12135,9 @@ var require_pdfDocEncoding = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/Cache.js
+// node_modules/pdf-lib/cjs/utils/Cache.js
 var require_Cache = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/Cache.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/Cache.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var Cache = (
@@ -5783,9 +12168,9 @@ var require_Cache = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/index.js
+// node_modules/pdf-lib/cjs/utils/index.js
 var require_utils2 = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/index.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -5806,9 +12191,9 @@ var require_utils2 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/errors.js
+// node_modules/pdf-lib/cjs/core/errors.js
 var require_errors2 = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/errors.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/errors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.MissingKeywordError = exports.MissingPDFHeaderError = exports.StalledParserError = exports.UnbalancedParenthesisError = exports.PDFStreamParsingError = exports.PDFInvalidObjectParsingError = exports.PDFObjectParsingError = exports.NextByteAssertionError = exports.PDFParsingError = exports.NumberParsingError = exports.MissingTfOperatorError = exports.MissingDAEntryError = exports.MultiSelectValueError = exports.InvalidAcroFieldValueError = exports.IndexOutOfBoundsError = exports.CorruptPageTreeError = exports.InvalidTargetIndexError = exports.InvalidPDFDateStringError = exports.PDFArrayIsNotRectangleError = exports.PageEmbeddingMismatchedContextError = exports.UnrecognizedStreamTypeError = exports.MissingPageContentsEmbeddingError = exports.MissingCatalogError = exports.ReparseError = exports.UnsupportedEncodingError = exports.UnexpectedObjectTypeError = exports.PrivateConstructorError = exports.MethodNotImplementedError = void 0;
@@ -6216,9 +12601,9 @@ var require_errors2 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/syntax/CharCodes.js
+// node_modules/pdf-lib/cjs/core/syntax/CharCodes.js
 var require_CharCodes = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/syntax/CharCodes.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/syntax/CharCodes.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var CharCodes;
@@ -6286,9 +12671,9 @@ var require_CharCodes = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/document/PDFHeader.js
+// node_modules/pdf-lib/cjs/core/document/PDFHeader.js
 var require_PDFHeader = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/document/PDFHeader.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/document/PDFHeader.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -6336,9 +12721,9 @@ var require_PDFHeader = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFObject.js
+// node_modules/pdf-lib/cjs/core/objects/PDFObject.js
 var require_PDFObject = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFObject.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFObject.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var errors_1 = require_errors2();
@@ -6366,9 +12751,9 @@ var require_PDFObject = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFNumber.js
+// node_modules/pdf-lib/cjs/core/objects/PDFNumber.js
 var require_PDFNumber = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFNumber.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFNumber.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -6413,9 +12798,9 @@ var require_PDFNumber = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFArray.js
+// node_modules/pdf-lib/cjs/core/objects/PDFArray.js
 var require_PDFArray = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFArray.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFArray.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -6540,9 +12925,9 @@ var require_PDFArray = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFBool.js
+// node_modules/pdf-lib/cjs/core/objects/PDFBool.js
 var require_PDFBool = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFBool.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFBool.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -6599,9 +12984,9 @@ var require_PDFBool = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/syntax/Delimiters.js
+// node_modules/pdf-lib/cjs/core/syntax/Delimiters.js
 var require_Delimiters = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/syntax/Delimiters.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/syntax/Delimiters.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.IsDelimiter = void 0;
@@ -6621,9 +13006,9 @@ var require_Delimiters = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/syntax/Whitespace.js
+// node_modules/pdf-lib/cjs/core/syntax/Whitespace.js
 var require_Whitespace = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/syntax/Whitespace.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/syntax/Whitespace.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.IsWhitespace = void 0;
@@ -6639,9 +13024,9 @@ var require_Whitespace = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/syntax/Irregular.js
+// node_modules/pdf-lib/cjs/core/syntax/Irregular.js
 var require_Irregular = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/syntax/Irregular.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/syntax/Irregular.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.IsIrregular = void 0;
@@ -6659,9 +13044,9 @@ var require_Irregular = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFName.js
+// node_modules/pdf-lib/cjs/core/objects/PDFName.js
 var require_PDFName = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFName.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFName.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -6794,9 +13179,9 @@ var require_PDFName = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFNull.js
+// node_modules/pdf-lib/cjs/core/objects/PDFNull.js
 var require_PDFNull = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFNull.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFNull.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -6835,9 +13220,9 @@ var require_PDFNull = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFDict.js
+// node_modules/pdf-lib/cjs/core/objects/PDFDict.js
 var require_PDFDict = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFDict.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFDict.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -6979,9 +13364,9 @@ var require_PDFDict = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFStream.js
+// node_modules/pdf-lib/cjs/core/objects/PDFStream.js
 var require_PDFStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -7062,9 +13447,9 @@ var require_PDFStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFRawStream.js
+// node_modules/pdf-lib/cjs/core/objects/PDFRawStream.js
 var require_PDFRawStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFRawStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFRawStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -7104,9 +13489,9 @@ var require_PDFRawStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFRef.js
+// node_modules/pdf-lib/cjs/core/objects/PDFRef.js
 var require_PDFRef = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFRef.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFRef.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -7161,9 +13546,9 @@ var require_PDFRef = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/operators/PDFOperator.js
+// node_modules/pdf-lib/cjs/core/operators/PDFOperator.js
 var require_PDFOperator = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/operators/PDFOperator.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/operators/PDFOperator.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -7226,9 +13611,9 @@ var require_PDFOperator = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/operators/PDFOperatorNames.js
+// node_modules/pdf-lib/cjs/core/operators/PDFOperatorNames.js
 var require_PDFOperatorNames = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/operators/PDFOperatorNames.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/operators/PDFOperatorNames.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var PDFOperatorNames;
@@ -7311,9 +13696,9 @@ var require_PDFOperatorNames = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/structures/PDFFlateStream.js
+// node_modules/pdf-lib/cjs/core/structures/PDFFlateStream.js
 var require_PDFFlateStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/structures/PDFFlateStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/structures/PDFFlateStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -7354,9 +13739,9 @@ var require_PDFFlateStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/structures/PDFContentStream.js
+// node_modules/pdf-lib/cjs/core/structures/PDFContentStream.js
 var require_PDFContentStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/structures/PDFContentStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/structures/PDFContentStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -7426,9 +13811,9 @@ var require_PDFContentStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/rng.js
+// node_modules/pdf-lib/cjs/utils/rng.js
 var require_rng = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/rng.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/rng.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.SimpleRNG = void 0;
@@ -7452,9 +13837,9 @@ var require_rng = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/PDFContext.js
+// node_modules/pdf-lib/cjs/core/PDFContext.js
 var require_PDFContext = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/PDFContext.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/PDFContext.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -7651,9 +14036,9 @@ var require_PDFContext = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/structures/PDFPageLeaf.js
+// node_modules/pdf-lib/cjs/core/structures/PDFPageLeaf.js
 var require_PDFPageLeaf = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/structures/PDFPageLeaf.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/structures/PDFPageLeaf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -7865,9 +14250,9 @@ var require_PDFPageLeaf = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/PDFObjectCopier.js
+// node_modules/pdf-lib/cjs/core/PDFObjectCopier.js
 var require_PDFObjectCopier = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/PDFObjectCopier.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/PDFObjectCopier.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -7962,9 +14347,9 @@ var require_PDFObjectCopier = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/document/PDFCrossRefSection.js
+// node_modules/pdf-lib/cjs/core/document/PDFCrossRefSection.js
 var require_PDFCrossRefSection = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/document/PDFCrossRefSection.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/document/PDFCrossRefSection.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -8091,9 +14476,9 @@ var require_PDFCrossRefSection = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/document/PDFTrailer.js
+// node_modules/pdf-lib/cjs/core/document/PDFTrailer.js
 var require_PDFTrailer = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/document/PDFTrailer.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/document/PDFTrailer.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -8142,9 +14527,9 @@ var require_PDFTrailer = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/document/PDFTrailerDict.js
+// node_modules/pdf-lib/cjs/core/document/PDFTrailerDict.js
 var require_PDFTrailerDict = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/document/PDFTrailerDict.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/document/PDFTrailerDict.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -8184,9 +14569,9 @@ var require_PDFTrailerDict = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/structures/PDFObjectStream.js
+// node_modules/pdf-lib/cjs/core/structures/PDFObjectStream.js
 var require_PDFObjectStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/structures/PDFObjectStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/structures/PDFObjectStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -8270,9 +14655,9 @@ var require_PDFObjectStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/writers/PDFWriter.js
+// node_modules/pdf-lib/cjs/core/writers/PDFWriter.js
 var require_PDFWriter = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/writers/PDFWriter.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/writers/PDFWriter.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -8423,9 +14808,9 @@ var require_PDFWriter = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFInvalidObject.js
+// node_modules/pdf-lib/cjs/core/objects/PDFInvalidObject.js
 var require_PDFInvalidObject = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFInvalidObject.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFInvalidObject.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -8465,9 +14850,9 @@ var require_PDFInvalidObject = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/structures/PDFCrossRefStream.js
+// node_modules/pdf-lib/cjs/core/structures/PDFCrossRefStream.js
 var require_PDFCrossRefStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/structures/PDFCrossRefStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/structures/PDFCrossRefStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.EntryType = void 0;
@@ -8657,9 +15042,9 @@ var require_PDFCrossRefStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/writers/PDFStreamWriter.js
+// node_modules/pdf-lib/cjs/core/writers/PDFStreamWriter.js
 var require_PDFStreamWriter = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/writers/PDFStreamWriter.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/writers/PDFStreamWriter.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -8780,9 +15165,9 @@ var require_PDFStreamWriter = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFHexString.js
+// node_modules/pdf-lib/cjs/core/objects/PDFHexString.js
 var require_PDFHexString = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFHexString.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFHexString.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -8862,9 +15247,9 @@ var require_PDFHexString = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/embedders/StandardFontEmbedder.js
+// node_modules/pdf-lib/cjs/core/embedders/StandardFontEmbedder.js
 var require_StandardFontEmbedder = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/embedders/StandardFontEmbedder.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/embedders/StandardFontEmbedder.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -8955,9 +15340,9 @@ var require_StandardFontEmbedder = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/embedders/CMap.js
+// node_modules/pdf-lib/cjs/core/embedders/CMap.js
 var require_CMap = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/embedders/CMap.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/embedders/CMap.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.createCmap = void 0;
@@ -9004,9 +15389,9 @@ var require_CMap = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/embedders/FontFlags.js
+// node_modules/pdf-lib/cjs/core/embedders/FontFlags.js
 var require_FontFlags = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/embedders/FontFlags.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/embedders/FontFlags.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.deriveFontFlags = void 0;
@@ -9049,9 +15434,9 @@ var require_FontFlags = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/objects/PDFString.js
+// node_modules/pdf-lib/cjs/core/objects/PDFString.js
 var require_PDFString = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/objects/PDFString.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/objects/PDFString.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -9170,9 +15555,9 @@ var require_PDFString = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/embedders/CustomFontEmbedder.js
+// node_modules/pdf-lib/cjs/core/embedders/CustomFontEmbedder.js
 var require_CustomFontEmbedder = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/embedders/CustomFontEmbedder.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/embedders/CustomFontEmbedder.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -9413,9 +15798,9 @@ var require_CustomFontEmbedder = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/embedders/CustomFontSubsetEmbedder.js
+// node_modules/pdf-lib/cjs/core/embedders/CustomFontSubsetEmbedder.js
 var require_CustomFontSubsetEmbedder = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/embedders/CustomFontSubsetEmbedder.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/embedders/CustomFontSubsetEmbedder.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -9489,9 +15874,9 @@ var require_CustomFontSubsetEmbedder = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/embedders/FileEmbedder.js
+// node_modules/pdf-lib/cjs/core/embedders/FileEmbedder.js
 var require_FileEmbedder = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/embedders/FileEmbedder.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/embedders/FileEmbedder.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.AFRelationship = void 0;
@@ -9569,9 +15954,9 @@ var require_FileEmbedder = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/embedders/JpegEmbedder.js
+// node_modules/pdf-lib/cjs/core/embedders/JpegEmbedder.js
 var require_JpegEmbedder = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/embedders/JpegEmbedder.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/embedders/JpegEmbedder.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -9688,9 +16073,9 @@ var require_JpegEmbedder = __commonJS({
   }
 });
 
-// ../sporades/node_modules/@pdf-lib/upng/cjs/UPNG.js
+// node_modules/@pdf-lib/upng/cjs/UPNG.js
 var require_UPNG = __commonJS({
-  "../sporades/node_modules/@pdf-lib/upng/cjs/UPNG.js"(exports) {
+  "node_modules/@pdf-lib/upng/cjs/UPNG.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -11158,9 +17543,9 @@ var require_UPNG = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/utils/png.js
+// node_modules/pdf-lib/cjs/utils/png.js
 var require_png = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/utils/png.js"(exports) {
+  "node_modules/pdf-lib/cjs/utils/png.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.PNG = exports.PngType = void 0;
@@ -11233,9 +17618,9 @@ var require_png = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/embedders/PngEmbedder.js
+// node_modules/pdf-lib/cjs/core/embedders/PngEmbedder.js
 var require_PngEmbedder = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/embedders/PngEmbedder.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/embedders/PngEmbedder.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -11307,9 +17692,9 @@ var require_PngEmbedder = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/streams/Stream.js
+// node_modules/pdf-lib/cjs/core/streams/Stream.js
 var require_Stream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/streams/Stream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/streams/Stream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var Stream = (
@@ -11414,9 +17799,9 @@ var require_Stream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/streams/DecodeStream.js
+// node_modules/pdf-lib/cjs/core/streams/DecodeStream.js
 var require_DecodeStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/streams/DecodeStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/streams/DecodeStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -11561,9 +17946,9 @@ var require_DecodeStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/streams/Ascii85Stream.js
+// node_modules/pdf-lib/cjs/core/streams/Ascii85Stream.js
 var require_Ascii85Stream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/streams/Ascii85Stream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/streams/Ascii85Stream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -11644,9 +18029,9 @@ var require_Ascii85Stream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/streams/AsciiHexStream.js
+// node_modules/pdf-lib/cjs/core/streams/AsciiHexStream.js
 var require_AsciiHexStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/streams/AsciiHexStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/streams/AsciiHexStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -11709,9 +18094,9 @@ var require_AsciiHexStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/streams/FlateStream.js
+// node_modules/pdf-lib/cjs/core/streams/FlateStream.js
 var require_FlateStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/streams/FlateStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/streams/FlateStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -12596,9 +18981,9 @@ var require_FlateStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/streams/LZWStream.js
+// node_modules/pdf-lib/cjs/core/streams/LZWStream.js
 var require_LZWStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/streams/LZWStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/streams/LZWStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -12727,9 +19112,9 @@ var require_LZWStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/streams/RunLengthStream.js
+// node_modules/pdf-lib/cjs/core/streams/RunLengthStream.js
 var require_RunLengthStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/streams/RunLengthStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/streams/RunLengthStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -12777,9 +19162,9 @@ var require_RunLengthStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/streams/decode.js
+// node_modules/pdf-lib/cjs/core/streams/decode.js
 var require_decode = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/streams/decode.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/streams/decode.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.decodePDFRawStream = void 0;
@@ -12839,9 +19224,9 @@ var require_decode = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/embedders/PDFPageEmbedder.js
+// node_modules/pdf-lib/cjs/core/embedders/PDFPageEmbedder.js
 var require_PDFPageEmbedder = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/embedders/PDFPageEmbedder.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/embedders/PDFPageEmbedder.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -12934,9 +19319,9 @@ var require_PDFPageEmbedder = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/interactive/ViewerPreferences.js
+// node_modules/pdf-lib/cjs/core/interactive/ViewerPreferences.js
 var require_ViewerPreferences = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/interactive/ViewerPreferences.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/interactive/ViewerPreferences.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.Duplex = exports.PrintScaling = exports.ReadingDirection = exports.NonFullScreenPageMode = void 0;
@@ -13181,9 +19566,9 @@ var require_ViewerPreferences = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroField.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroField.js
 var require_PDFAcroField = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroField.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroField.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -13328,9 +19713,9 @@ var require_PDFAcroField = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/annotation/BorderStyle.js
+// node_modules/pdf-lib/cjs/core/annotation/BorderStyle.js
 var require_BorderStyle = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/annotation/BorderStyle.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/annotation/BorderStyle.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -13366,9 +19751,9 @@ var require_BorderStyle = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/annotation/PDFAnnotation.js
+// node_modules/pdf-lib/cjs/core/annotation/PDFAnnotation.js
 var require_PDFAnnotation = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/annotation/PDFAnnotation.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/annotation/PDFAnnotation.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -13495,9 +19880,9 @@ var require_PDFAnnotation = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/annotation/AppearanceCharacteristics.js
+// node_modules/pdf-lib/cjs/core/annotation/AppearanceCharacteristics.js
 var require_AppearanceCharacteristics = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/annotation/AppearanceCharacteristics.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/annotation/AppearanceCharacteristics.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -13624,9 +20009,9 @@ var require_AppearanceCharacteristics = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/annotation/PDFWidgetAnnotation.js
+// node_modules/pdf-lib/cjs/core/annotation/PDFWidgetAnnotation.js
 var require_PDFWidgetAnnotation = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/annotation/PDFWidgetAnnotation.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/annotation/PDFWidgetAnnotation.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -13742,9 +20127,9 @@ var require_PDFWidgetAnnotation = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroTerminal.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroTerminal.js
 var require_PDFAcroTerminal = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroTerminal.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroTerminal.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -13810,9 +20195,9 @@ var require_PDFAcroTerminal = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroButton.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroButton.js
 var require_PDFAcroButton = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroButton.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroButton.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -13908,9 +20293,9 @@ var require_PDFAcroButton = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroCheckBox.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroCheckBox.js
 var require_PDFAcroCheckBox = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroCheckBox.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroCheckBox.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -13966,9 +20351,9 @@ var require_PDFAcroCheckBox = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/flags.js
+// node_modules/pdf-lib/cjs/core/acroform/flags.js
 var require_flags = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/flags.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/flags.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.AcroChoiceFlags = exports.AcroTextFlags = exports.AcroButtonFlags = exports.AcroFieldFlags = void 0;
@@ -14010,9 +20395,9 @@ var require_flags = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroChoice.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroChoice.js
 var require_PDFAcroChoice = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroChoice.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroChoice.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14141,9 +20526,9 @@ var require_PDFAcroChoice = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroComboBox.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroComboBox.js
 var require_PDFAcroComboBox = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroComboBox.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroComboBox.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14175,9 +20560,9 @@ var require_PDFAcroComboBox = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroNonTerminal.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroNonTerminal.js
 var require_PDFAcroNonTerminal = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroNonTerminal.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroNonTerminal.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14217,9 +20602,9 @@ var require_PDFAcroNonTerminal = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroSignature.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroSignature.js
 var require_PDFAcroSignature = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroSignature.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroSignature.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14241,9 +20626,9 @@ var require_PDFAcroSignature = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroText.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroText.js
 var require_PDFAcroText = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroText.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroText.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14318,9 +20703,9 @@ var require_PDFAcroText = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroPushButton.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroPushButton.js
 var require_PDFAcroPushButton = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroPushButton.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroPushButton.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14352,9 +20737,9 @@ var require_PDFAcroPushButton = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroRadioButton.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroRadioButton.js
 var require_PDFAcroRadioButton = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroRadioButton.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroRadioButton.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14417,9 +20802,9 @@ var require_PDFAcroRadioButton = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroListBox.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroListBox.js
 var require_PDFAcroListBox = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroListBox.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroListBox.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14449,9 +20834,9 @@ var require_PDFAcroListBox = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/utils.js
+// node_modules/pdf-lib/cjs/core/acroform/utils.js
 var require_utils3 = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/utils.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/utils.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.createPDFAcroField = exports.createPDFAcroFields = void 0;
@@ -14559,9 +20944,9 @@ var require_utils3 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroForm.js
+// node_modules/pdf-lib/cjs/core/acroform/PDFAcroForm.js
 var require_PDFAcroForm = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/PDFAcroForm.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/PDFAcroForm.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14647,9 +21032,9 @@ var require_PDFAcroForm = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/acroform/index.js
+// node_modules/pdf-lib/cjs/core/acroform/index.js
 var require_acroform = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/acroform/index.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/acroform/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14710,9 +21095,9 @@ var require_acroform = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/structures/PDFCatalog.js
+// node_modules/pdf-lib/cjs/core/structures/PDFCatalog.js
 var require_PDFCatalog = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/structures/PDFCatalog.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/structures/PDFCatalog.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14790,9 +21175,9 @@ var require_PDFCatalog = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/structures/PDFPageTree.js
+// node_modules/pdf-lib/cjs/core/structures/PDFPageTree.js
 var require_PDFPageTree = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/structures/PDFPageTree.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/structures/PDFPageTree.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -14945,9 +21330,9 @@ var require_PDFPageTree = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/syntax/Numeric.js
+// node_modules/pdf-lib/cjs/core/syntax/Numeric.js
 var require_Numeric = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/syntax/Numeric.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/syntax/Numeric.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.IsNumeric = exports.IsNumericPrefix = exports.IsDigit = void 0;
@@ -14977,9 +21362,9 @@ var require_Numeric = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/parser/BaseParser.js
+// node_modules/pdf-lib/cjs/core/parser/BaseParser.js
 var require_BaseParser = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/parser/BaseParser.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/parser/BaseParser.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -15092,9 +21477,9 @@ var require_BaseParser = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/parser/ByteStream.js
+// node_modules/pdf-lib/cjs/core/parser/ByteStream.js
 var require_ByteStream = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/parser/ByteStream.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/parser/ByteStream.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -15164,9 +21549,9 @@ var require_ByteStream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/syntax/Keywords.js
+// node_modules/pdf-lib/cjs/core/syntax/Keywords.js
 var require_Keywords = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/syntax/Keywords.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/syntax/Keywords.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.Keywords = void 0;
@@ -15255,9 +21640,9 @@ var require_Keywords = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/parser/PDFObjectParser.js
+// node_modules/pdf-lib/cjs/core/parser/PDFObjectParser.js
 var require_PDFObjectParser = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/parser/PDFObjectParser.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/parser/PDFObjectParser.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -15475,9 +21860,9 @@ var require_PDFObjectParser = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/parser/PDFObjectStreamParser.js
+// node_modules/pdf-lib/cjs/core/parser/PDFObjectStreamParser.js
 var require_PDFObjectStreamParser = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/parser/PDFObjectStreamParser.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/parser/PDFObjectStreamParser.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -15561,9 +21946,9 @@ var require_PDFObjectStreamParser = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/parser/PDFXRefStreamParser.js
+// node_modules/pdf-lib/cjs/core/parser/PDFXRefStreamParser.js
 var require_PDFXRefStreamParser = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/parser/PDFXRefStreamParser.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/parser/PDFXRefStreamParser.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -15655,9 +22040,9 @@ var require_PDFXRefStreamParser = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/parser/PDFParser.js
+// node_modules/pdf-lib/cjs/core/parser/PDFParser.js
 var require_PDFParser = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/parser/PDFParser.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/parser/PDFParser.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -15996,9 +22381,9 @@ var require_PDFParser = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/annotation/flags.js
+// node_modules/pdf-lib/cjs/core/annotation/flags.js
 var require_flags2 = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/annotation/flags.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/annotation/flags.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.AnnotationFlags = void 0;
@@ -16021,9 +22406,9 @@ var require_flags2 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/annotation/index.js
+// node_modules/pdf-lib/cjs/core/annotation/index.js
 var require_annotation = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/annotation/index.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/annotation/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -16043,9 +22428,9 @@ var require_annotation = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/index.js
+// node_modules/pdf-lib/cjs/core/index.js
 var require_core = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/index.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -16246,9 +22631,9 @@ var require_core = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/objects.js
+// node_modules/pdf-lib/cjs/api/objects.js
 var require_objects2 = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/objects.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/objects.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.asNumber = exports.asPDFNumber = exports.asPDFName = void 0;
@@ -16265,9 +22650,9 @@ var require_objects2 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/rotations.js
+// node_modules/pdf-lib/cjs/api/rotations.js
 var require_rotations = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/rotations.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/rotations.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.rotateRectangle = exports.adjustDimsForRotation = exports.reduceRotation = exports.toDegrees = exports.toRadians = exports.radiansToDegrees = exports.degreesToRadians = exports.degrees = exports.radians = exports.RotationTypes = void 0;
@@ -16345,9 +22730,9 @@ var require_rotations = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/operators.js
+// node_modules/pdf-lib/cjs/api/operators.js
 var require_operators = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/operators.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/operators.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.endMarkedContent = exports.beginMarkedContent = exports.setStrokingCmykColor = exports.setFillingCmykColor = exports.setStrokingRgbColor = exports.setFillingRgbColor = exports.setStrokingGrayscaleColor = exports.setFillingGrayscaleColor = exports.drawObject = exports.rotateAndSkewTextDegreesAndTranslate = exports.rotateAndSkewTextRadiansAndTranslate = exports.setTextMatrix = exports.setTextRenderingMode = exports.TextRenderingMode = exports.setTextRise = exports.setLineHeight = exports.setCharacterSqueeze = exports.setWordSpacing = exports.setCharacterSpacing = exports.setFontAndSize = exports.endText = exports.beginText = exports.showText = exports.moveText = exports.nextLine = exports.endPath = exports.fillAndStroke = exports.fill = exports.stroke = exports.square = exports.rectangle = exports.lineTo = exports.moveTo = exports.closePath = exports.appendQuadraticCurve = exports.appendBezierCurve = exports.setLineWidth = exports.popGraphicsState = exports.pushGraphicsState = exports.setGraphicsState = exports.setLineJoin = exports.LineJoinStyle = exports.setLineCap = exports.LineCapStyle = exports.restoreDashPattern = exports.setDashPattern = exports.skewDegrees = exports.skewRadians = exports.rotateDegrees = exports.rotateRadians = exports.scale = exports.translate = exports.concatTransformationMatrix = exports.clipEvenOdd = exports.clip = void 0;
@@ -16591,9 +22976,9 @@ var require_operators = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/colors.js
+// node_modules/pdf-lib/cjs/api/colors.js
 var require_colors = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/colors.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/colors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.colorToComponents = exports.componentsToColor = exports.setStrokingColor = exports.setFillingColor = exports.cmyk = exports.rgb = exports.grayscale = exports.ColorTypes = void 0;
@@ -16643,9 +23028,9 @@ var require_colors = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/svgPath.js
+// node_modules/pdf-lib/cjs/api/svgPath.js
 var require_svgPath = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/svgPath.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/svgPath.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.svgPathToOperators = void 0;
@@ -17005,9 +23390,9 @@ var require_svgPath = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/operations.js
+// node_modules/pdf-lib/cjs/api/operations.js
 var require_operations = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/operations.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/operations.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.drawOptionList = exports.drawTextField = exports.drawTextLines = exports.drawButton = exports.drawRadioButton = exports.drawCheckBox = exports.rotateInPlace = exports.drawCheckMark = exports.drawSvgPath = exports.drawEllipse = exports.drawEllipsePath = exports.drawRectangle = exports.drawLine = exports.drawPage = exports.drawImage = exports.drawLinesOfText = exports.drawText = void 0;
@@ -17457,9 +23842,9 @@ var require_operations = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/errors.js
+// node_modules/pdf-lib/cjs/api/errors.js
 var require_errors3 = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/errors.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/errors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.InvalidMaxLengthError = exports.ExceededMaxLengthError = exports.CombedTextLayoutError = exports.RichTextFieldReadError = exports.FieldExistsAsNonTerminalError = exports.InvalidFieldNamePartError = exports.FieldAlreadyExistsError = exports.MissingOnValueCheckError = exports.UnexpectedFieldTypeError = exports.NoSuchFieldError = exports.RemovePageFromEmptyDocumentError = exports.ForeignPageError = exports.FontkitNotRegisteredError = exports.EncryptedPDFError = void 0;
@@ -17666,9 +24051,9 @@ var require_errors3 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/text/alignment.js
+// node_modules/pdf-lib/cjs/api/text/alignment.js
 var require_alignment = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/text/alignment.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/text/alignment.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.TextAlignment = void 0;
@@ -17681,9 +24066,9 @@ var require_alignment = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/text/layout.js
+// node_modules/pdf-lib/cjs/api/text/layout.js
 var require_layout = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/text/layout.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/text/layout.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.layoutSinglelineText = exports.layoutCombedText = exports.layoutMultilineText = void 0;
@@ -17884,9 +24269,9 @@ var require_layout = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/appearances.js
+// node_modules/pdf-lib/cjs/api/form/appearances.js
 var require_appearances = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/appearances.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/appearances.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.defaultOptionListAppearanceProvider = exports.defaultDropdownAppearanceProvider = exports.defaultTextFieldAppearanceProvider = exports.defaultButtonAppearanceProvider = exports.defaultRadioGroupAppearanceProvider = exports.defaultCheckBoxAppearanceProvider = exports.normalizeAppearance = void 0;
@@ -18284,9 +24669,9 @@ var require_appearances = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/PDFEmbeddedPage.js
+// node_modules/pdf-lib/cjs/api/PDFEmbeddedPage.js
 var require_PDFEmbeddedPage = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/PDFEmbeddedPage.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/PDFEmbeddedPage.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -18344,9 +24729,9 @@ var require_PDFEmbeddedPage = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/PDFFont.js
+// node_modules/pdf-lib/cjs/api/PDFFont.js
 var require_PDFFont = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/PDFFont.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/PDFFont.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -18428,9 +24813,9 @@ var require_PDFFont = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/PDFImage.js
+// node_modules/pdf-lib/cjs/api/PDFImage.js
 var require_PDFImage = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/PDFImage.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/PDFImage.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -18505,9 +24890,9 @@ var require_PDFImage = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/image/alignment.js
+// node_modules/pdf-lib/cjs/api/image/alignment.js
 var require_alignment2 = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/image/alignment.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/image/alignment.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ImageAlignment = void 0;
@@ -18520,9 +24905,9 @@ var require_alignment2 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/image/index.js
+// node_modules/pdf-lib/cjs/api/image/index.js
 var require_image = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/image/index.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/image/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -18530,9 +24915,9 @@ var require_image = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/PDFField.js
+// node_modules/pdf-lib/cjs/api/form/PDFField.js
 var require_PDFField = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/PDFField.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/PDFField.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.assertFieldAppearanceOptions = void 0;
@@ -18758,9 +25143,9 @@ var require_PDFField = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/PDFCheckBox.js
+// node_modules/pdf-lib/cjs/api/form/PDFCheckBox.js
 var require_PDFCheckBox = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/PDFCheckBox.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/PDFCheckBox.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -18875,9 +25260,9 @@ var require_PDFCheckBox = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/PDFDropdown.js
+// node_modules/pdf-lib/cjs/api/form/PDFDropdown.js
 var require_PDFDropdown = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/PDFDropdown.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/PDFDropdown.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -19093,9 +25478,9 @@ var require_PDFDropdown = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/PDFOptionList.js
+// node_modules/pdf-lib/cjs/api/form/PDFOptionList.js
 var require_PDFOptionList = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/PDFOptionList.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/PDFOptionList.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -19289,9 +25674,9 @@ var require_PDFOptionList = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/PDFRadioGroup.js
+// node_modules/pdf-lib/cjs/api/form/PDFRadioGroup.js
 var require_PDFRadioGroup = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/PDFRadioGroup.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/PDFRadioGroup.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -19454,9 +25839,9 @@ var require_PDFRadioGroup = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/PDFSignature.js
+// node_modules/pdf-lib/cjs/api/form/PDFSignature.js
 var require_PDFSignature = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/PDFSignature.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/PDFSignature.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -19488,9 +25873,9 @@ var require_PDFSignature = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/PDFTextField.js
+// node_modules/pdf-lib/cjs/api/form/PDFTextField.js
 var require_PDFTextField = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/PDFTextField.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/PDFTextField.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -19730,9 +26115,9 @@ var require_PDFTextField = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/StandardFonts.js
+// node_modules/pdf-lib/cjs/api/StandardFonts.js
 var require_StandardFonts = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/StandardFonts.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/StandardFonts.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.StandardFonts = void 0;
@@ -19756,9 +26141,9 @@ var require_StandardFonts = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/PDFForm.js
+// node_modules/pdf-lib/cjs/api/form/PDFForm.js
 var require_PDFForm = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/PDFForm.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/PDFForm.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -20135,9 +26520,9 @@ var require_PDFForm = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/sizes.js
+// node_modules/pdf-lib/cjs/api/sizes.js
 var require_sizes = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/sizes.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/sizes.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.PageSizes = void 0;
@@ -20196,9 +26581,9 @@ var require_sizes = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/PDFDocumentOptions.js
+// node_modules/pdf-lib/cjs/api/PDFDocumentOptions.js
 var require_PDFDocumentOptions = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/PDFDocumentOptions.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/PDFDocumentOptions.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ParseSpeeds = void 0;
@@ -20212,9 +26597,9 @@ var require_PDFDocumentOptions = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/PDFEmbeddedFile.js
+// node_modules/pdf-lib/cjs/api/PDFEmbeddedFile.js
 var require_PDFEmbeddedFile = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/PDFEmbeddedFile.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/PDFEmbeddedFile.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -20278,9 +26663,9 @@ var require_PDFEmbeddedFile = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/PDFJavaScript.js
+// node_modules/pdf-lib/cjs/api/PDFJavaScript.js
 var require_PDFJavaScript = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/PDFJavaScript.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/PDFJavaScript.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -20340,9 +26725,9 @@ var require_PDFJavaScript = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/core/embedders/JavaScriptEmbedder.js
+// node_modules/pdf-lib/cjs/core/embedders/JavaScriptEmbedder.js
 var require_JavaScriptEmbedder = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/core/embedders/JavaScriptEmbedder.js"(exports) {
+  "node_modules/pdf-lib/cjs/core/embedders/JavaScriptEmbedder.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -20386,9 +26771,9 @@ var require_JavaScriptEmbedder = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/PDFDocument.js
+// node_modules/pdf-lib/cjs/api/PDFDocument.js
 var require_PDFDocument = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/PDFDocument.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/PDFDocument.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -21093,9 +27478,9 @@ var require_PDFDocument = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/PDFPageOptions.js
+// node_modules/pdf-lib/cjs/api/PDFPageOptions.js
 var require_PDFPageOptions = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/PDFPageOptions.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/PDFPageOptions.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.BlendMode = void 0;
@@ -21117,9 +27502,9 @@ var require_PDFPageOptions = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/PDFPage.js
+// node_modules/pdf-lib/cjs/api/PDFPage.js
 var require_PDFPage = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/PDFPage.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/PDFPage.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -21788,9 +28173,9 @@ var require_PDFPage = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/PDFButton.js
+// node_modules/pdf-lib/cjs/api/form/PDFButton.js
 var require_PDFButton = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/PDFButton.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/PDFButton.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -21898,9 +28283,9 @@ var require_PDFButton = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/form/index.js
+// node_modules/pdf-lib/cjs/api/form/index.js
 var require_form = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/form/index.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/form/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -21944,9 +28329,9 @@ var require_form = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/text/index.js
+// node_modules/pdf-lib/cjs/api/text/index.js
 var require_text = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/text/index.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/text/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -21955,9 +28340,9 @@ var require_text = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/api/index.js
+// node_modules/pdf-lib/cjs/api/index.js
 var require_api = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/api/index.js"(exports) {
+  "node_modules/pdf-lib/cjs/api/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -22001,17 +28386,17 @@ var require_api = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/types/index.js
+// node_modules/pdf-lib/cjs/types/index.js
 var require_types = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/types/index.js"(exports) {
+  "node_modules/pdf-lib/cjs/types/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
   }
 });
 
-// ../sporades/node_modules/pdf-lib/cjs/index.js
+// node_modules/pdf-lib/cjs/index.js
 var require_cjs = __commonJS({
-  "../sporades/node_modules/pdf-lib/cjs/index.js"(exports) {
+  "node_modules/pdf-lib/cjs/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var tslib_1 = (init_tslib_es6(), __toCommonJS(tslib_es6_exports));
@@ -22022,9 +28407,9 @@ var require_cjs = __commonJS({
   }
 });
 
-// ../sporades/node_modules/jpeg-js/lib/encoder.js
+// node_modules/jpeg-js/lib/encoder.js
 var require_encoder = __commonJS({
-  "../sporades/node_modules/jpeg-js/lib/encoder.js"(exports, module) {
+  "node_modules/jpeg-js/lib/encoder.js"(exports, module) {
     var btoa2 = btoa2 || function(buf) {
       return Buffer.from(buf).toString("base64");
     };
@@ -23099,9 +29484,9 @@ var require_encoder = __commonJS({
   }
 });
 
-// ../sporades/node_modules/jpeg-js/lib/decoder.js
+// node_modules/jpeg-js/lib/decoder.js
 var require_decoder = __commonJS({
-  "../sporades/node_modules/jpeg-js/lib/decoder.js"(exports, module) {
+  "node_modules/jpeg-js/lib/decoder.js"(exports, module) {
     var JpegImage = (function jpegImage() {
       "use strict";
       var dctZigZag = new Int32Array([
@@ -24161,9 +30546,9 @@ var require_decoder = __commonJS({
   }
 });
 
-// ../sporades/node_modules/jpeg-js/index.js
+// node_modules/jpeg-js/index.js
 var require_jpeg_js = __commonJS({
-  "../sporades/node_modules/jpeg-js/index.js"(exports, module) {
+  "node_modules/jpeg-js/index.js"(exports, module) {
     var encode = require_encoder();
     var decode = require_decoder();
     module.exports = {
@@ -24173,9 +30558,9 @@ var require_jpeg_js = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/chunkstream.js
+// node_modules/pngjs/lib/chunkstream.js
 var require_chunkstream = __commonJS({
-  "../sporades/node_modules/pngjs/lib/chunkstream.js"(exports, module) {
+  "node_modules/pngjs/lib/chunkstream.js"(exports, module) {
     "use strict";
     var util = __require("util");
     var Stream = __require("stream");
@@ -24311,9 +30696,9 @@ var require_chunkstream = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/interlace.js
+// node_modules/pngjs/lib/interlace.js
 var require_interlace = __commonJS({
-  "../sporades/node_modules/pngjs/lib/interlace.js"(exports) {
+  "node_modules/pngjs/lib/interlace.js"(exports) {
     "use strict";
     var imagePasses = [
       {
@@ -24394,9 +30779,9 @@ var require_interlace = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/paeth-predictor.js
+// node_modules/pngjs/lib/paeth-predictor.js
 var require_paeth_predictor = __commonJS({
-  "../sporades/node_modules/pngjs/lib/paeth-predictor.js"(exports, module) {
+  "node_modules/pngjs/lib/paeth-predictor.js"(exports, module) {
     "use strict";
     module.exports = function paethPredictor(left, above, upLeft) {
       let paeth = left + above - upLeft;
@@ -24414,9 +30799,9 @@ var require_paeth_predictor = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/filter-parse.js
+// node_modules/pngjs/lib/filter-parse.js
 var require_filter_parse = __commonJS({
-  "../sporades/node_modules/pngjs/lib/filter-parse.js"(exports, module) {
+  "node_modules/pngjs/lib/filter-parse.js"(exports, module) {
     "use strict";
     var interlaceUtils = require_interlace();
     var paethPredictor = require_paeth_predictor();
@@ -24555,9 +30940,9 @@ var require_filter_parse = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/filter-parse-async.js
+// node_modules/pngjs/lib/filter-parse-async.js
 var require_filter_parse_async = __commonJS({
-  "../sporades/node_modules/pngjs/lib/filter-parse-async.js"(exports, module) {
+  "node_modules/pngjs/lib/filter-parse-async.js"(exports, module) {
     "use strict";
     var util = __require("util");
     var ChunkStream = require_chunkstream();
@@ -24581,9 +30966,9 @@ var require_filter_parse_async = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/constants.js
+// node_modules/pngjs/lib/constants.js
 var require_constants2 = __commonJS({
-  "../sporades/node_modules/pngjs/lib/constants.js"(exports, module) {
+  "node_modules/pngjs/lib/constants.js"(exports, module) {
     "use strict";
     module.exports = {
       PNG_SIGNATURE: [137, 80, 78, 71, 13, 10, 26, 10],
@@ -24616,9 +31001,9 @@ var require_constants2 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/crc.js
+// node_modules/pngjs/lib/crc.js
 var require_crc = __commonJS({
-  "../sporades/node_modules/pngjs/lib/crc.js"(exports, module) {
+  "node_modules/pngjs/lib/crc.js"(exports, module) {
     "use strict";
     var crcTable = [];
     (function() {
@@ -24656,9 +31041,9 @@ var require_crc = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/parser.js
+// node_modules/pngjs/lib/parser.js
 var require_parser = __commonJS({
-  "../sporades/node_modules/pngjs/lib/parser.js"(exports, module) {
+  "node_modules/pngjs/lib/parser.js"(exports, module) {
     "use strict";
     var constants2 = require_constants2();
     var CrcCalculator = require_crc();
@@ -24877,9 +31262,9 @@ var require_parser = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/bitmapper.js
+// node_modules/pngjs/lib/bitmapper.js
 var require_bitmapper = __commonJS({
-  "../sporades/node_modules/pngjs/lib/bitmapper.js"(exports) {
+  "node_modules/pngjs/lib/bitmapper.js"(exports) {
     "use strict";
     var interlaceUtils = require_interlace();
     var pixelBppMapper = [
@@ -25125,9 +31510,9 @@ var require_bitmapper = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/format-normaliser.js
+// node_modules/pngjs/lib/format-normaliser.js
 var require_format_normaliser = __commonJS({
-  "../sporades/node_modules/pngjs/lib/format-normaliser.js"(exports, module) {
+  "node_modules/pngjs/lib/format-normaliser.js"(exports, module) {
     "use strict";
     function dePalette(indata, outdata, width, height, palette) {
       let pxPos = 0;
@@ -25206,9 +31591,9 @@ var require_format_normaliser = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/parser-async.js
+// node_modules/pngjs/lib/parser-async.js
 var require_parser_async = __commonJS({
-  "../sporades/node_modules/pngjs/lib/parser-async.js"(exports, module) {
+  "node_modules/pngjs/lib/parser-async.js"(exports, module) {
     "use strict";
     var util = __require("util");
     var zlib2 = __require("zlib");
@@ -25336,9 +31721,9 @@ var require_parser_async = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/bitpacker.js
+// node_modules/pngjs/lib/bitpacker.js
 var require_bitpacker = __commonJS({
-  "../sporades/node_modules/pngjs/lib/bitpacker.js"(exports, module) {
+  "node_modules/pngjs/lib/bitpacker.js"(exports, module) {
     "use strict";
     var constants2 = require_constants2();
     module.exports = function(dataIn, width, height, options) {
@@ -25486,9 +31871,9 @@ var require_bitpacker = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/filter-pack.js
+// node_modules/pngjs/lib/filter-pack.js
 var require_filter_pack = __commonJS({
-  "../sporades/node_modules/pngjs/lib/filter-pack.js"(exports, module) {
+  "node_modules/pngjs/lib/filter-pack.js"(exports, module) {
     "use strict";
     var paethPredictor = require_paeth_predictor();
     function filterNone(pxData, pxPos, byteWidth, rawData, rawPos) {
@@ -25628,9 +32013,9 @@ var require_filter_pack = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/packer.js
+// node_modules/pngjs/lib/packer.js
 var require_packer = __commonJS({
-  "../sporades/node_modules/pngjs/lib/packer.js"(exports, module) {
+  "node_modules/pngjs/lib/packer.js"(exports, module) {
     "use strict";
     var constants2 = require_constants2();
     var CrcStream = require_crc();
@@ -25728,9 +32113,9 @@ var require_packer = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/packer-async.js
+// node_modules/pngjs/lib/packer-async.js
 var require_packer_async = __commonJS({
-  "../sporades/node_modules/pngjs/lib/packer-async.js"(exports, module) {
+  "node_modules/pngjs/lib/packer-async.js"(exports, module) {
     "use strict";
     var util = __require("util");
     var Stream = __require("stream");
@@ -25770,9 +32155,9 @@ var require_packer_async = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/sync-inflate.js
+// node_modules/pngjs/lib/sync-inflate.js
 var require_sync_inflate = __commonJS({
-  "../sporades/node_modules/pngjs/lib/sync-inflate.js"(exports, module) {
+  "node_modules/pngjs/lib/sync-inflate.js"(exports, module) {
     "use strict";
     var assert2 = __require("assert").ok;
     var zlib2 = __require("zlib");
@@ -25907,9 +32292,9 @@ var require_sync_inflate = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/sync-reader.js
+// node_modules/pngjs/lib/sync-reader.js
 var require_sync_reader = __commonJS({
-  "../sporades/node_modules/pngjs/lib/sync-reader.js"(exports, module) {
+  "node_modules/pngjs/lib/sync-reader.js"(exports, module) {
     "use strict";
     var SyncReader = module.exports = function(buffer) {
       this._buffer = buffer;
@@ -25945,9 +32330,9 @@ var require_sync_reader = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/filter-parse-sync.js
+// node_modules/pngjs/lib/filter-parse-sync.js
 var require_filter_parse_sync = __commonJS({
-  "../sporades/node_modules/pngjs/lib/filter-parse-sync.js"(exports) {
+  "node_modules/pngjs/lib/filter-parse-sync.js"(exports) {
     "use strict";
     var SyncReader = require_sync_reader();
     var Filter = require_filter_parse();
@@ -25969,9 +32354,9 @@ var require_filter_parse_sync = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/parser-sync.js
+// node_modules/pngjs/lib/parser-sync.js
 var require_parser_sync = __commonJS({
-  "../sporades/node_modules/pngjs/lib/parser-sync.js"(exports, module) {
+  "node_modules/pngjs/lib/parser-sync.js"(exports, module) {
     "use strict";
     var hasSyncZlib = true;
     var zlib2 = __require("zlib");
@@ -26064,9 +32449,9 @@ var require_parser_sync = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/packer-sync.js
+// node_modules/pngjs/lib/packer-sync.js
 var require_packer_sync = __commonJS({
-  "../sporades/node_modules/pngjs/lib/packer-sync.js"(exports, module) {
+  "node_modules/pngjs/lib/packer-sync.js"(exports, module) {
     "use strict";
     var hasSyncZlib = true;
     var zlib2 = __require("zlib");
@@ -26109,9 +32494,9 @@ var require_packer_sync = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/png-sync.js
+// node_modules/pngjs/lib/png-sync.js
 var require_png_sync = __commonJS({
-  "../sporades/node_modules/pngjs/lib/png-sync.js"(exports) {
+  "node_modules/pngjs/lib/png-sync.js"(exports) {
     "use strict";
     var parse5 = require_parser_sync();
     var pack = require_packer_sync();
@@ -26124,9 +32509,9 @@ var require_png_sync = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pngjs/lib/png.js
+// node_modules/pngjs/lib/png.js
 var require_png2 = __commonJS({
-  "../sporades/node_modules/pngjs/lib/png.js"(exports) {
+  "node_modules/pngjs/lib/png.js"(exports) {
     "use strict";
     var util = __require("util");
     var Stream = __require("stream");
@@ -26261,7 +32646,7 @@ var require_png2 = __commonJS({
   }
 });
 
-// ../sporades/node_modules/pdfjs-dist/legacy/build/pdf.mjs
+// node_modules/pdfjs-dist/legacy/build/pdf.mjs
 var pdf_exports = {};
 __export(pdf_exports, {
   AbortException: () => AbortException,
@@ -27977,7 +34362,7 @@ function percentage(value) {
 }
 var __webpack_modules__, __webpack_module_cache__, es_array_includes, es_array_push, es_iterator_constructor, es_iterator_filter, es_map_get_or_insert, es_map_get_or_insert_computed, es_set_difference_v2, es_set_intersection_v2, es_set_is_disjoint_from_v2, es_set_is_subset_of_v2, es_set_is_superset_of_v2, es_set_symmetric_difference_v2, es_set_union_v2, es_typed_array_with, es_uint8_array_set_from_base64, es_uint8_array_set_from_hex, es_uint8_array_to_base64, es_uint8_array_to_hex, web_url_parse, isNodeJS, BBOX_INIT, F32_BBOX_INIT, FONT_IDENTITY_MATRIX, SVG_NS, RenderingIntentFlag, AnnotationMode, AnnotationPrefix, AnnotationEditorPrefix, AnnotationEditorType, AnnotationEditorParamsType, PermissionFlag, TextRenderingMode, ImageKind, AnnotationType, AnnotationBorderStyleType, VerbosityLevel, OPS, DrawOPS, PasswordResponses, verbosity, BaseException, PasswordException, UnknownErrorException, InvalidPDFException, ResponseException, FormatError, AbortException, FeatureTest, Util, NormalizeRegex, NormalizationMap, makeArr, makeMap, makeObj, makeSet, es_iterator_map, PageViewport, XfaText, disallowedRichTextStyleRegExp, disallowedEventHandlerAttrRegExp, XfaLayer, PixelsPerInch, RenderingCancelledException, StatTimer, PDFDateString, OutputScale, SupportedImageMimeTypes, ColorScheme, CSSConstants, contrastCache, es_iterator_take, es_weak_map_get_or_insert, es_weak_map_get_or_insert_computed, web_dom_exception_stack, es_iterator_some, es_json_stringify, es_iterator_drop, es_iterator_every, es_iterator_find, es_json_parse, EditorToolbar, FloatingToolbar, INTERNAL_EVT, internalOpt, CurrentPointers, IdManager, ImageManager, CommandManager, KeyboardManager, ColorManager, AnnotationEditorUIManager, AltText, Comment, MIN_TOUCH_SPAN, TouchManager, AnnotationEditor, FakeEditor, SEED, MASK_HIGH, MASK_LOW, MurmurHash3_64, SerializableEmpty, AnnotationStorage, PrintAnnotationStorage, es_iterator_for_each, FORCED_DEPENDENCY_LABEL, floor, ceil, EMPTY_BBOX, BBoxReader, ensureDebugMetadata, CanvasBBoxTracker, CanvasDependencyTracker, CanvasNestedDependencyTracker, Dependencies, CanvasImagesTracker, CONTROL_CHAR_REGEXP, FontLoader, FontFaceObject, CSS_FONT_INFO, SYSTEM_FONT_INFO, FONT_INFO, PATTERN_INFO, InfoUtils, CssFontInfo, SystemFontInfo, FontInfo, PatternInfo, FontPathInfo, isRefProxy, isNameProxy, isValidExplicitDest, LoopbackPort, es_promise_try, CallbackKind, StreamKind, MessageHandler, BaseBinaryDataFactory, DOMBinaryDataFactory, BaseCanvasFactory, DOMCanvasFactory, BaseFilterFactory, DOMFilterFactory, NodeFilterFactory, NodeCanvasFactory, NodeBinaryDataFactory, MESH_WGSL, WebGPU, _webGPU, PathType, BaseShadingPattern, RadialAxialShadingPattern, MeshShadingPattern, DummyShadingPattern, PaintType, TilingPattern, MIN_FONT_SIZE, MAX_FONT_SIZE, EXECUTION_TIME, EXECUTION_STEPS, FULL_CHUNK_HEIGHT, XY, CanvasExtraState, LINE_CAP_STYLES, LINE_JOIN_STYLES, NORMAL_CLIP, EO_CLIP, CanvasGraphics, BasePDFStream, BasePDFStreamReader, BasePDFStreamRangeReader, PDFFetchStream, PDFFetchStreamReader, PDFFetchStreamRangeReader, PDFDataTransportStream, PDFDataTransportStreamReader, PDFDataTransportStreamRangeReader, OK_RESPONSE, PARTIAL_CONTENT_RESPONSE, PDFNetworkStream, PDFNetworkStreamReader, PDFNetworkStreamRangeReader, PDFNodeStream, PDFNodeStreamReader, PDFNodeStreamRangeReader, GlobalWorkerOptions, Metadata, INTERNAL, OptionalContentGroup, OptionalContentConfig, PagesMapper, INITIAL_DATA, dataObj, PDFObjects, MAX_TEXT_DIVS_TO_RENDER, DEFAULT_FONT_SIZE, TextLayer, RENDERING_CANCELLED_TIMEOUT, PDFDocumentLoadingTask, PDFDataRangeTransport, PDFDocumentProxy, PDFPageProxy, PDFWorker, WorkerTransport, RenderTask, InternalRenderTask, version2, build, es_math_sum_precise, ColorPicker, BasicColorPicker, es_iterator_flat_map, ColorConverters, BaseSVGFactory, DOMSVGFactory, annotation_layer_DEFAULT_FONT_SIZE, GetElementsByNameSet, TIMEZONE_OFFSET, AnnotationElementFactory, AnnotationElement, EditorAnnotationElement, LinkAnnotationElement, TextAnnotationElement, WidgetAnnotationElement, TextWidgetAnnotationElement, SignatureWidgetAnnotationElement, CheckboxWidgetAnnotationElement, RadioButtonWidgetAnnotationElement, PushButtonWidgetAnnotationElement, ChoiceWidgetAnnotationElement, PopupAnnotationElement, PopupElement, FreeTextAnnotationElement, LineAnnotationElement, SquareAnnotationElement, CircleAnnotationElement, PolylineAnnotationElement, PolygonAnnotationElement, CaretAnnotationElement, InkAnnotationElement, HighlightAnnotationElement, UnderlineAnnotationElement, SquigglyAnnotationElement, StrikeOutAnnotationElement, StampAnnotationElement, FileAttachmentAnnotationElement, MediaAnnotationElement, AnnotationLayer, EOL_PATTERN, FreeTextEditor, DrawingOptions, DrawingEditor, Outline, FreeDrawOutliner, FreeDrawOutline, HighlightOutliner, HighlightOutline, FreeHighlightOutliner, FreeHighlightDrawer, FreeHighlightOutline, HighlightDrawingOptions, HighlightEditor, InkDrawOutliner, InkDrawOutline, InkDrawingOptions, InkEditor, ContourDrawOutline, es_uint8_array_from_base64, BASE_HEADER_LENGTH, POINTS_PROPERTIES_NUMBER, SignatureExtractor, SignatureOptions, DrawnSignatureOptions, SignatureEditor, StampEditor, AnnotationEditorLayer, es_iterator_to_array, DrawLayer, TextLayerImages;
 var init_pdf = __esm({
-  "../sporades/node_modules/pdfjs-dist/legacy/build/pdf.mjs"() {
+  "node_modules/pdfjs-dist/legacy/build/pdf.mjs"() {
     __webpack_modules__ = {
       /***/
       9306(module, __unused_webpack_exports, __webpack_require__2) {
@@ -60500,7 +66885,7 @@ import { createRequire } from "node:module";
 import path3 from "node:path";
 import { pathToFileURL as pathToFileURL2 } from "node:url";
 
-// ../sporades/node_modules/acorn/dist/acorn.mjs
+// node_modules/acorn/dist/acorn.mjs
 var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
 var astralIdentifierStartCodes = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 8, 70, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 7, 25, 39, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 5, 57, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 200, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 24, 43, 261, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 110, 18, 195, 2637, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 33, 24, 3, 24, 45, 74, 6, 0, 67, 12, 65, 1, 2, 0, 15, 4, 10, 7381, 42, 31, 98, 114, 8702, 3, 2, 6, 2, 1, 2, 290, 16, 0, 30, 2, 3, 0, 15, 3, 9, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 339, 3, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 30, 7, 5, 262, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 208, 30, 2, 2, 2, 1, 2, 6, 3, 4, 10, 1, 225, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4381, 3, 5773, 3, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 8489];
 var nonASCIIidentifierChars = "\u200C\u200D\xB7\u0300-\u036F\u0387\u0483-\u0487\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7\u0610-\u061A\u064B-\u0669\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED\u06F0-\u06F9\u0711\u0730-\u074A\u07A6-\u07B0\u07C0-\u07C9\u07EB-\u07F3\u07FD\u0816-\u0819\u081B-\u0823\u0825-\u0827\u0829-\u082D\u0859-\u085B\u0897-\u089F\u08CA-\u08E1\u08E3-\u0903\u093A-\u093C\u093E-\u094F\u0951-\u0957\u0962\u0963\u0966-\u096F\u0981-\u0983\u09BC\u09BE-\u09C4\u09C7\u09C8\u09CB-\u09CD\u09D7\u09E2\u09E3\u09E6-\u09EF\u09FE\u0A01-\u0A03\u0A3C\u0A3E-\u0A42\u0A47\u0A48\u0A4B-\u0A4D\u0A51\u0A66-\u0A71\u0A75\u0A81-\u0A83\u0ABC\u0ABE-\u0AC5\u0AC7-\u0AC9\u0ACB-\u0ACD\u0AE2\u0AE3\u0AE6-\u0AEF\u0AFA-\u0AFF\u0B01-\u0B03\u0B3C\u0B3E-\u0B44\u0B47\u0B48\u0B4B-\u0B4D\u0B55-\u0B57\u0B62\u0B63\u0B66-\u0B6F\u0B82\u0BBE-\u0BC2\u0BC6-\u0BC8\u0BCA-\u0BCD\u0BD7\u0BE6-\u0BEF\u0C00-\u0C04\u0C3C\u0C3E-\u0C44\u0C46-\u0C48\u0C4A-\u0C4D\u0C55\u0C56\u0C62\u0C63\u0C66-\u0C6F\u0C81-\u0C83\u0CBC\u0CBE-\u0CC4\u0CC6-\u0CC8\u0CCA-\u0CCD\u0CD5\u0CD6\u0CE2\u0CE3\u0CE6-\u0CEF\u0CF3\u0D00-\u0D03\u0D3B\u0D3C\u0D3E-\u0D44\u0D46-\u0D48\u0D4A-\u0D4D\u0D57\u0D62\u0D63\u0D66-\u0D6F\u0D81-\u0D83\u0DCA\u0DCF-\u0DD4\u0DD6\u0DD8-\u0DDF\u0DE6-\u0DEF\u0DF2\u0DF3\u0E31\u0E34-\u0E3A\u0E47-\u0E4E\u0E50-\u0E59\u0EB1\u0EB4-\u0EBC\u0EC8-\u0ECE\u0ED0-\u0ED9\u0F18\u0F19\u0F20-\u0F29\u0F35\u0F37\u0F39\u0F3E\u0F3F\u0F71-\u0F84\u0F86\u0F87\u0F8D-\u0F97\u0F99-\u0FBC\u0FC6\u102B-\u103E\u1040-\u1049\u1056-\u1059\u105E-\u1060\u1062-\u1064\u1067-\u106D\u1071-\u1074\u1082-\u108D\u108F-\u109D\u135D-\u135F\u1369-\u1371\u1712-\u1715\u1732-\u1734\u1752\u1753\u1772\u1773\u17B4-\u17D3\u17DD\u17E0-\u17E9\u180B-\u180D\u180F-\u1819\u18A9\u1920-\u192B\u1930-\u193B\u1946-\u194F\u19D0-\u19DA\u1A17-\u1A1B\u1A55-\u1A5E\u1A60-\u1A7C\u1A7F-\u1A89\u1A90-\u1A99\u1AB0-\u1ABD\u1ABF-\u1ADD\u1AE0-\u1AEB\u1B00-\u1B04\u1B34-\u1B44\u1B50-\u1B59\u1B6B-\u1B73\u1B80-\u1B82\u1BA1-\u1BAD\u1BB0-\u1BB9\u1BE6-\u1BF3\u1C24-\u1C37\u1C40-\u1C49\u1C50-\u1C59\u1CD0-\u1CD2\u1CD4-\u1CE8\u1CED\u1CF4\u1CF7-\u1CF9\u1DC0-\u1DFF\u200C\u200D\u203F\u2040\u2054\u20D0-\u20DC\u20E1\u20E5-\u20F0\u2CEF-\u2CF1\u2D7F\u2DE0-\u2DFF\u302A-\u302F\u3099\u309A\u30FB\uA620-\uA629\uA66F\uA674-\uA67D\uA69E\uA69F\uA6F0\uA6F1\uA802\uA806\uA80B\uA823-\uA827\uA82C\uA880\uA881\uA8B4-\uA8C5\uA8D0-\uA8D9\uA8E0-\uA8F1\uA8FF-\uA909\uA926-\uA92D\uA947-\uA953\uA980-\uA983\uA9B3-\uA9C0\uA9D0-\uA9D9\uA9E5\uA9F0-\uA9F9\uAA29-\uAA36\uAA43\uAA4C\uAA4D\uAA50-\uAA59\uAA7B-\uAA7D\uAAB0\uAAB2-\uAAB4\uAAB7\uAAB8\uAABE\uAABF\uAAC1\uAAEB-\uAAEF\uAAF5\uAAF6\uABE3-\uABEA\uABEC\uABED\uABF0-\uABF9\uFB1E\uFE00-\uFE0F\uFE20-\uFE2F\uFE33\uFE34\uFE4D-\uFE4F\uFF10-\uFF19\uFF3F\uFF65";
@@ -66190,6 +72575,9 @@ function tokenizer2(input, options) {
   return Parser.tokenizer(input, options);
 }
 
+// src/client-prerender.ts
+var import_acorn_jsx = __toESM(require_acorn_jsx(), 1);
+
 // src/build-diagnostics.ts
 import path2 from "node:path";
 import { pathToFileURL } from "node:url";
@@ -66372,6 +72760,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
   return rendered;
 }
 function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
+  const packageModeCache = /* @__PURE__ */ new Map();
   const loaders = /* @__PURE__ */ new Map([
     [".cjs", "js"],
     [".cts", "ts"],
@@ -66387,17 +72776,17 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
     setup(pluginBuild) {
       pluginBuild.onLoad({ filter: /\.[cm]?[jt]sx?$/, namespace: "file" }, async (args) => {
         const contents = await readFile2(args.path, "utf8");
-        const commonJsModule = [".cjs", ".cts"].includes(path3.extname(args.path));
+        const commonJsModule = await rendererModuleUsesCommonJs(args.path, projectRoot, packageModeCache);
         const preservesImportMetaUrl = contents.includes("import.meta.url");
         if (!preservesImportMetaUrl && (!commonJsModule || !/\b(?:require|__dirname|__filename)\b/.test(contents))) return void 0;
         const loader = loaders.get(path3.extname(args.path));
         if (!loader) return void 0;
         const moduleUrl = pathToFileURL2(args.path).href;
-        const define = { "import.meta.url": JSON.stringify(moduleUrl) };
+        const define2 = { "import.meta.url": JSON.stringify(moduleUrl) };
         const result = await esbuildBuild({
           absWorkingDir: projectRoot,
           bundle: false,
-          define,
+          define: define2,
           entryPoints: [args.path],
           format: commonJsModule ? "cjs" : "esm",
           jsx: "preserve",
@@ -66424,11 +72813,45 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot) {
     }
   };
 }
+async function rendererModuleUsesCommonJs(modulePath, projectRoot, packageModeCache) {
+  const extension = path3.extname(modulePath);
+  if (extension === ".cjs" || extension === ".cts") return true;
+  if (extension !== ".js" && extension !== ".jsx") return false;
+  const mode = await nearestRendererPackageMode(path3.dirname(modulePath), projectRoot, packageModeCache);
+  return mode !== "module";
+}
+function nearestRendererPackageMode(directory, projectRoot, cache) {
+  const cached = cache.get(directory);
+  if (cached) return cached;
+  const pending = (async () => {
+    if (path3.basename(directory) === "node_modules") return "default";
+    try {
+      const parsed = JSON.parse(await readFile2(path3.join(directory, "package.json"), "utf8"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const type = parsed.type;
+        if (type === "module" || type === "commonjs") return type;
+      }
+      return "default";
+    } catch (error) {
+      if (!isMissingRendererPackageJson(error)) throw error;
+    }
+    if (path3.resolve(directory) === path3.resolve(projectRoot)) return "default";
+    const parent = path3.dirname(directory);
+    if (parent === directory) return "default";
+    return nearestRendererPackageMode(parent, projectRoot, cache);
+  })();
+  cache.set(directory, pending);
+  return pending;
+}
+function isMissingRendererPackageJson(error) {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
 function rendererTransformOutputLoader(loader) {
   return loader === "jsx" || loader === "tsx" ? "jsx" : "js";
 }
+var RendererSyntaxParser = Parser.extend((0, import_acorn_jsx.default)());
 function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
-  const syntax = parse3(contents, {
+  const syntax = RendererSyntaxParser.parse(contents, {
     allowHashBang: true,
     allowReturnOutsideFunction: true,
     ecmaVersion: "latest",
@@ -78063,7 +84486,7 @@ async function removeFileVersionBestEffort(database, fileId, version3) {
 // src/file-ingress-runtime.ts
 var import_pdf_lib = __toESM(require_cjs(), 1);
 
-// ../sporades/node_modules/@lezer/common/dist/index.js
+// node_modules/@lezer/common/dist/index.js
 var DefaultBufferLength = 1024;
 var nextPropID = 0;
 var Range2 = class {
@@ -79608,7 +86031,7 @@ var StringInput = class {
 };
 var stoppedInner = new NodeProp({ perNode: true });
 
-// ../sporades/node_modules/@lezer/lr/dist/index.js
+// node_modules/@lezer/lr/dist/index.js
 var Stack = class _Stack {
   /**
   @internal
@@ -81370,7 +87793,7 @@ function getSpecializer(spec) {
   return spec.get;
 }
 
-// ../sporades/node_modules/@lezer/highlight/dist/index.js
+// node_modules/@lezer/highlight/dist/index.js
 var nextTagID = 0;
 var Tag = class _Tag {
   /**
@@ -81994,7 +88417,7 @@ var classHighlighter = tagHighlighter([
   { tag: tags.punctuation, class: "tok-punctuation" }
 ]);
 
-// ../sporades/node_modules/@lezer/python/dist/index.js
+// node_modules/@lezer/python/dist/index.js
 var printKeyword = 1;
 var indent = 194;
 var dedent = 195;
@@ -82334,7 +88757,7 @@ var parser = LRParser.deserialize({
 var import_jpeg_js = __toESM(require_jpeg_js(), 1);
 var import_pngjs = __toESM(require_png2(), 1);
 
-// ../sporades/node_modules/unbash/dist/ansi-c.js
+// node_modules/unbash/dist/ansi-c.js
 function isOctal(code) {
   return code >= 48 && code <= 55;
 }
@@ -82460,7 +88883,7 @@ function decodeAnsiCQuoted(source, start, limit) {
   return { value, end: pos, closed };
 }
 
-// ../sporades/node_modules/unbash/dist/chars.js
+// node_modules/unbash/dist/chars.js
 var CH_TAB = 9;
 var CH_NL = 10;
 var CH_SPACE = 32;
@@ -82502,7 +88925,7 @@ var CH_PIPE = 124;
 var CH_RBRACE = 125;
 var CH_TILDE = 126;
 
-// ../sporades/node_modules/unbash/dist/arithmetic.js
+// node_modules/unbash/dist/arithmetic.js
 function opPrec(op) {
   switch (op) {
     case ",":
@@ -82994,7 +89417,7 @@ function parseArithmeticExpression(src, offset2 = 0, collector) {
   return result;
 }
 
-// ../sporades/node_modules/unbash/dist/word.js
+// node_modules/unbash/dist/word.js
 function dequoteValue(parts) {
   let s = "";
   for (const c of parts)
@@ -83099,7 +89522,7 @@ var WordImpl = class _WordImpl {
   }
 };
 
-// ../sporades/node_modules/unbash/dist/lexer.js
+// node_modules/unbash/dist/lexer.js
 var MAX_SYNTAX_NESTING = 256;
 var Token3 = {
   Word: 0,
@@ -86544,7 +92967,7 @@ var Lexer = class _Lexer {
   }
 };
 
-// ../sporades/node_modules/unbash/dist/parts.js
+// node_modules/unbash/dist/parts.js
 function computeWordParts(source, word, depth = 0) {
   const lexer = new Lexer(source, word.pos, word.end);
   lexer._nestingDepth = depth;
@@ -86592,7 +93015,7 @@ function resolveCollected(lexer) {
   }
 }
 
-// ../sporades/node_modules/unbash/dist/parser.js
+// node_modules/unbash/dist/parser.js
 WordImpl._resolveWord = computeWordParts;
 WordImpl._resolveHeredocBody = computeHereDocBodyParts;
 var ArithmeticCommandImpl = class {
