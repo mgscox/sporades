@@ -383,6 +383,68 @@ module.exports = () => \`<main>\${observed.join("|")}|\${adjacent}</main>\`;
   });
 });
 
+test("CommonJS wrapper writes remain valid assignment targets with local semantics", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cjs";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cjs"),
+      `module.exports = () => {
+  const observed = [];
+  ({ __dirname } = { __dirname: "shorthand" });
+  observed.push(__dirname);
+  ({ value: __dirname } = { value: "renamed" });
+  observed.push(__dirname);
+  [__dirname] = ["array"];
+  observed.push(__dirname);
+  [...__dirname] = ["r", "e", "s", "t"];
+  observed.push(__dirname.join(""));
+  [__dirname = "default"] = [undefined];
+  observed.push(__dirname);
+  __dirname = "direct";
+  __dirname += "-compound";
+  observed.push(__dirname);
+  __dirname = 1;
+  __dirname++;
+  observed.push(String(__dirname));
+  for (__dirname of ["for-of"]) {}
+  observed.push(__dirname);
+  for (__dirname in { "for-in": true }) {}
+  observed.push(__dirname);
+
+  ({ __filename } = { __filename: "filename-shorthand" });
+  ({ value: __filename } = { value: "filename-renamed" });
+  __filename += "-compound";
+  observed.push(__filename);
+
+  ({ require } = { require: { resolve: (value) => \`local:\${value}\` } });
+  observed.push(require.resolve("shorthand"));
+  ({ value: require } = { value: { resolve: (value) => \`renamed:\${value}\` } });
+  observed.push(require.resolve("require"));
+  return \`<main>\${observed.join("|")}</main>\`;
+};
+`,
+    );
+
+    const bundle = await createBundle(projectDir, { name: "wrapper-write-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>shorthand\|renamed\|array\|rest\|default\|direct-compound\|2\|for-of\|for-in\|filename-renamed-compound\|local:shorthand\|renamed:require<\/main>/,
+      );
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("a nested CommonJS prerender helper keeps per-module paths and computed require", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
