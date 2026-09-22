@@ -3,9 +3,10 @@ import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, write
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { createBundle } from "../dist/bundle-pipeline.js";
-import { placeClientPrerenderFragment } from "../dist/client-prerender.js";
+import { placeClientPrerenderFragment, renderClientPrerenderFragment } from "../dist/client-prerender.js";
 import { readProjectConfig } from "../dist/cli/project-config.js";
 import { validateClientToolchainInput } from "../dist/client-toolchain.js";
 import { discardPublicTree } from "../dist/public-tree.js";
@@ -148,6 +149,30 @@ test("a transitive ESM prerender module retains its own import.meta.url", async 
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);
     }
+  });
+});
+
+test("renderer import.meta.url failures redact encoded project URL forms", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = path.join(dir, "caf\u00e9 space#percent% capsule");
+    await mkdir(projectDir);
+    await writeFile(path.join(projectDir, "render-landing.mjs"), "export default () => { throw new Error(import.meta.url); };\n");
+    const canonicalProject = await realpath(projectDir);
+    const encodedAliases = [...new Set([projectDir, canonicalProject].flatMap((root) => [root.normalize("NFC"), root.normalize("NFD")]).flatMap((root) => {
+      const url = pathToFileURL(root);
+      return [url.href, url.pathname];
+    }))];
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, viteConfig.prerender[0], [projectDir, canonicalProject]),
+      (error) => {
+        assert.match(error.message, /renderer for landing failed: <project>\/render-landing\.mjs/i);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack, cause: error.cause });
+        for (const alias of encodedAliases) assert.equal(surfaced.includes(alias), false, `leaked encoded Capsule URL alias: ${alias}`);
+        assert.doesNotMatch(surfaced, /caf%C3%A9|%20space|%23percent|%25%20capsule/i);
+        return true;
+      },
+    );
   });
 });
 
