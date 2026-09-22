@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
@@ -197,6 +198,47 @@ test("a prerender module can use a local CommonJS dependency that requires a Nod
       const files = await publicFiles(bundle.staticFiles.publicDir);
       assert.equal(files.some((file) => /renderer|renderer-cjs/.test(file)), false, JSON.stringify(files));
       await assert.rejects(access(path.join(projectDir, ".sporades-prerender-output")), (error) => error.code === "ENOENT");
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("a nested CommonJS prerender helper keeps per-module paths and computed require", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cjs";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cjs"),
+      `const path = require("node:path");
+const target = process.argv.length > 0 ? "./adjacent.cjs" : "./missing.cjs";
+module.exports = () => {
+  const adjacent = require(target);
+  return \`<main>\${path.basename(__dirname)}|\${path.basename(__filename)}|\${path.basename(adjacent.filename)}|\${adjacent.content}</main>\`;
+};
+`,
+    );
+    await writeFile(
+      path.join(nestedDir, "adjacent.cjs"),
+      'const fs = require("node:fs");\nconst path = require("node:path");\nmodule.exports = { filename: __filename, content: fs.readFileSync(path.join(__dirname, "content.txt"), "utf8").trim() };\n',
+    );
+    await writeFile(path.join(nestedDir, "content.txt"), "adjacent CommonJS content\n");
+
+    const bundle = await createBundle(projectDir, { name: "nested-cjs-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>nested\|helper\.cjs\|adjacent\.cjs\|adjacent CommonJS content<\/main>/,
+      );
+      const cache = createRequire(import.meta.url).cache;
+      assert.equal(Object.keys(cache).some((file) => file.startsWith(projectDir)), false, "renderer dependencies remained in the CommonJS cache");
     } finally {
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);
