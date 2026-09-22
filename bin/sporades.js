@@ -66927,7 +66927,7 @@ function deepFreeze(value) {
 // src/client-prerender.ts
 import { lstat as lstat2, readFile as readFile2, realpath as realpath2 } from "node:fs/promises";
 import path3 from "node:path";
-import { createRequire } from "node:module";
+import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL as pathToFileURL2 } from "node:url";
 import { MessageChannel, Worker as Worker2 } from "node:worker_threads";
 
@@ -80860,7 +80860,8 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
       if (typeof dependency === "string" && path3.isAbsolute(dependency)) onDependency?.(dependency);
     }
     for (const request of outcome.packageImports ?? []) {
-      await recordRendererPackageImport(request.specifier, path3.dirname(request.filename), onDependency);
+      if (request.specifier.startsWith("#")) await recordRendererPackageImport(request.specifier, path3.dirname(request.filename), onDependency);
+      else recordRendererPackageManifests(request.specifier, path3.dirname(request.filename), onDependency);
     }
     if (outcome.kind === "not-function") {
       throw prerenderError(
@@ -80925,6 +80926,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
       pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
         if (args.pluginData?.[resolutionBypass]) return void 0;
         if (args.path.startsWith("#")) await recordRendererPackageImport(args.path, args.resolveDir || projectRoot, onDependency);
+        else recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency);
         const resolved = await pluginBuild.resolve(args.path, {
           importer: args.importer,
           kind: args.kind,
@@ -81131,6 +81133,12 @@ async function rendererNeedsCommonJsBoundaryNamespace(modulePath) {
     if (parent === directory) return false;
     directory = parent;
   }
+}
+function recordRendererPackageManifests(specifier, directory, onDependency) {
+  if (!onDependency || !specifier || isBuiltin(specifier) || specifier.startsWith(".") || specifier.startsWith("#") || path3.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier)) return;
+  const packageName = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
+  const localRequire = createRequire(path3.join(directory, "__sporades_prerender__.cjs"));
+  for (const base of localRequire.resolve.paths(specifier) ?? []) onDependency(path3.join(base, packageName, "package.json"));
 }
 async function recordRendererPackageImport(specifier, directory, onDependency) {
   if (!onDependency) return;
@@ -81848,7 +81856,7 @@ async function executeBundledRenderer(source, format, modulePath, displayPath, p
 const { workerData } = require("node:worker_threads");
 const completionPort = workerData.completionPort;
 delete workerData.completionPort;
-const { createRequire, Module } = require("node:module");
+const { createRequire, isBuiltin, Module } = require("node:module");
 const { dirname, isAbsolute, resolve } = require("node:path");
 const dependencies = new Set();
 const runtimeSpecifiers = new Set();
@@ -81857,7 +81865,7 @@ const originalResolveFilename = Module._resolveFilename;
 // One Worker-local seam observes both require() and require.resolve(), before
 // evaluation can fail and evict a module from the cache.
 Module._resolveFilename = function(specifier, parent) {
-  if (typeof specifier === "string" && specifier.startsWith("#")) packageImports.push({specifier, filename:parent?.filename || workerData.modulePath});
+  if (typeof specifier === "string" && !isBuiltin(specifier) && !specifier.startsWith(".") && !isAbsolute(specifier) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier)) packageImports.push({specifier, filename:parent?.filename || workerData.modulePath});
   if (typeof specifier === "string" && (isAbsolute(specifier) || /^file:/i.test(specifier))) runtimeSpecifiers.add(specifier);
   try {
     const filename = originalResolveFilename.apply(this, arguments);
@@ -83350,7 +83358,7 @@ function field(kind) {
 
 // src/templates/server-bundle-module-graph.ts
 import { readFile as readFile5 } from "node:fs/promises";
-import { isBuiltin } from "node:module";
+import { isBuiltin as isBuiltin2 } from "node:module";
 import path7 from "node:path";
 
 // src/package-root.ts
@@ -83442,7 +83450,7 @@ ${options.epilogue}
           name: "sporades-node-builtin-prefix",
           setup(pluginBuild) {
             pluginBuild.onResolve({ filter: /.*/ }, (args) => {
-              if (!args.path.startsWith("node:") && isBuiltin(args.path)) {
+              if (!args.path.startsWith("node:") && isBuiltin2(args.path)) {
                 return { path: `node:${args.path}`, external: true };
               }
               return void 0;
@@ -83459,7 +83467,7 @@ ${options.epilogue}
   if (!output) {
     throw bundleModuleGraphError("Server bundle failed: esbuild returned no output.", "Report this: the Sporades runtime module graph produced no bundle.");
   }
-  const unresolved = Object.values(result.metafile.outputs).flatMap((entry) => entry.imports).filter((entry) => entry.external && !isBuiltin(entry.path) && !entry.path.startsWith("data:")).map((entry) => entry.path);
+  const unresolved = Object.values(result.metafile.outputs).flatMap((entry) => entry.imports).filter((entry) => entry.external && !isBuiltin2(entry.path) && !entry.path.startsWith("data:")).map((entry) => entry.path);
   if (unresolved.length > 0) {
     throw bundleModuleGraphError(
       `Server bundle failed: the bundle would import ${[...new Set(unresolved)].sort().join(", ")} at runtime.`,

@@ -1,6 +1,6 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
-import { createRequire } from "node:module";
+import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { MessageChannel, Worker } from "node:worker_threads";
 
@@ -118,7 +118,8 @@ export async function renderClientPrerenderFragment(
       if (typeof dependency === "string" && path.isAbsolute(dependency)) onDependency?.(dependency);
     }
     for (const request of outcome.packageImports ?? []) {
-      await recordRendererPackageImport(request.specifier, path.dirname(request.filename), onDependency);
+      if (request.specifier.startsWith("#")) await recordRendererPackageImport(request.specifier, path.dirname(request.filename), onDependency);
+      else recordRendererPackageManifests(request.specifier, path.dirname(request.filename), onDependency);
     }
     if (outcome.kind === "not-function") {
       throw prerenderError(
@@ -208,6 +209,7 @@ function preserveRendererImportMetaUrl(
       pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
         if ((args.pluginData as { [resolutionBypass]?: boolean } | undefined)?.[resolutionBypass]) return undefined;
         if (args.path.startsWith("#")) await recordRendererPackageImport(args.path, args.resolveDir || projectRoot, onDependency);
+        else recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency);
         const resolved = await pluginBuild.resolve(args.path, {
           importer: args.importer,
           kind: args.kind,
@@ -444,6 +446,13 @@ async function rendererNeedsCommonJsBoundaryNamespace(modulePath: string) {
     if (parent === directory) return false;
     directory = parent;
   }
+}
+
+function recordRendererPackageManifests(specifier: string, directory: string, onDependency?: (file: string) => void) {
+  if (!onDependency || !specifier || isBuiltin(specifier) || specifier.startsWith(".") || specifier.startsWith("#") || path.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier)) return;
+  const packageName = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
+  const localRequire = createRequire(path.join(directory, "__sporades_prerender__.cjs"));
+  for (const base of localRequire.resolve.paths(specifier) ?? []) onDependency(path.join(base, packageName, "package.json"));
 }
 
 async function recordRendererPackageImport(specifier: string, directory: string, onDependency?: (file: string) => void) {
@@ -1278,7 +1287,7 @@ async function executeBundledRenderer(
 const { workerData } = require("node:worker_threads");
 const completionPort = workerData.completionPort;
 delete workerData.completionPort;
-const { createRequire, Module } = require("node:module");
+const { createRequire, isBuiltin, Module } = require("node:module");
 const { dirname, isAbsolute, resolve } = require("node:path");
 const dependencies = new Set();
 const runtimeSpecifiers = new Set();
@@ -1287,7 +1296,7 @@ const originalResolveFilename = Module._resolveFilename;
 // One Worker-local seam observes both require() and require.resolve(), before
 // evaluation can fail and evict a module from the cache.
 Module._resolveFilename = function(specifier, parent) {
-  if (typeof specifier === "string" && specifier.startsWith("#")) packageImports.push({specifier, filename:parent?.filename || workerData.modulePath});
+  if (typeof specifier === "string" && !isBuiltin(specifier) && !specifier.startsWith(".") && !isAbsolute(specifier) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier)) packageImports.push({specifier, filename:parent?.filename || workerData.modulePath});
   if (typeof specifier === "string" && (isAbsolute(specifier) || /^file:/i.test(specifier))) runtimeSpecifiers.add(specifier);
   try {
     const filename = originalResolveFilename.apply(this, arguments);
