@@ -2825,13 +2825,22 @@ function multipartBoundary(contentType) {
     return value.length <= 70 && validBchars && (quoted || validToken) ? value : null;
 }
 function multipartPartType(rawHeaders) {
-    const disposition = /^content-disposition:\s*form-data;\s*name="[^"]+"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);
+    const disposition = /^content-disposition:\s*form-data;\s*name="[^"]+"(?:;\s*filename="([^"]*)")?\s*$/im.exec(rawHeaders);
+    if (!disposition)
+        return undefined;
     return disposition?.[1] !== undefined ? "file" : "field";
 }
 function multipartLimitExceeded(partType, limitKind, limit, message = "Multipart part exceeds declared limits.") {
     return Object.assign(new Error(message), {
         code: "MULTIPART_LIMIT_EXCEEDED",
         details: { partType, limitKind, limit: Number(limit) },
+    });
+}
+function multipartHeaderLimitExceeded(rawHeaders) {
+    const partType = multipartPartType(rawHeaders);
+    return Object.assign(new Error("Multipart headers exceed limit."), {
+        code: "MULTIPART_LIMIT_EXCEEDED",
+        ...(partType ? { details: { partType, limitKind: "maxPartHeaderBytes", limit: 16384 } } : {}),
     });
 }
 // Keeps only one completed part (never the aggregate request) in memory. The storage adapter
@@ -2871,7 +2880,7 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
                 const headerEnd = pending.indexOf("\r\n\r\n");
                 if (headerEnd < 0) {
                     if (pending.length > 16384)
-                        throw multipartLimitExceeded(multipartPartType(pending.toString("latin1")), "maxPartHeaderBytes", 16384, "Multipart headers exceed limit.");
+                        throw multipartHeaderLimitExceeded(pending.toString("latin1"));
                     break;
                 }
                 rawHeaders = pending.subarray(0, headerEnd).toString("latin1");
@@ -3005,7 +3014,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             const rawHeaders = part.rawHeaders;
             const body = part.body;
             if (rawHeaders.length > 16384)
-                throw multipartLimitExceeded(multipartPartType(rawHeaders), "maxPartHeaderBytes", 16384, "Multipart headers exceed limit.");
+                throw multipartHeaderLimitExceeded(rawHeaders);
             if (unsupportedMultipartPartEncoding(rawHeaders))
                 throw Object.assign(new Error("Unsupported multipart part encoding."), { code: "INVALID_MULTIPART" });
             const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);

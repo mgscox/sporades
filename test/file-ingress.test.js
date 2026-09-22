@@ -759,6 +759,40 @@ test("multipart framing rejects malformed terminators and bounded headers/parts"
   await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(multipart(boundary, undefined, "x".repeat(20)), 1), boundary, 1000, 10)) {} }, { code: "MULTIPART_LIMIT_EXCEEDED" });
 });
 
+test("oversized multipart headers do not guess a late file disposition", async () => {
+  const boundary = "late-disposition";
+  const bytes = multipart(boundary, `X-Padding: ${"a".repeat(16384)}\r\nContent-Disposition: form-data; name="file"; filename="private.txt"`, "bytes");
+  await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(bytes, 17), boundary, 30000, 30000)) {} }, (error) => {
+    assert.equal(error?.code, "MULTIPART_LIMIT_EXCEEDED");
+    assert.equal(Object.hasOwn(error, "details"), false);
+    return true;
+  });
+  const classifiedBytes = multipart(boundary, `Content-Disposition: form-data; name="file"; filename="known.txt"\r\nX-Padding: ${"a".repeat(16384)}`, "bytes");
+  await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(classifiedBytes, 17), boundary, 30000, 30000)) {} }, { code: "MULTIPART_LIMIT_EXCEEDED", details: { partType: "file", limitKind: "maxPartHeaderBytes", limit: 16384 } });
+
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-late-disposition-")); let database;
+  try {
+    let handlers = 0;
+    const definition = capsule({ name: "late-disposition", endpoints: {
+      upload: endpoint({ method: "POST", path: "/late-disposition", body: { multipart: ingressPolicy() } }, requireAuth(() => { handlers += 1; return { body: { ok: true } }; })),
+    } });
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "late-disposition", files: { storagePath: path.join(dir, "files") } }, definition);
+    await seedIngressUser(database);
+    const request = Object.assign(new EventEmitter(), {
+      method: "POST", url: "/late-disposition", aborted: false, destroyed: false,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": "late-disposition", "x-sporades-session-token": "claim-session" },
+      async *[Symbol.asyncIterator]() { yield* splitEvery(bytes, 17); },
+    });
+    const response = { status: null, body: "", headers: {}, setHeader(name, value) { this.headers[name.toLowerCase()] = value; }, writeHead(status, headers = {}) { this.status = status; Object.assign(this.headers, headers); }, end(body = "") { this.body = String(body); } };
+    assert.equal(await routeEndpoint(database, request, response), true);
+    assert.equal(response.status, 500);
+    assert.deepEqual(JSON.parse(response.body), { ok: false, data: null, error: { code: "MULTIPART_LIMIT_EXCEEDED", message: "Endpoint handler failed.", hint: "Check the endpoint handler and retry the request." } });
+    assert.equal(response.body.includes("partType"), false);
+    assert.equal(response.body.includes("private.txt"), false);
+    assert.equal(handlers, 0);
+  } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("multipart streaming applies the header-classified field cap before reading a file-sized body", async () => {
   const boundary = "classified-limit"; const fieldBytes = "x".repeat(200); const fieldSource = multipart(boundary, 'Content-Disposition: form-data; name="tag"', fieldBytes);
   let reads = 0; const chunks = splitEvery(fieldSource, 8); const request = { async *[Symbol.asyncIterator]() { for await (const chunk of chunks) { reads += 1; yield chunk; } } };
