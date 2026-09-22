@@ -288,7 +288,7 @@ function findRawTextElementEnd(html, lowerHtml, cursor, name) {
     return undefined;
 }
 function isProjectRelativeModulePath(value) {
-    if (!value || value.includes("\\") || path.posix.isAbsolute(value))
+    if (!value || value.includes("\\") || path.posix.isAbsolute(value) || path.win32.parse(value).root)
         return false;
     const segments = value.split("/");
     return segments.every((segment) => segment && segment !== "." && segment !== "..");

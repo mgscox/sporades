@@ -60852,7 +60852,7 @@ function findRawTextElementEnd(html, lowerHtml, cursor, name2) {
   return void 0;
 }
 function isProjectRelativeModulePath(value) {
-  if (!value || value.includes("\\") || path3.posix.isAbsolute(value)) return false;
+  if (!value || value.includes("\\") || path3.posix.isAbsolute(value) || path3.win32.parse(value).root) return false;
   const segments = value.split("/");
   return segments.every((segment) => segment && segment !== "." && segment !== "..");
 }
