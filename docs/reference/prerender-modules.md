@@ -28,6 +28,12 @@ cannot retain the owning module's wrapper bindings through bundling. Use explici
 code instead. Ordinary method calls such as `object.eval(...)` are unaffected.
 Sloppy-mode CommonJS `with` statements are rejected for the same reason: their
 dynamic scope can replace wrapper bindings at runtime. Use explicit properties.
+Top-level CommonJS `arguments` (also inherited by arrows) is unsupported; access
+`require`, `module`, `exports`, `__filename` and `__dirname` by name. Ordinary
+functions retain their own `arguments` objects.
+At module scope, redeclaring a wrapper binding from a block-local function is
+unsupported: Annex B hoisting cannot preserve Node's implicit parameter exemption
+through bundling. Use an explicit assignment instead.
 Renderer-only CSS, image or other asset output is unsupported;
 assets used by static HTML must already belong to the ordinary Vite client graph.
 After placement in `transformIndexHtml`, later Vite output hooks must leave each
