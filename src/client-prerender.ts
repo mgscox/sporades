@@ -1,5 +1,4 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -109,8 +108,8 @@ export async function renderClientPrerenderFragment(
   }
   const boundedRendererRoots = [...projectRoots, ...rendererDependencyRoots];
 
-  if (bundleFormat === "esm") {
-    const outcome = await executeEsmBundledRenderer(bundledSource, canonicalModulePath, fragment.module, boundedRendererRoots);
+  {
+    const outcome = await executeBundledRenderer(bundledSource, bundleFormat, canonicalModulePath, fragment.module, boundedRendererRoots);
     if (outcome.kind === "not-function") {
       throw prerenderError(
         `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
@@ -134,46 +133,6 @@ export async function renderClientPrerenderFragment(
     return outcome.rendered;
   }
 
-  let renderer: unknown;
-  const initialRequireCache = new Set(Object.keys(createRequire(canonicalModulePath).cache));
-  try {
-    renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
-  } catch (error) {
-    discardRendererRequireCache(initialRequireCache);
-    throw prerenderError(
-      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, boundedRendererRoots)}`,
-      `Fix the renderer in ${fragment.module}, then retry.`,
-      { fragment: fragment.name, module: fragment.module },
-    );
-  }
-  if (typeof renderer !== "function") {
-    discardRendererRequireCache(initialRequireCache);
-    throw prerenderError(
-      `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
-      `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`,
-    );
-  }
-
-  let rendered: unknown;
-  try {
-    rendered = await renderer();
-  } catch (error) {
-    throw prerenderError(
-      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, boundedRendererRoots)}`,
-      `Fix the renderer in ${fragment.module}, then retry.`,
-      { fragment: fragment.name, module: fragment.module },
-    );
-  } finally {
-    discardRendererRequireCache(initialRequireCache);
-  }
-  if (typeof rendered !== "string") {
-    throw prerenderError(
-      `Client prerender renderer for ${fragment.name} returned a non-string result.`,
-      `Return an HTML string or Promise<string> from ${fragment.module}.`,
-      { fragment: fragment.name, resultType: rendered === null ? "null" : typeof rendered },
-    );
-  }
-  return rendered;
 }
 
 async function buildRendererBundle(
@@ -583,14 +542,16 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
       replacements.push({ start: node.start, end: node.end, value: shorthand ? `${String(node.name)}: ${value}` : value });
     }
   });
-  if (replacements.length === 0) return { contents, changed: false };
+  const writableLocations = ["__dirname", "__filename"].filter((name) => writtenWrapperNames.has(name));
+  if (replacements.length === 0 && writableLocations.length === 0) return { contents, changed: false };
   const needsModuleRequire = replacements.some((replacement) => replacement.value === helperName);
-  if (needsModuleRequire) {
+  if (needsModuleRequire || writableLocations.length > 0) {
     const insertionOffset = rendererHelperInsertionOffset(syntax, contents);
     replacements.push({
       start: insertionOffset,
       end: insertionOffset,
-      value: `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});\n`,
+      value: (needsModuleRequire ? `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});\n` : "")
+        + writableLocations.map((name) => `var ${name} = ${JSON.stringify(name === "__dirname" ? path.dirname(modulePath) : modulePath)};\n`).join(""),
     });
   }
   let rewritten = contents;
@@ -786,13 +747,6 @@ function forEachRendererChild(node: RendererSyntaxNode, visit: (child: RendererS
 
 function isRendererSyntaxNode(value: unknown): value is RendererSyntaxNode {
   return Boolean(value && typeof value === "object" && typeof (value as { type?: unknown }).type === "string");
-}
-
-function discardRendererRequireCache(initialCache: Set<string>) {
-  const cache = createRequire(import.meta.url).cache;
-  for (const cachedPath of Object.keys(cache)) {
-    if (!initialCache.has(cachedPath)) delete cache[cachedPath];
-  }
 }
 
 export function placeClientPrerenderFragment(html: string, fragment: ClientPrerenderFragment, rendered: string): string {
@@ -1042,43 +996,26 @@ function isCanonicalDescendant(parent: string, candidate: string) {
   return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-function executeBundledRenderer(source: string, modulePath: string, displayPath: string) {
-  const moduleRecord: { exports: unknown } = { exports: {} };
-  // Renderers share the trusted-build-code boundary of project Vite config. Execute the
-  // in-memory CommonJS bundle fresh on every build: project-rooted require supports Node
-  // builtins/native externals without adding a unique data URL to the permanent ESM cache.
-  const execute = new Function(
-    "exports",
-    "require",
-    "module",
-    "__filename",
-    "__dirname",
-    `${source}\n//# sourceURL=${displayPath.replaceAll("\\", "/")}\n`,
-  ) as (exports: unknown, require: NodeJS.Require, module: { exports: unknown }, fileName: string, directory: string) => void;
-  execute(moduleRecord.exports, createRequire(modulePath), moduleRecord, modulePath, path.dirname(modulePath));
-  const exported = moduleRecord.exports;
-  return exported && typeof exported === "object" && "default" in exported
-    ? (exported as { default?: unknown }).default
-    : undefined;
-}
-
 type EsmRendererOutcome =
   | { kind: "success"; rendered: string }
   | { kind: "not-function" }
   | { kind: "non-string"; resultType: string }
   | { kind: "failure"; message: string };
 
-async function executeEsmBundledRenderer(
+async function executeBundledRenderer(
   source: string,
+  format: "cjs" | "esm",
   modulePath: string,
   displayPath: string,
   projectRoots: string[],
 ): Promise<EsmRendererOutcome> {
-  // A short-lived worker gives top-level-await bundles a real ESM evaluator while
-  // bounding Node's otherwise permanent data-URL module cache to this render.
+  // Each trusted renderer owns a disposable module cache and global scope. This
+  // isolates preloaded CLI/Vite dependencies as well as concurrent renderer builds,
+  // without evicting or mutating the host's CommonJS cache. This is not a sandbox.
   const bootstrap = String.raw`
 const { parentPort, workerData } = require("node:worker_threads");
 const { createRequire } = require("node:module");
+const { dirname } = require("node:path");
 globalThis.require = createRequire(workerData.modulePath);
 function safeMessage(error) {
   try {
@@ -1089,8 +1026,18 @@ function safeMessage(error) {
 }
 (async () => {
   try {
-    const encoded = Buffer.from(workerData.source + "\n//# sourceURL=" + workerData.displayPath + "\n").toString("base64");
-    const namespace = await import("data:text/javascript;base64," + encoded);
+    const source = workerData.source + "\n//# sourceURL=" + workerData.displayPath + "\n";
+    let namespace;
+    if (workerData.format === "cjs") {
+      const record = { exports: {} };
+      const execute = new Function("exports", "require", "module", "__filename", "__dirname", source);
+      execute(record.exports, globalThis.require, record, workerData.modulePath, dirname(workerData.modulePath));
+      namespace = record.exports;
+    } else {
+      const encoded = Buffer.from(source).toString("base64");
+      namespace = await import("data:text/javascript;base64," + encoded);
+    }
+    if (!namespace) return parentPort.postMessage({ kind: "not-function" });
     if (typeof namespace.default !== "function") return parentPort.postMessage({ kind: "not-function" });
     const rendered = await namespace.default();
     if (typeof rendered !== "string") {
@@ -1103,7 +1050,7 @@ function safeMessage(error) {
 })();`;
   const worker = new Worker(bootstrap, {
     eval: true,
-    workerData: { source, modulePath, displayPath: displayPath.replaceAll("\\", "/") },
+    workerData: { source, format, modulePath, displayPath: displayPath.replaceAll("\\", "/") },
   });
   try {
     const outcome = await new Promise<EsmRendererOutcome>((resolve, reject) => {

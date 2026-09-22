@@ -65289,7 +65289,7 @@ import path9 from "node:path";
 // src/client-toolchain.ts
 import path4 from "node:path";
 import { lstat as lstat3, readFile as readFile3, realpath as realpath3 } from "node:fs/promises";
-import { createRequire as createRequire2 } from "node:module";
+import { createRequire } from "node:module";
 import { pathToFileURL as pathToFileURL3 } from "node:url";
 
 // src/templates/client-runtime-template.ts
@@ -66881,7 +66881,6 @@ function deepFreeze(value) {
 
 // src/client-prerender.ts
 import { lstat as lstat2, readFile as readFile2, realpath as realpath2 } from "node:fs/promises";
-import { createRequire } from "node:module";
 import path3 from "node:path";
 import { fileURLToPath, pathToFileURL as pathToFileURL2 } from "node:url";
 import { Worker as Worker2 } from "node:worker_threads";
@@ -72712,8 +72711,8 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     );
   }
   const boundedRendererRoots = [...projectRoots, ...rendererDependencyRoots];
-  if (bundleFormat === "esm") {
-    const outcome = await executeEsmBundledRenderer(bundledSource, canonicalModulePath, fragment.module, boundedRendererRoots);
+  {
+    const outcome = await executeBundledRenderer(bundledSource, bundleFormat, canonicalModulePath, fragment.module, boundedRendererRoots);
     if (outcome.kind === "not-function") {
       throw prerenderError(
         `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
@@ -72736,45 +72735,6 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     }
     return outcome.rendered;
   }
-  let renderer;
-  const initialRequireCache = new Set(Object.keys(createRequire(canonicalModulePath).cache));
-  try {
-    renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
-  } catch (error) {
-    discardRendererRequireCache(initialRequireCache);
-    throw prerenderError(
-      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, boundedRendererRoots)}`,
-      `Fix the renderer in ${fragment.module}, then retry.`,
-      { fragment: fragment.name, module: fragment.module }
-    );
-  }
-  if (typeof renderer !== "function") {
-    discardRendererRequireCache(initialRequireCache);
-    throw prerenderError(
-      `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
-      `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`
-    );
-  }
-  let rendered;
-  try {
-    rendered = await renderer();
-  } catch (error) {
-    throw prerenderError(
-      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, boundedRendererRoots)}`,
-      `Fix the renderer in ${fragment.module}, then retry.`,
-      { fragment: fragment.name, module: fragment.module }
-    );
-  } finally {
-    discardRendererRequireCache(initialRequireCache);
-  }
-  if (typeof rendered !== "string") {
-    throw prerenderError(
-      `Client prerender renderer for ${fragment.name} returned a non-string result.`,
-      `Return an HTML string or Promise<string> from ${fragment.module}.`,
-      { fragment: fragment.name, resultType: rendered === null ? "null" : typeof rendered }
-    );
-  }
-  return rendered;
 }
 async function buildRendererBundle(build2, projectRoot, canonicalModulePath, format, rendererDependencyRoots, rendererDependencyAliases) {
   return build2({
@@ -73090,15 +73050,17 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
       replacements.push({ start: node.start, end: node.end, value: shorthand ? `${String(node.name)}: ${value}` : value });
     }
   });
-  if (replacements.length === 0) return { contents, changed: false };
+  const writableLocations = ["__dirname", "__filename"].filter((name2) => writtenWrapperNames.has(name2));
+  if (replacements.length === 0 && writableLocations.length === 0) return { contents, changed: false };
   const needsModuleRequire = replacements.some((replacement) => replacement.value === helperName);
-  if (needsModuleRequire) {
+  if (needsModuleRequire || writableLocations.length > 0) {
     const insertionOffset = rendererHelperInsertionOffset(syntax, contents);
     replacements.push({
       start: insertionOffset,
       end: insertionOffset,
-      value: `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});
-`
+      value: (needsModuleRequire ? `const ${helperName} = require("node:module").createRequire(${JSON.stringify(moduleUrl)});
+` : "") + writableLocations.map((name2) => `var ${name2} = ${JSON.stringify(name2 === "__dirname" ? path3.dirname(modulePath) : modulePath)};
+`).join("")
     });
   }
   let rewritten = contents;
@@ -73261,12 +73223,6 @@ function forEachRendererChild(node, visit) {
 }
 function isRendererSyntaxNode(value) {
   return Boolean(value && typeof value === "object" && typeof value.type === "string");
-}
-function discardRendererRequireCache(initialCache) {
-  const cache = createRequire(import.meta.url).cache;
-  for (const cachedPath of Object.keys(cache)) {
-    if (!initialCache.has(cachedPath)) delete cache[cachedPath];
-  }
 }
 function placeClientPrerenderFragments(html, fragments) {
   const warnings = [];
@@ -73495,26 +73451,11 @@ function isCanonicalDescendant(parent, candidate) {
   const relative = path3.relative(parent, candidate);
   return Boolean(relative) && !relative.startsWith("..") && !path3.isAbsolute(relative);
 }
-function executeBundledRenderer(source, modulePath, displayPath) {
-  const moduleRecord = { exports: {} };
-  const execute = new Function(
-    "exports",
-    "require",
-    "module",
-    "__filename",
-    "__dirname",
-    `${source}
-//# sourceURL=${displayPath.replaceAll("\\", "/")}
-`
-  );
-  execute(moduleRecord.exports, createRequire(modulePath), moduleRecord, modulePath, path3.dirname(modulePath));
-  const exported = moduleRecord.exports;
-  return exported && typeof exported === "object" && "default" in exported ? exported.default : void 0;
-}
-async function executeEsmBundledRenderer(source, modulePath, displayPath, projectRoots) {
+async function executeBundledRenderer(source, format, modulePath, displayPath, projectRoots) {
   const bootstrap = String.raw`
 const { parentPort, workerData } = require("node:worker_threads");
 const { createRequire } = require("node:module");
+const { dirname } = require("node:path");
 globalThis.require = createRequire(workerData.modulePath);
 function safeMessage(error) {
   try {
@@ -73525,8 +73466,18 @@ function safeMessage(error) {
 }
 (async () => {
   try {
-    const encoded = Buffer.from(workerData.source + "\n//# sourceURL=" + workerData.displayPath + "\n").toString("base64");
-    const namespace = await import("data:text/javascript;base64," + encoded);
+    const source = workerData.source + "\n//# sourceURL=" + workerData.displayPath + "\n";
+    let namespace;
+    if (workerData.format === "cjs") {
+      const record = { exports: {} };
+      const execute = new Function("exports", "require", "module", "__filename", "__dirname", source);
+      execute(record.exports, globalThis.require, record, workerData.modulePath, dirname(workerData.modulePath));
+      namespace = record.exports;
+    } else {
+      const encoded = Buffer.from(source).toString("base64");
+      namespace = await import("data:text/javascript;base64," + encoded);
+    }
+    if (!namespace) return parentPort.postMessage({ kind: "not-function" });
     if (typeof namespace.default !== "function") return parentPort.postMessage({ kind: "not-function" });
     const rendered = await namespace.default();
     if (typeof rendered !== "string") {
@@ -73539,7 +73490,7 @@ function safeMessage(error) {
 })();`;
   const worker = new Worker2(bootstrap, {
     eval: true,
-    workerData: { source, modulePath, displayPath: displayPath.replaceAll("\\", "/") }
+    workerData: { source, format, modulePath, displayPath: displayPath.replaceAll("\\", "/") }
   });
   try {
     const outcome = await new Promise((resolve, reject) => {
@@ -73957,7 +73908,7 @@ async function loadProjectCompilerToolchain(projectRoot, spec) {
   } catch {
     throw projectToolchainError(spec.framework, `${spec.framework}/Vite requires node_modules to be a real directory contained by the Capsule project.`, spec.installHint);
   }
-  const projectRequire = createRequire2(path4.join(projectRoot, "package.json"));
+  const projectRequire = createRequire(path4.join(projectRoot, "package.json"));
   const resolvedPackages = /* @__PURE__ */ new Map();
   for (const required of spec.requiredPackages) {
     if (typeof declared[required.declaration] !== "string") {
