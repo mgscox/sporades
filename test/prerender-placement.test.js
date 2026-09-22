@@ -5,6 +5,22 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createBundle } from "../dist/bundle-pipeline.js";
+import { placeClientPrerenderFragments } from "../dist/client-prerender.js";
+
+test("unknown marker diagnostics are bounded single-line text without rewriting comments", () => {
+  for (const payload of ['bad\nforged-output\u001b[2J\u2028\u202e', 'long-' + 'x'.repeat(10000), '\u001b\u202e']) {
+    const source = `<html><body><!-- sporades:prerender ${payload} --></body></html>`;
+    for (const fragments of [[], [{name:'known', html:'<p>unused</p>'}]]) {
+      const placed = placeClientPrerenderFragments(source, fragments);
+      assert.equal(placed.html, source);
+      const warning = placed.warnings.find(({code}) => code === 'PRERENDER_UNKNOWN_MARKER');
+      assert.ok(warning);
+      assert.ok(Array.from(warning.fragment).length <= 64);
+      assert.ok(Array.from(warning.message).length < 160);
+      assert.doesNotMatch(warning.fragment + warning.message, /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u);
+    }
+  }
+});
 
 test("ordered prerender placement preserves author HTML, warnings and last successful output", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-placement-"));
@@ -109,6 +125,10 @@ export default async () => {
       await assert.rejects(createBundle(root, {...config, client}), /reserved prerender boundary comment/i);
       await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'late-boundaries', generateBundle: {order:'post', handler(_options, bundle) {bundle['index.html'].source += ${JSON.stringify(boundary)};} } }] };`);
       await assert.rejects(createBundle(root, {...config, client}), /reserved prerender boundary comment/i);
+      await assert.rejects(createBundle(root, config), /not stable in the parsed HTML document/i);
+    }
+    for (const suffix of [`<template>${boundary}</template>`, `<template><template>${boundary}</template></template>`, '<!sporades:prerender-boundary-start malformed>']) {
+      await writeFile(path.join(root, 'vite.config.mjs'), `export default { plugins: [{ name: 'late-inert-boundaries', generateBundle: {order:'post', handler(_options, bundle) {bundle['index.html'].source += ${JSON.stringify(suffix)};} } }] };`);
       await assert.rejects(createBundle(root, config), /not stable in the parsed HTML document/i);
     }
     await writeFile(path.join(root, 'vite.config.mjs'), 'export default {};');

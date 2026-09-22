@@ -1029,17 +1029,27 @@ export function validateClientPrerenderOutputHtml(html, expectedBoundaries) {
     }
 }
 function hasReservedPrerenderBoundary(html) {
-    const pending = [parseHtml(html, { scriptingEnabled: true })];
+    return countReservedPrerenderBoundaries(parseHtml(html, { scriptingEnabled: true })) > 0;
+}
+function countReservedPrerenderBoundaries(root) {
+    const pending = [root];
+    let count = 0;
     while (pending.length) {
         const node = pending.pop();
         if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end)\b/.test(node.data.trim()))
-            return true;
+            count++;
         if ("childNodes" in node)
             pending.push(...node.childNodes);
-        if ("tagName" in node && node.tagName === "template")
+        if ("tagName" in node && node.tagName === "template" && "content" in node)
             pending.push(node.content);
     }
-    return false;
+    return count;
+}
+function unknownPrerenderMarkerWarning(name) {
+    const normalized = name.replace(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/gu, " ").replace(/\s+/g, " ").trim();
+    const characters = Array.from(normalized || "[empty]");
+    const fragment = characters.length > 64 ? `${characters.slice(0, 63).join("")}…` : characters.join("");
+    return { code: "PRERENDER_UNKNOWN_MARKER", fragment, message: `Unknown prerender marker "${fragment}" remains a comment in index.html.` };
 }
 export function placeClientPrerenderFragments(html, fragments) {
     const warnings = [];
@@ -1058,7 +1068,7 @@ export function placeClientPrerenderFragments(html, fragments) {
     const placement = scanClientPrerenderHtml(html);
     if (fragments.length === 0) {
         for (const name of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
-            warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name, message: `Unknown prerender marker "${name}" remains a comment in index.html.` });
+            warnings.push(unknownPrerenderMarkerWarning(name));
         }
         return { html, warnings, placements: 0, boundaries: [] };
     }
@@ -1078,7 +1088,7 @@ export function placeClientPrerenderFragments(html, fragments) {
             else {
                 replaced += html.slice(marker.start, marker.end);
                 if (!unknownNames.has(marker.name)) {
-                    warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: marker.name, message: `Unknown prerender marker "${marker.name}" remains a comment in index.html.` });
+                    warnings.push(unknownPrerenderMarkerWarning(marker.name));
                     unknownNames.add(marker.name);
                 }
             }
@@ -1193,9 +1203,12 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
         if (implicit)
             implicit.after = order;
     };
-    visit(parseHtml(html, { sourceCodeLocationInfo: true, scriptingEnabled: true }));
+    const document = parseHtml(html, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+    visit(document);
     const invalid = () => prerenderError("Client prerender placement is not stable in the parsed HTML document.", "Use context-valid fragment HTML at each marker (for example, rows inside tables), outside inert templates. The browser must keep fragment content between its boundaries.");
-    if (boundaries.length !== expectedPlacements * 2)
+    // Templates are inert to current discovery, but their cloned contents can
+    // become live later. Count all reserved comments, including malformed pairs.
+    if (boundaries.length !== expectedPlacements * 2 || countReservedPrerenderBoundaries(document) !== expectedPlacements * 2)
         throw invalid();
     boundaries.sort((left, right) => left.start - right.start);
     const ownedRanges = [];
@@ -1276,7 +1289,7 @@ function scanClientPrerenderHtml(html) {
         if ("childNodes" in node)
             for (const child of node.childNodes)
                 visit(child);
-        if ("tagName" in node && node.tagName === "template")
+        if ("tagName" in node && node.tagName === "template" && "content" in node)
             visit(node.content);
     };
     visit(document);
