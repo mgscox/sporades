@@ -263,6 +263,10 @@ function scanClientPrerenderHtml(html: string) {
     if (closing) nameStart += 1;
     if (!/[A-Za-z]/.test(html[nameStart] ?? "")) {
       const declarationEnd = findHtmlTagEnd(html, nameStart);
+      if (declarationEnd === undefined && (html[nameStart] === "!" || html[nameStart] === "?")) {
+        problem = "unterminated HTML declaration";
+        break;
+      }
       cursor = declarationEnd === undefined ? tagStart + 1 : declarationEnd;
       continue;
     }
@@ -270,7 +274,10 @@ function scanClientPrerenderHtml(html: string) {
     while (/[A-Za-z0-9:-]/.test(html[nameEnd] ?? "")) nameEnd += 1;
     const name = lowerHtml.slice(nameStart, nameEnd);
     const tagEnd = findHtmlTagEnd(html, nameEnd);
-    if (tagEnd === undefined) break;
+    if (tagEnd === undefined) {
+      problem = "unterminated HTML tag";
+      break;
+    }
     if (!closing && name === "body" && bodyEnd === undefined) bodyEnd = tagEnd;
     cursor = tagEnd;
 
