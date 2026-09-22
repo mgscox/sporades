@@ -81767,9 +81767,10 @@ Module.prototype.require = function(specifier) {
       const filename = localRequire.resolve(specifier);
       if (isAbsolute(filename)) dependencies.add(filename);
     } catch {
+      const packageName = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
       const candidates = specifier.startsWith(".") || isAbsolute(specifier)
         ? [resolve(dirname(this.filename || workerData.modulePath), specifier)]
-        : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, specifier));
+        : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, packageName));
       for (const candidate of candidates) {
         for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
       }

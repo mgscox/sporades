@@ -4248,6 +4248,16 @@ test("Dev watches prerender modules and transitive code while retaining the last
         assert.ok((await page()).includes(`Installed ${packageName}`));
       }
       const absolute = path.join(dir, 'late-absolute.cjs');
+      for (const packageName of ['computed-export-copy', '@example/computed-export-copy']) {
+        await writeFile(path.join(projectDir, 'render/landing.ts'), `export default () => { const target = ${JSON.stringify(`${packageName}/feature`)}; return require(target); };`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+        const packageDir = path.join(projectDir, 'node_modules', packageName);
+        await mkdir(path.join(packageDir, 'dist'), {recursive:true});
+        await writeFile(path.join(packageDir, 'package.json'), JSON.stringify({name:packageName, exports:{'./feature':'./dist/feature.js'}}));
+        await writeFile(path.join(packageDir, 'dist/feature.js'), `module.exports = ${JSON.stringify(`Installed computed ${packageName}`)};`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.ok((await page()).includes(`Installed computed ${packageName}`));
+      }
       await writeFile(path.join(projectDir, 'render/landing.ts'), `import copy from ${JSON.stringify(absolute)}; export default () => copy;`);
       await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
       await writeFile(absolute, 'module.exports = "Recovered absolute dependency";');
