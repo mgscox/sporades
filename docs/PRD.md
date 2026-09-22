@@ -416,6 +416,12 @@ included in HTTP errors, CLI output, or client transport results.
 preferences and file APIs, app-message helpers, a `createHooks` factory,
 Vue-native composables, Svelte stores, SolidJS signals, Lit reactive
 controllers, and Inferno lifecycle adapters over the same connection.
+The framework-neutral `prerender` API additionally exposes `discover()` for a
+readonly snapshot of opaque, named static-fragment boundary handles and
+`dismiss(name?)` for explicit all-fragment or name-filtered cleanup. Each handle
+has an idempotent `dismiss()` method. Unknown names and repeated cleanup are
+no-ops; no import, connection or framework lifecycle dismisses fragments
+automatically. This is build-time static-shell handover, not SSR or hydration.
 Vanilla TypeScript clients can use the transport primitives directly:
 
 ```ts
