@@ -90,6 +90,26 @@ test("named prerender markers replace only HTML comment nodes outside raw text",
   assert.equal(placeClientPrerenderFragment(source, fragment, rendered), expected);
 });
 
+test("fallback scanning recovers abrupt comments and rejects unterminated constructs", () => {
+  const fragment = { name: "landing", module: "render-landing.mjs" };
+  const rendered = "<main>static fragment</main>";
+  const marker = "<!-- sporades:prerender landing -->";
+  const bounded = "<!-- sporades:prerender-boundary-start landing --><main>static fragment</main><!-- sporades:prerender-boundary-end landing -->";
+  for (const abruptComment of ["<!-->", "<!--->", "<!-- stale --!>"]) {
+    const source = `<!doctype html><html><head>${abruptComment}</head><body>${marker}<p>page</p></body></html>\n`;
+    const expected = `<!doctype html><html><head>${abruptComment}</head><body>${bounded}<p>page</p></body></html>\n`;
+    assert.equal(placeClientPrerenderFragment(source, fragment, rendered), expected, abruptComment);
+  }
+  assert.throws(
+    () => placeClientPrerenderFragment("<html><body><!-- unterminated", fragment, rendered),
+    /unterminated HTML comment/i,
+  );
+  assert.throws(
+    () => placeClientPrerenderFragment("<html><body><script>const open = true;", fragment, rendered),
+    /unterminated raw text element: script/i,
+  );
+});
+
 test("a prerender module can use a local CommonJS dependency that requires a Node builtin", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
