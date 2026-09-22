@@ -289,6 +289,99 @@ test("TypeScript CommonJS prerender helpers keep static TypeScript sibling requi
   });
 });
 
+test("named class expression bindings shield local CommonJS-like identifiers", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cjs";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cjs"),
+      `const path = require("node:path");
+const Resolver = class require {
+  static resolve(value) { return require.resolve(value); }
+};
+const DirectoryName = class __dirname {
+  static value() { return __dirname.name; }
+};
+const FileName = class __filename {
+  static value() { return __filename.name; }
+};
+function nested(require) {
+  return class NestedResolver {
+    static value() { return require.resolve("nested-function-class"); }
+  }.value();
+}
+module.exports = () => \`<main>\${Resolver.resolve("class-local")}|\${DirectoryName.value()}|\${FileName.value()}|\${nested({ resolve: (value) => value })}|\${path.basename(__dirname)}</main>\`;
+`,
+    );
+
+    const bundle = await createBundle(projectDir, { name: "class-scope-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>class-local\|__dirname\|__filename\|nested-function-class\|nested<\/main>/,
+      );
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("for and switch lexical bindings do not hide the module CommonJS require", async () => {
+  await withTempDir(async (projectDir) => {
+    const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
+    await writeMinimalViteCapsule(projectDir, sourceHtml);
+    const nestedDir = path.join(projectDir, "renderer", "nested");
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import render from "./renderer/nested/helper.cjs";\nexport default render;\n',
+    );
+    await writeFile(
+      path.join(nestedDir, "helper.cjs"),
+      `const observed = [];
+for (let require = { resolve: (value) => \`for:\${value}\` }, index = 0; index < 1; observed.push(require.resolve("update")), index++) {
+  observed.push(require.resolve("body"));
+}
+for (const require of [{ resolve: (value) => \`of:\${value}\` }]) observed.push(require.resolve("value"));
+for (const key in { item: true }) {
+  const require = { resolve: (value) => \`in:\${value}\` };
+  observed.push(require.resolve(key));
+}
+switch ("go") {
+  case "go":
+    const require = { resolve: (value) => \`switch:\${value}\` };
+    observed.push(require.resolve("case"));
+    break;
+  default:
+    break;
+}
+const target = process.argv.length > 0 ? "./adjacent.cjs" : "./missing.cjs";
+const adjacent = require(target);
+module.exports = () => \`<main>\${observed.join("|")}|\${adjacent}</main>\`;
+`,
+    );
+    await writeFile(path.join(nestedDir, "adjacent.cjs"), 'module.exports = "module-local dynamic require";\n');
+
+    const bundle = await createBundle(projectDir, { name: "lexical-scope-prerender", client: structuredClone(viteConfig) }, { publishLegacy: false });
+    try {
+      assert.match(
+        await readFile(bundle.staticFiles.indexHtml, "utf8"),
+        /<main>for:body\|for:update\|of:value\|in:item\|switch:case\|module-local dynamic require<\/main>/,
+      );
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("a nested CommonJS prerender helper keeps per-module paths and computed require", async () => {
   await withTempDir(async (projectDir) => {
     const sourceHtml = '<!doctype html><html><head></head><body><!-- sporades:prerender landing --><script type="module" src="/client/index.tsx"></script></body></html>\n';
