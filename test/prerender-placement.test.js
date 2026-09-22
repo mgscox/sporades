@@ -5,6 +5,22 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createBundle } from "../dist/bundle-pipeline.js";
+import { placeClientPrerenderFragments } from "../dist/client-prerender.js";
+
+test("unknown marker diagnostics are bounded single-line text without rewriting comments", () => {
+  for (const payload of ['bad\nforged-output\u001b[2J\u2028\u202e', 'long-' + 'x'.repeat(10000), '\u001b\u202e']) {
+    const source = `<html><body><!-- sporades:prerender ${payload} --></body></html>`;
+    for (const fragments of [[], [{name:'known', html:'<p>unused</p>'}]]) {
+      const placed = placeClientPrerenderFragments(source, fragments);
+      assert.equal(placed.html, source);
+      const warning = placed.warnings.find(({code}) => code === 'PRERENDER_UNKNOWN_MARKER');
+      assert.ok(warning);
+      assert.ok(Array.from(warning.fragment).length <= 64);
+      assert.ok(Array.from(warning.message).length < 160);
+      assert.doesNotMatch(warning.fragment + warning.message, /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u);
+    }
+  }
+});
 
 test("ordered prerender placement preserves author HTML, warnings and last successful output", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-placement-"));

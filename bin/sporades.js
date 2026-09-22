@@ -81412,6 +81412,12 @@ function forEachRendererChild(node, visit) {
 function isRendererSyntaxNode(value) {
   return Boolean(value && typeof value === "object" && typeof value.type === "string");
 }
+function unknownPrerenderMarkerWarning(name2) {
+  const normalized = name2.replace(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/gu, " ").replace(/\s+/g, " ").trim();
+  const characters = Array.from(normalized || "[empty]");
+  const fragment = characters.length > 64 ? `${characters.slice(0, 63).join("")}\u2026` : characters.join("");
+  return { code: "PRERENDER_UNKNOWN_MARKER", fragment, message: `Unknown prerender marker "${fragment}" remains a comment in index.html.` };
+}
 function placeClientPrerenderFragments(html, fragments) {
   const warnings = [];
   const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
@@ -81423,7 +81429,7 @@ function placeClientPrerenderFragments(html, fragments) {
   const placement = scanClientPrerenderHtml(html);
   if (fragments.length === 0) {
     for (const name2 of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
-      warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: name2, message: `Unknown prerender marker "${name2}" remains a comment in index.html.` });
+      warnings.push(unknownPrerenderMarkerWarning(name2));
     }
     return { html, warnings };
   }
@@ -81444,7 +81450,7 @@ function placeClientPrerenderFragments(html, fragments) {
       else {
         replaced += html.slice(marker.start, marker.end);
         if (!unknownNames.has(marker.name)) {
-          warnings.push({ code: "PRERENDER_UNKNOWN_MARKER", fragment: marker.name, message: `Unknown prerender marker "${marker.name}" remains a comment in index.html.` });
+          warnings.push(unknownPrerenderMarkerWarning(marker.name));
           unknownNames.add(marker.name);
         }
       }
