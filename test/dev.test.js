@@ -4227,6 +4227,16 @@ test("Dev watches prerender modules and transitive code while retaining the last
       const final = await page();
       assert.match(final, /Recovered new dependency/);
       assert.doesNotMatch(final, /(?:server|project)-env-prerender-must-not-ship/);
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'export default () => { const target = "./computed.cjs"; return require(target); };');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      assert.match(await page(), /Recovered new dependency/);
+      await writeFile(path.join(projectDir, 'render/computed.cjs'), 'throw new Error("computed helper failed");');
+      const helperFailed = await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      assert.match(helperFailed.error.message, /computed helper failed/);
+      assert.match(await page(), /Recovered new dependency/);
+      await writeFile(path.join(projectDir, 'render/computed.cjs'), 'module.exports = "Recovered computed helper";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Recovered computed helper/);
     } catch (error) {
       error.message += `\nCaptured events: ${JSON.stringify(events.events)}`;
       throw error;

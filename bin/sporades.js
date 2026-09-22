@@ -81717,11 +81717,32 @@ function isCanonicalDescendant(parent, candidate) {
 async function executeBundledRenderer(source, format, modulePath, displayPath, projectRoots) {
   const bootstrap = String.raw`
 const { parentPort, workerData } = require("node:worker_threads");
-const { createRequire } = require("node:module");
-const { dirname } = require("node:path");
+const { createRequire, Module } = require("node:module");
+const { dirname, isAbsolute, resolve } = require("node:path");
+const dependencies = new Set();
+const originalRequire = Module.prototype.require;
+// Observe attempts before evaluation: failed CommonJS modules are evicted from
+// require.cache. This override lives only in the disposable renderer Worker.
+Module.prototype.require = function(specifier) {
+  if (typeof specifier === "string") {
+    const localRequire = createRequire(this.filename || workerData.modulePath);
+    try {
+      const filename = localRequire.resolve(specifier);
+      if (isAbsolute(filename)) dependencies.add(filename);
+    } catch {
+      const candidates = specifier.startsWith(".") || isAbsolute(specifier)
+        ? [resolve(dirname(this.filename || workerData.modulePath), specifier)]
+        : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, specifier));
+      for (const candidate of candidates) {
+        for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
+      }
+    }
+  }
+  return originalRequire.apply(this, arguments);
+};
 globalThis.require = createRequire(workerData.modulePath);
 function post(outcome) {
-  parentPort.postMessage({ ...outcome, dependencies: Object.keys(require.cache) });
+  parentPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])] });
 }
 function safeMessage(error) {
   try {
