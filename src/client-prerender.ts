@@ -268,11 +268,10 @@ function preserveRendererImportMetaUrl(
       const loadRendererModule = async (args: import("esbuild").OnLoadArgs): Promise<import("esbuild").OnLoadResult | undefined> => {
         const contents = await readFile(args.path, "utf8");
         const commonJsModule = await rendererModuleUsesCommonJs(args.path, contents, projectRoot, packageModeCache);
-        const preservesImportMetaUrl = contents.includes("import.meta.url");
         const loader = loaders.get(path.extname(args.path));
         if (!loader) return undefined;
         const checksImports = contents.includes("import");
-        const requiresTransform = checksImports || preservesImportMetaUrl || (commonJsModule && /\b(?:require|module|eval|__dirname|__filename)\b/.test(contents));
+        const requiresTransform = checksImports || (commonJsModule && /\b(?:require|module|eval|__dirname|__filename)\b/.test(contents));
         if (!requiresTransform) {
           if (args.namespace !== commonJsNamespace) return undefined;
           return {
@@ -283,7 +282,7 @@ function preserveRendererImportMetaUrl(
           };
         }
         const moduleUrl = pathToFileURL(args.path).href;
-        const define: Record<string, string> = { "import.meta.url": JSON.stringify(moduleUrl) };
+        const define: Record<string, string> = { "import.meta": JSON.stringify({ url: moduleUrl }) };
         const result = await esbuildBuild({
           absWorkingDir: projectRoot,
           bundle: false,
@@ -313,7 +312,7 @@ function preserveRendererImportMetaUrl(
         const specialized = commonJsModule
           ? specializeCommonJsRendererModule(javascript[0].text, args.path, moduleUrl)
           : { contents: javascript[0].text, changed: false };
-        if (commonJsModule && !preservesImportMetaUrl && !specialized.changed && args.namespace !== commonJsNamespace) return undefined;
+        if (commonJsModule && !checksImports && !specialized.changed && args.namespace !== commonJsNamespace) return undefined;
         return {
           contents: specialized.contents,
           loader: rendererTransformOutputLoader(loader),

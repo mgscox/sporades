@@ -201,3 +201,15 @@ test('direct CommonJS eval fails explicitly instead of using entry-rooted wrappe
     assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), 'local');
   } finally { await rm(root, {recursive:true, force:true}); }
 });
+
+test('ESM import.meta aliases and computed accesses preserve each source URL', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-import-meta-alias-')));
+  try {
+    await mkdir(path.join(root, 'nested'));
+    const helper = path.join(root, 'nested/helper.mjs');
+    const entry = path.join(root, 'entry.mjs');
+    await writeFile(helper, 'const meta = import.meta; const {url} = import /* module meta */ .meta; export default () => [meta.url, url, import.meta["url"], meta === import.meta];');
+    await writeFile(entry, 'import helper from "./nested/helper.mjs"; const meta = import.meta; export default () => JSON.stringify([meta["url"], ...helper()]);');
+    assert.deepEqual(JSON.parse(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'})), [pathToFileURL(entry).href, pathToFileURL(helper).href, pathToFileURL(helper).href, pathToFileURL(helper).href, true]);
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
