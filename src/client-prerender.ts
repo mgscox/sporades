@@ -783,6 +783,11 @@ export type ClientPrerenderWarning = Readonly<{
 export function placeClientPrerenderFragments(html: string, fragments: readonly { name: string; html: string }[]) {
   const warnings: ClientPrerenderWarning[] = [];
   if (fragments.length === 0) return { html, warnings };
+  for (const fragment of fragments) {
+    if (scanClientPrerenderHtml(fragment.html).reservedBoundary) {
+      throw prerenderError(`Prerender fragment "${fragment.name}" contains a reserved prerender boundary comment.`, "Remove Sporades private boundary comments from renderer output; the Bundle pipeline supplies them.");
+    }
+  }
   const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
   const counts = new Map(fragments.map((fragment) => [fragment.name, 0]));
   const expand = (fragment: { name: string; html: string }) => {
@@ -837,6 +842,7 @@ function scanClientPrerenderHtml(html: string) {
   const markers: Array<{ start: number; end: number; name?: string }> = [];
   let bodyEnd: number | undefined;
   let problem: string | undefined;
+  let reservedBoundary = false;
   let cursor = 0;
   while (cursor < html.length) {
     const tagStart = html.indexOf("<", cursor);
@@ -847,7 +853,9 @@ function scanClientPrerenderHtml(html: string) {
         problem = "unterminated HTML comment";
         break;
       }
-      const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(html.slice(tagStart + 4, commentEnd.contentEnd));
+      const comment = html.slice(tagStart + 4, commentEnd.contentEnd);
+      if (/^\s*sporades:prerender-boundary-(?:start|end)\b/.test(comment)) reservedBoundary = true;
+      const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(comment);
       if (marker) markers.push({ start: tagStart, end: commentEnd.end, name: marker[1] });
       cursor = commentEnd.end;
       continue;
@@ -911,7 +919,7 @@ function scanClientPrerenderHtml(html: string) {
       cursor = rawTextEnd;
     }
   }
-  return { bodyEnd, markers, problem };
+  return { bodyEnd, markers, problem, reservedBoundary };
 }
 
 function findHtmlCommentEnd(html: string, commentStart: number): { contentEnd: number; end: number } | undefined {

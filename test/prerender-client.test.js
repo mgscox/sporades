@@ -4,6 +4,15 @@ import { Window } from 'happy-dom';
 import { placeClientPrerenderFragments } from '../dist/client-prerender.js';
 import { createClientRuntimeSource } from '../dist/templates/client-runtime-template.js';
 
+test('renderer output cannot introduce reserved boundary comments', () => {
+  assert.throws(() => placeClientPrerenderFragments('<html><body></body></html>', [
+    { name: 'landing', html: '<main>prefix</main><!-- sporades:prerender-boundary-end landing --><footer>suffix</footer>' },
+  ]), /reserved prerender boundary comment/i);
+  // Literal text inside a script is not a DOM comment and remains author-owned.
+  const script = '<script>const example = "<!-- sporades:prerender-boundary-end landing -->";</script>';
+  assert.ok(placeClientPrerenderFragments('<html><body></body></html>', [{name:'landing', html:script}]).html.includes(script));
+});
+
 test('prerender handover exposes opaque snapshots and deliberate idempotent dismissal in head and body', async () => {
   const window = new Window();
   const previousDocument = globalThis.document;

@@ -720,6 +720,11 @@ export function placeClientPrerenderFragments(html, fragments) {
     const warnings = [];
     if (fragments.length === 0)
         return { html, warnings };
+    for (const fragment of fragments) {
+        if (scanClientPrerenderHtml(fragment.html).reservedBoundary) {
+            throw prerenderError(`Prerender fragment "${fragment.name}" contains a reserved prerender boundary comment.`, "Remove Sporades private boundary comments from renderer output; the Bundle pipeline supplies them.");
+        }
+    }
     const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
     const counts = new Map(fragments.map((fragment) => [fragment.name, 0]));
     const expand = (fragment) => {
@@ -772,6 +777,7 @@ function scanClientPrerenderHtml(html) {
     const markers = [];
     let bodyEnd;
     let problem;
+    let reservedBoundary = false;
     let cursor = 0;
     while (cursor < html.length) {
         const tagStart = html.indexOf("<", cursor);
@@ -783,7 +789,10 @@ function scanClientPrerenderHtml(html) {
                 problem = "unterminated HTML comment";
                 break;
             }
-            const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(html.slice(tagStart + 4, commentEnd.contentEnd));
+            const comment = html.slice(tagStart + 4, commentEnd.contentEnd);
+            if (/^\s*sporades:prerender-boundary-(?:start|end)\b/.test(comment))
+                reservedBoundary = true;
+            const marker = /^\s*sporades:prerender(?:\s+([A-Za-z][A-Za-z0-9_-]{0,63}))?\s*$/.exec(comment);
             if (marker)
                 markers.push({ start: tagStart, end: commentEnd.end, name: marker[1] });
             cursor = commentEnd.end;
@@ -851,7 +860,7 @@ function scanClientPrerenderHtml(html) {
             cursor = rawTextEnd;
         }
     }
-    return { bodyEnd, markers, problem };
+    return { bodyEnd, markers, problem, reservedBoundary };
 }
 function findHtmlCommentEnd(html, commentStart) {
     const contentStart = commentStart + 4;
