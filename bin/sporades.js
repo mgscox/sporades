@@ -81292,7 +81292,9 @@ function collectRendererScopes(node, scope, scopes) {
   } else if (node.type === "ImportDeclaration") {
     for (const specifier of node.specifiers ?? []) addRendererBinding(activeScope, specifier.local);
   }
-  forEachRendererChild(node, (child) => collectRendererScopes(child, activeScope, scopes));
+  const isFunction = node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression";
+  const bodyScope = isFunction ? { parent: activeScope, functionScope: true, bindings: /* @__PURE__ */ new Set() } : void 0;
+  forEachRendererChild(node, (child) => collectRendererScopes(child, bodyScope && child === node.body ? bodyScope : activeScope, scopes));
 }
 function addRendererBinding(scope, pattern) {
   if (!pattern || typeof pattern !== "object") return;

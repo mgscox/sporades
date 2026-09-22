@@ -696,7 +696,13 @@ function collectRendererScopes(
   } else if (node.type === "ImportDeclaration") {
     for (const specifier of (node.specifiers as RendererSyntaxNode[] | undefined) ?? []) addRendererBinding(activeScope, specifier.local);
   }
-  forEachRendererChild(node, (child) => collectRendererScopes(child, activeScope, scopes));
+  const isFunction = node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression";
+  // Parameter initializers cannot see body var/function declarations. A body
+  // environment still inherits parameters, but must not add bindings to them.
+  const bodyScope: RendererLexicalScope | undefined = isFunction
+    ? { parent: activeScope, functionScope: true, bindings: new Set() }
+    : undefined;
+  forEachRendererChild(node, (child) => collectRendererScopes(child, bodyScope && child === node.body ? bodyScope : activeScope, scopes));
 }
 
 function addRendererBinding(scope: RendererLexicalScope, pattern: unknown) {

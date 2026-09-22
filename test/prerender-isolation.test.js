@@ -228,6 +228,22 @@ test('CommonJS wrapper arguments fail explicitly while ordinary function argumen
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('CommonJS parameter initializers do not inherit body var shadows of module wrappers', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-parameter-scope-')));
+  try {
+    await mkdir(path.join(root, 'nested'));
+    await writeFile(path.join(root, 'nested/value.cjs'), 'module.exports = "adjacent";');
+    await writeFile(path.join(root, 'nested/helper.cjs'), `
+function render(directory = __dirname, filename = __filename, copy = require('./' + 'value.cjs')) {
+  var __dirname, __filename, require;
+  return JSON.stringify([directory, filename, copy]);
+}
+module.exports = render;`);
+    await writeFile(path.join(root, 'entry.mjs'), 'import render from "./nested/helper.cjs"; export default render;');
+    assert.deepEqual(JSON.parse(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'})), [path.join(root, 'nested'), path.join(root, 'nested/helper.cjs'), 'adjacent']);
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('ESM import.meta aliases and computed accesses preserve each source URL', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-import-meta-alias-')));
   try {
