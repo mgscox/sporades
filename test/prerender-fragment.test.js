@@ -1126,6 +1126,68 @@ test("raw file URL alias redaction does not consume sibling prefixes", async () 
   });
 });
 
+test("noncanonical contained file URLs retain project-relative diagnostic context", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "URL Capsule");
+    const rendererDir = path.join(projectDir, "renderer", "invalid");
+    await mkdir(rendererDir, { recursive: true });
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const canonicalProject = await realpath(projectDir);
+    const canonicalUrl = pathToFileURL(path.join(canonicalProject, "renderer", "invalid", "missing-contained-url.mjs")).href;
+    const rawUrl = `${canonicalUrl
+      .replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase())
+      .replace("URL", "%55%52%4c")}?variant=%2f#contained-fragment`;
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      `import ${JSON.stringify(rawUrl)};\nexport default () => "<main>unreachable</main>";\n`,
+    );
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+      (error) => {
+        assert.match(
+          error.message,
+          /<project>\/renderer\/invalid\/missing-contained-url\.mjs\?variant=%2f#contained-fragment/i,
+        );
+        assert.doesNotMatch(error.message, /%55%52%4c%20Capsule/i);
+        return true;
+      },
+    );
+  });
+});
+
+test("mixed-case local file URL schemes redact external and contained paths", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    const containedDir = path.join(projectDir, "renderer");
+    const externalDir = path.join(tempRoot, "external modules");
+    await mkdir(containedDir, { recursive: true });
+    await mkdir(externalDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const canonicalProject = await realpath(projectDir);
+    const cases = [
+      {
+        specifier: pathToFileURL(path.join(canonicalProject, "renderer", "missing-mixed-contained.mjs")).href.replace(/^file:/, "FiLe:"),
+        expected: /<project>\/renderer\/missing-mixed-contained\.mjs/i,
+      },
+      {
+        specifier: pathToFileURL(path.join(await realpath(externalDir), "missing-uppercase-external.mjs")).href.replace(/^file:/, "FILE:"),
+        expected: /<project>\/missing-uppercase-external\.mjs/i,
+      },
+    ];
+    for (const testCase of cases) {
+      await writeFile(
+        path.join(projectDir, "render-landing.mjs"),
+        `import ${JSON.stringify(testCase.specifier)};\nexport default () => "<main>unreachable</main>";\n`,
+      );
+      await assert.rejects(
+        renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+        testCase.expected,
+      );
+    }
+  });
+});
+
 test("hoisted renderer build failures redact dependency paths outside the Capsule", async () => {
   await withTempDir(async (tempRoot) => {
     const projectDir = path.join(tempRoot, "capsule");
