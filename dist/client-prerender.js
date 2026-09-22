@@ -754,15 +754,28 @@ export function placeClientPrerenderFragment(html, fragment, rendered) {
     return placeClientPrerenderFragments(html, [{ name: fragment.name, html: rendered }]).html;
 }
 export function validateClientPrerenderSourceHtml(html) {
-    if (scanClientPrerenderHtml(html).reservedBoundary) {
+    if (hasReservedPrerenderBoundary(html)) {
         throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
     }
+}
+function hasReservedPrerenderBoundary(html) {
+    const pending = [parseHtml(html, { scriptingEnabled: true })];
+    while (pending.length) {
+        const node = pending.pop();
+        if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end)\b/.test(node.data.trim()))
+            return true;
+        if ("childNodes" in node)
+            pending.push(...node.childNodes);
+        if ("tagName" in node && node.tagName === "template")
+            pending.push(node.content);
+    }
+    return false;
 }
 export function placeClientPrerenderFragments(html, fragments) {
     const warnings = [];
     validateClientPrerenderSourceHtml(html);
     for (const fragment of fragments) {
-        if (scanClientPrerenderHtml(fragment.html).reservedBoundary) {
+        if (hasReservedPrerenderBoundary(fragment.html)) {
             throw prerenderError(`Prerender fragment "${fragment.name}" contains a reserved prerender boundary comment.`, "Remove Sporades private boundary comments from renderer output; the Bundle pipeline supplies them.");
         }
     }

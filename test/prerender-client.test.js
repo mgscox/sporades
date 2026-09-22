@@ -2,9 +2,16 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Window } from 'happy-dom';
 import { placeClientPrerenderFragments } from '../dist/client-prerender.js';
+import { validateClientToolchainInput } from '../dist/client-toolchain.js';
 import { createClientRuntimeSource } from '../dist/templates/client-runtime-template.js';
 
 test('renderer output and source HTML cannot introduce reserved boundary comments', () => {
+  const bogus = '<!sporades:prerender-boundary-start landing><p>author</p><!sporades:prerender-boundary-end landing>';
+  for (const html of [bogus, `<template>${bogus}</template>`]) {
+    assert.throws(() => placeClientPrerenderFragments(html, []), /reserved prerender boundary comment/i);
+    assert.throws(() => validateClientToolchainInput({toolchain:'esbuild', frameworkConfig:{framework:'react'}, indexHtml:html}), /reserved prerender boundary comment/i);
+    assert.throws(() => placeClientPrerenderFragments('<body></body>', [{name:'landing', html}]), /reserved prerender boundary comment/i);
+  }
   assert.throws(() => placeClientPrerenderFragments('<body><!-- sporades:prerender-boundary-start landing --><p>author</p><!-- sporades:prerender-boundary-end landing --></body>', []), /reserved prerender boundary comment/i);
   assert.throws(() => placeClientPrerenderFragments('<html><body></body></html>', [
     { name: 'landing', html: '<main>prefix</main><!-- sporades:prerender-boundary-end landing --><footer>suffix</footer>' },
