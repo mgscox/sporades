@@ -776,6 +776,37 @@ export default async () => \`<main>\${awaited}|\${misleading.length > 0}|\${(awa
   });
 });
 
+test("top-level-await renderer worker exit fails instead of hanging", async () => {
+  await withTempDir(async (projectDir) => {
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      `await Promise.resolve();
+export default () => {
+  process.exit(0);
+};
+`,
+    );
+    let timeout;
+    const canonicalProject = await realpath(projectDir);
+    const render = renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" });
+    const boundedRender = Promise.race([
+      render,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("timed out waiting for renderer worker exit")), 500);
+      }),
+    ]).finally(() => clearTimeout(timeout));
+
+    await assert.rejects(
+      boundedRender,
+      (error) => {
+        assert.match(error.message, /renderer worker exited before returning a result \(code 0\)/i);
+        assert.match(error.hint, /fix the renderer/i);
+        return true;
+      },
+    );
+  });
+});
+
 test("invalid renderer package metadata is identified without leaking Capsule paths", async () => {
   await withTempDir(async (dir) => {
     const projectDir = path.join(dir, "caf\u00e9 package capsule");
