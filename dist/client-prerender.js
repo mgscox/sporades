@@ -1,7 +1,7 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Worker } from "node:worker_threads";
+import { MessageChannel, Worker } from "node:worker_threads";
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
 import { parse as parseHtml } from "parse5";
@@ -1103,15 +1103,19 @@ async function executeBundledRenderer(source, format, modulePath, displayPath, p
     // isolates preloaded CLI/Vite dependencies as well as concurrent renderer builds,
     // without evicting or mutating the host's CommonJS cache. This is not a sandbox.
     const bootstrap = String.raw `
-const { parentPort, workerData } = require("node:worker_threads");
+const { workerData } = require("node:worker_threads");
+const completionPort = workerData.completionPort;
+delete workerData.completionPort;
 const { createRequire, Module } = require("node:module");
 const { dirname, isAbsolute, resolve } = require("node:path");
 const dependencies = new Set();
+const runtimeSpecifiers = new Set();
 const originalRequire = Module.prototype.require;
 // Observe attempts before evaluation: failed CommonJS modules are evicted from
 // require.cache. This override lives only in the disposable renderer Worker.
 Module.prototype.require = function(specifier) {
   if (typeof specifier === "string") {
+    if (isAbsolute(specifier) || /^file:/i.test(specifier)) runtimeSpecifiers.add(specifier);
     const localRequire = createRequire(this.filename || workerData.modulePath);
     try {
       const filename = localRequire.resolve(specifier);
@@ -1129,7 +1133,7 @@ Module.prototype.require = function(specifier) {
 };
 globalThis.require = createRequire(workerData.modulePath);
 function post(outcome) {
-  parentPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])] });
+  completionPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])], runtimeSpecifiers: [...runtimeSpecifiers] });
 }
 function safeMessage(error) {
   try {
@@ -1138,6 +1142,7 @@ function safeMessage(error) {
     return "Thrown error message unavailable.";
   }
 }
+process.once("uncaughtException", (error) => post({ kind: "failure", message: safeMessage(error) }));
 (async () => {
   try {
     const source = workerData.source + "\n//# sourceURL=" + workerData.displayPath + "\n";
@@ -1162,19 +1167,21 @@ function safeMessage(error) {
     post({ kind: "failure", message: safeMessage(error) });
   }
 })();`;
+    const completion = new MessageChannel();
     const worker = new Worker(bootstrap, {
         eval: true,
         // Runtime require(esm) hides ESM descendants from require.cache on the
         // minimum supported Node release. Keep computed requires CommonJS-only;
         // literal ESM imports/requires still use the fully tracked bundle graph.
         execArgv: ["--no-experimental-require-module"],
-        workerData: { source, format, modulePath, displayPath: displayPath.replaceAll("\\", "/") },
+        workerData: { source, format, modulePath, displayPath: displayPath.replaceAll("\\", "/"), completionPort: completion.port2 },
+        transferList: [completion.port2],
     });
     try {
         const outcome = await new Promise((resolve, reject) => {
             let settled = false;
             const cleanup = () => {
-                worker.off("message", onMessage);
+                completion.port1.off("message", onMessage);
                 worker.off("error", onError);
                 worker.off("exit", onExit);
             };
@@ -1190,19 +1197,35 @@ function safeMessage(error) {
             const onExit = (code) => settle(() => {
                 reject(new Error(`renderer worker exited before returning a result (code ${code})`));
             });
-            worker.once("message", onMessage);
+            completion.port1.once("message", onMessage);
             worker.once("error", onError);
             worker.once("exit", onExit);
         });
         if (outcome.kind !== "failure")
             return outcome;
-        return { ...outcome, kind: "failure", message: boundedMessage(outcome.message, projectRoots) };
+        const runtimeRoots = new Set(projectRoots);
+        const aliases = [];
+        for (const filename of outcome.dependencies ?? []) {
+            if (path.isAbsolute(filename) && !projectRoots.some((root) => filename === root || isCanonicalDescendant(root, filename))) {
+                addRendererDependencyRoot(runtimeRoots, filename);
+            }
+        }
+        for (const specifier of outcome.runtimeSpecifiers ?? []) {
+            const filename = rendererLocalFilePath(specifier);
+            if (!filename)
+                continue;
+            const containedRoot = projectRoots.find((root) => filename === root || isCanonicalDescendant(root, filename));
+            const relative = containedRoot ? path.relative(containedRoot, filename) : path.basename(filename);
+            aliases.push([specifier, { replacement: relative ? `<project>/${relative.replaceAll("\\", "/")}` : "<project>", boundary: "path" }]);
+        }
+        return { ...outcome, message: boundedMessage(outcome.message, [...runtimeRoots], aliases) };
     }
     catch (error) {
         return { kind: "failure", message: boundedMessage(error, projectRoots) };
     }
     finally {
         await worker.terminate();
+        completion.port1.close();
     }
 }
 function boundedMessage(error, projectRoots = [], exactAliases = []) {
