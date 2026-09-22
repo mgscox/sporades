@@ -66437,6 +66437,14 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
   const rootScope = { functionScope: true, bindings: /* @__PURE__ */ new Set() };
   const scopes = /* @__PURE__ */ new WeakMap();
   collectRendererScopes(syntax, rootScope, scopes);
+  const assignmentTargets = /* @__PURE__ */ new WeakSet();
+  collectRendererAssignmentTargets(syntax, assignmentTargets);
+  const writtenWrapperNames = /* @__PURE__ */ new Set();
+  visitRendererSyntax(syntax, (node) => {
+    if (node.type === "Identifier" && assignmentTargets.has(node) && (node.name === "require" || node.name === "__dirname" || node.name === "__filename") && !rendererScopeBinds(scopes.get(node) ?? rootScope, node.name)) {
+      writtenWrapperNames.add(node.name);
+    }
+  });
   const replacements = [];
   let helperName = "__sporadesModuleRequire";
   while (contents.includes(helperName)) helperName += "_";
@@ -66449,15 +66457,23 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
       const memberObject = callee?.type === "MemberExpression" ? callee.object : void 0;
       const memberProperty = callee?.type === "MemberExpression" ? callee.property : void 0;
       if (memberObject?.type === "Identifier" && memberObject.name === "require" && memberProperty?.type === "Identifier" && memberProperty.name === "resolve" && callee?.computed !== true && !rendererScopeBinds(scope, "require")) {
-        replacements.push({ start: memberObject.start, end: memberObject.end, value: helperName });
+        replacements.push({
+          start: memberObject.start,
+          end: memberObject.end,
+          value: writtenWrapperNames.has("require") ? "(0, require)" : helperName
+        });
         return;
       }
       if (callee?.type === "Identifier" && callee.name === "require" && !rendererScopeBinds(scope, "require") && first && !isStaticRendererRequireSpecifier(first)) {
-        replacements.push({ start: callee.start, end: callee.end, value: helperName });
+        replacements.push({
+          start: callee.start,
+          end: callee.end,
+          value: writtenWrapperNames.has("require") ? "(0, require)" : helperName
+        });
       }
       return;
     }
-    if (node.type === "Identifier" && (node.name === "__dirname" || node.name === "__filename") && isRendererIdentifierReference(node, parent, key) && !rendererScopeBinds(scope, node.name)) {
+    if (node.type === "Identifier" && (node.name === "__dirname" || node.name === "__filename") && isRendererIdentifierReference(node, parent, key, assignmentTargets) && !rendererScopeBinds(scope, node.name) && !writtenWrapperNames.has(node.name)) {
       const value = JSON.stringify(node.name === "__dirname" ? path3.dirname(modulePath) : modulePath);
       const shorthand = parent?.type === "Property" && parent.shorthand === true && parent.value === node;
       replacements.push({ start: node.start, end: node.end, value: shorthand ? `${String(node.name)}: ${value}` : value });
@@ -66552,11 +66568,37 @@ function isStaticRendererRequireSpecifier(node) {
   if (node.type === "Literal") return typeof node.value === "string";
   return node.type === "TemplateLiteral" && (node.expressions?.length ?? 0) === 0;
 }
-function isRendererIdentifierReference(node, parent, key) {
+function collectRendererAssignmentTargets(syntax, targets) {
+  visitRendererSyntax(syntax, (node) => {
+    if (node.type === "AssignmentExpression") markRendererAssignmentTarget(node.left, targets);
+    else if (node.type === "UpdateExpression") markRendererAssignmentTarget(node.argument, targets);
+    else if ((node.type === "ForInStatement" || node.type === "ForOfStatement") && isRendererSyntaxNode(node.left) && node.left.type !== "VariableDeclaration") {
+      markRendererAssignmentTarget(node.left, targets);
+    }
+  });
+}
+function markRendererAssignmentTarget(value, targets) {
+  if (!isRendererSyntaxNode(value)) return;
+  if (value.type === "Identifier") {
+    targets.add(value);
+  } else if (value.type === "ArrayPattern") {
+    for (const element of value.elements ?? []) markRendererAssignmentTarget(element, targets);
+  } else if (value.type === "ObjectPattern") {
+    for (const property of value.properties ?? []) {
+      markRendererAssignmentTarget(property.type === "RestElement" ? property.argument : property.value, targets);
+    }
+  } else if (value.type === "AssignmentPattern") {
+    markRendererAssignmentTarget(value.left, targets);
+  } else if (value.type === "RestElement" || value.type === "ParenthesizedExpression") {
+    markRendererAssignmentTarget(value.argument ?? value.expression, targets);
+  }
+}
+function isRendererIdentifierReference(node, parent, key, assignmentTargets) {
+  if (assignmentTargets.has(node)) return false;
   if (!parent) return true;
   if (parent.type === "VariableDeclarator" && key === "id" || key === "params" || key === "id") return false;
   if ((parent.type === "MemberExpression" || parent.type === "Property") && key === "property" && parent.computed !== true) return false;
-  if (parent.type === "Property" && key === "key" && parent.computed !== true && parent.shorthand !== true) return false;
+  if (parent.type === "Property" && key === "key" && parent.computed !== true) return false;
   if (parent.type === "LabeledStatement" || parent.type === "BreakStatement" || parent.type === "ContinueStatement") return false;
   if (parent.type.startsWith("Import") || parent.type.startsWith("Export")) return false;
   return node.type === "Identifier";
@@ -66570,6 +66612,7 @@ function visitRendererSyntax(node, visit, parent, key, seen = /* @__PURE__ */ ne
 function forEachRendererChild(node, visit) {
   for (const [key, value] of Object.entries(node)) {
     if (key === "start" || key === "end" || key === "loc" || key === "range") continue;
+    if (node.type === "Property" && node.shorthand === true && key === "key") continue;
     if (Array.isArray(value)) {
       for (const child of value) if (isRendererSyntaxNode(child)) visit(child, key);
     } else if (isRendererSyntaxNode(value)) {

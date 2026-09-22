@@ -238,6 +238,19 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
   const rootScope: RendererLexicalScope = { functionScope: true, bindings: new Set() };
   const scopes = new WeakMap<object, RendererLexicalScope>();
   collectRendererScopes(syntax, rootScope, scopes);
+  const assignmentTargets = new WeakSet<object>();
+  collectRendererAssignmentTargets(syntax, assignmentTargets);
+  const writtenWrapperNames = new Set<string>();
+  visitRendererSyntax(syntax, (node) => {
+    if (
+      node.type === "Identifier"
+      && assignmentTargets.has(node)
+      && (node.name === "require" || node.name === "__dirname" || node.name === "__filename")
+      && !rendererScopeBinds(scopes.get(node) ?? rootScope, node.name)
+    ) {
+      writtenWrapperNames.add(node.name);
+    }
+  });
   const replacements: Array<{ start: number; end: number; value: string }> = [];
   let helperName = "__sporadesModuleRequire";
   while (contents.includes(helperName)) helperName += "_";
@@ -257,7 +270,11 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
         && callee?.computed !== true
         && !rendererScopeBinds(scope, "require")
       ) {
-        replacements.push({ start: memberObject.start, end: memberObject.end, value: helperName });
+        replacements.push({
+          start: memberObject.start,
+          end: memberObject.end,
+          value: writtenWrapperNames.has("require") ? "(0, require)" : helperName,
+        });
         return;
       }
       if (
@@ -267,15 +284,20 @@ function specializeCommonJsRendererModule(contents: string, modulePath: string, 
         && first
         && !isStaticRendererRequireSpecifier(first)
       ) {
-        replacements.push({ start: callee.start, end: callee.end, value: helperName });
+        replacements.push({
+          start: callee.start,
+          end: callee.end,
+          value: writtenWrapperNames.has("require") ? "(0, require)" : helperName,
+        });
       }
       return;
     }
     if (
       node.type === "Identifier"
       && (node.name === "__dirname" || node.name === "__filename")
-      && isRendererIdentifierReference(node, parent, key)
+      && isRendererIdentifierReference(node, parent, key, assignmentTargets)
       && !rendererScopeBinds(scope, node.name as string)
+      && !writtenWrapperNames.has(node.name as string)
     ) {
       const value = JSON.stringify(node.name === "__dirname" ? path.dirname(modulePath) : modulePath);
       const shorthand = parent?.type === "Property" && parent.shorthand === true && parent.value === node;
@@ -380,11 +402,48 @@ function isStaticRendererRequireSpecifier(node: RendererSyntaxNode) {
   return node.type === "TemplateLiteral" && ((node.expressions as unknown[] | undefined)?.length ?? 0) === 0;
 }
 
-function isRendererIdentifierReference(node: RendererSyntaxNode, parent: RendererSyntaxNode | undefined, key: string | undefined) {
+function collectRendererAssignmentTargets(syntax: RendererSyntaxNode, targets: WeakSet<object>) {
+  visitRendererSyntax(syntax, (node) => {
+    if (node.type === "AssignmentExpression") markRendererAssignmentTarget(node.left, targets);
+    else if (node.type === "UpdateExpression") markRendererAssignmentTarget(node.argument, targets);
+    else if (
+      (node.type === "ForInStatement" || node.type === "ForOfStatement")
+      && isRendererSyntaxNode(node.left)
+      && node.left.type !== "VariableDeclaration"
+    ) {
+      markRendererAssignmentTarget(node.left, targets);
+    }
+  });
+}
+
+function markRendererAssignmentTarget(value: unknown, targets: WeakSet<object>) {
+  if (!isRendererSyntaxNode(value)) return;
+  if (value.type === "Identifier") {
+    targets.add(value);
+  } else if (value.type === "ArrayPattern") {
+    for (const element of (value.elements as unknown[] | undefined) ?? []) markRendererAssignmentTarget(element, targets);
+  } else if (value.type === "ObjectPattern") {
+    for (const property of (value.properties as RendererSyntaxNode[] | undefined) ?? []) {
+      markRendererAssignmentTarget(property.type === "RestElement" ? property.argument : property.value, targets);
+    }
+  } else if (value.type === "AssignmentPattern") {
+    markRendererAssignmentTarget(value.left, targets);
+  } else if (value.type === "RestElement" || value.type === "ParenthesizedExpression") {
+    markRendererAssignmentTarget(value.argument ?? value.expression, targets);
+  }
+}
+
+function isRendererIdentifierReference(
+  node: RendererSyntaxNode,
+  parent: RendererSyntaxNode | undefined,
+  key: string | undefined,
+  assignmentTargets: WeakSet<object>,
+) {
+  if (assignmentTargets.has(node)) return false;
   if (!parent) return true;
   if ((parent.type === "VariableDeclarator" && key === "id") || key === "params" || key === "id") return false;
   if ((parent.type === "MemberExpression" || parent.type === "Property") && key === "property" && parent.computed !== true) return false;
-  if (parent.type === "Property" && key === "key" && parent.computed !== true && parent.shorthand !== true) return false;
+  if (parent.type === "Property" && key === "key" && parent.computed !== true) return false;
   if (parent.type === "LabeledStatement" || parent.type === "BreakStatement" || parent.type === "ContinueStatement") return false;
   if (parent.type.startsWith("Import") || parent.type.startsWith("Export")) return false;
   return node.type === "Identifier";
@@ -406,6 +465,7 @@ function visitRendererSyntax(
 function forEachRendererChild(node: RendererSyntaxNode, visit: (child: RendererSyntaxNode, key: string) => void) {
   for (const [key, value] of Object.entries(node)) {
     if (key === "start" || key === "end" || key === "loc" || key === "range") continue;
+    if (node.type === "Property" && node.shorthand === true && key === "key") continue;
     if (Array.isArray(value)) {
       for (const child of value) if (isRendererSyntaxNode(child)) visit(child, key);
     } else if (isRendererSyntaxNode(value)) {

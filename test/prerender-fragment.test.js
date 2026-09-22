@@ -422,10 +422,17 @@ test("CommonJS wrapper writes remain valid assignment targets with local semanti
   ({ value: __filename } = { value: "filename-renamed" });
   __filename += "-compound";
   observed.push(__filename);
+  __filename = 1;
+  ++__filename;
+  observed.push(String(__filename));
+  for (__filename of ["filename-for-of"]) {}
+  observed.push(__filename);
 
   ({ require } = { require: { resolve: (value) => \`local:\${value}\` } });
   observed.push(require.resolve("shorthand"));
   ({ value: require } = { value: { resolve: (value) => \`renamed:\${value}\` } });
+  observed.push(require.resolve("require"));
+  require = { resolve: (value) => \`direct:\${value}\` };
   observed.push(require.resolve("require"));
   return \`<main>\${observed.join("|")}</main>\`;
 };
@@ -436,7 +443,7 @@ test("CommonJS wrapper writes remain valid assignment targets with local semanti
     try {
       assert.match(
         await readFile(bundle.staticFiles.indexHtml, "utf8"),
-        /<main>shorthand\|renamed\|array\|rest\|default\|direct-compound\|2\|for-of\|for-in\|filename-renamed-compound\|local:shorthand\|renamed:require<\/main>/,
+        /<main>shorthand\|renamed\|array\|rest\|default\|direct-compound\|2\|for-of\|for-in\|filename-renamed-compound\|2\|filename-for-of\|local:shorthand\|renamed:require\|direct:require<\/main>/,
       );
     } finally {
       await bundle.releasePublicTreeLease();
@@ -461,7 +468,9 @@ test("a nested CommonJS prerender helper keeps per-module paths and computed req
 const target = process.argv.length > 0 ? "./adjacent.cjs" : "./missing.cjs";
 module.exports = () => {
   const adjacent = require(target);
-  return \`<main>\${path.basename(__dirname)}|\${path.basename(__filename)}|\${path.basename(adjacent.filename)}|\${adjacent.cached}|\${adjacent.content}</main>\`;
+  const locations = { __dirname, __filename };
+  const labels = { __dirname: "directory-key", __filename: "filename-key" };
+  return \`<main>\${path.basename(locations.__dirname)}|\${path.basename(locations.__filename)}|\${labels.__dirname}|\${labels.__filename}|\${path.basename(adjacent.filename)}|\${adjacent.cached}|\${adjacent.content}</main>\`;
 };
 `,
     );
@@ -475,7 +484,7 @@ module.exports = () => {
     try {
       assert.match(
         await readFile(bundle.staticFiles.indexHtml, "utf8"),
-        /<main>nested\|helper\.cjs\|adjacent\.cjs\|true\|adjacent CommonJS content<\/main>/,
+        /<main>nested\|helper\.cjs\|directory-key\|filename-key\|adjacent\.cjs\|true\|adjacent CommonJS content<\/main>/,
       );
       const cache = createRequire(import.meta.url).cache;
       const canonicalProjectDir = await realpath(projectDir);
