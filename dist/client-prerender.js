@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
-import { parse as parseHtml } from "parse5";
+import { parse as parseHtml, serialize as serializeHtml, defaultTreeAdapter } from "parse5";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
 export function readClientPrerenderConfig(value, toolchain) {
     if (value === undefined)
@@ -845,7 +845,59 @@ export function placeClientPrerenderFragments(html, fragments) {
     if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
         throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
     }
+    validatePrerenderAuthorDom(html, replaced, new Set(placement.markers.filter((marker) => marker.name === undefined || byName.has(marker.name)).map((marker) => marker.start)));
     return { html: replaced, warnings, placements };
+}
+function validatePrerenderAuthorDom(source, output, consumedMarkers) {
+    const original = parseHtml(source, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+    const candidate = parseHtml(output, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+    const removeOriginalMarkers = (node) => {
+        if (node.nodeName === "#comment" && node.sourceCodeLocation && consumedMarkers.has(node.sourceCodeLocation.startOffset)) {
+            defaultTreeAdapter.detachNode(node);
+            return;
+        }
+        if ("childNodes" in node)
+            for (const child of [...node.childNodes])
+                removeOriginalMarkers(child);
+    };
+    removeOriginalMarkers(original);
+    const intervals = new Map();
+    const boundaries = [];
+    let position = 0;
+    const index = (node) => {
+        const interval = { before: position++, after: 0 };
+        intervals.set(node, interval);
+        if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end) /.test(node.data.trim()))
+            boundaries.push(node);
+        if ("childNodes" in node)
+            for (const child of node.childNodes)
+                index(child);
+        interval.after = position;
+    };
+    index(candidate);
+    boundaries.sort((left, right) => left.sourceCodeLocation.startOffset - right.sourceCodeLocation.startOffset);
+    for (let pair = 0; pair < boundaries.length; pair += 2) {
+        const start = intervals.get(boundaries[pair]).before;
+        const end = intervals.get(boundaries[pair + 1]).after;
+        // Model Range.deleteContents(): remove fully contained nodes but retain
+        // partially selected ancestors. Compare the resulting author DOM, not HTML
+        // spelling, so implied wrappers and parser reparenting cannot escape cleanup.
+        const removeRange = (node) => {
+            if (!("childNodes" in node))
+                return;
+            for (const child of [...node.childNodes]) {
+                const interval = intervals.get(child);
+                if (interval.before >= start && interval.after <= end)
+                    defaultTreeAdapter.detachNode(child);
+                else
+                    removeRange(child);
+            }
+        };
+        removeRange(candidate);
+    }
+    if (serializeHtml(original) !== serializeHtml(candidate)) {
+        throw prerenderError("Client prerender placement is not stable in the parsed HTML document.", "Fragment dismissal must restore the author-owned DOM. Use explicit containers where HTML parsing would otherwise reparent author content.");
+    }
 }
 function validatePrerenderDomBoundaries(html, expectedPlacements) {
     if (expectedPlacements === 0)

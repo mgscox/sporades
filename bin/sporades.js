@@ -30499,7 +30499,7 @@ var require_decoder = __commonJS({
       window["jpeg-js"].decode = decode;
     }
     function decode(jpegData, userOpts = {}) {
-      var defaultOpts = {
+      var defaultOpts2 = {
         // "undefined" means "Choose whether to transform colors based on the image’s color model."
         colorTransform: void 0,
         useTArray: false,
@@ -30510,7 +30510,7 @@ var require_decoder = __commonJS({
         maxMemoryUsageInMB: 512
         // Don't decode if memory footprint is more than 512MB
       };
-      var opts = { ...defaultOpts, ...userOpts };
+      var opts = { ...defaultOpts2, ...userOpts };
       var arr = new Uint8Array(jpegData);
       var decoder = new JpegImage();
       decoder.opts = opts;
@@ -74127,6 +74127,9 @@ var UNESCAPED_TEXT = /* @__PURE__ */ new Set([
   TAG_NAMES.NOFRAMES,
   TAG_NAMES.PLAINTEXT
 ]);
+function hasUnescapedText(tn, scriptingEnabled) {
+  return UNESCAPED_TEXT.has(tn) || scriptingEnabled && tn === TAG_NAMES.NOSCRIPT;
+}
 
 // node_modules/parse5/dist/tokenizer/index.js
 var State;
@@ -80692,6 +80695,35 @@ function endTagInForeignContent(p, token) {
   }
 }
 
+// node_modules/parse5/node_modules/entities/dist/escape.js
+function getEscape(char) {
+  return char === 34 ? "&quot;" : char === 38 ? "&amp;" : char === 39 ? "&apos;" : char === 60 ? "&lt;" : char === 62 ? "&gt;" : "&nbsp;";
+}
+function escapeWithRegex(re, data2) {
+  re.lastIndex = 0;
+  if (!re.test(data2))
+    return data2;
+  let out = "";
+  let last = 0;
+  do {
+    const index = re.lastIndex - 1;
+    if (last !== index)
+      out += data2.substring(last, index);
+    const char = data2.charCodeAt(index);
+    out += getEscape(char);
+    last = index + 1;
+  } while (re.test(data2));
+  return out + data2.substring(last);
+}
+var attributeEscapeRegex = /["&\u{A0}]/gu;
+function escapeAttribute(data2) {
+  return escapeWithRegex(attributeEscapeRegex, data2);
+}
+var textEscapeRegex = /[&<>\u{A0}]/gu;
+function escapeText(data2) {
+  return escapeWithRegex(textEscapeRegex, data2);
+}
+
 // node_modules/parse5/dist/serializer/index.js
 var VOID_ELEMENTS = /* @__PURE__ */ new Set([
   TAG_NAMES.AREA,
@@ -80713,6 +80745,92 @@ var VOID_ELEMENTS = /* @__PURE__ */ new Set([
   TAG_NAMES.TRACK,
   TAG_NAMES.WBR
 ]);
+function isVoidElement(node, options) {
+  return options.treeAdapter.isElementNode(node) && options.treeAdapter.getNamespaceURI(node) === NS.HTML && VOID_ELEMENTS.has(options.treeAdapter.getTagName(node));
+}
+var defaultOpts = { treeAdapter: defaultTreeAdapter, scriptingEnabled: true };
+function serialize(node, options) {
+  const opts = { ...defaultOpts, ...options };
+  if (isVoidElement(node, opts)) {
+    return "";
+  }
+  return serializeChildNodes(node, opts);
+}
+function serializeChildNodes(parentNode, options) {
+  let html = "";
+  const container = options.treeAdapter.isElementNode(parentNode) && options.treeAdapter.getTagName(parentNode) === TAG_NAMES.TEMPLATE && options.treeAdapter.getNamespaceURI(parentNode) === NS.HTML ? options.treeAdapter.getTemplateContent(parentNode) : parentNode;
+  const childNodes = options.treeAdapter.getChildNodes(container);
+  if (childNodes) {
+    for (const currentNode of childNodes) {
+      html += serializeNode(currentNode, options);
+    }
+  }
+  return html;
+}
+function serializeNode(node, options) {
+  if (options.treeAdapter.isElementNode(node)) {
+    return serializeElement(node, options);
+  }
+  if (options.treeAdapter.isTextNode(node)) {
+    return serializeTextNode(node, options);
+  }
+  if (options.treeAdapter.isCommentNode(node)) {
+    return serializeCommentNode(node, options);
+  }
+  if (options.treeAdapter.isDocumentTypeNode(node)) {
+    return serializeDocumentTypeNode(node, options);
+  }
+  return "";
+}
+function serializeElement(node, options) {
+  const tn = options.treeAdapter.getTagName(node);
+  return `<${tn}${serializeAttributes(node, options)}>${isVoidElement(node, options) ? "" : `${serializeChildNodes(node, options)}</${tn}>`}`;
+}
+function serializeAttributes(node, { treeAdapter }) {
+  let html = "";
+  for (const attr of treeAdapter.getAttrList(node)) {
+    html += " ";
+    if (attr.namespace) {
+      switch (attr.namespace) {
+        case NS.XML: {
+          html += `xml:${attr.name}`;
+          break;
+        }
+        case NS.XMLNS: {
+          if (attr.name !== "xmlns") {
+            html += "xmlns:";
+          }
+          html += attr.name;
+          break;
+        }
+        case NS.XLINK: {
+          html += `xlink:${attr.name}`;
+          break;
+        }
+        default: {
+          html += `${attr.prefix}:${attr.name}`;
+        }
+      }
+    } else {
+      html += attr.name;
+    }
+    html += `="${escapeAttribute(attr.value)}"`;
+  }
+  return html;
+}
+function serializeTextNode(node, options) {
+  const { treeAdapter } = options;
+  const content2 = treeAdapter.getTextNodeContent(node);
+  const parent = treeAdapter.getParentNode(node);
+  const parentTn = parent && treeAdapter.isElementNode(parent) && treeAdapter.getTagName(parent);
+  return parentTn && treeAdapter.getNamespaceURI(parent) === NS.HTML && hasUnescapedText(parentTn, options.scriptingEnabled) ? content2 : escapeText(content2);
+}
+function serializeCommentNode(node, { treeAdapter }) {
+  return `<!--${treeAdapter.getCommentNodeContent(node)}-->`;
+}
+function serializeDocumentTypeNode(node, { treeAdapter }) {
+  return `<!DOCTYPE ${treeAdapter.getDocumentTypeNodeName(node)}>`;
+}
 
 // node_modules/parse5/dist/index.js
 function parse4(html, options) {
@@ -81507,7 +81625,48 @@ function placeClientPrerenderFragments(html, fragments) {
   if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
     throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
   }
+  validatePrerenderAuthorDom(html, replaced, new Set(placement.markers.filter((marker) => marker.name === void 0 || byName.has(marker.name)).map((marker) => marker.start)));
   return { html: replaced, warnings, placements };
+}
+function validatePrerenderAuthorDom(source, output, consumedMarkers) {
+  const original = parse4(source, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+  const candidate = parse4(output, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+  const removeOriginalMarkers = (node) => {
+    if (node.nodeName === "#comment" && node.sourceCodeLocation && consumedMarkers.has(node.sourceCodeLocation.startOffset)) {
+      defaultTreeAdapter.detachNode(node);
+      return;
+    }
+    if ("childNodes" in node) for (const child of [...node.childNodes]) removeOriginalMarkers(child);
+  };
+  removeOriginalMarkers(original);
+  const intervals = /* @__PURE__ */ new Map();
+  const boundaries = [];
+  let position = 0;
+  const index = (node) => {
+    const interval = { before: position++, after: 0 };
+    intervals.set(node, interval);
+    if (node.nodeName === "#comment" && "data" in node && /^sporades:prerender-boundary-(?:start|end) /.test(node.data.trim())) boundaries.push(node);
+    if ("childNodes" in node) for (const child of node.childNodes) index(child);
+    interval.after = position;
+  };
+  index(candidate);
+  boundaries.sort((left, right) => left.sourceCodeLocation.startOffset - right.sourceCodeLocation.startOffset);
+  for (let pair2 = 0; pair2 < boundaries.length; pair2 += 2) {
+    const start = intervals.get(boundaries[pair2]).before;
+    const end = intervals.get(boundaries[pair2 + 1]).after;
+    const removeRange = (node) => {
+      if (!("childNodes" in node)) return;
+      for (const child of [...node.childNodes]) {
+        const interval = intervals.get(child);
+        if (interval.before >= start && interval.after <= end) defaultTreeAdapter.detachNode(child);
+        else removeRange(child);
+      }
+    };
+    removeRange(candidate);
+  }
+  if (serialize(original) !== serialize(candidate)) {
+    throw prerenderError("Client prerender placement is not stable in the parsed HTML document.", "Fragment dismissal must restore the author-owned DOM. Use explicit containers where HTML parsing would otherwise reparent author content.");
+  }
 }
 function validatePrerenderDomBoundaries(html, expectedPlacements) {
   if (expectedPlacements === 0) return;
