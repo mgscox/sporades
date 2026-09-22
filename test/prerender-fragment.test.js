@@ -1042,6 +1042,57 @@ test("failed file URL imports preserve contained context and reject unsafe URL f
   });
 });
 
+test("filesystem-root import failures do not create a global slash redaction root", async () => {
+  await withTempDir(async (projectDir) => {
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      'import "/sporades-prerender-missing-root.mjs";\nexport default () => "<main>unreachable</main>";\n',
+    );
+    const canonicalProject = await realpath(projectDir);
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+      (error) => {
+        assert.match(error.message, /render-landing\.mjs:1:7: ERROR: Could not resolve "\/sporades-prerender-missing-root\.mjs"/i);
+        assert.doesNotMatch(error.message, /<project>sporades-prerender-missing-root/i);
+        return true;
+      },
+    );
+  });
+});
+
+test("noncanonical local file URL encodings redact the exact raw parent", async () => {
+  await withTempDir(async (tempRoot) => {
+    const projectDir = path.join(tempRoot, "capsule");
+    const externalDir = path.join(tempRoot, "caf\u00e9 URL modules");
+    await mkdir(projectDir);
+    await mkdir(externalDir);
+    await writeFile(path.join(projectDir, "package.json"), '{"type":"module"}\n');
+    const canonicalProject = await realpath(projectDir);
+    const canonicalExternalDir = await realpath(externalDir);
+    const canonicalUrl = pathToFileURL(path.join(canonicalExternalDir, "missing-noncanonical.mjs")).href;
+    const rawUrl = `${canonicalUrl
+      .replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase())
+      .replace("URL", "%55%52%4c")}?variant=%2f#fragment`;
+    await writeFile(
+      path.join(projectDir, "render-landing.mjs"),
+      `import ${JSON.stringify(rawUrl)};\nexport default () => "<main>unreachable</main>";\n`,
+    );
+
+    await assert.rejects(
+      renderClientPrerenderFragment(canonicalProject, { name: "landing", module: "render-landing.mjs" }),
+      (error) => {
+        assert.match(error.message, /<project>\/missing-noncanonical\.mjs\?variant=%2f#fragment/i);
+        const surfaced = JSON.stringify({ message: error.message, hint: error.hint, diagnostics: error.diagnostics, stack: error.stack });
+        assert.equal(surfaced.includes(canonicalExternalDir), false, "leaked decoded noncanonical file URL path");
+        assert.doesNotMatch(surfaced, /caf(?:é|e%cc%81|%c3%a9).*%55%52%4c%20modules/i);
+        return true;
+      },
+    );
+  });
+});
+
 test("hoisted renderer build failures redact dependency paths outside the Capsule", async () => {
   await withTempDir(async (tempRoot) => {
     const projectDir = path.join(tempRoot, "capsule");
