@@ -41,3 +41,33 @@ test('prerender executions isolate preloaded dynamic CommonJS dependencies and p
     assert.deepEqual(results, ['1', '1']);
   } finally { delete require.cache[require.resolve(dependency)]; await rm(root, {recursive:true, force:true}); }
 });
+
+test('writable require starts module-local, keeps static TypeScript imports, and then honors replacement', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-writable-require-')));
+  try {
+    await mkdir(path.join(root, 'nested'));
+    await writeFile(path.join(root, 'entry.mjs'), `import render from './nested/helper.cjs'; export default render;`);
+    await writeFile(path.join(root, 'nested/value.cjs'), 'module.exports = "adjacent";');
+    await writeFile(path.join(root, 'nested/typed.ts'), 'const value: string = "typed"; export default value;');
+    await writeFile(path.join(root, 'nested/helper.cjs'), `
+const path = require('node:path');
+module.exports = () => {
+  const target = './value.cjs';
+  const before = require(target) + '|' + path.basename(require.resolve(target)) + '|' + require('./typed.ts').default;
+  require = (value) => 'replaced:' + value;
+  return before + '|' + require('./value.cjs');
+};`);
+    assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), 'adjacent|value.cjs|typed|replaced:./value.cjs');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('computed dynamic imports fail clearly rather than resolving against the CLI directory', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-dynamic-import-')));
+  try {
+    await writeFile(path.join(root, 'entry.mjs'), `export default async () => { const target = './adjacent.mjs'; return (await import(target)).default; };`);
+    await writeFile(path.join(root, 'adjacent.mjs'), 'export default "adjacent";');
+    await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), /prerender.*dynamic import.*string literal/i);
+    await writeFile(path.join(root, 'entry.mjs'), `export default async () => (await import('./adjacent.mjs')).default;`);
+    assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}), 'adjacent');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
