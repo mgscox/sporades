@@ -4299,6 +4299,33 @@ test("Dev watches prerender modules and transitive code while retaining the last
       await writeFile(tsconfigPath, JSON.stringify(tsconfig));
       await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
       assert.match(await page(), /Retargeted tsconfig mapping/);
+      await writeFile(tsconfigPath, JSON.stringify({compilerOptions:{baseUrl:'./render'}}));
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "base-copy"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(path.join(projectDir, 'render/base-copy.ts'), 'export default "Recovered base URL copy";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Recovered base URL copy/);
+      for (const kind of ['static', 'computed']) {
+        const name = `shadowed-${kind}-copy`;
+        const outer = path.join(projectDir, 'node_modules', name);
+        await mkdir(outer, {recursive:true});
+        await writeFile(path.join(outer, 'package.json'), JSON.stringify({name, main:'index.js'}));
+        await writeFile(path.join(outer, 'index.js'), 'module.exports = "Outer package";');
+        await writeFile(path.join(projectDir, 'render/landing.ts'), kind === 'static' ? `import copy from '${name}'; export default () => copy;` : `export default () => { const name = '${name}'; return require(name); };`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Outer package/);
+        const inner = path.join(projectDir, 'render/node_modules', name);
+        await mkdir(inner, {recursive:true});
+        await writeFile(path.join(inner, 'index.js'), 'module.exports = "Nearer manifestless package";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Nearer manifestless package/);
+        await rm(path.join(inner, 'index.js'));
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Outer package/);
+        await writeFile(path.join(inner, 'index.js'), 'module.exports = "Recreated nearer package";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Recreated nearer package/);
+      }
       await mkdir(localPackage);
       await writeFile(path.join(localPackage, 'copy.js'), 'module.exports = "Local package boundary";');
       await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "./local-package/copy.js"; export default () => copy;');

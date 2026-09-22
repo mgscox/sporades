@@ -260,6 +260,13 @@ test('tsconfig observer retains extended config and missing mapped module inputs
     assert.ok(dependencies.has(path.join(root, 'render/copy.ts')), 'mapped missing source is watched');
     await writeFile(path.join(root, 'render/copy.ts'), 'export default "Mapped copy";');
     assert.equal(await render(), 'Mapped copy');
+    await writeFile(base, '{"compilerOptions":{"baseUrl":"../render"}}');
+    await writeFile(path.join(root, 'entry.ts'), 'import copy from "base-copy"; export default () => copy;');
+    dependencies.clear();
+    await assert.rejects(render());
+    assert.ok(dependencies.has(path.join(root, 'render/base-copy.ts')), 'baseUrl without paths records missing candidates');
+    await writeFile(path.join(root, 'render/base-copy.ts'), 'export default "Base URL copy";');
+    assert.equal(await render(), 'Base URL copy');
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 

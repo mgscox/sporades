@@ -94,7 +94,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
             if (request.specifier.startsWith("#"))
                 await recordRendererPackageImport(request.specifier, path.dirname(request.filename), onDependency);
             else
-                recordRendererPackageManifests(request.specifier, path.dirname(request.filename), onDependency);
+                await recordRendererPackageManifests(request.specifier, path.dirname(request.filename), onDependency, request.resolvedPath);
         }
         if (outcome.kind === "not-function") {
             throw prerenderError(`Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`, `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`);
@@ -159,7 +159,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 if (args.path.startsWith("#"))
                     await recordRendererPackageImport(args.path, args.resolveDir || projectRoot, onDependency);
                 else
-                    recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency);
+                    await recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency);
                 const localPath = rendererLocalFilePath(args.path)
                     ?? (args.path.startsWith(".") ? path.resolve(args.resolveDir || projectRoot, args.path) : undefined);
                 // Record absent and malformed boundaries before resolution can fail.
@@ -219,6 +219,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 }
                 if (!resolved.external && resolved.namespace === "file") {
                     onDependency?.(resolved.path);
+                    await recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency, resolved.path);
                     await recordRendererLocalPackageBoundaries(resolved.path, projectRoot, onDependency);
                 }
                 if (!resolved.external
@@ -413,13 +414,30 @@ async function rendererNeedsCommonJsBoundaryNamespace(modulePath) {
         directory = parent;
     }
 }
-function recordRendererPackageManifests(specifier, directory, onDependency) {
+async function recordRendererPackageManifests(specifier, directory, onDependency, resolvedPath) {
     if (!onDependency || !specifier || isBuiltin(specifier) || specifier.startsWith(".") || specifier.startsWith("#") || path.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier))
         return;
-    const packageName = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
+    const parts = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1);
+    if (parts.length !== (specifier.startsWith("@") ? 2 : 1) || parts.some((part) => !part || part === "." || part === ".."))
+        return;
+    const packageName = parts.join("/");
     const localRequire = createRequire(path.join(directory, "__sporades_prerender__.cjs"));
-    for (const base of localRequire.resolve.paths(specifier) ?? [])
-        onDependency(path.join(base, packageName, "package.json"));
+    for (const base of localRequire.resolve.paths(specifier) ?? []) {
+        const root = path.join(base, packageName);
+        onDependency(path.join(root, "package.json"));
+        if (!resolvedPath)
+            continue;
+        let canonicalRoot = root;
+        try {
+            canonicalRoot = await realpath(root);
+        }
+        catch { /* missing nearer candidates still need observation */ }
+        if (resolvedPath === canonicalRoot || isCanonicalDescendant(canonicalRoot, resolvedPath))
+            break;
+        // A nearer manifestless index or package subpath can supersede the chosen
+        // package. Watch candidates only up to it, not its entire installed tree.
+        onDependency(root);
+    }
 }
 async function recordRendererPackageImport(specifier, directory, onDependency) {
     if (!onDependency)
@@ -1306,10 +1324,12 @@ const originalResolveFilename = Module._resolveFilename;
 // One Worker-local seam observes both require() and require.resolve(), before
 // evaluation can fail and evict a module from the cache.
 Module._resolveFilename = function(specifier, parent) {
-  if (typeof specifier === "string" && !isBuiltin(specifier) && !specifier.startsWith(".") && !isAbsolute(specifier) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier)) packageImports.push({specifier, filename:parent?.filename || workerData.modulePath});
+  const packageRequest = typeof specifier === "string" && !isBuiltin(specifier) && !specifier.startsWith(".") && !isAbsolute(specifier) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier) ? {specifier, filename:parent?.filename || workerData.modulePath} : null;
+  if (packageRequest) packageImports.push(packageRequest);
   if (typeof specifier === "string" && (isAbsolute(specifier) || /^file:/i.test(specifier))) runtimeSpecifiers.add(specifier);
   try {
     const filename = originalResolveFilename.apply(this, arguments);
+    if (packageRequest) packageRequest.resolvedPath = filename;
     if (typeof filename === "string" && isAbsolute(filename)) dependencies.add(filename);
     return filename;
   } catch (error) {
