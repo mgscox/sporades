@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import type { ClientToolchainName } from "./client-capabilities.js";
+import { redactBuildProjectRoots } from "./build-diagnostics.js";
 
 export type ClientPrerenderFragment = Readonly<{
   name: string;
@@ -55,7 +56,11 @@ export function readClientPrerenderConfig(value: unknown, toolchain: ClientToolc
   return fragments;
 }
 
-export async function renderClientPrerenderFragment(projectRoot: string, fragment: ClientPrerenderFragment): Promise<string> {
+export async function renderClientPrerenderFragment(
+  projectRoot: string,
+  fragment: ClientPrerenderFragment,
+  projectRoots: string[] = [projectRoot],
+): Promise<string> {
   const modulePath = path.resolve(projectRoot, ...fragment.module.split("/"));
   let canonicalModulePath: string;
   try {
@@ -96,7 +101,7 @@ export async function renderClientPrerenderFragment(projectRoot: string, fragmen
   } catch (error) {
     if (hasHint(error)) throw error;
     throw prerenderError(
-      `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, projectRoot)}`,
+      `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, projectRoots)}`,
       `Fix ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module },
     );
@@ -122,7 +127,7 @@ export async function renderClientPrerenderFragment(projectRoot: string, fragmen
   } catch (error) {
     if (hasHint(error)) throw error;
     throw prerenderError(
-      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error)}`,
+      `Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`,
       `Fix the renderer in ${fragment.module}, then retry.`,
       { fragment: fragment.name, module: fragment.module },
     );
@@ -177,9 +182,9 @@ function executeBundledRenderer(source: string, modulePath: string, displayPath:
     : undefined;
 }
 
-function boundedMessage(error: unknown, projectRoot?: string) {
+function boundedMessage(error: unknown, projectRoots: string[] = []) {
   const message = error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
-  const redacted = projectRoot ? message.split(projectRoot).join("<project>") : message;
+  const redacted = redactBuildProjectRoots(message, projectRoots);
   return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
 

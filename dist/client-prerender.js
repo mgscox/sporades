@@ -1,6 +1,7 @@
 import { lstat, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { redactBuildProjectRoots } from "./build-diagnostics.js";
 export function readClientPrerenderConfig(value, toolchain) {
     if (value === undefined)
         return [];
@@ -36,7 +37,7 @@ export function readClientPrerenderConfig(value, toolchain) {
     }
     return fragments;
 }
-export async function renderClientPrerenderFragment(projectRoot, fragment) {
+export async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots = [projectRoot]) {
     const modulePath = path.resolve(projectRoot, ...fragment.module.split("/"));
     let canonicalModulePath;
     try {
@@ -76,7 +77,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment) {
     catch (error) {
         if (hasHint(error))
             throw error;
-        throw prerenderError(`Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, projectRoot)}`, `Fix ${fragment.module}, then retry.`, { fragment: fragment.name, module: fragment.module });
+        throw prerenderError(`Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, projectRoots)}`, `Fix ${fragment.module}, then retry.`, { fragment: fragment.name, module: fragment.module });
     }
     try {
         const renderer = executeBundledRenderer(bundledSource, canonicalModulePath, fragment.module);
@@ -92,7 +93,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment) {
     catch (error) {
         if (hasHint(error))
             throw error;
-        throw prerenderError(`Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error)}`, `Fix the renderer in ${fragment.module}, then retry.`, { fragment: fragment.name, module: fragment.module });
+        throw prerenderError(`Client prerender renderer for ${fragment.name} failed: ${boundedMessage(error, projectRoots)}`, `Fix the renderer in ${fragment.module}, then retry.`, { fragment: fragment.name, module: fragment.module });
     }
 }
 export function placeClientPrerenderFragment(html, fragment, rendered) {
@@ -131,9 +132,9 @@ function executeBundledRenderer(source, modulePath, displayPath) {
         ? exported.default
         : undefined;
 }
-function boundedMessage(error, projectRoot) {
+function boundedMessage(error, projectRoots = []) {
     const message = error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
-    const redacted = projectRoot ? message.split(projectRoot).join("<project>") : message;
+    const redacted = redactBuildProjectRoots(message, projectRoots);
     return redacted.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
 }
 function prerenderError(message, hint, diagnostics) {

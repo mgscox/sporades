@@ -15,6 +15,7 @@
       "src/auth-admission.ts",
       "src/auth-runtime.ts",
       "src/base-image.ts",
+      "src/build-diagnostics.ts",
       "src/bundle-pipeline.ts",
       "src/capsule-services.ts",
       "src/cli/access-key-operator-envelope.ts",
@@ -102,7 +103,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "577ea3521d6c674fba70117444b7c85e5cfb04504fd0323d2344f1d5c7f7472f"
+    "digest": "c0f1637524c5c0ed3b9d76f09c55ca4ede363f7e8f3b08465bb55360d0e6be8a"
   },
   "outputs": {
     "files": [
@@ -132,6 +133,10 @@
       "dist/base-image.d.ts.map",
       "dist/base-image.js",
       "dist/base-image.js.map",
+      "dist/build-diagnostics.d.ts",
+      "dist/build-diagnostics.d.ts.map",
+      "dist/build-diagnostics.js",
+      "dist/build-diagnostics.js.map",
       "dist/bundle-pipeline.d.ts",
       "dist/bundle-pipeline.d.ts.map",
       "dist/bundle-pipeline.js",
@@ -449,6 +454,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "db6302dcee9f6f9d4964ae1dc0446ead68d68ce5071278961e0e0cc13a1858e7"
+    "digest": "f45ce0af7e3c54132f825cf701efeed9b3e5018edd8b6d43b287d3ab7448f5bc"
   }
 }
