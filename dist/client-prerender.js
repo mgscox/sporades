@@ -610,7 +610,7 @@ function collectRendererScopes(node, scope, scopes) {
                 const declared = { functionScope: true, bindings: new Set() };
                 addRendererBinding(declared, declaration.id);
                 for (const name of declared.bindings)
-                    if (!["require", "__dirname", "__filename"].includes(name))
+                    if (!["require", "module", "exports", "__dirname", "__filename"].includes(name))
                         declarationScope.bindings.add(name);
             }
             else
