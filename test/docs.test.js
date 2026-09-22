@@ -1176,6 +1176,37 @@ test("docs describe doctor diagnostics as read-only coordination", async () => {
   assert.doesNotMatch(roadmap, /`sporades doctor` \| ready/);
 });
 
+test("canonical hosting docs define runtime health bound compatibility", async () => {
+  const [operations, runtimeSource, hostHelperSource] = await Promise.all([
+    readProjectFile("docs/reference/operations-and-hosting.md"),
+    readProjectFile("src/http-runtime.ts"),
+    readProjectFile("src/cli/sporades-host-helper.ts"),
+  ]);
+  const contract = operations.match(/### Runtime health bounds[\s\S]*?(?=\n`sporades host reconcile`)/)?.[0];
+  const normalizer = hostHelperSource.match(/function normaliseRuntimeHealthBody\(body: any\)[\s\S]*?(?=\nfunction healthFailure)/)?.[0];
+  assert.ok(contract, "canonical operations docs must define the runtime health bounds contract");
+  assert.ok(normalizer, "Host health must retain an inspectable runtime health normalizer");
+
+  assert.match(contract, /`\/__sporades\/health\/runtime`/);
+  assert.match(contract, /token-gated/);
+  assert.match(contract, /`sporades host health --json`/);
+  for (const field of ["fileMaxSizeBytes", "httpMaxBodyBytes"]) {
+    assert.match(contract, new RegExp("`" + field + "`"));
+    assert.match(runtimeSource, new RegExp(`runtime: \\{ ready,[^}]*${field}`));
+    assert.match(normalizer, new RegExp(`const ${field} = body\\?\\.data\\?\\.runtime\\?\\.${field}`));
+  }
+  assert.match(normalizer, /\(!hasFileMaxSizeBytes && !hasHttpMaxBodyBytes\)/);
+  assert.match(normalizer, /hasFileMaxSizeBytes && hasHttpMaxBodyBytes[\s\S]*Number\.isInteger\(fileMaxSizeBytes\) && fileMaxSizeBytes > 0[\s\S]*Number\.isInteger\(httpMaxBodyBytes\) && httpMaxBodyBytes > 0/);
+  assert.match(normalizer, /validBounds && hasFileMaxSizeBytes \? \{ fileMaxSizeBytes, httpMaxBodyBytes \} : \{\}/);
+  assert.match(runtimeSource, /request\.headers\["x-sporades-host-probe"\]/);
+  assert.match(contract, /resolved running-process positive integer byte bounds/i);
+  assert.match(contract, /legacy Capsule releases[\s\S]*omit[\s\S]*together/i);
+  assert.match(contract, /all-absent pair[\s\S]*compatibl/i);
+  assert.match(contract, /partial presence[\s\S]*malformed[\s\S]*non-positive[\s\S]*unexpected shape/i);
+  assert.match(contract, /probe credential[\s\S]*token gate[\s\S]*unchanged/i);
+  assert.match(contract, /no additional sensitive data/i);
+});
+
 test("user guide documents Capsule service reset without blanket Runtime deletion", async () => {
   const userGuide = await readProjectFile("docs/user-guide.md");
 
