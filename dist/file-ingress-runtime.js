@@ -2836,8 +2836,10 @@ function multipartLimitExceeded(partType, limitKind, limit, message = "Multipart
         details: { partType, limitKind, limit: Number(limit) },
     });
 }
-function multipartHeaderLimitExceeded(rawHeaders) {
-    const partType = multipartPartType(rawHeaders);
+function multipartHeaderLimitExceeded(rawHeaders, headersComplete = false) {
+    const completeLineEnd = rawHeaders.lastIndexOf("\r\n");
+    const completeHeaders = headersComplete ? rawHeaders : completeLineEnd < 0 ? "" : rawHeaders.slice(0, completeLineEnd);
+    const partType = multipartPartType(completeHeaders);
     return Object.assign(new Error("Multipart headers exceed limit."), {
         code: "MULTIPART_LIMIT_EXCEEDED",
         ...(partType ? { details: { partType, limitKind: "maxPartHeaderBytes", limit: 16384 } } : {}),
@@ -3014,7 +3016,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             const rawHeaders = part.rawHeaders;
             const body = part.body;
             if (rawHeaders.length > 16384)
-                throw multipartHeaderLimitExceeded(rawHeaders);
+                throw multipartHeaderLimitExceeded(rawHeaders, true);
             if (unsupportedMultipartPartEncoding(rawHeaders))
                 throw Object.assign(new Error("Unsupported multipart part encoding."), { code: "INVALID_MULTIPART" });
             const disposition = /^content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/im.exec(rawHeaders);

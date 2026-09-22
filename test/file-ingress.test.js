@@ -770,6 +770,18 @@ test("oversized multipart headers do not guess a late file disposition", async (
   const classifiedBytes = multipart(boundary, `Content-Disposition: form-data; name="file"; filename="known.txt"\r\nX-Padding: ${"a".repeat(16384)}`, "bytes");
   await assert.rejects(async () => { for await (const _ of multipartParts(splitEvery(classifiedBytes, 17), boundary, 30000, 30000)) {} }, { code: "MULTIPART_LIMIT_EXCEEDED", details: { partType: "file", limitKind: "maxPartHeaderBytes", limit: 16384 } });
 
+  const dispositionPrefix = 'Content-Disposition: form-data; name="file"';
+  const paddingPrefix = "X-Padding: ";
+  const partialHeaders = `${paddingPrefix}${"a".repeat(16385 - paddingPrefix.length - 2 - dispositionPrefix.length)}\r\n${dispositionPrefix}`;
+  assert.equal(Buffer.byteLength(partialHeaders), 16385);
+  const fileSuffix = '; filename="private.txt"\r\n\r\nbytes\r\n--late-disposition--';
+  const exactOverflow = [Buffer.from(`--${boundary}\r\n${partialHeaders}`), Buffer.from(fileSuffix)];
+  await assert.rejects(async () => { for await (const _ of multipartParts(exactOverflow, boundary, 30000, 30000)) {} }, (error) => {
+    assert.equal(error?.code, "MULTIPART_LIMIT_EXCEEDED");
+    assert.equal(Object.hasOwn(error, "details"), false);
+    return true;
+  });
+
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-late-disposition-")); let database;
   try {
     let handlers = 0;
