@@ -2371,7 +2371,7 @@ test("managed ClamAV starts degraded and fail-closed when signatures stay stale 
   await shutdownClamavRuntime(runtime.database); assert.equal(runtime.schedules[2].cancelled, true);
 
   const offline = managedClamavRuntime({ freshclamExits: [1], signatures: ["daily:7"] });
-  assert.equal(await initializeClamavRuntime(offline.database), true, "a failed refresh still admits signatures inside the unchanged 24h gate");
+  assert.equal(await initializeClamavRuntime(offline.database), true, "a failed refresh still admits signatures inside the freshness gate");
   assert.deepEqual(offline.delays, []); assert.deepEqual(offline.schedules.map((entry) => entry.delayMs), [15 * 60 * 1000], "a failed boot refresh is retried soon");
   await shutdownClamavRuntime(offline.database);
 });
@@ -2392,7 +2392,7 @@ test("managed ClamAV periodic refresh reloads clamd and retries failures on a sh
 
   const aging = managedClamavRuntime({ freshclamExits: [0], signatures: ["aging:daily:3"] });
   assert.equal(await initializeClamavRuntime(aging.database), true);
-  assert.deepEqual(aging.schedules.map((entry) => entry.delayMs), [30 * 60 * 1000 + 1_000], "the next refresh runs as the current signature reaches the 24h gate");
+  assert.deepEqual(aging.schedules.map((entry) => entry.delayMs), [30 * 60 * 1000 + 1_000], "the next refresh runs as the current signature leaves the freshness gate");
   await shutdownClamavRuntime(aging.database);
 });
 
