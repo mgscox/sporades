@@ -42692,6 +42692,7 @@ var bash52CommandVocabulary = Object.freeze([
   "}"
 ]);
 var bashCommandNames = new Set(bash52CommandVocabulary);
+var clamavSignatureMaxAgeMs = 26 * 60 * 60 * 1e3;
 var clamavRefreshIntervalMs = 60 * 60 * 1e3;
 var clamavRefreshRetryMs = 15 * 60 * 1e3;
 var clamavRefreshTimeoutMs = 5 * 60 * 1e3;

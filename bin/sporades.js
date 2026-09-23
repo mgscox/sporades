@@ -106223,9 +106223,10 @@ async function contentPolicyOutcome(row, bytes) {
   if (bytes.subarray(0, 5).toString("ascii") === "%PDF-") return await validatePdfIngress(bytes) && /\.pdf$/.test(name2) && type === "application/pdf" ? "clean" : "rejected";
   return safeUntrustedText(bytes) && /\.txt$/.test(name2) && type === "text/plain" ? "clean" : "rejected";
 }
+var clamavSignatureMaxAgeMs = 26 * 60 * 60 * 1e3;
 function isCurrentClamavSignature(signature, now2 = Date.now()) {
   const builtAt = Date.parse(signature?.updatedAt);
-  return Boolean(signature) && typeof signature?.version === "string" && /^daily:\d{1,12}$/.test(signature.version) && Number.isFinite(builtAt) && builtAt <= now2 && now2 - builtAt <= 24 * 60 * 60 * 1e3;
+  return Boolean(signature) && typeof signature?.version === "string" && /^daily:\d{1,12}$/.test(signature.version) && Number.isFinite(builtAt) && builtAt <= now2 && now2 - builtAt <= clamavSignatureMaxAgeMs;
 }
 function collectBoundedToolOutput(child, timeoutMs, maximumBytes = 8192) {
   return new Promise((resolve) => {
@@ -106553,8 +106554,20 @@ async function runFreshclam(database, deadline) {
 }
 function nextClamavRefreshDelay(database, signature, refreshed) {
   if (!refreshed) return clamavRefreshRetryMs;
-  const expiresIn = Date.parse(signature?.updatedAt) + 24 * 60 * 60 * 1e3 - clamavNow(database);
+  const expiresIn = Date.parse(signature?.updatedAt) + clamavSignatureMaxAgeMs - clamavNow(database);
   return Math.max(1e3, Math.min(clamavRefreshIntervalMs, expiresIn + 1e3));
+}
+async function startClamd(database, deadline) {
+  if (clamavRemaining(database, deadline) <= 0) return false;
+  const daemon = clamavSpawn(database, "/usr/sbin/clamd", ["--foreground", "--config-file=/etc/clamav/clamd.conf"]);
+  database.__clamavProcess = daemon;
+  observeClamavChild(database, daemon);
+  if (await waitForClamavReadiness(database, daemon, deadline, "/tmp/sporades-clamd.sock")) {
+    database.clamavReady = true;
+    return true;
+  }
+  await stopOwnedClamavChildren(database);
+  return false;
 }
 async function refreshClamavSignatures(database) {
   const deadline = clamavNow(database) + clamavRefreshTimeoutMs;
@@ -106565,6 +106578,15 @@ async function refreshClamavSignatures(database) {
     database.clamavReady = false;
     await emitClamavRefreshWarning(database, "CLAMAV_SIGNATURE_STALE_AFTER_REFRESH");
     return clamavRefreshRetryMs;
+  }
+  if (!database.__clamavProcess) {
+    const started = await startClamd(database, clamavNow(database) + (database.__clamavTest?.startupTimeoutMs ?? 12e4));
+    if (database.__clamavRefreshStopped) return clamavRefreshRetryMs;
+    if (!started) {
+      await emitClamavRefreshWarning(database, "CLAMAV_DAEMON_START_FAILED");
+      return clamavRefreshRetryMs;
+    }
+    return nextClamavRefreshDelay(database, signature, refreshed);
   }
   if (await loadedClamavSignatureVersion(database) !== signature.version) await clamavSocketCommand(database, Buffer.from("zRELOAD\0"), 64);
   if (!refreshed) await emitClamavRefreshWarning(database, "CLAMAV_SIGNATURE_REFRESH_FAILED");
@@ -106622,20 +106644,17 @@ async function initializeClamavRuntime(database) {
     signature = await verifiedClamavSignature(database, deadline);
     if (isCurrentClamavSignature(signature, clamavNow(database))) break;
     const delayMs = clamavBootRetryDelaysMs[attempt];
-    if (delayMs === void 0 || clamavRemaining(database, deadline) <= delayMs) return false;
+    if (delayMs === void 0 || clamavRemaining(database, deadline) <= delayMs) {
+      database.clamavReady = false;
+      await emitClamavRefreshWarning(database, "CLAMAV_STARTUP_DEGRADED");
+      scheduleClamavRefresh(database, clamavRefreshRetryMs);
+      return true;
+    }
     await clamavDelay(database, delayMs);
   }
-  if (clamavRemaining(database, deadline) <= 0) return false;
-  const daemon = clamavSpawn(database, "/usr/sbin/clamd", ["--foreground", "--config-file=/etc/clamav/clamd.conf"]);
-  database.__clamavProcess = daemon;
-  observeClamavChild(database, daemon);
-  if (await waitForClamavReadiness(database, daemon, deadline, "/tmp/sporades-clamd.sock")) {
-    database.clamavReady = true;
-    scheduleClamavRefresh(database, nextClamavRefreshDelay(database, signature, refreshed));
-    return true;
-  }
-  await stopOwnedClamavChildren(database);
-  return false;
+  if (!await startClamd(database, deadline)) return false;
+  scheduleClamavRefresh(database, nextClamavRefreshDelay(database, signature, refreshed));
+  return true;
 }
 async function shutdownClamavRuntime(database) {
   database.clamavReady = false;

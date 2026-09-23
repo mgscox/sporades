@@ -746,22 +746,31 @@ legacy startup behaviour.
 The Base image includes ClamAV, which increases image size, while enabling it
 also costs daemon startup time and RAM. `freshclam` is the only intended
 network egress and downloads public signature updates, never customer data.
-Every managed startup forces a one-shot `freshclam` refresh before the 24-hour
-signature gate is evaluated, retrying a failed or stale refresh after 5 and
-15 seconds within the startup window; clamd starts only once current
-signatures are on disk. After that, the runtime owns the refresh schedule
-itself rather than running `freshclam --daemon`: it runs a bounded one-shot
-`freshclam` every hour, and again as soon as the current signature reaches
-24 hours old, re-verifies the result against the same 24-hour gate,
+Signatures are current for 26 hours after their build time: ClamAV publishes
+one daily signature roughly every 24 hours and advertises it some time after
+it is built, so the extra two hours cover that publication latency plus a
+refresh retry. Every managed startup forces a one-shot `freshclam` refresh
+before this freshness gate is evaluated, retrying a failed or stale refresh
+after 5 and 15 seconds within the startup window; clamd starts only once
+current signatures are on disk. After that, the runtime owns the refresh
+schedule itself rather than running `freshclam --daemon`: it runs a bounded
+one-shot `freshclam` every hour, and again as soon as the current signature
+leaves the gate, re-verifies the result against the same gate,
 and asks clamd to reload (`zRELOAD`) when the on-disk version differs from the
 loaded one. A failed refresh, or signatures still stale after a refresh, is
 retried after 15 minutes and logged as a `warn`
 `file.inspection.signature-refresh-failed` platform event, so a newly
 published signature is picked up within minutes; stale signatures keep
 inspection failing closed until then. Health supervises clamd only, because each refresh
-is expected to exit. ClamAV publishes its daily signature roughly once a day,
-so a restart that falls between a signature reaching 24 hours old and the next
-publication still fails startup with `FILE_INSPECTION_UNAVAILABLE`. Shutdown cancels
+is expected to exit. If signatures are still stale after the startup
+refreshes, the Capsule starts degraded rather than failing: clamd is not
+started, every inspection-required upload fails closed, runtime health reports
+`fileInspection` as not ready, and a `warn` event with code
+`CLAMAV_STARTUP_DEGRADED` is logged. Because Hosted push verification requires
+ready file inspection, a degraded runtime never passes verification of a new
+release; it only keeps an already-accepted Capsule serving other routes after a
+restart. The 15-minute refresh starts clamd as soon as current signatures
+arrive, without a restart. Shutdown cancels
 the schedule, stops any running refresh and clamd after `SIGTERM`, and uses a
 bounded `SIGKILL` fallback, including partial-startup failure paths. Managed and Dev startup share one absolute
 120-second readiness window: database verification, socket probes, and retry
@@ -772,7 +781,7 @@ owned child is cleared. A process error marks health unavailable but is not
 itself proof that the child exited. If a child is still live at the deadline,
 cleanup fails visibly and retains the owned child reference for a later
 shutdown or rollback retry.
-Signatures older than 24 hours, missing databases, daemon/socket failure,
+Signatures older than 26 hours, missing databases, daemon/socket failure,
 timeouts, malformed or oversized replies, scan limits, infection, and every
 other inconclusive outcome fail closed. Operators should monitor runtime
 health and signature-update logs, budget memory for clamd, and keep the data
@@ -813,7 +822,7 @@ database cannot make it current. Multipart ingress captures one authenticated,
 currently loaded scanner identity when request staging begins, so an ordinary
 freshclam file-publication window cannot make a healthy later part report a
 spurious unavailable signature. Each clean scan still checks both clamd's
-current `VERSION` and that captured signature's 24-hour freshness when its
+current `VERSION` and that captured signature's 26-hour freshness when its
 verdict is recorded. A reload, socket/version loss, or signature that ages out
 while a slow request body is arriving makes a clean verdict inconclusive and
 unclaimable; the next request re-establishes readiness without an app restart.
