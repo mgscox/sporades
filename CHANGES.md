@@ -165,6 +165,7 @@ Changes since v0.9.26.
 
 ### 📦 Packaging
 
+- Install local deps (fd0cf1d6).
 - Include regenerated prerender declaration map (a655d0fc).
 - Specialize package-scoped CommonJS helpers (de79f9ba).
 
@@ -255,6 +256,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
