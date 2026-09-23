@@ -5126,7 +5126,8 @@ export async function runClientAccessKeyOperation(database: LooseRecord, auth: L
 }
 
 // Proxies such as Cloudflare close WebSockets that carry no frames for 100
-// seconds. Ping well inside that window so idle pages keep their socket.
+// seconds. Ping well inside that window so idle pages keep their socket; a
+// ping still unanswered at the next heartbeat marks the peer gone.
 const WEBSOCKET_HEARTBEAT_MS = 30_000;
 
 export function createWebSocketHub(
@@ -5209,16 +5210,21 @@ export function createWebSocketHub(
         journey: null,
         journeySubscriptions: new Set(),
         lastFrameAt: Date.now(),
+        pingSentAt: null,
         heartbeat: null,
       };
       clients.add(client);
+      const unanswered = () => client.pingSentAt !== null && client.lastFrameAt < client.pingSentAt;
       client.heartbeat = setInterval(() => {
-        // A peer that has not answered two pings is gone; free its slot.
-        if (Date.now() - client.lastFrameAt > heartbeatMs * 2) {
-          socket.destroy();
+        if (client.closing || socket.destroyed) return;
+        if (unanswered()) {
+          // Timers run before pending socket reads after a stall, so let queued
+          // frames land before judging the peer gone.
+          setImmediate(() => { if (unanswered()) socket.destroy(); });
           return;
         }
-        if (!client.closing && !socket.destroyed) socket.write(Buffer.from([0x89, 0x00]));
+        client.pingSentAt = Date.now();
+        socket.write(Buffer.from([0x89, 0x00]));
       }, heartbeatMs);
       client.heartbeat.unref?.();
       socket.on("data", (chunk: Uint8Array<ArrayBufferLike>) => {

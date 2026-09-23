@@ -71,11 +71,22 @@ test("idle WebSockets receive pings so proxy idle timeouts do not close them", a
   }, { answerPings: true });
 });
 
+test("a stalled event loop pings before judging a healthy peer", async () => {
+  await withHeartbeatHub(async ({ frames, isClosed }) => {
+    await wait(100);
+    const stalledUntil = Date.now() + 200;
+    while (Date.now() < stalledUntil) {}
+    await wait(150);
+    assert.ok(frames.filter((frame) => frame.opcode === 9).length >= 3, "pinging resumes after the stall");
+    assert.equal(isClosed(), false, "a stall longer than two heartbeats does not evict a peer that answers");
+  }, { answerPings: true });
+});
+
 test("a peer that stops answering pings is disconnected", async () => {
   await withHeartbeatHub(async ({ frames, isClosed }) => {
     await wait(200);
     assert.ok(frames.some((frame) => frame.opcode === 9), "the hub pings idle peers");
-    assert.equal(isClosed(), true, "a silent peer is dropped after two missed heartbeats");
+    assert.equal(isClosed(), true, "a silent peer is dropped once a ping goes unanswered for a heartbeat");
   });
 });
 

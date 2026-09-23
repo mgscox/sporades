@@ -122244,15 +122244,21 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         journey: null,
         journeySubscriptions: /* @__PURE__ */ new Set(),
         lastFrameAt: Date.now(),
+        pingSentAt: null,
         heartbeat: null
       };
       clients.add(client);
+      const unanswered = () => client.pingSentAt !== null && client.lastFrameAt < client.pingSentAt;
       client.heartbeat = setInterval(() => {
-        if (Date.now() - client.lastFrameAt > heartbeatMs * 2) {
-          socket.destroy();
+        if (client.closing || socket.destroyed) return;
+        if (unanswered()) {
+          setImmediate(() => {
+            if (unanswered()) socket.destroy();
+          });
           return;
         }
-        if (!client.closing && !socket.destroyed) socket.write(Buffer.from([137, 0]));
+        client.pingSentAt = Date.now();
+        socket.write(Buffer.from([137, 0]));
       }, heartbeatMs);
       client.heartbeat.unref?.();
       socket.on("data", (chunk) => {

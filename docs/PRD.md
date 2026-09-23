@@ -558,7 +558,12 @@ runtime-owned error with a manual retry, including notification to existing and
 late live-query subscribers. Brief successful connections and individual messages
 do not reset the budget: only five continuous healthy minutes rearm it. Manual
 retry explicitly starts a new budget and obtains a fresh token. The client never
-reconnects forever or leaves the Capsule shell in an indefinite loading state. This connection token
+reconnects forever or leaves the Capsule shell in an indefinite loading state.
+The runtime sends a WebSocket ping every 30 seconds so an idle page keeps its
+socket through proxy idle timeouts (Cloudflare closes idle sockets at 100
+seconds) and can reach the healthy period. A peer whose ping is still
+unanswered at the next heartbeat is evicted, after pending inbound frames are
+read. Client pings are answered with a pong. This connection token
 is not a Session credential and grants no application authority.
 
 The SDK hides raw WebSocket frames from app code. Client-origin App messages
