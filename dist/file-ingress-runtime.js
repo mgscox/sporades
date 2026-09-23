@@ -2721,6 +2721,14 @@ function clamavSpawn(database, command, args) { return database.__clamavTest?.sp
 function clamavSchedule(database, callback, delayMs) { if (database.__clamavTest?.schedule)
     return database.__clamavTest.schedule(callback, delayMs); const timer = setTimeout(callback, delayMs); timer.unref?.(); return () => clearTimeout(timer); }
 async function runFreshclam(database, deadline) {
+    // A previous run whose termination failed stays owned; never start a second updater beside it.
+    const retained = database.__clamavUpdateProcess;
+    if (retained) {
+        await terminateChild(retained, clamavTerminateTimeout(database), database);
+        unobserveClamavChild(database, retained);
+        if (database.__clamavUpdateProcess === retained)
+            database.__clamavUpdateProcess = null;
+    }
     if (clamavRemaining(database, deadline) <= 0)
         return false;
     const update = clamavSpawn(database, "/usr/bin/freshclam", ["--config-file=/etc/clamav/freshclam.conf"]);
@@ -2755,13 +2763,24 @@ async function refreshClamavSignatures(database) {
     if (database.__clamavRefreshStopped)
         return clamavRefreshRetryMs;
     const signature = await verifiedClamavSignature(database, deadline);
+    if (database.__clamavRefreshStopped)
+        return clamavRefreshRetryMs;
     // stale-after-refresh fails closed; requests and health apply the same gate independently.
     if (!isCurrentClamavSignature(signature, clamavNow(database))) {
         database.clamavReady = false;
         await emitClamavRefreshWarning(database, "CLAMAV_SIGNATURE_STALE_AFTER_REFRESH");
         return clamavRefreshRetryMs;
     }
-    // A degraded start has no clamd yet; current signatures now let it start under the startup window.
+    // A crashed clamd is released so it can be restarted; its exit already latched health unavailable.
+    const crashed = database.__clamavProcess;
+    if (crashed && clamavChildTerminated(crashed)) {
+        unobserveClamavChild(database, crashed);
+        database.__clamavProcess = null;
+        await emitClamavRefreshWarning(database, "CLAMAV_DAEMON_EXITED");
+        if (database.__clamavRefreshStopped)
+            return clamavRefreshRetryMs;
+    }
+    // A degraded start or a crashed clamd has no daemon; current signatures now let one start under the startup window.
     if (!database.__clamavProcess) {
         const started = await startClamd(database, clamavNow(database) + (database.__clamavTest?.startupTimeoutMs ?? 120_000));
         if (database.__clamavRefreshStopped)
@@ -2780,7 +2799,7 @@ async function refreshClamavSignatures(database) {
     return nextClamavRefreshDelay(database, signature, refreshed);
 }
 async function emitClamavRefreshWarning(database, code) { try {
-    await database.log?.emit?.({ category: "platform", event: "file.inspection.signature-refresh-failed", level: "warn", message: "ClamAV signature refresh did not produce current signatures", data: { schema: "v1", outcome: "failed", code } });
+    await database.log?.emit?.({ category: "platform", event: "file.inspection.signature-refresh-failed", level: "warn", message: "ClamAV signature refresh did not leave file inspection ready", data: { schema: "v1", outcome: "failed", code } });
 }
 catch { } }
 function scheduleClamavRefresh(database, delayMs) {
@@ -2788,7 +2807,7 @@ function scheduleClamavRefresh(database, delayMs) {
         return;
     database.__clamavRefreshCancel = clamavSchedule(database, () => {
         database.__clamavRefreshCancel = null;
-        const pending = refreshClamavSignatures(database).catch(() => clamavRefreshRetryMs).then((nextDelayMs) => { if (database.__clamavRefreshPending === pending)
+        const pending = refreshClamavSignatures(database).catch(async () => { await emitClamavRefreshWarning(database, "CLAMAV_SIGNATURE_REFRESH_FAILED"); return clamavRefreshRetryMs; }).then((nextDelayMs) => { if (database.__clamavRefreshPending === pending)
             database.__clamavRefreshPending = null; scheduleClamavRefresh(database, nextDelayMs); });
         database.__clamavRefreshPending = pending;
     }, delayMs);
@@ -2846,6 +2865,9 @@ export async function initializeClamavRuntime(database) {
 export async function shutdownClamavRuntime(database) { database.clamavReady = false; stopClamavRefresh(database); if (!database.__clamavDevSidecar?.externallyManaged) {
     await stopOwnedClamavChildren(database);
     await database.__clamavRefreshPending;
+    if (database.__clamavProcess || database.__clamavUpdateProcess)
+        await stopOwnedClamavChildren(database);
+    database.clamavReady = false;
 }
 else {
     unobserveClamavChild(database, database.__clamavDevSidecar.process);

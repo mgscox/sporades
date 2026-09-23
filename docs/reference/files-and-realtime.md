@@ -770,7 +770,9 @@ started, every inspection-required upload fails closed, runtime health reports
 ready file inspection, a degraded runtime never passes verification of a new
 release; it only keeps an already-accepted Capsule serving other routes after a
 restart. The 15-minute refresh starts clamd as soon as current signatures
-arrive, without a restart. Shutdown cancels
+arrive, without a restart. A clamd that exits after startup latches health
+unavailable until the next refresh, which logs `CLAMAV_DAEMON_EXITED` and
+starts a replacement once signatures are current. Shutdown cancels
 the schedule, stops any running refresh and clamd after `SIGTERM`, and uses a
 bounded `SIGKILL` fallback, including partial-startup failure paths. Managed and Dev startup share one absolute
 120-second readiness window: database verification, socket probes, and retry

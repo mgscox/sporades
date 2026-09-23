@@ -354,7 +354,8 @@ startup and then hourly (and as the current signature reaches 26 hours old),
 retrying after 15 minutes when a refresh fails or leaves signatures older than
 26 hours. A restart that still finds only stale signatures starts the Capsule
 with file inspection unavailable and health not ready, rather than failing
-startup, and recovers on a later refresh. Push verification still requires
+startup, and recovers on a later refresh; a later refresh also restarts a
+`clamd` that has exited. Push verification still requires
 ready file inspection. After a successful update, `freshclam`
 notifies the local `clamd` over the configured Unix socket and the runtime also
 requests a reload whenever the loaded version differs from disk. Health continues
