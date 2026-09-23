@@ -82220,7 +82220,7 @@ async function recordRendererPackageImport(specifier, directory, onDependency) {
           else if (expanded.startsWith("./")) {
             const candidate = path3.resolve(directory, expanded);
             if (isCanonicalDescendant(directory, candidate)) {
-              for (const extension of ["", ".tsx", ".ts", ".jsx", ".js", ".json", "/index.ts", "/index.js"]) onDependency(candidate + extension);
+              recordRendererLocalResolutionCandidates(candidate, onDependency);
             }
           } else if (expanded && !expanded.startsWith(".") && (!expanded.startsWith("@") || expanded.split("/")[1]) && !path3.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
             const packageName = expanded.split("/").slice(0, expanded.startsWith("@") ? 2 : 1).join("/");

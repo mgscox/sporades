@@ -491,8 +491,7 @@ async function recordRendererPackageImport(specifier, directory, onDependency) {
                     else if (expanded.startsWith("./")) {
                         const candidate = path.resolve(directory, expanded);
                         if (isCanonicalDescendant(directory, candidate)) {
-                            for (const extension of ["", ".tsx", ".ts", ".jsx", ".js", ".json", "/index.ts", "/index.js"])
-                                onDependency(candidate + extension);
+                            recordRendererLocalResolutionCandidates(candidate, onDependency);
                         }
                     }
                     else if (expanded && !expanded.startsWith(".") && (!expanded.startsWith("@") || expanded.split("/")[1]) && !path.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {

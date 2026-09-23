@@ -273,6 +273,23 @@ test('successful local edges retain higher-priority static and computed resoluti
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('package-import aliases observe missing TypeScript substitutions for explicit JavaScript targets', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-alias-substitutions-')));
+  try {
+    await writeFile(path.join(root, 'entry.mjs'), 'import copy from "#copy"; export default () => copy;');
+    for (const [requested, actual] of [['copy.js','copy.ts'], ['copy.mjs','copy.mts'], ['copy.cjs','copy.cts'], ['copy.jsx','copy.tsx']]) {
+      await writeFile(path.join(root, 'package.json'), JSON.stringify({imports:{'#copy':{node:`./${requested}`, default:`./${requested}`}}}));
+      const dependencies = new Set();
+      const render = () => renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}, [], (file) => dependencies.add(file));
+      await assert.rejects(render());
+      assert.ok(dependencies.has(path.join(root, actual)), `${requested} observes ${actual} before creation`);
+      await writeFile(path.join(root, actual), 'export default "Recovered alias substitution";');
+      assert.equal(await render(), 'Recovered alias substitution');
+      await rm(path.join(root, actual));
+    }
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('tsconfig observer retains extended config and missing mapped module inputs', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-tsconfig-inputs-')));
   try {
