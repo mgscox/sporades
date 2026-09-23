@@ -15,7 +15,7 @@ async function withHeartbeatHub(fn, { answerPings = false } = {}) {
   const socket = connect(port, "127.0.0.1");
   const frames = [];
   let closed = false;
-  let handshake = Buffer.alloc(0);
+  let pending = Buffer.alloc(0);
   let upgraded = false;
   function sendMasked(opcode, payload = Buffer.alloc(0)) {
     const mask = Buffer.from([1, 2, 3, 4]);
@@ -24,21 +24,22 @@ async function withHeartbeatHub(fn, { answerPings = false } = {}) {
   }
   socket.on("close", () => { closed = true; });
   socket.on("error", () => {});
+  // TCP may split a frame anywhere, so keep bytes until a whole frame is in.
   socket.on("data", (chunk) => {
+    pending = Buffer.concat([pending, chunk]);
     if (!upgraded) {
-      handshake = Buffer.concat([handshake, chunk]);
-      const end = handshake.indexOf("\r\n\r\n");
+      const end = pending.indexOf("\r\n\r\n");
       if (end === -1) return;
-      assert.match(handshake.subarray(0, end).toString(), /^HTTP\/1\.1 101/);
+      assert.match(pending.subarray(0, end).toString(), /^HTTP\/1\.1 101/);
       upgraded = true;
-      chunk = handshake.subarray(end + 4);
+      pending = pending.subarray(end + 4);
     }
-    for (let offset = 0; offset + 1 < chunk.length;) {
-      const length = chunk[offset + 1] & 0x7f;
-      const frame = { opcode: chunk[offset] & 0x0f, payload: chunk.subarray(offset + 2, offset + 2 + length) };
+    while (pending.length >= 2 && pending.length >= 2 + (pending[1] & 0x7f)) {
+      const length = pending[1] & 0x7f;
+      const frame = { opcode: pending[0] & 0x0f, payload: Buffer.from(pending.subarray(2, 2 + length)) };
+      pending = pending.subarray(2 + length);
       frames.push(frame);
       if (answerPings && frame.opcode === 9) sendMasked(10, frame.payload);
-      offset += 2 + length;
     }
   });
   await new Promise((resolve) => socket.once("connect", resolve));
