@@ -273,6 +273,9 @@ const MIGRATED_RUNTIME_MODULES = [
   // Promise lineage is carried whole by ACL/resource draining. Its private
   // composition-root retention hook must remain visible to the guards.
   { file: "promise-coordinator.js", atLeast: 8, sentinel: "retainCompositionRootCandidate" },
+  // Live query invalidation reads every emitted statement on the SQLite adapter to classify the
+  // tables it reads or writes. Its write classifier decides which subscriptions refresh.
+  { file: "live-query-invalidation.js", atLeast: 5, sentinel: "recordLiveQueryStatementWrite" },
   // Headless Team Billing owns provider-correlation DDL and the fail-closed
   // projection boundary. The private timestamp validator is the final gate
   // before runtime-owned text can cross into browser state.

@@ -211,6 +211,14 @@ argument array independently before handler lookup. Its canonical JSON form may
 be at most 65,536 UTF-8 bytes. Runtime-owned queries, implicit table queries,
 and legacy rows subscriptions remain argument-free.
 
+Subscribed queries re-run after a mutation that writes and after a Job
+finishes. On SQLite, the runtime re-runs only the subscriptions whose last run
+read a table written since the previous refresh; a statement whose table it
+cannot identify re-runs every subscription, and a subscription whose last run
+failed re-runs on every refresh. A query result that depends on the
+clock or other state outside the database therefore does not update on
+unrelated writes. Postgres and libsql Capsules still re-run every subscription.
+
 ### Change Data With Mutations
 
 Mutations receive `ctx` plus the arguments passed from the client:
