@@ -1,9 +1,11 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { Parser } from "acorn";
 import jsx from "acorn-jsx";
+import { createPathsMatcher, getTsconfig } from "get-tsconfig";
 import { parse as parseHtml, serialize as serializeHtml, defaultTreeAdapter } from "parse5";
 import { redactBuildProjectRoots } from "./build-diagnostics.js";
 export function readClientPrerenderConfig(value, toolchain) {
@@ -38,8 +40,9 @@ export function readClientPrerenderConfig(value, toolchain) {
     });
     return fragments;
 }
-export async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots = [projectRoot]) {
+export async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots = [projectRoot], onDependency) {
     const modulePath = path.resolve(projectRoot, ...fragment.module.split("/"));
+    onDependency?.(modulePath);
     let canonicalModulePath;
     try {
         const metadata = await lstat(modulePath);
@@ -60,13 +63,13 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
         const { build } = await import("esbuild");
         let result;
         try {
-            result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases);
+            result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases, onDependency);
         }
         catch (error) {
             if (!isCommonJsTopLevelAwaitBuildFailure(error))
                 throw error;
             bundleFormat = "esm";
-            result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases);
+            result = await buildRendererBundle(build, projectRoot, canonicalModulePath, bundleFormat, rendererDependencyRoots, rendererDependencyAliases, onDependency);
         }
         const outputs = result.outputFiles ?? [];
         const javascript = outputs.filter((output) => output.path.endsWith(".js"));
@@ -81,6 +84,22 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
     const boundedRendererRoots = [...projectRoots, ...rendererDependencyRoots];
     {
         const outcome = await executeBundledRenderer(bundledSource, bundleFormat, canonicalModulePath, fragment.module, boundedRendererRoots);
+        for (const dependency of outcome.dependencies ?? []) {
+            if (typeof dependency === "string" && path.isAbsolute(dependency)) {
+                onDependency?.(dependency);
+                await recordRendererLocalPackageBoundaries(dependency, projectRoot, onDependency);
+            }
+        }
+        for (const request of outcome.packageImports ?? []) {
+            if (request.specifier.startsWith("#"))
+                await recordRendererPackageTargets(request.specifier, path.dirname(request.filename), onDependency);
+            else
+                await recordRendererPackageManifests(request.specifier, path.dirname(request.filename), onDependency, request.resolvedPath);
+            for (const directory of request.resolvePaths ?? []) {
+                if (!request.specifier.startsWith("#"))
+                    await recordRendererPackageManifests(request.specifier, directory, onDependency, request.resolvedPath);
+            }
+        }
         if (outcome.kind === "not-function") {
             throw prerenderError(`Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`, `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`);
         }
@@ -93,7 +112,7 @@ export async function renderClientPrerenderFragment(projectRoot, fragment, proje
         return outcome.rendered;
     }
 }
-async function buildRendererBundle(build, projectRoot, canonicalModulePath, format, rendererDependencyRoots, rendererDependencyAliases) {
+async function buildRendererBundle(build, projectRoot, canonicalModulePath, format, rendererDependencyRoots, rendererDependencyAliases, onDependency) {
     return build({
         absWorkingDir: projectRoot,
         bundle: true,
@@ -103,7 +122,7 @@ async function buildRendererBundle(build, projectRoot, canonicalModulePath, form
         logLevel: "silent",
         outdir: path.join(projectRoot, ".sporades-prerender-output"),
         platform: "node",
-        plugins: [preserveRendererImportMetaUrl(build, projectRoot, rendererDependencyRoots, rendererDependencyAliases)],
+        plugins: [preserveRendererImportMetaUrl(build, projectRoot, rendererDependencyRoots, rendererDependencyAliases, onDependency)],
         sourcemap: false,
         target: "node22",
         write: false,
@@ -119,8 +138,9 @@ function isCommonJsTopLevelAwaitBuildFailure(error) {
         && diagnostic.text.includes("Top-level await")
         && diagnostic.text.includes('"cjs" output format')));
 }
-function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDependencyRoots, rendererDependencyAliases) {
+function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDependencyRoots, rendererDependencyAliases, onDependency) {
     const packageModeCache = new Map();
+    const recordTsconfig = createRendererTsconfigObserver(onDependency);
     const loaders = new Map([
         [".cjs", "js"],
         [".cts", "ts"],
@@ -139,6 +159,18 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
             pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
                 if (args.pluginData?.[resolutionBypass])
                     return undefined;
+                recordTsconfig(args.path, args.resolveDir || projectRoot);
+                if (args.path.startsWith("#"))
+                    await recordRendererPackageTargets(args.path, args.resolveDir || projectRoot, onDependency);
+                else
+                    await recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency);
+                const localPath = rendererLocalFilePath(args.path)
+                    ?? (args.path.startsWith(".") ? path.resolve(args.resolveDir || projectRoot, args.path) : undefined);
+                // Record absent and malformed boundaries before resolution can fail.
+                if (localPath) {
+                    recordRendererLocalResolutionCandidates(localPath, onDependency);
+                    await recordRendererLocalPackageBoundaries(localPath, projectRoot, onDependency);
+                }
                 const resolved = await pluginBuild.resolve(args.path, {
                     importer: args.importer,
                     kind: args.kind,
@@ -149,6 +181,14 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 });
                 if (resolved.errors.length > 0) {
                     const failedPath = rendererLocalFilePath(args.path);
+                    if (!localPath && !path.isAbsolute(args.path) && !/^(?:[A-Za-z][A-Za-z0-9+.-]*:|#)/.test(args.path)) {
+                        const packageName = args.path.split("/").slice(0, args.path.startsWith("@") ? 2 : 1).join("/");
+                        const localRequire = createRequire(path.join(args.resolveDir || projectRoot, "__sporades_prerender__.cjs"));
+                        // Watch only the unresolved package roots, not every node_modules
+                        // tree. Installation (including package subpaths) can then recover.
+                        for (const directory of localRequire.resolve.paths(args.path) ?? [])
+                            onDependency?.(path.join(directory, packageName));
+                    }
                     const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : undefined;
                     if (failedPath) {
                         const projectRootEqual = path.resolve(failedPath) === path.resolve(projectRoot);
@@ -176,6 +216,11 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                     }
                     return args.namespace === commonJsNamespace ? { errors: resolved.errors, warnings: resolved.warnings } : undefined;
                 }
+                if (!resolved.external && resolved.namespace === "file") {
+                    onDependency?.(resolved.path);
+                    await recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency, resolved.path);
+                    await recordRendererLocalPackageBoundaries(resolved.path, projectRoot, onDependency);
+                }
                 if (!resolved.external
                     && resolved.namespace === "file"
                     && !isCanonicalDescendant(projectRoot, resolved.path)) {
@@ -202,6 +247,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
                 };
             });
             const loadRendererModule = async (args) => {
+                recordTsconfig("", path.dirname(args.path));
                 const contents = await readFile(args.path, "utf8");
                 const commonJsModule = await rendererModuleUsesCommonJs(args.path, contents, projectRoot, packageModeCache);
                 const loader = loaders.get(path.extname(args.path));
@@ -364,6 +410,202 @@ async function rendererNeedsCommonJsBoundaryNamespace(modulePath) {
         const parent = path.dirname(directory);
         if (parent === directory)
             return false;
+        directory = parent;
+    }
+}
+async function recordRendererPackageManifests(specifier, directory, onDependency, resolvedPath) {
+    if (!onDependency || !specifier || isBuiltin(specifier) || specifier.startsWith(".") || specifier.startsWith("#") || path.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier))
+        return;
+    const parts = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1);
+    if (parts.length !== (specifier.startsWith("@") ? 2 : 1) || parts.some((part) => !part || part === "." || part === ".."))
+        return;
+    const packageName = parts.join("/");
+    await recordRendererPackageTargets(specifier, directory, onDependency, packageName);
+    const localRequire = createRequire(path.join(directory, "__sporades_prerender__.cjs"));
+    for (const base of localRequire.resolve.paths(specifier) ?? []) {
+        const root = path.join(base, packageName);
+        onDependency(path.join(root, "package.json"));
+        // A subpath may cross a nested directory link, which bounded package
+        // polling intentionally does not expand. Keep its finite alternatives
+        // explicit so a preferred file behind that link still invalidates Dev.
+        const subpath = specifier.slice(packageName.length + 1);
+        if (subpath)
+            recordRendererLocalResolutionCandidates(path.join(root, subpath), onDependency);
+        await recordRendererPackageTargets(specifier, root, onDependency, packageName, true);
+        if (!resolvedPath)
+            continue;
+        let canonicalRoot = root;
+        try {
+            canonicalRoot = await realpath(root);
+        }
+        catch { /* missing nearer candidates still need observation */ }
+        // Observe nearer candidates and the selected package itself: a new file
+        // inside it can outrank the selected subpath or package entry point. This
+        // remains bounded to this package, not the containing node_modules tree.
+        onDependency(root);
+        if (resolvedPath === canonicalRoot || isCanonicalDescendant(canonicalRoot, resolvedPath))
+            break;
+    }
+}
+async function recordRendererPackageTargets(specifier, directory, onDependency, selfPackageName, packageRoot = false) {
+    if (!onDependency)
+        return;
+    // Observe all matching conditional targets; Node/esbuild still decides which
+    // one resolves. This is a conservative watch graph, not a second resolver.
+    while (path.basename(directory) !== "node_modules") {
+        const manifest = path.join(directory, "package.json");
+        onDependency(manifest);
+        let configuration;
+        try {
+            configuration = JSON.parse(await readFile(manifest, "utf8"));
+        }
+        catch (error) {
+            if (isMissingRendererPackageJson(error)) {
+                if (packageRoot)
+                    return;
+                const parent = path.dirname(directory);
+                if (parent === directory)
+                    return;
+                directory = parent;
+                continue;
+            }
+            return;
+        }
+        let mappings = configuration?.imports;
+        if (selfPackageName !== undefined) {
+            if (packageRoot && specifier === selfPackageName) {
+                for (const entry of [configuration?.main, configuration?.module]) {
+                    if (typeof entry === "string")
+                        recordRendererLocalResolutionCandidates(path.resolve(directory, entry), onDependency);
+                }
+            }
+            if ((!packageRoot && configuration?.name !== selfPackageName) || configuration?.exports == null)
+                return;
+            const exports = configuration.exports;
+            mappings = typeof exports === "object" && !Array.isArray(exports) && Object.keys(exports).some((key) => key.startsWith("."))
+                ? exports : { ".": exports };
+            specifier = `.${specifier.slice(selfPackageName.length)}`;
+        }
+        if (!mappings || typeof mappings !== "object")
+            return;
+        const seen = new Set();
+        const selfTargets = [];
+        const visitAlias = (alias) => {
+            if (seen.has(alias))
+                return;
+            seen.add(alias);
+            for (const [key, target] of Object.entries(mappings)) {
+                const star = key.indexOf("*");
+                const suffix = star < 0 ? "" : key.slice(star + 1);
+                const matches = star < 0 ? key === alias : alias.startsWith(key.slice(0, star)) && alias.endsWith(suffix) && alias.length >= key.length - 1;
+                if (!matches)
+                    continue;
+                const match = star < 0 ? "" : alias.slice(star, suffix ? -suffix.length : undefined);
+                const visitTarget = (value) => {
+                    if (Array.isArray(value)) {
+                        for (const entry of value)
+                            visitTarget(entry);
+                        return;
+                    }
+                    if (value && typeof value === "object") {
+                        for (const entry of Object.values(value))
+                            visitTarget(entry);
+                        return;
+                    }
+                    if (typeof value !== "string")
+                        return;
+                    const expanded = star < 0 ? value : value.replaceAll("*", match);
+                    if (expanded.startsWith("#"))
+                        visitAlias(expanded);
+                    else if (expanded.startsWith("./")) {
+                        const candidate = path.resolve(directory, expanded);
+                        if (isCanonicalDescendant(directory, candidate)) {
+                            recordRendererLocalResolutionCandidates(candidate, onDependency);
+                        }
+                    }
+                    else if (selfPackageName === undefined && expanded && !expanded.startsWith(".") && (!expanded.startsWith("@") || expanded.split("/")[1]) && !path.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
+                        const packageName = expanded.split("/").slice(0, expanded.startsWith("@") ? 2 : 1).join("/");
+                        const localRequire = createRequire(path.join(directory, "__sporades_prerender__.cjs"));
+                        for (const base of localRequire.resolve.paths(expanded) ?? [])
+                            onDependency(path.join(base, packageName));
+                        // An imports alias may itself target this package's exports.
+                        selfTargets.push(recordRendererPackageTargets(expanded, directory, onDependency, packageName));
+                    }
+                };
+                visitTarget(target);
+            }
+        };
+        visitAlias(specifier);
+        await Promise.all(selfTargets);
+        return;
+    }
+}
+function recordRendererLocalResolutionCandidates(candidate, onDependency) {
+    if (!onDependency)
+        return;
+    // Observe potential winners even when resolution succeeds: a new .ts file
+    // can supersede an existing .js import without changing the selected file.
+    for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".css", ".json", "/package.json", "/index.tsx", "/index.ts", "/index.jsx", "/index.js", "/index.css", "/index.json"])
+        onDependency(candidate + suffix);
+    const extension = path.extname(candidate);
+    const substitutes = extension === ".js" || extension === ".jsx" ? [".ts", ".tsx"] : extension === ".mjs" ? [".mts"] : extension === ".cjs" ? [".cts"] : [];
+    for (const substitute of substitutes)
+        onDependency(candidate.slice(0, -extension.length) + substitute);
+}
+function createRendererTsconfigObserver(onDependency) {
+    const matchers = new Map();
+    return (specifier, directory) => {
+        if (!onDependency)
+            return;
+        if (!matchers.has(directory)) {
+            const cache = new Map();
+            let matcher;
+            try {
+                const config = getTsconfig(directory, "tsconfig.json", cache);
+                if (config)
+                    matcher = createPathsMatcher(config) ?? undefined;
+            }
+            catch { /* esbuild owns config diagnostics; retain inputs for repair. */ }
+            finally {
+                // Adapter for the exact-pinned get-tsconfig filesystem cache. Retain
+                // read configs, package manifests and absent lookup candidates, not
+                // existing parent directories (which would observe build outputs).
+                for (const [key, value] of cache) {
+                    const read = /^readFileSync:(.*):utf8$/.exec(key);
+                    const exists = /^existsSync:(.*)$/.exec(key);
+                    if (read)
+                        onDependency(path.resolve(read[1]));
+                    else if (exists && (value === false || exists[1].endsWith(".json")))
+                        onDependency(path.resolve(exists[1]));
+                }
+                matchers.set(directory, matcher);
+            }
+        }
+        if (!specifier || isBuiltin(specifier) || specifier.startsWith(".") || path.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier))
+            return;
+        for (const candidate of matchers.get(directory)?.(specifier) ?? []) {
+            recordRendererLocalResolutionCandidates(candidate, onDependency);
+        }
+    };
+}
+async function recordRendererLocalPackageBoundaries(modulePath, projectRoot, onDependency) {
+    if (!onDependency)
+        return;
+    let directory = path.dirname(modulePath);
+    while (path.basename(directory) !== "node_modules") {
+        const manifest = path.join(directory, "package.json");
+        onDependency(manifest);
+        try {
+            await readFile(manifest, "utf8");
+            return;
+        }
+        catch (error) {
+            if (!isMissingRendererPackageJson(error))
+                return;
+        }
+        const parent = path.dirname(directory);
+        if (directory === path.resolve(projectRoot) || parent === directory)
+            return;
         directory = parent;
     }
 }
@@ -1131,17 +1373,48 @@ async function executeBundledRenderer(source, format, modulePath, displayPath, p
 const { workerData } = require("node:worker_threads");
 const completionPort = workerData.completionPort;
 delete workerData.completionPort;
-const { createRequire, Module } = require("node:module");
+const { createRequire, isBuiltin, Module } = require("node:module");
 const { dirname, isAbsolute, resolve } = require("node:path");
 const dependencies = new Set();
 const runtimeSpecifiers = new Set();
+const packageImports = [];
 const originalResolveFilename = Module._resolveFilename;
 // One Worker-local seam observes both require() and require.resolve(), before
 // evaluation can fail and evict a module from the cache.
 Module._resolveFilename = function(specifier, parent) {
+  const customDirectories = new Set();
+  let customPathsRead = false;
+  const forwarded = Array.from(arguments);
+  const options = forwarded[3];
+  if (options && typeof options === "object") {
+    forwarded[3] = new Proxy({}, { get(_target, property) {
+      // Observe the access Node actually performs, preserving accessor counts
+      // and their original receiver instead of reading options.paths twice.
+      const value = Reflect.get(options, property, options);
+      if (property === "paths" && Array.isArray(value)) {
+        customPathsRead = true;
+        // Node consumes these entries itself. Intercept those exact reads so
+        // accessors/inherited indices are observed without extra evaluation.
+        // The options facade also supports frozen options.paths properties.
+        return new Proxy(value, { get(target, key) {
+          const entry = Reflect.get(target, key, target);
+          if (typeof key === "string" && /^(0|[1-9][0-9]*)$/.test(key) && typeof entry === "string") customDirectories.add(resolve(entry));
+          return entry;
+        }});
+      }
+      return value;
+    }});
+  }
+  const packageRequest = typeof specifier === "string" && !isBuiltin(specifier) && !specifier.startsWith(".") && !isAbsolute(specifier) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier) ? {specifier, filename:parent?.filename || workerData.modulePath} : null;
+  if (packageRequest) packageImports.push(packageRequest);
   if (typeof specifier === "string" && (isAbsolute(specifier) || /^file:/i.test(specifier))) runtimeSpecifiers.add(specifier);
+  if (typeof specifier === "string" && (specifier.startsWith(".") || isAbsolute(specifier))) {
+    const candidate = resolve(dirname(parent?.filename || workerData.modulePath), specifier);
+    for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
+  }
   try {
-    const filename = originalResolveFilename.apply(this, arguments);
+    const filename = originalResolveFilename.apply(this, forwarded);
+    if (packageRequest) packageRequest.resolvedPath = filename;
     if (typeof filename === "string" && isAbsolute(filename)) dependencies.add(filename);
     return filename;
   } catch (error) {
@@ -1150,12 +1423,22 @@ Module._resolveFilename = function(specifier, parent) {
       const packageName = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
       const candidates = specifier.startsWith(".") || isAbsolute(specifier)
         ? [resolve(dirname(parent?.filename || workerData.modulePath), specifier)]
-        : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, packageName));
+        : (customPathsRead
+          ? [...customDirectories].flatMap((directory) => createRequire(resolve(directory, "__sporades_prerender__.cjs")).resolve.paths(specifier) || [])
+          : localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, packageName));
       for (const candidate of candidates) {
         for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
       }
   }
     throw error;
+  } finally {
+    if (packageRequest && customPathsRead) packageRequest.resolvePaths = [...customDirectories];
+    if (typeof specifier === "string" && (specifier.startsWith(".") || isAbsolute(specifier))) {
+      for (const directory of customDirectories) {
+        const candidate = resolve(directory, specifier);
+        for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
+      }
+    }
   }
 };
 globalThis.require = createRequire(workerData.modulePath);
@@ -1163,7 +1446,7 @@ function post(outcome) {
   // Cross-channel delivery is not ordered against Worker.exit. Keep the worker
   // alive after completion until the parent consumes the result and terminates it.
   completionPort.ref();
-  completionPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])], runtimeSpecifiers: [...runtimeSpecifiers] });
+  completionPort.postMessage({ ...outcome, dependencies: [...new Set([...dependencies, ...Object.keys(require.cache)])], runtimeSpecifiers: [...runtimeSpecifiers], packageImports });
 }
 function safeMessage(error) {
   try {
@@ -1201,6 +1484,10 @@ process.once("uncaughtException", (error) => post({ kind: "failure", message: sa
     const completion = new MessageChannel();
     const worker = new Worker(bootstrap, {
         eval: true,
+        // Runtime require(esm) hides ESM descendants from require.cache on the
+        // minimum supported Node release. Keep computed requires CommonJS-only;
+        // literal ESM imports/requires still use the fully tracked bundle graph.
+        execArgv: ["--no-experimental-require-module"],
         workerData: { source, format, modulePath, displayPath: displayPath.replaceAll("\\", "/"), completionPort: completion.port2 },
         transferList: [completion.port2],
     });

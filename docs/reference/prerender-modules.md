@@ -40,6 +40,13 @@ After placement in `transformIndexHtml`, later Vite output hooks must leave each
 Sporades-owned boundary pair and its enclosed HTML unchanged. Final validation
 rejects replacement ranges; derive final fragment content in the renderer.
 
+Computed CommonJS `require(variable)` supports CommonJS dependencies only.
+Runtime `require()` of ESM is disabled in the renderer Worker because Node's
+CommonJS cache does not expose the ESM descendants needed for reliable Dev
+watching. Use a literal import or require for ESM dependencies so the bundler can
+track their complete code graph. This restriction is consistent across supported
+Node releases.
+
 Fragment HTML must be valid for its marker's document context. The build checks
 the parsed DOM without rewriting the emitted HTML: content moved outside its
 handover boundaries by HTML parsing fails with a placement diagnostic. For

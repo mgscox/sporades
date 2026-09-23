@@ -21,6 +21,7 @@ import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
 import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
 import { installProjectTailwindToolchain } from "./support/project-tailwind-toolchain.js";
 import { CLIENT_CAPABILITIES } from "../dist/client-capabilities.js";
+import { installPrerenderFixture } from "./support/prerender-capsule.js";
 import { mountLitTemplate } from "./support/lit-template-harness.js";
 import { mountSvelteTemplate } from "./support/svelte-template-harness.js";
 import { mountSolidTemplate } from "./support/solid-template-harness.js";
@@ -4186,6 +4187,300 @@ test("Vue Vite rejects a symlinked node_modules root before resolving compiler p
       return true;
     });
     await assert.rejects(access(path.join(projectDir, ".sporades")), (error) => error.code === "ENOENT");
+  });
+});
+
+test("Dev watches prerender modules and transitive code while retaining the last successful static shell", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "prerender-dev", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, 'prerender-dev');
+    await installFakeReact(projectDir);
+    const config = await installPrerenderFixture(projectDir);
+    config.dev.port = 0;
+    await writeFile(path.join(projectDir, 'sporades.json'), JSON.stringify(config));
+    const child = startCli(['dev', '--json'], {cwd:projectDir});
+    const events = captureJsonEvents(child);
+    let socket;
+    try {
+      const started = await events.next((event) => event.data?.event === 'started');
+      const page = () => fetch(started.data.url).then((response) => response.text());
+      assert.match(await page(), /Useful before JavaScript/);
+      socket = await openSocket(started.data.url); await subscribeDevRefresh(socket);
+      const refresh = readSocketMessage(socket);
+      await writeFile(path.join(projectDir, 'render/copy.ts'), 'export const copy = "Transitive edit";');
+      const rebuilt = await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.equal(rebuilt.data.build.phase, 'client');
+      assert.equal((await refresh).type, 'refresh');
+      assert.match(await page(), /Transitive edit/);
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'export default () => "<main>Renderer edit</main>";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Renderer edit/);
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'export default () => { throw new Error("failed prerender edit"); };');
+      const failed = await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      assert.match(failed.error.message, /failed prerender edit/);
+      assert.match(await page(), /Renderer edit/);
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import { copy } from "./new-copy.ts"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(path.join(projectDir, 'render/new-copy.ts'), 'export const copy = "Recovered new dependency";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      const final = await page();
+      assert.match(final, /Recovered new dependency/);
+      assert.doesNotMatch(final, /(?:server|project)-env-prerender-must-not-ship/);
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'export default () => { const target = "./computed.cjs"; return require(target); };');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      assert.match(await page(), /Recovered new dependency/);
+      await writeFile(path.join(projectDir, 'render/computed.cjs'), 'throw new Error("computed helper failed");');
+      const helperFailed = await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      assert.match(helperFailed.error.message, /computed helper failed/);
+      assert.match(await page(), /Recovered new dependency/);
+      await writeFile(path.join(projectDir, 'render/computed.cjs'), 'module.exports = "Recovered computed helper";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Recovered computed helper/);
+      for (const packageName of ['new-render-copy', '@example/new-render-copy']) {
+        await writeFile(path.join(projectDir, 'render/landing.ts'), `import copy from ${JSON.stringify(packageName)}; export default () => copy;`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+        const packageDir = path.join(projectDir, 'node_modules', packageName);
+        await mkdir(packageDir, {recursive:true});
+        await writeFile(path.join(packageDir, 'package.json'), JSON.stringify({name:packageName, main:'index.js'}));
+        await writeFile(path.join(packageDir, 'index.js'), `module.exports = ${JSON.stringify(`Installed ${packageName}`)};`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.ok((await page()).includes(`Installed ${packageName}`));
+      }
+      const customResolution = path.join(dir, 'custom-resolution');
+      for (const [specifier, target] of [
+        ['custom-copy', path.join(customResolution, 'node_modules/custom-copy/index.js')],
+        ['./relative-copy', path.join(customResolution, 'relative-copy.js')],
+      ]) {
+        await writeFile(path.join(projectDir, 'render/landing.ts'), `export default () => {const target = ${JSON.stringify(specifier)}; return require(require.resolve(target, {paths:[${JSON.stringify(customResolution)}]}));};`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+        await mkdir(path.dirname(target), {recursive:true});
+        await writeFile(target, 'module.exports = "Recovered custom resolution";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Recovered custom resolution/);
+        await writeFile(target, 'module.exports = "Updated custom resolution";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Updated custom resolution/);
+      }
+      const linkedPackage = path.join(dir, 'linked-copy');
+      await mkdir(path.join(linkedPackage, 'node_modules'), {recursive:true});
+      await writeFile(path.join(linkedPackage, 'package.json'), '{"name":"linked-copy","main":"index.js"}');
+      await writeFile(path.join(linkedPackage, 'index.js'), 'module.exports = "Linked package";');
+      await symlink(linkedPackage, path.join(linkedPackage, 'cycle'));
+      await symlink(linkedPackage, path.join(linkedPackage, 'node_modules/linked-copy'));
+      await symlink(linkedPackage, path.join(projectDir, 'node_modules/linked-copy'));
+      const linkedHelper = path.join(dir, 'linked-helper');
+      await mkdir(linkedHelper);
+      await writeFile(path.join(linkedHelper, 'copy.js'), 'module.exports = "Linked package";');
+      await symlink(linkedHelper, path.join(linkedPackage, 'helper'));
+      await writeFile(path.join(linkedPackage, 'index.js'), 'module.exports = require("./helper/copy.js");');
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "linked-copy"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Linked package/);
+      const linkedRebuildCount = events.events.filter(event => event.data?.event === 'rebuild').length;
+      await writeFile(path.join(linkedPackage, 'node_modules/unrelated.txt'), 'not an imported dependency');
+      await new Promise(resolve => setTimeout(resolve, 800));
+      assert.equal(events.events.filter(event => event.data?.event === 'rebuild').length, linkedRebuildCount, 'unrelated nested dependencies are not recursively polled');
+      await writeFile(path.join(linkedHelper, 'copy.js'), 'module.exports = "Updated linked package";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Updated linked package/);
+      await writeFile(path.join(linkedHelper, 'alternative.json'), '"Initial linked alternative"');
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "linked-copy/helper/alternative"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Initial linked alternative/);
+      await writeFile(path.join(linkedHelper, 'alternative.js'), 'module.exports = "Preferred linked alternative";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Preferred linked alternative/);
+      for (const computed of [false, true]) {
+        const stem = computed ? 'main-computed' : 'main-static';
+        await writeFile(path.join(linkedHelper, `${stem}.json`), '"Initial linked main"');
+        await writeFile(path.join(linkedPackage, 'package.json'), JSON.stringify({name:'linked-copy', main:`helper/${stem}`}));
+        await writeFile(path.join(projectDir, 'render/landing.ts'), computed
+          ? 'export default () => {const name = "linked-copy"; return require(name);};'
+          : 'import copy from "linked-copy"; export default () => copy;');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Initial linked main/);
+        await writeFile(path.join(linkedHelper, `${stem}.js`), 'module.exports = "Preferred linked main";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Preferred linked main/);
+      }
+      const absolute = path.join(dir, 'late-absolute.cjs');
+      const manifestPath = path.join(projectDir, 'package.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+      for (const [alias, target, renderer, resolvedTarget = target] of [
+        ['#copy', './render/alias-copy.ts', 'import copy from "#copy"; export default () => copy;'],
+        ['#typed-copy', './render/alias-typed.js', 'import copy from "#typed-copy"; export default () => copy;', './render/alias-typed.ts'],
+        ['#computed/*', './render/*.cjs', 'export default () => { const name = "#computed/alias-computed"; return require(name); };'],
+      ]) {
+        manifest.imports = {[alias]:{node:target, default:target}};
+        await writeFile(manifestPath, JSON.stringify(manifest));
+        await writeFile(path.join(projectDir, 'render/landing.ts'), renderer);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+        const targetFile = resolvedTarget.replace('*', 'alias-computed');
+        await writeFile(path.join(projectDir, targetFile), targetFile.endsWith('.ts') ? 'export default "Recovered package alias";' : 'module.exports = "Recovered computed alias";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Recovered (?:package|computed) alias/);
+        if (alias === '#copy') {
+          await writeFile(path.join(projectDir, 'render/repointed-alias.ts'), 'export default "Repointed manifest alias";');
+          manifest.imports = {'#copy':'./render/repointed-alias.ts'};
+          await writeFile(manifestPath, JSON.stringify(manifest));
+          await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+          assert.match(await page(), /Repointed manifest alias/);
+        }
+      }
+      for (const computed of [false, true]) {
+        const stem = computed ? 'self-computed' : 'self-static';
+        const target = `./render/${stem}.${computed ? 'cjs' : 'ts'}`;
+        manifest.exports = {[`./${stem}`]:{node:target, default:target}};
+        await writeFile(manifestPath, JSON.stringify(manifest));
+        const specifier = `${manifest.name}/${stem}`;
+        await writeFile(path.join(projectDir, 'render/landing.ts'), computed
+          ? `export default () => {const target = ${JSON.stringify(specifier)}; return require(target);};`
+          : `import copy from ${JSON.stringify(specifier)}; export default () => copy;`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+        await writeFile(path.join(projectDir, target), computed ? 'module.exports = "Recovered self export";' : 'export default "Recovered self export";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Recovered self export/);
+      }
+      for (const packageName of ['computed-export-copy', '@example/computed-export-copy', 'static-export-copy']) {
+        const renderer = packageName.startsWith('static') ? `import copy from ${JSON.stringify(`${packageName}/feature`)}; export default () => copy;` : `export default () => { const target = ${JSON.stringify(`${packageName}/feature`)}; return require(target); };`;
+        await writeFile(path.join(projectDir, 'render/landing.ts'), renderer);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+        const packageDir = path.join(projectDir, 'node_modules', packageName);
+        await mkdir(path.join(packageDir, 'dist'), {recursive:true});
+        await writeFile(path.join(packageDir, 'package.json'), JSON.stringify({name:packageName, exports:{'./feature':'./dist/feature.js'}}));
+        await writeFile(path.join(packageDir, 'dist/feature.js'), `module.exports = ${JSON.stringify(`Installed computed ${packageName}`)};`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.ok((await page()).includes(`Installed computed ${packageName}`));
+        await writeFile(path.join(packageDir, 'dist/next.js'), `module.exports = ${JSON.stringify(`Repointed ${packageName}`)};`);
+        await writeFile(path.join(packageDir, 'package.json'), JSON.stringify({name:packageName, exports:{'./feature':'./dist/next.js'}}));
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.ok((await page()).includes(`Repointed ${packageName}`));
+      }
+      const localPackage = path.join(projectDir, 'render/local-package');
+      const tsconfigPath = path.join(projectDir, 'tsconfig.json');
+      const tsconfig = {compilerOptions:{paths:{'@render/*':['./render/*']}}};
+      await writeFile(tsconfigPath, JSON.stringify(tsconfig));
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "@render/mapped-copy"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(path.join(projectDir, 'render/mapped-copy.ts'), 'export default "Recovered tsconfig mapping";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Recovered tsconfig mapping/);
+      await writeFile(path.join(projectDir, 'render/mapped-next.ts'), 'export default "Retargeted tsconfig mapping";');
+      tsconfig.compilerOptions.paths = {'@render/*':['./render/mapped-next.ts']};
+      await writeFile(tsconfigPath, JSON.stringify(tsconfig));
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Retargeted tsconfig mapping/);
+      await writeFile(tsconfigPath, JSON.stringify({compilerOptions:{baseUrl:'./render'}}));
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "base-copy"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(path.join(projectDir, 'render/base-copy.ts'), 'export default "Recovered base URL copy";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Recovered base URL copy/);
+      for (const kind of ['static', 'computed']) {
+        const name = `shadowed-${kind}-copy`;
+        const outer = path.join(projectDir, 'node_modules', name);
+        await mkdir(outer, {recursive:true});
+        await writeFile(path.join(outer, 'package.json'), JSON.stringify({name, main:'index.js'}));
+        await writeFile(path.join(outer, 'index.js'), 'module.exports = "Outer package";');
+        await writeFile(path.join(projectDir, 'render/landing.ts'), kind === 'static' ? `import copy from '${name}'; export default () => copy;` : `export default () => { const name = '${name}'; return require(name); };`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Outer package/);
+        const inner = path.join(projectDir, 'render/node_modules', name);
+        await mkdir(inner, {recursive:true});
+        await writeFile(path.join(inner, 'index.js'), 'module.exports = "Nearer manifestless package";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Nearer manifestless package/);
+        await rm(path.join(inner, 'index.js'));
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Outer package/);
+        await writeFile(path.join(inner, 'index.js'), 'module.exports = "Recreated nearer package";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Recreated nearer package/);
+      }
+      await mkdir(localPackage);
+      await writeFile(path.join(localPackage, 'copy.js'), 'module.exports = "Local package boundary";');
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "./local-package/copy.js"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(path.join(localPackage, 'package.json'), '{"type":"commonjs"}');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Local package boundary/);
+      await writeFile(path.join(localPackage, 'package.json'), '{"type":"module"}');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      assert.match(await page(), /Local package boundary/);
+      await writeFile(path.join(localPackage, 'package.json'), '{"type":"commonjs"}');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      await writeFile(path.join(localPackage, 'package.json'), '{malformed');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(path.join(localPackage, 'package.json'), '{"type":"commonjs"}');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Local package boundary/);
+      await writeFile(path.join(projectDir, 'render/landing.ts'), `import copy from ${JSON.stringify(absolute)}; export default () => copy;`);
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await writeFile(absolute, 'module.exports = "Recovered absolute dependency";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Recovered absolute dependency/);
+      const resolutionDir = path.join(projectDir, 'render/resolution');
+      await mkdir(resolutionDir);
+      await writeFile(path.join(resolutionDir, 'package.json'), '{"type":"commonjs"}');
+      for (const computed of [false, true]) {
+        const stem = computed ? 'resolution-computed' : 'resolution-static';
+        const initial = path.join(resolutionDir, `${stem}.${computed ? 'json' : 'js'}`);
+        const preferred = path.join(resolutionDir, `${stem}.${computed ? 'js' : 'ts'}`);
+        await writeFile(initial, computed ? '"Initial resolution"' : 'module.exports = "Initial resolution";');
+        await writeFile(path.join(projectDir, 'render/landing.ts'), computed
+          ? `export default () => {const target = "./resolution/${stem}"; return require(target);};`
+          : `import copy from "./resolution/${stem}"; export default () => copy;`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Initial resolution/);
+        await writeFile(preferred, computed ? 'module.exports = "Preferred resolution";' : 'export default "Preferred resolution";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Preferred resolution/);
+        await rm(preferred);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Initial resolution/);
+      }
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 800));
+      for (const computed of [false, true]) {
+        const name = computed ? 'selected-computed' : 'selected-static';
+        const selected = path.join(projectDir, 'node_modules', name);
+        await mkdir(selected, {recursive:true});
+        await writeFile(path.join(selected, 'package.json'), JSON.stringify({name, type:'commonjs'}));
+        await writeFile(path.join(selected, 'feature.json'), '"Initial package resolution"');
+        await writeFile(path.join(projectDir, 'render/landing.ts'), computed
+          ? `export default () => {const target = "${name}/feature"; return require(target);};`
+          : `import copy from "${name}/feature"; export default () => copy;`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Initial package resolution/);
+        const preferred = path.join(selected, 'feature.js');
+        await writeFile(preferred, 'module.exports = "Preferred package resolution";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Preferred package resolution/);
+        await rm(preferred);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Initial package resolution/);
+      }
+      const rebuildCount = () => events.events.filter((event) => event.data?.event === 'rebuild').length;
+      await settle();
+      await writeFile(path.join(projectDir, 'render/existing.cjs'), 'module.exports = "One rebuild";');
+      const beforeExisting = rebuildCount();
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "./existing.cjs"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      await settle();
+      assert.equal(rebuildCount(), beforeExisting + 1, 'discovering an unchanged dependency does not trigger another rebuild');
+      const beforeMissing = rebuildCount();
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "./still-missing.cjs"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+      await settle();
+      assert.equal(rebuildCount(), beforeMissing + 1, 'new missing candidates do not repeat the failed build');
+    } catch (error) {
+      error.message += `\nCaptured events: ${JSON.stringify(events.events)}`;
+      throw error;
+    } finally {
+      socket?.close();
+      const exited = new Promise((resolve) => child.once('exit', resolve));
+      child.kill('SIGTERM'); await exited;
+    }
   });
 });
 

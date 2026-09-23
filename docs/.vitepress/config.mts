@@ -55,6 +55,7 @@ export default defineConfig({
         items: [
           { text: "Feature reference index", link: "/guide/reference" },
           { text: "Projects and configuration", link: "/reference/projects-and-configuration" },
+          { text: "Prerender modules", link: "/reference/prerender-modules" },
           { text: "Server runtime", link: "/reference/server-runtime" },
           { text: "Built-in Teams", link: "/reference/teams" },
           { text: "Jobs and schedules", link: "/reference/jobs-and-schedules" },

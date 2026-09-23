@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { installPrerenderFixture } from "./support/prerender-capsule.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -96,6 +97,9 @@ for (const { framework, template, toolchain } of [
     assert.equal(created.code, 0, created.stderr);
     await execFileAsync("npm", ["install", ...(["lit", "solid", "vue", "svelte"].includes(framework) ? [] : ["--omit=dev"]), "--ignore-scripts", "--package-lock=false"], {
       cwd: projectDir,
+      // npm run may export the repository's allowScripts as CLI config. A child
+      // project install rejects that setting; retain --ignore-scripts explicitly.
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "npm_config_allow_scripts")),
       timeout: 120_000,
       maxBuffer: 10 * 1024 * 1024,
     });
@@ -144,6 +148,8 @@ for (const { framework, template, toolchain } of [
       `${await readFile(clientPath, "utf8")}\nconsole.log(import.meta.env.VITE_REAL_CONTAINER_LEAK);\n`,
     );
 
+    const prerenderFixture = framework === "react" && template === "blank" && selectedToolchain === "vite";
+    if (prerenderFixture) await installPrerenderFixture(projectDir);
     deployAttempted = true;
     const deployed = await runCli(["deploy", "--json"], projectDir);
     assert.equal(deployed.code, 0, deployed.stderr);
@@ -185,6 +191,17 @@ for (const { framework, template, toolchain } of [
       fetched[kind] = { path: publicPath, bytes: Buffer.byteLength(body), mime: response.headers.get("content-type") };
     }
     const output = bodies.join("\n");
+    if (prerenderFixture) {
+      assert.match(bodies[0], /<main id="prerender-static">Useful before JavaScript<\/main>/);
+      assert.match(bodies[0], /Static fallback remains/);
+      assert.doesNotMatch(bodies[0], /\/client\.js/);
+      for (const publicPath of paths) {
+        const response = await fetchEventually(`${url}/${publicPath}`);
+        assert.equal(response.status, 200, publicPath);
+        const body = await response.text();
+        assert.doesNotMatch(body, /(?:server|project)-env-prerender-must-not-ship|\/@vite\/client|vite\/hmr/i);
+      }
+    }
     assert.match(output, ["lit", "solid", "vue", "svelte", "inferno"].includes(framework) ? {
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,

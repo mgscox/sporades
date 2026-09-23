@@ -3,7 +3,7 @@ import { assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAtt
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { readdirSync, readFileSync, statSync, watch } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -2157,7 +2157,13 @@ async function startDevSession(options: LooseRecord) {
   let security = resolveEffectiveSecurityPolicy(config, session);
   const restartPolicy = restartPolicyForMode("dev");
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
-  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false });
+  let clientDependencies = new Set<string>();
+  const initialDependencySignatures = new Map<string, string>();
+  const recordClientDependency = (file: string) => {
+    if (!clientDependencies.has(file)) initialDependencySignatures.set(file, readDevInputSignature([{ path: file, dependency: true }]));
+    clientDependencies.add(file);
+  };
+  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, onClientDependency: recordClientDependency });
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
   const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
     wait: true,
@@ -2525,7 +2531,8 @@ async function startDevSession(options: LooseRecord) {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
       const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
-      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false });
+      const nextClientDependencies = new Set<string>();
+      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); } });
       const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
         wait: true,
         emit: (data, error) => emitDevEvent(options, data, error),
@@ -2582,6 +2589,8 @@ async function startDevSession(options: LooseRecord) {
       }
       const previousBundle = bundle;
       bundle = rebuild;
+      clientDependencies = nextClientDependencies;
+      for (const file of initialDependencySignatures.keys()) if (!clientDependencies.has(file)) initialDependencySignatures.delete(file);
       rebuild.releasePublicTreeLease().catch((error) => {
         reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
       });
@@ -2662,7 +2671,7 @@ async function startDevSession(options: LooseRecord) {
         },
       );
     }
-  });
+  }, () => [...clientDependencies], initialDependencySignatures);
   emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
 
   let shutdownStarted = false;
@@ -2909,13 +2918,18 @@ async function importCapsuleDefinition(moduleSource: WithImplicitCoercion<string
   return module.default ?? null;
 }
 
-function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<void>; (arg0: any): any; }) {
-  const watchedPaths = [
+function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<void>; (arg0: any): any; }, clientDependencies: () => readonly string[] = () => [], initialDependencySignatures: ReadonlyMap<string, string> = new Map()) {
+  const baseWatchedPaths = [
     { path: path.join(projectDir, "server"), affectsServerRuntime: true },
     { path: path.join(projectDir, "client"), affectsServerRuntime: false },
     { path: path.join(projectDir, "shared"), affectsServerRuntime: true },
     { path: path.join(projectDir, "index.html"), affectsServerRuntime: false },
     { path: path.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true },
+  ];
+  const watchedPaths = () => [
+    ...baseWatchedPaths,
+    ...clientDependencies().filter((file) => !baseWatchedPaths.some((base) => file === base.path || file.startsWith(`${base.path}${path.sep}`)))
+      .map((file) => ({ path: file, affectsServerRuntime: false, dependency: true })),
   ];
   const watchers = [];
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2940,7 +2954,9 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
     }
     const currentChange = pendingChange ?? { affectsServerRuntime: true };
     pendingChange = null;
-    const currentSignature = readDevInputSignature(watchedPaths);
+    const beforePaths = watchedPaths();
+    const beforeSignatures = new Map(beforePaths.map((entry) => [entry.path, readDevInputSignature([entry])]));
+    const currentSignature = [...beforeSignatures.values()].flatMap((signature) => signature.split("\n")).sort().join("\n");
     if (currentSignature === lastHandledSignature) {
       return;
     }
@@ -2948,8 +2964,15 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
     rebuildInFlight = true;
     try {
       await onChange(currentChange);
-      lastHandledSignature = currentSignature;
-      for (const watchedPath of watchedPaths) handledSignatures.set(watchedPath.path, readDevInputSignature([watchedPath]));
+      const afterPaths = watchedPaths();
+      for (const watchedPath of afterPaths) {
+        const signature = beforeSignatures.get(watchedPath.path) ?? initialDependencySignatures.get(watchedPath.path) ?? readDevInputSignature([watchedPath]);
+        handledSignatures.set(watchedPath.path, signature);
+        if (!observedSignatures.has(watchedPath.path)) observedSignatures.set(watchedPath.path, signature);
+      }
+      const currentPaths = new Set(afterPaths.map((entry) => entry.path));
+      for (const signatures of [handledSignatures, observedSignatures]) for (const file of signatures.keys()) if (!currentPaths.has(file)) signatures.delete(file);
+      lastHandledSignature = afterPaths.flatMap((entry) => handledSignatures.get(entry.path)!.split("\n")).sort().join("\n");
     } finally {
       rebuildInFlight = false;
       if (pendingChange) {
@@ -2958,28 +2981,33 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
     }
   };
 
-  const observe = (watchedPath: (typeof watchedPaths)[number]) => {
+  const observe = (watchedPath: ReturnType<typeof watchedPaths>[number]) => {
     const signature = readDevInputSignature([watchedPath]);
+    const initial = initialDependencySignatures.get(watchedPath.path);
+    if (initial !== undefined) {
+      if (!observedSignatures.has(watchedPath.path)) observedSignatures.set(watchedPath.path, initial);
+      if (!handledSignatures.has(watchedPath.path)) handledSignatures.set(watchedPath.path, initial);
+    }
     if (observedSignatures.get(watchedPath.path) === signature) return;
     observedSignatures.set(watchedPath.path, signature);
     schedule(watchedPath);
   };
 
-  for (const watchedPath of watchedPaths) {
+  for (const watchedPath of watchedPaths()) {
     const signature = readDevInputSignature([watchedPath]);
     observedSignatures.set(watchedPath.path, signature);
     handledSignatures.set(watchedPath.path, signature);
     try {
       watchers.push(watch(watchedPath.path, { recursive: true }, () => observe(watchedPath)));
     } catch (error) {
-      if (errorDetails(error).code !== "ENOENT") {
+      if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") {
         throw error;
       }
     }
   }
-  lastHandledSignature = readDevInputSignature(watchedPaths);
+  lastHandledSignature = readDevInputSignature(watchedPaths());
   const signaturePoll = setInterval(() => {
-    for (const watchedPath of watchedPaths) {
+    for (const watchedPath of watchedPaths()) {
       observe(watchedPath);
       if (handledSignatures.get(watchedPath.path) !== readDevInputSignature([watchedPath])) schedule(watchedPath);
     }
@@ -3002,18 +3030,18 @@ function readDevInputSignature(watchedPaths: LooseRecord[]) {
   const entries: any[] = [];
 
   for (const watchedPath of watchedPaths) {
-    collectPathSignature(watchedPath.path, entries);
+    collectPathSignature(watchedPath.path, entries, watchedPath.dependency ? new Set<string>() : undefined);
   }
 
   return entries.sort().join("\n");
 }
 
-function collectPathSignature(filePath: string, entries: any[]) {
+function collectPathSignature(filePath: string, entries: any[], dependencyDirectories?: Set<string>) {
   let stats;
   try {
     stats = statSync(filePath, { bigint: true });
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT" || errorDetails(error).code === "ENOTDIR") {
       entries.push(`${filePath}:missing`);
       return;
     }
@@ -3021,13 +3049,39 @@ function collectPathSignature(filePath: string, entries: any[]) {
   }
 
   if (stats.isDirectory()) {
-    const children = readdirSync(filePath);
+    if (dependencyDirectories) {
+      // A linked package can point back to itself or its workspace. Inspect
+      // each physical directory only once for this dependency signature.
+      const identity = `${stats.dev}:${stats.ino}`;
+      if (dependencyDirectories.has(identity)) {
+        entries.push(`${filePath}:dir:seen:${identity}`);
+        return;
+      }
+      dependencyDirectories.add(identity);
+    }
+    // Nested dependency trees are not resolution alternatives for this package.
+    // Modules actually imported from them have their own explicit watch paths.
+    const children = readdirSync(filePath).filter(child => !dependencyDirectories || (child !== "node_modules" && child !== ".git")).sort();
     if (children.length === 0) {
       entries.push(`${filePath}:dir:empty`);
       return;
     }
     for (const child of children) {
-      collectPathSignature(path.join(filePath, child), entries);
+      const childPath = path.join(filePath, child);
+      if (dependencyDirectories) {
+        let link;
+        try { link = lstatSync(childPath, { bigint: true }); }
+        catch (error) {
+          if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") throw error;
+        }
+        // Do not expand a package's nested links into the rest of a workspace.
+        // Explicit imported targets are watched independently, including links.
+        if (link?.isSymbolicLink()) {
+          entries.push(`${childPath}:link:${link.ino}:${link.size}:${link.mtimeNs}:${link.ctimeNs}`);
+          continue;
+        }
+      }
+      collectPathSignature(childPath, entries, dependencyDirectories);
     }
     return;
   }

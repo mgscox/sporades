@@ -42,6 +42,7 @@ export async function buildClientToolchain(options: {
   indexHtml: string;
   indexHtmlPath: string;
   prerender?: readonly ClientPrerenderFragment[];
+  onDependency?: (file: string) => void;
   devRefresh?: boolean;
 }): Promise<ClientToolchainOutput> {
   validateClientToolchainInput(options);
@@ -157,6 +158,7 @@ async function buildVite(options: {
   indexHtml: string;
   indexHtmlPath: string;
   prerender?: readonly ClientPrerenderFragment[];
+  onDependency?: (file: string) => void;
   devRefresh?: boolean;
 }) {
   const { build } = await import("vite");
@@ -201,7 +203,7 @@ async function buildVite(options: {
       plugins: [
         ...frameworkPlugins,
         sporadesViteClientPlugin(options.devRefresh === true),
-        sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, prerenderState, options.prerender !== undefined),
+        sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, prerenderState, options.prerender !== undefined, options.onDependency),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
       ],
       build: {
@@ -254,7 +256,7 @@ async function buildVite(options: {
   }
 }
 
-function sporadesVitePrerenderPlugin(projectRoot: string, projectRoots: string[], fragments: readonly ClientPrerenderFragment[], warnings: ClientPrerenderWarning[], state: { boundaries: string[] }, diagnoseMarkers: boolean): VitePlugin {
+function sporadesVitePrerenderPlugin(projectRoot: string, projectRoots: string[], fragments: readonly ClientPrerenderFragment[], warnings: ClientPrerenderWarning[], state: { boundaries: string[] }, diagnoseMarkers: boolean, onDependency?: (file: string) => void): VitePlugin {
   return {
     name: "sporades-prerender",
     enforce: "post",
@@ -263,7 +265,7 @@ function sporadesVitePrerenderPlugin(projectRoot: string, projectRoots: string[]
       async handler(html) {
         const rendered = [];
         for (const fragment of fragments) {
-          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
+          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots, onDependency) });
         }
         const placed = placeClientPrerenderFragments(html, rendered);
         state.boundaries = placed.boundaries;

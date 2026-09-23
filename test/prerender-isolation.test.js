@@ -91,6 +91,34 @@ module.exports = () => initial + '|' + __dirname;
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('computed require cannot hide an ESM import graph from Dev dependency tracking', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-computed-esm-')));
+  try {
+    await writeFile(path.join(root, 'copy.mjs'), 'export default "static copy";');
+    await writeFile(path.join(root, 'view.mjs'), 'import copy from "./copy.mjs"; export default copy;');
+    await writeFile(path.join(root, 'entry.cjs'), 'exports.default = () => { const target = "./view.mjs"; return require(target).default; };');
+    await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), /require\(\).*ES Module.*not supported/is);
+    await writeFile(path.join(root, 'entry.cjs'), 'exports.default = () => require("./view.mjs").default;');
+    const dependencies = new Set();
+    assert.equal(await renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}, [root], (file) => dependencies.add(file)), 'static copy');
+    assert.ok(dependencies.has(path.join(root, 'view.mjs')));
+    assert.ok(dependencies.has(path.join(root, 'copy.mjs')));
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('failed static absolute and file URL imports report their local recovery targets', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-local-targets-')));
+  try {
+    const missing = path.join(root, 'missing.mjs');
+    for (const specifier of [missing, pathToFileURL(missing).href]) {
+      await writeFile(path.join(root, 'entry.mjs'), `import value from ${JSON.stringify(specifier)}; export default () => value;`);
+      const dependencies = new Set();
+      await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}, [root], (file) => dependencies.add(file)));
+      assert.ok(dependencies.has(missing), specifier);
+    }
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('computed external require failures redact runtime paths and file URLs', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-runtime-redaction-')));
   const external = await realpath(await mkdtemp(path.join(tmpdir(), 'private-renderer-location-')));
@@ -209,6 +237,173 @@ test('CommonJS dynamic with scope fails explicitly before wrapper specialization
     await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), /With statements are unsupported/i);
     await writeFile(path.join(root, 'entry.cjs'), 'exports.default = () => { with ({ value: "local" }) { return value; } };');
     await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), /With statements are unsupported/i);
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('successful local edges retain higher-priority static and computed resolution candidates', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-resolution-candidates-')));
+  try {
+    await writeFile(path.join(root, 'entry.mjs'), 'import copy from "./copy"; export default () => copy;');
+    await writeFile(path.join(root, 'copy.js'), 'module.exports = "JavaScript copy";');
+    const dependencies = new Set();
+    const render = () => renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}, [], (file) => dependencies.add(file));
+    assert.equal(await render(), 'JavaScript copy');
+    assert.ok(dependencies.has(path.join(root, 'copy.ts')), 'higher-priority TypeScript file is observed before it exists');
+    await writeFile(path.join(root, 'copy.ts'), 'export default "TypeScript copy";');
+    assert.equal(await render(), 'TypeScript copy');
+    await writeFile(path.join(root, 'entry.mjs'), 'export default () => { const target = "./dynamic"; return require(target); };');
+    await writeFile(path.join(root, 'dynamic.json'), '"JSON copy"');
+    dependencies.clear();
+    assert.equal(await render(), 'JSON copy');
+    assert.ok(dependencies.has(path.join(root, 'dynamic.js')), 'higher-priority computed CommonJS target is observed');
+    await writeFile(path.join(root, 'dynamic.js'), 'module.exports = "Computed JavaScript copy";');
+    assert.equal(await render(), 'Computed JavaScript copy');
+    const packageRoot = path.join(root, 'node_modules/selected-package');
+    await mkdir(packageRoot, {recursive:true});
+    await writeFile(path.join(packageRoot, 'package.json'), '{"name":"selected-package","type":"commonjs"}');
+    await writeFile(path.join(packageRoot, 'feature.json'), '"Package JSON copy"');
+    await writeFile(path.join(root, 'entry.mjs'), 'import copy from "selected-package/feature"; export default () => copy;');
+    dependencies.clear();
+    assert.equal(await render(), 'Package JSON copy');
+    assert.ok(dependencies.has(packageRoot), 'selected package observes new resolution candidates within its tree');
+    await writeFile(path.join(packageRoot, 'feature.js'), 'module.exports = "Package JavaScript copy";');
+    assert.equal(await render(), 'Package JavaScript copy');
+    await writeFile(path.join(packageRoot, 'feature.ts'), 'export default "Package TypeScript copy";');
+    assert.equal(await render(), 'Package JavaScript copy', 'esbuild prioritizes JavaScript inside node_modules');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('computed require.resolve observes custom package and relative search roots', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-resolve-options-')));
+  try {
+    const project = path.join(root, 'project');
+    const custom = path.join(root, 'custom');
+    await mkdir(project); await mkdir(custom);
+    for (const [specifier, target, observed] of [
+      ['custom-copy', path.join(custom, 'node_modules/custom-copy/index.js'), path.join(custom, 'node_modules/custom-copy')],
+      ['./relative-copy', path.join(custom, 'relative-copy.js'), path.join(custom, 'relative-copy.js')],
+    ]) {
+      await writeFile(path.join(project, 'entry.cjs'), `module.exports = () => { const target = ${JSON.stringify(specifier)}; return require(require.resolve(target, {paths:[${JSON.stringify(custom)}]})); };`);
+      const dependencies = new Set();
+      const render = () => renderClientPrerenderFragment(project, {name:'landing', module:'entry.cjs'}, [], (file) => dependencies.add(file));
+      await assert.rejects(render());
+      assert.ok(dependencies.has(observed), 'custom missing resolution candidate is observed');
+      await mkdir(path.dirname(target), {recursive:true});
+      await writeFile(target, 'module.exports = "Recovered custom search root";');
+      assert.equal(await render(), 'Recovered custom search root');
+    }
+    let nativeReads = 0;
+    createRequire(path.join(project, 'entry.cjs')).resolve('custom-copy', {get paths() {nativeReads++; return [custom];}});
+    await writeFile(path.join(project, 'entry.cjs'), `module.exports = () => { let reads = 0; const target = "custom-copy"; const resolved = require.resolve(target, {get paths() {reads++; return [${JSON.stringify(custom)}];}}); return reads + ":" + require(resolved); };`);
+    assert.equal(await renderClientPrerenderFragment(project, {name:'landing', module:'entry.cjs'}), `${nativeReads}:Recovered custom search root`);
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('custom search path accessors retain native reads and missing dependency observation', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-accessor-paths-')));
+  try {
+    const project = path.join(root, 'project');
+    const custom = path.join(root, 'custom');
+    await mkdir(project); await mkdir(custom);
+    for (const inherited of [false, true]) {
+      const name = inherited ? 'inherited-copy' : 'accessor-copy';
+      const setup = `let reads = 0; const paths = new Array(1); const owner = ${inherited ? 'Object.create(Array.prototype)' : 'paths'}; Object.defineProperty(owner, '0', {get() {if (this !== paths) throw new Error('wrong receiver'); reads++; return ${JSON.stringify(custom)};}}); ${inherited ? 'Object.setPrototypeOf(paths, owner);' : ''} const options = Object.freeze({paths});`;
+      const native = createRequire(path.join(project, 'entry.cjs'));
+      const nativeReads = Function('require', `${setup} try {require.resolve(${JSON.stringify(name)}, options);} catch {} return reads;`)(native);
+      await writeFile(path.join(project, 'entry.cjs'), `module.exports = () => {${setup} const target = ${JSON.stringify(name)}; try {return require(require.resolve(target, options));} catch {return String(reads);}};`);
+      const dependencies = new Set();
+      const render = () => renderClientPrerenderFragment(project, {name:'landing', module:'entry.cjs'}, [], file => dependencies.add(file));
+      assert.equal(await render(), String(nativeReads));
+      const packageDir = path.join(custom, 'node_modules', name);
+      assert.ok(dependencies.has(packageDir), 'accessor-backed custom root is observed');
+      await mkdir(packageDir, {recursive:true});
+      await writeFile(path.join(packageDir, 'index.js'), 'module.exports = "Recovered accessor path";');
+      assert.equal(await render(), 'Recovered accessor path');
+    }
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('package self-references observe missing conditional and wildcard export targets', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-self-reference-')));
+  try {
+    await mkdir(path.join(root, 'render'));
+    for (const computed of [false, true]) {
+      const extension = computed ? 'cjs' : 'ts';
+      const target = path.join(root, 'render/copy.' + extension);
+      await writeFile(path.join(root, 'package.json'), JSON.stringify({name:'self-capsule', imports:{'#self':'self-capsule/copy'}, exports:{'./*':{node:`./render/*.${extension}`, default:`./render/*.${extension}`}}}));
+      await writeFile(path.join(root, 'entry.mjs'), computed
+        ? 'export default () => {const target = "self-capsule/copy"; return require(target);};'
+        : 'import copy from "self-capsule/copy"; export default () => copy;');
+      const dependencies = new Set();
+      const render = () => renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}, [], (file) => dependencies.add(file));
+      await assert.rejects(render());
+      assert.ok(dependencies.has(target), 'missing self-export target is observed');
+      assert.equal(dependencies.has(root), false, 'self-reference does not watch its own generated output');
+      await writeFile(path.join(root, 'entry.mjs'), computed
+        ? 'export default () => {const target = "#self"; return require(target);};'
+        : 'import copy from "#self"; export default () => copy;');
+      dependencies.clear();
+      await assert.rejects(render());
+      assert.ok(dependencies.has(target), 'package imports alias retains its self-export target');
+      await writeFile(target, computed ? 'module.exports = "Recovered self-reference";' : 'export default "Recovered self-reference";');
+      assert.equal(await render(), 'Recovered self-reference');
+      await rm(target);
+    }
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({name:'@example/self-capsule', exports:{node:'./render/root.js', default:'./render/root.js'}}));
+    await writeFile(path.join(root, 'entry.mjs'), 'import copy from "@example/self-capsule"; export default () => copy;');
+    const dependencies = new Set();
+    const render = () => renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}, [], (file) => dependencies.add(file));
+    await assert.rejects(render());
+    assert.ok(dependencies.has(path.join(root, 'render/root.ts')));
+    await writeFile(path.join(root, 'render/root.ts'), 'export default "Recovered root export";');
+    assert.equal(await render(), 'Recovered root export');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('package-import aliases observe missing TypeScript substitutions for explicit JavaScript targets', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-alias-substitutions-')));
+  try {
+    await writeFile(path.join(root, 'entry.mjs'), 'import copy from "#copy"; export default () => copy;');
+    for (const [requested, actual] of [['copy.js','copy.ts'], ['copy.mjs','copy.mts'], ['copy.cjs','copy.cts'], ['copy.jsx','copy.tsx']]) {
+      await writeFile(path.join(root, 'package.json'), JSON.stringify({imports:{'#copy':{node:`./${requested}`, default:`./${requested}`}}}));
+      const dependencies = new Set();
+      const render = () => renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}, [], (file) => dependencies.add(file));
+      await assert.rejects(render());
+      assert.ok(dependencies.has(path.join(root, actual)), `${requested} observes ${actual} before creation`);
+      await writeFile(path.join(root, actual), 'export default "Recovered alias substitution";');
+      assert.equal(await render(), 'Recovered alias substitution');
+      await rm(path.join(root, actual));
+    }
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('tsconfig observer retains extended config and missing mapped module inputs', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-tsconfig-inputs-')));
+  try {
+    await mkdir(path.join(root, 'configs'));
+    await mkdir(path.join(root, 'render'));
+    await writeFile(path.join(root, 'tsconfig.json'), '{"extends":"./configs/base.json"}');
+    await writeFile(path.join(root, 'entry.ts'), 'import copy from "@render/copy"; export default () => copy;');
+    const base = path.join(root, 'configs/base.json');
+    const dependencies = new Set();
+    const render = () => renderClientPrerenderFragment(root, {name:'landing', module:'entry.ts'}, [], (file) => dependencies.add(file));
+    await assert.rejects(render());
+    assert.ok(dependencies.has(base), 'missing extended configuration is watched');
+    await writeFile(base, '{/* JSONC */ "compilerOptions":{"paths":{"@render/*":["../render/*"],},},}');
+    dependencies.clear();
+    await assert.rejects(render());
+    assert.ok(dependencies.has(path.join(root, 'tsconfig.json')));
+    assert.ok(dependencies.has(base), 'extended configuration remains watched');
+    assert.ok(dependencies.has(path.join(root, 'render/copy.ts')), 'mapped missing source is watched');
+    await writeFile(path.join(root, 'render/copy.ts'), 'export default "Mapped copy";');
+    assert.equal(await render(), 'Mapped copy');
+    await writeFile(base, '{"compilerOptions":{"baseUrl":"../render"}}');
+    await writeFile(path.join(root, 'entry.ts'), 'import copy from "base-copy"; export default () => copy;');
+    dependencies.clear();
+    await assert.rejects(render());
+    assert.ok(dependencies.has(path.join(root, 'render/base-copy.ts')), 'baseUrl without paths records missing candidates');
+    await writeFile(path.join(root, 'render/base-copy.ts'), 'export default "Base URL copy";');
+    assert.equal(await render(), 'Base URL copy');
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 

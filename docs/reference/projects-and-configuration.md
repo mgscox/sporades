@@ -211,7 +211,9 @@ build without replacing the last successful normalized public tree.
 Renderers are trusted build code, not sandboxed SSR. They receive no Server
 runtime or Server-env context. Renderer-only assets are unsupported; use assets
 from the ordinary Vite client graph. See [Build static prerender fragments](../guide/client.md#build-static-prerender-fragments)
-for a configuration example and the trust and asset boundaries.
+for a configuration example and the trust and asset boundaries. See
+[Prerender modules](./prerender-modules.md) for supported module formats,
+module-relative loading and explicit CommonJS restrictions.
 
 ### Built-in Stripe payments in blank Capsules
 

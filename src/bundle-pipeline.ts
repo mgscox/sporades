@@ -61,6 +61,7 @@ export async function createBundle(
   options: {
     publishLegacy?: boolean;
     devClientRefresh?: boolean;
+    onClientDependency?: (file: string) => void;
     // Dev sessions use project files directly and never snapshot deploy.files.
     deployFiles?: boolean;
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
@@ -121,6 +122,7 @@ export async function createBundle(
     indexHtml,
     indexHtmlPath: paths.indexHtml,
     prerender: config.client?.prerender === undefined ? undefined : prerender,
+    onDependency: options.onClientDependency,
     clientSource,
     clientSourcePath: paths.clientEntry,
     frameworkConfig: frameworkBundleConfig,

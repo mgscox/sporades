@@ -142,7 +142,7 @@ async function buildVite(options) {
             plugins: [
                 ...frameworkPlugins,
                 sporadesViteClientPlugin(options.devRefresh === true),
-                sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, prerenderState, options.prerender !== undefined),
+                sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, prerenderState, options.prerender !== undefined, options.onDependency),
                 sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
             ],
             build: {
@@ -199,7 +199,7 @@ async function buildVite(options) {
         throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
     }
 }
-function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, state, diagnoseMarkers) {
+function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warnings, state, diagnoseMarkers, onDependency) {
     return {
         name: "sporades-prerender",
         enforce: "post",
@@ -208,7 +208,7 @@ function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warni
             async handler(html) {
                 const rendered = [];
                 for (const fragment of fragments) {
-                    rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots) });
+                    rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots, onDependency) });
                 }
                 const placed = placeClientPrerenderFragments(html, rendered);
                 state.boundaries = placed.boundaries;
