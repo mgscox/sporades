@@ -1,159 +1,172 @@
 # Changes
 
-## Unreleased - 2026-09-21
+## Unreleased - 2026-09-23
 
-Changes since v0.9.25.
+Changes since v0.9.26.
 
 ### 🚀 Features
 
-- Add durable notification intents (#75) (8885992b).
-- Add PostgreSQL resource transaction locks (f52eb67e).
-- Add outer resource watchdog regression coverage (447f186f).
-- Implement SQLite Job resource transactions and durable replay receipts (d2553b24).
+- Verify prerender parity and track renderer dependencies in Dev (392b1bf2).
+- Expose deliberate prerender browser handover (daa88f83).
+- Complete ordered prerender placement and diagnostics (d5aa8bbe).
+- Emit one Vite prerender fragment (769f523d).
 
 ### 🐛 Bug Fixes
 
-- Preserve URL health route contract (#88) (10db3e3d).
-- Harden request target rejection (#84) (d7514796).
-- Fix HTTP failure logging liveness (#82) (fa53a5d8).
-- Fix issue #77 suite baseline failures (#78) (2f52fd41).
-- Fix File URL locking and resource acquisition deadlines (4571679e).
-- Fix postgres resource callback lock waits (f3f5374f).
-- Fence ACL and resource schema races (16200025).
-- Fix ACL Promise combinator tracking (4da46e89).
-- Reject unsafe resource table identity (c9d6bda0).
-- Harden ACL lineage and resource readiness (602a968e).
-- Harden ACL promise settlement and reject rewrite rules (901f34ba).
-- Reject all resource table triggers (e7546547).
-- Lock resource ACL dependencies and reject mutating triggers (fbdb4b53).
-- Support async postgres ACL helpers (cfa01f1f).
-- Close four findings in PostgreSQL resource handling (b353f1cf).
-- Retain lazy reconnect after an unknown COMMIT outcome (08188c67).
-- Deny a missing locked anchor before authorization (010a1785).
-- Isolate postgres resource error boundaries (91684477).
-- Redact PostgreSQL outer resource storage errors (619e0ab5).
-- Fix postgres resource failure settlement (6a049ac7).
-- Harden PostgreSQL resource authorization (d2dc57cb).
-- Make PostgreSQL Job claim locks nowait (0fdfea3d).
-- Publish PostgreSQL resource bootstrap atomically (d4f2b435).
-- Bound PostgreSQL resource bootstrap lock (cdcc950f).
-- Serialize PostgreSQL resource bootstrap (d5afdd21).
-- Fix PostgreSQL resource identifier casing (d2bcd317).
-- Harden resource transaction adapter seam (be2fe86d).
-- Lock PostgreSQL resource authorization (b5f45cfb).
-- Settle cancelled PostgreSQL resource Jobs (d4810820).
-- Correct PostgreSQL Job loss capability assertion (2958562d).
-- Fix outer resource logging settlement (4afe9504).
-- Fix outer watchdog mutation race regression (2f849575).
-- Fix authentication provider labels and migrate corrupted user rows (63d2f16a).
-- Fix stale page-token recovery and bound unstable reconnects (b601a9ab).
-- Repair resource constructor typing and regenerate shipped CLI fixes (98e22936).
-- Fix SQLite resource review findings and document invocation boundaries (b1c0fe4b).
-- Correct ticket 06 dependency metadata for resource swarm (cdba60a9).
+- Retain linked package resolution alternatives (68c63e53).
+- Bound dependency polling and observe path accessors (93bca941).
+- Observe custom require.resolve search paths (cdfaacff).
+- Observe package self-reference export targets (0b32dd2b).
+- Share substitution observation for package imports (9536e562).
+- Observe resolution changes inside selected packages (9325e4e6).
+- Observe alternatives to successful renderer imports (6030a36d).
+- Keep declarative shadow hosts within fragment ownership (a4684e8e).
+- Reject inert reserved boundaries in final HTML (7fd93332).
+- Observe nearer manifestless renderer packages (fdced03b).
+- Bound and normalize unknown marker diagnostics (f695fea2).
+- Bound module-scope Annex B wrapper aliases (fe313576).
+- Normalize CommonJS renderer default exports (20d92eb4).
+- Track renderer tsconfig mappings and config inputs (51c875ed).
+- Separate parameter and body environments (da3772a5).
+- Reject synthetic CommonJS wrapper arguments (adbc8ba3).
+- Verify final Vite fragment ownership (ce8a333e).
+- Reject dynamic CommonJS with scope (9183e3c2).
+- Verify dismissal restores the authored DOM (9edefe18).
+- Preserve source import.meta through aliases (ea6f8a2c).
+- Diagnose malformed named marker directives (30083989).
+- Reject shadowed direct-eval call syntax (341c4a49).
+- Preserve author ancestors and implicit wrapper ownership (bb4733a5).
+- Watch successful package-resolution manifests (c8c7070d).
+- Use browser HTML parsing and reject direct CJS eval (75b44468).
+- Watch package-import alias manifests and targets (0ceff350).
+- Observe runtime module resolution attempts (2dd1181c).
+- Reject fragment document-root mutations (525fcd9c).
+- Finalize HTML before output-derived Vite assets (4cb4703c).
+- Detect reserved comments through HTML parsing (b0a753de).
+- Retain all root CommonJS wrapper redeclarations (42f0a7a8).
+- Watch missing computed package export roots (b512d596).
+- Initialize CommonJS source module locations (6631c412).
+- Place fragments after Vite composes deferred tags (95a5fdff).
+- Track failed local imports without duplicate rebuilds (122c92d8).
+- Preserve failure envelopes and diagnose empty configurations (389159b1).
+- Preserve module.require and TypeScript CommonJS semantics (0483d227).
+- Retain worker until private completion is consumed (6db56268).
+- Recover failed renderer builds after package installation (2924c02c).
+- Reject fragment-created ancestors spanning boundary ends (c2678825).
+- Isolate bootstrap completion from renderer progress messages (3a21a2e4).
+- Redact computed runtime dependency diagnostics (9b5c776e).
+- Track attempted CommonJS renderer dependencies before evaluation (f647e116).
+- Reject parser-moved fragment content before publication (688e3ca4).
+- Preserve quoted doctype identifiers during placement (efd3b86f).
+- Reject untrackable runtime require of ESM render dependencies (d09a8737).
+- Preserve foreign-content CDATA during placement (0aa70731).
+- Validate source boundaries and dismiss parsed DOM ranges (054aebb3).
+- Retain CommonJS wrapper values through var declarations (d1154712).
+- Protect prerender boundaries and regenerate public API docs (635070d8).
+- Preserve writable require and bound dynamic imports (9fdf7bf8).
+- Isolate prerender execution and writable module locations (d7e83717).
+- Merge renderer diagnostic aliases (07b0d17f).
+- Apply file URL alias boundaries (5c030678).
+- Redact project-root file URL equality (0f6545e8).
+- Map raw file URL diagnostic aliases (5eb2954d).
+- Bound raw file URL redaction (413ec06d).
+- Bound prerender diagnostic aliases (d290f59d).
+- Redact unresolved external file URLs (6516e18a).
+- Redact unresolved external renderer imports (8891bc7a).
+- Preserve nested prerender diagnostic paths (5f5e3fff).
+- Redact hoisted renderer runtime paths (b520367e).
+- Load plain hoisted prerender modules (4d762255).
+- Reject early prerender worker exit (f5aec1a1).
+- Classify ambiguous renderer modules (a10445fd).
+- Classify package-scoped CommonJS renderers (9c3dff53).
+- Preserve renderer hashbang and directives (95b5807c).
+- Preserve renderer class member names (29810c22).
+- Preserve CommonJS wrapper delete semantics (14da5e3e).
+- Preserve CommonJS wrapper assignments (86d06b58).
+- Resolve renderer lexical bindings accurately (e249665d).
+- Preserve static CommonJS renderer imports (513995da).
+- Preserve nested CTS module locations (ebf0db8f).
+- Treat noscript as raw prerender text (e5ed75f4).
+- Preserve nested CommonJS module locations (5920306e).
+- Track HTML attribute value states (aac17b2e).
+- Return honest renderer transform loaders (dc0f509a).
+- Tokenize less-than text safely (96fc6a42).
+- Fail closed on incomplete prerender HTML (b87c34ad).
+- Discover renderer tsconfig per module (930f3f64).
+- Reject Windows renderer module roots (f5400ef0).
+- Bound malformed prerender HTML scanning (9b25a1c7).
+- Preserve renderer tsconfig authority (c6b965e0).
+- Redact encoded project file URLs (0a184995).
+- Preserve renderer import meta URLs (03df87e1).
+- Replace only HTML prerender markers (5020a1f3).
+- Bound hostile renderer message access (17fc79ed).
+- Preserve HTML offsets during case folding (a6a1bbe8).
+- Contain renderer-owned error details (89f91139).
+- Locate prerender fallback body safely (78bf529c).
+- Redact prerender runtime project paths (556df1d4).
+- Execute prerender bundles without ESM cache growth (62506646).
 
 ### 🔧 Improvements
 
-- Reconcile monolith HTTP import census (#87) (9c897f7a).
-- Reconcile HTTP runtime module census (#85) (a9a66a68).
-- Keep ACL race and any fail closed (84a8fc8e).
-- Clarify PostgreSQL resource evidence boundaries (abcc32e3).
-- Fail closed for noneligible resource adapters (c25db850).
-- Race outer resource hooks with deadline (43a99c76).
-- Guard endpoint files after resource binding (bb42a116).
-- Mark ticket 02 done: merged as e31b4dfe (#61) (fa640cd1).
+- Expose internal renderer loader mapping (be8d5303).
 
 ### 📝 Documentation
 
-- Track request admission research (#90) (1d5f27a1).
-- Reconcile HTTP re-export census (#89) (1220e9f9).
-- Complete HTTP runtime caller census (#86) (0955f7c3).
-- Book ticket 07 completion (32759b21).
-- Verify amended Grant workflow boundaries (#76) (14eda541).
-- Book ticket 06 complete (f0d905e5).
-- Book ticket 05 complete (PR #74) (45258174).
-- Fail closed for libSQL resource scopes (#74) (d9f036d5).
-- Unblock fence tickets 05/06 after 02/04 merged (687f58d1).
-- Reject partitioned PostgreSQL resource tables (f198d2de).
-- Reject unexpected resource indexes (fa474fd6).
-- Await Team ACL helpers (82d8b4ef).
-- Configure engineering skills for GitHub issues (831fc4bf).
-- Prove PostgreSQL endpoint receipt recovery (be719200).
-- Complete PostgreSQL resource receipt recovery (675120bd).
-- Mark ticket 03 merged and update resource fence frontier (9229ea96).
-- Reconcile outer resource commits and publish logs (d033d108).
-- Regenerate resource API reference (be2c0dba).
-- Document outer resource transaction joining (9851aba0).
-- Track unsupported notification attempts through resource rollback (8b094c59).
-- Map resource connection acquisition errors and retain durable planning links (869bb009).
-- Align Stripe dependency and pinned API version on 22.6.2 (2b5cc9c6).
-- Expose auth.sessionToken() for same-origin public endpoints (#62) (0a87a800).
-- Carry approved M1 resource transaction plan from decision PR 57 (28e95c2e).
+- Link canonical module reference and assert parity (fce2ad85).
+- Verify package-import manifest retargeting (91bb7996).
+- Complete canonical client API requirements (8690e560).
+- Specify prerender in canonical configuration reference (0fee4c1e).
+- Expose multipart limits and runtime bounds (#98) (ad023b9e).
 
 ### 🧪 Tests
 
-- Preserve literal HTTP request-target semantics (#83) (9b4eb84b).
-- Quarantine Postgres backend on deadline cancellation (61162981).
-- Bound PostgreSQL cancellation delivery (1d97423f).
-- Fence cancelled Postgres queries and nested ACL promises (70f09f18).
-- Bind File deletion authorization to locked metadata (d1b497ca).
-- Bound PostgreSQL resource callback lock waits (709d14f2).
-- Normalize PostgreSQL ACL lock contention (6c8ed5f8).
-- Bound PostgreSQL ACL dependency locks (59005492).
-- Bound Job resource authorization contention (1d0a407c).
-- Preserve resource callback SQLSTATE errors (6cdb5476).
-- Reject generated Postgres resource columns (098753ad).
-- Reject unsafe Postgres resource schemas (568c50e2).
-- Prove PostgreSQL resource schema publication (91ce4717).
-- Census carried resource and billing modules (85285957).
-- Prove resource transaction seam boundary (656bddf3).
-- Cover PostgreSQL Job claim conflicts (6cd34a7f).
-- Prove PostgreSQL paused-owner recovery (ec9a17e0).
-- Prove PostgreSQL resource process death recovery (846fb131).
-- Reset PostgreSQL commit-loss fixture (67ed81b3).
-- Prove PostgreSQL commit acknowledgement loss (6d6f0c31).
-- Assert revoked PostgreSQL Job scope handles (1e543513).
-- Fence PostgreSQL Job claims through commit admission (951c1fd6).
-- Cover PostgreSQL Job resource receipts (bb614495).
-- Prove PostgreSQL resource lock contention and backend loss (c50007ab).
-- Harden outer resource admission and failures (205df5da).
-- Prove outer resource dispatch causally (a9c750ff).
-- Poison admitted outer resource failures (4b0c7a71).
-- Quarantine SQLite root after uncertain outer commit (81322daa).
-- Redact postcommit resource log publication failures (76a11538).
-- Keep outer cleanup watchdog coverage runtime-owned (7fbc2e19).
-- Prove outer notification rejection settlement (a246cb65).
-- Fence outer resource settlement and parent logging (11ab4cfe).
-- Cover outer resource uncertainty across endpoints (181ad213).
-- Prove outer resource commit uncertainty outcomes (fd8af841).
-- Classify outer resource commit uncertainty (c5990fa3).
-- Quarantine uncertain outer resource connections (a21fa98d).
-- Fence outer resource middleware and commit deadline (b07bfe1e).
-- Track nested resource table operations (a6285359).
-- Prove watchdog reaches pending log cleanup (177d08a4).
-- Make outer hook watchdog proof self-contained (e79596a2).
-- Cover watchdog during resource cleanup (5de7d131).
-- Assert Grant state inside protected Jobs (56342516).
-- Prove joined Grant mutations across runtimes (464e69fe).
-- Cover real multipart endpoint resource file guards (ab61e05a).
-- Cover endpoint resource file guards (e3c71ed0).
-- Cover outer resource hook deadline (0cbe976e).
-- Exercise the token route in Journey reconnect integration tests (5884446a).
-- Abort outer cleanup after resource deadline (8fbcab4d).
-- Cover outer resource log transactions (260a9270).
-- Poison caught outer resource failures (6d00d514).
-- Prove membership ACL ordering across runtimes (2da4cddd).
-- Prove Grant resource ordering across workers (cda02216).
-- Cover endpoint resource deadline parity (62160e8e).
-- Prove outer resource transaction ordering (b7c9d4e4).
-- Keep outer resource deadline through transaction settlement (7ae38c07).
-- WIP: fence outer resource transaction deadline (34da2523).
-- WIP: join mutation and endpoint resource scopes (1092d072).
-- Reconcile resource cancellation from independent runtimes (93a1442b).
-- Preserve cancelled Job settlement for resource abort errors (fa2b08c3).
+- Cover Hosted and Container warning envelopes (0e4bd01a).
+- Merge file URL alias collisions (d1a26a5e).
+- Redact bare project-root file URLs (6283b5d9).
+- Redact project-root file URL equality (848d96c9).
+- Redact contained and mixed-case file URLs (c242cc3b).
+- Preserve sibling file URL prefixes (5495bdfa).
+- Bound prerender diagnostic root aliases (fbb5c3b1).
+- Redact unresolved external file URLs (004832b6).
+- Redact unresolved external renderer imports (b7c7dabb).
+- Preserve nested prerender diagnostic context (4b42f056).
+- Redact hoisted prerender runtime paths (11b1d918).
+- Cover prerender namespace and worker outcomes (2936ae6e).
+- Fail closed when prerender worker exits (08a703cc).
+- Detect ambiguous renderer module formats (af1963c3).
+- Preserve renderer hashbang and directives (2008d12c).
+- Preserve non-computed renderer member names (a11d2822).
+- Preserve CommonJS wrapper delete semantics (9ef87b2e).
+- Preserve CommonJS wrapper write targets (1de31e18).
+- Preserve renderer lexical shadowing (9452a5cb).
+- Preserve static renderer requires and cache bounds (f572e4ff).
+- Preserve nested CTS renderer paths (3bb7d4a8).
+- Ignore prerender markers inside noscript (f7172af4).
+- Preserve nested CommonJS renderer paths (d40f2302).
+- Specify renderer output loader mapping (cdcd65b2).
+- Tokenize prose and HTML declarations safely (0e71c4e6).
+- Prove extended TSX renderer config (a4da6b3f).
+- Preserve less-than text during marker scanning (3481ad1e).
+- Reject unterminated prerender HTML tags (fdcc0c5f).
+- Discover extended renderer tsconfig (21bc1984).
+- Reject Windows renderer module paths (0f4ea77f).
+- Bound malformed HTML comment recovery (644acc13).
+- Preserve renderer tsconfig semantics (4d1e98a9).
+- Redact encoded renderer file URLs (59c22625).
+- Preserve transitive renderer import meta URL (fad9ea03).
+- Ignore prerender marker text in raw HTML (4d2948d4).
+- Contain hostile renderer message access (d74c1372).
+- Cover Unicode-safe prerender body offsets (77d2d1c4).
+- Reject renderer-owned structured errors (589ab6e9).
+- Cover HTML-aware prerender fallback placement (93a48e19).
+- Cover prerender runtime path redaction (5e2dadb4).
+- Cover prerender execution edge cases (6667a916).
+- Specify one Vite prerender fragment (69ea0c58).
 
 ### 📦 Packaging
 
-- Bound PostgreSQL quarantine lock release (bff3a21c).
+- Include regenerated prerender declaration map (a655d0fc).
+- Specialize package-scoped CommonJS helpers (de79f9ba).
 
 ## v0.9.11 - 2026-09-02
 
@@ -242,6 +255,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
