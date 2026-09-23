@@ -106549,6 +106549,7 @@ async function runFreshclam(database, deadline) {
     await terminateChild(retained, clamavTerminateTimeout(database), database);
     unobserveClamavChild(database, retained);
     if (database.__clamavUpdateProcess === retained) database.__clamavUpdateProcess = null;
+    if (database.__clamavRefreshStopped) return false;
   }
   if (clamavRemaining(database, deadline) <= 0) return false;
   const update = clamavSpawn(database, "/usr/bin/freshclam", ["--config-file=/etc/clamav/freshclam.conf"]);

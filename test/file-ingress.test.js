@@ -2441,6 +2441,15 @@ test("managed ClamAV refresh restarts a crashed clamd and keeps ownership of a h
   stubborn.canExit = true; hung.schedules[1].callback(); await hung.database.__clamavRefreshPending;
   assert.deepEqual(stubborn.signals, ["SIGTERM", "SIGKILL", "SIGTERM"], "the retained updater is stopped before a new run"); assert.equal(hung.spawned.filter(([command]) => command === "/usr/bin/freshclam").length, 3); assert.equal(hung.database.__clamavUpdateProcess, null);
   await shutdownClamavRuntime(hung.database);
+
+  let retained = null; const stopping = managedClamavRuntime({ freshclamExits: [0, undefined], signatures: ["daily:1", null], onFreshclam: (process, advance) => {
+    if (retained || stopping?.spawned.length !== 3) return; retained = process; process.kill = function (signal) { this.signals.push(signal); if (this.canExit) queueMicrotask(() => { this.signalCode = signal; this.emit("exit", null, signal); }); }; advance(5 * 60 * 1000 - 10);
+  } });
+  assert.equal(await initializeClamavRuntime(stopping.database), true);
+  stopping.schedules[0].callback(); await stopping.database.__clamavRefreshPending; assert.equal(stopping.database.__clamavUpdateProcess, retained);
+  retained.canExit = true; stopping.schedules[1].callback(); await shutdownClamavRuntime(stopping.database);
+  assert.equal(stopping.spawned.filter(([command]) => command === "/usr/bin/freshclam").length, 2, "shutdown during retained-updater cleanup starts no new freshclam");
+  assert.equal(stopping.database.__clamavUpdateProcess, null); assert.equal(stopping.database.__clamavProcess, null);
 });
 
 test("ClamAV supervision handles every nonterminal child error until exit or owner teardown", async () => {

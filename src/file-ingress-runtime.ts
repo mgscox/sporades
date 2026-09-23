@@ -1389,7 +1389,7 @@ function clamavSpawn(database: RecordLike, command: string, args: string[]) { re
 function clamavSchedule(database: RecordLike, callback: () => void, delayMs: number): () => void { if (database.__clamavTest?.schedule) return database.__clamavTest.schedule(callback, delayMs); const timer = setTimeout(callback, delayMs); timer.unref?.(); return () => clearTimeout(timer); }
 async function runFreshclam(database: RecordLike, deadline: number) {
   // A previous run whose termination failed stays owned; never start a second updater beside it.
-  const retained = database.__clamavUpdateProcess; if (retained) { await terminateChild(retained, clamavTerminateTimeout(database), database); unobserveClamavChild(database, retained); if (database.__clamavUpdateProcess === retained) database.__clamavUpdateProcess = null; }
+  const retained = database.__clamavUpdateProcess; if (retained) { await terminateChild(retained, clamavTerminateTimeout(database), database); unobserveClamavChild(database, retained); if (database.__clamavUpdateProcess === retained) database.__clamavUpdateProcess = null; if (database.__clamavRefreshStopped) return false; }
   if (clamavRemaining(database, deadline) <= 0) return false;
   const update = clamavSpawn(database, "/usr/bin/freshclam", ["--config-file=/etc/clamav/freshclam.conf"]); database.__clamavUpdateProcess = update;
   const completed = await waitForChild(update, clamavRemaining(database, deadline)); if (!completed) await terminateChild(update, Math.min(clamavTerminateTimeout(database), clamavRemaining(database, deadline)), database);

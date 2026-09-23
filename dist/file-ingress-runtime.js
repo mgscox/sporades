@@ -2728,6 +2728,8 @@ async function runFreshclam(database, deadline) {
         unobserveClamavChild(database, retained);
         if (database.__clamavUpdateProcess === retained)
             database.__clamavUpdateProcess = null;
+        if (database.__clamavRefreshStopped)
+            return false;
     }
     if (clamavRemaining(database, deadline) <= 0)
         return false;
