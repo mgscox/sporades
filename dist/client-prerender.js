@@ -1372,16 +1372,20 @@ Module._resolveFilename = function(specifier, parent) {
   const forwarded = Array.from(arguments);
   const options = forwarded[3];
   if (options && typeof options === "object") {
-    forwarded[3] = new Proxy(options, { get(target, property) {
+    forwarded[3] = new Proxy({}, { get(_target, property) {
       // Observe the access Node actually performs, preserving accessor counts
       // and their original receiver instead of reading options.paths twice.
-      const value = Reflect.get(target, property, target);
+      const value = Reflect.get(options, property, options);
       if (property === "paths" && Array.isArray(value)) {
         customPathsRead = true;
-        for (let index = 0; index < value.length; index++) {
-          const entry = Object.getOwnPropertyDescriptor(value, String(index));
-          if (entry && typeof entry.value === "string") customDirectories.add(resolve(entry.value));
-        }
+        // Node consumes these entries itself. Intercept those exact reads so
+        // accessors/inherited indices are observed without extra evaluation.
+        // The options facade also supports frozen options.paths properties.
+        return new Proxy(value, { get(target, key) {
+          const entry = Reflect.get(target, key, target);
+          if (typeof key === "string" && /^(0|[1-9][0-9]*)$/.test(key) && typeof entry === "string") customDirectories.add(resolve(entry));
+          return entry;
+        }});
       }
       return value;
     }});

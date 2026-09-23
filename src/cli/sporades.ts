@@ -3,7 +3,7 @@ import { assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAtt
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { readdirSync, readFileSync, statSync, watch } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -2160,7 +2160,7 @@ async function startDevSession(options: LooseRecord) {
   let clientDependencies = new Set<string>();
   const initialDependencySignatures = new Map<string, string>();
   const recordClientDependency = (file: string) => {
-    if (!clientDependencies.has(file)) initialDependencySignatures.set(file, readDevInputSignature([{ path: file }]));
+    if (!clientDependencies.has(file)) initialDependencySignatures.set(file, readDevInputSignature([{ path: file, dependency: true }]));
     clientDependencies.add(file);
   };
   let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, onClientDependency: recordClientDependency });
@@ -2929,7 +2929,7 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
   const watchedPaths = () => [
     ...baseWatchedPaths,
     ...clientDependencies().filter((file) => !baseWatchedPaths.some((base) => file === base.path || file.startsWith(`${base.path}${path.sep}`)))
-      .map((file) => ({ path: file, affectsServerRuntime: false })),
+      .map((file) => ({ path: file, affectsServerRuntime: false, dependency: true })),
   ];
   const watchers = [];
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3030,13 +3030,13 @@ function readDevInputSignature(watchedPaths: LooseRecord[]) {
   const entries: any[] = [];
 
   for (const watchedPath of watchedPaths) {
-    collectPathSignature(watchedPath.path, entries);
+    collectPathSignature(watchedPath.path, entries, watchedPath.dependency ? new Set<string>() : undefined);
   }
 
   return entries.sort().join("\n");
 }
 
-function collectPathSignature(filePath: string, entries: any[]) {
+function collectPathSignature(filePath: string, entries: any[], dependencyDirectories?: Set<string>) {
   let stats;
   try {
     stats = statSync(filePath, { bigint: true });
@@ -3049,13 +3049,39 @@ function collectPathSignature(filePath: string, entries: any[]) {
   }
 
   if (stats.isDirectory()) {
-    const children = readdirSync(filePath);
+    if (dependencyDirectories) {
+      // A linked package can point back to itself or its workspace. Inspect
+      // each physical directory only once for this dependency signature.
+      const identity = `${stats.dev}:${stats.ino}`;
+      if (dependencyDirectories.has(identity)) {
+        entries.push(`${filePath}:dir:seen:${identity}`);
+        return;
+      }
+      dependencyDirectories.add(identity);
+    }
+    // Nested dependency trees are not resolution alternatives for this package.
+    // Modules actually imported from them have their own explicit watch paths.
+    const children = readdirSync(filePath).filter(child => !dependencyDirectories || (child !== "node_modules" && child !== ".git")).sort();
     if (children.length === 0) {
       entries.push(`${filePath}:dir:empty`);
       return;
     }
     for (const child of children) {
-      collectPathSignature(path.join(filePath, child), entries);
+      const childPath = path.join(filePath, child);
+      if (dependencyDirectories) {
+        let link;
+        try { link = lstatSync(childPath, { bigint: true }); }
+        catch (error) {
+          if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") throw error;
+        }
+        // Do not expand a package's nested links into the rest of a workspace.
+        // Explicit imported targets are watched independently, including links.
+        if (link?.isSymbolicLink()) {
+          entries.push(`${childPath}:link:${link.ino}:${link.size}:${link.mtimeNs}:${link.ctimeNs}`);
+          continue;
+        }
+      }
+      collectPathSignature(childPath, entries, dependencyDirectories);
     }
     return;
   }

@@ -4262,6 +4262,28 @@ test("Dev watches prerender modules and transitive code while retaining the last
         await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
         assert.match(await page(), /Updated custom resolution/);
       }
+      const linkedPackage = path.join(dir, 'linked-copy');
+      await mkdir(path.join(linkedPackage, 'node_modules'), {recursive:true});
+      await writeFile(path.join(linkedPackage, 'package.json'), '{"name":"linked-copy","main":"index.js"}');
+      await writeFile(path.join(linkedPackage, 'index.js'), 'module.exports = "Linked package";');
+      await symlink(linkedPackage, path.join(linkedPackage, 'cycle'));
+      await symlink(linkedPackage, path.join(linkedPackage, 'node_modules/linked-copy'));
+      await symlink(linkedPackage, path.join(projectDir, 'node_modules/linked-copy'));
+      const linkedHelper = path.join(dir, 'linked-helper');
+      await mkdir(linkedHelper);
+      await writeFile(path.join(linkedHelper, 'copy.js'), 'module.exports = "Linked package";');
+      await symlink(linkedHelper, path.join(linkedPackage, 'helper'));
+      await writeFile(path.join(linkedPackage, 'index.js'), 'module.exports = require("./helper/copy.js");');
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "linked-copy"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Linked package/);
+      const linkedRebuildCount = events.events.filter(event => event.data?.event === 'rebuild').length;
+      await writeFile(path.join(linkedPackage, 'node_modules/unrelated.txt'), 'not an imported dependency');
+      await new Promise(resolve => setTimeout(resolve, 800));
+      assert.equal(events.events.filter(event => event.data?.event === 'rebuild').length, linkedRebuildCount, 'unrelated nested dependencies are not recursively polled');
+      await writeFile(path.join(linkedHelper, 'copy.js'), 'module.exports = "Updated linked package";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Updated linked package/);
       const absolute = path.join(dir, 'late-absolute.cjs');
       const manifestPath = path.join(projectDir, 'package.json');
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));

@@ -65276,7 +65276,7 @@ function validateAliasDomains(value) {
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash14, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual5 } from "node:crypto";
-import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
+import { lstatSync, readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod2, cp, lstat as lstat9, mkdir as mkdir8, readdir as readdir3, readFile as readFile11, rename as rename6, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
 import path15 from "node:path";
@@ -82923,16 +82923,20 @@ Module._resolveFilename = function(specifier, parent) {
   const forwarded = Array.from(arguments);
   const options = forwarded[3];
   if (options && typeof options === "object") {
-    forwarded[3] = new Proxy(options, { get(target, property) {
+    forwarded[3] = new Proxy({}, { get(_target, property) {
       // Observe the access Node actually performs, preserving accessor counts
       // and their original receiver instead of reading options.paths twice.
-      const value = Reflect.get(target, property, target);
+      const value = Reflect.get(options, property, options);
       if (property === "paths" && Array.isArray(value)) {
         customPathsRead = true;
-        for (let index = 0; index < value.length; index++) {
-          const entry = Object.getOwnPropertyDescriptor(value, String(index));
-          if (entry && typeof entry.value === "string") customDirectories.add(resolve(entry.value));
-        }
+        // Node consumes these entries itself. Intercept those exact reads so
+        // accessors/inherited indices are observed without extra evaluation.
+        // The options facade also supports frozen options.paths properties.
+        return new Proxy(value, { get(target, key) {
+          const entry = Reflect.get(target, key, target);
+          if (typeof key === "string" && /^(0|[1-9][0-9]*)$/.test(key) && typeof entry === "string") customDirectories.add(resolve(entry));
+          return entry;
+        }});
       }
       return value;
     }});
@@ -132936,7 +132940,7 @@ async function startDevSession(options) {
   let clientDependencies = /* @__PURE__ */ new Set();
   const initialDependencySignatures = /* @__PURE__ */ new Map();
   const recordClientDependency = (file) => {
-    if (!clientDependencies.has(file)) initialDependencySignatures.set(file, readDevInputSignature([{ path: file }]));
+    if (!clientDependencies.has(file)) initialDependencySignatures.set(file, readDevInputSignature([{ path: file, dependency: true }]));
     clientDependencies.add(file);
   };
   let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, onClientDependency: recordClientDependency });
@@ -133622,7 +133626,7 @@ function watchDevInputs(projectDir, onChange, clientDependencies = () => [], ini
   ];
   const watchedPaths = () => [
     ...baseWatchedPaths,
-    ...clientDependencies().filter((file) => !baseWatchedPaths.some((base) => file === base.path || file.startsWith(`${base.path}${path15.sep}`))).map((file) => ({ path: file, affectsServerRuntime: false }))
+    ...clientDependencies().filter((file) => !baseWatchedPaths.some((base) => file === base.path || file.startsWith(`${base.path}${path15.sep}`))).map((file) => ({ path: file, affectsServerRuntime: false, dependency: true }))
   ];
   const watchers = [];
   let debounceTimer = null;
@@ -133713,11 +133717,11 @@ function serverRuntimeConfig(config = {}) {
 function readDevInputSignature(watchedPaths) {
   const entries = [];
   for (const watchedPath of watchedPaths) {
-    collectPathSignature(watchedPath.path, entries);
+    collectPathSignature(watchedPath.path, entries, watchedPath.dependency ? /* @__PURE__ */ new Set() : void 0);
   }
   return entries.sort().join("\n");
 }
-function collectPathSignature(filePath, entries) {
+function collectPathSignature(filePath, entries, dependencyDirectories) {
   let stats;
   try {
     stats = statSync(filePath, { bigint: true });
@@ -133729,13 +133733,34 @@ function collectPathSignature(filePath, entries) {
     throw error;
   }
   if (stats.isDirectory()) {
-    const children = readdirSync(filePath);
+    if (dependencyDirectories) {
+      const identity = `${stats.dev}:${stats.ino}`;
+      if (dependencyDirectories.has(identity)) {
+        entries.push(`${filePath}:dir:seen:${identity}`);
+        return;
+      }
+      dependencyDirectories.add(identity);
+    }
+    const children = readdirSync(filePath).filter((child) => !dependencyDirectories || child !== "node_modules" && child !== ".git").sort();
     if (children.length === 0) {
       entries.push(`${filePath}:dir:empty`);
       return;
     }
     for (const child of children) {
-      collectPathSignature(path15.join(filePath, child), entries);
+      const childPath = path15.join(filePath, child);
+      if (dependencyDirectories) {
+        let link2;
+        try {
+          link2 = lstatSync(childPath, { bigint: true });
+        } catch (error) {
+          if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") throw error;
+        }
+        if (link2?.isSymbolicLink()) {
+          entries.push(`${childPath}:link:${link2.ino}:${link2.size}:${link2.mtimeNs}:${link2.ctimeNs}`);
+          continue;
+        }
+      }
+      collectPathSignature(childPath, entries, dependencyDirectories);
     }
     return;
   }

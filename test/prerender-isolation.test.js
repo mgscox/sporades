@@ -299,6 +299,30 @@ test('computed require.resolve observes custom package and relative search roots
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('custom search path accessors retain native reads and missing dependency observation', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-accessor-paths-')));
+  try {
+    const project = path.join(root, 'project');
+    const custom = path.join(root, 'custom');
+    await mkdir(project); await mkdir(custom);
+    for (const inherited of [false, true]) {
+      const name = inherited ? 'inherited-copy' : 'accessor-copy';
+      const setup = `let reads = 0; const paths = new Array(1); const owner = ${inherited ? 'Object.create(Array.prototype)' : 'paths'}; Object.defineProperty(owner, '0', {get() {if (this !== paths) throw new Error('wrong receiver'); reads++; return ${JSON.stringify(custom)};}}); ${inherited ? 'Object.setPrototypeOf(paths, owner);' : ''} const options = Object.freeze({paths});`;
+      const native = createRequire(path.join(project, 'entry.cjs'));
+      const nativeReads = Function('require', `${setup} try {require.resolve(${JSON.stringify(name)}, options);} catch {} return reads;`)(native);
+      await writeFile(path.join(project, 'entry.cjs'), `module.exports = () => {${setup} const target = ${JSON.stringify(name)}; try {return require(require.resolve(target, options));} catch {return String(reads);}};`);
+      const dependencies = new Set();
+      const render = () => renderClientPrerenderFragment(project, {name:'landing', module:'entry.cjs'}, [], file => dependencies.add(file));
+      assert.equal(await render(), String(nativeReads));
+      const packageDir = path.join(custom, 'node_modules', name);
+      assert.ok(dependencies.has(packageDir), 'accessor-backed custom root is observed');
+      await mkdir(packageDir, {recursive:true});
+      await writeFile(path.join(packageDir, 'index.js'), 'module.exports = "Recovered accessor path";');
+      assert.equal(await render(), 'Recovered accessor path');
+    }
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('package self-references observe missing conditional and wildcard export targets', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-self-reference-')));
   try {
