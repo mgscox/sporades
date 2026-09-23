@@ -42692,6 +42692,9 @@ var bash52CommandVocabulary = Object.freeze([
   "}"
 ]);
 var bashCommandNames = new Set(bash52CommandVocabulary);
+var clamavRefreshIntervalMs = 60 * 60 * 1e3;
+var clamavRefreshRetryMs = 15 * 60 * 1e3;
+var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 
 // src/teams-runtime.ts
 var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;

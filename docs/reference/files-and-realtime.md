@@ -746,10 +746,24 @@ legacy startup behaviour.
 The Base image includes ClamAV, which increases image size, while enabling it
 also costs daemon startup time and RAM. `freshclam` is the only intended
 network egress and downloads public signature updates, never customer data.
-After the initial readiness update, Sporades keeps freshclam's bounded daemon
-running for periodic updates and supervises both children. Shutdown awaits
-both processes after `SIGTERM` and uses a bounded `SIGKILL` fallback, including
-partial-startup failure paths. Managed and Dev startup share one absolute
+Every managed startup forces a one-shot `freshclam` refresh before the 24-hour
+signature gate is evaluated, retrying a failed or stale refresh after 5 and
+15 seconds within the startup window; clamd starts only once current
+signatures are on disk. After that, the runtime owns the refresh schedule
+itself rather than running `freshclam --daemon`: it runs a bounded one-shot
+`freshclam` every hour, and again as soon as the current signature reaches
+24 hours old, re-verifies the result against the same 24-hour gate,
+and asks clamd to reload (`zRELOAD`) when the on-disk version differs from the
+loaded one. A failed refresh, or signatures still stale after a refresh, is
+retried after 15 minutes and logged as a `warn`
+`file.inspection.signature-refresh-failed` platform event, so a newly
+published signature is picked up within minutes; stale signatures keep
+inspection failing closed until then. Health supervises clamd only, because each refresh
+is expected to exit. ClamAV publishes its daily signature roughly once a day,
+so a restart that falls between a signature reaching 24 hours old and the next
+publication still fails startup with `FILE_INSPECTION_UNAVAILABLE`. Shutdown cancels
+the schedule, stops any running refresh and clamd after `SIGTERM`, and uses a
+bounded `SIGKILL` fallback, including partial-startup failure paths. Managed and Dev startup share one absolute
 120-second readiness window: database verification, socket probes, and retry
 delays are each capped by the time still remaining, so repeated slow probes
 cannot multiply that window. `SIGTERM` and the bounded `SIGKILL` fallback share
