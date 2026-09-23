@@ -5125,7 +5125,17 @@ export async function runClientAccessKeyOperation(database: LooseRecord, auth: L
   }
 }
 
-export function createWebSocketHub(getDatabase: () => any, trustedRefresh: TrustedRefreshTransport | null = null) {
+// Proxies such as Cloudflare close WebSockets that carry no frames for 100
+// seconds. Ping well inside that window so idle pages keep their socket; a
+// ping still unanswered at the next heartbeat marks the peer gone.
+const WEBSOCKET_HEARTBEAT_MS = 30_000;
+
+export function createWebSocketHub(
+  getDatabase: () => any,
+  trustedRefresh: TrustedRefreshTransport | null = null,
+  options: { heartbeatMs?: number } = {},
+) {
+  const heartbeatMs = options.heartbeatMs ?? WEBSOCKET_HEARTBEAT_MS;
   const clients = new Set<any>();
   const journeys = new Map<string, any>();
   const connectionTokens = new Map<string, number>();
@@ -5199,14 +5209,32 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
         lastSeenAt: now,
         journey: null,
         journeySubscriptions: new Set(),
+        lastFrameAt: Date.now(),
+        pingSentAt: null,
+        heartbeat: null,
       };
       clients.add(client);
+      const unanswered = () => client.pingSentAt !== null && client.lastFrameAt < client.pingSentAt;
+      client.heartbeat = setInterval(() => {
+        if (client.closing || socket.destroyed) return;
+        if (unanswered()) {
+          // Timers run before pending socket reads after a stall, so let queued
+          // frames land before judging the peer gone.
+          setImmediate(() => { if (unanswered()) socket.destroy(); });
+          return;
+        }
+        client.pingSentAt = Date.now();
+        socket.write(Buffer.from([0x89, 0x00]));
+      }, heartbeatMs);
+      client.heartbeat.unref?.();
       socket.on("data", (chunk: Uint8Array<ArrayBufferLike>) => {
+        client.lastFrameAt = Date.now();
         client.lastSeenAt = new Date().toISOString();
         client.buffer = Buffer.concat([client.buffer, chunk]);
         drainWebSocketFrames(client, (message: any) => enqueueClientMessage(client, message));
       });
       const removeClient = () => {
+        clearInterval(client.heartbeat);
         clients.delete(client);
         trustedRefresh?.disconnected(client.id);
         client.subscriptions.clear();
@@ -6439,6 +6467,16 @@ function drainWebSocketFrames(client: LooseRecord, onMessage: (message: any) => 
       closeWebSocketClient(client);
       return;
     }
+    if (opcode === 9) {
+      const pong = Buffer.alloc(payload.length);
+      for (let index = 0; index < payload.length; index += 1) {
+        pong[index] = mask ? payload[index] ^ mask[index % 4] : payload[index];
+      }
+      if (!client.closing && !client.socket.destroyed && pong.length < 126) {
+        client.socket.write(Buffer.concat([Buffer.from([0x8a, pong.length]), pong]));
+      }
+      continue;
+    }
     if (opcode !== 1) {
       continue;
     }
@@ -6456,6 +6494,7 @@ function closeWebSocketClient(client: LooseRecord) {
     return;
   }
   client.closing = true;
+  clearInterval(client.heartbeat);
   try {
     client.socket.write(Buffer.from([0x88, 0x00]), () => {
       client.socket.end();

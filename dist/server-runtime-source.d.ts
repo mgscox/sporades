@@ -164,7 +164,9 @@ export declare function runClientAccessKeyOperation(database: LooseRecord, auth:
         hint: string;
     };
 }>;
-export declare function createWebSocketHub(getDatabase: () => any, trustedRefresh?: TrustedRefreshTransport | null): {
+export declare function createWebSocketHub(getDatabase: () => any, trustedRefresh?: TrustedRefreshTransport | null, options?: {
+    heartbeatMs?: number;
+}): {
     createConnectionToken(currentToken?: string): string;
     accept(request: IncomingMessage, socket: Duplex): Promise<void>;
     disconnectAll(): void;
