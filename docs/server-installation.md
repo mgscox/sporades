@@ -349,8 +349,16 @@ verification timeout remains bounded and overrides either default. Runtime
 health output preserves the safe `checks.fileInspection.ok` boolean without
 exposing daemon topology, signatures, or malware names.
 
-The Base image's `freshclam` daemon notifies its local `clamd` over the
-configured Unix socket after a successful signature update. Health continues
+The Capsule runtime refreshes signatures with a one-shot `freshclam` at every
+startup and then hourly (and as the current signature reaches 26 hours old),
+retrying after 15 minutes when a refresh fails or leaves signatures older than
+26 hours. A restart that still finds only stale signatures starts the Capsule
+with file inspection unavailable and health not ready, rather than failing
+startup, and recovers on a later refresh; a later refresh also restarts a
+`clamd` that has exited. Push verification still requires
+ready file inspection. After a successful update, `freshclam`
+notifies the local `clamd` over the configured Unix socket and the runtime also
+requests a reload whenever the loaded version differs from disk. Health continues
 to require the on-disk and loaded signature versions to match, so an update may
 briefly fail closed while `clamd` reloads and then converges without waiting for
 its periodic reload interval. A failed update leaves the last loaded valid

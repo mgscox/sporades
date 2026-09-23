@@ -2268,7 +2268,7 @@ test("a request-scoped ClamAV signature stays claimable exactly at its age bound
     const inspection = { policyRevision: "clamav-freshness-v1", requiredInspectors: ["clamav"] };
     const endpoint = { options: { method: "POST", path: "/clamav-freshness", body: { multipart: { ...ingressPolicy(), inspection } } } };
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-freshness", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-freshness" }));
-    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let now = Date.parse("2030-01-02T00:00:00.000Z"); let updatedAt = new Date(now - 24 * 60 * 60 * 1000).toISOString(); let scans = 0;
+    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let now = Date.parse("2030-01-02T00:00:00.000Z"); let updatedAt = new Date(now - 26 * 60 * 60 * 1000).toISOString(); let scans = 0;
     scanner = await fakeClamSocket(socketPath, { response: () => { scans += 1; return "stream: OK\0"; } });
     database.__clamavTest = { socketPath, now: () => now, loadedSignature: "daily:42", get signature() { return { version: "daily:42", updatedAt }; } };
     const stage = async (key, delayBeforeBody = 0) => { const boundary = `clamav-freshness-${key}`; const headers = { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { now += delayBeforeBody; yield multipartBinary(boundary, "fresh.txt", "text/plain", Buffer.from("hello")); } }, { headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0]; const receipt = JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload); const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: key, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } }); return { lease, receipt, api }; };
@@ -2278,8 +2278,8 @@ test("a request-scoped ClamAV signature stays claimable exactly at its age bound
   } finally { if (scanner) await new Promise((resolve) => scanner.server.close(resolve)); await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("the one ClamAV freshness predicate rejects stale, future, malformed, and over-24-hour signatures", () => {
-  const now = Date.parse("2026-09-02T12:00:00.000Z"); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now - 24 * 60 * 60 * 1000).toISOString() }, now), true); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now - 24 * 60 * 60 * 1000 - 1).toISOString() }, now), false); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now + 1).toISOString() }, now), false); assert.equal(isCurrentClamavSignature({ version: "forged", updatedAt: new Date(now).toISOString() }, now), false);
+test("the one ClamAV freshness predicate rejects stale, future, malformed, and over-26-hour signatures", () => {
+  const now = Date.parse("2026-09-02T12:00:00.000Z"); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now - 26 * 60 * 60 * 1000).toISOString() }, now), true); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now - 26 * 60 * 60 * 1000 - 1).toISOString() }, now), false); assert.equal(isCurrentClamavSignature({ version: "daily:42", updatedAt: new Date(now + 1).toISOString() }, now), false); assert.equal(isCurrentClamavSignature({ version: "forged", updatedAt: new Date(now).toISOString() }, now), false);
 });
 
 test("bounded scanner tool collection drains stdout after process exit", async () => {
@@ -2295,17 +2295,24 @@ test("bounded scanner tool collection drains stdout after process exit", async (
   const errored = new EventEmitter(); errored.stdout = new EventEmitter(); const failed = collectBoundedToolOutput(errored, 10_000); errored.emit("error", new Error("spawn failed")); assert.equal((await failed).ok, false);
 });
 
-test("signal-terminated ClamAV children permanently degrade health before scanner probes", async () => {
+test("a signal-terminated clamd permanently degrades health before scanner probes while one-shot freshclam exits do not", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-signals-")); const socketPath = path.join(dir, "clamd.sock"); let commands = 0;
   const server = createNetServer((socket) => socket.once("data", () => { commands += 1; socket.end(Buffer.from("PONG\0")); })); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
   const alive = () => { const listeners = new Map(); return { exitCode: null, signalCode: null, once(name, listener) { listeners.set(name, listener); }, emit(name, ...args) { listeners.get(name)?.(...args); }, kill() {} }; };
   const testState = { socketPath, loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } };
   try {
     for (const signalCode of ["SIGTERM", "SIGKILL", "SIGABRT"]) {
-      const daemon = alive(); const updater = alive(); updater.signalCode = signalCode;
+      const daemon = alive(); const updater = alive(); daemon.signalCode = signalCode;
       const database = { clamavRequired: true, clamavReady: true, __clamavProcess: daemon, __clamavUpdateProcess: updater, __clamavTest: testState };
       assert.deepEqual(await checkClamavRuntime(database), { ok: false }, signalCode); assert.equal(database.clamavReady, false);
     }
+    assert.equal(commands, 0);
+    for (const signalCode of ["SIGTERM", "SIGKILL", "SIGABRT"]) {
+      const daemon = alive(); const updater = alive(); updater.signalCode = signalCode;
+      const database = { clamavRequired: true, clamavReady: true, __clamavProcess: daemon, __clamavUpdateProcess: updater, __clamavTest: testState };
+      assert.deepEqual(await checkClamavRuntime(database), { ok: true }, `freshclam ${signalCode} is a refresh outcome, not a scanner failure`); assert.equal(database.clamavReady, true);
+    }
+    commands = 0;
     const sidecarProcess = alive(); sidecarProcess.signalCode = "SIGKILL";
     const sidecarDatabase = { clamavRequired: true, clamavReady: true, __clamavDevSidecar: { process: sidecarProcess, externallyManaged: true }, __clamavTest: testState };
     assert.deepEqual(await checkClamavRuntime(sidecarDatabase), { ok: false }); assert.equal(sidecarDatabase.clamavReady, false);
@@ -2315,9 +2322,134 @@ test("signal-terminated ClamAV children permanently degrade health before scanne
     assert.deepEqual(await checkClamavRuntime(exitedDatabase), { ok: false }); assert.equal(commands, beforeExit, "exit latch prevents probes");
 
     const erroredDaemon = alive(); const erroredUpdater = alive(); const erroredDatabase = { clamavRequired: true, clamavReady: true, __clamavProcess: erroredDaemon, __clamavUpdateProcess: erroredUpdater, __clamavTest: testState };
-    assert.deepEqual(await checkClamavRuntime(erroredDatabase), { ok: true }); erroredUpdater.emit("error", new Error("child error")); assert.equal(erroredDatabase.clamavReady, false);
+    assert.deepEqual(await checkClamavRuntime(erroredDatabase), { ok: true }); erroredDaemon.emit("error", new Error("child error")); assert.equal(erroredDatabase.clamavReady, false);
     assert.deepEqual(await checkClamavRuntime(erroredDatabase), { ok: true }, "an error without exit evidence is not terminal");
   } finally { await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
+});
+
+function managedClamavRuntime({ freshclamExits = [], signatures = [], loadedSignature = "daily:1", onFreshclam } = {}) {
+  let now = Date.parse("2030-01-01T00:00:00.000Z"); const spawned = []; const delays = []; const schedules = []; const commands = []; let signature = null; let signatureHold = null;
+  const freshAt = (version) => ({ version, updatedAt: new Date(now - 60_000).toISOString() }); const staleAt = (version) => ({ version, updatedAt: new Date(now - 27 * 60 * 60 * 1000).toISOString() }); const agingAt = (version) => ({ version, updatedAt: new Date(now - 25.5 * 60 * 60 * 1000).toISOString() }); const logs = [];
+  const child = (command) => { const process = new EventEmitter(); Object.assign(process, { command, exitCode: null, signalCode: null, signals: [] }); process.kill = function (signal) { this.signals.push(signal); queueMicrotask(() => { this.signalCode = signal; this.emit("exit", null, signal); }); }; return process; };
+  const database = {
+    endpoints: [{ options: { body: { multipart: { inspection: { requiredInspectors: ["clamav"] } } } } }],
+    log: { emit: async (event) => { logs.push(event); } },
+    __clamavTest: {
+      managed: true, terminateTimeoutMs: 5, now: () => now,
+      delay: async (milliseconds) => { delays.push(milliseconds); now += milliseconds; },
+      spawn: (command, args) => { const process = child(command); spawned.push([command, ...args]); if (command === "/usr/bin/freshclam") { onFreshclam?.(process, (milliseconds) => { now += milliseconds; }); const exit = freshclamExits.shift(); const next = signatures.shift(); if (exit !== undefined) queueMicrotask(() => { if (next) signature = next === "stale" ? staleAt(signature?.version ?? "daily:1") : next.startsWith("aging:") ? agingAt(next.slice(6)) : freshAt(next); process.exitCode = exit; process.emit("exit", exit); }); } return process; },
+      schedule: (callback, delayMs) => { const entry = { callback, delayMs, cancelled: false }; schedules.push(entry); return () => { entry.cancelled = true; }; },
+      socketExists: () => true, readinessProbe: async () => true,
+      get signature() { return signatureHold ? signatureHold.then(() => signature) : signature; }, get loadedSignature() { return loadedSignature; },
+      socketCommand: async (command) => { commands.push(command.toString()); return command.toString() === "zPING\0" ? "PONG" : "RELOADING"; },
+    },
+  };
+  return { database, spawned, delays, schedules, commands, logs, setLoaded(value) { loadedSignature = value; }, advance(milliseconds) { now += milliseconds; }, holdSignature() { let release; signatureHold = new Promise((resolve) => { release = resolve; }); return () => { signatureHold = null; release(); }; } };
+}
+
+test("managed ClamAV boot forces a freshclam refresh and retries it before starting clamd", async () => {
+  const runtime = managedClamavRuntime({ freshclamExits: [1, 0], signatures: [null, "daily:1"] });
+  assert.equal(await initializeClamavRuntime(runtime.database), true); assert.equal(runtime.database.clamavReady, true);
+  assert.deepEqual(runtime.spawned, [["/usr/bin/freshclam", "--config-file=/etc/clamav/freshclam.conf"], ["/usr/bin/freshclam", "--config-file=/etc/clamav/freshclam.conf"], ["/usr/sbin/clamd", "--foreground", "--config-file=/etc/clamav/clamd.conf"]]);
+  assert.equal(runtime.spawned.some((args) => args.includes("--daemon")), false, "no long-lived freshclam daemon competes for the database lock");
+  assert.deepEqual(runtime.delays, [5_000]); assert.deepEqual(runtime.schedules.map((entry) => entry.delayMs), [60 * 60 * 1000]); assert.equal(runtime.database.__clamavUpdateProcess, null);
+  await shutdownClamavRuntime(runtime.database); assert.equal(runtime.schedules[0].cancelled, true);
+});
+
+test("managed ClamAV starts degraded and fail-closed when signatures stay stale after every boot refresh, then recovers", async () => {
+  const runtime = managedClamavRuntime({ freshclamExits: [0, 0, 0, 0, 0], signatures: ["stale", "stale", "stale", "stale", "daily:2"] });
+  assert.equal(await initializeClamavRuntime(runtime.database), true, "the Capsule starts; only inspection is unavailable"); assert.equal(runtime.database.clamavReady, false);
+  assert.deepEqual(runtime.spawned.map(([command]) => command), ["/usr/bin/freshclam", "/usr/bin/freshclam", "/usr/bin/freshclam"], "clamd never starts on stale signatures");
+  assert.deepEqual(runtime.delays, [5_000, 15_000]); assert.deepEqual(runtime.schedules.map((entry) => entry.delayMs), [15 * 60 * 1000]);
+  assert.deepEqual(runtime.logs.map((event) => event.data.code), ["CLAMAV_STARTUP_DEGRADED"]);
+  assert.deepEqual(await checkClamavRuntime(runtime.database), { ok: false }, "health stays not ready, so Hosted push verification still fails");
+  runtime.schedules[0].callback(); await runtime.database.__clamavRefreshPending;
+  assert.equal(runtime.database.clamavReady, false); assert.equal(runtime.database.__clamavProcess ?? null, null); assert.equal(runtime.schedules[1].delayMs, 15 * 60 * 1000, "still stale: retry in 15 minutes");
+  runtime.schedules[1].callback(); await runtime.database.__clamavRefreshPending;
+  assert.equal(runtime.database.clamavReady, true, "a published signature recovers inspection without a restart"); assert.equal(runtime.database.__clamavProcess.command, "/usr/sbin/clamd");
+  assert.equal(runtime.schedules[2].delayMs, 60 * 60 * 1000); assert.deepEqual(runtime.commands, [], "a freshly started clamd needs no reload");
+  await shutdownClamavRuntime(runtime.database); assert.equal(runtime.schedules[2].cancelled, true);
+
+  const offline = managedClamavRuntime({ freshclamExits: [1], signatures: ["daily:7"] });
+  assert.equal(await initializeClamavRuntime(offline.database), true, "a failed refresh still admits signatures inside the freshness gate");
+  assert.deepEqual(offline.delays, []); assert.deepEqual(offline.schedules.map((entry) => entry.delayMs), [15 * 60 * 1000], "a failed boot refresh is retried soon");
+  await shutdownClamavRuntime(offline.database);
+});
+
+test("managed ClamAV periodic refresh reloads clamd and retries failures on a short cadence", async () => {
+  const runtime = managedClamavRuntime({ freshclamExits: [0, 0, 1, 0], signatures: ["daily:1", "daily:2", null, "stale"] });
+  assert.equal(await initializeClamavRuntime(runtime.database), true);
+  runtime.advance(60 * 60 * 1000); runtime.schedules[0].callback(); await runtime.database.__clamavRefreshPending;
+  assert.deepEqual(runtime.commands, ["zRELOAD\0"], "a newer on-disk signature asks clamd to reload"); assert.equal(runtime.schedules[1].delayMs, 60 * 60 * 1000);
+  runtime.setLoaded("daily:2");
+  runtime.schedules[1].callback(); await runtime.database.__clamavRefreshPending;
+  assert.deepEqual(runtime.commands, ["zRELOAD\0"], "no reload when clamd already serves the disk version"); assert.equal(runtime.schedules[2].delayMs, 15 * 60 * 1000, "a failed freshclam run is retried after 15 minutes");
+  runtime.schedules[2].callback(); await runtime.database.__clamavRefreshPending;
+  assert.equal(runtime.database.clamavReady, false, "stale-after-refresh fails closed"); assert.equal(runtime.schedules[3].delayMs, 15 * 60 * 1000);
+  assert.deepEqual(runtime.logs.map((event) => [event.event, event.level, event.data.code]), [["file.inspection.signature-refresh-failed", "warn", "CLAMAV_SIGNATURE_REFRESH_FAILED"], ["file.inspection.signature-refresh-failed", "warn", "CLAMAV_SIGNATURE_STALE_AFTER_REFRESH"]], "refresh failures are visible, not silent");
+  assert.equal(runtime.spawned.filter(([command]) => command === "/usr/sbin/clamd").length, 1);
+  await shutdownClamavRuntime(runtime.database); assert.equal(runtime.schedules[3].cancelled, true);
+
+  const aging = managedClamavRuntime({ freshclamExits: [0], signatures: ["aging:daily:3"] });
+  assert.equal(await initializeClamavRuntime(aging.database), true);
+  assert.deepEqual(aging.schedules.map((entry) => entry.delayMs), [30 * 60 * 1000 + 1_000], "the next refresh runs as the current signature leaves the freshness gate");
+  await shutdownClamavRuntime(aging.database);
+});
+
+test("managed ClamAV shutdown stops a running refresh and schedules nothing further", async () => {
+  const runtime = managedClamavRuntime({ freshclamExits: [0], signatures: ["daily:1"] });
+  assert.equal(await initializeClamavRuntime(runtime.database), true); const clamd = runtime.database.__clamavProcess;
+  runtime.schedules[0].callback(); const refresh = runtime.database.__clamavUpdateProcess;
+  assert.equal(refresh.command, "/usr/bin/freshclam"); assert.equal(refresh.exitCode, null);
+  await shutdownClamavRuntime(runtime.database);
+  assert.deepEqual(refresh.signals, ["SIGTERM"]); assert.deepEqual(clamd.signals, ["SIGTERM"]);
+  assert.equal(runtime.database.__clamavUpdateProcess, null); assert.equal(runtime.database.__clamavProcess, null); assert.equal(runtime.database.__clamavRefreshPending, null);
+  assert.equal(runtime.schedules.length, 1); assert.deepEqual(runtime.commands, []);
+});
+
+test("managed ClamAV shutdown during an in-flight signature check never leaves a clamd behind", async () => {
+  const degraded = managedClamavRuntime({ freshclamExits: [0, 0, 0, 0], signatures: ["stale", "stale", "stale", "daily:2"] });
+  assert.equal(await initializeClamavRuntime(degraded.database), true); assert.equal(degraded.database.clamavReady, false);
+  const releaseDegraded = degraded.holdSignature(); degraded.schedules[0].callback(); await new Promise((resolve) => setImmediate(resolve));
+  const degradedShutdown = shutdownClamavRuntime(degraded.database); await new Promise((resolve) => setImmediate(resolve)); releaseDegraded(); await degradedShutdown;
+  assert.equal(degraded.spawned.some(([command]) => command === "/usr/sbin/clamd"), false, "a stopped recovery does not start clamd"); assert.equal(degraded.database.__clamavProcess ?? null, null); assert.equal(degraded.database.clamavReady, false);
+
+  const healthy = managedClamavRuntime({ freshclamExits: [0, 0], signatures: ["daily:1", "daily:1"] });
+  assert.equal(await initializeClamavRuntime(healthy.database), true); const clamd = healthy.database.__clamavProcess;
+  const releaseHealthy = healthy.holdSignature(); healthy.schedules[0].callback(); await new Promise((resolve) => setImmediate(resolve));
+  const healthyShutdown = shutdownClamavRuntime(healthy.database); await new Promise((resolve) => setImmediate(resolve)); releaseHealthy(); await healthyShutdown;
+  assert.deepEqual(clamd.signals, ["SIGTERM"]); assert.equal(healthy.spawned.filter(([command]) => command === "/usr/sbin/clamd").length, 1, "the terminated clamd is not replaced after teardown");
+  assert.equal(healthy.database.__clamavProcess, null); assert.equal(healthy.database.clamavReady, false); assert.equal(healthy.schedules.length, 1);
+});
+
+test("managed ClamAV refresh restarts a crashed clamd and keeps ownership of a hung freshclam", async () => {
+  const runtime = managedClamavRuntime({ freshclamExits: [0, 0], signatures: ["daily:1", "daily:1"] });
+  assert.equal(await initializeClamavRuntime(runtime.database), true); const crashed = runtime.database.__clamavProcess;
+  crashed.exitCode = 1; crashed.emit("exit", 1); assert.deepEqual(await checkClamavRuntime(runtime.database), { ok: false });
+  runtime.schedules[0].callback(); await runtime.database.__clamavRefreshPending;
+  assert.notEqual(runtime.database.__clamavProcess, crashed); assert.equal(runtime.spawned.filter(([command]) => command === "/usr/sbin/clamd").length, 2);
+  assert.deepEqual(runtime.logs.map((event) => event.data.code), ["CLAMAV_DAEMON_EXITED"]); assert.deepEqual(await checkClamavRuntime(runtime.database), { ok: true }, "the restarted clamd clears the exit latch");
+  assert.equal(runtime.schedules[1].delayMs, 60 * 60 * 1000); await shutdownClamavRuntime(runtime.database);
+
+  let stubborn = null; const hung = managedClamavRuntime({ freshclamExits: [0, undefined, 0], signatures: ["daily:1", null, "daily:1"], onFreshclam: (process, advance) => {
+    if (stubborn || hung?.spawned.length !== 3) return; stubborn = process; process.kill = function (signal) { this.signals.push(signal); if (this.canExit) queueMicrotask(() => { this.signalCode = signal; this.emit("exit", null, signal); }); }; advance(5 * 60 * 1000 - 10);
+  } });
+  assert.equal(await initializeClamavRuntime(hung.database), true);
+  hung.schedules[0].callback(); await hung.database.__clamavRefreshPending;
+  assert.equal(hung.database.__clamavUpdateProcess, stubborn, "a freshclam that survives SIGKILL stays owned"); assert.deepEqual(stubborn.signals, ["SIGTERM", "SIGKILL"]);
+  assert.deepEqual(hung.logs.map((event) => event.data.code), ["CLAMAV_SIGNATURE_REFRESH_FAILED"]); assert.equal(hung.schedules[1].delayMs, 15 * 60 * 1000);
+  stubborn.canExit = true; hung.schedules[1].callback(); await hung.database.__clamavRefreshPending;
+  assert.deepEqual(stubborn.signals, ["SIGTERM", "SIGKILL", "SIGTERM"], "the retained updater is stopped before a new run"); assert.equal(hung.spawned.filter(([command]) => command === "/usr/bin/freshclam").length, 3); assert.equal(hung.database.__clamavUpdateProcess, null);
+  await shutdownClamavRuntime(hung.database);
+
+  let retained = null; const stopping = managedClamavRuntime({ freshclamExits: [0, undefined], signatures: ["daily:1", null], onFreshclam: (process, advance) => {
+    if (retained || stopping?.spawned.length !== 3) return; retained = process; process.kill = function (signal) { this.signals.push(signal); if (this.canExit) queueMicrotask(() => { this.signalCode = signal; this.emit("exit", null, signal); }); }; advance(5 * 60 * 1000 - 10);
+  } });
+  assert.equal(await initializeClamavRuntime(stopping.database), true);
+  stopping.schedules[0].callback(); await stopping.database.__clamavRefreshPending; assert.equal(stopping.database.__clamavUpdateProcess, retained);
+  retained.canExit = true; stopping.schedules[1].callback(); await shutdownClamavRuntime(stopping.database);
+  assert.equal(stopping.spawned.filter(([command]) => command === "/usr/bin/freshclam").length, 2, "shutdown during retained-updater cleanup starts no new freshclam");
+  assert.equal(stopping.database.__clamavUpdateProcess, null); assert.equal(stopping.database.__clamavProcess, null);
 });
 
 test("ClamAV supervision handles every nonterminal child error until exit or owner teardown", async () => {

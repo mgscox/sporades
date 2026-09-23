@@ -1232,7 +1232,10 @@ async function contentPolicyOutcome(row: RecordLike, bytes: Buffer) {
   if (bytes.subarray(0, 5).toString("ascii") === "%PDF-") return await validatePdfIngress(bytes) && /\.pdf$/.test(name) && type === "application/pdf" ? "clean" : "rejected";
   return safeUntrustedText(bytes) && /\.txt$/.test(name) && type === "text/plain" ? "clean" : "rejected";
 }
-export function isCurrentClamavSignature(signature: RecordLike | null, now = Date.now()) { const builtAt = Date.parse(signature?.updatedAt); return Boolean(signature) && typeof signature?.version === "string" && /^daily:\d{1,12}$/.test(signature.version) && Number.isFinite(builtAt) && builtAt <= now && now - builtAt <= 24 * 60 * 60 * 1000; }
+// ClamAV publishes one daily signature roughly every 24h and advertises it some time after its
+// build time, so the gate allows 2h beyond a day for publication latency plus the refresh retry.
+const clamavSignatureMaxAgeMs = 26 * 60 * 60 * 1000;
+export function isCurrentClamavSignature(signature: RecordLike | null, now = Date.now()) { const builtAt = Date.parse(signature?.updatedAt); return Boolean(signature) && typeof signature?.version === "string" && /^daily:\d{1,12}$/.test(signature.version) && Number.isFinite(builtAt) && builtAt <= now && now - builtAt <= clamavSignatureMaxAgeMs; }
 export function collectBoundedToolOutput(child: any, timeoutMs: number, maximumBytes = 8192) { return new Promise<{ ok: boolean; stdout: string }>((resolve) => { let settled = false; let stdout = Buffer.alloc(0); let exitCode: number | null | undefined; let stdoutEnded = !child.stdout; const finish = (ok: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve({ ok, stdout: stdout.toString("utf8") }); }; const completed = () => { if (exitCode !== undefined && stdoutEnded) finish(exitCode === 0); }; const timer = setTimeout(() => finish(false), timeoutMs); child.stdout?.on?.("data", (chunk: Buffer) => { if (stdout.length + chunk.length > maximumBytes) return finish(false); stdout = Buffer.concat([stdout, chunk]); }); child.stdout?.once?.("end", () => { stdoutEnded = true; completed(); }); child.once("exit", (code: number | null) => { exitCode = code; completed(); }); child.once("close", (code: number | null) => finish(code === 0)); child.once("error", () => finish(false)); }); }
 function clamavNow(database: RecordLike) { return database.__clamavTest?.now?.() ?? Date.now(); }
 function clamavDelay(database: RecordLike, timeoutMs: number) { return database.__clamavTest?.delay?.(timeoutMs) ?? new Promise((resolve) => setTimeout(resolve, timeoutMs)); }
@@ -1373,6 +1376,59 @@ async function stopOwnedClamavChildren(database: RecordLike) {
   results.forEach((result, index) => { const [key, child] = owned[index]; if (result.status === "fulfilled") { unobserveClamavChild(database, child); if (database[key] === child) database[key] = null; } else failures.push(result.reason); });
   if (failures.length) throw new AggregateError(failures, "ClamAV child cleanup failed.");
 }
+// The runtime owns the signature refresh schedule instead of `freshclam --daemon`: each run is a
+// bounded one-shot whose result is re-verified against the same freshness gate, so a refresh that
+// fails or leaves stale signatures is retried on a short cadence rather than silently.
+// A restart that finds only stale signatures starts degraded: inspection stays unavailable and
+// health stays not ready (so Hosted push verification still fails) until a refresh recovers.
+const clamavBootRetryDelaysMs = [5_000, 15_000];
+const clamavRefreshIntervalMs = 60 * 60 * 1000;
+const clamavRefreshRetryMs = 15 * 60 * 1000;
+const clamavRefreshTimeoutMs = 5 * 60 * 1000;
+function clamavSpawn(database: RecordLike, command: string, args: string[]) { return database.__clamavTest?.spawn ? database.__clamavTest.spawn(command, args) : childProcess.spawn(command, args, { stdio: "ignore" }); }
+function clamavSchedule(database: RecordLike, callback: () => void, delayMs: number): () => void { if (database.__clamavTest?.schedule) return database.__clamavTest.schedule(callback, delayMs); const timer = setTimeout(callback, delayMs); timer.unref?.(); return () => clearTimeout(timer); }
+async function runFreshclam(database: RecordLike, deadline: number) {
+  // A previous run whose termination failed stays owned; never start a second updater beside it.
+  const retained = database.__clamavUpdateProcess; if (retained) { await terminateChild(retained, clamavTerminateTimeout(database), database); unobserveClamavChild(database, retained); if (database.__clamavUpdateProcess === retained) database.__clamavUpdateProcess = null; if (database.__clamavRefreshStopped) return false; }
+  if (clamavRemaining(database, deadline) <= 0) return false;
+  const update = clamavSpawn(database, "/usr/bin/freshclam", ["--config-file=/etc/clamav/freshclam.conf"]); database.__clamavUpdateProcess = update;
+  const completed = await waitForChild(update, clamavRemaining(database, deadline)); if (!completed) await terminateChild(update, Math.min(clamavTerminateTimeout(database), clamavRemaining(database, deadline)), database);
+  if (database.__clamavUpdateProcess === update) database.__clamavUpdateProcess = null; return completed;
+}
+// Hourly after success, but never later than the moment the current signature leaves the gate,
+// so the stale window is bounded by upstream publication plus the 15-minute retry.
+function nextClamavRefreshDelay(database: RecordLike, signature: RecordLike | null, refreshed: boolean) { if (!refreshed) return clamavRefreshRetryMs; const expiresIn = Date.parse(signature?.updatedAt) + clamavSignatureMaxAgeMs - clamavNow(database); return Math.max(1_000, Math.min(clamavRefreshIntervalMs, expiresIn + 1_000)); }
+async function startClamd(database: RecordLike, deadline: number) {
+  if (clamavRemaining(database, deadline) <= 0) return false;
+  const daemon = clamavSpawn(database, "/usr/sbin/clamd", ["--foreground", "--config-file=/etc/clamav/clamd.conf"]); database.__clamavProcess = daemon;
+  observeClamavChild(database, daemon);
+  if (await waitForClamavReadiness(database, daemon, deadline, "/tmp/sporades-clamd.sock")) { database.clamavReady = true; return true; }
+  await stopOwnedClamavChildren(database); return false;
+}
+async function refreshClamavSignatures(database: RecordLike) {
+  const deadline = clamavNow(database) + clamavRefreshTimeoutMs; const refreshed = await runFreshclam(database, deadline); if (database.__clamavRefreshStopped) return clamavRefreshRetryMs;
+  const signature = await verifiedClamavSignature(database, deadline); if (database.__clamavRefreshStopped) return clamavRefreshRetryMs;
+  // stale-after-refresh fails closed; requests and health apply the same gate independently.
+  if (!isCurrentClamavSignature(signature, clamavNow(database))) { database.clamavReady = false; await emitClamavRefreshWarning(database, "CLAMAV_SIGNATURE_STALE_AFTER_REFRESH"); return clamavRefreshRetryMs; }
+  // A crashed clamd is released so it can be restarted; its exit already latched health unavailable.
+  const crashed = database.__clamavProcess; if (crashed && clamavChildTerminated(crashed)) { unobserveClamavChild(database, crashed); database.__clamavProcess = null; await emitClamavRefreshWarning(database, "CLAMAV_DAEMON_EXITED"); if (database.__clamavRefreshStopped) return clamavRefreshRetryMs; }
+  // A degraded start or a crashed clamd has no daemon; current signatures now let one start under the startup window.
+  if (!database.__clamavProcess) { const started = await startClamd(database, clamavNow(database) + (database.__clamavTest?.startupTimeoutMs ?? 120_000)); if (database.__clamavRefreshStopped) return clamavRefreshRetryMs; if (!started) { await emitClamavRefreshWarning(database, "CLAMAV_DAEMON_START_FAILED"); return clamavRefreshRetryMs; } return nextClamavRefreshDelay(database, signature, refreshed); }
+  // freshclam's NotifyClamd also requests a reload; clamd coalesces a RELOAD that arrives while one is in progress.
+  if (await loadedClamavSignatureVersion(database) !== signature.version) await clamavSocketCommand(database, Buffer.from("zRELOAD\0"), 64);
+  if (!refreshed) await emitClamavRefreshWarning(database, "CLAMAV_SIGNATURE_REFRESH_FAILED");
+  return nextClamavRefreshDelay(database, signature, refreshed);
+}
+async function emitClamavRefreshWarning(database: RecordLike, code: string) { try { await database.log?.emit?.({ category: "platform", event: "file.inspection.signature-refresh-failed", level: "warn", message: "ClamAV signature refresh did not leave file inspection ready", data: { schema: "v1", outcome: "failed", code } }); } catch {} }
+function scheduleClamavRefresh(database: RecordLike, delayMs: number) {
+  if (database.__clamavRefreshStopped) return;
+  database.__clamavRefreshCancel = clamavSchedule(database, () => {
+    database.__clamavRefreshCancel = null;
+    const pending = refreshClamavSignatures(database).catch(async () => { await emitClamavRefreshWarning(database, "CLAMAV_SIGNATURE_REFRESH_FAILED"); return clamavRefreshRetryMs; }).then((nextDelayMs) => { if (database.__clamavRefreshPending === pending) database.__clamavRefreshPending = null; scheduleClamavRefresh(database, nextDelayMs); });
+    database.__clamavRefreshPending = pending;
+  }, delayMs);
+}
+function stopClamavRefresh(database: RecordLike) { database.__clamavRefreshStopped = true; database.__clamavRefreshCancel?.(); database.__clamavRefreshCancel = null; }
 export async function initializeClamavRuntime(database: RecordLike) {
   const required = database.endpoints?.some((endpoint: RecordLike) => endpoint?.options?.body?.multipart?.inspection?.requiredInspectors?.includes("clamav")); database.clamavRequired = Boolean(required); database.clamavReady = !required;
   if (!required) return true;
@@ -1381,19 +1437,24 @@ export async function initializeClamavRuntime(database: RecordLike) {
     observeClamavChild(database, database.__clamavDevSidecar.process);
     database.clamavReady = await waitForClamavReadiness(database, database.__clamavDevSidecar.process, deadline, database.__clamavDevSidecar.socketPath); return database.clamavReady;
   }
-  if (database.__clamavTest) { database.clamavReady = Boolean(await currentLoadedClamavSignature(database, deadline)); return database.clamavReady; }
-  if (process.env.SPORADES_CLAMAV_MANAGED !== "1") return false;
-  try { fs.mkdirSync("/app/data/clamav", { recursive: true }); fs.mkdirSync("/tmp/sporades-clamav", { recursive: true }); } catch { return false; }
-  if (clamavRemaining(database, deadline) <= 0) return false;
-  const update = childProcess.spawn("/usr/bin/freshclam", ["--config-file=/etc/clamav/freshclam.conf"], { stdio: "ignore" }); database.__clamavUpdateProcess = update; const updateCompleted = await waitForChild(update, clamavRemaining(database, deadline)); if (!updateCompleted) await terminateChild(update, Math.min(clamavTerminateTimeout(database), clamavRemaining(database, deadline)), database); database.__clamavUpdateProcess = null; const signature = await verifiedClamavSignature(database, deadline); if (!isCurrentClamavSignature(signature, clamavNow(database))) return false;
-  if (clamavRemaining(database, deadline) <= 0) return false;
-  const daemon = childProcess.spawn("/usr/sbin/clamd", ["--foreground", "--config-file=/etc/clamav/clamd.conf"], { stdio: "ignore" }); database.__clamavProcess = daemon;
-  observeClamavChild(database, daemon);
-  if (await waitForClamavReadiness(database, daemon, deadline, "/tmp/sporades-clamd.sock")) { database.clamavReady = true; const updater = childProcess.spawn("/usr/bin/freshclam", ["--daemon", "--foreground=true", "--config-file=/etc/clamav/freshclam.conf"], { stdio: "ignore" }); database.__clamavUpdateProcess = updater; observeClamavChild(database, updater); return true; }
-  await stopOwnedClamavChildren(database); return false;
+  if (database.__clamavTest && !database.__clamavTest.managed) { database.clamavReady = Boolean(await currentLoadedClamavSignature(database, deadline)); return database.clamavReady; }
+  if (!database.__clamavTest && process.env.SPORADES_CLAMAV_MANAGED !== "1") return false;
+  if (!database.__clamavTest) try { fs.mkdirSync("/app/data/clamav", { recursive: true }); fs.mkdirSync("/tmp/sporades-clamav", { recursive: true }); } catch { return false; }
+  database.__clamavRefreshStopped = false;
+  // Boot always forces a refresh and retries it before the freshness gate decides.
+  let refreshed = false; let signature: RecordLike | null = null;
+  for (let attempt = 0; ; attempt += 1) {
+    refreshed = await runFreshclam(database, deadline); signature = await verifiedClamavSignature(database, deadline);
+    if (isCurrentClamavSignature(signature, clamavNow(database))) break;
+    const delayMs = clamavBootRetryDelaysMs[attempt];
+    if (delayMs === undefined || clamavRemaining(database, deadline) <= delayMs) { database.clamavReady = false; await emitClamavRefreshWarning(database, "CLAMAV_STARTUP_DEGRADED"); scheduleClamavRefresh(database, clamavRefreshRetryMs); return true; }
+    await clamavDelay(database, delayMs);
+  }
+  if (!await startClamd(database, deadline)) return false;
+  scheduleClamavRefresh(database, nextClamavRefreshDelay(database, signature, refreshed)); return true;
 }
-export async function shutdownClamavRuntime(database: RecordLike) { database.clamavReady = false; if (!database.__clamavDevSidecar?.externallyManaged) await stopOwnedClamavChildren(database); else { unobserveClamavChild(database, database.__clamavDevSidecar.process); database.__clamavProcess = null; database.__clamavUpdateProcess = null; } }
-export async function checkClamavRuntime(database: RecordLike) { if (!database.clamavRequired) return { ok: true }; const children = [database.__clamavDevSidecar?.process, database.__clamavProcess, database.__clamavUpdateProcess]; for (const child of children) observeClamavChild(database, child); if (children.some(clamavChildTerminated)) { database.clamavReady = false; return { ok: false }; } const current = await currentLoadedClamavSignature(database); const pong = current ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null; database.clamavReady = pong === "PONG"; return { ok: database.clamavReady }; }
+export async function shutdownClamavRuntime(database: RecordLike) { database.clamavReady = false; stopClamavRefresh(database); if (!database.__clamavDevSidecar?.externallyManaged) { await stopOwnedClamavChildren(database); await database.__clamavRefreshPending; if (database.__clamavProcess || database.__clamavUpdateProcess) await stopOwnedClamavChildren(database); database.clamavReady = false; } else { unobserveClamavChild(database, database.__clamavDevSidecar.process); database.__clamavProcess = null; database.__clamavUpdateProcess = null; } }
+export async function checkClamavRuntime(database: RecordLike) { if (!database.clamavRequired) return { ok: true }; const children = [database.__clamavDevSidecar?.process, database.__clamavProcess]; for (const child of children) observeClamavChild(database, child); if (children.some(clamavChildTerminated)) { database.clamavReady = false; return { ok: false }; } const current = await currentLoadedClamavSignature(database); const pong = current ? await clamavSocketCommand(database, Buffer.from("zPING\0"), 16, 500) : null; database.clamavReady = pong === "PONG"; return { ok: database.clamavReady }; }
 async function inspectIngressLease(database: RecordLike, policy: RecordLike | null, row: RecordLike, bytes: Buffer, clamavRequestSignature?: RecordLike | null) {
   if (!policy) return undefined;
   const verdicts = await Promise.all(policy.requiredInspectors.map(async (inspector: string) => { const result = inspector === "content-policy-v1" ? { outcome: await contentPolicyOutcome(row, bytes), signatureVersion: "content-policy-v1" } : await clamavInstream(database, bytes, clamavRequestSignature); const inspectedAt = ingressAuditNow(database); return Object.freeze({ inspector, outcome: result.outcome, leaseId: row.leaseId, size: row.size, digest: row.digest, version: row.version, policyRevision: policy.policyRevision, engine: inspector === "content-policy-v1" ? "sporades-content-policy" : "clamav", signatureVersion: result.signatureVersion, inspectedAt }); }));
