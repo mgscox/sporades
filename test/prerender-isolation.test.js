@@ -273,6 +273,43 @@ test('successful local edges retain higher-priority static and computed resoluti
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('package self-references observe missing conditional and wildcard export targets', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-self-reference-')));
+  try {
+    await mkdir(path.join(root, 'render'));
+    for (const computed of [false, true]) {
+      const extension = computed ? 'cjs' : 'ts';
+      const target = path.join(root, 'render/copy.' + extension);
+      await writeFile(path.join(root, 'package.json'), JSON.stringify({name:'self-capsule', imports:{'#self':'self-capsule/copy'}, exports:{'./*':{node:`./render/*.${extension}`, default:`./render/*.${extension}`}}}));
+      await writeFile(path.join(root, 'entry.mjs'), computed
+        ? 'export default () => {const target = "self-capsule/copy"; return require(target);};'
+        : 'import copy from "self-capsule/copy"; export default () => copy;');
+      const dependencies = new Set();
+      const render = () => renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}, [], (file) => dependencies.add(file));
+      await assert.rejects(render());
+      assert.ok(dependencies.has(target), 'missing self-export target is observed');
+      assert.equal(dependencies.has(root), false, 'self-reference does not watch its own generated output');
+      await writeFile(path.join(root, 'entry.mjs'), computed
+        ? 'export default () => {const target = "#self"; return require(target);};'
+        : 'import copy from "#self"; export default () => copy;');
+      dependencies.clear();
+      await assert.rejects(render());
+      assert.ok(dependencies.has(target), 'package imports alias retains its self-export target');
+      await writeFile(target, computed ? 'module.exports = "Recovered self-reference";' : 'export default "Recovered self-reference";');
+      assert.equal(await render(), 'Recovered self-reference');
+      await rm(target);
+    }
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({name:'@example/self-capsule', exports:{node:'./render/root.js', default:'./render/root.js'}}));
+    await writeFile(path.join(root, 'entry.mjs'), 'import copy from "@example/self-capsule"; export default () => copy;');
+    const dependencies = new Set();
+    const render = () => renderClientPrerenderFragment(root, {name:'landing', module:'entry.mjs'}, [], (file) => dependencies.add(file));
+    await assert.rejects(render());
+    assert.ok(dependencies.has(path.join(root, 'render/root.ts')));
+    await writeFile(path.join(root, 'render/root.ts'), 'export default "Recovered root export";');
+    assert.equal(await render(), 'Recovered root export');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('package-import aliases observe missing TypeScript substitutions for explicit JavaScript targets', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-alias-substitutions-')));
   try {

@@ -4271,6 +4271,20 @@ test("Dev watches prerender modules and transitive code while retaining the last
           assert.match(await page(), /Repointed manifest alias/);
         }
       }
+      for (const computed of [false, true]) {
+        const stem = computed ? 'self-computed' : 'self-static';
+        const target = `./render/${stem}.${computed ? 'cjs' : 'ts'}`;
+        manifest.exports = {[`./${stem}`]:{node:target, default:target}};
+        await writeFile(manifestPath, JSON.stringify(manifest));
+        const specifier = `${manifest.name}/${stem}`;
+        await writeFile(path.join(projectDir, 'render/landing.ts'), computed
+          ? `export default () => {const target = ${JSON.stringify(specifier)}; return require(target);};`
+          : `import copy from ${JSON.stringify(specifier)}; export default () => copy;`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+        await writeFile(path.join(projectDir, target), computed ? 'module.exports = "Recovered self export";' : 'export default "Recovered self export";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Recovered self export/);
+      }
       for (const packageName of ['computed-export-copy', '@example/computed-export-copy', 'static-export-copy']) {
         const renderer = packageName.startsWith('static') ? `import copy from ${JSON.stringify(`${packageName}/feature`)}; export default () => copy;` : `export default () => { const target = ${JSON.stringify(`${packageName}/feature`)}; return require(target); };`;
         await writeFile(path.join(projectDir, 'render/landing.ts'), renderer);

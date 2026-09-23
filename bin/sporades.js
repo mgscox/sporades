@@ -81875,7 +81875,7 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
       }
     }
     for (const request of outcome.packageImports ?? []) {
-      if (request.specifier.startsWith("#")) await recordRendererPackageImport(request.specifier, path3.dirname(request.filename), onDependency);
+      if (request.specifier.startsWith("#")) await recordRendererPackageTargets(request.specifier, path3.dirname(request.filename), onDependency);
       else await recordRendererPackageManifests(request.specifier, path3.dirname(request.filename), onDependency, request.resolvedPath);
     }
     if (outcome.kind === "not-function") {
@@ -81942,7 +81942,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
       pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
         if (args.pluginData?.[resolutionBypass]) return void 0;
         recordTsconfig(args.path, args.resolveDir || projectRoot);
-        if (args.path.startsWith("#")) await recordRendererPackageImport(args.path, args.resolveDir || projectRoot, onDependency);
+        if (args.path.startsWith("#")) await recordRendererPackageTargets(args.path, args.resolveDir || projectRoot, onDependency);
         else await recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency);
         const localPath = rendererLocalFilePath(args.path) ?? (args.path.startsWith(".") ? path3.resolve(args.resolveDir || projectRoot, args.path) : void 0);
         if (localPath) {
@@ -82162,6 +82162,7 @@ async function recordRendererPackageManifests(specifier, directory, onDependency
   const parts = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1);
   if (parts.length !== (specifier.startsWith("@") ? 2 : 1) || parts.some((part) => !part || part === "." || part === "..")) return;
   const packageName = parts.join("/");
+  await recordRendererPackageTargets(specifier, directory, onDependency, packageName);
   const localRequire = createRequire(path3.join(directory, "__sporades_prerender__.cjs"));
   for (const base of localRequire.resolve.paths(specifier) ?? []) {
     const root = path3.join(base, packageName);
@@ -82176,7 +82177,7 @@ async function recordRendererPackageManifests(specifier, directory, onDependency
     if (resolvedPath === canonicalRoot || isCanonicalDescendant(canonicalRoot, resolvedPath)) break;
   }
 }
-async function recordRendererPackageImport(specifier, directory, onDependency) {
+async function recordRendererPackageTargets(specifier, directory, onDependency, selfPackageName) {
   if (!onDependency) return;
   while (path3.basename(directory) !== "node_modules") {
     const manifest = path3.join(directory, "package.json");
@@ -82193,13 +82194,20 @@ async function recordRendererPackageImport(specifier, directory, onDependency) {
       }
       return;
     }
-    const imports = configuration?.imports;
-    if (!imports || typeof imports !== "object") return;
+    let mappings = configuration?.imports;
+    if (selfPackageName !== void 0) {
+      if (configuration?.name !== selfPackageName || configuration.exports == null) return;
+      const exports = configuration.exports;
+      mappings = typeof exports === "object" && !Array.isArray(exports) && Object.keys(exports).some((key) => key.startsWith(".")) ? exports : { ".": exports };
+      specifier = `.${specifier.slice(selfPackageName.length)}`;
+    }
+    if (!mappings || typeof mappings !== "object") return;
     const seen = /* @__PURE__ */ new Set();
+    const selfTargets = [];
     const visitAlias = (alias) => {
       if (seen.has(alias)) return;
       seen.add(alias);
-      for (const [key, target] of Object.entries(imports)) {
+      for (const [key, target] of Object.entries(mappings)) {
         const star = key.indexOf("*");
         const suffix = star < 0 ? "" : key.slice(star + 1);
         const matches = star < 0 ? key === alias : alias.startsWith(key.slice(0, star)) && alias.endsWith(suffix) && alias.length >= key.length - 1;
@@ -82222,16 +82230,18 @@ async function recordRendererPackageImport(specifier, directory, onDependency) {
             if (isCanonicalDescendant(directory, candidate)) {
               recordRendererLocalResolutionCandidates(candidate, onDependency);
             }
-          } else if (expanded && !expanded.startsWith(".") && (!expanded.startsWith("@") || expanded.split("/")[1]) && !path3.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
+          } else if (selfPackageName === void 0 && expanded && !expanded.startsWith(".") && (!expanded.startsWith("@") || expanded.split("/")[1]) && !path3.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
             const packageName = expanded.split("/").slice(0, expanded.startsWith("@") ? 2 : 1).join("/");
             const localRequire = createRequire(path3.join(directory, "__sporades_prerender__.cjs"));
             for (const base of localRequire.resolve.paths(expanded) ?? []) onDependency(path3.join(base, packageName));
+            selfTargets.push(recordRendererPackageTargets(expanded, directory, onDependency, packageName));
           }
         };
         visitTarget(target);
       }
     };
     visitAlias(specifier);
+    await Promise.all(selfTargets);
     return;
   }
 }

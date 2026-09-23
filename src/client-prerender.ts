@@ -122,7 +122,7 @@ export async function renderClientPrerenderFragment(
       }
     }
     for (const request of outcome.packageImports ?? []) {
-      if (request.specifier.startsWith("#")) await recordRendererPackageImport(request.specifier, path.dirname(request.filename), onDependency);
+      if (request.specifier.startsWith("#")) await recordRendererPackageTargets(request.specifier, path.dirname(request.filename), onDependency);
       else await recordRendererPackageManifests(request.specifier, path.dirname(request.filename), onDependency, request.resolvedPath);
     }
     if (outcome.kind === "not-function") {
@@ -214,7 +214,7 @@ function preserveRendererImportMetaUrl(
       pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
         if ((args.pluginData as { [resolutionBypass]?: boolean } | undefined)?.[resolutionBypass]) return undefined;
         recordTsconfig(args.path, args.resolveDir || projectRoot);
-        if (args.path.startsWith("#")) await recordRendererPackageImport(args.path, args.resolveDir || projectRoot, onDependency);
+        if (args.path.startsWith("#")) await recordRendererPackageTargets(args.path, args.resolveDir || projectRoot, onDependency);
         else await recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency);
         const localPath = rendererLocalFilePath(args.path)
           ?? (args.path.startsWith(".") ? path.resolve(args.resolveDir || projectRoot, args.path) : undefined);
@@ -467,6 +467,7 @@ async function recordRendererPackageManifests(specifier: string, directory: stri
   const parts = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1);
   if (parts.length !== (specifier.startsWith("@") ? 2 : 1) || parts.some((part) => !part || part === "." || part === "..")) return;
   const packageName = parts.join("/");
+  await recordRendererPackageTargets(specifier, directory, onDependency, packageName);
   const localRequire = createRequire(path.join(directory, "__sporades_prerender__.cjs"));
   for (const base of localRequire.resolve.paths(specifier) ?? []) {
     const root = path.join(base, packageName);
@@ -482,14 +483,14 @@ async function recordRendererPackageManifests(specifier: string, directory: stri
   }
 }
 
-async function recordRendererPackageImport(specifier: string, directory: string, onDependency?: (file: string) => void) {
+async function recordRendererPackageTargets(specifier: string, directory: string, onDependency?: (file: string) => void, selfPackageName?: string) {
   if (!onDependency) return;
   // Observe all matching conditional targets; Node/esbuild still decides which
   // one resolves. This is a conservative watch graph, not a second resolver.
   while (path.basename(directory) !== "node_modules") {
     const manifest = path.join(directory, "package.json");
     onDependency(manifest);
-    let configuration: { imports?: Record<string, unknown> };
+    let configuration: { name?: string; imports?: Record<string, unknown>; exports?: unknown };
     try { configuration = JSON.parse(await readFile(manifest, "utf8")); }
     catch (error) {
       if (isMissingRendererPackageJson(error)) {
@@ -500,13 +501,21 @@ async function recordRendererPackageImport(specifier: string, directory: string,
       }
       return;
     }
-    const imports = configuration?.imports;
-    if (!imports || typeof imports !== "object") return;
+    let mappings = configuration?.imports;
+    if (selfPackageName !== undefined) {
+      if (configuration?.name !== selfPackageName || configuration.exports == null) return;
+      const exports = configuration.exports;
+      mappings = typeof exports === "object" && !Array.isArray(exports) && Object.keys(exports).some((key) => key.startsWith("."))
+        ? exports as Record<string, unknown> : { ".": exports };
+      specifier = `.${specifier.slice(selfPackageName.length)}`;
+    }
+    if (!mappings || typeof mappings !== "object") return;
     const seen = new Set<string>();
+    const selfTargets: Promise<void>[] = [];
     const visitAlias = (alias: string) => {
       if (seen.has(alias)) return;
       seen.add(alias);
-      for (const [key, target] of Object.entries(imports)) {
+      for (const [key, target] of Object.entries(mappings)) {
         const star = key.indexOf("*");
         const suffix = star < 0 ? "" : key.slice(star + 1);
         const matches = star < 0 ? key === alias : alias.startsWith(key.slice(0, star)) && alias.endsWith(suffix) && alias.length >= key.length - 1;
@@ -523,16 +532,19 @@ async function recordRendererPackageImport(specifier: string, directory: string,
             if (isCanonicalDescendant(directory, candidate)) {
               recordRendererLocalResolutionCandidates(candidate, onDependency);
             }
-          } else if (expanded && !expanded.startsWith(".") && (!expanded.startsWith("@") || expanded.split("/")[1]) && !path.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
+          } else if (selfPackageName === undefined && expanded && !expanded.startsWith(".") && (!expanded.startsWith("@") || expanded.split("/")[1]) && !path.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
             const packageName = expanded.split("/").slice(0, expanded.startsWith("@") ? 2 : 1).join("/");
             const localRequire = createRequire(path.join(directory, "__sporades_prerender__.cjs"));
             for (const base of localRequire.resolve.paths(expanded) ?? []) onDependency(path.join(base, packageName));
+            // An imports alias may itself target this package's exports.
+            selfTargets.push(recordRendererPackageTargets(expanded, directory, onDependency, packageName));
           }
         };
         visitTarget(target);
       }
     };
     visitAlias(specifier);
+    await Promise.all(selfTargets);
     return;
   }
 }
