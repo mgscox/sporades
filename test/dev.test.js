@@ -4247,6 +4247,21 @@ test("Dev watches prerender modules and transitive code while retaining the last
         await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
         assert.ok((await page()).includes(`Installed ${packageName}`));
       }
+      const customResolution = path.join(dir, 'custom-resolution');
+      for (const [specifier, target] of [
+        ['custom-copy', path.join(customResolution, 'node_modules/custom-copy/index.js')],
+        ['./relative-copy', path.join(customResolution, 'relative-copy.js')],
+      ]) {
+        await writeFile(path.join(projectDir, 'render/landing.ts'), `export default () => {const target = ${JSON.stringify(specifier)}; return require(require.resolve(target, {paths:[${JSON.stringify(customResolution)}]}));};`);
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'failed');
+        await mkdir(path.dirname(target), {recursive:true});
+        await writeFile(target, 'module.exports = "Recovered custom resolution";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Recovered custom resolution/);
+        await writeFile(target, 'module.exports = "Updated custom resolution";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Updated custom resolution/);
+      }
       const absolute = path.join(dir, 'late-absolute.cjs');
       const manifestPath = path.join(projectDir, 'package.json');
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));

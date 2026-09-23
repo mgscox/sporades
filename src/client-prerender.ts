@@ -124,6 +124,9 @@ export async function renderClientPrerenderFragment(
     for (const request of outcome.packageImports ?? []) {
       if (request.specifier.startsWith("#")) await recordRendererPackageTargets(request.specifier, path.dirname(request.filename), onDependency);
       else await recordRendererPackageManifests(request.specifier, path.dirname(request.filename), onDependency, request.resolvedPath);
+      for (const directory of request.resolvePaths ?? []) {
+        if (!request.specifier.startsWith("#")) await recordRendererPackageManifests(request.specifier, directory, onDependency, request.resolvedPath);
+      }
     }
     if (outcome.kind === "not-function") {
       throw prerenderError(
@@ -1342,7 +1345,7 @@ type EsmRendererOutcome = (
   | { kind: "success"; rendered: string }
   | { kind: "not-function" }
   | { kind: "non-string"; resultType: string }
-  | { kind: "failure"; message: string }) & { dependencies?: string[]; runtimeSpecifiers?: string[]; packageImports?: Array<{specifier: string; filename: string; resolvedPath?: string}> };
+  | { kind: "failure"; message: string }) & { dependencies?: string[]; runtimeSpecifiers?: string[]; packageImports?: Array<{specifier: string; filename: string; resolvedPath?: string; resolvePaths?: string[]}> };
 
 async function executeBundledRenderer(
   source: string,
@@ -1367,6 +1370,25 @@ const originalResolveFilename = Module._resolveFilename;
 // One Worker-local seam observes both require() and require.resolve(), before
 // evaluation can fail and evict a module from the cache.
 Module._resolveFilename = function(specifier, parent) {
+  const customDirectories = new Set();
+  let customPathsRead = false;
+  const forwarded = Array.from(arguments);
+  const options = forwarded[3];
+  if (options && typeof options === "object") {
+    forwarded[3] = new Proxy(options, { get(target, property) {
+      // Observe the access Node actually performs, preserving accessor counts
+      // and their original receiver instead of reading options.paths twice.
+      const value = Reflect.get(target, property, target);
+      if (property === "paths" && Array.isArray(value)) {
+        customPathsRead = true;
+        for (let index = 0; index < value.length; index++) {
+          const entry = Object.getOwnPropertyDescriptor(value, String(index));
+          if (entry && typeof entry.value === "string") customDirectories.add(resolve(entry.value));
+        }
+      }
+      return value;
+    }});
+  }
   const packageRequest = typeof specifier === "string" && !isBuiltin(specifier) && !specifier.startsWith(".") && !isAbsolute(specifier) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier) ? {specifier, filename:parent?.filename || workerData.modulePath} : null;
   if (packageRequest) packageImports.push(packageRequest);
   if (typeof specifier === "string" && (isAbsolute(specifier) || /^file:/i.test(specifier))) runtimeSpecifiers.add(specifier);
@@ -1375,7 +1397,7 @@ Module._resolveFilename = function(specifier, parent) {
     for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
   }
   try {
-    const filename = originalResolveFilename.apply(this, arguments);
+    const filename = originalResolveFilename.apply(this, forwarded);
     if (packageRequest) packageRequest.resolvedPath = filename;
     if (typeof filename === "string" && isAbsolute(filename)) dependencies.add(filename);
     return filename;
@@ -1385,12 +1407,22 @@ Module._resolveFilename = function(specifier, parent) {
       const packageName = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
       const candidates = specifier.startsWith(".") || isAbsolute(specifier)
         ? [resolve(dirname(parent?.filename || workerData.modulePath), specifier)]
-        : (localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, packageName));
+        : (customPathsRead
+          ? [...customDirectories].flatMap((directory) => createRequire(resolve(directory, "__sporades_prerender__.cjs")).resolve.paths(specifier) || [])
+          : localRequire.resolve.paths(specifier) || []).map((base) => resolve(base, packageName));
       for (const candidate of candidates) {
         for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
       }
   }
     throw error;
+  } finally {
+    if (packageRequest && customPathsRead) packageRequest.resolvePaths = [...customDirectories];
+    if (typeof specifier === "string" && (specifier.startsWith(".") || isAbsolute(specifier))) {
+      for (const directory of customDirectories) {
+        const candidate = resolve(directory, specifier);
+        for (const suffix of ["", ".js", ".json", ".node", "/package.json", "/index.js", "/index.json", "/index.node"]) dependencies.add(candidate + suffix);
+      }
+    }
   }
 };
 globalThis.require = createRequire(workerData.modulePath);

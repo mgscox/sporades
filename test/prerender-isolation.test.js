@@ -273,6 +273,32 @@ test('successful local edges retain higher-priority static and computed resoluti
   } finally { await rm(root, {recursive:true, force:true}); }
 });
 
+test('computed require.resolve observes custom package and relative search roots', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-resolve-options-')));
+  try {
+    const project = path.join(root, 'project');
+    const custom = path.join(root, 'custom');
+    await mkdir(project); await mkdir(custom);
+    for (const [specifier, target, observed] of [
+      ['custom-copy', path.join(custom, 'node_modules/custom-copy/index.js'), path.join(custom, 'node_modules/custom-copy')],
+      ['./relative-copy', path.join(custom, 'relative-copy.js'), path.join(custom, 'relative-copy.js')],
+    ]) {
+      await writeFile(path.join(project, 'entry.cjs'), `module.exports = () => { const target = ${JSON.stringify(specifier)}; return require(require.resolve(target, {paths:[${JSON.stringify(custom)}]})); };`);
+      const dependencies = new Set();
+      const render = () => renderClientPrerenderFragment(project, {name:'landing', module:'entry.cjs'}, [], (file) => dependencies.add(file));
+      await assert.rejects(render());
+      assert.ok(dependencies.has(observed), 'custom missing resolution candidate is observed');
+      await mkdir(path.dirname(target), {recursive:true});
+      await writeFile(target, 'module.exports = "Recovered custom search root";');
+      assert.equal(await render(), 'Recovered custom search root');
+    }
+    let nativeReads = 0;
+    createRequire(path.join(project, 'entry.cjs')).resolve('custom-copy', {get paths() {nativeReads++; return [custom];}});
+    await writeFile(path.join(project, 'entry.cjs'), `module.exports = () => { let reads = 0; const target = "custom-copy"; const resolved = require.resolve(target, {get paths() {reads++; return [${JSON.stringify(custom)}];}}); return reads + ":" + require(resolved); };`);
+    assert.equal(await renderClientPrerenderFragment(project, {name:'landing', module:'entry.cjs'}), `${nativeReads}:Recovered custom search root`);
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
 test('package self-references observe missing conditional and wildcard export targets', async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-self-reference-')));
   try {
