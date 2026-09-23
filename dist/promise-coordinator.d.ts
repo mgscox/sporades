@@ -4,6 +4,7 @@ type PromiseObserver = {
     after?: (promise: Promise<any>) => void;
     settled?: (promise: Promise<any>) => void;
 };
+type PromiseCombinatorKind = "all" | "allSettled" | "any" | "race";
 export declare function retainPromiseObserver(observer: PromiseObserver): void;
 export declare function releasePromiseObserver(observer: PromiseObserver): void;
 export declare function activePromise(): Promise<any> | undefined;
@@ -11,7 +12,7 @@ export declare function promiseSettlementCause(promise: Promise<any>): Promise<a
 export declare function promiseDescendsFrom(promise: Promise<any> | undefined, ancestor: any): boolean;
 export declare function promiseDependsOn(promise: Promise<any> | undefined, dependency: Promise<any>): boolean;
 export declare function promiseCompositionRootCandidate(): Promise<any> | undefined;
-export declare function promiseCombinatorKind(promise: Promise<any>): "all" | "allSettled" | "any" | "race" | undefined;
+export declare function promiseCombinatorKind(promise: Promise<any>): PromiseCombinatorKind | undefined;
 export declare function enclosingPromiseCombinatorRoot(): Promise<any> | undefined;
 export {};
 //# sourceMappingURL=promise-coordinator.d.ts.map

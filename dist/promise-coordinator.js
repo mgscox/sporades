@@ -9,7 +9,36 @@ let promiseHookStop;
 let compositionRootCandidates = [];
 let thenableWrapperRoots = new WeakSet();
 const promiseCombinatorKinds = new WeakMap();
+const promiseCombinatorNames = new Set(["all", "allSettled", "any", "race"]);
 let compositionRootClearQueued = false;
+// Find a native combinator frame (`at Promise.all`, `at Function.race`, ...) on the current
+// synchronous stack. This reads V8's structured call sites instead of the formatted stack
+// string: the hook calls it for every child Promise while retained, and formatting is costly
+// because a Capsule loaded as a data: URL module embeds its whole source in every frame. It
+// inspects the same frames the formatted stack held (Error.stackTraceLimit still applies) and,
+// like the previous `at (?:Promise|Function).<name>` match, ignores `at async ...` frames.
+function promiseCombinatorOnStack() {
+    const prepareStackTrace = Error.prepareStackTrace;
+    let callSites;
+    Error.prepareStackTrace = (_error, sites) => sites;
+    try {
+        callSites = new Error().stack;
+    }
+    finally {
+        Error.prepareStackTrace = prepareStackTrace;
+    }
+    if (!Array.isArray(callSites))
+        return undefined;
+    for (const site of callSites) {
+        if (site.isAsync?.())
+            continue;
+        const name = site.getFunctionName();
+        const type = site.getTypeName();
+        if (name && promiseCombinatorNames.has(name) && (type === "Promise" || type === "Function"))
+            return name;
+    }
+    return undefined;
+}
 // Native combinators expose their inputs through ordinary thenable access, but do not expose the
 // aggregate Promise itself. Keep the root Promises created in that same synchronous turn so a
 // tracked input can identify the aggregate without replacing Promise or Promise.prototype.
@@ -32,11 +61,11 @@ function installPromiseHook() {
                 promiseParents.set(promise, parent);
             else
                 retainCompositionRootCandidate(promise);
-            const match = parent && (new Error().stack ?? "").match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
-            if (parent && match) {
+            const combinator = parent ? promiseCombinatorOnStack() : undefined;
+            if (parent && combinator) {
                 const root = [...compositionRootCandidates].reverse().find((candidate) => !thenableWrapperRoots.has(candidate));
                 if (root) {
-                    promiseCombinatorKinds.set(root, match[1]);
+                    promiseCombinatorKinds.set(root, combinator);
                     const inputs = promiseCombinatorInputs.get(root) ?? new Set();
                     inputs.add(parent);
                     promiseCombinatorInputs.set(root, inputs);
@@ -124,26 +153,24 @@ export function promiseCompositionRootCandidate() {
     if (!wrapper)
         return undefined;
     thenableWrapperRoots.add(wrapper);
-    const stack = new Error().stack ?? "";
-    const match = stack.match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
-    if (!match)
+    const combinator = promiseCombinatorOnStack();
+    if (!combinator)
         return undefined;
     for (let index = compositionRootCandidates.length - 2; index >= 0; index -= 1) {
         const candidate = compositionRootCandidates[index];
         if (!thenableWrapperRoots.has(candidate)) {
-            promiseCombinatorKinds.set(candidate, match[1]);
+            promiseCombinatorKinds.set(candidate, combinator);
             return candidate;
         }
     }
-    promiseCombinatorKinds.set(wrapper, match[1]);
+    promiseCombinatorKinds.set(wrapper, combinator);
     return wrapper;
 }
 export function promiseCombinatorKind(promise) {
     return promiseCombinatorKinds.get(promise);
 }
 export function enclosingPromiseCombinatorRoot() {
-    const stack = new Error().stack ?? "";
-    if (!/at (?:Promise|Function)\.(?:all|allSettled|any|race)\b/.test(stack))
+    if (!promiseCombinatorOnStack())
         return undefined;
     for (let index = compositionRootCandidates.length - 1; index >= 0; index -= 1) {
         const candidate = compositionRootCandidates[index];

@@ -55,6 +55,7 @@
       "src/http-runtime.ts",
       "src/inspection-sql.ts",
       "src/jobs-runtime.ts",
+      "src/live-query-invalidation.ts",
       "src/log-envelope.ts",
       "src/log-index-guard.ts",
       "src/log-index-storage.ts",
@@ -103,7 +104,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "b075a45d41330478221249f84880da70fa8a451fbc0beae28e5e1601dfd58069"
+    "digest": "bd541c12fce32657353252463f1005d4a8ec53f837c317cede0766e8b9e8d9d7"
   },
   "outputs": {
     "files": [
@@ -293,6 +294,10 @@
       "dist/jobs-runtime.d.ts.map",
       "dist/jobs-runtime.js",
       "dist/jobs-runtime.js.map",
+      "dist/live-query-invalidation.d.ts",
+      "dist/live-query-invalidation.d.ts.map",
+      "dist/live-query-invalidation.js",
+      "dist/live-query-invalidation.js.map",
       "dist/log-envelope.d.ts",
       "dist/log-envelope.d.ts.map",
       "dist/log-envelope.js",
@@ -454,6 +459,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "35744db9da79335e5c7640fb5893e4a41c7b2b26b049d2d983c55abca058b28a"
+    "digest": "a318ec6c3333aa0b139d0840ce334e1475d2b81af283c10503d1ff86b39011bb"
   }
 }
