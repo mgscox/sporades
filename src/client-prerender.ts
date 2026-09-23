@@ -475,6 +475,12 @@ async function recordRendererPackageManifests(specifier: string, directory: stri
   for (const base of localRequire.resolve.paths(specifier) ?? []) {
     const root = path.join(base, packageName);
     onDependency(path.join(root, "package.json"));
+    // A subpath may cross a nested directory link, which bounded package
+    // polling intentionally does not expand. Keep its finite alternatives
+    // explicit so a preferred file behind that link still invalidates Dev.
+    const subpath = specifier.slice(packageName.length + 1);
+    if (subpath) recordRendererLocalResolutionCandidates(path.join(root, subpath), onDependency);
+    await recordRendererPackageTargets(specifier, root, onDependency, packageName, true);
     if (!resolvedPath) continue;
     let canonicalRoot = root;
     try { canonicalRoot = await realpath(root); } catch { /* missing nearer candidates still need observation */ }
@@ -486,17 +492,18 @@ async function recordRendererPackageManifests(specifier: string, directory: stri
   }
 }
 
-async function recordRendererPackageTargets(specifier: string, directory: string, onDependency?: (file: string) => void, selfPackageName?: string) {
+async function recordRendererPackageTargets(specifier: string, directory: string, onDependency?: (file: string) => void, selfPackageName?: string, packageRoot = false) {
   if (!onDependency) return;
   // Observe all matching conditional targets; Node/esbuild still decides which
   // one resolves. This is a conservative watch graph, not a second resolver.
   while (path.basename(directory) !== "node_modules") {
     const manifest = path.join(directory, "package.json");
     onDependency(manifest);
-    let configuration: { name?: string; imports?: Record<string, unknown>; exports?: unknown };
+    let configuration: { name?: string; main?: unknown; module?: unknown; imports?: Record<string, unknown>; exports?: unknown };
     try { configuration = JSON.parse(await readFile(manifest, "utf8")); }
     catch (error) {
       if (isMissingRendererPackageJson(error)) {
+        if (packageRoot) return;
         const parent = path.dirname(directory);
         if (parent === directory) return;
         directory = parent;
@@ -506,7 +513,12 @@ async function recordRendererPackageTargets(specifier: string, directory: string
     }
     let mappings = configuration?.imports;
     if (selfPackageName !== undefined) {
-      if (configuration?.name !== selfPackageName || configuration.exports == null) return;
+      if (packageRoot && specifier === selfPackageName) {
+        for (const entry of [configuration?.main, configuration?.module]) {
+          if (typeof entry === "string") recordRendererLocalResolutionCandidates(path.resolve(directory, entry), onDependency);
+        }
+      }
+      if ((!packageRoot && configuration?.name !== selfPackageName) || configuration?.exports == null) return;
       const exports = configuration.exports;
       mappings = typeof exports === "object" && !Array.isArray(exports) && Object.keys(exports).some((key) => key.startsWith("."))
         ? exports as Record<string, unknown> : { ".": exports };

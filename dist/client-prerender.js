@@ -425,6 +425,13 @@ async function recordRendererPackageManifests(specifier, directory, onDependency
     for (const base of localRequire.resolve.paths(specifier) ?? []) {
         const root = path.join(base, packageName);
         onDependency(path.join(root, "package.json"));
+        // A subpath may cross a nested directory link, which bounded package
+        // polling intentionally does not expand. Keep its finite alternatives
+        // explicit so a preferred file behind that link still invalidates Dev.
+        const subpath = specifier.slice(packageName.length + 1);
+        if (subpath)
+            recordRendererLocalResolutionCandidates(path.join(root, subpath), onDependency);
+        await recordRendererPackageTargets(specifier, root, onDependency, packageName, true);
         if (!resolvedPath)
             continue;
         let canonicalRoot = root;
@@ -440,7 +447,7 @@ async function recordRendererPackageManifests(specifier, directory, onDependency
             break;
     }
 }
-async function recordRendererPackageTargets(specifier, directory, onDependency, selfPackageName) {
+async function recordRendererPackageTargets(specifier, directory, onDependency, selfPackageName, packageRoot = false) {
     if (!onDependency)
         return;
     // Observe all matching conditional targets; Node/esbuild still decides which
@@ -454,6 +461,8 @@ async function recordRendererPackageTargets(specifier, directory, onDependency, 
         }
         catch (error) {
             if (isMissingRendererPackageJson(error)) {
+                if (packageRoot)
+                    return;
                 const parent = path.dirname(directory);
                 if (parent === directory)
                     return;
@@ -464,7 +473,13 @@ async function recordRendererPackageTargets(specifier, directory, onDependency, 
         }
         let mappings = configuration?.imports;
         if (selfPackageName !== undefined) {
-            if (configuration?.name !== selfPackageName || configuration.exports == null)
+            if (packageRoot && specifier === selfPackageName) {
+                for (const entry of [configuration?.main, configuration?.module]) {
+                    if (typeof entry === "string")
+                        recordRendererLocalResolutionCandidates(path.resolve(directory, entry), onDependency);
+                }
+            }
+            if ((!packageRoot && configuration?.name !== selfPackageName) || configuration?.exports == null)
                 return;
             const exports = configuration.exports;
             mappings = typeof exports === "object" && !Array.isArray(exports) && Object.keys(exports).some((key) => key.startsWith("."))

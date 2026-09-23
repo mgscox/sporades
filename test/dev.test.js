@@ -4284,6 +4284,26 @@ test("Dev watches prerender modules and transitive code while retaining the last
       await writeFile(path.join(linkedHelper, 'copy.js'), 'module.exports = "Updated linked package";');
       await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
       assert.match(await page(), /Updated linked package/);
+      await writeFile(path.join(linkedHelper, 'alternative.json'), '"Initial linked alternative"');
+      await writeFile(path.join(projectDir, 'render/landing.ts'), 'import copy from "linked-copy/helper/alternative"; export default () => copy;');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Initial linked alternative/);
+      await writeFile(path.join(linkedHelper, 'alternative.js'), 'module.exports = "Preferred linked alternative";');
+      await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+      assert.match(await page(), /Preferred linked alternative/);
+      for (const computed of [false, true]) {
+        const stem = computed ? 'main-computed' : 'main-static';
+        await writeFile(path.join(linkedHelper, `${stem}.json`), '"Initial linked main"');
+        await writeFile(path.join(linkedPackage, 'package.json'), JSON.stringify({name:'linked-copy', main:`helper/${stem}`}));
+        await writeFile(path.join(projectDir, 'render/landing.ts'), computed
+          ? 'export default () => {const name = "linked-copy"; return require(name);};'
+          : 'import copy from "linked-copy"; export default () => copy;');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Initial linked main/);
+        await writeFile(path.join(linkedHelper, `${stem}.js`), 'module.exports = "Preferred linked main";');
+        await events.next((event) => event.data?.event === 'rebuild' && event.data.status === 'success');
+        assert.match(await page(), /Preferred linked main/);
+      }
       const absolute = path.join(dir, 'late-absolute.cjs');
       const manifestPath = path.join(projectDir, 'package.json');
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));

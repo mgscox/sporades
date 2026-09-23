@@ -82170,6 +82170,9 @@ async function recordRendererPackageManifests(specifier, directory, onDependency
   for (const base of localRequire.resolve.paths(specifier) ?? []) {
     const root = path3.join(base, packageName);
     onDependency(path3.join(root, "package.json"));
+    const subpath = specifier.slice(packageName.length + 1);
+    if (subpath) recordRendererLocalResolutionCandidates(path3.join(root, subpath), onDependency);
+    await recordRendererPackageTargets(specifier, root, onDependency, packageName, true);
     if (!resolvedPath) continue;
     let canonicalRoot = root;
     try {
@@ -82180,7 +82183,7 @@ async function recordRendererPackageManifests(specifier, directory, onDependency
     if (resolvedPath === canonicalRoot || isCanonicalDescendant(canonicalRoot, resolvedPath)) break;
   }
 }
-async function recordRendererPackageTargets(specifier, directory, onDependency, selfPackageName) {
+async function recordRendererPackageTargets(specifier, directory, onDependency, selfPackageName, packageRoot = false) {
   if (!onDependency) return;
   while (path3.basename(directory) !== "node_modules") {
     const manifest = path3.join(directory, "package.json");
@@ -82190,6 +82193,7 @@ async function recordRendererPackageTargets(specifier, directory, onDependency, 
       configuration = JSON.parse(await readFile2(manifest, "utf8"));
     } catch (error) {
       if (isMissingRendererPackageJson(error)) {
+        if (packageRoot) return;
         const parent = path3.dirname(directory);
         if (parent === directory) return;
         directory = parent;
@@ -82199,7 +82203,12 @@ async function recordRendererPackageTargets(specifier, directory, onDependency, 
     }
     let mappings = configuration?.imports;
     if (selfPackageName !== void 0) {
-      if (configuration?.name !== selfPackageName || configuration.exports == null) return;
+      if (packageRoot && specifier === selfPackageName) {
+        for (const entry of [configuration?.main, configuration?.module]) {
+          if (typeof entry === "string") recordRendererLocalResolutionCandidates(path3.resolve(directory, entry), onDependency);
+        }
+      }
+      if (!packageRoot && configuration?.name !== selfPackageName || configuration?.exports == null) return;
       const exports = configuration.exports;
       mappings = typeof exports === "object" && !Array.isArray(exports) && Object.keys(exports).some((key) => key.startsWith(".")) ? exports : { ".": exports };
       specifier = `.${specifier.slice(selfPackageName.length)}`;
