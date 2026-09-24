@@ -11,6 +11,7 @@ import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js"
 import { createMailRuntime } from "./mail-runtime.js";
 import { ensureNotificationIntentStorage, notificationIntentStorageExists, startNotificationIntentWorker, stopNotificationIntentWorker } from "./notification-intent-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
+import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
 import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, EMAIL_SIGN_IN_FAILURE_LIMIT, EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES, EMAIL_SIGN_IN_THROTTLE_WINDOW_MS, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, isReservedAuthUserId, mailNotConfiguredError, normalizeEmailCredentials, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
 // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
@@ -5995,9 +5996,13 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         subscription.generation = generation;
         try {
             const database = getDatabase();
-            const result = await runQuery(database, client.session.auth, subscription.name, subscription.args, {
+            const readTables = new Set();
+            const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
                 sessionToken: client.session.token,
-            });
+            }));
+            // A failed run may not have read what a successful one would, so it re-runs on every refresh.
+            if (subscription.generation === generation)
+                subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
             const data = subscription.style === "direct"
                 ? (result.data ?? result.rows)
                 : { rows: result.data ?? result.rows };
@@ -6014,6 +6019,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         catch (error) {
             if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation)
                 return;
+            subscription.readTables = null;
             try {
                 onError(error);
             }
@@ -6021,8 +6027,15 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         }
     }
     function refreshQueries() {
+        // Scope the refresh to subscriptions that read a table written since the last refresh. An
+        // empty window means an earlier refresh already covered those writes. Adapters that do not
+        // report their statements keep refreshing every subscription (#105).
+        const dirty = takeLiveQueryDirtyTables();
+        const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
         for (const subscribedClient of clients) {
             for (const subscription of subscribedClient.subscriptions.values()) {
+                if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty))
+                    continue;
                 void sendQueryResult(subscribedClient, subscription, (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error));
             }
         }
@@ -6314,6 +6327,7 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
             if (args.length > 0)
                 return { rows: null, data: null, error: invalidQueryArgumentsError() };
             const cacheKey = `${table.name}:${context.auth.userId}`;
+            recordLiveQueryTableRead(table.name);
             if (!database.rowCache.has(cacheKey)) {
                 const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
                 const ownerScoped = table.fields.some((field) => field.name === "ownerId");

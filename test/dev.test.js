@@ -13399,6 +13399,118 @@ export default capsule({
   });
 });
 
+test("sporades dev refreshes only subscriptions that read a table a mutation or Job wrote", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "scoped-refresh-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "scoped-refresh-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, job, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "scoped-refresh-island",
+
+  schema: {
+    todos: table({ text: String(), ownerId: String() }),
+    notes: table({ text: String(), ownerId: String() }),
+    audits: table({ text: String() }),
+  },
+
+  queries: {
+    todos: query((ctx) => ctx.db.todos.where("ownerId", ctx.auth.userId).orderBy("createdAt", "asc").all()),
+    notes: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).orderBy("createdAt", "asc").all()),
+  },
+
+  mutations: {
+    addTodo: mutation((ctx, text: string) => ctx.db.todos.insert({ text, ownerId: ctx.auth.userId })),
+    addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text, ownerId: ctx.auth.userId })),
+    audit: mutation((ctx, text: string) => ctx.db.audits.insert({ text })),
+    queueNote: mutation(async (ctx, text: string) => {
+      await ctx.jobs.enqueue("writeNote", { text, ownerId: ctx.auth.userId });
+      return { queued: true };
+    }),
+  },
+
+  jobs: {
+    writeNote: job((ctx, payload: { text: string; ownerId: string }) => {
+      ctx.db.notes.insert({ text: payload.text, ownerId: payload.ownerId });
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+      socket.send(JSON.stringify({ id: "notes", type: "query.subscribe", query: "notes" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      // Returns the ids of messages that arrive before a sentinel request's reply.
+      const drainUntil = async (label) => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        socket.send(JSON.stringify({ id: label, type: "auth.get" }));
+        const seen = [];
+        for (let message = await readSocketMessage(socket); message.id !== label; message = await readSocketMessage(socket)) seen.push(message.id);
+        return seen;
+      };
+      const expectOnlyNext = async (label) => {
+        assert.deepEqual(await drainUntil(label), [], `${label}: no other subscription was refreshed`);
+      };
+
+      // Startup schema statements are unidentified writes, which may make one refresh a full one.
+      socket.send(JSON.stringify({ id: "warm", type: "mutation.run", mutation: "audit", args: ["warm-up"] }));
+      assert.equal((await readSocketMessage(socket)).id, "warm");
+      await drainUntil("after-warm");
+
+      socket.send(JSON.stringify({ id: "add-todo", type: "mutation.run", mutation: "addTodo", args: ["ship"] }));
+      assert.equal((await readSocketMessage(socket)).id, "add-todo");
+      const todoRefresh = await readSocketMessage(socket);
+      assert.equal(todoRefresh.id, "todos");
+      assert.deepEqual(todoRefresh.data.map((todo) => todo.text), ["ship"]);
+      await expectOnlyNext("after-todo");
+
+      socket.send(JSON.stringify({ id: "unrelated", type: "mutation.run", mutation: "audit", args: ["unrelated"] }));
+      assert.equal((await readSocketMessage(socket)).id, "unrelated");
+      await expectOnlyNext("after-unrelated");
+
+      // The mutation itself writes only the Job table; the Job's completion refreshes notes alone.
+      socket.send(JSON.stringify({ id: "queue-note", type: "mutation.run", mutation: "queueNote", args: ["from job"] }));
+      assert.equal((await readSocketMessage(socket)).id, "queue-note");
+      const noteRefresh = await readSocketMessage(socket);
+      assert.equal(noteRefresh.id, "notes");
+      assert.deepEqual(noteRefresh.data.map((note) => note.text), ["from job"]);
+      await expectOnlyNext("after-job");
+
+      socket.send(JSON.stringify({ id: "add-note", type: "mutation.run", mutation: "addNote", args: ["direct"] }));
+      assert.equal((await readSocketMessage(socket)).id, "add-note");
+      const directNoteRefresh = await readSocketMessage(socket);
+      assert.equal(directNoteRefresh.id, "notes");
+      assert.deepEqual(directNoteRefresh.data.map((note) => note.text), ["from job", "direct"]);
+      await expectOnlyNext("after-note");
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev processes same-socket WebSocket messages in order around async mutations", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "queued-mutation-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

@@ -26881,6 +26881,17 @@ function logPayloadMaxBytes(config = {}) {
   return config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes ?? 4096;
 }
 
+// src/live-query-invalidation.ts
+var { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
+var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
+var liveQueryReads = new AsyncLocalStorage();
+var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
+var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
+var writeTablePattern = new RegExp(
+  String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
+  "i"
+);
+
 // src/auth-admission.ts
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 var ACCESS_KEY_SCOPE_LIMIT = 1024;

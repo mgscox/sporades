@@ -1,5 +1,6 @@
 import { acquirePostgresResourceBootstrapLock, resourceError } from "./resource-runtime.js";
 import { notificationIntentSchemas } from "./notification-intent-runtime.js";
+import { liveQueryTablesTracked, recordLiveQueryStatementRead, recordLiveQueryStatementWrite } from "./live-query-invalidation.js";
 // The Capsule runtime's Database adapters and dialect: the three engines, the seam they answer, the
 // one shared method set every behavioural call goes through, and the app-schema DDL that method set
 // emits. Batch 9 of the migration ADR-0041 records, and the last domain to leave
@@ -1791,18 +1792,28 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     };
     return {
     exec(sql: string) {
-      return run(() => useConnection(() => connection.exec(sql)));
+      return run(() => useConnection(() => {
+        const result = connection.exec(sql);
+        recordLiveQueryStatementWrite(sql);
+        return result;
+      }));
     },
     prepare(sql: string) {
       return {
         all(...params: any[]) {
+          recordLiveQueryStatementRead(sql);
           return run(() => useConnection(() => connection.prepare(sql).all(...params)));
         },
         get(...params: any[]) {
+          recordLiveQueryStatementRead(sql);
           return run(() => useConnection(() => connection.prepare(sql).get(...params)));
         },
         run(...params: string[]) {
-          return run(() => useConnection(() => connection.prepare(sql).run(...params)));
+          return run(() => useConnection(() => {
+            const result = connection.prepare(sql).run(...params);
+            recordLiveQueryStatementWrite(sql, result);
+            return result;
+          }));
         },
         columns() {
           return run(() => useConnection(() => connection.prepare(sql).columns()));
@@ -1818,6 +1829,9 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "sqlite",
+    // Every statement on the shared and dedicated connections reports its tables, so live
+    // query refreshes can be scoped to the tables a write changed.
+    [liveQueryTablesTracked]: true,
     // Outer resources must be able to open one independent durable SQLite
     // connection. This runtime-owned marker propagates through transaction
     // adapters; callers cannot opt an in-memory or read-only adapter in.
@@ -1836,8 +1850,24 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         let begun = false;
         let commitIssued = false;
         const operations = {
-          exec: (sql: string) => dedicated.exec(sql),
-          prepare: (sql: string) => dedicated.prepare(sql),
+          exec: (sql: string) => {
+            const result = dedicated.exec(sql);
+            recordLiveQueryStatementWrite(sql);
+            return result;
+          },
+          prepare: (sql: string) => {
+            const statement = dedicated.prepare(sql);
+            return Object.assign(Object.create(statement), {
+              all: (...params: any[]) => { recordLiveQueryStatementRead(sql); return statement.all(...params); },
+              get: (...params: any[]) => { recordLiveQueryStatementRead(sql); return statement.get(...params); },
+              run: (...params: any[]) => {
+                const result = statement.run(...params);
+                recordLiveQueryStatementWrite(sql, result);
+                return result;
+              },
+              columns: () => statement.columns(),
+            });
+          },
         };
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
         try {

@@ -1,5 +1,6 @@
 import { acquirePostgresResourceBootstrapLock, resourceError } from "./resource-runtime.js";
 import { notificationIntentSchemas } from "./notification-intent-runtime.js";
+import { liveQueryTablesTracked, recordLiveQueryStatementRead, recordLiveQueryStatementWrite } from "./live-query-invalidation.js";
 // The Capsule runtime's Database adapters and dialect: the three engines, the seam they answer, the
 // one shared method set every behavioural call goes through, and the app-schema DDL that method set
 // emits. Batch 9 of the migration ADR-0041 records, and the last domain to leave
@@ -1382,18 +1383,28 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         };
         return {
             exec(sql) {
-                return run(() => useConnection(() => connection.exec(sql)));
+                return run(() => useConnection(() => {
+                    const result = connection.exec(sql);
+                    recordLiveQueryStatementWrite(sql);
+                    return result;
+                }));
             },
             prepare(sql) {
                 return {
                     all(...params) {
+                        recordLiveQueryStatementRead(sql);
                         return run(() => useConnection(() => connection.prepare(sql).all(...params)));
                     },
                     get(...params) {
+                        recordLiveQueryStatementRead(sql);
                         return run(() => useConnection(() => connection.prepare(sql).get(...params)));
                     },
                     run(...params) {
-                        return run(() => useConnection(() => connection.prepare(sql).run(...params)));
+                        return run(() => useConnection(() => {
+                            const result = connection.prepare(sql).run(...params);
+                            recordLiveQueryStatementWrite(sql, result);
+                            return result;
+                        }));
                     },
                     columns() {
                         return run(() => useConnection(() => connection.prepare(sql).columns()));
@@ -1408,6 +1419,9 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         ...createSharedDatabaseAdapterMethods(dialect),
         ...createOperations(connectionGate.runOperation),
         engine: "sqlite",
+        // Every statement on the shared and dedicated connections reports its tables, so live
+        // query refreshes can be scoped to the tables a write changed.
+        [liveQueryTablesTracked]: true,
         // Outer resources must be able to open one independent durable SQLite
         // connection. This runtime-owned marker propagates through transaction
         // adapters; callers cannot opt an in-memory or read-only adapter in.
@@ -1432,8 +1446,24 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                 let begun = false;
                 let commitIssued = false;
                 const operations = {
-                    exec: (sql) => dedicated.exec(sql),
-                    prepare: (sql) => dedicated.prepare(sql),
+                    exec: (sql) => {
+                        const result = dedicated.exec(sql);
+                        recordLiveQueryStatementWrite(sql);
+                        return result;
+                    },
+                    prepare: (sql) => {
+                        const statement = dedicated.prepare(sql);
+                        return Object.assign(Object.create(statement), {
+                            all: (...params) => { recordLiveQueryStatementRead(sql); return statement.all(...params); },
+                            get: (...params) => { recordLiveQueryStatementRead(sql); return statement.get(...params); },
+                            run: (...params) => {
+                                const result = statement.run(...params);
+                                recordLiveQueryStatementWrite(sql, result);
+                                return result;
+                            },
+                            columns: () => statement.columns(),
+                        });
+                    },
                 };
                 const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
                 try {

@@ -91674,7 +91674,26 @@ var promiseHookStop;
 var compositionRootCandidates = [];
 var thenableWrapperRoots = /* @__PURE__ */ new WeakSet();
 var promiseCombinatorKinds = /* @__PURE__ */ new WeakMap();
+var promiseCombinatorNames = /* @__PURE__ */ new Set(["all", "allSettled", "any", "race"]);
 var compositionRootClearQueued = false;
+function promiseCombinatorOnStack() {
+  const prepareStackTrace = Error.prepareStackTrace;
+  let callSites;
+  Error.prepareStackTrace = (_error, sites) => sites;
+  try {
+    callSites = new Error().stack;
+  } finally {
+    Error.prepareStackTrace = prepareStackTrace;
+  }
+  if (!Array.isArray(callSites)) return void 0;
+  for (const site of callSites) {
+    if (site.isAsync?.()) continue;
+    const name2 = site.getFunctionName();
+    const type = site.getTypeName();
+    if (name2 && promiseCombinatorNames.has(name2) && (type === "Promise" || type === "Function")) return name2;
+  }
+  return void 0;
+}
 function retainCompositionRootCandidate(promise) {
   compositionRootCandidates.push(promise);
   if (compositionRootClearQueued) return;
@@ -91690,11 +91709,11 @@ function installPromiseHook() {
     init(promise, parent) {
       if (parent) promiseParents.set(promise, parent);
       else retainCompositionRootCandidate(promise);
-      const match = parent && (new Error().stack ?? "").match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
-      if (parent && match) {
+      const combinator = parent ? promiseCombinatorOnStack() : void 0;
+      if (parent && combinator) {
         const root = [...compositionRootCandidates].reverse().find((candidate) => !thenableWrapperRoots.has(candidate));
         if (root) {
-          promiseCombinatorKinds.set(root, match[1]);
+          promiseCombinatorKinds.set(root, combinator);
           const inputs = promiseCombinatorInputs.get(root) ?? /* @__PURE__ */ new Set();
           inputs.add(parent);
           promiseCombinatorInputs.set(root, inputs);
@@ -91769,25 +91788,23 @@ function promiseCompositionRootCandidate() {
   const wrapper = compositionRootCandidates.at(-1);
   if (!wrapper) return void 0;
   thenableWrapperRoots.add(wrapper);
-  const stack = new Error().stack ?? "";
-  const match = stack.match(/at (?:Promise|Function)\.(all|allSettled|any|race)\b/);
-  if (!match) return void 0;
+  const combinator = promiseCombinatorOnStack();
+  if (!combinator) return void 0;
   for (let index = compositionRootCandidates.length - 2; index >= 0; index -= 1) {
     const candidate = compositionRootCandidates[index];
     if (!thenableWrapperRoots.has(candidate)) {
-      promiseCombinatorKinds.set(candidate, match[1]);
+      promiseCombinatorKinds.set(candidate, combinator);
       return candidate;
     }
   }
-  promiseCombinatorKinds.set(wrapper, match[1]);
+  promiseCombinatorKinds.set(wrapper, combinator);
   return wrapper;
 }
 function promiseCombinatorKind(promise) {
   return promiseCombinatorKinds.get(promise);
 }
 function enclosingPromiseCombinatorRoot() {
-  const stack = new Error().stack ?? "";
-  if (!/at (?:Promise|Function)\.(?:all|allSettled|any|race)\b/.test(stack)) return void 0;
+  if (!promiseCombinatorOnStack()) return void 0;
   for (let index = compositionRootCandidates.length - 1; index >= 0; index -= 1) {
     const candidate = compositionRootCandidates[index];
     if (!settledPromises.has(candidate)) return candidate;
@@ -114132,6 +114149,53 @@ function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
   return endpoints;
 }
 
+// src/live-query-invalidation.ts
+var { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
+var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
+var LIVE_QUERY_ANY_TABLE = "*";
+var liveQueryReads = new AsyncLocalStorage();
+var dirtyTables = /* @__PURE__ */ new Set();
+var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
+var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
+var writeTablePattern = new RegExp(
+  String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
+  "i"
+);
+var nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT)\b/i;
+function trackLiveQueryReads(tables, run2) {
+  return liveQueryReads.run(tables, run2);
+}
+function recordLiveQueryStatementRead(sql2) {
+  const tables = liveQueryReads.getStore();
+  if (!tables) return;
+  let identified = false;
+  for (const match of String(sql2).matchAll(readTablePattern)) {
+    tables.add(match[1] ?? match[2]);
+    identified = true;
+  }
+  if (!identified) tables.add(LIVE_QUERY_ANY_TABLE);
+}
+function recordLiveQueryTableRead(table) {
+  liveQueryReads.getStore()?.add(table);
+}
+function recordLiveQueryStatementWrite(sql2, result) {
+  if (result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
+  const text2 = String(sql2);
+  if (nonWritingStatementPattern.test(text2)) return;
+  const match = writeTablePattern.exec(text2);
+  dirtyTables.add(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE);
+}
+function takeLiveQueryDirtyTables() {
+  const taken = dirtyTables;
+  dirtyTables = /* @__PURE__ */ new Set();
+  return taken;
+}
+function liveQueryNeedsRefresh(readTables, dirty) {
+  if (!readTables || dirty.has(LIVE_QUERY_ANY_TABLE)) return true;
+  for (const table of readTables) if (dirty.has(table)) return true;
+  return false;
+}
+
 // src/service-users-runtime.ts
 var SERVICE_USER_DISPLAY_NAME_BYTES = 160;
 function serviceUserError(code, message, hint) {
@@ -115097,8 +115161,8 @@ function chainSchemaOperation(previous, operation) {
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");
 function createConnectionTransactionGate() {
-  const AsyncLocalStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
-  const transactionOwnership = new AsyncLocalStorage();
+  const AsyncLocalStorage2 = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
+  const transactionOwnership = new AsyncLocalStorage2();
   const transactionOwner = Object.freeze({});
   let transactionTail = Promise.resolve();
   let transactionActive = false;
@@ -116449,18 +116513,28 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     };
     return {
       exec(sql2) {
-        return run2(() => useConnection(() => connection.exec(sql2)));
+        return run2(() => useConnection(() => {
+          const result = connection.exec(sql2);
+          recordLiveQueryStatementWrite(sql2);
+          return result;
+        }));
       },
       prepare(sql2) {
         return {
           all(...params) {
+            recordLiveQueryStatementRead(sql2);
             return run2(() => useConnection(() => connection.prepare(sql2).all(...params)));
           },
           get(...params) {
+            recordLiveQueryStatementRead(sql2);
             return run2(() => useConnection(() => connection.prepare(sql2).get(...params)));
           },
           run(...params) {
-            return run2(() => useConnection(() => connection.prepare(sql2).run(...params)));
+            return run2(() => useConnection(() => {
+              const result = connection.prepare(sql2).run(...params);
+              recordLiveQueryStatementWrite(sql2, result);
+              return result;
+            }));
           },
           columns() {
             return run2(() => useConnection(() => connection.prepare(sql2).columns()));
@@ -116473,6 +116547,9 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "sqlite",
+    // Every statement on the shared and dedicated connections reports its tables, so live
+    // query refreshes can be scoped to the tables a write changed.
+    [liveQueryTablesTracked]: true,
     // Outer resources must be able to open one independent durable SQLite
     // connection. This runtime-owned marker propagates through transaction
     // adapters; callers cannot opt an in-memory or read-only adapter in.
@@ -116492,8 +116569,30 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         let begun = false;
         let commitIssued = false;
         const operations = {
-          exec: (sql2) => dedicated.exec(sql2),
-          prepare: (sql2) => dedicated.prepare(sql2)
+          exec: (sql2) => {
+            const result = dedicated.exec(sql2);
+            recordLiveQueryStatementWrite(sql2);
+            return result;
+          },
+          prepare: (sql2) => {
+            const statement = dedicated.prepare(sql2);
+            return Object.assign(Object.create(statement), {
+              all: (...params) => {
+                recordLiveQueryStatementRead(sql2);
+                return statement.all(...params);
+              },
+              get: (...params) => {
+                recordLiveQueryStatementRead(sql2);
+                return statement.get(...params);
+              },
+              run: (...params) => {
+                const result = statement.run(...params);
+                recordLiveQueryStatementWrite(sql2, result);
+                return result;
+              },
+              columns: () => statement.columns()
+            });
+          }
         };
         const transaction = createTransactionScopedAdapter(adapter, operations, adapter, "transaction");
         try {
@@ -123214,9 +123313,11 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     subscription.generation = generation;
     try {
       const database = getDatabase();
-      const result = await runQuery(database, client.session.auth, subscription.name, subscription.args, {
+      const readTables = /* @__PURE__ */ new Set();
+      const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
         sessionToken: client.session.token
-      });
+      }));
+      if (subscription.generation === generation) subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
       const data2 = subscription.style === "direct" ? result.data ?? result.rows : { rows: result.data ?? result.rows };
       if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
       sendJson(client, {
@@ -123228,6 +123329,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       });
     } catch (error) {
       if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
+      subscription.readTables = null;
       try {
         onError(error);
       } catch {
@@ -123235,8 +123337,11 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     }
   }
   function refreshQueries() {
+    const dirty = takeLiveQueryDirtyTables();
+    const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
     for (const subscribedClient of clients) {
       for (const subscription of subscribedClient.subscriptions.values()) {
+        if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty)) continue;
         void sendQueryResult(
           subscribedClient,
           subscription,
@@ -123515,6 +123620,7 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
       }
       if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
       const cacheKey = `${table.name}:${context.auth.userId}`;
+      recordLiveQueryTableRead(table.name);
       if (!database.rowCache.has(cacheKey)) {
         const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
         const ownerScoped = table.fields.some((field) => field.name === "ownerId");
