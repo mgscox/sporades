@@ -1,26 +1,17 @@
 # Changes
 
-## Unreleased - 2026-09-23
+## Unreleased - 2026-09-24
 
-Changes since v0.9.28.
+Changes since v0.9.29.
 
 ### 🐛 Bug Fixes
 
-- Evict only on an unanswered ping and document the heartbeat (66f964e0).
-- Ping idle WebSockets so proxy idle timeouts do not strand pages (7ee9c7f8).
-- Start no freshclam after retained-updater cleanup once shutdown began (0185fc01).
-- Close ClamAV refresh shutdown race and recover crashed clamd (6c23b686).
-- Start degraded on stale ClamAV signatures and allow 26h freshness (79dd3ece).
-- Own ClamAV signature refresh in the Capsule runtime (17193be4).
-
-### 🧪 Tests
-
-- Buffer raw WebSocket frames across TCP chunks (e07288dd).
-- Describe the ClamAV freshness gate without a fixed age (b180ac1a).
+- Refresh only live queries that read a written table (6942754d).
+- Detect Promise combinators from call sites, not formatted stacks (a55a4fd3).
 
 ### 📦 Packaging
 
-- Regenerate runtime artifacts for the WebSocket heartbeat (d0b1193b).
+- Regenerate runtime artifacts for scoped live query refresh (14235222).
 
 ## v0.9.11 - 2026-09-02
 
@@ -109,6 +100,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
