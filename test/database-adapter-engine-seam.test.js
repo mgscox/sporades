@@ -489,6 +489,9 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     "team-billing-subscription-semantics.js",
     // HTTP trace lifecycle and bounded attributes, with no SQL or adapter semantics.
     "runtime-telemetry.js",
+    // Shared HTTP AsyncLocalStorage identity and its runtime-owned detachment seam;
+    // no SQL walker, dialect, emitted statement, or normalization behavior.
+    "runtime-request-context.js",
   ]);
 
   const carried = runtimeGraphModules();
