@@ -2,11 +2,9 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { parseEnvironment } from './setup.mjs';
 
-const env = new Map((await readFile(new URL('./.env', import.meta.url), 'utf8')).split(/\r?\n/).flatMap(line => {
-  const match = line.match(/^([A-Za-z_][A-Za-z_0-9]*)=(.*)$/);
-  return match ? [[match[1], match[2]]] : [];
-}));
+const env = parseEnvironment(await readFile(new URL('./.env', import.meta.url), 'utf8'));
 const origin = `${env.get('TRACE_TLS_MODE') === 'tls' ? 'https' : 'http'}://127.0.0.1:${env.get('TRACE_PORT') ?? 8443}`;
 const authorization = `Basic ${Buffer.from(`${env.get('TRACE_UI_USER')}:${env.get('TRACE_UI_PASSWORD')}`).toString('base64')}`;
 const traceId = process.argv[3] ?? randomBytes(16).toString('hex');

@@ -15,6 +15,7 @@ services:
       dockerfile: Dockerfile.gateway
     restart: unless-stopped
     read_only: true
+    user: "${TRACE_RUN_UID:?run setup.mjs}:${TRACE_RUN_GID:?run setup.mjs}"
     ports:
       - "${TRACE_BIND:-127.0.0.1}:${TRACE_PORT:-8443}:8443"
     environment:
@@ -22,11 +23,9 @@ services:
       TRACE_BIND: ${TRACE_BIND:-127.0.0.1}
       TRACE_CERT_FILE: ${TRACE_CERT_FILE:-}
       TRACE_KEY_FILE: ${TRACE_KEY_FILE:-}
-      TRACE_INGEST_TOKEN: ${TRACE_INGEST_TOKEN:?run setup.mjs}
-      TRACE_UI_USER: ${TRACE_UI_USER:?run setup.mjs}
-      TRACE_UI_PASSWORD: ${TRACE_UI_PASSWORD:?run setup.mjs}
     volumes:
       - ./certs:/certs:ro
+      - ./.credentials.json:/run/secrets/trace-credentials.json:ro
     depends_on:
       - collector
       - jaeger

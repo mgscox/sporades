@@ -1,23 +1,39 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const owned = ['TRACE_INGEST_TOKEN', 'TRACE_UI_PASSWORD'];
 const defaults = { TRACE_TLS_MODE: 'tls', TRACE_BIND: '127.0.0.1', TRACE_PORT: '8443', TRACE_UI_USER: 'operator', TRACE_RETENTION: '168h' };
+
+export function parseEnvironment(source) {
+  const entries = new Map();
+  for (const line of source.split(/\r?\n/)) {
+    const match = line.match(/^([A-Za-z_][A-Za-z_0-9]*)=(.*)$/);
+    if (!match) continue;
+    const value = match[2];
+    if (value.startsWith("'")) {
+      const close = value.match(/(?<!\\)'(?:\s+#.*)?$/);
+      if (!close) throw new Error(`Invalid quoted value for ${match[1]}`);
+      entries.set(match[1], value.slice(1, close.index).replaceAll("\\'", "'"));
+    } else if (value.startsWith('"')) {
+      const close = value.match(/(?<!\\)"(?:\s+#.*)?$/);
+      if (!close) throw new Error(`Invalid quoted value for ${match[1]}`);
+      try { entries.set(match[1], JSON.parse(value.slice(0, close.index + 1))); }
+      catch { throw new Error(`Invalid quoted value for ${match[1]}`); }
+    } else entries.set(match[1], value);
+  }
+  return entries;
+}
 
 export async function setupEnvironment(path) {
   let source;
   try { source = await readFile(path, 'utf8'); }
   catch (error) { if (error.code !== 'ENOENT') throw error; source = ''; }
-  const entries = new Map();
-  for (const line of source.split(/\r?\n/)) {
-    const match = line.match(/^([A-Za-z_][A-Za-z_0-9]*)=(.*)$/);
-    if (match) entries.set(match[1], match[2]);
-  }
+  const entries = parseEnvironment(source);
   const additions = [];
-  for (const [key, value] of Object.entries(defaults)) if (!entries.has(key)) additions.push(`${key}=${value}`);
-  for (const key of owned) if (!entries.has(key)) additions.push(`${key}=${randomBytes(32).toString('hex')}`);
+  for (const [key, value] of Object.entries(defaults)) if (!entries.has(key)) { additions.push(`${key}=${value}`); entries.set(key, value); }
+  for (const key of owned) if (!entries.has(key)) { const value = randomBytes(32).toString('hex'); additions.push(`${key}=${value}`); entries.set(key, value); }
   const mode = entries.get('TRACE_TLS_MODE') ?? defaults.TRACE_TLS_MODE;
   const bind = entries.get('TRACE_BIND') ?? defaults.TRACE_BIND;
   if (!['tls', 'proxy'].includes(mode)) throw new Error('TRACE_TLS_MODE must be tls or proxy');
@@ -28,6 +44,19 @@ export async function setupEnvironment(path) {
     await writeFile(path, `${source}${source && !source.endsWith('\n') ? '\n' : ''}${additions.join('\n')}\n`, { mode: 0o600 });
   }
   await chmod(path, 0o600);
+  const credentialsPath = join(dirname(path), '.credentials.json');
+  await writeFile(credentialsPath, `${JSON.stringify({
+    ingestToken: entries.get('TRACE_INGEST_TOKEN'), uiUser: entries.get('TRACE_UI_USER'),
+    uiPassword: entries.get('TRACE_UI_PASSWORD'),
+  })}\n`, { mode: 0o600 });
+  await chmod(credentialsPath, 0o600);
+  const composeKeys = ['TRACE_TLS_MODE', 'TRACE_BIND', 'TRACE_PORT', 'TRACE_CERT_FILE', 'TRACE_KEY_FILE', 'TRACE_RETENTION'];
+  const composePath = join(dirname(path), '.compose.env');
+  const quote = value => `'${String(value ?? '').replaceAll("'", "\\'")}'`;
+  const runUser = process.platform === 'darwin' ? 1000 : process.getuid();
+  const runGroup = process.platform === 'darwin' ? 1000 : process.getgid();
+  await writeFile(composePath, `${composeKeys.map(key => `${key}=${quote(entries.get(key))}`).join('\n')}\nTRACE_RUN_UID=${runUser}\nTRACE_RUN_GID=${runGroup}\n`, { mode: 0o600 });
+  await chmod(composePath, 0o600);
   return { missing };
 }
 

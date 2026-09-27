@@ -31,10 +31,13 @@ async function pathReady(config) {
 }
 
 function proxyUi(req, res, target) {
-  const url = new URL(req.url, target);
-  const headers = { ...req.headers, host: url.host };
-  delete headers.authorization;
-  const upstream = httpRequest(url, { method: req.method, headers, timeout: 3000 }, response => {
+  if (!req.url.startsWith('/') || req.url.startsWith('//')) { res.writeHead(400); res.end(); return; }
+  const url = new URL(target);
+  const headers = { host: url.host };
+  for (const name of ['accept', 'accept-encoding', 'content-type', 'content-length']) {
+    if (req.headers[name]) headers[name] = req.headers[name];
+  }
+  const upstream = httpRequest({ protocol: url.protocol, hostname: url.hostname, port: url.port, path: req.url, method: req.method, headers, timeout: 3000 }, response => {
     res.writeHead(response.statusCode, response.headers);
     response.pipe(res);
   });
@@ -78,8 +81,10 @@ export function createGateway(config, tls) {
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
-  const required = ['TRACE_INGEST_TOKEN', 'TRACE_UI_USER', 'TRACE_UI_PASSWORD', 'TRACE_TLS_MODE'];
+  const required = ['TRACE_TLS_MODE'];
   for (const key of required) if (!process.env[key]) throw new Error(`Missing ${key}`);
+  const credentials = JSON.parse(readFileSync('/run/secrets/trace-credentials.json', 'utf8'));
+  for (const key of ['ingestToken', 'uiUser', 'uiPassword']) if (!credentials[key]) throw new Error(`Missing ${key}`);
   if (process.env.TRACE_TLS_MODE === 'proxy' && !['127.0.0.1', '::1'].includes(process.env.TRACE_BIND)) {
     throw new Error('TRACE_BIND must be loopback in proxy mode');
   }
@@ -88,8 +93,7 @@ if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   } : undefined;
   if (!tls && process.env.TRACE_TLS_MODE !== 'proxy') throw new Error('Invalid TRACE_TLS_MODE');
   const gateway = createGateway({
-    ingestToken: process.env.TRACE_INGEST_TOKEN, uiUser: process.env.TRACE_UI_USER,
-    uiPassword: process.env.TRACE_UI_PASSWORD, collectorUrl: 'http://collector:4318',
+    ...credentials, collectorUrl: 'http://collector:4318',
     jaegerUrl: 'http://jaeger:16686',
   }, tls);
   gateway.listen(8443, '0.0.0.0');
