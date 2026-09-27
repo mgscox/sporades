@@ -99,3 +99,48 @@ test('a valid but unreachable collector does not hold up requests or shutdown', 
     assert(Date.now() - start < 2500, 'shutdown should have a bounded deadline');
   } finally { app.close(); }
 });
+
+test('export failure and recovery report bounded reason codes without exposing collector details', async () => {
+  const diagnostics = [];
+  let receiverStatus = 401;
+  const collector = createServer(async (request, response) => {
+    for await (const _ of request) {}
+    response.writeHead(receiverStatus).end('private receiver detail');
+  }).listen(0, '127.0.0.1');
+  await once(collector, 'listening');
+  const telemetry = createHttpRequestTelemetry({
+    endpoint: `http://127.0.0.1:${collector.address().port}`,
+    tls: { mode: 'loopback' }, serviceName: 'diagnostics-test',
+  }, (diagnostic) => diagnostics.push(diagnostic));
+  const app = createServer((request, response) => telemetry.run(request, response, [{ method: 'GET', path: '/ok' }], () => response.writeHead(200).end('ok'))).listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  const drive = async () => { assert.equal((await fetch(`http://127.0.0.1:${app.address().port}/ok?private=secret`)).status, 200); await new Promise((resolve) => setTimeout(resolve, 800)); };
+  try {
+    await drive();
+    await drive();
+    assert.deepEqual(diagnostics, [{ event: 'telemetry.export.failed', reason: 'AUTH_REJECTED' }]);
+    receiverStatus = 200;
+    await drive();
+    assert.deepEqual(diagnostics.at(-1), { event: 'telemetry.export.recovered' });
+    await new Promise((resolve) => collector.close(resolve));
+    await drive();
+    assert.deepEqual(diagnostics.at(-1), { event: 'telemetry.export.failed', reason: 'DESTINATION_UNAVAILABLE' });
+    assert.doesNotMatch(JSON.stringify(diagnostics), /secret|private receiver|127\.0\.0\.1/);
+  } finally { await telemetry.shutdown(); app.close(); collector.close(); }
+});
+
+test('a failing diagnostic sink cannot interrupt HTTP service or exporter shutdown', async () => {
+  const collector = createServer(async (request, response) => {
+    for await (const _ of request) {}
+    response.writeHead(401).end();
+  }).listen(0, '127.0.0.1');
+  await once(collector, 'listening');
+  const telemetry = createHttpRequestTelemetry({ endpoint: `http://127.0.0.1:${collector.address().port}`, tls: { mode: 'loopback' }, serviceName: 'sink-failure-test' }, () => Promise.reject(new Error('private diagnostic failure')));
+  const app = createServer((request, response) => telemetry.run(request, response, [], () => response.writeHead(200).end('ok'))).listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  try {
+    assert.equal((await fetch(`http://127.0.0.1:${app.address().port}/ok`)).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    await telemetry.shutdown();
+  } finally { app.close(); collector.close(); }
+});

@@ -128,7 +128,13 @@ database.log.emit({
 });
 const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
-const telemetry = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry);
+const telemetry = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry, (diagnostic) => database.log.emit({
+    category: "platform",
+    event: diagnostic.event,
+    level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
+    message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
+    data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
+}));
 const server = createServer(async (request, response) => telemetry.run(request, response, database.endpoints, async () => {
     try {
         if (prepareHttpSecurity(database, request, response)) {

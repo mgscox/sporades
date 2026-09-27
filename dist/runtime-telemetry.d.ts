@@ -10,6 +10,12 @@ export type RuntimeTelemetryConfig = {
     serviceName: string;
     samplingRatio?: number;
 };
+export type TelemetryExportDiagnostic = {
+    event: "telemetry.export.failed";
+    reason: "AUTH_REJECTED" | "DESTINATION_UNAVAILABLE" | "TLS_FAILED" | "EXPORT_FAILED";
+} | {
+    event: "telemetry.export.recovered";
+};
 type RequestLike = Pick<IncomingMessage, "method" | "url">;
 type EndpointLike = {
     method: string;
@@ -19,7 +25,7 @@ type EndpointLike = {
 export declare function resolveTelemetryRoute(request: RequestLike, endpoints: readonly EndpointLike[]): string;
 /** Internal seam for later operation spans; no Capsule-facing API is exported. */
 export declare function activeRuntimeRequestSpan(): Span | undefined;
-export declare function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null): {
+export declare function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>): {
     run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => unknown;
     shutdown: () => Promise<void>;
 };

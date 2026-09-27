@@ -58,6 +58,16 @@ W3C `traceparent` can establish parentage; remote sampling flags do not override
 the local sampling policy. This slice covers Dev and local Container HTTP traces;
 Host transport and additional signals are separate work.
 
+When a selected exporter fails, the existing platform log records
+`telemetry.export.failed` with one bounded reason: `AUTH_REJECTED`,
+`DESTINATION_UNAVAILABLE`, `TLS_FAILED`, or `EXPORT_FAILED`. Repeated failures
+are limited to one event per reason per minute; the next successful export
+records `telemetry.export.recovered`. These events include no destination URL,
+credential, response body, or exception text. An authentication rejection or
+unreachable collector does not block Capsule requests. Check the Container's
+platform log and monitoring stack readiness/storage separately when tracing is
+missing.
+
 ## Create a Capsule
 
 ```sh

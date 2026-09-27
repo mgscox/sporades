@@ -2017,8 +2017,15 @@ async function startDevSession(options) {
         runtimeProbeToken: inspectionToken,
     });
     let telemetry;
+    const emitTelemetryDiagnostic = (diagnostic) => runtime.database.log.emit({
+        category: "platform",
+        event: diagnostic.event,
+        level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
+        message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
+        data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
+    });
     try {
-        telemetry = createHttpRequestTelemetry(telemetryConfig);
+        telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
     }
     catch (error) {
         await runtime.shutdown();
@@ -2349,7 +2356,7 @@ async function startDevSession(options) {
             rollbackLegacy = await rebuild.publishLegacy();
             if (affectsServerRuntime) {
                 const telemetryChanged = JSON.stringify(nextTelemetryConfig) !== JSON.stringify(telemetryConfig);
-                const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig) : null;
+                const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig, emitTelemetryDiagnostic) : null;
                 await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session)).catch(async (error) => {
                     await nextTelemetry?.shutdown();
                     throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });

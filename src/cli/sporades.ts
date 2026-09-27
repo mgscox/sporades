@@ -2291,7 +2291,14 @@ async function startDevSession(options: LooseRecord) {
     runtimeProbeToken: inspectionToken,
   });
   let telemetry: ReturnType<typeof createHttpRequestTelemetry>;
-  try { telemetry = createHttpRequestTelemetry(telemetryConfig); }
+  const emitTelemetryDiagnostic = (diagnostic: { event: "telemetry.export.failed"; reason: string } | { event: "telemetry.export.recovered" }) => runtime.database.log.emit({
+    category: "platform",
+    event: diagnostic.event,
+    level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
+    message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
+    data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
+  });
+  try { telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic); }
   catch (error) { await runtime.shutdown(); throw error; }
   await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
   runtime.database.log.emit({
@@ -2656,7 +2663,7 @@ async function startDevSession(options: LooseRecord) {
       rollbackLegacy = await rebuild.publishLegacy();
       if (affectsServerRuntime) {
         const telemetryChanged = JSON.stringify(nextTelemetryConfig) !== JSON.stringify(telemetryConfig);
-        const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig) : null;
+        const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig, emitTelemetryDiagnostic) : null;
         await runtime.restart(
           rebuild.serverRuntime.source,
           rebuild.serverRuntime.env,

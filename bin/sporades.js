@@ -144891,7 +144891,16 @@ function validatedRemoteParent(request) {
     isRemote: true
   });
 }
-function createHttpRequestTelemetry(config) {
+function exportFailureReason(error) {
+  const code = error && typeof error === "object" ? error.code : void 0;
+  if (code === 401 || code === 403) return "AUTH_REJECTED";
+  if (typeof code === "string") {
+    if (["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"].includes(code)) return "DESTINATION_UNAVAILABLE";
+    if (code.startsWith("ERR_TLS_") || code.startsWith("CERT_") || ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT"].includes(code)) return "TLS_FAILED";
+  }
+  return "EXPORT_FAILED";
+}
+function createHttpRequestTelemetry(config, onDiagnostic) {
   if (!config) return { run: (_request, _response, _endpoints, handle) => handle(), shutdown: async () => {
   } };
   const url = new URL(config.endpoint);
@@ -144906,7 +144915,41 @@ function createHttpRequestTelemetry(config) {
     concurrencyLimit: 1,
     httpAgentOptions: config.tls.caFile ? { ca: readFileSync3(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 }
   });
-  const processor = new import_sdk_trace_base.BatchSpanProcessor(exporter, {
+  let failedReason = null;
+  let lastFailureLoggedAt = 0;
+  const emitDiagnostic = (diagnostic) => {
+    try {
+      const recorded = onDiagnostic?.(diagnostic);
+      if (recorded && typeof recorded.then === "function") void Promise.resolve(recorded).catch(() => {
+      });
+    } catch {
+    }
+  };
+  const observedExporter = {
+    export(spans, callback) {
+      exporter.export(spans, (result) => {
+        try {
+          if (result.code === 0) {
+            if (failedReason) emitDiagnostic({ event: "telemetry.export.recovered" });
+            failedReason = null;
+          } else {
+            const reason = exportFailureReason(result.error);
+            const now2 = Date.now();
+            if (reason !== failedReason || now2 - lastFailureLoggedAt >= 6e4) {
+              emitDiagnostic({ event: "telemetry.export.failed", reason });
+              lastFailureLoggedAt = now2;
+            }
+            failedReason = reason;
+          }
+        } catch {
+        }
+        callback(result);
+      });
+    },
+    forceFlush: () => exporter.forceFlush(),
+    shutdown: () => exporter.shutdown()
+  };
+  const processor = new import_sdk_trace_base.BatchSpanProcessor(observedExporter, {
     maxQueueSize: 128,
     maxExportBatchSize: 32,
     scheduledDelayMillis: 500,
@@ -148987,8 +149030,15 @@ async function startDevSession(options) {
     runtimeProbeToken: inspectionToken
   });
   let telemetry;
+  const emitTelemetryDiagnostic = (diagnostic) => runtime.database.log.emit({
+    category: "platform",
+    event: diagnostic.event,
+    level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
+    message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
+    data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null
+  });
   try {
-    telemetry = createHttpRequestTelemetry(telemetryConfig);
+    telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
   } catch (error) {
     await runtime.shutdown();
     throw error;
@@ -149338,7 +149388,7 @@ async function startDevSession(options) {
       rollbackLegacy = await rebuild.publishLegacy();
       if (affectsServerRuntime) {
         const telemetryChanged = JSON.stringify(nextTelemetryConfig) !== JSON.stringify(telemetryConfig);
-        const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig) : null;
+        const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig, emitTelemetryDiagnostic) : null;
         await runtime.restart(
           rebuild.serverRuntime.source,
           rebuild.serverRuntime.env,

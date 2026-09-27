@@ -59,7 +59,19 @@ function validatedRemoteParent(request) {
         isRemote: true,
     });
 }
-export function createHttpRequestTelemetry(config) {
+function exportFailureReason(error) {
+    const code = error && typeof error === "object" ? error.code : undefined;
+    if (code === 401 || code === 403)
+        return "AUTH_REJECTED";
+    if (typeof code === "string") {
+        if (["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"].includes(code))
+            return "DESTINATION_UNAVAILABLE";
+        if (code.startsWith("ERR_TLS_") || code.startsWith("CERT_") || ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT"].includes(code))
+            return "TLS_FAILED";
+    }
+    return "EXPORT_FAILED";
+}
+export function createHttpRequestTelemetry(config, onDiagnostic) {
     if (!config)
         return { run: (_request, _response, _endpoints, handle) => handle(), shutdown: async () => { } };
     const url = new URL(config.endpoint);
@@ -76,7 +88,43 @@ export function createHttpRequestTelemetry(config) {
         concurrencyLimit: 1,
         httpAgentOptions: config.tls.caFile ? { ca: readFileSync(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 },
     });
-    const processor = new BatchSpanProcessor(exporter, {
+    let failedReason = null;
+    let lastFailureLoggedAt = 0;
+    const emitDiagnostic = (diagnostic) => {
+        try {
+            const recorded = onDiagnostic?.(diagnostic);
+            if (recorded && typeof recorded.then === "function")
+                void Promise.resolve(recorded).catch(() => { });
+        }
+        catch { /* Telemetry diagnostics cannot affect exports or application work. */ }
+    };
+    const observedExporter = {
+        export(spans, callback) {
+            exporter.export(spans, (result) => {
+                try {
+                    if (result.code === 0) {
+                        if (failedReason)
+                            emitDiagnostic({ event: "telemetry.export.recovered" });
+                        failedReason = null;
+                    }
+                    else {
+                        const reason = exportFailureReason(result.error);
+                        const now = Date.now();
+                        if (reason !== failedReason || now - lastFailureLoggedAt >= 60_000) {
+                            emitDiagnostic({ event: "telemetry.export.failed", reason });
+                            lastFailureLoggedAt = now;
+                        }
+                        failedReason = reason;
+                    }
+                }
+                catch { /* A malformed exporter result must not change SDK completion. */ }
+                callback(result);
+            });
+        },
+        forceFlush: () => exporter.forceFlush(),
+        shutdown: () => exporter.shutdown(),
+    };
+    const processor = new BatchSpanProcessor(observedExporter, {
         maxQueueSize: 128,
         maxExportBatchSize: 32,
         scheduledDelayMillis: 500,
