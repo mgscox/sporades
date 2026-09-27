@@ -343,3 +343,155 @@ test('a failing diagnostic sink cannot interrupt HTTP service or exporter shutdo
     await telemetry.shutdown();
   } finally { app.close(); collector.close(); }
 });
+
+test('idle metric export reports authentication loss and recovery through the diagnostic seam', async () => {
+  const diagnostics = [];
+  const requests = [];
+  let status = 401;
+  const collector = createServer(async (request, response) => {
+    for await (const _ of request) {}
+    requests.push(request.url);
+    response.writeHead(status).end('private receiver detail');
+  }).listen(0, '127.0.0.1');
+  await once(collector, 'listening');
+  const telemetry = createHttpRequestTelemetry({
+    endpoint: `http://127.0.0.1:${collector.address().port}`,
+    tls: { mode: 'loopback' }, serviceName: 'idle-metric-diagnostics', metricsIntervalMs: 1000,
+  }, diagnostic => diagnostics.push(diagnostic));
+  const waitFor = async predicate => {
+    const deadline = Date.now() + 4500;
+    while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    assert(predicate(), 'expected metric export and diagnostic before deadline');
+  };
+  try {
+    await waitFor(() => requests.filter(path => path === '/v1/metrics').length >= 2);
+    assert.deepEqual(diagnostics, [{ event: 'telemetry.export.failed', reason: 'AUTH_REJECTED' }]);
+    assert.deepEqual([...new Set(requests)], ['/v1/metrics']);
+    status = 200;
+    await waitFor(() => diagnostics.some(diagnostic => diagnostic.event === 'telemetry.export.recovered'));
+    assert.deepEqual(diagnostics, [
+      { event: 'telemetry.export.failed', reason: 'AUTH_REJECTED' },
+      { event: 'telemetry.export.recovered' },
+    ]);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /private receiver|127\\.0\\.0\\.1/);
+  } finally { await telemetry.shutdown(); collector.close(); }
+});
+
+test('metric destination failure recovers when the idle receiver returns', async () => {
+  const diagnostics = [];
+  const reserve = createServer().listen(0, '127.0.0.1');
+  await once(reserve, 'listening');
+  const port = reserve.address().port;
+  await new Promise(resolve => reserve.close(resolve));
+  const telemetry = createHttpRequestTelemetry({
+    endpoint: `http://127.0.0.1:${port}`,
+    tls: { mode: 'loopback' }, serviceName: 'metric-destination-test', metricsIntervalMs: 1000,
+  }, diagnostic => diagnostics.push(diagnostic));
+  const waitFor = async predicate => {
+    const deadline = Date.now() + 4500;
+    while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    assert(predicate(), 'expected idle metric diagnostic before deadline');
+  };
+  let collector;
+  try {
+    await waitFor(() => diagnostics.some(diagnostic => diagnostic.reason === 'DESTINATION_UNAVAILABLE'));
+    collector = createServer(async (request, response) => {
+      for await (const _ of request) {}
+      response.writeHead(200).end();
+    }).listen(port, '127.0.0.1');
+    await once(collector, 'listening');
+    await waitFor(() => diagnostics.some(diagnostic => diagnostic.event === 'telemetry.export.recovered'));
+    assert.deepEqual(diagnostics, [
+      { event: 'telemetry.export.failed', reason: 'DESTINATION_UNAVAILABLE' },
+      { event: 'telemetry.export.recovered' },
+    ]);
+  } finally { await telemetry.shutdown(); collector?.close(); }
+});
+
+test('trace and metric transport recoveries wait until both exporters are healthy', async () => {
+  const diagnostics = [];
+  const received = { traces: 0, metrics: 0 };
+  let traceStatus = 200;
+  let metricStatus = 401;
+  const collector = createServer(async (request, response) => {
+    for await (const _ of request) {}
+    const signal = request.url === '/v1/traces' ? 'traces' : 'metrics';
+    received[signal]++;
+    response.writeHead(signal === 'traces' ? traceStatus : metricStatus).end();
+  }).listen(0, '127.0.0.1');
+  await once(collector, 'listening');
+  const telemetry = createHttpRequestTelemetry({
+    endpoint: `http://127.0.0.1:${collector.address().port}`,
+    tls: { mode: 'loopback' }, serviceName: 'partial-export-test', metricsIntervalMs: 1000,
+  }, diagnostic => diagnostics.push(diagnostic));
+  const app = createServer((request, response) => telemetry.run(request, response, [{ method: 'GET', path: '/ok' }], () => response.writeHead(200).end('ok'))).listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  const driveTrace = async () => assert.equal((await fetch(`http://127.0.0.1:${app.address().port}/ok`)).status, 200);
+  const waitFor = async predicate => {
+    const deadline = Date.now() + 4500;
+    while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    assert(predicate(), 'expected exporter callback before deadline');
+  };
+  try {
+    await waitFor(() => diagnostics.length === 1);
+    assert.deepEqual(diagnostics, [{ event: 'telemetry.export.failed', reason: 'AUTH_REJECTED' }]);
+    await driveTrace();
+    await waitFor(() => received.traces >= 1);
+    assert.equal(diagnostics.length, 1, 'healthy trace callback does not clear metric failure');
+    metricStatus = 200;
+    await waitFor(() => diagnostics.length === 2);
+    assert.deepEqual(diagnostics[1], { event: 'telemetry.export.recovered' });
+
+    traceStatus = 401;
+    await driveTrace();
+    await waitFor(() => diagnostics.length === 3);
+    assert.deepEqual(diagnostics[2], { event: 'telemetry.export.failed', reason: 'AUTH_REJECTED' });
+    const metricCount = received.metrics;
+    await waitFor(() => received.metrics > metricCount);
+    assert.equal(diagnostics.length, 3, 'healthy metric callback does not clear trace failure');
+    traceStatus = 200;
+    await driveTrace();
+    await waitFor(() => diagnostics.length === 4);
+    assert.deepEqual(diagnostics[3], { event: 'telemetry.export.recovered' });
+  } finally { await telemetry.shutdown(); app.close(); collector.close(); }
+});
+
+test('mixed trace and metric failures suppress repeats of each reason during one outage', async () => {
+  const diagnostics = [];
+  const received = { traces: 0, metrics: 0 };
+  const collector = createServer(async (request, response) => {
+    for await (const _ of request) {}
+    if (request.url === '/v1/traces') {
+      received.traces++;
+      response.writeHead(503).end('private trace failure');
+    } else {
+      received.metrics++;
+      response.writeHead(401).end('private metric failure');
+    }
+  }).listen(0, '127.0.0.1');
+  await once(collector, 'listening');
+  const telemetry = createHttpRequestTelemetry({
+    endpoint: `http://127.0.0.1:${collector.address().port}`,
+    tls: { mode: 'loopback' }, serviceName: 'mixed-failure-test', metricsIntervalMs: 1000,
+  }, diagnostic => diagnostics.push(diagnostic));
+  const app = createServer((request, response) => telemetry.run(request, response, [{ method: 'GET', path: '/ok' }], () => response.writeHead(200).end('ok'))).listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  const waitFor = async predicate => {
+    const deadline = Date.now() + 5000;
+    while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    assert(predicate(), 'expected both exporters to complete repeated callbacks');
+  };
+  try {
+    const origin = `http://127.0.0.1:${app.address().port}/ok`;
+    for (let index = 0; index < 4; index++) {
+      assert.equal((await fetch(origin)).status, 200);
+      await new Promise(resolve => setTimeout(resolve, 650));
+    }
+    await waitFor(() => received.traces >= 4 && received.metrics >= 2);
+    assert.deepEqual(diagnostics, [
+      { event: 'telemetry.export.failed', reason: 'EXPORT_FAILED' },
+      { event: 'telemetry.export.failed', reason: 'AUTH_REJECTED' },
+    ]);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /private|127\\.0\\.0\\.1/);
+  } finally { await telemetry.shutdown(); app.close(); collector.close(); }
+});
