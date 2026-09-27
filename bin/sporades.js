@@ -127986,6 +127986,7 @@ var import_sdk_trace_base = __toESM(require_index_shim(), 1);
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID8 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
+import { getHeapStatistics } from "node:v8";
 var builtinRoutes = [
   ["GET", "/__sporades/connection-token"],
   ["GET", "/__sporades/health/runtime"],
@@ -128017,6 +128018,7 @@ function safeMethod(method) {
   return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
 }
 var requestScope = new AsyncLocalStorage();
+var processInstanceId = randomUUID8();
 function activeRuntimeLogIdentity() {
   const scope = requestScope.getStore();
   if (!scope) return void 0;
@@ -128073,8 +128075,13 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     exportIntervalMillis: config.metricsIntervalMs ?? 15e3,
     exportTimeoutMillis: 800
   });
+  const resource = (0, import_resources.resourceFromAttributes)({
+    "service.name": config.serviceName.slice(0, 80),
+    "service.instance.id": processInstanceId,
+    "deployment.environment.name": config.environment ?? "unknown"
+  });
   const meterProvider = new import_sdk_metrics.MeterProvider({
-    resource: (0, import_resources.resourceFromAttributes)({ "service.name": config.serviceName.slice(0, 80), "deployment.environment.name": config.environment ?? "unknown" }),
+    resource,
     readers: [metricReader],
     views: [
       { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
@@ -128086,6 +128093,28 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
   const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
   const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
+  const processMeter = meterProvider.getMeter("sporades-runtime-process", "1");
+  const cpuTime = processMeter.createObservableCounter("process.cpu.time", { unit: "s" });
+  const rss = processMeter.createObservableGauge("process.memory.rss", { unit: "By" });
+  const heapUsed = processMeter.createObservableGauge("process.memory.heap.used", { unit: "By" });
+  const heapAllocated = processMeter.createObservableGauge("process.memory.heap.allocated", { unit: "By" });
+  const heapLimit = processMeter.createObservableGauge("process.memory.heap.limit", { unit: "By" });
+  const external = processMeter.createObservableGauge("process.memory.external", { unit: "By" });
+  const arrayBuffers = processMeter.createObservableGauge("process.memory.array_buffers", { unit: "By" });
+  const uptime = processMeter.createObservableGauge("process.uptime", { unit: "s" });
+  processMeter.addBatchObservableCallback((result) => {
+    const cpu = process.cpuUsage();
+    const memory = process.memoryUsage();
+    result.observe(cpuTime, cpu.user / 1e6, { state: "user" });
+    result.observe(cpuTime, cpu.system / 1e6, { state: "system" });
+    result.observe(rss, memory.rss);
+    result.observe(heapUsed, memory.heapUsed);
+    result.observe(heapAllocated, memory.heapTotal);
+    result.observe(heapLimit, getHeapStatistics().heap_size_limit);
+    result.observe(external, memory.external);
+    result.observe(arrayBuffers, memory.arrayBuffers);
+    result.observe(uptime, process.uptime());
+  }, [cpuTime, rss, heapUsed, heapAllocated, heapLimit, external, arrayBuffers, uptime]);
   const seenRoutes = /* @__PURE__ */ new Set();
   let failedReason = null;
   let lastFailureLoggedAt = 0;
@@ -128128,7 +128157,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     exportTimeoutMillis: 800
   });
   const provider = new import_sdk_trace_base.BasicTracerProvider({
-    resource: (0, import_resources.resourceFromAttributes)({ "service.name": config.serviceName.slice(0, 80) }),
+    resource,
     sampler: new import_sdk_trace_base.TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
     spanProcessors: [processor]
   });
@@ -145174,7 +145203,7 @@ import { cp, lstat as lstat8, mkdir as mkdir8, readFile as readFile10, readdir a
 import path15 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
 var STACK_SCHEMA = 1;
-var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "setup.mjs", "smoke.mjs"];
+var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "setup.mjs", "smoke.mjs"];
 function prerequisite() {
   if (!["arm64", "x64"].includes(process.arch) || !["linux", "darwin"].includes(process.platform)) {
     throw commandError("Unsupported monitoring stack architecture.", "Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.");
@@ -145266,7 +145295,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
     missingAssets,
     versionDifference,
     missing,
-    nextSteps: ["Review .env and fill missing settings", "Run `node setup.mjs` after editing .env", "Run `docker compose --env-file .compose.env up -d --build` from the stack directory", "Run `node smoke.mjs send` to verify stored traces and metrics", "Open /grafana/d/sporades-api through the protected gateway"]
+    nextSteps: ["Review .env and fill missing settings", "Run `node setup.mjs` after editing .env", "Run `docker compose --env-file .compose.env up -d --build` from the stack directory", "Run `node smoke.mjs send` to verify stored traces and metrics", "Open /grafana/d/sporades-api or /grafana/d/sporades-resources through the protected gateway"]
   };
 }
 

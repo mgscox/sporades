@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { commandError } from './cli-support.js';
 
 const STACK_SCHEMA = 1;
-const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'setup.mjs', 'smoke.mjs'];
+const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'setup.mjs', 'smoke.mjs'];
 
 function prerequisite() {
   if (!['arm64', 'x64'].includes(process.arch) || !['linux', 'darwin'].includes(process.platform)) {
@@ -89,6 +89,6 @@ export async function runMonitoringStack(action: 'init' | 'validate', directory:
   }
   return {
     path: target, schemaVersion: STACK_SCHEMA, packageVersion: version, created, overrides, missingAssets, versionDifference, missing,
-    nextSteps: ['Review .env and fill missing settings', 'Run `node setup.mjs` after editing .env', 'Run `docker compose --env-file .compose.env up -d --build` from the stack directory', 'Run `node smoke.mjs send` to verify stored traces and metrics', 'Open /grafana/d/sporades-api through the protected gateway'],
+    nextSteps: ['Review .env and fill missing settings', 'Run `node setup.mjs` after editing .env', 'Run `docker compose --env-file .compose.env up -d --build` from the stack directory', 'Run `node smoke.mjs send` to verify stored traces and metrics', 'Open /grafana/d/sporades-api or /grafana/d/sporades-resources through the protected gateway'],
   };
 }

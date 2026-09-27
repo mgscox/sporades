@@ -110,6 +110,7 @@ services:
       - ./grafana-datasource.yaml:/etc/grafana/provisioning/datasources/sporades.yaml:ro
       - ./grafana-dashboard-provider.yaml:/etc/grafana/provisioning/dashboards/sporades.yaml:ro
       - ./api-dashboard.json:/var/lib/grafana/provisioned/api-dashboard.json:ro
+      - ./resource-dashboard.json:/var/lib/grafana/provisioned/resource-dashboard.json:ro
     depends_on:
       prometheus:
         condition: service_started
