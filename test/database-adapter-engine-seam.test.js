@@ -487,6 +487,8 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     // Pure Team Billing event/state ratchet semantics. Runtime modules share
     // these bounded mappings, but the module owns no SQL or adapter behavior.
     "team-billing-subscription-semantics.js",
+    // HTTP trace lifecycle and bounded attributes, with no SQL or adapter semantics.
+    "runtime-telemetry.js",
   ]);
 
   const carried = runtimeGraphModules();

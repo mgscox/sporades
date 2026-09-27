@@ -48,6 +48,7 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
     devClientRefresh?: boolean;
     onClientDependency?: (file: string) => void;
     deployFiles?: boolean;
+    telemetryProfile?: string | null;
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
 }): Promise<{
     paths: {

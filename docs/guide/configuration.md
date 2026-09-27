@@ -11,6 +11,11 @@ Use the detailed reference for:
 
 For exact generated paths, see the [runtime layout](../runtime-layout.md).
 
+Dev HTTP tracing uses [operator Telemetry profiles](../reference/projects-and-configuration.md#dev-http-tracing).
+Add an explicit `telemetry.profile` binding in `sporades.json` or pass
+`sporades dev --telemetry <name>` for one session. Sessions without either
+selection export nothing.
+
 ## Database backend
 
 See [database configuration and local services](../reference/projects-and-configuration.md#configuration)

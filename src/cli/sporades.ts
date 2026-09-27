@@ -101,6 +101,8 @@ import {
 } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
 import { runMonitoringStack } from "./monitoring-stack.js";
+import { changeTelemetryProfile, readTelemetryProfiles, resolveLocalTelemetryConfig, type TelemetryProfile } from "./telemetry-profile.js";
+import { createHttpRequestTelemetry } from "../runtime-telemetry.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, confirmAccessKeyOperatorAction, sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
 import {
@@ -223,6 +225,12 @@ async function main() {
       }
       await manageLocalLifecycle("dev", parseDevArgs(args));
       return;
+
+    case "telemetry": {
+      if (isHelp) { printHelp("telemetry"); return; }
+      await runTelemetryProfileCommand(args);
+      return;
+    }
 
     case "auth":
       if (isHelp) {
@@ -482,6 +490,58 @@ function isLocalTemplateReference(value: string) {
   return path.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
 }
 
+async function runTelemetryProfileCommand(args: string[]) {
+  if (args[0] !== "profile" || !["add", "list", "show", "remove"].includes(args[1] ?? "")) {
+    throw commandError("Unknown Telemetry operation.", "Use `sporades telemetry profile add|list|show|remove`.");
+  }
+  const operation = args[1];
+  const name = operation === "list" ? null : args[2];
+  if (operation !== "list" && !name) throw commandError("Missing Telemetry profile name.", "Pass a profile name after the operation.");
+  const rest = args.slice(operation === "list" ? 2 : 3);
+  let json = false;
+  const input: LooseRecord = {};
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === "--json") { json = true; continue; }
+    if (operation === "add") {
+      if (arg === "--endpoint") { input.endpoint = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--dashboard") { input.dashboard = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--credential-env") { input.credentialEnv = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--ca-file") { input.caFile = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--loopback") { input.loopback = true; continue; }
+    }
+    throw commandError(`Unknown Telemetry option: ${arg}`, "Run `sporades telemetry --help` for supported profile options.");
+  }
+  if (operation === "add") {
+    const profile: TelemetryProfile = {
+      endpoint: input.endpoint,
+      ...(input.dashboard ? { dashboard: input.dashboard } : {}),
+      tls: { mode: input.loopback ? "loopback" : "verified", ...(input.caFile ? { caFile: input.caFile } : {}) },
+      ...(input.credentialEnv ? { credentialEnv: input.credentialEnv } : {}),
+    };
+    const saved = await changeTelemetryProfile("add", name!, profile);
+    if (json) writeResult({ ok: true, data: { name, profile: saved }, error: null });
+    else process.stdout.write(`Telemetry profile added: ${name}\n`);
+    return;
+  }
+  if (operation === "remove") {
+    await changeTelemetryProfile("remove", name!);
+    if (json) writeResult({ ok: true, data: { name, removed: true }, error: null });
+    else process.stdout.write(`Telemetry profile removed: ${name}\n`);
+    return;
+  }
+  const profiles = await readTelemetryProfiles();
+  if (operation === "show") {
+    const profile = Object.hasOwn(profiles, name!) ? profiles[name!] : undefined;
+    if (!profile) throw commandError("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
+    if (json) writeResult({ ok: true, data: { name, profile }, error: null });
+    else process.stdout.write(`${name}\t${profile.endpoint}\n`);
+    return;
+  }
+  if (json) writeResult({ ok: true, data: { profiles }, error: null });
+  else for (const [alias, profile] of Object.entries(profiles)) process.stdout.write(`${alias}\t${profile.endpoint}\n`);
+}
+
 function parseDevArgs(args: string[]): LooseRecord {
   const lifecycleCommands = new Set(["status", "stop", "reset"]);
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
@@ -489,6 +549,7 @@ function parseDevArgs(args: string[]): LooseRecord {
   let port = null;
   let json = false;
   let publicDev = false;
+  let telemetryProfile: string | null = null;
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -517,6 +578,11 @@ function parseDevArgs(args: string[]): LooseRecord {
         publicDev = true;
         break;
 
+      case "--telemetry":
+        if (subcommand !== "start") throw commandError(`Unknown flag: ${arg}`, "Use `sporades dev --telemetry <profile>` only when starting.");
+        telemetryProfile = readFlagValue(rest, ++index, "--telemetry");
+        break;
+
       default:
         throw commandError(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
     }
@@ -527,6 +593,7 @@ function parseDevArgs(args: string[]): LooseRecord {
     port,
     json,
     publicDev,
+    telemetryProfile,
     projectDir: process.cwd(),
   };
 }
@@ -2189,7 +2256,8 @@ async function startDevSession(options: LooseRecord) {
     if (!clientDependencies.has(file)) initialDependencySignatures.set(file, readDevInputSignature([{ path: file, dependency: true }]));
     clientDependencies.add(file);
   };
-  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, onClientDependency: recordClientDependency });
+  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, telemetryProfile: options.telemetryProfile, onClientDependency: recordClientDependency });
+  let telemetryConfig = await resolveLocalTelemetryConfig(config, options.telemetryProfile);
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
   const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
     wait: true,
@@ -2210,6 +2278,9 @@ async function startDevSession(options: LooseRecord) {
     config: withRuntimeSecuritySession(config, session),
     runtimeProbeToken: inspectionToken,
   });
+  let telemetry: ReturnType<typeof createHttpRequestTelemetry>;
+  try { telemetry = createHttpRequestTelemetry(telemetryConfig); }
+  catch (error) { await runtime.shutdown(); throw error; }
   await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
   runtime.database.log.emit({
     category: "platform",
@@ -2221,7 +2292,7 @@ async function startDevSession(options: LooseRecord) {
   const devRefresh = createDevRefreshController();
   const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
 
-  const server = createServer(async (request, response) => {
+  const server = createServer(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
     try {
       if (prepareHttpSecurity(runtime.database, request, response)) {
         return;
@@ -2382,7 +2453,7 @@ async function startDevSession(options: LooseRecord) {
     } catch (error) {
       writeUnhandledHttpError(runtime.database, request, response, error);
     }
-  });
+  }));
   server.on("upgrade", (request, socket) => {
     const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
     if (!target) {
@@ -2558,7 +2629,8 @@ async function startDevSession(options: LooseRecord) {
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
       const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
       const nextClientDependencies = new Set<string>();
-      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); } });
+      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, telemetryProfile: options.telemetryProfile, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); } });
+      const nextTelemetryConfig = await resolveLocalTelemetryConfig(nextConfig, options.telemetryProfile);
       const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
         wait: true,
         emit: (data, error) => emitDevEvent(options, data, error),
@@ -2571,13 +2643,24 @@ async function startDevSession(options: LooseRecord) {
       }
       rollbackLegacy = await rebuild.publishLegacy();
       if (affectsServerRuntime) {
+        const telemetryChanged = JSON.stringify(nextTelemetryConfig) !== JSON.stringify(telemetryConfig);
+        const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig) : null;
         await runtime.restart(
           rebuild.serverRuntime.source,
           rebuild.serverRuntime.env,
           nextCapsuleServiceEnv,
           rebuild.serverRuntime.capsuleModuleSource,
           withRuntimeSecuritySession(nextConfig, session),
-        ).catch((error: unknown) => { throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true }); });
+        ).catch(async (error: unknown) => {
+          await nextTelemetry?.shutdown();
+          throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
+        });
+        if (nextTelemetry) {
+          const previousTelemetry = telemetry;
+          telemetry = nextTelemetry;
+          telemetryConfig = nextTelemetryConfig;
+          void previousTelemetry.shutdown();
+        }
         runtimeServiceEnv = nextCapsuleServiceEnv;
         fatalRestartAttempts = 0;
         refresh = await devRefresh.broadcast();
@@ -2713,7 +2796,7 @@ async function startDevSession(options: LooseRecord) {
     rm(path.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {});
     websocketHub.disconnectAll();
     let shutdownError: unknown;
-    try { await shutdownHttpServerAndRuntime(server, () => runtime.shutdown()); }
+    try { await shutdownHttpServerAndRuntime(server, async () => { await runtime.shutdown(); await telemetry.shutdown(); }); }
     catch (error) { shutdownError = error; }
     await rm(sessionFilePath, { force: true });
     process.off("unhandledRejection", onUnhandledRejection);

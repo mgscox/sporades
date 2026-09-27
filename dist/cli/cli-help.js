@@ -32,6 +32,7 @@ Commands:
 Options:
   --port <number>     Dev session port when starting
   --public            Allow non-localhost access when starting
+  --telemetry <name>  Export HTTP traces using a registered Telemetry profile
   --json              Write JSON output
   --help, -h          Show this help
 `,
@@ -138,6 +139,21 @@ Options:
   --dir <path>        Target stack directory (default: current directory)
   --json              Write { ok, data, error } JSON output
   --help, -h          Show this help
+`,
+    telemetry: `Usage: sporades telemetry profile <add|list|show|remove> [name] [options]
+
+Register and inspect operator-owned OTLP/HTTP Telemetry profiles. Descriptors store only
+credential environment and private CA file references; they never store secret values.
+Dev sessions use --telemetry <name> first, then sporades.json telemetry.profile, then no export.
+
+Options for profile add:
+  --endpoint <url>        OTLP/HTTP base origin (HTTPS, or HTTP loopback with --loopback)
+  --dashboard <url>       Optional dashboard HTTPS URL
+  --credential-env <KEY>  Environment variable containing the ingestion bearer token
+  --ca-file <path>        Absolute private CA certificate path for verified TLS
+  --loopback              Permit a local HTTP collector for development
+  --json                  Write { ok, data, error } JSON output
+  --help, -h              Show this help
 `,
     deploy: `Usage: sporades deploy [status|stop|restart|reconcile|remove|reset|ssh] [options]
 
@@ -257,6 +273,7 @@ Options:
       doctor         Run read-only Sporades diagnostics
       env            Manage Sealed Server env
       monitoring     Generate and validate a monitoring stack
+      telemetry      Register operator Telemetry profiles
       deploy         Start a local Container session
       host           Manage Host profiles and Hosted Capsules
       logs           Print Dev session logs

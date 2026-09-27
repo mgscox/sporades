@@ -24,6 +24,7 @@ import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
 import { createStripeCallbackEndpoint } from "../stripe-webhook-runtime.js";
 import { createStripeTeamBillingProvider } from "../stripe-team-billing-provider.js";
+import { createHttpRequestTelemetry } from "../runtime-telemetry.js";
 import { sporadesCapsuleModuleUrl, sporadesConfig, sporadesSealedServerEnv, sporadesServerEnv, sporadesServerSource, } from "sporades:server-bundle-inputs";
 // The emitted-list bundle exposes these four as module exports. Kept so the two artifacts present
 // the same module interface, not because a deployed Capsule imports itself: `server.mjs` is
@@ -127,7 +128,8 @@ database.log.emit({
 });
 const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
-const server = createServer(async (request, response) => {
+const telemetry = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry);
+const server = createServer(async (request, response) => telemetry.run(request, response, database.endpoints, async () => {
     try {
         if (prepareHttpSecurity(database, request, response)) {
             return;
@@ -160,7 +162,7 @@ const server = createServer(async (request, response) => {
     catch (error) {
         writeUnhandledHttpError(database, request, response, error);
     }
-});
+}));
 server.on("upgrade", (request, socket) => {
     const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
     if (!target) {
@@ -188,7 +190,7 @@ const shutdown = async () => {
     websocketHub.disconnectAll();
     let shutdownError;
     try {
-        await shutdownHttpServerAndRuntime(server, () => shutdownAndCloseDatabase(database));
+        await shutdownHttpServerAndRuntime(server, async () => { await shutdownAndCloseDatabase(database); await telemetry.shutdown(); });
     }
     catch (error) {
         shutdownError = error;

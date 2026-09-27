@@ -502,6 +502,10 @@ _Avoid_: audit log, security log, admin log
 
 ## Configuration
 
+**Telemetry profile**:
+A named, operator-owned OTLP/HTTP monitoring connection separate from a Host profile. It contains a destination, TLS trust reference and optional ingestion credential environment reference, never a secret value. Dev selects an explicit session profile before an explicit project binding; absent both, no telemetry is exported.
+_Avoid_: Host profile, Capsule secret, app telemetry endpoint
+
 **sporades.json**:
 The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, enabled auth providers (or legacy auth mode), security and scheduling policy, optional payment configuration, deploy port, optional dev port override.
 _Avoid_: config file (too generic — it's the specific project config)

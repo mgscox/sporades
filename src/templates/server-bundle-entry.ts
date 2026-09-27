@@ -45,6 +45,7 @@ import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
 import { createStripeCallbackEndpoint } from "../stripe-webhook-runtime.js";
 import { createStripeTeamBillingProvider } from "../stripe-team-billing-provider.js";
+import { createHttpRequestTelemetry } from "../runtime-telemetry.js";
 import {
   sporadesCapsuleModuleUrl,
   sporadesConfig,
@@ -150,8 +151,9 @@ database.log.emit({
 });
 const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
+const telemetry = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry);
 
-const server = createServer(async (request, response) => {
+const server = createServer(async (request, response) => telemetry.run(request, response, database.endpoints, async () => {
   try {
     if (prepareHttpSecurity(database, request, response)) {
       return;
@@ -190,7 +192,7 @@ const server = createServer(async (request, response) => {
   } catch (error) {
     writeUnhandledHttpError(database, request, response, error);
   }
-});
+}));
 
 server.on("upgrade", (request, socket) => {
   const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
@@ -220,7 +222,7 @@ const shutdown = async () => {
   shutdownStarted = true;
   websocketHub.disconnectAll();
   let shutdownError: unknown;
-  try { await shutdownHttpServerAndRuntime(server, () => shutdownAndCloseDatabase(database)); }
+  try { await shutdownHttpServerAndRuntime(server, async () => { await shutdownAndCloseDatabase(database); await telemetry.shutdown(); }); }
   catch (error) { shutdownError = error; }
   if (shutdownError) process.stderr.write(`${shutdownError instanceof Error ? shutdownError.stack ?? shutdownError.message : String(shutdownError)}\n`);
   process.exit(shutdownError ? 1 : 0);
