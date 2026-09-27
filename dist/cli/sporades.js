@@ -409,7 +409,7 @@ async function runTelemetryProfileCommand(args) {
     }
     const profiles = await readTelemetryProfiles();
     if (operation === "show") {
-        const profile = profiles[name];
+        const profile = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
         if (!profile)
             throw commandError("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
         if (json)

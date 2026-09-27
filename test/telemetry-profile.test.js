@@ -25,6 +25,14 @@ test('installed CLI stores reference-only profiles and Dev selection honors expl
     assert.equal(rejected.status, 1);
     assert.doesNotMatch(rejected.stdout + rejected.stderr, /password|secret/);
     assert.equal((await resolveLocalTelemetryConfig({ name: 'capsule' })), null);
+    await assert.rejects(resolveLocalTelemetryConfig({ telemetry: { profile: 'constructor' } }), /Unknown Telemetry profile/);
+    assert.equal(cli('show', 'constructor', '--json').status, 1);
+    const inheritedName = cli('add', 'constructor', '--endpoint', 'http://localhost:4321', '--loopback', '--json');
+    assert.equal(inheritedName.status, 0, inheritedName.stderr);
+    assert.equal((await resolveLocalTelemetryConfig({ telemetry: { profile: 'constructor' } })).endpoint, 'http://localhost:4321');
+    assert.equal(JSON.parse(cli('show', 'constructor', '--json').stdout).data.profile.endpoint, 'http://localhost:4321');
+    assert.equal(cli('remove', 'constructor', '--json').status, 0);
+    await assert.rejects(resolveLocalTelemetryConfig({ telemetry: { profile: 'constructor' } }), /Unknown Telemetry profile/);
     assert.equal((await resolveLocalTelemetryConfig({ name: 'capsule', telemetry: { profile: 'local' } })).endpoint, 'http://127.0.0.1:4318');
     const second = cli('add', 'other', '--endpoint', 'http://localhost:4320', '--loopback', '--json');
     assert.equal(second.status, 0, second.stderr);

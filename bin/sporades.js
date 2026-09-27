@@ -99925,10 +99925,10 @@ async function changeTelemetryProfile(operation, name2, profile) {
   const profiles = await readTelemetryProfiles();
   if (operation === "add") {
     if (!profile) invalid("Provide a Telemetry profile.");
-    if (profiles[name2]) throw commandError("Telemetry profile already exists.", "Use another name or remove the existing profile first.");
+    if (Object.hasOwn(profiles, name2)) throw commandError("Telemetry profile already exists.", "Use another name or remove the existing profile first.");
     profiles[name2] = validateTelemetryProfile(profile);
   } else {
-    if (!profiles[name2]) throw commandError("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
+    if (!Object.hasOwn(profiles, name2)) throw commandError("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
     delete profiles[name2];
   }
   await writeTelemetryProfiles(profiles);
@@ -99939,7 +99939,8 @@ async function resolveLocalTelemetryConfig(config, sessionProfile) {
   const name2 = sessionProfile ?? config.telemetry?.profile;
   if (!name2) return null;
   if (!aliasPattern.test(name2)) invalid("Select a registered Telemetry profile name.");
-  const profile = (await readTelemetryProfiles())[name2];
+  const profiles = await readTelemetryProfiles();
+  const profile = Object.hasOwn(profiles, name2) ? profiles[name2] : void 0;
   if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
   if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name2}.`);
   return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule" };
@@ -147353,7 +147354,7 @@ async function runTelemetryProfileCommand(args) {
   }
   const profiles = await readTelemetryProfiles();
   if (operation === "show") {
-    const profile = profiles[name2];
+    const profile = Object.hasOwn(profiles, name2) ? profiles[name2] : void 0;
     if (!profile) throw commandError("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
     if (json) writeResult({ ok: true, data: { name: name2, profile }, error: null });
     else process.stdout.write(`${name2}	${profile.endpoint}

@@ -107,12 +107,12 @@ export async function changeTelemetryProfile(operation, name, profile) {
     if (operation === "add") {
         if (!profile)
             invalid("Provide a Telemetry profile.");
-        if (profiles[name])
+        if (Object.hasOwn(profiles, name))
             throw commandError("Telemetry profile already exists.", "Use another name or remove the existing profile first.");
         profiles[name] = validateTelemetryProfile(profile);
     }
     else {
-        if (!profiles[name])
+        if (!Object.hasOwn(profiles, name))
             throw commandError("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
         delete profiles[name];
     }
@@ -126,7 +126,8 @@ export async function resolveLocalTelemetryConfig(config, sessionProfile) {
         return null;
     if (!aliasPattern.test(name))
         invalid("Select a registered Telemetry profile name.");
-    const profile = (await readTelemetryProfiles())[name];
+    const profiles = await readTelemetryProfiles();
+    const profile = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
     if (!profile)
         throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
     if (profile.credentialEnv && !process.env[profile.credentialEnv])
