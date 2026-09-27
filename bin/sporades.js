@@ -56490,7 +56490,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         parent,
         rect,
         parentRect,
-        open: open2,
+        open: open3,
         commentManager = null
       }) {
         this.#container = container;
@@ -56509,7 +56509,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         if (!commentManager) {
           this.#addEventListeners();
           this.#container.hidden = true;
-          if (open2) {
+          if (open3) {
             this.#toggle();
           }
         }
@@ -80736,10 +80736,10 @@ function validateAliasDomains(value) {
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
-import { createHash as createHash15, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual5 } from "node:crypto";
-import { lstatSync, readdirSync, readFileSync as readFileSync4, statSync as statSync2, watch } from "node:fs";
+import { createHash as createHash15, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual5, X509Certificate } from "node:crypto";
+import { constants as fsConstants, lstatSync, readdirSync, readFileSync as readFileSync4, statSync as statSync2, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
-import { appendFile, chmod as chmod3, cp as cp2, lstat as lstat10, mkdir as mkdir10, readdir as readdir4, readFile as readFile13, rename as rename7, rm as rm8, writeFile as writeFile9 } from "node:fs/promises";
+import { appendFile, chmod as chmod3, cp as cp2, lstat as lstat10, mkdir as mkdir10, open as open2, readdir as readdir4, readFile as readFile13, rename as rename7, rm as rm8, writeFile as writeFile9 } from "node:fs/promises";
 import path18 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL5 } from "node:url";
 
@@ -100153,6 +100153,9 @@ async function resolveContainerTelemetryConfig(config, sessionProfile) {
   if (sessionProfile === null) return null;
   const resolved = await resolveLocalTelemetryConfig(config, sessionProfile);
   if (!resolved) return null;
+  return toContainerTelemetryConfig(resolved);
+}
+function toContainerTelemetryConfig(resolved) {
   const endpoint = new URL(resolved.endpoint);
   if (resolved.tls.mode === "loopback") endpoint.hostname = "host.docker.internal";
   return {
@@ -101135,7 +101138,7 @@ async function createBundle(projectDir, config, options = {}) {
   });
   const clientBundle = clientOutput.legacyClientBundle;
   const serverBundleInputs = {
-    config: { ...config, __sporadesTelemetry: options.containerTelemetry ? await resolveContainerTelemetryConfig(config, options.telemetryProfile) : options.telemetryProfile === void 0 ? null : await resolveLocalTelemetryConfig(config, options.telemetryProfile) },
+    config: { ...config, __sporadesTelemetry: options.containerTelemetry ? Object.hasOwn(options, "resolvedContainerTelemetry") ? options.resolvedContainerTelemetry : await resolveContainerTelemetryConfig(config, options.telemetryProfile) : options.telemetryProfile === void 0 ? null : await resolveLocalTelemetryConfig(config, options.telemetryProfile) },
     serverEnv: sealedEnvelope ? {} : serverEnv,
     sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
     serverSource,
@@ -118196,17 +118199,17 @@ var Lexer = class _Lexer {
       if (next < end && this.src.charCodeAt(next) === CH_LBRACE) {
         close = this.findClosingBrace(next + 1, end);
       } else {
-        const open2 = skipLineContinuations(this.src, next, end);
-        if (open2 >= end || this.src.charCodeAt(open2) !== CH_LPAREN)
+        const open3 = skipLineContinuations(this.src, next, end);
+        if (open3 >= end || this.src.charCodeAt(open3) !== CH_LPAREN)
           return start;
-        close = this.findClosingParenthesis(open2 + 1, end);
+        close = this.findClosingParenthesis(open3 + 1, end);
       }
     } else {
-      const open2 = start + 1;
-      if (quoted || ch !== CH_LT && ch !== CH_GT || open2 >= end || this.src.charCodeAt(open2) !== CH_LPAREN) {
+      const open3 = start + 1;
+      if (quoted || ch !== CH_LT && ch !== CH_GT || open3 >= end || this.src.charCodeAt(open3) !== CH_LPAREN) {
         return start;
       }
-      close = this.findClosingParenthesis(open2 + 1, end);
+      close = this.findClosingParenthesis(open3 + 1, end);
     }
     return close === -1 ? end : close + 1;
   }
@@ -128087,6 +128090,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   });
   const failedExports = { traces: false, metrics: false };
   const lastFailureLoggedAt = /* @__PURE__ */ new Map();
+  let reportedOutage = false;
   const emitDiagnostic = (diagnostic) => {
     try {
       const recorded = withoutRuntimeRequestIdentity(() => onDiagnostic?.(diagnostic));
@@ -128100,9 +128104,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       if (result.code === 0) {
         const wasFailed = failedExports.traces || failedExports.metrics;
         failedExports[signal] = false;
-        if (wasFailed && !failedExports.traces && !failedExports.metrics) {
+        if (wasFailed && !failedExports.traces && !failedExports.metrics && reportedOutage) {
           emitDiagnostic({ event: "telemetry.export.recovered" });
-          lastFailureLoggedAt.clear();
+          reportedOutage = false;
         }
       } else {
         failedExports[signal] = true;
@@ -128111,6 +128115,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
         if (!lastFailureLoggedAt.has(reason) || now2 - lastFailureLoggedAt.get(reason) >= 6e4) {
           emitDiagnostic({ event: "telemetry.export.failed", reason });
           lastFailureLoggedAt.set(reason, now2);
+          reportedOutage = true;
         }
       }
     } catch {
@@ -151353,6 +151358,36 @@ function readProjectConfigSync(projectDir) {
   const raw = readFileSync4(path18.join(projectDir, "sporades.json"), "utf8");
   return JSON.parse(raw);
 }
+var TELEMETRY_CA_MAX_BYTES = 1024 * 1024;
+async function readContainerTelemetryCa(caPath) {
+  let file;
+  try {
+    file = await open2(caPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const metadata = await file.stat();
+    if (!metadata.isFile() || metadata.size === 0 || metadata.size > TELEMETRY_CA_MAX_BYTES || !(metadata.mode & 292)) throw new Error("invalid CA file");
+    const contents = await file.readFile();
+    if (contents.length === 0 || contents.length > TELEMETRY_CA_MAX_BYTES) throw new Error("invalid CA file");
+    const pem = contents.toString("utf8");
+    const blocks = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g);
+    if (!blocks?.length || pem.replace(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g, "").trim()) throw new Error("invalid CA certificate");
+    for (const block of blocks) new X509Certificate(block);
+    return contents;
+  } catch {
+    throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB; the running Container was preserved.");
+  } finally {
+    await file?.close();
+  }
+}
+async function removeContainerTelemetryCaStage(runtimeDir, stagedPath) {
+  if (typeof stagedPath !== "string") return;
+  const stageDir = path18.join(runtimeDir, "telemetry-ca");
+  if (path18.dirname(stagedPath) !== stageDir || !/^[0-9a-f]{32}\.pem$/.test(path18.basename(stagedPath))) return;
+  const directory = await lstat10(stageDir).catch(() => null);
+  if (directory?.isDirectory() && !directory.isSymbolicLink()) await rm8(stagedPath, { force: true });
+}
+function dockerMountField(value) {
+  return /[,"\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+}
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4e3;
@@ -151361,14 +151396,14 @@ async function startContainerSession(options) {
   const bindingPath = path18.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
   const telemetryProfile = options.telemetryProfile === void 0 ? existingBinding?.telemetryProfile : options.telemetryProfile;
-  const telemetryConfig = await resolveContainerTelemetryConfig(config, telemetryProfile);
-  const selectedTelemetryName = telemetryProfile === null ? null : telemetryProfile ?? config.telemetry?.profile;
-  const telemetrySource = selectedTelemetryName && telemetryConfig ? (await readTelemetryProfiles())[selectedTelemetryName] : null;
+  const telemetrySource = telemetryProfile === null ? null : await resolveLocalTelemetryConfig(config, telemetryProfile);
+  const telemetryConfig = telemetrySource ? toContainerTelemetryConfig(telemetrySource) : null;
+  const telemetryCa = telemetrySource?.tls.caFile ? await readContainerTelemetryCa(telemetrySource.tls.caFile) : null;
   const previousConsumer = await readPublicTreeConsumer(path18.join(runtimeDir, "build"), "container");
   verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
-  const bundle = await createBundle(options.projectDir, config, { publishLegacy: false, telemetryProfile, containerTelemetry: true });
+  const bundle = await createBundle(options.projectDir, config, { publishLegacy: false, telemetryProfile, containerTelemetry: true, resolvedContainerTelemetry: telemetryConfig });
   const dataDir = path18.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
   await mkdir10(dataDir, { recursive: true });
@@ -151479,10 +151514,11 @@ async function startContainerSession(options) {
     "--env",
     `${key}=${value}`
   ]);
+  const telemetryCaStagePath = telemetryCa ? path18.join(runtimeDir, "telemetry-ca", `${randomBytes9(16).toString("hex")}.pem`) : null;
   const telemetryArgs = telemetryConfig ? [
     ...telemetryConfig.tls.mode === "loopback" ? ["--add-host", "host.docker.internal:host-gateway"] : [],
     ...telemetryConfig.credentialEnv ? ["--env", telemetryConfig.credentialEnv] : [],
-    ...telemetrySource?.tls.caFile ? ["--volume", `${telemetrySource.tls.caFile}:/run/sporades/telemetry-ca.pem:ro`] : []
+    ...telemetryCaStagePath ? ["--mount", `type=bind,${dockerMountField(`source=${telemetryCaStagePath}`)},target=/run/sporades/telemetry-ca.pem,readonly`] : []
   ] : [];
   const dockerRunArgs = [
     "run",
@@ -151537,6 +151573,11 @@ async function startContainerSession(options) {
   let committedConsumer = null;
   let binding = null;
   try {
+    if (telemetryCaStagePath && telemetryCa) {
+      await mkdir10(path18.dirname(telemetryCaStagePath), { recursive: true, mode: 448 });
+      await writeFile9(telemetryCaStagePath, telemetryCa, { flag: "wx", mode: 420 });
+      await chmod3(telemetryCaStagePath, 420);
+    }
     await recordPreservedFileAttempt(seedJournal, {
       candidate: { name: containerName, transaction: containerTransactionToken },
       ...existingContainer ? { previous: { containerId: existingBinding.containerId, name: oldName, rollbackName, wasRunning: oldWasRunning } } : {}
@@ -151585,6 +151626,7 @@ async function startContainerSession(options) {
       containerId,
       containerName,
       ...telemetryProfile !== void 0 ? { telemetryProfile } : {},
+      ...telemetryCaStagePath ? { telemetryCaStagePath } : {},
       clientRelease,
       pendingDeployFileCleanup: [...existingBinding?.pendingDeployFileCleanup ?? [], ...existingBinding?.deployFilesRoot ? [existingBinding.deployFilesRoot] : []],
       ...bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path: path19, update }) => ({ path: path19, update })) } : {},
@@ -151669,6 +151711,13 @@ async function startContainerSession(options) {
       rollbackFailures.push("candidate-public-tree");
     }
     if (!candidateRetained) {
+      if (telemetryCaStagePath) {
+        try {
+          await rm8(telemetryCaStagePath, { force: true });
+        } catch {
+          rollbackFailures.push("candidate-telemetry-ca");
+        }
+      }
       try {
         await rollbackPreservedFiles(createdSeeds);
       } catch {
@@ -151698,6 +151747,9 @@ async function startContainerSession(options) {
   }
   if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");
   await finishPreservedFileAttempt(seedJournal);
+  if (existingBinding?.telemetryCaStagePath && existingBinding.telemetryCaStagePath !== telemetryCaStagePath) {
+    await removeContainerTelemetryCaStage(runtimeDir, existingBinding.telemetryCaStagePath);
+  }
   for (const snapshot of binding.pendingDeployFileCleanup) await removeDeployFileSnapshot(runtimeDir, snapshot);
   binding.pendingDeployFileCleanup = [];
   await replaceContainerBinding(bindingPath, binding);
@@ -153504,6 +153556,7 @@ async function removeLocalContainerSession(options) {
     for (const snapshot of [...binding.pendingDeployFileCleanup ?? [], binding.deployFilesRoot]) {
       await removeDeployFileSnapshot(path18.join(options.projectDir, ".sporades"), snapshot);
     }
+    await removeContainerTelemetryCaStage(path18.join(options.projectDir, ".sporades"), binding.telemetryCaStagePath);
   } catch (error) {
     if (claimedConsumer && currentConsumer) {
       await restorePublicTreeConsumer(

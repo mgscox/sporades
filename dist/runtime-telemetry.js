@@ -114,6 +114,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
     });
     const failedExports = { traces: false, metrics: false };
     const lastFailureLoggedAt = new Map();
+    let reportedOutage = false;
     const emitDiagnostic = (diagnostic) => {
         try {
             const recorded = withoutRuntimeRequestIdentity(() => onDiagnostic?.(diagnostic));
@@ -127,9 +128,9 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             if (result.code === 0) {
                 const wasFailed = failedExports.traces || failedExports.metrics;
                 failedExports[signal] = false;
-                if (wasFailed && !failedExports.traces && !failedExports.metrics) {
+                if (wasFailed && !failedExports.traces && !failedExports.metrics && reportedOutage) {
                     emitDiagnostic({ event: "telemetry.export.recovered" });
-                    lastFailureLoggedAt.clear();
+                    reportedOutage = false;
                 }
             }
             else {
@@ -139,6 +140,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
                 if (!lastFailureLoggedAt.has(reason) || now - lastFailureLoggedAt.get(reason) >= 60_000) {
                     emitDiagnostic({ event: "telemetry.export.failed", reason });
                     lastFailureLoggedAt.set(reason, now);
+                    reportedOutage = true;
                 }
             }
         }

@@ -82,6 +82,69 @@ test("Container telemetry uses an explicit profile, host routing and credential 
   });
 });
 
+test("invalid private CA fails before replacing a working Container or altering the operator file", async () => {
+  await withTempDir(async (dir) => {
+    const projectRoot = path.join(dir, "with,comma");
+    await mkdir(projectRoot);
+    const created = await runCli(["create", "ca-capsule", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: projectRoot });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(projectRoot, "ca-capsule"));
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "ca-container");
+    const configDir = path.join(dir, "operator-config");
+    await mkdir(configDir);
+    const caPath = path.join(dir, "operator-ca.pem");
+    const env = { ...docker.env, SPORADES_CONFIG_DIR: configDir };
+    assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env })).code, 0);
+    const originalBinding = await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8");
+    const cases = [
+      ["missing", async () => {}],
+      ["directory", async () => mkdir(caPath)],
+      ["oversized", async () => writeFile(caPath, "x".repeat(1024 * 1024 + 1))],
+      ["unreadable", async () => { await writeFile(caPath, "unreadable"); await chmod(caPath, 0o000); }],
+      ["malformed", async () => writeFile(caPath, "not a certificate")],
+    ];
+    for (const [name, prepare] of cases) {
+      await rm(caPath, { recursive: true, force: true });
+      await prepare();
+      await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: {
+        private: { endpoint: "https://monitor.example:4318", tls: { mode: "verified", caFile: caPath } },
+      } }));
+      const before = await docker.calls();
+      const result = await runCli(["deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env });
+      assert.notEqual(result.code, 0, `${name}: ${result.stdout}`);
+      assert.deepEqual(await docker.calls(), before, `${name}: Docker lifecycle remains untouched`);
+      assert.equal(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"), originalBinding);
+      if (name === "unreadable") assert.equal((await stat(caPath)).mode & 0o777, 0);
+    }
+    await rm(caPath, { recursive: true, force: true });
+    const certificate = await readFile(path.join(repoRoot, "test", "fixtures", "smtp-test-cert.pem"));
+    await writeFile(caPath, certificate, { mode: 0o600 });
+    await chmod(caPath, 0o600);
+    const valid = await runCli(["deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env });
+    assert.equal(valid.code, 0, valid.stderr);
+    const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    const run = (await docker.calls()).filter(call => call.args[0] === "run").at(-1);
+    assert(run.args.some(arg => arg.includes(`"source=${binding.telemetryCaStagePath}"`) && arg.includes("target=/run/sporades/telemetry-ca.pem")));
+    assert(!run.args.some(arg => arg.includes(caPath)));
+    assert.deepEqual(await readFile(binding.telemetryCaStagePath), certificate);
+    assert.equal((await stat(binding.telemetryCaStagePath)).mode & 0o777, 0o644, "runtime UID can read staged trust");
+    assert.equal((await stat(caPath)).mode & 0o777, 0o600, "operator mode stays private");
+    assert.deepEqual(await readFile(caPath), certificate, "operator CA stays untouched");
+    await updateSporadesConfig(projectDir, config => {
+      config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    });
+    const sshDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env });
+    assert.equal(sshDeploy.code, 0, sshDeploy.stderr);
+    const sshBinding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    const sshRun = (await docker.calls()).filter(call => call.args[0] === "run").at(-1).args;
+    assert(sshRun.includes(BASE_IMAGE_RUNTIME_USER));
+    assert(sshRun.some(arg => arg.includes(sshBinding.telemetryCaStagePath)));
+    assert.equal((await stat(sshBinding.telemetryCaStagePath)).mode & 0o777, 0o644);
+    await assert.rejects(readFile(binding.telemetryCaStagePath), { code: "ENOENT" }, "old staged CA is retired after replacement");
+  });
+});
+
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-deploy-"));
   try {

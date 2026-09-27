@@ -1,5 +1,6 @@
 import type { PathLike } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
+import type { RuntimeTelemetryConfig } from "./runtime-telemetry.js";
 import { type ClientPrerenderFragment } from "./client-prerender.js";
 export type JsonRecord = Record<string, unknown>;
 export type ServerEnv = Record<string, string>;
@@ -50,6 +51,7 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
     deployFiles?: boolean;
     telemetryProfile?: string | null;
     containerTelemetry?: boolean;
+    resolvedContainerTelemetry?: RuntimeTelemetryConfig | null;
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
 }): Promise<{
     paths: {

@@ -130,6 +130,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   });
   const failedExports: Record<"traces" | "metrics", boolean> = { traces: false, metrics: false };
   const lastFailureLoggedAt = new Map<Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"], number>();
+  let reportedOutage = false;
   const emitDiagnostic = (diagnostic: TelemetryExportDiagnostic) => {
     try {
       const recorded = withoutRuntimeRequestIdentity(() => onDiagnostic?.(diagnostic));
@@ -141,9 +142,9 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       if (result.code === 0) {
         const wasFailed = failedExports.traces || failedExports.metrics;
         failedExports[signal] = false;
-        if (wasFailed && !failedExports.traces && !failedExports.metrics) {
+        if (wasFailed && !failedExports.traces && !failedExports.metrics && reportedOutage) {
           emitDiagnostic({ event: "telemetry.export.recovered" });
-          lastFailureLoggedAt.clear();
+          reportedOutage = false;
         }
       } else {
         failedExports[signal] = true;
@@ -152,6 +153,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
         if (!lastFailureLoggedAt.has(reason) || now - lastFailureLoggedAt.get(reason)! >= 60_000) {
           emitDiagnostic({ event: "telemetry.export.failed", reason });
           lastFailureLoggedAt.set(reason, now);
+          reportedOutage = true;
         }
       }
     } catch { /* A malformed exporter result must not change SDK completion. */ }
