@@ -2,10 +2,10 @@
 import { assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { lstatSync, readdirSync, readFileSync, statSync, watch } from "node:fs";
+import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
+import { constants as fsConstants, lstatSync, readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, cp, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { authStatus, createBundle, isReservedServerEnvKeyName, isValidServerEnvKeyName, parseServerEnv, readServerEnvFile, serverEnvPlaintextSize, } from "../bundle-pipeline.js";
@@ -24,7 +24,7 @@ import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServi
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
 import { runMonitoringStack } from "./monitoring-stack.js";
-import { changeTelemetryProfile, readTelemetryProfiles, resolveContainerTelemetryConfig, resolveLocalTelemetryConfig } from "./telemetry-profile.js";
+import { changeTelemetryProfile, readTelemetryProfiles, resolveLocalTelemetryConfig, toContainerTelemetryConfig } from "./telemetry-profile.js";
 import { createHttpRequestTelemetry } from "../runtime-telemetry.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, confirmAccessKeyOperatorAction, sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
@@ -3964,6 +3964,47 @@ function readProjectConfigSync(projectDir) {
     const raw = readFileSync(path.join(projectDir, "sporades.json"), "utf8");
     return JSON.parse(raw);
 }
+const TELEMETRY_CA_MAX_BYTES = 1024 * 1024;
+async function readContainerTelemetryCa(caPath) {
+    let file;
+    try {
+        // The operator file is read once. Docker receives a private deployment copy,
+        // so edits or permission changes to the original cannot change this attempt.
+        file = await open(caPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        const metadata = await file.stat();
+        if (!metadata.isFile() || metadata.size === 0 || metadata.size > TELEMETRY_CA_MAX_BYTES || !(metadata.mode & 0o444))
+            throw new Error("invalid CA file");
+        const contents = await file.readFile();
+        if (contents.length === 0 || contents.length > TELEMETRY_CA_MAX_BYTES)
+            throw new Error("invalid CA file");
+        const pem = contents.toString("utf8");
+        const blocks = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g);
+        if (!blocks?.length || pem.replace(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g, "").trim())
+            throw new Error("invalid CA certificate");
+        for (const block of blocks)
+            new X509Certificate(block);
+        return contents;
+    }
+    catch {
+        throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB; the running Container was preserved.");
+    }
+    finally {
+        await file?.close();
+    }
+}
+async function removeContainerTelemetryCaStage(runtimeDir, stagedPath) {
+    if (typeof stagedPath !== "string")
+        return;
+    const stageDir = path.join(runtimeDir, "telemetry-ca");
+    if (path.dirname(stagedPath) !== stageDir || !/^[0-9a-f]{32}\.pem$/.test(path.basename(stagedPath)))
+        return;
+    const directory = await lstat(stageDir).catch(() => null);
+    if (directory?.isDirectory() && !directory.isSymbolicLink())
+        await rm(stagedPath, { force: true });
+}
+function dockerMountField(value) {
+    return /[,"\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+}
 async function startContainerSession(options) {
     const config = await readProjectConfig(options.projectDir);
     const port = options.port ?? config.deploy?.port ?? 4000;
@@ -3972,14 +4013,14 @@ async function startContainerSession(options) {
     const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
     const existingBinding = await readContainerBinding(bindingPath);
     const telemetryProfile = options.telemetryProfile === undefined ? existingBinding?.telemetryProfile : options.telemetryProfile;
-    const telemetryConfig = await resolveContainerTelemetryConfig(config, telemetryProfile);
-    const selectedTelemetryName = telemetryProfile === null ? null : telemetryProfile ?? config.telemetry?.profile;
-    const telemetrySource = selectedTelemetryName && telemetryConfig ? (await readTelemetryProfiles())[selectedTelemetryName] : null;
+    const telemetrySource = telemetryProfile === null ? null : await resolveLocalTelemetryConfig(config, telemetryProfile);
+    const telemetryConfig = telemetrySource ? toContainerTelemetryConfig(telemetrySource) : null;
+    const telemetryCa = telemetrySource?.tls.caFile ? await readContainerTelemetryCa(telemetrySource.tls.caFile) : null;
     const previousConsumer = await readPublicTreeConsumer(path.join(runtimeDir, "build"), "container");
     verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
     const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
     const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
-    const bundle = await createBundle(options.projectDir, config, { publishLegacy: false, telemetryProfile, containerTelemetry: true });
+    const bundle = await createBundle(options.projectDir, config, { publishLegacy: false, telemetryProfile, containerTelemetry: true, resolvedContainerTelemetry: telemetryConfig });
     const dataDir = path.join(runtimeDir, "data");
     const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
     await mkdir(dataDir, { recursive: true });
@@ -4051,9 +4092,10 @@ async function startContainerSession(options) {
         await chmod(path.join(runtimeDir, "deploy-files"), 0o700);
     }
     const deployReleaseRoot = path.join(runtimeDir, "deploy-files", randomBytes(16).toString("hex"));
+    const telemetryCaStagePath = telemetryCa ? path.join(runtimeDir, "telemetry-ca", `${randomBytes(16).toString("hex")}.pem`) : null;
     const preservedRoot = path.join(runtimeDir, "preserved-files");
     const createdSeeds = [];
-    const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0);
+    const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0 || Boolean(telemetryCaStagePath || existingBinding?.telemetryCaStagePath));
     try {
         for (const file of bundle.deployFiles) {
             const destination = path.join(deployReleaseRoot, file.path);
@@ -4085,7 +4127,7 @@ async function startContainerSession(options) {
     const telemetryArgs = telemetryConfig ? [
         ...(telemetryConfig.tls.mode === "loopback" ? ["--add-host", "host.docker.internal:host-gateway"] : []),
         ...(telemetryConfig.credentialEnv ? ["--env", telemetryConfig.credentialEnv] : []),
-        ...(telemetrySource?.tls.caFile ? ["--volume", `${telemetrySource.tls.caFile}:/run/sporades/telemetry-ca.pem:ro`] : []),
+        ...(telemetryCaStagePath ? ["--mount", `type=bind,${dockerMountField(`source=${telemetryCaStagePath}`)},target=/run/sporades/telemetry-ca.pem,readonly`] : []),
     ] : [];
     const dockerRunArgs = [
         "run",
@@ -4140,11 +4182,20 @@ async function startContainerSession(options) {
     let committedConsumer = null;
     let binding = null;
     try {
+        if (telemetryCaStagePath && telemetryCa) {
+            await recordPreservedFileAttempt(seedJournal, { telemetryCaStagePath });
+            await mkdir(path.dirname(telemetryCaStagePath), { recursive: true, mode: 0o700 });
+            await writeFile(telemetryCaStagePath, telemetryCa, { flag: "wx", mode: 0o644 });
+            await chmod(telemetryCaStagePath, 0o644);
+        }
         // Journal both runtimes before touching Docker so `sporades deploy reconcile`
         // can settle an interrupted attempt from the journal alone.
         await recordPreservedFileAttempt(seedJournal, {
             candidate: { name: containerName, transaction: containerTransactionToken },
-            ...(existingContainer ? { previous: { containerId: existingBinding.containerId, name: oldName, rollbackName, wasRunning: oldWasRunning } } : {}),
+            ...(existingContainer || existingBinding?.telemetryCaStagePath ? { previous: {
+                    ...(existingContainer ? { containerId: existingBinding.containerId, name: oldName, rollbackName, wasRunning: oldWasRunning } : {}),
+                    ...(existingBinding?.telemetryCaStagePath ? { telemetryCaStagePath: existingBinding.telemetryCaStagePath } : {}),
+                } } : {}),
         });
         if (existingContainer) {
             runDocker(["rename", existingBinding.containerId, rollbackName], options.projectDir, "Failed to stage the existing Container for replacement.", "Retry after Docker can rename the bound Container.");
@@ -4177,7 +4228,9 @@ async function startContainerSession(options) {
         binding = {
             containerId,
             containerName,
+            containerTransactionToken,
             ...(telemetryProfile !== undefined ? { telemetryProfile } : {}),
+            ...(telemetryCaStagePath ? { telemetryCaStagePath } : {}),
             clientRelease,
             pendingDeployFileCleanup: [...(existingBinding?.pendingDeployFileCleanup ?? []), ...(existingBinding?.deployFilesRoot ? [existingBinding.deployFilesRoot] : [])],
             ...(bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path, update }) => ({ path, update })) } : {}),
@@ -4270,6 +4323,14 @@ async function startContainerSession(options) {
             rollbackFailures.push("candidate-public-tree");
         }
         if (!candidateRetained) {
+            if (telemetryCaStagePath) {
+                try {
+                    await rm(telemetryCaStagePath, { force: true });
+                }
+                catch {
+                    rollbackFailures.push("candidate-telemetry-ca");
+                }
+            }
             try {
                 await rollbackPreservedFiles(createdSeeds);
             }
@@ -4298,6 +4359,9 @@ async function startContainerSession(options) {
     }
     if (!containerId || !binding)
         throw commandError("Container replacement did not commit.", "Retry deployment.");
+    if (existingBinding?.telemetryCaStagePath && existingBinding.telemetryCaStagePath !== telemetryCaStagePath) {
+        await removeContainerTelemetryCaStage(runtimeDir, existingBinding.telemetryCaStagePath);
+    }
     await finishPreservedFileAttempt(seedJournal);
     for (const snapshot of binding.pendingDeployFileCleanup)
         await removeDeployFileSnapshot(runtimeDir, snapshot);
@@ -5917,8 +5981,11 @@ async function reconcileLocalContainerSession(options) {
     }
     const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
     const binding = await readContainerBinding(bindingPath);
-    const committed = Boolean(attempt.release && binding?.deployFilesRoot === attempt.release);
+    const candidateCaStagePath = attempt.records.find((record) => record.telemetryCaStagePath)?.telemetryCaStagePath;
     const candidate = attempt.records.find((record) => record.candidate)?.candidate;
+    const committed = Boolean((attempt.release && binding?.deployFilesRoot === attempt.release)
+        || (candidateCaStagePath && binding?.telemetryCaStagePath === candidateCaStagePath)
+        || (typeof candidate?.transaction === "string" && /^[a-f0-9]{32}$/.test(candidate.transaction) && binding?.containerTransactionToken === candidate.transaction));
     const previous = attempt.records.find((record) => record.previous)?.previous;
     const actions = [];
     if (committed) {
@@ -5926,6 +5993,10 @@ async function reconcileLocalContainerSession(options) {
         if (previous?.rollbackName && binding?.containerId !== previous.containerId) {
             runDockerCleanup(["rm", "-f", previous.rollbackName], options.projectDir, "Failed to remove the staged previous Container.", "Retry `sporades deploy reconcile` after Docker can remove the retained rollback Container.", true);
             actions.push("previous-container-removed");
+        }
+        if (previous?.telemetryCaStagePath && previous.telemetryCaStagePath !== binding?.telemetryCaStagePath) {
+            await removeContainerTelemetryCaStage(runtimeDir, previous.telemetryCaStagePath);
+            actions.push("previous-telemetry-ca-removed");
         }
     }
     else {
@@ -5943,10 +6014,14 @@ async function reconcileLocalContainerSession(options) {
                 actions.push("previous-container-renamed");
             }
         }
+        if (candidateCaStagePath && candidateCaStagePath !== binding?.telemetryCaStagePath) {
+            await removeContainerTelemetryCaStage(runtimeDir, candidateCaStagePath);
+            actions.push("candidate-telemetry-ca-removed");
+        }
         await rollbackPreservedFiles(attempt.seeds);
         if (attempt.seeds.length)
             actions.push("seeds-rolled-back");
-        if (attempt.release && attempt.release !== binding?.deployFilesRoot) {
+        if (attempt.release && attempt.release !== binding?.deployFilesRoot && await lstat(attempt.release).catch(() => null)) {
             await removeDeployFileSnapshot(runtimeDir, attempt.release);
             actions.push("candidate-snapshot-removed");
         }
@@ -6011,6 +6086,7 @@ async function removeLocalContainerSession(options) {
         for (const snapshot of [...(binding.pendingDeployFileCleanup ?? []), binding.deployFilesRoot]) {
             await removeDeployFileSnapshot(path.join(options.projectDir, ".sporades"), snapshot);
         }
+        await removeContainerTelemetryCaStage(path.join(options.projectDir, ".sporades"), binding.telemetryCaStagePath);
     }
     catch (error) {
         if (claimedConsumer && currentConsumer) {

@@ -121,6 +121,10 @@ export async function resolveContainerTelemetryConfig(config: { name?: string; t
   if (sessionProfile === null) return null;
   const resolved = await resolveLocalTelemetryConfig(config, sessionProfile);
   if (!resolved) return null;
+  return toContainerTelemetryConfig(resolved);
+}
+
+export function toContainerTelemetryConfig(resolved: RuntimeTelemetryConfig): RuntimeTelemetryConfig {
   const endpoint = new URL(resolved.endpoint);
   if (resolved.tls.mode === "loopback") endpoint.hostname = "host.docker.internal";
   return {

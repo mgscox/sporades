@@ -444,15 +444,15 @@ test('trace and metric transport recoveries wait until both exporters are health
 
     traceStatus = 401;
     await driveTrace();
-    await waitFor(() => diagnostics.length === 3);
-    assert.deepEqual(diagnostics[2], { event: 'telemetry.export.failed', reason: 'AUTH_REJECTED' });
+    await waitFor(() => received.traces >= 2);
+    assert.equal(diagnostics.length, 2, 'the same reason stays throttled after recovery');
     const metricCount = received.metrics;
     await waitFor(() => received.metrics > metricCount);
-    assert.equal(diagnostics.length, 3, 'healthy metric callback does not clear trace failure');
+    assert.equal(diagnostics.length, 2, 'healthy metric callback does not clear trace failure');
     traceStatus = 200;
     await driveTrace();
-    await waitFor(() => diagnostics.length === 4);
-    assert.deepEqual(diagnostics[3], { event: 'telemetry.export.recovered' });
+    await waitFor(() => received.traces >= 3);
+    assert.equal(diagnostics.length, 2, 'a throttled failure cannot produce an orphan recovery');
   } finally { await telemetry.shutdown(); app.close(); collector.close(); }
 });
 

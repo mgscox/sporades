@@ -77,7 +77,7 @@ export async function createBundle(projectDir, config, options = {}) {
     const clientBundle = clientOutput.legacyClientBundle;
     const serverBundleInputs = {
         config: { ...config, __sporadesTelemetry: options.containerTelemetry
-                ? await resolveContainerTelemetryConfig(config, options.telemetryProfile)
+                ? (Object.hasOwn(options, "resolvedContainerTelemetry") ? options.resolvedContainerTelemetry : await resolveContainerTelemetryConfig(config, options.telemetryProfile))
                 : options.telemetryProfile === undefined ? null : await resolveLocalTelemetryConfig(config, options.telemetryProfile) },
         serverEnv: sealedEnvelope ? {} : serverEnv,
         sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },

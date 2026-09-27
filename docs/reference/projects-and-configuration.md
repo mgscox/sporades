@@ -17,7 +17,15 @@ sporades deploy --telemetry local
 
 For a remote collector, use an HTTPS OTLP/HTTP origin and omit `--loopback`.
 `--ca-file /absolute/path/to/ca.pem` trusts a private CA while retaining TLS
-verification. The optional `--dashboard` is a credential-free HTTPS URL.
+verification. Container deploy checks that the selected CA is a readable,
+regular PEM certificate file of at most 1 MiB before replacing a running
+Container. It mounts a deployment-owned, read-only copy that the Container's
+runtime user can read; the operator file and its permissions stay unchanged.
+Keep the operator CA available for later redeploys. The optional `--dashboard`
+is a credential-free HTTPS URL.
+If deployment is interrupted, `sporades deploy reconcile` retires an unbound
+staged CA after settling the Container attempt; a bound CA remains until that
+Container is replaced or removed.
 `--event-loop-delay-resolution-ms` tunes Node event-loop delay sampling from
 10 to 1000 ms (default 20 ms); shorter intervals use more timer work.
 `--metrics-interval-ms` tunes metric export from 5000 to 300000 ms; the default
@@ -55,7 +63,7 @@ scope this credential to ingestion and use the operator's protected environment.
 A loopback collector URL is routed through `host.docker.internal` with Docker's
 `host-gateway` mapping; the collector must listen on an address reachable from
 the Container, not solely on Host loopback. A verified HTTPS profile uses its
-configured remote address and mounts an optional private CA read-only. Container
+configured remote address and mounts an optional validated private CA copy read-only. Container
 hardening and the self-contained server Bundle stay in effect. A missing
 selected profile or credential fails before the session starts. With no
 selection there is no exporter or retry loop. A collector outage leaves request

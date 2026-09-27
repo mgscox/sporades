@@ -27,4 +27,5 @@ export declare function resolveContainerTelemetryConfig(config: {
         profile?: string;
     };
 }, sessionProfile?: string | null): Promise<RuntimeTelemetryConfig | null>;
+export declare function toContainerTelemetryConfig(resolved: RuntimeTelemetryConfig): RuntimeTelemetryConfig;
 //# sourceMappingURL=telemetry-profile.d.ts.map

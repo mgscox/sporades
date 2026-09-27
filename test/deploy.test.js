@@ -82,6 +82,308 @@ test("Container telemetry uses an explicit profile, host routing and credential 
   });
 });
 
+test("invalid private CA fails before replacing a working Container or altering the operator file", async () => {
+  await withTempDir(async (dir) => {
+    const projectRoot = path.join(dir, "with,comma");
+    await mkdir(projectRoot);
+    const created = await runCli(["create", "ca-capsule", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: projectRoot });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(projectRoot, "ca-capsule"));
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "ca-container");
+    const configDir = path.join(dir, "operator-config");
+    await mkdir(configDir);
+    const caPath = path.join(dir, "operator-ca.pem");
+    const env = { ...docker.env, SPORADES_CONFIG_DIR: configDir };
+    assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env })).code, 0);
+    const originalBinding = await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8");
+    const cases = [
+      ["missing", async () => {}],
+      ["directory", async () => mkdir(caPath)],
+      ["oversized", async () => writeFile(caPath, "x".repeat(1024 * 1024 + 1))],
+      ["unreadable", async () => { await writeFile(caPath, "unreadable"); await chmod(caPath, 0o000); }],
+      ["malformed", async () => writeFile(caPath, "not a certificate")],
+    ];
+    for (const [name, prepare] of cases) {
+      await rm(caPath, { recursive: true, force: true });
+      await prepare();
+      await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: {
+        private: { endpoint: "https://monitor.example:4318", tls: { mode: "verified", caFile: caPath } },
+      } }));
+      const before = await docker.calls();
+      const result = await runCli(["deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env });
+      assert.notEqual(result.code, 0, `${name}: ${result.stdout}`);
+      assert.deepEqual(await docker.calls(), before, `${name}: Docker lifecycle remains untouched`);
+      assert.equal(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"), originalBinding);
+      if (name === "unreadable") assert.equal((await stat(caPath)).mode & 0o777, 0);
+    }
+    await rm(caPath, { recursive: true, force: true });
+    const certificate = await readFile(path.join(repoRoot, "test", "fixtures", "smtp-test-cert.pem"));
+    await writeFile(caPath, certificate, { mode: 0o600 });
+    await chmod(caPath, 0o600);
+    const valid = await runCli(["deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env });
+    assert.equal(valid.code, 0, valid.stderr);
+    const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    const run = (await docker.calls()).filter(call => call.args[0] === "run").at(-1);
+    assert(run.args.some(arg => arg.includes(`"source=${binding.telemetryCaStagePath}"`) && arg.includes("target=/run/sporades/telemetry-ca.pem")));
+    assert(!run.args.some(arg => arg.includes(caPath)));
+    assert.deepEqual(await readFile(binding.telemetryCaStagePath), certificate);
+    assert.equal((await stat(binding.telemetryCaStagePath)).mode & 0o777, 0o644, "runtime UID can read staged trust");
+    assert.equal((await stat(caPath)).mode & 0o777, 0o600, "operator mode stays private");
+    assert.deepEqual(await readFile(caPath), certificate, "operator CA stays untouched");
+    await updateSporadesConfig(projectDir, config => {
+      config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    });
+    const sshDeploy = await runCli(["deploy", "--json"], { cwd: projectDir, env });
+    assert.equal(sshDeploy.code, 0, sshDeploy.stderr);
+    const sshBinding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    const sshRun = (await docker.calls()).filter(call => call.args[0] === "run").at(-1).args;
+    assert(sshRun.includes(BASE_IMAGE_RUNTIME_USER));
+    assert(sshRun.some(arg => arg.includes(sshBinding.telemetryCaStagePath)));
+    assert.equal((await stat(sshBinding.telemetryCaStagePath)).mode & 0o777, 0o644);
+    await assert.rejects(readFile(binding.telemetryCaStagePath), { code: "ENOENT" }, "old staged CA is retired after replacement");
+  });
+});
+
+test("interrupted CA deployment reconciles its unbound copy and preserves the bound copy until removal", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "ca-recovery", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "ca-recovery"));
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "ca-recovery-container");
+    const configDir = path.join(dir, "operator-config");
+    const caPath = path.join(dir, "operator-ca.pem");
+    await mkdir(configDir);
+    const certificate = await readFile(path.join(repoRoot, "test", "fixtures", "smtp-test-cert.pem"));
+    await writeFile(caPath, certificate, { mode: 0o600 });
+    await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: {
+      private: { endpoint: "https://monitor.example:4318", tls: { mode: "verified", caFile: caPath } },
+    } }));
+    const env = { ...docker.env, SPORADES_CONFIG_DIR: configDir };
+    assert.equal((await runCli(["deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env })).code, 0);
+    const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+    const originalBinding = await readFile(bindingPath, "utf8");
+    const activeCa = JSON.parse(originalBinding).telemetryCaStagePath;
+    const preload = path.join(dir, "exit-after-ca-candidate.mjs");
+    await writeFile(preload, `import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
+const spawn = cp.spawnSync;
+cp.spawnSync = function(command, args, ...rest) {
+  const result = spawn.call(this, command, args, ...rest);
+  if (command === 'docker' && args[0] === 'run' && args.includes('--detach') && result.status === 0) process.exit(17);
+  return result;
+}; syncBuiltinESMExports();`);
+    const interrupted = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...env, NODE_OPTIONS: `--import=${preload}` } });
+    assert.equal(interrupted.code, 17, interrupted.stdout + interrupted.stderr);
+    const journal = path.join(projectDir, ".sporades", "deploy-file-attempt.jsonl");
+    const records = (await readFile(journal, "utf8")).trim().split("\n").map(JSON.parse);
+    const candidateCa = records.find(record => record.telemetryCaStagePath)?.telemetryCaStagePath;
+    assert(candidateCa && candidateCa !== activeCa);
+    assert.deepEqual(await readFile(candidateCa), certificate);
+    assert.deepEqual(await readFile(activeCa), certificate);
+    for (const action of ["stop", "remove"]) {
+      const blocked = await runCli(["deploy", action, "--json"], { cwd: projectDir, env });
+      assert.notEqual(blocked.code, 0);
+      assert.match(blocked.stdout + blocked.stderr, /requires recovery/);
+    }
+    const reconciled = await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env });
+    assert.equal(reconciled.code, 0, reconciled.stdout + reconciled.stderr);
+    assert(JSON.parse(reconciled.stdout).data.actions.includes("candidate-telemetry-ca-removed"));
+    await assert.rejects(readFile(candidateCa), { code: "ENOENT" });
+    assert.deepEqual(await readFile(activeCa), certificate);
+    assert.equal(await readFile(bindingPath, "utf8"), originalBinding);
+    const earlyPreload = path.join(dir, "exit-after-ca-write.mjs");
+    await writeFile(earlyPreload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const write = fs.promises.writeFile;
+fs.promises.writeFile = async function(file, ...args) {
+  const result = await write.call(this, file, ...args);
+  if (String(file).includes('/.sporades/telemetry-ca/')) process.exit(19);
+  return result;
+}; syncBuiltinESMExports();`);
+    const earlyExit = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...env, NODE_OPTIONS: `--import=${earlyPreload}` } });
+    assert.equal(earlyExit.code, 19, earlyExit.stdout + earlyExit.stderr);
+    const earlyRecords = (await readFile(journal, "utf8")).trim().split("\n").map(JSON.parse);
+    const earlyCa = earlyRecords.find(record => record.telemetryCaStagePath)?.telemetryCaStagePath;
+    assert.deepEqual(await readFile(earlyCa), certificate);
+    assert.equal((await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env })).code, 0);
+    await assert.rejects(readFile(earlyCa), { code: "ENOENT" });
+    assert.deepEqual(await readFile(activeCa), certificate);
+    assert.equal((await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env })).code, 0);
+    await assert.rejects(readFile(activeCa), { code: "ENOENT" });
+    assert.deepEqual(await readFile(caPath), certificate, "operator CA remains untouched");
+  });
+});
+
+test("reconcile retires the previous CA after a Container binding commits before cleanup", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "ca-committed", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "ca-committed"));
+    await installFakeReact(projectDir);
+    const configDir = path.join(dir, "operator-config");
+    const caPath = path.join(dir, "operator-ca.pem");
+    await mkdir(configDir);
+    const certificate = await readFile(path.join(repoRoot, "test", "fixtures", "smtp-test-cert.pem"));
+    await writeFile(caPath, certificate, { mode: 0o600 });
+    await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: {
+      private: { endpoint: "https://monitor.example:4318", tls: { mode: "verified", caFile: caPath } },
+    } }));
+    const firstDocker = await installFakeDocker(path.join(dir, "first"), "ca-first-container");
+    const env = { ...firstDocker.env, SPORADES_CONFIG_DIR: configDir };
+    assert.equal((await runCli(["deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env })).code, 0);
+    const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+    const previousCa = JSON.parse(await readFile(bindingPath, "utf8")).telemetryCaStagePath;
+    const nextDocker = await installFakeDocker(path.join(dir, "next"), "ca-next-container");
+    const preload = path.join(dir, "exit-after-binding.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const rename = fs.promises.rename;
+fs.promises.rename = async function(source, target) {
+  const result = await rename.call(this, source, target);
+  if (String(target).endsWith('/.sporades/binding.json')) process.exit(18);
+  return result;
+}; syncBuiltinESMExports();`);
+    const nextEnv = { ...nextDocker.env, SPORADES_CONFIG_DIR: configDir };
+    const interrupted = await runCli(["deploy", "--json"], { cwd: projectDir, env: { ...nextEnv, NODE_OPTIONS: `--import=${preload}` } });
+    assert.equal(interrupted.code, 18, interrupted.stdout + interrupted.stderr);
+    const committed = JSON.parse(await readFile(bindingPath, "utf8"));
+    assert.notEqual(committed.telemetryCaStagePath, previousCa);
+    assert.deepEqual(await readFile(previousCa), certificate);
+    const reconciled = await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env: nextEnv });
+    assert.equal(reconciled.code, 0, reconciled.stdout + reconciled.stderr);
+    const outcome = JSON.parse(reconciled.stdout).data;
+    assert.equal(outcome.committed, true);
+    assert(outcome.actions.includes("previous-telemetry-ca-removed"));
+    await assert.rejects(readFile(previousCa), { code: "ENOENT" });
+    assert.deepEqual(await readFile(committed.telemetryCaStagePath), certificate);
+    assert.equal((await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: nextEnv })).code, 0);
+    await assert.rejects(readFile(committed.telemetryCaStagePath), { code: "ENOENT" });
+    assert.deepEqual(await readFile(caPath), certificate);
+  });
+});
+
+test("reconcile keeps old CA before untrusted replacement commits and retires it after binding commits", async () => {
+  for (const selection of [["--no-telemetry"], ["--telemetry", "public"]]) await withTempDir(async (dir) => {
+    const created = await runCli(["create", "ca-disable", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "ca-disable"));
+    await installFakeReact(projectDir);
+    const configDir = path.join(dir, "operator-config");
+    const caPath = path.join(dir, "operator-ca.pem");
+    await mkdir(configDir);
+    const certificate = await readFile(path.join(repoRoot, "test", "fixtures", "smtp-test-cert.pem"));
+    await writeFile(caPath, certificate, { mode: 0o600 });
+    await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: {
+      private: { endpoint: "https://monitor.example:4318", tls: { mode: "verified", caFile: caPath } },
+      public: { endpoint: "https://monitor.example:4318", tls: { mode: "verified" } },
+    } }));
+    const firstDocker = await installFakeDocker(path.join(dir, "first"), "ca-old-container");
+    const firstEnv = { ...firstDocker.env, SPORADES_CONFIG_DIR: configDir };
+    assert.equal((await runCli(["deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env: firstEnv })).code, 0);
+    const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+    const originalBinding = await readFile(bindingPath, "utf8");
+    const oldCa = JSON.parse(originalBinding).telemetryCaStagePath;
+    const nextDocker = await installFakeDocker(path.join(dir, "next"), "ca-new-container");
+    const env = { ...nextDocker.env, SPORADES_CONFIG_DIR: configDir };
+    const earlyPreload = path.join(dir, "exit-before-binding.mjs");
+    await writeFile(earlyPreload, `import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
+const spawn = cp.spawnSync;
+cp.spawnSync = function(command, args, ...rest) {
+  const result = spawn.call(this, command, args, ...rest);
+  if (command === 'docker' && args[0] === 'run' && args.includes('--detach') && result.status === 0) process.exit(17);
+  return result;
+}; syncBuiltinESMExports();`);
+    const early = await runCli(["deploy", ...selection, "--json"], { cwd: projectDir, env: { ...env, NODE_OPTIONS: `--import=${earlyPreload}` } });
+    assert.equal(early.code, 17, early.stdout + early.stderr);
+    const journal = path.join(projectDir, ".sporades", "deploy-file-attempt.jsonl");
+    assert((await readFile(journal, "utf8")).includes(oldCa), `${selection.join(" ")}: previous CA recorded for recovery`);
+    const before = await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env });
+    assert.equal(before.code, 0, before.stdout + before.stderr);
+    assert.equal(JSON.parse(before.stdout).data.committed, false);
+    assert.deepEqual(await readFile(oldCa), certificate, "uncommitted replacement retains bound CA");
+    assert.equal(await readFile(bindingPath, "utf8"), originalBinding);
+    const latePreload = path.join(dir, "exit-after-binding.mjs");
+    await writeFile(latePreload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const rename = fs.promises.rename;
+fs.promises.rename = async function(source, target) {
+  const result = await rename.call(this, source, target);
+  if (String(target).endsWith('/.sporades/binding.json')) process.exit(18);
+  return result;
+}; syncBuiltinESMExports();`);
+    const late = await runCli(["deploy", ...selection, "--json"], { cwd: projectDir, env: { ...env, NODE_OPTIONS: `--import=${latePreload}` } });
+    assert.equal(late.code, 18, late.stdout + late.stderr);
+    assert((await readFile(journal, "utf8")).includes(oldCa));
+    const committed = JSON.parse(await readFile(bindingPath, "utf8"));
+    assert.equal(committed.telemetryCaStagePath, undefined);
+    const after = await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env });
+    assert.equal(after.code, 0, after.stdout + after.stderr);
+    assert.equal(JSON.parse(after.stdout).data.committed, true);
+    await assert.rejects(readFile(oldCa), { code: "ENOENT" });
+    assert.deepEqual(await readFile(caPath), certificate);
+  });
+});
+
+test("forced replacement journals bound CA ownership even when the previous Container is missing", async () => {
+  for (const selection of [["--no-telemetry"], ["--telemetry", "private"]]) await withTempDir(async (dir) => {
+    const created = await runCli(["create", "ca-stale", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "ca-stale"));
+    await installFakeReact(projectDir);
+    const configDir = path.join(dir, "operator-config");
+    const caPath = path.join(dir, "operator-ca.pem");
+    await mkdir(configDir);
+    const certificate = await readFile(path.join(repoRoot, "test", "fixtures", "smtp-test-cert.pem"));
+    await writeFile(caPath, certificate, { mode: 0o600 });
+    await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: {
+      private: { endpoint: "https://monitor.example:4318", tls: { mode: "verified", caFile: caPath } },
+    } }));
+    const oldDocker = await installFakeDocker(path.join(dir, "old"), "ca-old-container");
+    const oldEnv = { ...oldDocker.env, SPORADES_CONFIG_DIR: configDir };
+    assert.equal((await runCli(["deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env: oldEnv })).code, 0);
+    const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+    const oldBinding = await readFile(bindingPath, "utf8");
+    const oldCa = JSON.parse(oldBinding).telemetryCaStagePath;
+    const nextDocker = await installFakeDocker(path.join(dir, "next"), "ca-next-container", { missingInspectIds: ["ca-old-container"] });
+    const env = { ...nextDocker.env, SPORADES_CONFIG_DIR: configDir };
+    const earlyPreload = path.join(dir, "exit-before-binding.mjs");
+    await writeFile(earlyPreload, `import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
+const spawn = cp.spawnSync;
+cp.spawnSync = function(command, args, ...rest) {
+  const result = spawn.call(this, command, args, ...rest);
+  if (command === 'docker' && args[0] === 'run' && args.includes('--detach') && result.status === 0) process.exit(17);
+  return result;
+}; syncBuiltinESMExports();`);
+    const early = await runCli(["deploy", "--force", ...selection, "--json"], { cwd: projectDir, env: { ...env, NODE_OPTIONS: `--import=${earlyPreload}` } });
+    assert.equal(early.code, 17, early.stdout + early.stderr);
+    const journal = path.join(projectDir, ".sporades", "deploy-file-attempt.jsonl");
+    const earlyRecords = (await readFile(journal, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.equal(earlyRecords.find(record => record.previous)?.previous.telemetryCaStagePath, oldCa);
+    const before = await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env });
+    assert.equal(before.code, 0, before.stdout + before.stderr);
+    assert.equal(JSON.parse(before.stdout).data.committed, false);
+    assert.deepEqual(await readFile(oldCa), certificate);
+    assert.equal(await readFile(bindingPath, "utf8"), oldBinding);
+    const latePreload = path.join(dir, "exit-after-binding.mjs");
+    await writeFile(latePreload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const rename = fs.promises.rename;
+fs.promises.rename = async function(source, target) {
+  const result = await rename.call(this, source, target);
+  if (String(target).endsWith('/.sporades/binding.json')) process.exit(18);
+  return result;
+}; syncBuiltinESMExports();`);
+    const late = await runCli(["deploy", "--force", ...selection, "--json"], { cwd: projectDir, env: { ...env, NODE_OPTIONS: `--import=${latePreload}` } });
+    assert.equal(late.code, 18, late.stdout + late.stderr);
+    const committed = JSON.parse(await readFile(bindingPath, "utf8"));
+    assert.notEqual(committed.containerId, JSON.parse(oldBinding).containerId);
+    const after = await runCli(["deploy", "reconcile", "--json"], { cwd: projectDir, env });
+    assert.equal(after.code, 0, after.stdout + after.stderr);
+    assert.equal(JSON.parse(after.stdout).data.committed, true);
+    await assert.rejects(readFile(oldCa), { code: "ENOENT" });
+    if (selection.includes("private")) assert.deepEqual(await readFile(committed.telemetryCaStagePath), certificate);
+    else assert.equal(committed.telemetryCaStagePath, undefined);
+    assert.deepEqual(await readFile(caPath), certificate);
+  });
+});
+
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-deploy-"));
   try {
