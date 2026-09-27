@@ -4665,7 +4665,10 @@ async function startContainerSession(options: LooseRecord) {
     // can settle an interrupted attempt from the journal alone.
     await recordPreservedFileAttempt(seedJournal, {
       candidate: { name: containerName, transaction: containerTransactionToken },
-      ...(existingContainer ? { previous: { containerId: existingBinding.containerId, name: oldName, rollbackName, wasRunning: oldWasRunning, telemetryCaStagePath: existingBinding?.telemetryCaStagePath } } : {}),
+      ...(existingContainer || existingBinding?.telemetryCaStagePath ? { previous: {
+        ...(existingContainer ? { containerId: existingBinding.containerId, name: oldName, rollbackName, wasRunning: oldWasRunning } : {}),
+        ...(existingBinding?.telemetryCaStagePath ? { telemetryCaStagePath: existingBinding.telemetryCaStagePath } : {}),
+      } } : {}),
     });
     if (existingContainer) {
       runDocker(["rename", existingBinding.containerId, rollbackName], options.projectDir, "Failed to stage the existing Container for replacement.", "Retry after Docker can rename the bound Container.");
