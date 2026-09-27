@@ -1,13 +1,60 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { request as httpRequest } from 'node:http';
 import { spawn } from 'node:child_process';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { gatewayRunIdentity, setupEnvironment } from '../monitoring/trace/setup.mjs';
+import { gatewayRunIdentity, inspectEnvironment, setupEnvironment } from '../monitoring/trace/setup.mjs';
+
+test('copied example generates safe credentials, reports external certificates, and defaults traces to three days', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sporades-trace-example-'));
+  const path = join(directory, '.env');
+  await copyFile(new URL('../monitoring/trace/.env.example', import.meta.url), path);
+  assert.deepEqual((await setupEnvironment(path)).missing, ['TRACE_CERT_FILE', 'TRACE_KEY_FILE']);
+  const env = await readFile(path, 'utf8');
+  assert.match(env, /^TRACE_RETENTION=72h$/m);
+  const credentials = await readFile(join(directory, '.private', 'credentials.json'), 'utf8');
+  const grafana = await readFile(join(directory, '.private', 'grafana-admin-password'), 'utf8');
+  assert.doesNotMatch(credentials + grafana, /REPLACE_WITH_GENERATED_SECRET/);
+  assert.match(await readFile(join(directory, '.compose.env'), 'utf8'), /TRACE_RETENTION='72h'/);
+});
+
+test('explicit invalid owned credentials fail without publishing private outputs or altering operator env', async () => {
+  for (const key of ['TRACE_INGEST_TOKEN', 'TRACE_UI_PASSWORD', 'GRAFANA_ADMIN_PASSWORD']) {
+    for (const value of ['REPLACE_WITH_GENERATED_SECRET', '']) {
+      const directory = await mkdtemp(join(tmpdir(), 'sporades-trace-placeholder-'));
+      const path = join(directory, '.env');
+      const source = `TRACE_TLS_MODE=proxy\n${key}=${value}\n`;
+      await writeFile(path, source);
+      if (value) assert.throws(() => inspectEnvironment(source), new RegExp(key));
+      await assert.rejects(setupEnvironment(path), new RegExp(key));
+      assert.equal(await readFile(path, 'utf8'), source);
+      await assert.rejects(stat(join(directory, '.private', 'credentials.json')), /ENOENT/);
+      await assert.rejects(stat(join(directory, '.private', 'grafana-admin-password')), /ENOENT/);
+    }
+  }
+});
+
+test('dashboard regex variables use PromQL raw strings in panels and variable queries', async () => {
+  for (const dashboard of ['api-dashboard.json', 'resource-dashboard.json']) {
+    const source = JSON.parse(await readFile(new URL(`../monitoring/trace/${dashboard}`, import.meta.url), 'utf8'));
+    const expressions = [
+      ...source.panels.flatMap(panel => panel.targets.map(target => target.expr)),
+      ...source.templating.list.filter(variable => variable.type === 'query').map(variable => variable.query),
+    ];
+    for (const expression of expressions) {
+      for (const variable of ['service', 'environment', 'instance', 'route']) {
+        if (expression.includes(`\${${variable}:regex}`)) {
+          const label = { route: 'http_route', service: 'service_name', environment: 'deployment_environment_name', instance: 'instance' }[variable];
+          assert.ok(expression.includes(`${label}=~` + '`' + `\${${variable}:regex}` + '`'), expression);
+        }
+      }
+    }
+  }
+});
 
 test('root Linux setup keeps the gateway non-root; unprivileged setup keeps its owner', () => {
   assert.deepEqual(gatewayRunIdentity('linux', 0, 0), { uid: 1000, gid: 1000, transferOwnership: true });
@@ -19,11 +66,13 @@ import { createGateway } from '../monitoring/trace/gateway.mjs';
 test('setup preserves operator settings and generates only missing owned credentials', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sporades-trace-'));
   const path = join(directory, '.env');
-  await writeFile(path, 'TRACE_TLS_MODE=proxy\nTRACE_BIND=127.0.0.1\nTRACE_INGEST_TOKEN=chosen-token\nOPERATOR_EXTRA=keep-me\n');
+  await writeFile(path, 'TRACE_TLS_MODE=proxy\nTRACE_BIND=127.0.0.1\nTRACE_RETENTION=48h\nTRACE_INGEST_TOKEN=chosen-token\nOPERATOR_EXTRA=keep-me\n');
   await setupEnvironment(path);
   const first = await readFile(path, 'utf8');
   assert.match(first, /TRACE_INGEST_TOKEN=chosen-token/);
   assert.match(first, /OPERATOR_EXTRA=keep-me/);
+  assert.match(first, /^TRACE_RETENTION=48h$/m);
+  assert.match(await readFile(join(directory, '.compose.env'), 'utf8'), /TRACE_RETENTION='48h'/);
   assert.match(first, /TRACE_UI_PASSWORD=[^\n]+/);
   await setupEnvironment(path);
   assert.equal(await readFile(path, 'utf8'), first);

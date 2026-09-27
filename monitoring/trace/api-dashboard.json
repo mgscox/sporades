@@ -32,7 +32,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (service_name) (rate(http_server_request_count_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`}[${metric_window}]))",
+          "expr": "sum by (service_name) (rate(http_server_request_count_total{service_name=~`${service:regex}`,deployment_environment_name=~`${environment:regex}`,http_route=~`${route:regex}`}[${metric_window}]))",
           "legendFormat": "{{service_name}}"
         }
       ],
@@ -60,7 +60,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, service_name) (rate(http_server_request_duration_seconds_bucket{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`,sporades_http_outcome!=\"abort\"}[${metric_window}])))",
+          "expr": "histogram_quantile(0.95, sum by (le, service_name) (rate(http_server_request_duration_seconds_bucket{service_name=~`${service:regex}`,deployment_environment_name=~`${environment:regex}`,http_route=~`${route:regex}`,sporades_http_outcome!=\"abort\"}[${metric_window}])))",
           "legendFormat": "{{service_name}}"
         }
       ],
@@ -88,7 +88,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (service_name, sporades_http_outcome) (rate(http_server_request_count_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`,sporades_http_outcome=~\"error|failure|abort\"}[${metric_window}]))",
+          "expr": "sum by (service_name, sporades_http_outcome) (rate(http_server_request_count_total{service_name=~`${service:regex}`,deployment_environment_name=~`${environment:regex}`,http_route=~`${route:regex}`,sporades_http_outcome=~\"error|failure|abort\"}[${metric_window}]))",
           "legendFormat": "{{service_name}} {{sporades_http_outcome}}"
         }
       ],
@@ -116,7 +116,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (service_name) (http_server_active_requests{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`})",
+          "expr": "sum by (service_name) (http_server_active_requests{service_name=~`${service:regex}`,deployment_environment_name=~`${environment:regex}`,http_route=~`${route:regex}`})",
           "legendFormat": "{{service_name}}"
         }
       ],
@@ -144,7 +144,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, service_name, http_route) (rate(http_server_request_duration_seconds_bucket{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`,sporades_http_outcome!=\"abort\"}[${metric_window}])))",
+          "expr": "histogram_quantile(0.95, sum by (le, service_name, http_route) (rate(http_server_request_duration_seconds_bucket{service_name=~`${service:regex}`,deployment_environment_name=~`${environment:regex}`,http_route=~`${route:regex}`,sporades_http_outcome!=\"abort\"}[${metric_window}])))",
           "legendFormat": "{{service_name}} {{http_route}}"
         }
       ],

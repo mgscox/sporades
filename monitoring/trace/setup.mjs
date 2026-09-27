@@ -6,7 +6,15 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const owned = ['TRACE_INGEST_TOKEN', 'TRACE_UI_PASSWORD', 'GRAFANA_ADMIN_PASSWORD'];
-const defaults = { TRACE_TLS_MODE: 'tls', TRACE_BIND: '127.0.0.1', TRACE_PORT: '8443', TRACE_UI_USER: 'operator', TRACE_RETENTION: '168h', METRIC_RETENTION: '14d', METRIC_DISK_CAP: '8GB' };
+const defaults = { TRACE_TLS_MODE: 'tls', TRACE_BIND: '127.0.0.1', TRACE_PORT: '8443', TRACE_UI_USER: 'operator', TRACE_RETENTION: '72h', METRIC_RETENTION: '14d', METRIC_DISK_CAP: '8GB' };
+
+function rejectPlaceholderCredentials(entries) {
+  for (const key of owned) {
+    if (entries.get(key) === 'REPLACE_WITH_GENERATED_SECRET') {
+      throw new Error(`${key} must be replaced with a real credential`);
+    }
+  }
+}
 
 export function gatewayRunIdentity(platform = process.platform, uid = process.getuid(), gid = process.getgid()) {
   if (platform === 'darwin') return { uid: 1000, gid: 1000, transferOwnership: false };
@@ -36,6 +44,7 @@ export function parseEnvironment(source) {
 
 export function inspectEnvironment(source) {
   const entries = parseEnvironment(source);
+  rejectPlaceholderCredentials(entries);
   const mode = entries.get('TRACE_TLS_MODE') ?? defaults.TRACE_TLS_MODE;
   const bind = entries.get('TRACE_BIND') ?? defaults.TRACE_BIND;
   if (!['tls', 'proxy'].includes(mode)) throw new Error('TRACE_TLS_MODE must be tls or proxy');
@@ -49,6 +58,10 @@ export async function setupEnvironment(path) {
   try { source = await readFile(path, 'utf8'); }
   catch (error) { if (error.code !== 'ENOENT') throw error; source = ''; }
   const entries = parseEnvironment(source);
+  rejectPlaceholderCredentials(entries);
+  for (const key of owned) {
+    if (entries.has(key) && !entries.get(key)) throw new Error(`${key} must not be empty`);
+  }
   const additions = [];
   for (const [key, value] of Object.entries(defaults)) if (!entries.has(key)) { additions.push(`${key}=${value}`); entries.set(key, value); }
   if (!entries.has('GRAFANA_ROOT_URL')) {

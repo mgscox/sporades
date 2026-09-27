@@ -8,7 +8,7 @@ extensions:
             values: /badger/values
           ephemeral: false
           ttl:
-            spans: ${env:TRACE_RETENTION:-168h}
+            spans: ${env:TRACE_RETENTION:-72h}
   jaeger_query:
     storage:
       traces: traces
