@@ -5,6 +5,71 @@ import { get } from 'node:http';
 import { once } from 'node:events';
 
 import { activeRuntimeRequestSpan, createHttpRequestTelemetry, resolveTelemetryRoute } from '../dist/runtime-telemetry.js';
+import { createLogEnvelope } from '../dist/server-runtime-source.js';
+import { minimumLogPayloadMaxBytes } from '../dist/log-envelope.js';
+
+test('overlapping request logs carry isolated trace and stable request identities', async () => {
+  const telemetry = createHttpRequestTelemetry({ endpoint: 'http://127.0.0.1:19999', tls: { mode: 'loopback' }, serviceName: 'log-test' });
+  const logs = [];
+  let atFloor;
+  const app = createServer((request, response) => telemetry.run(request, response, [{ method: 'GET', path: '/work' }], async () => {
+    const label = request.url.includes('slow') ? 'slow' : 'fast';
+    const log = (suffix) => logs.push(createLogEnvelope({ config: { name: 'log-test' }, category: 'app', event: 'ctx.log', message: `${label}-${suffix}`, request: { method: 'GET', path: '/work' }, correlation: { id: `caller-${label}` }, data: { safe: label, password: 'private-password' } }));
+    log('start');
+    if (label === 'slow') {
+      const config = { name: 'log-test', logs: { payloadMaxBytes: minimumLogPayloadMaxBytes({ name: 'log-test' }) } };
+      atFloor = createLogEnvelope({ config, timestamp: '2026-09-11T00:00:00.000Z', category: 'c'.repeat(16), level: 'l'.repeat(16), event: 'e'.repeat(64), message: 'm'.repeat(128), data: { value: 'd'.repeat(244) } });
+    }
+    await new Promise((resolve) => setTimeout(resolve, label === 'slow' ? 50 : 5));
+    log('end');
+    response.writeHead(200).end();
+  })).listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  try {
+    const origin = `http://127.0.0.1:${app.address().port}`;
+    await Promise.all([
+      fetch(`${origin}/work?slow=private`, { headers: { traceparent: '00-11111111111111111111111111111111-aaaaaaaaaaaaaaaa-01' } }),
+      fetch(`${origin}/work?fast=private`, { headers: { traceparent: '00-22222222222222222222222222222222-bbbbbbbbbbbbbbbb-01' } }),
+    ]);
+    assert.equal(logs.length, 4);
+    for (const label of ['slow', 'fast']) {
+      const pair = logs.filter((entry) => entry.message.startsWith(label));
+      assert.equal(pair.length, 2);
+      assert.match(pair[0].request.id, /^[0-9a-f-]{36}$/);
+      assert.equal(pair[0].request.id, pair[1].request.id);
+      assert.equal(pair[0].traceId, label === 'slow' ? '11111111111111111111111111111111' : '22222222222222222222222222222222');
+      assert.match(pair[0].spanId, /^[0-9a-f]{16}$/);
+      assert.equal(pair[0].spanId, pair[1].spanId);
+      assert.deepEqual(pair[0].correlation, { id: `caller-${label}` });
+      assert.equal(pair[0].data.password, '[REDACTED]');
+    }
+    assert.notEqual(logs[0].request.id, logs[2].request.id);
+    assert.equal(atFloor.truncated, false);
+    assert.equal(Buffer.byteLength(JSON.stringify(atFloor)), minimumLogPayloadMaxBytes({ name: 'log-test' }));
+    assert.doesNotMatch(JSON.stringify(logs), /private|aaaaaaaa|bbbbbbbb/);
+  } finally { await telemetry.shutdown(); app.close(); }
+});
+
+test('disabled telemetry keeps stable request IDs and preserves caller correlation', async () => {
+  const telemetry = createHttpRequestTelemetry();
+  const seen = [];
+  const app = createServer((request, response) => telemetry.run(request, response, [], async () => {
+    const log = (message, suppliedId) => seen.push(createLogEnvelope({ config: { name: 'disabled' }, message, request: suppliedId ? { id: suppliedId, method: 'GET', path: '/work' } : null, correlation: { id: 'caller-correlation' } }));
+    log('first');
+    await Promise.resolve();
+    log('second');
+    log('explicit', 'caller-request');
+    response.writeHead(200).end();
+  })).listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  try {
+    assert.equal((await fetch(`http://127.0.0.1:${app.address().port}/work`)).status, 200);
+    assert.equal(seen[0].request.id, seen[1].request.id);
+    assert.equal(seen[2].request.id, 'caller-request');
+    assert.deepEqual(seen.map((entry) => entry.correlation), Array(3).fill({ id: 'caller-correlation' }));
+    assert(seen.every((entry) => entry.traceId === null && entry.spanId === null));
+  } finally { await telemetry.shutdown(); app.close(); }
+});
 
 test('HTTP telemetry exports bounded route labels, terminal outcomes and isolated overlapping parents', async () => {
   const received = [];

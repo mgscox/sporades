@@ -26853,44 +26853,9 @@ var unsupportedResources = Object.freeze({
 
 // src/log-envelope.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-function uncappedLogEnvelope(input) {
-  const config = input.config ?? {};
-  const capsuleName = String(config.name ?? "unknown");
-  return {
-    schema: "sporades.log.v1",
-    timestamp: input.timestamp ?? (/* @__PURE__ */ new Date()).toISOString(),
-    category: input.category ?? "platform",
-    event: input.event ?? "runtime.event",
-    level: input.level ?? "info",
-    message: String(input.message ?? ""),
-    capsule: {
-      name: capsuleName,
-      id: String(config.capsule?.id ?? config.id ?? capsuleName)
-    },
-    release: input.release ?? config.release ?? null,
-    request: input.request ? {
-      id: input.request.id ?? randomUUID2(),
-      method: input.request.method ?? null,
-      path: input.request.path ?? null
-    } : null,
-    correlation: input.correlation ?? null,
-    data: input.data ?? null
-  };
-}
-function logPayloadMaxBytes(config = {}) {
-  return config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes ?? 4096;
-}
 
-// src/live-query-invalidation.ts
-var { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
-var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
-var liveQueryReads = new AsyncLocalStorage();
-var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
-var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
-var writeTablePattern = new RegExp(
-  String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
-  "i"
-);
+// src/runtime-telemetry.ts
+import { AsyncLocalStorage } from "node:async_hooks";
 
 // src/auth-admission.ts
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
@@ -26906,6 +26871,23 @@ var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
 // src/access-keys-runtime.ts
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
 
+// src/teams-runtime.ts
+var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
+var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
+var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
+var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+
+// src/auth-runtime.ts
+var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
+var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
+var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
+var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
+var registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
+var invalidRegistrationAdmission = Symbol("sporades.invalidRegistrationAdmission");
+var OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1e3;
+var oauthRegistrationUnsealFailed = Symbol("sporades.oauthRegistrationUnsealFailed");
+
 // src/team-billing-management.ts
 var CLAIM_TTL_MS = 5 * 60 * 1e3;
 
@@ -26920,7 +26902,7 @@ var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 var CLAIM_TTL_MS2 = 5 * 6e4;
 
 // src/jobs-runtime.ts
-var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
 var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
 var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
@@ -27010,7 +26992,7 @@ function auditString(value, fallback) {
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
 // src/file-storage-runtime.ts
-var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
 
 // src/file-ingress-runtime.ts
 var import_pdf_lib = __toESM(require_cjs(), 1);
@@ -42708,22 +42690,59 @@ var clamavRefreshIntervalMs = 60 * 60 * 1e3;
 var clamavRefreshRetryMs = 15 * 60 * 1e3;
 var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 
-// src/teams-runtime.ts
-var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
-var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
-var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
-var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+// src/runtime-telemetry.ts
+var requestScope = new AsyncLocalStorage();
+function activeRuntimeLogIdentity() {
+  const scope = requestScope.getStore();
+  if (!scope) return void 0;
+  const context = scope.span?.spanContext();
+  const traceId = context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? context.traceId : null;
+  const spanId = traceId && context && /^[0-9a-f]{16}$/.test(context.spanId) && !/^0+$/.test(context.spanId) ? context.spanId : null;
+  return { requestId: scope.requestId, traceId, spanId };
+}
 
-// src/auth-runtime.ts
-var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
-var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
-var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
-var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
-var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
-var registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
-var invalidRegistrationAdmission = Symbol("sporades.invalidRegistrationAdmission");
-var OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1e3;
-var oauthRegistrationUnsealFailed = Symbol("sporades.oauthRegistrationUnsealFailed");
+// src/log-envelope.ts
+function uncappedLogEnvelope(input) {
+  const config = input.config ?? {};
+  const capsuleName = String(config.name ?? "unknown");
+  const identity = activeRuntimeLogIdentity();
+  return {
+    schema: "sporades.log.v1",
+    timestamp: input.timestamp ?? (/* @__PURE__ */ new Date()).toISOString(),
+    category: input.category ?? "platform",
+    event: input.event ?? "runtime.event",
+    level: input.level ?? "info",
+    message: String(input.message ?? ""),
+    capsule: {
+      name: capsuleName,
+      id: String(config.capsule?.id ?? config.id ?? capsuleName)
+    },
+    release: input.release ?? config.release ?? null,
+    request: input.request || identity ? {
+      id: input.request?.id ?? identity?.requestId ?? randomUUID2(),
+      method: input.request?.method ?? null,
+      path: input.request?.path ?? null
+    } : null,
+    correlation: input.correlation ?? null,
+    traceId: identity?.traceId ?? null,
+    spanId: identity?.spanId ?? null,
+    data: input.data ?? null
+  };
+}
+function logPayloadMaxBytes(config = {}) {
+  return config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes ?? 4096;
+}
+
+// src/live-query-invalidation.ts
+var { AsyncLocalStorage: AsyncLocalStorage2 } = process.getBuiltinModule("node:async_hooks");
+var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
+var liveQueryReads = new AsyncLocalStorage2();
+var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
+var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
+var writeTablePattern = new RegExp(
+  String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
+  "i"
+);
 
 // src/cli/access-key-operator-envelope.ts
 import { createInterface } from "node:readline/promises";

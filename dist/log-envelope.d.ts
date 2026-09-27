@@ -17,6 +17,8 @@ export declare function uncappedLogEnvelope(input: LooseRecord): {
         path: any;
     } | null;
     correlation: any;
+    traceId: string | null;
+    spanId: string | null;
     data: any;
 };
 export declare function minimumLogPayloadMaxBytes(config?: LooseRecord): number;

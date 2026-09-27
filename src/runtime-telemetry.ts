@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -63,10 +64,20 @@ function safeMethod(method: unknown): string {
   return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
 }
 
-const requestSpan = new AsyncLocalStorage<Span>();
+const requestScope = new AsyncLocalStorage<{ requestId: string; span?: Span }>();
 
 /** Internal seam for later operation spans; no Capsule-facing API is exported. */
-export function activeRuntimeRequestSpan(): Span | undefined { return requestSpan.getStore(); }
+export function activeRuntimeRequestSpan(): Span | undefined { return requestScope.getStore()?.span; }
+
+/** Only runtime-created identities may be attached to the existing log envelope. */
+export function activeRuntimeLogIdentity(): { requestId: string; traceId: string | null; spanId: string | null } | undefined {
+  const scope = requestScope.getStore();
+  if (!scope) return undefined;
+  const context = scope.span?.spanContext();
+  const traceId = context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? context.traceId : null;
+  const spanId = traceId && context && /^[0-9a-f]{16}$/.test(context.spanId) && !/^0+$/.test(context.spanId) ? context.spanId : null;
+  return { requestId: scope.requestId, traceId, spanId };
+}
 
 function validatedRemoteParent(request: IncomingMessage) {
   const value = request.headers.traceparent;
@@ -92,7 +103,7 @@ function exportFailureReason(error: unknown): Extract<TelemetryExportDiagnostic,
 }
 
 export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>) {
-  if (!config) return { run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => handle(), shutdown: async () => {} };
+  if (!config) return { run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => requestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => {} };
   const url = new URL(config.endpoint);
   const endpoint = new URL("/v1/traces", url).toString();
   const token = config.credentialEnv ? process.env[config.credentialEnv] : undefined;
@@ -208,7 +219,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = requestSpan.run(span, handle);
+        const result = requestScope.run({ requestId: randomUUID(), span }, handle);
         if (result && typeof (result as Promise<unknown>).then === "function") {
           return Promise.resolve(result).catch((error) => { end("error"); throw error; });
         }

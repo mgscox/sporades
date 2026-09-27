@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { ROOT_CONTEXT, SpanKind, SpanStatusCode, TraceFlags, trace } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -44,9 +45,19 @@ function safeMethod(method) {
     const value = typeof method === "string" ? method.toUpperCase() : "OTHER";
     return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
 }
-const requestSpan = new AsyncLocalStorage();
+const requestScope = new AsyncLocalStorage();
 /** Internal seam for later operation spans; no Capsule-facing API is exported. */
-export function activeRuntimeRequestSpan() { return requestSpan.getStore(); }
+export function activeRuntimeRequestSpan() { return requestScope.getStore()?.span; }
+/** Only runtime-created identities may be attached to the existing log envelope. */
+export function activeRuntimeLogIdentity() {
+    const scope = requestScope.getStore();
+    if (!scope)
+        return undefined;
+    const context = scope.span?.spanContext();
+    const traceId = context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? context.traceId : null;
+    const spanId = traceId && context && /^[0-9a-f]{16}$/.test(context.spanId) && !/^0+$/.test(context.spanId) ? context.spanId : null;
+    return { requestId: scope.requestId, traceId, spanId };
+}
 function validatedRemoteParent(request) {
     const value = request.headers.traceparent;
     if (typeof value !== "string" || value.length !== 55)
@@ -75,7 +86,7 @@ function exportFailureReason(error) {
 }
 export function createHttpRequestTelemetry(config, onDiagnostic) {
     if (!config)
-        return { run: (_request, _response, _endpoints, handle) => handle(), shutdown: async () => { } };
+        return { run: (_request, _response, _endpoints, handle) => requestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => { } };
     const url = new URL(config.endpoint);
     const endpoint = new URL("/v1/traces", url).toString();
     const token = config.credentialEnv ? process.env[config.credentialEnv] : undefined;
@@ -204,7 +215,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             response.once("error", () => end("error"));
             request.once("aborted", () => end("abort"));
             try {
-                const result = requestSpan.run(span, handle);
+                const result = requestScope.run({ requestId: randomUUID(), span }, handle);
                 if (result && typeof result.then === "function") {
                     return Promise.resolve(result).catch((error) => { end("error"); throw error; });
                 }

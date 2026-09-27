@@ -45,7 +45,9 @@ JSON escaping and UTF-8 encoding. It reserves these additional allowances:
 | `message` | 128 bytes of JSON-escaped UTF-8 content, excluding surrounding quotes |
 | `category`, `level` | 16 bytes each, measured the same way |
 | `timestamp` | 24-byte UTC ISO timestamp, such as `2026-09-11T00:00:00.000Z` |
-| `request`, `correlation` | `null` |
+| `request.id` | 36-byte runtime UUID with `method` and `path` as `null` |
+| `correlation` | `null` |
+| `traceId`, `spanId` | 32 and 16 lowercase hexadecimal characters |
 | `data` | 256 bytes of serialized JSON after redaction |
 | `truncated` | `false`, including the field and value in the byte budget |
 

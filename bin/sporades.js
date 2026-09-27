@@ -78053,7 +78053,7 @@ var init_shared_env_configuration = __esm({
 
 // node_modules/.pnpm/@opentelemetry+otlp-exporter-base@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/otlp-exporter-base/build/esm/configuration/otlp-node-http-env-configuration.js
 import * as fs2 from "fs";
-import * as path15 from "path";
+import * as path12 from "path";
 function getStaticHeadersFromEnv(signalIdentifier) {
   const signalSpecificRawHeaders = (0, import_core4.getStringFromEnv)(`OTEL_EXPORTER_OTLP_${signalIdentifier}_HEADERS`);
   const nonSignalSpecificRawHeaders = (0, import_core4.getStringFromEnv)("OTEL_EXPORTER_OTLP_HEADERS");
@@ -78112,7 +78112,7 @@ function readFileFromEnv(signalSpecificEnvVar, nonSignalSpecificEnvVar, warningM
   const filePath = signalSpecificPath ?? nonSignalSpecificPath;
   if (filePath != null) {
     try {
-      return fs2.readFileSync(path15.resolve(process.cwd(), filePath));
+      return fs2.readFileSync(path12.resolve(process.cwd(), filePath));
     } catch {
       diag2.warn(warningMessage);
       return void 0;
@@ -127970,14 +127970,233 @@ function restartPolicyStatus(mode, overrides2 = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash11, randomBytes as randomBytes6, randomUUID as randomUUID10 } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash as createHash11, randomBytes as randomBytes6, randomUUID as randomUUID11 } from "node:crypto";
+import { appendFileSync, mkdirSync, readFileSync as readFileSync3 } from "node:fs";
 
 // src/log-envelope.ts
+import { randomUUID as randomUUID9 } from "node:crypto";
+
+// src/runtime-telemetry.ts
+init_esm();
+var import_exporter_trace_otlp_http = __toESM(require_src6(), 1);
+var import_exporter_metrics_otlp_http = __toESM(require_src7(), 1);
+var import_resources = __toESM(require_src3(), 1);
+var import_sdk_metrics = __toESM(require_src4(), 1);
+var import_sdk_trace_base = __toESM(require_index_shim(), 1);
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID8 } from "node:crypto";
+import { readFileSync as readFileSync2, statSync } from "node:fs";
+var builtinRoutes = [
+  ["GET", "/__sporades/connection-token"],
+  ["GET", "/__sporades/health/runtime"],
+  ["GET", "/__sporades/debug/logs"],
+  ["GET", "/__sporades/debug/logs/tail"],
+  ["GET", "/__sporades/debug/db/list"],
+  ["GET", "/__sporades/debug/db/dump"],
+  ["POST", "/__sporades/debug/db/query"],
+  ["POST", "/__sporades/debug/ctx-log"],
+  ["POST", "/__sporades/debug/privileged-audit"],
+  ["POST", "/__sporades/debug/auth/as"],
+  ["GET", "/__sporades/debug/auth/clients"]
+];
+function resolveTelemetryRoute(request, endpoints) {
+  const method = safeMethod(request.method);
+  const target = interpretHttpRequestTarget(request.url, request.method);
+  if (!target) return "/__unknown";
+  const pathname = target.pathname;
+  const custom = endpoints.find((endpoint) => endpoint.method === method && endpoint.path === pathname);
+  if (custom && /^\/[a-zA-Z0-9/_%.:-]{0,120}$/.test(custom.path)) return custom.path;
+  if (builtinRoutes.some(([routeMethod, routePath]) => routeMethod === method && routePath === pathname)) return pathname;
+  if (method === "GET" && /^\/__sporades\/files\/private\/[^/]+$/.test(pathname)) return "/__sporades/files/private/:id";
+  if (method === "PUT" && /^\/__sporades\/uploads\/[^/]+$/.test(pathname)) return "/__sporades/uploads/:id";
+  if (pathname.startsWith("/__sporades/auth/")) return "/__sporades/auth/*";
+  return "/__unknown";
+}
+function safeMethod(method) {
+  const value = typeof method === "string" ? method.toUpperCase() : "OTHER";
+  return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
+}
+var requestScope = new AsyncLocalStorage();
+function activeRuntimeLogIdentity() {
+  const scope = requestScope.getStore();
+  if (!scope) return void 0;
+  const context2 = scope.span?.spanContext();
+  const traceId = context2 && /^[0-9a-f]{32}$/.test(context2.traceId) && !/^0+$/.test(context2.traceId) ? context2.traceId : null;
+  const spanId = traceId && context2 && /^[0-9a-f]{16}$/.test(context2.spanId) && !/^0+$/.test(context2.spanId) ? context2.spanId : null;
+  return { requestId: scope.requestId, traceId, spanId };
+}
+function validatedRemoteParent(request) {
+  const value = request.headers.traceparent;
+  if (typeof value !== "string" || value.length !== 55) return ROOT_CONTEXT;
+  const match = /^00-([a-f0-9]{32})-([a-f0-9]{16})-(00|01)$/.exec(value);
+  if (!match || /^0+$/.test(match[1]) || /^0+$/.test(match[2])) return ROOT_CONTEXT;
+  return trace.setSpanContext(ROOT_CONTEXT, {
+    traceId: match[1],
+    spanId: match[2],
+    traceFlags: match[3] === "01" ? TraceFlags.SAMPLED : TraceFlags.NONE,
+    isRemote: true
+  });
+}
+function exportFailureReason(error) {
+  const code = error && typeof error === "object" ? error.code : void 0;
+  if (code === 401 || code === 403) return "AUTH_REJECTED";
+  if (typeof code === "string") {
+    if (["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"].includes(code)) return "DESTINATION_UNAVAILABLE";
+    if (code.startsWith("ERR_TLS_") || code.startsWith("CERT_") || ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT"].includes(code)) return "TLS_FAILED";
+  }
+  return "EXPORT_FAILED";
+}
+function createHttpRequestTelemetry(config, onDiagnostic) {
+  if (!config) return { run: (_request, _response, _endpoints, handle) => requestScope.run({ requestId: randomUUID8() }, handle), shutdown: async () => {
+  } };
+  const url = new URL(config.endpoint);
+  const endpoint = new URL("/v1/traces", url).toString();
+  const token = config.credentialEnv ? process.env[config.credentialEnv] : void 0;
+  if (config.credentialEnv && !token) throw new Error("Telemetry ingestion credential is unavailable.");
+  if (config.tls.caFile && statSync(config.tls.caFile).size > 1024 * 1024) throw new Error("Telemetry CA file is too large.");
+  const exporter = new import_exporter_trace_otlp_http.OTLPTraceExporter({
+    url: endpoint,
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+    timeoutMillis: 600,
+    concurrencyLimit: 1,
+    httpAgentOptions: config.tls.caFile ? { ca: readFileSync2(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 }
+  });
+  const metricExporter = new import_exporter_metrics_otlp_http.OTLPMetricExporter({
+    url: new URL("/v1/metrics", url).toString(),
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+    timeoutMillis: 600,
+    concurrencyLimit: 1,
+    httpAgentOptions: config.tls.caFile ? { ca: readFileSync2(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 }
+  });
+  const metricReader = new import_sdk_metrics.PeriodicExportingMetricReader({
+    exporter: metricExporter,
+    exportIntervalMillis: config.metricsIntervalMs ?? 15e3,
+    exportTimeoutMillis: 800
+  });
+  const meterProvider = new import_sdk_metrics.MeterProvider({
+    resource: (0, import_resources.resourceFromAttributes)({ "service.name": config.serviceName.slice(0, 80), "deployment.environment.name": config.environment ?? "unknown" }),
+    readers: [metricReader],
+    views: [
+      { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
+      { instrumentName: "http.server.active_requests", aggregationCardinalityLimit: 128 },
+      { instrumentName: "http.server.request.duration", aggregationCardinalityLimit: 512, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [5e-3, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } }
+    ]
+  });
+  const meter = meterProvider.getMeter("sporades-runtime-http", "1");
+  const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
+  const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
+  const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
+  const seenRoutes = /* @__PURE__ */ new Set();
+  let failedReason = null;
+  let lastFailureLoggedAt = 0;
+  const emitDiagnostic = (diagnostic) => {
+    try {
+      const recorded = onDiagnostic?.(diagnostic);
+      if (recorded && typeof recorded.then === "function") void Promise.resolve(recorded).catch(() => {
+      });
+    } catch {
+    }
+  };
+  const observedExporter = {
+    export(spans, callback) {
+      exporter.export(spans, (result) => {
+        try {
+          if (result.code === 0) {
+            if (failedReason) emitDiagnostic({ event: "telemetry.export.recovered" });
+            failedReason = null;
+          } else {
+            const reason = exportFailureReason(result.error);
+            const now2 = Date.now();
+            if (reason !== failedReason || now2 - lastFailureLoggedAt >= 6e4) {
+              emitDiagnostic({ event: "telemetry.export.failed", reason });
+              lastFailureLoggedAt = now2;
+            }
+            failedReason = reason;
+          }
+        } catch {
+        }
+        callback(result);
+      });
+    },
+    forceFlush: () => exporter.forceFlush(),
+    shutdown: () => exporter.shutdown()
+  };
+  const processor = new import_sdk_trace_base.BatchSpanProcessor(observedExporter, {
+    maxQueueSize: 128,
+    maxExportBatchSize: 32,
+    scheduledDelayMillis: 500,
+    exportTimeoutMillis: 800
+  });
+  const provider = new import_sdk_trace_base.BasicTracerProvider({
+    resource: (0, import_resources.resourceFromAttributes)({ "service.name": config.serviceName.slice(0, 80) }),
+    sampler: new import_sdk_trace_base.TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
+    spanProcessors: [processor]
+  });
+  const tracer = provider.getTracer("sporades-runtime-http", "1");
+  let closing = false;
+  return {
+    run(request, response, endpoints, handle) {
+      if (closing) return handle();
+      const method = safeMethod(request.method);
+      let route = resolveTelemetryRoute(request, endpoints);
+      if (!seenRoutes.has(route)) {
+        if (seenRoutes.size < 128) seenRoutes.add(route);
+        else route = "/__other";
+      }
+      const started = process.hrtime.bigint();
+      const activeLabels = { "http.request.method": method, "http.route": route };
+      activeRequests.add(1, activeLabels);
+      const span = tracer.startSpan(`${method} ${route}`, { kind: SpanKind.SERVER, attributes: { "http.request.method": method, "http.route": route } }, validatedRemoteParent(request));
+      let ended = false;
+      const end = (outcome) => {
+        if (ended) return;
+        ended = true;
+        const status = outcome === "error" && !response.headersSent ? 500 : Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
+        const labels = { ...activeLabels, "http.response.status_code": `${Math.floor(status / 100)}xx`, "sporades.http.outcome": outcome };
+        requestCount.add(1, labels);
+        requestDuration.record(Number(process.hrtime.bigint() - started) / 1e9, labels);
+        activeRequests.add(-1, activeLabels);
+        span.setAttribute("http.response.status_code", status);
+        span.setAttribute("sporades.http.outcome", outcome);
+        if (outcome !== "success") span.setStatus({ code: SpanStatusCode.ERROR });
+        span.end();
+      };
+      response.once("finish", () => end(response.statusCode >= 500 ? "error" : response.statusCode >= 400 ? "failure" : "success"));
+      response.once("close", () => {
+        if (!response.writableFinished) end("abort");
+      });
+      response.once("error", () => end("error"));
+      request.once("aborted", () => end("abort"));
+      try {
+        const result = requestScope.run({ requestId: randomUUID8(), span }, handle);
+        if (result && typeof result.then === "function") {
+          return Promise.resolve(result).catch((error) => {
+            end("error");
+            throw error;
+          });
+        }
+        return result;
+      } catch (error) {
+        end("error");
+        throw error;
+      }
+    },
+    async shutdown() {
+      if (closing) return;
+      closing = true;
+      await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise((resolve2) => {
+        const timer = setTimeout(resolve2, 1500);
+        timer.unref();
+      })]);
+    }
+  };
+}
+
+// src/log-envelope.ts
 function uncappedLogEnvelope(input) {
   const config = input.config ?? {};
   const capsuleName = String(config.name ?? "unknown");
+  const identity = activeRuntimeLogIdentity();
   return {
     schema: "sporades.log.v1",
     timestamp: input.timestamp ?? (/* @__PURE__ */ new Date()).toISOString(),
@@ -127990,12 +128209,14 @@ function uncappedLogEnvelope(input) {
       id: String(config.capsule?.id ?? config.id ?? capsuleName)
     },
     release: input.release ?? config.release ?? null,
-    request: input.request ? {
-      id: input.request.id ?? randomUUID8(),
-      method: input.request.method ?? null,
-      path: input.request.path ?? null
+    request: input.request || identity ? {
+      id: input.request?.id ?? identity?.requestId ?? randomUUID9(),
+      method: input.request?.method ?? null,
+      path: input.request?.path ?? null
     } : null,
     correlation: input.correlation ?? null,
+    traceId: identity?.traceId ?? null,
+    spanId: identity?.spanId ?? null,
     data: input.data ?? null
   };
 }
@@ -128009,6 +128230,9 @@ function minimumLogPayloadMaxBytes(config = {}) {
     message: "m".repeat(128),
     data: null
   });
+  envelope.request = { id: "f".repeat(36), method: null, path: null };
+  envelope.traceId = "f".repeat(32);
+  envelope.spanId = "f".repeat(16);
   return Buffer.byteLength(JSON.stringify({ ...envelope, truncated: false }), "utf8") - 4 + 256;
 }
 function logPayloadMaxBytes(config = {}) {
@@ -129733,10 +129957,10 @@ function createEmailEventEndpoints(mailConfig, serverEnv, subscription) {
 }
 
 // src/live-query-invalidation.ts
-var { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
+var { AsyncLocalStorage: AsyncLocalStorage2 } = process.getBuiltinModule("node:async_hooks");
 var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
 var LIVE_QUERY_ANY_TABLE = "*";
-var liveQueryReads = new AsyncLocalStorage();
+var liveQueryReads = new AsyncLocalStorage2();
 var dirtyTables = /* @__PURE__ */ new Set();
 var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
 var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
@@ -130190,7 +130414,7 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid2) {
 }
 
 // src/database-runtime.ts
-import { randomUUID as randomUUID9 } from "node:crypto";
+import { randomUUID as randomUUID10 } from "node:crypto";
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql2) {
@@ -133523,7 +133747,7 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     const occupiedNames = new Set(tableNames);
     let tempTableName;
     do {
-      tempTableName = `__sporades_migrating_${randomUUID9().replaceAll("-", "")}`;
+      tempTableName = `__sporades_migrating_${randomUUID10().replaceAll("-", "")}`;
     } while (occupiedNames.has(tempTableName));
     return chainMaybePromise([
       ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
@@ -134655,7 +134879,7 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID10() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID11() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
@@ -134966,7 +135190,7 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id2 = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID10();
+  const token = randomUUID11();
   const now2 = database.clock.now();
   const nowIso2 = now2.toISOString();
   const fullLeaseExpiresAt = jobTimestampAfter(now2, RUNTIME_CLAIM_LEASE_MS);
@@ -135773,7 +135997,7 @@ function capLogEnvelope(envelope, maxBytes) {
 function readJsonlLogEvents(logPath, limit = 200) {
   let raw = "";
   try {
-    raw = readFileSync(logPath, "utf8");
+    raw = readFileSync3(logPath, "utf8");
   } catch (error) {
     if (error?.code !== "ENOENT") {
       throw error;
@@ -137492,7 +137716,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID10(),
+        id: randomUUID11(),
         createdAt: now2,
         updatedAt: now2
       };
@@ -137529,7 +137753,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID10(),
+        id: randomUUID11(),
         createdAt: now2,
         updatedAt: now2
       };
@@ -138290,7 +138514,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
               const currentAuth = { userId: current2.userId, displayName: current2.displayName, email: current2.email, picture: current2.picture, isAuthenticated: Boolean(current2.isAuthenticated), isGuest: Boolean(current2.isGuest), provider: current2.provider };
               if (!await tx.claimEmailCredentialVersion(normalized.email, credential.passwordHash, credential.passwordSalt)) return;
               if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
-              await tx.replaceReauthenticationProof({ id: randomUUID10(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
+              await tx.replaceReauthenticationProof({ id: randomUUID11(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
               ok = true;
               await tx.clearEmailReauthenticationAttempts(reauthenticationThrottleKeys);
             });
@@ -139011,7 +139235,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL)"
     )
   ).run(
-    randomUUID10(),
+    randomUUID11(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
@@ -140182,7 +140406,7 @@ async function runCurrentUserJobWorker(database) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;
       }
-      const claimToken = randomUUID10();
+      const claimToken = randomUUID11();
       const claimed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')"
       )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
@@ -140363,7 +140587,7 @@ async function runInsertMutation(database, context2, mutationName, args) {
   }
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID10(),
+    id: randomUUID11(),
     createdAt: now2,
     updatedAt: now2
   };
@@ -143694,7 +143918,7 @@ import { createHash as createHash12, randomBytes as randomBytes7 } from "node:cr
 import { mkdir as mkdir6, mkdtemp, rm as rm6 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
-import path12 from "node:path";
+import path13 from "node:path";
 var DEV_CLAMAV_READY_MARKER = "sporades-clamav-ready-v1";
 var DEV_CLAMAV_HOST_READY_TIMEOUT_MS = 125e3;
 function devRuntimeRequiresClamav(database) {
@@ -143872,12 +144096,12 @@ async function devClamavContainerIsRunning(dockerCommand, containerName, deadlin
   return result.code === 0 && result.stdout.trim() === "true" && now2() <= deadline;
 }
 async function startDevClamavSidecar(options) {
-  const dataRoot = path12.join(options.projectDir, ".sporades", "clamav");
-  await mkdir6(path12.join(dataRoot, "clamav"), { recursive: true });
-  const socketDir = await mkdtemp(path12.join(tmpdir(), "sporades-dev-clamav-"));
-  const identity = createHash12("sha256").update(`${path12.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const dataRoot = path13.join(options.projectDir, ".sporades", "clamav");
+  await mkdir6(path13.join(dataRoot, "clamav"), { recursive: true });
+  const socketDir = await mkdtemp(path13.join(tmpdir(), "sporades-dev-clamav-"));
+  const identity = createHash12("sha256").update(`${path13.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
-  const socketPath = path12.join(socketDir, "clamd.sock");
+  const socketPath = path13.join(socketDir, "clamd.sock");
   let child;
   let proxy;
   const bridges = /* @__PURE__ */ new Set();
@@ -144067,7 +144291,7 @@ ${removed.stderr}`)) failures.push(new Error("Dev File inspection container clea
 // src/capsule-services.ts
 import { randomBytes as randomBytes8 } from "node:crypto";
 import { mkdir as mkdir7, readFile as readFile9, rm as rm7, writeFile as writeFile6 } from "node:fs/promises";
-import path13 from "node:path";
+import path14 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
 var SUPPORTED_STORAGE_ENGINES = /* @__PURE__ */ new Set(["minio"]);
@@ -144079,9 +144303,9 @@ var MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z";
 var MINIO_ROOT_USER = "sporades";
 var MINIO_BUCKET = "sporades-files";
 var MINIO_REGION = "us-east-1";
-var CAPSULE_SERVICES_COMPOSE_FILE = path13.join(".sporades", "compose", "capsule-services.compose.yml");
-var CAPSULE_SERVICES_STATE_DIR = path13.join(".sporades", "services");
-var CAPSULE_SERVICES_CREDENTIALS_FILE = path13.join(".sporades", "services", "credentials.json");
+var CAPSULE_SERVICES_COMPOSE_FILE = path14.join(".sporades", "compose", "capsule-services.compose.yml");
+var CAPSULE_SERVICES_STATE_DIR = path14.join(".sporades", "services");
+var CAPSULE_SERVICES_CREDENTIALS_FILE = path14.join(".sporades", "services", "credentials.json");
 function validateCapsuleServicesConfig(services) {
   if (services === void 0) {
     return null;
@@ -144106,13 +144330,13 @@ function validateCapsuleServicesConfig(services) {
   return services;
 }
 async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
-  const composePath = path13.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path14.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
     await rm7(composePath, { force: true });
     return null;
   }
   validateCapsuleServicesConfig(config.services);
-  await mkdir7(path13.dirname(composePath), { recursive: true });
+  await mkdir7(path14.dirname(composePath), { recursive: true });
   const credentials = await loadOrCreateCapsuleServiceCredentials(projectDir);
   const model = capsuleServicesComposeModel(config, projectDir, {
     credentials,
@@ -144128,7 +144352,7 @@ async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
   };
 }
 async function loadOrCreateCapsuleServiceCredentials(projectDir) {
-  const credentialsPath = path13.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
+  const credentialsPath = path14.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
   let existing = {};
   try {
     const parsed = JSON.parse(await readFile9(credentialsPath, "utf8"));
@@ -144144,7 +144368,7 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
     storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes8(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
-    await mkdir7(path13.dirname(credentialsPath), { recursive: true });
+    await mkdir7(path14.dirname(credentialsPath), { recursive: true });
     await writeFile6(credentialsPath, `${JSON.stringify(credentials, null, 2)}
 `, { mode: 384 });
   }
@@ -144192,7 +144416,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-database`,
       engine: engineModel.engine,
       image: engineModel.image,
-      stateDir: path13.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
+      stateDir: path14.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
       targetPort: engineModel.targetPort,
       volumeTarget: engineModel.volumeTarget,
       environment: engineModel.environment,
@@ -144210,7 +144434,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-storage`,
       engine: "minio",
       image: MINIO_IMAGE,
-      stateDir: path13.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
+      stateDir: path14.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
       targetPort: 9e3,
       volumeTarget: "/data",
       environment: {
@@ -144947,7 +145171,7 @@ function renderCliHelp(command) {
 import { spawnSync } from "node:child_process";
 import { createHash as createHash13 } from "node:crypto";
 import { cp, lstat as lstat8, mkdir as mkdir8, readFile as readFile10, readdir as readdir3, writeFile as writeFile7 } from "node:fs/promises";
-import path14 from "node:path";
+import path15 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
 var STACK_SCHEMA = 1;
 var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "setup.mjs", "smoke.mjs"];
@@ -144982,11 +145206,11 @@ async function existingFile(filename) {
 }
 async function runMonitoringStack(action, directory, packageRoot) {
   prerequisite();
-  const source = path14.join(packageRoot, "monitoring", "trace");
-  const target = path14.resolve(directory);
-  const packageInfo = JSON.parse(await readFile10(path14.join(packageRoot, "package.json"), "utf8"));
+  const source = path15.join(packageRoot, "monitoring", "trace");
+  const target = path15.resolve(directory);
+  const packageInfo = JSON.parse(await readFile10(path15.join(packageRoot, "package.json"), "utf8"));
   const version3 = packageInfo.version;
-  const manifestPath = path14.join(target, "stack-manifest.json");
+  const manifestPath = path15.join(target, "stack-manifest.json");
   if (action === "init") await mkdir8(target, { recursive: true });
   else if (!await existingFile(target)) throw commandError("Monitoring stack directory does not exist.", "Run `sporades monitoring stack init --dir <path>` first.");
   const preexistingContent = (await readdir3(target)).length > 0;
@@ -145004,8 +145228,8 @@ async function runMonitoringStack(action, directory, packageRoot) {
   const overrides2 = [];
   const missingAssets = [];
   for (const name2 of ASSETS) {
-    const sourcePath = path14.join(source, name2 === ".gitignore" ? "gitignore.template" : name2);
-    const destination = path14.join(target, name2);
+    const sourcePath = path15.join(source, name2 === ".gitignore" ? "gitignore.template" : name2);
+    const destination = path15.join(target, name2);
     const sourceBytes = await readFile10(sourcePath);
     const current2 = await existingFile(destination);
     if (!current2 && action === "init") {
@@ -145025,13 +145249,13 @@ async function runMonitoringStack(action, directory, packageRoot) {
   }
   let missing = [];
   if (action === "init") {
-    const setup = await import(pathToFileURL4(path14.join(source, "setup.mjs")).href);
-    missing = (await setup.setupEnvironment(path14.join(target, ".env"))).missing;
+    const setup = await import(pathToFileURL4(path15.join(source, "setup.mjs")).href);
+    missing = (await setup.setupEnvironment(path15.join(target, ".env"))).missing;
   } else {
-    const setup = await import(pathToFileURL4(path14.join(source, "setup.mjs")).href);
-    const env = await existingFile(path14.join(target, ".env"));
+    const setup = await import(pathToFileURL4(path15.join(source, "setup.mjs")).href);
+    const env = await existingFile(path15.join(target, ".env"));
     if (!env) missing = [".env"];
-    else missing = setup.inspectEnvironment(await readFile10(path14.join(target, ".env"), "utf8")).missing;
+    else missing = setup.inspectEnvironment(await readFile10(path15.join(target, ".env"), "utf8")).missing;
   }
   return {
     path: target,
@@ -145043,213 +145267,6 @@ async function runMonitoringStack(action, directory, packageRoot) {
     versionDifference,
     missing,
     nextSteps: ["Review .env and fill missing settings", "Run `node setup.mjs` after editing .env", "Run `docker compose --env-file .compose.env up -d --build` from the stack directory", "Run `node smoke.mjs send` to verify stored traces and metrics", "Open /grafana/d/sporades-api through the protected gateway"]
-  };
-}
-
-// src/runtime-telemetry.ts
-init_esm();
-var import_exporter_trace_otlp_http = __toESM(require_src6(), 1);
-var import_exporter_metrics_otlp_http = __toESM(require_src7(), 1);
-var import_resources = __toESM(require_src3(), 1);
-var import_sdk_metrics = __toESM(require_src4(), 1);
-var import_sdk_trace_base = __toESM(require_index_shim(), 1);
-import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
-import { readFileSync as readFileSync3, statSync } from "node:fs";
-var builtinRoutes = [
-  ["GET", "/__sporades/connection-token"],
-  ["GET", "/__sporades/health/runtime"],
-  ["GET", "/__sporades/debug/logs"],
-  ["GET", "/__sporades/debug/logs/tail"],
-  ["GET", "/__sporades/debug/db/list"],
-  ["GET", "/__sporades/debug/db/dump"],
-  ["POST", "/__sporades/debug/db/query"],
-  ["POST", "/__sporades/debug/ctx-log"],
-  ["POST", "/__sporades/debug/privileged-audit"],
-  ["POST", "/__sporades/debug/auth/as"],
-  ["GET", "/__sporades/debug/auth/clients"]
-];
-function resolveTelemetryRoute(request, endpoints) {
-  const method = safeMethod(request.method);
-  const target = interpretHttpRequestTarget(request.url, request.method);
-  if (!target) return "/__unknown";
-  const pathname = target.pathname;
-  const custom = endpoints.find((endpoint) => endpoint.method === method && endpoint.path === pathname);
-  if (custom && /^\/[a-zA-Z0-9/_%.:-]{0,120}$/.test(custom.path)) return custom.path;
-  if (builtinRoutes.some(([routeMethod, routePath]) => routeMethod === method && routePath === pathname)) return pathname;
-  if (method === "GET" && /^\/__sporades\/files\/private\/[^/]+$/.test(pathname)) return "/__sporades/files/private/:id";
-  if (method === "PUT" && /^\/__sporades\/uploads\/[^/]+$/.test(pathname)) return "/__sporades/uploads/:id";
-  if (pathname.startsWith("/__sporades/auth/")) return "/__sporades/auth/*";
-  return "/__unknown";
-}
-function safeMethod(method) {
-  const value = typeof method === "string" ? method.toUpperCase() : "OTHER";
-  return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
-}
-var requestSpan = new AsyncLocalStorage2();
-function validatedRemoteParent(request) {
-  const value = request.headers.traceparent;
-  if (typeof value !== "string" || value.length !== 55) return ROOT_CONTEXT;
-  const match = /^00-([a-f0-9]{32})-([a-f0-9]{16})-(00|01)$/.exec(value);
-  if (!match || /^0+$/.test(match[1]) || /^0+$/.test(match[2])) return ROOT_CONTEXT;
-  return trace.setSpanContext(ROOT_CONTEXT, {
-    traceId: match[1],
-    spanId: match[2],
-    traceFlags: match[3] === "01" ? TraceFlags.SAMPLED : TraceFlags.NONE,
-    isRemote: true
-  });
-}
-function exportFailureReason(error) {
-  const code = error && typeof error === "object" ? error.code : void 0;
-  if (code === 401 || code === 403) return "AUTH_REJECTED";
-  if (typeof code === "string") {
-    if (["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"].includes(code)) return "DESTINATION_UNAVAILABLE";
-    if (code.startsWith("ERR_TLS_") || code.startsWith("CERT_") || ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT"].includes(code)) return "TLS_FAILED";
-  }
-  return "EXPORT_FAILED";
-}
-function createHttpRequestTelemetry(config, onDiagnostic) {
-  if (!config) return { run: (_request, _response, _endpoints, handle) => handle(), shutdown: async () => {
-  } };
-  const url = new URL(config.endpoint);
-  const endpoint = new URL("/v1/traces", url).toString();
-  const token = config.credentialEnv ? process.env[config.credentialEnv] : void 0;
-  if (config.credentialEnv && !token) throw new Error("Telemetry ingestion credential is unavailable.");
-  if (config.tls.caFile && statSync(config.tls.caFile).size > 1024 * 1024) throw new Error("Telemetry CA file is too large.");
-  const exporter = new import_exporter_trace_otlp_http.OTLPTraceExporter({
-    url: endpoint,
-    headers: token ? { authorization: `Bearer ${token}` } : {},
-    timeoutMillis: 600,
-    concurrencyLimit: 1,
-    httpAgentOptions: config.tls.caFile ? { ca: readFileSync3(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 }
-  });
-  const metricExporter = new import_exporter_metrics_otlp_http.OTLPMetricExporter({
-    url: new URL("/v1/metrics", url).toString(),
-    headers: token ? { authorization: `Bearer ${token}` } : {},
-    timeoutMillis: 600,
-    concurrencyLimit: 1,
-    httpAgentOptions: config.tls.caFile ? { ca: readFileSync3(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 }
-  });
-  const metricReader = new import_sdk_metrics.PeriodicExportingMetricReader({
-    exporter: metricExporter,
-    exportIntervalMillis: config.metricsIntervalMs ?? 15e3,
-    exportTimeoutMillis: 800
-  });
-  const meterProvider = new import_sdk_metrics.MeterProvider({
-    resource: (0, import_resources.resourceFromAttributes)({ "service.name": config.serviceName.slice(0, 80), "deployment.environment.name": config.environment ?? "unknown" }),
-    readers: [metricReader],
-    views: [
-      { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
-      { instrumentName: "http.server.active_requests", aggregationCardinalityLimit: 128 },
-      { instrumentName: "http.server.request.duration", aggregationCardinalityLimit: 512, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [5e-3, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } }
-    ]
-  });
-  const meter = meterProvider.getMeter("sporades-runtime-http", "1");
-  const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
-  const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
-  const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
-  const seenRoutes = /* @__PURE__ */ new Set();
-  let failedReason = null;
-  let lastFailureLoggedAt = 0;
-  const emitDiagnostic = (diagnostic) => {
-    try {
-      const recorded = onDiagnostic?.(diagnostic);
-      if (recorded && typeof recorded.then === "function") void Promise.resolve(recorded).catch(() => {
-      });
-    } catch {
-    }
-  };
-  const observedExporter = {
-    export(spans, callback) {
-      exporter.export(spans, (result) => {
-        try {
-          if (result.code === 0) {
-            if (failedReason) emitDiagnostic({ event: "telemetry.export.recovered" });
-            failedReason = null;
-          } else {
-            const reason = exportFailureReason(result.error);
-            const now2 = Date.now();
-            if (reason !== failedReason || now2 - lastFailureLoggedAt >= 6e4) {
-              emitDiagnostic({ event: "telemetry.export.failed", reason });
-              lastFailureLoggedAt = now2;
-            }
-            failedReason = reason;
-          }
-        } catch {
-        }
-        callback(result);
-      });
-    },
-    forceFlush: () => exporter.forceFlush(),
-    shutdown: () => exporter.shutdown()
-  };
-  const processor = new import_sdk_trace_base.BatchSpanProcessor(observedExporter, {
-    maxQueueSize: 128,
-    maxExportBatchSize: 32,
-    scheduledDelayMillis: 500,
-    exportTimeoutMillis: 800
-  });
-  const provider = new import_sdk_trace_base.BasicTracerProvider({
-    resource: (0, import_resources.resourceFromAttributes)({ "service.name": config.serviceName.slice(0, 80) }),
-    sampler: new import_sdk_trace_base.TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
-    spanProcessors: [processor]
-  });
-  const tracer = provider.getTracer("sporades-runtime-http", "1");
-  let closing = false;
-  return {
-    run(request, response, endpoints, handle) {
-      if (closing) return handle();
-      const method = safeMethod(request.method);
-      let route = resolveTelemetryRoute(request, endpoints);
-      if (!seenRoutes.has(route)) {
-        if (seenRoutes.size < 128) seenRoutes.add(route);
-        else route = "/__other";
-      }
-      const started = process.hrtime.bigint();
-      const activeLabels = { "http.request.method": method, "http.route": route };
-      activeRequests.add(1, activeLabels);
-      const span = tracer.startSpan(`${method} ${route}`, { kind: SpanKind.SERVER, attributes: { "http.request.method": method, "http.route": route } }, validatedRemoteParent(request));
-      let ended = false;
-      const end = (outcome) => {
-        if (ended) return;
-        ended = true;
-        const status = outcome === "error" && !response.headersSent ? 500 : Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
-        const labels = { ...activeLabels, "http.response.status_code": `${Math.floor(status / 100)}xx`, "sporades.http.outcome": outcome };
-        requestCount.add(1, labels);
-        requestDuration.record(Number(process.hrtime.bigint() - started) / 1e9, labels);
-        activeRequests.add(-1, activeLabels);
-        span.setAttribute("http.response.status_code", status);
-        span.setAttribute("sporades.http.outcome", outcome);
-        if (outcome !== "success") span.setStatus({ code: SpanStatusCode.ERROR });
-        span.end();
-      };
-      response.once("finish", () => end(response.statusCode >= 500 ? "error" : response.statusCode >= 400 ? "failure" : "success"));
-      response.once("close", () => {
-        if (!response.writableFinished) end("abort");
-      });
-      response.once("error", () => end("error"));
-      request.once("aborted", () => end("abort"));
-      try {
-        const result = requestSpan.run(span, handle);
-        if (result && typeof result.then === "function") {
-          return Promise.resolve(result).catch((error) => {
-            end("error");
-            throw error;
-          });
-        }
-        return result;
-      } catch (error) {
-        end("error");
-        throw error;
-      }
-    },
-    async shutdown() {
-      if (closing) return;
-      closing = true;
-      await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise((resolve2) => {
-        const timer = setTimeout(resolve2, 1500);
-        timer.unref();
-      })]);
-    }
   };
 }
 
