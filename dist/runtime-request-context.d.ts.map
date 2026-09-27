@@ -1,0 +1,1 @@
+{"version":3,"file":"runtime-request-context.d.ts","sourceRoot":"","sources":["../src/runtime-request-context.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,iBAAiB,EAAE,MAAM,kBAAkB,CAAC;AACrD,OAAO,KAAK,EAAE,IAAI,EAAE,MAAM,oBAAoB,CAAC;AAE/C,qFAAqF;AACrF,eAAO,MAAM,mBAAmB;eAAsC,MAAM;WAAS,IAAI;EAAK,CAAC;AAE/F,yFAAyF;AACzF,wBAAgB,6BAA6B,CAAC,CAAC,EAAE,QAAQ,EAAE,MAAM,CAAC,GAAG,CAAC,CAErE"}

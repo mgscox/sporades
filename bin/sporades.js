@@ -105076,6 +105076,13 @@ function unavailable() {
   return error;
 }
 
+// src/runtime-request-context.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage();
+function withoutRuntimeRequestIdentity(callback) {
+  return runtimeRequestScope.exit(callback);
+}
+
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var RESERVED_JOB_NAME_PREFIX = "_sporades";
@@ -105709,11 +105716,18 @@ function abortSchedulePayloadFactories(database) {
   for (const controllers of database.schedulePayloadFactoryControllers?.values?.() ?? []) for (const controller of controllers) controller.abort();
 }
 function createRuntimeClock(clock) {
-  if (clock) return clock;
-  return {
+  const source = clock ?? {
     now: () => /* @__PURE__ */ new Date(),
     setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimer: (timer) => clearTimeout(timer)
+  };
+  return {
+    now: () => source.now(),
+    setTimer: (callback, delayMs) => withoutRuntimeRequestIdentity(() => source.setTimer(
+      () => withoutRuntimeRequestIdentity(callback),
+      delayMs
+    )),
+    clearTimer: (timer) => source.clearTimer(timer)
   };
 }
 function runtimeOwnedJobHandlers(runtime) {
@@ -127984,7 +127998,6 @@ var import_exporter_metrics_otlp_http = __toESM(require_src7(), 1);
 var import_resources = __toESM(require_src3(), 1);
 var import_sdk_metrics = __toESM(require_src4(), 1);
 var import_sdk_trace_base = __toESM(require_index_shim(), 1);
-import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID8 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
@@ -128019,10 +128032,9 @@ function safeMethod(method) {
   const value = typeof method === "string" ? method.toUpperCase() : "OTHER";
   return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
 }
-var requestScope = new AsyncLocalStorage();
 var processInstanceId = randomUUID8();
 function activeRuntimeLogIdentity() {
-  const scope = requestScope.getStore();
+  const scope = runtimeRequestScope.getStore();
   if (!scope) return void 0;
   const context2 = scope.span?.spanContext();
   const traceId = context2 && /^[0-9a-f]{32}$/.test(context2.traceId) && !/^0+$/.test(context2.traceId) ? context2.traceId : null;
@@ -128051,7 +128063,7 @@ function exportFailureReason(error) {
   return "EXPORT_FAILED";
 }
 function createHttpRequestTelemetry(config, onDiagnostic) {
-  if (!config) return { run: (_request, _response, _endpoints, handle) => requestScope.run({ requestId: randomUUID8() }, handle), shutdown: async () => {
+  if (!config) return { run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID8() }, handle), shutdown: async () => {
   } };
   if (config.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1e3)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
@@ -128077,7 +128089,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const lastFailureLoggedAt = /* @__PURE__ */ new Map();
   const emitDiagnostic = (diagnostic) => {
     try {
-      const recorded = onDiagnostic?.(diagnostic);
+      const recorded = withoutRuntimeRequestIdentity(() => onDiagnostic?.(diagnostic));
       if (recorded && typeof recorded.then === "function") void Promise.resolve(recorded).catch(() => {
       });
     } catch {
@@ -128262,7 +128274,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = requestScope.run({ requestId: randomUUID8(), span }, handle);
+        const result = runtimeRequestScope.run({ requestId: randomUUID8(), span }, handle);
         if (result && typeof result.then === "function") {
           return Promise.resolve(result).catch((error) => {
             end("error");

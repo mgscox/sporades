@@ -59,6 +59,7 @@ import { PASSWORD_RESET_MAIL_JOB, PASSWORD_RESET_REQUEST_JOB, privilegedAuthUser
 import { TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB } from "./team-billing-runtime.js";
 import { TEAM_BILLING_ERASURE_JOB } from "./team-billing-erasure.js";
 import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB } from "./team-billing-management.js";
+import { withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
 // Synchronous access to a Node builtin without an import — see the header. Bound as one namespace
 // and **not destructured**: `bin/sporades.js` is the whole of `src/` in one esbuild scope, so a
 // top-level `const { createHash } = …` here would collide with `server-runtime-source.ts`'s
@@ -790,12 +791,17 @@ export function abortSchedulePayloadFactories(database) {
             controller.abort();
 }
 export function createRuntimeClock(clock) {
-    if (clock)
-        return clock;
-    return {
+    const source = clock ?? {
         now: () => new Date(),
         setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
         clearTimer: (timer) => clearTimeout(timer),
+    };
+    // Forward the clock contract with its original receiver, including frozen
+    // and private-field clocks. Only runtime timer callbacks lose HTTP identity.
+    return {
+        now: () => source.now(),
+        setTimer: (callback, delayMs) => withoutRuntimeRequestIdentity(() => source.setTimer(() => withoutRuntimeRequestIdentity(callback), delayMs)),
+        clearTimer: (timer) => source.clearTimer(timer),
     };
 }
 /** Internal full-runtime test support; not exported from sporades/server or sporades/client. */

@@ -26855,7 +26855,6 @@ var unsupportedResources = Object.freeze({
 import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/runtime-telemetry.ts
-import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/auth-admission.ts
@@ -26901,6 +26900,10 @@ var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 
 // src/team-billing-erasure.ts
 var CLAIM_TTL_MS2 = 5 * 6e4;
+
+// src/runtime-request-context.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage();
 
 // src/jobs-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
@@ -42692,10 +42695,9 @@ var clamavRefreshRetryMs = 15 * 60 * 1e3;
 var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 
 // src/runtime-telemetry.ts
-var requestScope = new AsyncLocalStorage();
 var processInstanceId = randomUUID2();
 function activeRuntimeLogIdentity() {
-  const scope = requestScope.getStore();
+  const scope = runtimeRequestScope.getStore();
   if (!scope) return void 0;
   const context = scope.span?.spanContext();
   const traceId = context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? context.traceId : null;

@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
@@ -10,6 +9,7 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { AggregationType, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
 import { interpretHttpRequestTarget } from "./http-runtime.js";
+import { runtimeRequestScope, withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
 const builtinRoutes = [
     ["GET", "/__sporades/connection-token"],
     ["GET", "/__sporades/health/runtime"],
@@ -47,13 +47,12 @@ function safeMethod(method) {
     const value = typeof method === "string" ? method.toUpperCase() : "OTHER";
     return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
 }
-const requestScope = new AsyncLocalStorage();
 const processInstanceId = randomUUID();
 /** Internal seam for later operation spans; no Capsule-facing API is exported. */
-export function activeRuntimeRequestSpan() { return requestScope.getStore()?.span; }
+export function activeRuntimeRequestSpan() { return runtimeRequestScope.getStore()?.span; }
 /** Only runtime-created identities may be attached to the existing log envelope. */
 export function activeRuntimeLogIdentity() {
-    const scope = requestScope.getStore();
+    const scope = runtimeRequestScope.getStore();
     if (!scope)
         return undefined;
     const context = scope.span?.spanContext();
@@ -89,7 +88,7 @@ function exportFailureReason(error) {
 }
 export function createHttpRequestTelemetry(config, onDiagnostic) {
     if (!config)
-        return { run: (_request, _response, _endpoints, handle) => requestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => { } };
+        return { run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => { } };
     if (config.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1000))
         throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
     const url = new URL(config.endpoint);
@@ -117,7 +116,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
     const lastFailureLoggedAt = new Map();
     const emitDiagnostic = (diagnostic) => {
         try {
-            const recorded = onDiagnostic?.(diagnostic);
+            const recorded = withoutRuntimeRequestIdentity(() => onDiagnostic?.(diagnostic));
             if (recorded && typeof recorded.then === "function")
                 void Promise.resolve(recorded).catch(() => { });
         }
@@ -311,7 +310,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             response.once("error", () => end("error"));
             request.once("aborted", () => end("abort"));
             try {
-                const result = requestScope.run({ requestId: randomUUID(), span }, handle);
+                const result = runtimeRequestScope.run({ requestId: randomUUID(), span }, handle);
                 if (result && typeof result.then === "function") {
                     return Promise.resolve(result).catch((error) => { end("error"); throw error; });
                 }
