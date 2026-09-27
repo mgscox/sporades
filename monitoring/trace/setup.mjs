@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { chmod, chown, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const owned = ['TRACE_INGEST_TOKEN', 'TRACE_UI_PASSWORD'];
 const defaults = { TRACE_TLS_MODE: 'tls', TRACE_BIND: '127.0.0.1', TRACE_PORT: '8443', TRACE_UI_USER: 'operator', TRACE_RETENTION: '168h' };
@@ -32,6 +34,16 @@ export function parseEnvironment(source) {
   return entries;
 }
 
+export function inspectEnvironment(source) {
+  const entries = parseEnvironment(source);
+  const mode = entries.get('TRACE_TLS_MODE') ?? defaults.TRACE_TLS_MODE;
+  const bind = entries.get('TRACE_BIND') ?? defaults.TRACE_BIND;
+  if (!['tls', 'proxy'].includes(mode)) throw new Error('TRACE_TLS_MODE must be tls or proxy');
+  if (mode === 'proxy' && !['127.0.0.1', '::1'].includes(bind)) throw new Error('TRACE_BIND must be loopback in proxy mode');
+  return { missing: [...owned.filter(key => entries.has(key) && !entries.get(key)),
+    ...(mode === 'tls' ? ['TRACE_CERT_FILE', 'TRACE_KEY_FILE'].filter(key => !entries.get(key)) : [])] };
+}
+
 export async function setupEnvironment(path) {
   let source;
   try { source = await readFile(path, 'utf8'); }
@@ -40,12 +52,7 @@ export async function setupEnvironment(path) {
   const additions = [];
   for (const [key, value] of Object.entries(defaults)) if (!entries.has(key)) { additions.push(`${key}=${value}`); entries.set(key, value); }
   for (const key of owned) if (!entries.has(key)) { const value = randomBytes(32).toString('hex'); additions.push(`${key}=${value}`); entries.set(key, value); }
-  const mode = entries.get('TRACE_TLS_MODE') ?? defaults.TRACE_TLS_MODE;
-  const bind = entries.get('TRACE_BIND') ?? defaults.TRACE_BIND;
-  if (!['tls', 'proxy'].includes(mode)) throw new Error('TRACE_TLS_MODE must be tls or proxy');
-  if (mode === 'proxy' && !['127.0.0.1', '::1'].includes(bind)) throw new Error('TRACE_BIND must be loopback in proxy mode');
-  const missing = [...owned.filter(key => entries.has(key) && !entries.get(key)),
-    ...(mode === 'tls' ? ['TRACE_CERT_FILE', 'TRACE_KEY_FILE'].filter(key => !entries.get(key)) : [])];
+  const { missing } = inspectEnvironment(`${source}${source && !source.endsWith('\n') ? '\n' : ''}${additions.join('\n')}`);
   if (additions.length) {
     await writeFile(path, `${source}${source && !source.endsWith('\n') ? '\n' : ''}${additions.join('\n')}\n`, { mode: 0o600 });
   }
@@ -70,8 +77,8 @@ export async function setupEnvironment(path) {
   return { missing };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
-  const path = resolve(process.argv[2] ?? new URL('./.env', import.meta.url).pathname);
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
+  const path = resolve(process.argv[2] ?? fileURLToPath(new URL('./.env', import.meta.url)));
   const { missing } = await setupEnvironment(path);
   if (missing.length) {
     process.stderr.write(`Missing external settings: ${missing.join(', ')}\n`);

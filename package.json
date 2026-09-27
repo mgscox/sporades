@@ -11,6 +11,7 @@
   "files": [
     "bin/",
     "dist/",
+    "monitoring/trace/",
     "src/types/",
     "CHANGES.md",
     "Dockerfile.base",
@@ -42,6 +43,7 @@
     "docs:preview": "vitepress preview docs",
     "docs:api": "typedoc",
     "package": "node ./scripts/package.mjs",
+    "monitoring:release-asset": "node ./scripts/monitoring-stack-release.mjs",
     "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.runtime.json",
     "pretest": "npm run build && node ./scripts/check-generated-bin.mjs",
     "test": "node --test --test-concurrency=1 test/*.test.js",

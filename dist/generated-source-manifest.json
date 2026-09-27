@@ -35,6 +35,7 @@
       "src/cli/host-helper-validation.ts",
       "src/cli/host-request-builders.ts",
       "src/cli/hosted-capsule-contract.ts",
+      "src/cli/monitoring-stack.ts",
       "src/cli/project-config.ts",
       "src/cli/schedule-inspection-envelope.ts",
       "src/cli/sporades-host-helper.ts",
@@ -104,7 +105,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "12bf43bef25f00bd02236b4b5837624e3f32c9fac4911c4ba7582db00920ac2d"
+    "digest": "a130f375f5a691296d4fe0f9436cd8290b58c0df0815fdd5f09d1b32a04b2ec6"
   },
   "outputs": {
     "files": [
@@ -214,6 +215,10 @@
       "dist/cli/hosted-capsule-contract.d.ts.map",
       "dist/cli/hosted-capsule-contract.js",
       "dist/cli/hosted-capsule-contract.js.map",
+      "dist/cli/monitoring-stack.d.ts",
+      "dist/cli/monitoring-stack.d.ts.map",
+      "dist/cli/monitoring-stack.js",
+      "dist/cli/monitoring-stack.js.map",
       "dist/cli/project-config.d.ts",
       "dist/cli/project-config.d.ts.map",
       "dist/cli/project-config.js",
@@ -459,6 +464,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "562b1e19432105e55041177456f959c5a59d7dd8c55a9855c51a79afe6123dd7"
+    "digest": "fb9022139980114a28d79a908323e19f75c81d9ec63e8ff7d927a3b28c75d353"
   }
 }
