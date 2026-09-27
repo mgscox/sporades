@@ -30,8 +30,11 @@ async function pathReady(config) {
   } while (Date.now() < end);
   if (!traceReady) return false;
   if (!config.prometheusUrl) return true;
+  // A fresh instant-query timestamp can describe an old sample. A unique value
+  // proves that this probe's metric write reached readable storage.
+  const metricValue = randomBytes(6).readUIntBE(0, 6) + 1;
   const metricTime = String(BigInt(Date.now()) * 1000000n);
-  const metric = JSON.stringify({ resourceMetrics: [{ resource: { attributes: [{ key: 'service.name', value: { stringValue: 'sporades-stack-health' } }] }, scopeMetrics: [{ metrics: [{ name: 'sporades.stack.readiness', gauge: { dataPoints: [{ timeUnixNano: metricTime, asDouble: 1 }] } }] }] }] });
+  const metric = JSON.stringify({ resourceMetrics: [{ resource: { attributes: [{ key: 'service.name', value: { stringValue: 'sporades-stack-health' } }] }, scopeMetrics: [{ metrics: [{ name: 'sporades.stack.readiness', gauge: { dataPoints: [{ timeUnixNano: metricTime, asDouble: metricValue }] } }] }] }] });
   const metricSent = await deadlineFetch(`${config.collectorUrl}/v1/metrics`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: metric });
   if (!metricSent.ok) return false;
   const metricEnd = Date.now() + 2500;
@@ -41,7 +44,7 @@ async function pathReady(config) {
     const stored = await deadlineFetch(query);
     if (stored.ok) {
       const data = await stored.json();
-      if (data.status === 'success' && data.data?.result?.some(item => Number(item.value?.[1]) === 1 && Number(item.value?.[0]) * 1000 >= Date.now() - 10_000)) return true;
+      if (data.status === 'success' && data.data?.result?.some(item => Number(item.value?.[1]) === metricValue)) return true;
     }
     await new Promise(resolve => setTimeout(resolve, 150));
   } while (Date.now() < metricEnd);
@@ -83,19 +86,29 @@ export function createGateway(config, tls) {
     if (req.url === '/v1/traces' || req.url === '/v1/metrics') {
       if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
       if (!same(req.headers.authorization, `Bearer ${config.ingestToken}`)) { res.writeHead(401); res.end(); return; }
-      let size = 0;
-      const chunks = [];
-      for await (const chunk of req) {
-        size += chunk.length;
-        if (size > 2 * 1024 * 1024) { res.writeHead(413); res.end(); return; }
-        chunks.push(chunk);
-      }
+      const encoding = req.headers['content-encoding']?.toLowerCase();
+      if (encoding && encoding !== 'identity' && encoding !== 'gzip') { res.writeHead(415); res.end(); return; }
       try {
-        const response = await deadlineFetch(`${config.collectorUrl}${req.url}`, { method: 'POST', headers: { 'content-type': req.headers['content-type'] ?? 'application/x-protobuf' }, body: Buffer.concat(chunks) });
+        let size = 0;
+        const chunks = [];
+        const bodyDeadline = setTimeout(() => req.destroy(), 3000);
+        try {
+          for await (const chunk of req) {
+            size += chunk.length;
+            if (size > 2 * 1024 * 1024) { res.writeHead(413); res.end(); return; }
+            chunks.push(chunk);
+          }
+        } finally { clearTimeout(bodyDeadline); }
+        const headers = { 'content-type': req.headers['content-type'] ?? 'application/x-protobuf' };
+        if (encoding === 'gzip') headers['content-encoding'] = encoding;
+        const response = await deadlineFetch(`${config.collectorUrl}${req.url}`, { method: 'POST', headers, body: Buffer.concat(chunks) });
         if (!response.ok) { res.writeHead(response.status >= 500 ? 503 : 400); res.end(); return; }
         res.writeHead(response.status, { 'content-type': response.headers.get('content-type') ?? 'application/json' });
         res.end(Buffer.from(await response.arrayBuffer()));
-      } catch { res.writeHead(503); res.end(); }
+      } catch {
+        if (!res.destroyed && !res.headersSent) { res.writeHead(503); res.end(); }
+        else res.destroy();
+      }
       return;
     }
     const auth = req.headers.authorization?.startsWith('Basic ') ? Buffer.from(req.headers.authorization.slice(6), 'base64').toString() : '';

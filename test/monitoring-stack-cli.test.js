@@ -39,6 +39,9 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert.equal(result.ok, true);
   assert.equal(result.data.path, target);
   assert.deepEqual(result.data.missingAssets, []);
+  const gatewaySource = await readFile(join(root, 'monitoring', 'trace', 'gateway.mjs'), 'utf8');
+  assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', 'gateway.mjs'), 'utf8'), gatewaySource);
+  assert.equal(await readFile(join(target, 'gateway.mjs'), 'utf8'), gatewaySource);
   assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /prom\/prometheus:v3\.13\.3[\s\S]*grafana\/grafana:13\.2\.2/);
   const api = JSON.parse(await readFile(join(target, 'api-dashboard.json'), 'utf8'));
   assert.equal(api.title, 'Sporades Capsule API');
