@@ -40,6 +40,7 @@
       "src/cli/schedule-inspection-envelope.ts",
       "src/cli/sporades-host-helper.ts",
       "src/cli/sporades.ts",
+      "src/cli/telemetry-profile.ts",
       "src/client-capabilities.ts",
       "src/client-prerender.ts",
       "src/client-toolchain.ts",
@@ -73,6 +74,7 @@
       "src/runtime-errors.ts",
       "src/runtime-log-policy.ts",
       "src/runtime-restart-policy.ts",
+      "src/runtime-telemetry.ts",
       "src/sealed-server-env.ts",
       "src/server-runtime-source.ts",
       "src/server.ts",
@@ -105,7 +107,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "a130f375f5a691296d4fe0f9436cd8290b58c0df0815fdd5f09d1b32a04b2ec6"
+    "digest": "bb7113a11e84eef09ae92bff3ff19972233e3ccafe556067d93089f2cb62ccce"
   },
   "outputs": {
     "files": [
@@ -235,6 +237,10 @@
       "dist/cli/sporades.d.ts.map",
       "dist/cli/sporades.js",
       "dist/cli/sporades.js.map",
+      "dist/cli/telemetry-profile.d.ts",
+      "dist/cli/telemetry-profile.d.ts.map",
+      "dist/cli/telemetry-profile.js",
+      "dist/cli/telemetry-profile.js.map",
       "dist/client-capabilities.d.ts",
       "dist/client-capabilities.d.ts.map",
       "dist/client-capabilities.js",
@@ -367,6 +373,10 @@
       "dist/runtime-restart-policy.d.ts.map",
       "dist/runtime-restart-policy.js",
       "dist/runtime-restart-policy.js.map",
+      "dist/runtime-telemetry.d.ts",
+      "dist/runtime-telemetry.d.ts.map",
+      "dist/runtime-telemetry.js",
+      "dist/runtime-telemetry.js.map",
       "dist/sealed-server-env.d.ts",
       "dist/sealed-server-env.d.ts.map",
       "dist/sealed-server-env.js",
@@ -464,6 +474,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "fb9022139980114a28d79a908323e19f75c81d9ec63e8ff7d927a3b28c75d353"
+    "digest": "b2217868bb7c3aac7643c062d7b0da0e8d433f1011e7172ea03be8f89f606e29"
   }
 }

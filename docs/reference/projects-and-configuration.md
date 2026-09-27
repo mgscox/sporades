@@ -4,6 +4,46 @@ Capsule creation, project layout, configuration, security policy, database servi
 
 [Back to the feature reference index](../guide/reference.md).
 
+## Dev HTTP tracing
+
+The operator registers a named Telemetry profile separately from a Host profile:
+
+```sh
+sporades telemetry profile add local --endpoint http://127.0.0.1:4318 --loopback --credential-env TRACE_INGEST_TOKEN
+sporades telemetry profile list --json
+sporades dev --telemetry local
+```
+
+For a remote collector, use an HTTPS OTLP/HTTP origin and omit `--loopback`.
+`--ca-file /absolute/path/to/ca.pem` trusts a private CA while retaining TLS
+verification. The optional `--dashboard` is a credential-free HTTPS URL.
+Profiles live in `$SPORADES_CONFIG_DIR/telemetry.json` (or the Sporades XDG
+configuration directory), with restrictive file permissions. Their descriptors
+contain an ingestion credential **environment variable name**, never its value.
+Set that variable in the CLI process before starting Dev. The token is sent as
+`Authorization: Bearer` to `<endpoint>/v1/traces`; it is not written to the
+profile or generated Bundle.
+
+Selection order is `sporades dev --telemetry <name>`, then the explicit project
+binding below, then no export:
+
+```json
+{ "telemetry": { "profile": "local" } }
+```
+
+The generated server Bundle receives the selected nonsecret profile descriptor.
+Its runtime reads the credential environment reference at startup. A missing
+selected profile or credential fails before the Dev session starts. With no
+selection there is no exporter or retry loop. A collector outage leaves request
+handling available; completed spans use a bounded batch queue and shutdown
+deadline. One SERVER span covers each request, including streams and premature
+closes. Route labels use declared endpoint paths, fixed platform templates, or
+one bounded unknown category. Request bodies, queries, credentials, private
+identifiers, exception text, baggage and trace state are not exported. A valid
+W3C `traceparent` can establish parentage; remote sampling flags do not override
+the local sampling policy. This slice covers Dev HTTP traces; Container and Host
+transport and additional signals are separate work.
+
 ## Create a Capsule
 
 ```sh

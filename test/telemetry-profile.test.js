@@ -1,0 +1,39 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { resolveLocalTelemetryConfig } from '../dist/cli/telemetry-profile.js';
+
+test('installed CLI stores reference-only profiles and Dev selection honors explicit precedence', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'sporades-telemetry-profile-'));
+  const oldConfigDir = process.env.SPORADES_CONFIG_DIR;
+  const oldToken = process.env.TRACE_INGEST_TOKEN;
+  process.env.SPORADES_CONFIG_DIR = directory;
+  process.env.TRACE_INGEST_TOKEN = 'private-test-token';
+  const cli = (...args) => spawnSync(process.execPath, ['bin/sporades.js', 'telemetry', 'profile', ...args], {
+    cwd: process.cwd(), encoding: 'utf8', env: process.env,
+  });
+  try {
+    const added = cli('add', 'local', '--endpoint', 'http://127.0.0.1:4318', '--loopback', '--credential-env', 'TRACE_INGEST_TOKEN', '--json');
+    assert.equal(added.status, 0, added.stderr);
+    assert.equal(JSON.parse(added.stdout).data.profile.credentialEnv, 'TRACE_INGEST_TOKEN');
+    assert.doesNotMatch(await readFile(path.join(directory, 'telemetry.json'), 'utf8'), /private-test-token/);
+    const rejected = cli('add', 'bad', '--endpoint', 'https://user:password@example.com?token=secret', '--json');
+    assert.equal(rejected.status, 1);
+    assert.doesNotMatch(rejected.stdout + rejected.stderr, /password|secret/);
+    assert.equal((await resolveLocalTelemetryConfig({ name: 'capsule' })), null);
+    assert.equal((await resolveLocalTelemetryConfig({ name: 'capsule', telemetry: { profile: 'local' } })).endpoint, 'http://127.0.0.1:4318');
+    const second = cli('add', 'other', '--endpoint', 'http://localhost:4320', '--loopback', '--json');
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal((await resolveLocalTelemetryConfig({ name: 'capsule', telemetry: { profile: 'local' } }, 'other')).endpoint, 'http://localhost:4320');
+    delete process.env.TRACE_INGEST_TOKEN;
+    await assert.rejects(resolveLocalTelemetryConfig({ telemetry: { profile: 'local' } }), /credential is unavailable/);
+  } finally {
+    if (oldConfigDir === undefined) delete process.env.SPORADES_CONFIG_DIR; else process.env.SPORADES_CONFIG_DIR = oldConfigDir;
+    if (oldToken === undefined) delete process.env.TRACE_INGEST_TOKEN; else process.env.TRACE_INGEST_TOKEN = oldToken;
+    await rm(directory, { recursive: true, force: true });
+  }
+});

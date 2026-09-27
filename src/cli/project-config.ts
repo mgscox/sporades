@@ -8,6 +8,7 @@ import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, de
 import { validateLogConfig } from "../log-envelope.js";
 import { validateMailConfig } from "../mail-config.js";
 import { validatePaymentsConfig } from "../stripe-payment-config.js";
+import { validateTelemetryProjectConfig } from "./telemetry-profile.js";
 import { commandError, errorDetails, type LooseRecord } from "./cli-support.js";
 import { readClientPrerenderConfig } from "../client-prerender.js";
 
@@ -49,6 +50,7 @@ const SUPPORTED_PROJECT_KEYS = new Set([
   "ssh",
   "template",
   "teams",
+  "telemetry",
 ]);
 
 export async function readProjectConfig(projectDir: string) {
@@ -73,6 +75,7 @@ export async function readProjectConfig(projectDir: string) {
   validatePasswordResetConfig(config.auth);
   validateTeamsConfig(config.teams);
   validateCapsuleServicesConfig(config.services);
+  validateTelemetryProjectConfig(config.telemetry);
   return config;
 }
 

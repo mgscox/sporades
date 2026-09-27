@@ -265,8 +265,11 @@ The repository currently includes:
 
 The following work is intentionally deferred:
 
-- Automatic OpenTelemetry and centralized JSON logging:
-  `.scratch/post-v2-platform-hardening-and-ops/issues/04-add-automatic-opentelemetry.md` and
+- Additional automatic OpenTelemetry signals and centralized JSON logging:
+  Dev HTTP SERVER tracing is available through explicit operator Telemetry profiles;
+  Container/Host transport, metrics and operation spans remain deferred under
+  [automatic monitoring issue #107](https://github.com/mgscox/sporades/issues/107).
+  Centralized JSON logging remains deferred in
   `.scratch/post-v2-platform-hardening-and-ops/issues/05-centralize-json-server-logging.md`.
 - Runtime restart policy for fatal paths:
   `.scratch/post-v2-platform-hardening-and-ops/issues/06-handle-fatal-runtime-paths-with-restart-policy.md`.

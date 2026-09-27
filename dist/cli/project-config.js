@@ -7,6 +7,7 @@ import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, de
 import { validateLogConfig } from "../log-envelope.js";
 import { validateMailConfig } from "../mail-config.js";
 import { validatePaymentsConfig } from "../stripe-payment-config.js";
+import { validateTelemetryProjectConfig } from "./telemetry-profile.js";
 import { commandError, errorDetails } from "./cli-support.js";
 import { readClientPrerenderConfig } from "../client-prerender.js";
 export { validateMailConfig } from "../mail-config.js";
@@ -44,6 +45,7 @@ const SUPPORTED_PROJECT_KEYS = new Set([
     "ssh",
     "template",
     "teams",
+    "telemetry",
 ]);
 export async function readProjectConfig(projectDir) {
     const configPath = path.join(projectDir, "sporades.json");
@@ -66,6 +68,7 @@ export async function readProjectConfig(projectDir) {
     validatePasswordResetConfig(config.auth);
     validateTeamsConfig(config.teams);
     validateCapsuleServicesConfig(config.services);
+    validateTelemetryProjectConfig(config.telemetry);
     return config;
 }
 const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
