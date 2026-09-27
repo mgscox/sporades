@@ -194,6 +194,73 @@ test('request metrics count sampled-out traffic, failures and streams without pr
   } finally { app.close(); collector.close(); }
 });
 
+test('enabled Capsule exports periodic process CPU, memory and uptime without HTTP traffic', async () => {
+  const batches = [];
+  const collector = createServer(async (request, response) => {
+    let body = '';
+    for await (const part of request) body += part;
+    batches.push({ path: request.url, body: JSON.parse(body) });
+    response.writeHead(200).end();
+  }).listen(0, '127.0.0.1');
+  await once(collector, 'listening');
+  const telemetry = createHttpRequestTelemetry({ endpoint: `http://127.0.0.1:${collector.address().port}`, tls: { mode: 'loopback' }, serviceName: 'resource-test', metricsIntervalMs: 1000 });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 1300));
+    const resources = batches.filter(batch => batch.path === '/v1/metrics').flatMap(batch => batch.body.resourceMetrics ?? []);
+    assert(resources.length > 0, 'periodic export occurs without requests');
+    const identity = resources[0].resource.attributes;
+    assert.equal(identity.find(item => item.key === 'service.name')?.value.stringValue, 'resource-test');
+    assert.match(identity.find(item => item.key === 'service.instance.id')?.value.stringValue ?? '', /^[0-9a-f-]{36}$/);
+    const metrics = resources.flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []);
+    const byName = name => metrics.find(metric => metric.name === name);
+    const value = point => Number(point?.asDouble ?? point?.asInt);
+    const cpu = byName('process.cpu.time');
+    assert.equal(cpu.unit, 's');
+    assert.equal(cpu.sum.isMonotonic, true);
+    assert.deepEqual(cpu.sum.dataPoints.map(point => point.attributes.find(item => item.key === 'state')?.value.stringValue).sort(), ['system', 'user']);
+    assert(cpu.sum.dataPoints.every(point => value(point) >= 0));
+    for (const name of ['process.memory.rss', 'process.memory.heap.used', 'process.memory.heap.allocated', 'process.memory.heap.limit', 'process.memory.external', 'process.memory.array_buffers']) {
+      const metric = byName(name);
+      assert.equal(metric.unit, 'By', name);
+      assert(value(metric.gauge.dataPoints[0]) > 0, name);
+    }
+    assert.equal(byName('process.uptime').unit, 's');
+    assert(value(byName('process.uptime').gauge.dataPoints[0]) > 0);
+  } finally { await telemetry.shutdown(); collector.close(); }
+});
+
+test('disabled and replaced telemetry stop process exports without multiplying readers', async () => {
+  const resources = [];
+  const collector = createServer(async (request, response) => {
+    let body = '';
+    for await (const part of request) body += part;
+    if (request.url === '/v1/metrics') resources.push(...(JSON.parse(body).resourceMetrics ?? []));
+    response.writeHead(200).end();
+  }).listen(0, '127.0.0.1');
+  await once(collector, 'listening');
+  const config = { endpoint: `http://127.0.0.1:${collector.address().port}`, tls: { mode: 'loopback' }, serviceName: 'reload-test', metricsIntervalMs: 1000 };
+  const first = createHttpRequestTelemetry(config);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 1150));
+    await first.shutdown();
+    const firstId = resources.find(resource => resource.scopeMetrics?.some(scope => scope.metrics?.some(metric => metric.name === 'process.uptime')))?.resource.attributes.find(item => item.key === 'service.instance.id')?.value.stringValue;
+    assert(firstId);
+    const afterDisable = resources.length;
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    assert.equal(resources.length, afterDisable, 'disabled reader does not export again');
+    const replacement = createHttpRequestTelemetry(config);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 1150));
+      const ids = resources.map(resource => resource.resource.attributes.find(item => item.key === 'service.instance.id')?.value.stringValue).filter(Boolean);
+      assert(ids.includes(firstId));
+      assert(ids.every(id => id === firstId), 'reload preserves the running process identity');
+    } finally { await replacement.shutdown(); }
+    const afterReloadShutdown = resources.length;
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    assert.equal(resources.length, afterReloadShutdown, 'replacement reader does not leak a timer');
+  } finally { await first.shutdown(); collector.close(); }
+});
+
 test('an uncaught handler rejection records an error status before the HTTP error response', async () => {
   const batches = [];
   const collector = createServer(async (request, response) => {

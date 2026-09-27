@@ -41,6 +41,11 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert.deepEqual(result.data.missingAssets, []);
   assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /prom\/prometheus:v3\.13\.3[\s\S]*grafana\/grafana:13\.2\.2/);
   assert.equal(JSON.parse(await readFile(join(target, 'api-dashboard.json'), 'utf8')).title, 'Sporades Capsule API');
+  const resources = JSON.parse(await readFile(join(target, 'resource-dashboard.json'), 'utf8'));
+  assert.equal(resources.uid, 'sporades-resources');
+  assert.match(resources.panels.find(panel => panel.title === 'CPU cores used')?.targets[0].expr ?? '', /rate\(process_cpu_time_seconds_total.*instance=~/);
+  assert.equal(resources.panels.find(panel => panel.title === 'JavaScript heap')?.targets.length, 2);
+  assert(resources.panels.some(panel => panel.title === 'V8 heap limit'));
   assert.equal((await stat(join(target, '.private', 'grafana-admin-password'))).mode & 0o777, 0o600);
   assert.ok(result.data.missing.includes('TRACE_CERT_FILE'));
   const environment = join(target, '.env');

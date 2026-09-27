@@ -266,8 +266,9 @@ The repository currently includes:
 The following work is intentionally deferred:
 
 - Additional automatic OpenTelemetry signals and centralized JSON logging:
-  Dev and local Container HTTP SERVER tracing and API request metrics are available
-  through explicit operator Telemetry profiles. Resource metrics, Hosted telemetry
+  Dev and local Container HTTP SERVER tracing, API request metrics, and periodic
+  process CPU/memory metrics are available through explicit operator Telemetry
+  profiles. GC/event-loop metrics, container/Host collection, Hosted telemetry
   transport, and operation spans remain deferred under
   [automatic monitoring issue #107](https://github.com/mgscox/sporades/issues/107).
   Centralized JSON logging remains deferred in

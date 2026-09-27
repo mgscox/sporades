@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { getHeapStatistics } from "node:v8";
 
 import { ROOT_CONTEXT, SpanKind, SpanStatusCode, TraceFlags, trace } from "@opentelemetry/api";
 import type { Span } from "@opentelemetry/api";
@@ -65,6 +66,7 @@ function safeMethod(method: unknown): string {
 }
 
 const requestScope = new AsyncLocalStorage<{ requestId: string; span?: Span }>();
+const processInstanceId = randomUUID();
 
 /** Internal seam for later operation spans; no Capsule-facing API is exported. */
 export function activeRuntimeRequestSpan(): Span | undefined { return requestScope.getStore()?.span; }
@@ -128,8 +130,13 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     exportIntervalMillis: config.metricsIntervalMs ?? 15_000,
     exportTimeoutMillis: 800,
   });
+  const resource = resourceFromAttributes({
+    "service.name": config.serviceName.slice(0, 80),
+    "service.instance.id": processInstanceId,
+    "deployment.environment.name": config.environment ?? "unknown",
+  });
   const meterProvider = new MeterProvider({
-    resource: resourceFromAttributes({ "service.name": config.serviceName.slice(0, 80), "deployment.environment.name": config.environment ?? "unknown" }),
+    resource,
     readers: [metricReader],
     views: [
       { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
@@ -141,6 +148,29 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
   const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
   const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
+  const processMeter = meterProvider.getMeter("sporades-runtime-process", "1");
+  const cpuTime = processMeter.createObservableCounter("process.cpu.time", { unit: "s" });
+  const rss = processMeter.createObservableGauge("process.memory.rss", { unit: "By" });
+  const heapUsed = processMeter.createObservableGauge("process.memory.heap.used", { unit: "By" });
+  const heapAllocated = processMeter.createObservableGauge("process.memory.heap.allocated", { unit: "By" });
+  const heapLimit = processMeter.createObservableGauge("process.memory.heap.limit", { unit: "By" });
+  const external = processMeter.createObservableGauge("process.memory.external", { unit: "By" });
+  const arrayBuffers = processMeter.createObservableGauge("process.memory.array_buffers", { unit: "By" });
+  const uptime = processMeter.createObservableGauge("process.uptime", { unit: "s" });
+  // The metric reader owns the only collection interval. No process API runs per request.
+  processMeter.addBatchObservableCallback((result) => {
+    const cpu = process.cpuUsage();
+    const memory = process.memoryUsage();
+    result.observe(cpuTime, cpu.user / 1e6, { state: "user" });
+    result.observe(cpuTime, cpu.system / 1e6, { state: "system" });
+    result.observe(rss, memory.rss);
+    result.observe(heapUsed, memory.heapUsed);
+    result.observe(heapAllocated, memory.heapTotal);
+    result.observe(heapLimit, getHeapStatistics().heap_size_limit);
+    result.observe(external, memory.external);
+    result.observe(arrayBuffers, memory.arrayBuffers);
+    result.observe(uptime, process.uptime());
+  }, [cpuTime, rss, heapUsed, heapAllocated, heapLimit, external, arrayBuffers, uptime]);
   const seenRoutes = new Set<string>();
   let failedReason: Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"] | null = null;
   let lastFailureLoggedAt = 0;
@@ -180,7 +210,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     exportTimeoutMillis: 800,
   });
   const provider = new BasicTracerProvider({
-    resource: resourceFromAttributes({ "service.name": config.serviceName.slice(0, 80) }),
+    resource,
     sampler: new TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
     spanProcessors: [processor],
   });

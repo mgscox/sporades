@@ -1,0 +1,296 @@
+{
+  "uid": "sporades-resources",
+  "title": "Sporades Capsule Resources",
+  "description": "Process CPU and memory for enabled Capsules. Each instance is a distinct process lifetime.",
+  "schemaVersion": 41,
+  "version": 2,
+  "refresh": "15s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "tags": [
+    "sporades",
+    "resources"
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "CPU cores used",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service_name,instance) (rate(process_cpu_time_seconds_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}[2m]))",
+          "legendFormat": "{{service_name}} {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0
+        }
+      },
+      "description": "100% of one CPU core equals 1.0; a multi-core process can exceed 1.0. Rate handles process counter resets."
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "CPU time by state",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_cpu_time_seconds_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}",
+          "legendFormat": "{{service_name}} {{instance}} {{state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        }
+      },
+      "description": "Cumulative user and system CPU seconds since process start; resets on restart."
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Resident memory (RSS)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_memory_rss_bytes{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}",
+          "legendFormat": "{{service_name}} {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        }
+      },
+      "description": "Resident process memory. Do not add it to heap or external memory."
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "JavaScript heap",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_memory_heap_used_bytes{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}",
+          "legendFormat": "used {{service_name}} {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "process_memory_heap_allocated_bytes{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}",
+          "legendFormat": "allocated {{service_name}} {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        }
+      },
+      "description": "Heap used and allocated bytes. The V8 limit is shown separately and is not a container/RSS cap."
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "External memory and ArrayBuffers",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_memory_external_bytes{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}",
+          "legendFormat": "external {{service_name}} {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "process_memory_array_buffers_bytes{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}",
+          "legendFormat": "ArrayBuffers {{service_name}} {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        }
+      },
+      "description": "ArrayBuffers, including Buffers, are already included in external memory. These lines are not additive."
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Process uptime",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_uptime_seconds{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}",
+          "legendFormat": "{{service_name}} {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        }
+      },
+      "description": "Seconds since process start; resets to zero on restart."
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "V8 heap limit",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "C",
+          "expr": "process_memory_heap_limit_bytes{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}",
+          "legendFormat": "V8 limit {{service_name}} {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        }
+      },
+      "description": "Maximum V8 heap size. This is not a container or RSS memory limit."
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Capsule",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sporades-prometheus"
+        },
+        "query": "label_values(process_memory_rss_bytes, service_name)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "environment",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sporades-prometheus"
+        },
+        "query": "label_values(process_memory_rss_bytes, deployment_environment_name)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "instance",
+        "label": "Process instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sporades-prometheus"
+        },
+        "query": "label_values(process_memory_rss_bytes{service_name=~\"${service:regex}\"}, instance)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  }
+}

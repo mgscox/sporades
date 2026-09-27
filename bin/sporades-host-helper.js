@@ -26852,10 +26852,11 @@ var unsupportedResources = Object.freeze({
 });
 
 // src/log-envelope.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/runtime-telemetry.ts
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/auth-admission.ts
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
@@ -42692,6 +42693,7 @@ var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 
 // src/runtime-telemetry.ts
 var requestScope = new AsyncLocalStorage();
+var processInstanceId = randomUUID2();
 function activeRuntimeLogIdentity() {
   const scope = requestScope.getStore();
   if (!scope) return void 0;
@@ -42719,7 +42721,7 @@ function uncappedLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request || identity ? {
-      id: input.request?.id ?? identity?.requestId ?? randomUUID2(),
+      id: input.request?.id ?? identity?.requestId ?? randomUUID3(),
       method: input.request?.method ?? null,
       path: input.request?.path ?? null
     } : null,
