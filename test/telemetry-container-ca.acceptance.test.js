@@ -34,8 +34,13 @@ test("packed CLI exports through a private CA from a disposable Container", {
     await run("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=host.docker.internal", "-addext", "subjectAltName=DNS:host.docker.internal"], { timeout: 30_000 });
     const received = [];
     collector = createServer({ key: await readFile(key), cert: await readFile(cert) }, async (request, response) => {
-      for await (const _ of request) {}
-      received.push({ path: request.url, authorization: request.headers.authorization });
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const resources = (body.resourceMetrics ?? []).map(entry => Object.fromEntries(
+        (entry.resource?.attributes ?? []).map(attribute => [attribute.key, attribute.value?.stringValue]),
+      ));
+      received.push({ path: request.url, authorization: request.headers.authorization, resources });
       response.writeHead(200).end();
     }).listen(0, "0.0.0.0");
     await once(collector, "listening");
@@ -55,24 +60,31 @@ test("packed CLI exports through a private CA from a disposable Container", {
     const staged = await readFile(binding.telemetryCaStagePath);
     assert.deepEqual(staged, await readFile(cert));
     const deadline = Date.now() + 20_000;
-    while (!received.some(event => event.path === "/v1/metrics") && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 250));
-    assert(received.some(event => event.path === "/v1/metrics" && event.authorization === "Bearer session-owned-credential"), "Container did not export through its original CA and credential");
-    const originalCount = received.length;
+    while (!received.some(isContainerMetric) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 250));
+    assert(received.some(event => isContainerMetric(event) && event.authorization === "Bearer session-owned-credential"), "Container did not export through its original CA, credential and resource identity");
     await run(process.execPath, [cli, "deploy", "stop", "--json"], { cwd: projectDir, env, timeout: 30_000 });
     await devBuild(cli, projectDir, env, []);
     assert.doesNotMatch(await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8"), /host\.docker\.internal/);
+    const afterDevExit = received.length;
     await run(process.execPath, [cli, "deploy", "restart", "--json"], { cwd: projectDir, env, timeout: 30_000 });
     assert.equal((await run("docker", ["inspect", "--format", "{{.State.Running}}", containerId])).stdout.trim(), "true");
-    await waitUntil(() => received.length > originalCount && received.slice(originalCount).some(event => event.path === "/v1/metrics" && event.authorization === "Bearer session-owned-credential"), 20_000);
+    await waitUntil(() => received.slice(afterDevExit).some(event => isContainerMetric(event) && event.authorization === "Bearer session-owned-credential"), 20_000);
     const disabled = await run(process.execPath, [cli, "deploy", "--no-telemetry", "--json"], { cwd: projectDir, env, timeout: 120_000 });
     containerId = JSON.parse(disabled.stdout.trim().split("\n").at(-1)).data.containerId;
     await run(process.execPath, [cli, "deploy", "stop", "--json"], { cwd: projectDir, env, timeout: 30_000 });
     await devBuild(cli, projectDir, env, ["--telemetry", "private"]);
+    const knownDevInstances = new Set(received.flatMap(event => event.resources)
+      .filter(resource => resource["deployment.environment.name"] === "dev")
+      .map(resource => resource["service.instance.id"])
+      .filter(id => typeof id === "string" && id.length > 0));
     const beforeDisabledRestart = received.length;
     await run(process.execPath, [cli, "deploy", "restart", "--json"], { cwd: projectDir, env, timeout: 30_000 });
     assert.equal((await run("docker", ["inspect", "--format", "{{.State.Running}}", containerId])).stdout.trim(), "true");
     await new Promise(resolve => setTimeout(resolve, 6500));
-    assert.equal(received.length, beforeDisabledRestart, "disabled Container exported after enabled Dev rebuilt the shared Bundle");
+    assert.equal(received.slice(beforeDisabledRestart).filter(event => event.path === "/v1/metrics"
+      && event.resources.some(resource => !knownDevInstances.has(resource["service.instance.id"]))).length,
+    0, "disabled Container started a new metrics exporter after enabled Dev rebuilt the shared Bundle");
+    assert.equal((await run("docker", ["inspect", "--format", "{{.State.Running}}", containerId])).stdout.trim(), "true", "disabled Container stopped during the no-export observation");
     await writeFile(cert, "malformed CA");
     await assert.rejects(
       run(process.execPath, [cli, "deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env, timeout: 120_000 }),
@@ -86,6 +98,12 @@ test("packed CLI exports through a private CA from a disposable Container", {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function isContainerMetric(event) {
+  return event.path === "/v1/metrics" && event.resources.some(resource =>
+    resource["deployment.environment.name"] === "container" && resource["service.name"] === "ca-acceptance"
+  );
+}
 
 async function devBuild(cli, projectDir, env, selection) {
   const child = spawn(process.execPath, [cli, "dev", ...selection, "--json"], { cwd: projectDir, env, stdio: ["ignore", "pipe", "pipe"] });
