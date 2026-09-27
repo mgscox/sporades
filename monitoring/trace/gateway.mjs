@@ -84,6 +84,14 @@ function proxyUi(req, res, target, deadlineMs = UI_REQUEST_DEADLINE_MS) {
     response?.unpipe(res);
     response?.destroy();
     upstream.destroy();
+    // A backend may answer before a client finishes uploading. Once the
+    // response has flushed, close that client socket instead of leaving the
+    // HTTP parser waiting indefinitely for the remainder of its body.
+    if (!req.complete) {
+      res.shouldKeepAlive = false;
+      if (res.writableFinished || res.destroyed) req.destroy();
+      else res.once('finish', () => req.destroy());
+    }
   };
   const fail = status => {
     if (finished) return;

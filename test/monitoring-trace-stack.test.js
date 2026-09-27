@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { request as httpRequest } from 'node:http';
+import { connect } from 'node:net';
 import { spawn } from 'node:child_process';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { gatewayRunIdentity, inspectEnvironment, setupEnvironment } from '../monitoring/trace/setup.mjs';
@@ -353,4 +354,35 @@ test('Resources API p95 excludes aborted requests like the API dashboard', async
   const apiP95 = api.panels.find(panel => panel.title === 'p95 request latency').targets[0].expr;
   assert.match(apiP95, /sporades_http_outcome!=\"abort\"/);
   assert.match(resourceP95, /sporades_http_outcome!=\"abort\"/);
+});
+
+
+test('incomplete authenticated UI uploads close their client sockets after deadline or early reply', async () => {
+  const backend = createServer((req, res) => {
+    if (req.url === '/early') res.end('early');
+  });
+  await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve));
+  const gateway = createGateway({ ingestToken: 'token', uiUser: 'viewer', uiPassword: 'secret', collectorUrl: 'http://127.0.0.1:1', jaegerUrl: `http://127.0.0.1:${backend.address().port}`, uiRequestDeadlineMs: 200 });
+  await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
+  const sockets = [];
+  try {
+    for (const [path, status] of [['/stall-upload', 504], ['/early', 200]]) {
+      const socket = connect(gateway.address().port, '127.0.0.1');
+      sockets.push(socket);
+      const response = new Promise((resolve, reject) => {
+        let data = '';
+        socket.on('data', chunk => { data += chunk; });
+        socket.once('error', reject);
+        socket.once('close', () => resolve(data));
+      });
+      socket.write(`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Basic ${Buffer.from('viewer:secret').toString('base64')}\r\nContent-Length: 1000000\r\n\r\nx`);
+      const text = await Promise.race([response, new Promise((_, reject) => setTimeout(() => reject(new Error(`${path} client socket stayed open`)), 900))]);
+      assert.match(text, new RegExp(`HTTP/1\.1 ${status} `));
+      assert.equal(await new Promise(resolve => gateway.getConnections((error, count) => resolve(error ? -1 : count))), 0);
+    }
+  } finally {
+    sockets.forEach(socket => socket.destroy());
+    gateway.closeAllConnections(); backend.closeAllConnections();
+    gateway.close(); backend.close();
+  }
 });
