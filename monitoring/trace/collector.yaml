@@ -1,0 +1,34 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        max_request_body_size: 2097152
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 192
+    spike_limit_mib: 48
+  batch:
+    send_batch_size: 256
+    timeout: 1s
+exporters:
+  otlphttp/jaeger:
+    endpoint: http://jaeger:4318
+    sending_queue:
+      enabled: true
+      queue_size: 1000
+      num_consumers: 2
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 30s
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/jaeger]

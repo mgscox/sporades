@@ -1,0 +1,68 @@
+name: sporades-traces
+services:
+  storage-init:
+    image: busybox:1.37.0
+    command: ["chown", "10001:10001", "/badger"]
+    volumes:
+      - traces:/badger
+    restart: "no"
+    mem_limit: 64m
+    pids_limit: 32
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    restart: unless-stopped
+    read_only: true
+    ports:
+      - "${TRACE_BIND:-127.0.0.1}:${TRACE_PORT:-8443}:8443"
+    environment:
+      TRACE_TLS_MODE: ${TRACE_TLS_MODE:?run setup.mjs}
+      TRACE_BIND: ${TRACE_BIND:-127.0.0.1}
+      TRACE_CERT_FILE: ${TRACE_CERT_FILE:-}
+      TRACE_KEY_FILE: ${TRACE_KEY_FILE:-}
+      TRACE_INGEST_TOKEN: ${TRACE_INGEST_TOKEN:?run setup.mjs}
+      TRACE_UI_USER: ${TRACE_UI_USER:?run setup.mjs}
+      TRACE_UI_PASSWORD: ${TRACE_UI_PASSWORD:?run setup.mjs}
+    volumes:
+      - ./certs:/certs:ro
+    depends_on:
+      - collector
+      - jaeger
+    mem_limit: 192m
+    cpus: 1.0
+    pids_limit: 128
+    logging: { options: { max-size: "10m", max-file: "3" } }
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.138.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    restart: unless-stopped
+    read_only: true
+    volumes:
+      - ./collector.yaml:/etc/otelcol/config.yaml:ro
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    logging: { options: { max-size: "10m", max-file: "3" } }
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.21.0
+    command: ["--config=/etc/jaeger/config.yaml"]
+    restart: unless-stopped
+    environment:
+      TRACE_RETENTION: ${TRACE_RETENTION:-168h}
+    volumes:
+      - ./jaeger.yaml:/etc/jaeger/config.yaml:ro
+      - traces:/badger
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 256
+    logging: { options: { max-size: "10m", max-file: "3" } }
+
+volumes:
+  traces:
