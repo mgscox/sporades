@@ -48,8 +48,8 @@ sporades logs tail --port 4000 --json
 `ctx.log` entries and Sporades platform runtime events share the
 `sporades.log.v1` envelope: `timestamp`, `category`, `event`, `level`,
 `message`, `capsule`, optional `release`, optional `request`, optional
-`correlation`, and structured `data`. App logs use `category: "app"` and
-`event: "ctx.log"`; runtime events use `category: "platform"`. This JSONL log
+`correlation`, nullable `traceId` and `spanId`, and structured `data`. App logs
+use `category: "app"` and `event: "ctx.log"`; runtime events use `category: "platform"`. This JSONL log
 stream is separate from `sporades dev --json`, which only streams Dev-session
 lifecycle events such as start and rebuild status.
 
@@ -59,6 +59,18 @@ are replaced with `[REDACTED]`; exact Server env values are also redacted if
 they appear in structured log data. Request method and path may be recorded, but
 raw request bodies are not logged by default. Each log event is capped to a
 bounded payload size, with oversized structured data marked as truncated.
+
+Within one HTTP request, `request.id` is a stable runtime UUID across async
+log calls, including when telemetry export is disabled. An explicitly supplied
+request ID and existing correlation data remain intact. With telemetry enabled,
+`traceId` and `spanId` come only from the validated active server span; they
+are `null` otherwise. Incoming baggage, raw `traceparent`, headers, query
+strings and request bodies never populate these fields. To find events for a
+trace, run `sporades logs --json` and select entries whose `traceId` matches
+the trace. Use `sporades logs tail --json` for the durable JSONL stream,
+including events from a handler whose database transaction later rolled back.
+The bounded recent index preserves its transaction behavior and runtime
+sequence; the JSONL stream preserves append order.
 
 The JSONL log stream lives under the Runtime directory by default and is the
 primary durable stream for CLI tailing, Host collection, Docker stdout, and

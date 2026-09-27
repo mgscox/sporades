@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { commandError } from "./runtime-errors.js";
+import { activeRuntimeLogIdentity } from "./runtime-telemetry.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -8,6 +9,7 @@ type LooseRecord = Record<string, any>;
 export function uncappedLogEnvelope(input: LooseRecord) {
   const config = input.config ?? {};
   const capsuleName = String(config.name ?? "unknown");
+  const identity = activeRuntimeLogIdentity();
   return {
     schema: "sporades.log.v1",
     timestamp: input.timestamp ?? new Date().toISOString(),
@@ -20,14 +22,16 @@ export function uncappedLogEnvelope(input: LooseRecord) {
       id: String(config.capsule?.id ?? config.id ?? capsuleName),
     },
     release: input.release ?? config.release ?? null,
-    request: input.request
+    request: input.request || identity
       ? {
-        id: input.request.id ?? randomUUID(),
-        method: input.request.method ?? null,
-        path: input.request.path ?? null,
+        id: input.request?.id ?? identity?.requestId ?? randomUUID(),
+        method: input.request?.method ?? null,
+        path: input.request?.path ?? null,
       }
       : null,
     correlation: input.correlation ?? null,
+    traceId: identity?.traceId ?? null,
+    spanId: identity?.spanId ?? null,
     data: input.data ?? null,
   };
 }
@@ -42,6 +46,11 @@ export function minimumLogPayloadMaxBytes(config: LooseRecord = {}) {
     message: "m".repeat(128),
     data: null,
   });
+  // Reserve the largest runtime-owned identities even when validation happens
+  // outside a request. Caller-supplied request/correlation metadata is variable.
+  envelope.request = { id: "f".repeat(36), method: null, path: null };
+  envelope.traceId = "f".repeat(32);
+  envelope.spanId = "f".repeat(16);
   // String allowances count JSON-escaped UTF-8 content, excluding quotes.
   // Replace the four-byte null with 256 bytes of sanitized, serialized data.
   return Buffer.byteLength(JSON.stringify({ ...envelope, truncated: false }), "utf8") - 4 + 256;

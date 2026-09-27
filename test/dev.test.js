@@ -10547,7 +10547,7 @@ test("sporades logs returns captured ctx.log entries from the running dev sessio
 export default capsule({
   name: "Todo Island",
   endpoints: {
-    log: endpoint({ method: "POST", path: "/log" }, (ctx) => {
+    log: endpoint({ method: "POST", path: "/log" }, async (ctx) => {
       ctx.log.info("ctx.log is available", {
         password: "plaintext-password",
         token: "token-123",
@@ -10559,6 +10559,8 @@ export default capsule({
         nested: { apiToken: "nested-token-123" },
         large: "x".repeat(5000),
       });
+      await Promise.resolve();
+      ctx.log.info("ctx.log after await", { safe: "second" });
       return { status: 200, body: { ok: true, body: ctx.request.body } };
     }),
   },
@@ -10599,6 +10601,10 @@ export default capsule({
       assert.equal(ctxLog.request.method, "POST");
       assert.equal(ctxLog.request.path, "/log");
       assert.equal(ctxLog.request.body, undefined);
+      const afterAwaitLog = logs.data.entries.find((entry) => entry.message === "ctx.log after await");
+      assert.equal(afterAwaitLog.request.id, ctxLog.request.id);
+      assert.equal(afterAwaitLog.traceId, null);
+      assert.equal(afterAwaitLog.spanId, null);
       assert.equal(ctxLog.data.safe, "visible");
       assert.equal(ctxLog.data.password, "[REDACTED]");
       assert.equal(ctxLog.data.token, "[REDACTED]");

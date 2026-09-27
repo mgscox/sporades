@@ -27,6 +27,12 @@ type EndpointLike = {
 export declare function resolveTelemetryRoute(request: RequestLike, endpoints: readonly EndpointLike[]): string;
 /** Internal seam for later operation spans; no Capsule-facing API is exported. */
 export declare function activeRuntimeRequestSpan(): Span | undefined;
+/** Only runtime-created identities may be attached to the existing log envelope. */
+export declare function activeRuntimeLogIdentity(): {
+    requestId: string;
+    traceId: string | null;
+    spanId: string | null;
+} | undefined;
 export declare function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>): {
     run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => unknown;
     shutdown: () => Promise<void>;

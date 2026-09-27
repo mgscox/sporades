@@ -903,6 +903,11 @@ The JSONL log stream used by app `ctx.log` and platform runtime events is a
 separate durable stream exposed through `sporades logs tail --json` and indexed
 recently for `sporades logs --json`. Host commands support `--json` for
 agent-friendly remote operation.
+Within a request, its runtime-owned UUID is stable across async logs; a
+validated active span contributes nullable `traceId` and `spanId` to the same
+log envelope. Existing caller request and correlation values remain intact.
+Operators can select matching `traceId` entries from supported logs inspection;
+the durable JSONL tail also retains logs from rolled-back handlers.
 
 ## Privileged Audit Events
 
