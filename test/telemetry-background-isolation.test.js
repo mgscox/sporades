@@ -183,9 +183,9 @@ test('injected clock timer rearming detaches request identity without changing h
       response.end('scheduled');
     } else {
       logs.push(envelope('B-before'));
-      clock.fire(firstHandle);
-      assert.equal(clock.timer(secondHandle).delay, 25);
-      clock.fire(secondHandle);
+      source.fire(firstHandle);
+      assert.equal(source.timer(secondHandle).delay, 25);
+      source.fire(secondHandle);
       logs.push(envelope('B-after'));
       response.end('ran');
     }
@@ -194,7 +194,7 @@ test('injected clock timer rearming detaches request identity without changing h
   try {
     const origin = `http://127.0.0.1:${app.address().port}`;
     assert.equal(await (await fetch(`${origin}/A`)).text(), 'scheduled');
-    assert.equal(clock.timer(firstHandle).delay, 10);
+    assert.equal(source.timer(firstHandle).delay, 10);
     assert.equal(await (await fetch(`${origin}/B`)).text(), 'ran');
     const byMessage = Object.fromEntries(logs.map(log => [log.message, log]));
     assert.equal(byMessage['first-background'].request, null);
@@ -203,11 +203,27 @@ test('injected clock timer rearming detaches request identity without changing h
     assert.equal(byMessage['B-before'].request.id, byMessage['B-after'].request.id);
     assert.notEqual(byMessage.A.request.id, byMessage['B-before'].request.id);
     const cancelledHandle = clock.setTimer(() => assert.fail('cancelled timer fired'), 30);
-    assert.equal(clock.timer(cancelledHandle).delay, 30);
+    assert.equal(source.timer(cancelledHandle).delay, 30);
     clock.clearTimer(cancelledHandle);
-    assert.equal(clock.timer(cancelledHandle), undefined);
+    assert.equal(source.timer(cancelledHandle), undefined);
   } finally {
     await telemetry.shutdown();
     await new Promise(resolve => app.close(resolve));
   }
+});
+
+test('a frozen injected clock keeps its runtime methods and exact timer handle', () => {
+  const callbacks = new Map();
+  const source = Object.freeze({
+    now() { return new Date('2030-01-01T00:00:00.000Z'); },
+    setTimer(callback, delay) { callbacks.set(41, { callback, delay }); return 41; },
+    clearTimer(handle) { callbacks.delete(handle); },
+  });
+  const clock = createRuntimeClock(source);
+  assert.equal(clock.now().toISOString(), '2030-01-01T00:00:00.000Z');
+  const handle = clock.setTimer(() => {}, 25);
+  assert.equal(handle, 41);
+  assert.equal(callbacks.get(handle).delay, 25);
+  clock.clearTimer(handle);
+  assert.equal(callbacks.size, 0);
 });

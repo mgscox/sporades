@@ -796,17 +796,13 @@ export function createRuntimeClock(clock) {
         setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
         clearTimer: (timer) => clearTimeout(timer),
     };
-    // A class-backed test clock may keep state in private fields. Forward every
-    // method with the original receiver while detaching only runtime timers.
-    const setTimer = (callback, delayMs) => withoutRuntimeRequestIdentity(() => source.setTimer(() => withoutRuntimeRequestIdentity(callback), delayMs));
-    return new Proxy(source, {
-        get(target, property) {
-            if (property === "setTimer")
-                return setTimer;
-            const value = Reflect.get(target, property, target);
-            return typeof value === "function" ? value.bind(target) : value;
-        },
-    });
+    // Forward the clock contract with its original receiver, including frozen
+    // and private-field clocks. Only runtime timer callbacks lose HTTP identity.
+    return {
+        now: () => source.now(),
+        setTimer: (callback, delayMs) => withoutRuntimeRequestIdentity(() => source.setTimer(() => withoutRuntimeRequestIdentity(callback), delayMs)),
+        clearTimer: (timer) => source.clearTimer(timer),
+    };
 }
 /** Internal full-runtime test support; not exported from sporades/server or sporades/client. */
 export function createControllableRuntimeClock(initialInstant) {

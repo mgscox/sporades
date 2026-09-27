@@ -105721,17 +105721,14 @@ function createRuntimeClock(clock) {
     setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimer: (timer) => clearTimeout(timer)
   };
-  const setTimer = (callback, delayMs) => withoutRuntimeRequestIdentity(() => source.setTimer(
-    () => withoutRuntimeRequestIdentity(callback),
-    delayMs
-  ));
-  return new Proxy(source, {
-    get(target, property) {
-      if (property === "setTimer") return setTimer;
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    }
-  });
+  return {
+    now: () => source.now(),
+    setTimer: (callback, delayMs) => withoutRuntimeRequestIdentity(() => source.setTimer(
+      () => withoutRuntimeRequestIdentity(callback),
+      delayMs
+    )),
+    clearTimer: (timer) => source.clearTimer(timer)
+  };
 }
 function runtimeOwnedJobHandlers(runtime) {
   return [
