@@ -21,7 +21,9 @@ verification. The optional `--dashboard` is a credential-free HTTPS URL.
 `--event-loop-delay-resolution-ms` tunes Node event-loop delay sampling from
 10 to 1000 ms (default 20 ms); shorter intervals use more timer work.
 `--metrics-interval-ms` tunes metric export from 5000 to 300000 ms; the default
-is 15000 ms. GC counts and pause duration, event-loop delay and utilization use
+is 15000 ms. The monitoring dashboards default to a 12-minute Metric window
+so even a 300-second profile has at least two samples for rates and p95. Select
+2 minutes only for profiles exporting every 30 seconds or faster. GC counts and pause duration, event-loop delay and utilization use
 the same process instance identity as CPU and memory. A finite stall appears
 after recovery; a permanently blocked process may stop exporting. The monitoring stack's [operator README](https://github.com/mgscox/sporades/blob/main/monitoring/trace/README.md)
 documents its separate scrape interval, retention, disk cap, and Grafana URL.

@@ -1,9 +1,9 @@
 {
   "uid": "sporades-api",
   "title": "Sporades Capsule API",
-  "description": "Independent request metrics for enabled Capsules. Streams are included in throughput; latency excludes aborted requests.",
+  "description": "Independent request metrics for enabled Capsules. Rate and latency lookback follow the Metric window selector; streams are included in throughput and latency excludes aborted requests.",
   "schemaVersion": 41,
-  "version": 4,
+  "version": 5,
   "refresh": "15s",
   "time": {
     "from": "now-1h",
@@ -32,7 +32,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (service_name) (rate(http_server_request_count_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`}[5m]))",
+          "expr": "sum by (service_name) (rate(http_server_request_count_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`}[${metric_window}]))",
           "legendFormat": "{{service_name}}"
         }
       ],
@@ -60,7 +60,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, service_name) (rate(http_server_request_duration_seconds_bucket{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`,sporades_http_outcome!=\"abort\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, service_name) (rate(http_server_request_duration_seconds_bucket{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`,sporades_http_outcome!=\"abort\"}[${metric_window}])))",
           "legendFormat": "{{service_name}}"
         }
       ],
@@ -88,7 +88,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (service_name, sporades_http_outcome) (rate(http_server_request_count_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`,sporades_http_outcome=~\"error|failure|abort\"}[5m]))",
+          "expr": "sum by (service_name, sporades_http_outcome) (rate(http_server_request_count_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`,sporades_http_outcome=~\"error|failure|abort\"}[${metric_window}]))",
           "legendFormat": "{{service_name}} {{sporades_http_outcome}}"
         }
       ],
@@ -144,7 +144,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, service_name, http_route) (rate(http_server_request_duration_seconds_bucket{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`,sporades_http_outcome!=\"abort\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, service_name, http_route) (rate(http_server_request_duration_seconds_bucket{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",http_route=~`${route:regex}`,sporades_http_outcome!=\"abort\"}[${metric_window}])))",
           "legendFormat": "{{service_name}} {{http_route}}"
         }
       ],
@@ -217,6 +217,32 @@
           "text": "All",
           "value": "$__all"
         }
+      },
+      {
+        "name": "metric_window",
+        "label": "Metric window",
+        "type": "custom",
+        "query": "2m,12m",
+        "options": [
+          {
+            "selected": false,
+            "text": "2m",
+            "value": "2m"
+          },
+          {
+            "selected": true,
+            "text": "12m",
+            "value": "12m"
+          }
+        ],
+        "current": {
+          "selected": true,
+          "text": "12m",
+          "value": "12m"
+        },
+        "multi": false,
+        "includeAll": false,
+        "description": "12m supports metric exports up to 300s; use 2m only with exports at most 30s apart. Longer windows smooth rates and retain older delay peaks."
       }
     ]
   }

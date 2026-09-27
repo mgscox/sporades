@@ -40,7 +40,10 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert.equal(result.data.path, target);
   assert.deepEqual(result.data.missingAssets, []);
   assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /prom\/prometheus:v3\.13\.3[\s\S]*grafana\/grafana:13\.2\.2/);
-  assert.equal(JSON.parse(await readFile(join(target, 'api-dashboard.json'), 'utf8')).title, 'Sporades Capsule API');
+  const api = JSON.parse(await readFile(join(target, 'api-dashboard.json'), 'utf8'));
+  assert.equal(api.title, 'Sporades Capsule API');
+  assert.equal(api.templating.list.find(variable => variable.name === 'metric_window')?.current.value, '12m');
+  assert(api.panels.filter(panel => panel.targets.some(target => /rate\(/.test(target.expr))).every(panel => panel.targets.every(target => target.expr.includes('[${metric_window}]'))));
   const resources = JSON.parse(await readFile(join(target, 'resource-dashboard.json'), 'utf8'));
   assert.equal(resources.uid, 'sporades-resources');
   assert.match(resources.panels.find(panel => panel.title === 'CPU cores used')?.targets[0].expr ?? '', /rate\(process_cpu_time_seconds_total.*instance=~/);
@@ -48,7 +51,8 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert(resources.panels.some(panel => panel.title === 'V8 heap limit'));
   assert.match(resources.panels.find(panel => panel.title === 'GC collections per second')?.targets[0].expr ?? '', /rate\(process_gc_count_total.*instance=~/);
   assert.match(resources.panels.find(panel => panel.title === 'GC pause time per second')?.targets[0].expr ?? '', /rate\(process_gc_duration_seconds_total.*instance=~/);
-  assert.match(resources.panels.find(panel => panel.title === 'Event-loop delay')?.targets[0].expr ?? '', /max_over_time\(process_event_loop_delay_max_milliseconds.*\[20s\]\)/);
+  assert.equal(resources.templating.list.find(variable => variable.name === 'metric_window')?.current.value, '12m');
+  assert.match(resources.panels.find(panel => panel.title === 'Event-loop delay')?.targets[0].expr ?? '', /max_over_time\(process_event_loop_delay_max_milliseconds.*\[\$\{metric_window\}\]\)/);
   assert.match(resources.panels.find(panel => panel.title === 'Event-loop utilization')?.targets[0].expr ?? '', /process_event_loop_utilization_ratio.*instance=~/);
   assert.match(resources.panels.find(panel => panel.title === 'API request p95 latency')?.targets[0].expr ?? '', /http_server_request_duration_seconds_bucket.*instance=~/);
 
