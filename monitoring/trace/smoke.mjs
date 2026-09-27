@@ -11,13 +11,13 @@ if (mode === 'tls' && !configuredOrigin) {
   throw new Error('SMOKE_ORIGIN is required in TLS mode; set it to the HTTPS origin whose hostname matches the certificate');
 }
 const requestedOrigin = configuredOrigin || `http://127.0.0.1:${env.get('TRACE_PORT') ?? 8443}`;
-if (!/^https?:\/\/[^/?#]+$/.test(requestedOrigin)) {
+if (!/^https?:\/\/[^/?#\\\s\u0000-\u001f\u007f]+$/.test(requestedOrigin)) {
   throw new Error('SMOKE_ORIGIN must be a clean HTTP(S) origin without credentials, path, query, or fragment');
 }
 let parsedOrigin;
 try { parsedOrigin = new URL(requestedOrigin); }
 catch { throw new Error('SMOKE_ORIGIN must be a valid HTTP(S) origin'); }
-if (parsedOrigin.username || parsedOrigin.password || !parsedOrigin.hostname || /:$/.test(requestedOrigin)) {
+if (parsedOrigin.username || parsedOrigin.password || !parsedOrigin.hostname || parsedOrigin.pathname !== '/' || parsedOrigin.search || parsedOrigin.hash || /:$/.test(requestedOrigin)) {
   throw new Error('SMOKE_ORIGIN must be a clean HTTP(S) origin without credentials, path, query, or fragment');
 }
 const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsedOrigin.hostname);

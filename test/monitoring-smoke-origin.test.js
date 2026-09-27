@@ -78,7 +78,7 @@ test('DNS-only TLS certificate supports trusted send and query at explicit hostn
 
 test('unsafe smoke origins fail before authenticated requests', async t => {
   const f = await fixture(t);
-  for (const origin of ['http://example.com:8443', 'http://localhost.evil:8443', 'ftp://localhost:8443', 'https://viewer:secret@localhost:8443', 'http://127.0.0.1:8443/path', 'http://127.0.0.1:8443?x=1', 'http://127.0.0.1:8443/#fragment', 'http://127.0.0.1:8443/', 'http://viewer:secret@127.0.0.1:8443', 'not-an-origin']) {
+  for (const origin of [`${f.origin}\\path`, `${f.origin}\n`, `${f.origin}\t`, `${f.origin}\r`, `${f.origin} `, 'http://example.com:8443', 'http://localhost.evil:8443', 'ftp://localhost:8443', 'https://viewer:secret@localhost:8443', 'http://127.0.0.1:8443/path', 'http://127.0.0.1:8443?x=1', 'http://127.0.0.1:8443/#fragment', 'http://127.0.0.1:8443/', 'http://viewer:secret@127.0.0.1:8443', 'not-an-origin']) {
     const before = f.received.length;
     const result = await run(f, 'send', { SMOKE_ORIGIN: origin });
     assert.notEqual(result.status, 0, origin);
