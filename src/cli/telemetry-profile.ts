@@ -111,3 +111,17 @@ export async function resolveLocalTelemetryConfig(config: { name?: string; telem
   if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name}.`);
   return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule" };
 }
+
+/** Docker loopback is the Capsule itself; route an explicitly local profile to its Host. */
+export async function resolveContainerTelemetryConfig(config: { name?: string; telemetry?: { profile?: string } }, sessionProfile?: string | null): Promise<RuntimeTelemetryConfig | null> {
+  if (sessionProfile === null) return null;
+  const resolved = await resolveLocalTelemetryConfig(config, sessionProfile);
+  if (!resolved) return null;
+  const endpoint = new URL(resolved.endpoint);
+  if (resolved.tls.mode === "loopback") endpoint.hostname = "host.docker.internal";
+  return {
+    ...resolved,
+    endpoint: endpoint.toString(),
+    tls: resolved.tls.caFile ? { ...resolved.tls, caFile: "/run/sporades/telemetry-ca.pem" } : resolved.tls,
+  };
+}

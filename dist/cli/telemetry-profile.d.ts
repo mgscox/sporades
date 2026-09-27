@@ -18,4 +18,11 @@ export declare function resolveLocalTelemetryConfig(config: {
         profile?: string;
     };
 }, sessionProfile?: string | null): Promise<RuntimeTelemetryConfig | null>;
+/** Docker loopback is the Capsule itself; route an explicitly local profile to its Host. */
+export declare function resolveContainerTelemetryConfig(config: {
+    name?: string;
+    telemetry?: {
+        profile?: string;
+    };
+}, sessionProfile?: string | null): Promise<RuntimeTelemetryConfig | null>;
 //# sourceMappingURL=telemetry-profile.d.ts.map

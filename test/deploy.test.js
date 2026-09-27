@@ -41,6 +41,47 @@ test("Container prerender warnings reach human and structured successful CLI out
   });
 });
 
+test("Container telemetry uses an explicit profile, host routing and credential reference across redeploy and restart", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "trace-capsule", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "trace-capsule"));
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "trace-container");
+    const configDir = path.join(dir, "operator-config");
+    await mkdir(configDir);
+    await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: {
+      local: { endpoint: "http://127.0.0.1:4318", tls: { mode: "loopback" }, credentialEnv: "TRACE_INGEST_TOKEN" },
+    } }));
+    const env = { ...docker.env, SPORADES_CONFIG_DIR: configDir, TRACE_INGEST_TOKEN: "private-container-token" };
+    const disabled = await runCli(["deploy", "--json"], { cwd: projectDir, env });
+    assert.equal(disabled.code, 0, disabled.stderr);
+    assert(!firstDockerRunCall(await docker.calls()).args.includes("--add-host"));
+    assert.doesNotMatch(await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8"), /private-container-token/);
+
+    const enabled = await runCli(["deploy", "--telemetry", "local", "--json"], { cwd: projectDir, env });
+    assert.equal(enabled.code, 0, enabled.stderr);
+    const run = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+    assert(run.args.includes("host.docker.internal:host-gateway"));
+    assert(run.args.includes("TRACE_INGEST_TOKEN"));
+    assert(!run.args.some((arg) => arg.includes("private-container-token")));
+    const bundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+    assert.match(bundle, /host\.docker\.internal:4318/);
+    assert.doesNotMatch(bundle, /private-container-token/);
+    assert.doesNotMatch(enabled.stdout + enabled.stderr, /private-container-token/);
+    assert.equal((await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env })).code, 0);
+    assert.equal((await runCli(["deploy", "restart", "--json"], { cwd: projectDir, env })).code, 0);
+    assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env })).code, 0);
+    assert((await docker.calls()).filter((call) => call.args[0] === "run").at(-1).args.includes("--add-host"));
+    const disabledAgain = await runCli(["deploy", "--no-telemetry", "--json"], { cwd: projectDir, env });
+    assert.equal(disabledAgain.code, 0, disabledAgain.stderr);
+    const latestRun = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
+    assert(!latestRun.args.includes("--add-host"));
+    assert(!latestRun.args.includes("TRACE_INGEST_TOKEN"));
+    assert.doesNotMatch(await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8"), /host\.docker\.internal:4318/);
+  });
+});
+
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-deploy-"));
   try {

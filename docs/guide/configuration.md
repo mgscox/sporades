@@ -11,10 +11,11 @@ Use the detailed reference for:
 
 For exact generated paths, see the [runtime layout](../runtime-layout.md).
 
-Dev HTTP tracing uses [operator Telemetry profiles](../reference/projects-and-configuration.md#dev-http-tracing).
+Local HTTP tracing uses [operator Telemetry profiles](../reference/projects-and-configuration.md#local-http-tracing).
 Add an explicit `telemetry.profile` binding in `sporades.json` or pass
 `sporades dev --telemetry <name>` for one session. Sessions without either
-selection export nothing.
+selection export nothing. A local Container session can use `sporades deploy
+--telemetry <name>` and disable export with `sporades deploy --no-telemetry`.
 
 ## Database backend
 

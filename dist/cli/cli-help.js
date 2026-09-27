@@ -171,6 +171,8 @@ Commands:
 
 Options:
   --port <number>     Published local port when starting
+  --telemetry <name>  Export HTTP traces using a registered Telemetry profile
+  --no-telemetry      Disable export for this Container session
   --force             Replace stale or conflicting container state when starting
   --json              Write JSON output
   --help, -h          Show this help

@@ -99945,6 +99945,18 @@ async function resolveLocalTelemetryConfig(config, sessionProfile) {
   if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name2}.`);
   return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule" };
 }
+async function resolveContainerTelemetryConfig(config, sessionProfile) {
+  if (sessionProfile === null) return null;
+  const resolved = await resolveLocalTelemetryConfig(config, sessionProfile);
+  if (!resolved) return null;
+  const endpoint = new URL(resolved.endpoint);
+  if (resolved.tls.mode === "loopback") endpoint.hostname = "host.docker.internal";
+  return {
+    ...resolved,
+    endpoint: endpoint.toString(),
+    tls: resolved.tls.caFile ? { ...resolved.tls, caFile: "/run/sporades/telemetry-ca.pem" } : resolved.tls
+  };
+}
 
 // src/public-tree.ts
 import { lstat as lstat5, mkdir as mkdir4, readdir as readdir2, readFile as readFile7, rename as rename4, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
@@ -100918,7 +100930,7 @@ async function createBundle(projectDir, config, options = {}) {
   });
   const clientBundle = clientOutput.legacyClientBundle;
   const serverBundleInputs = {
-    config: { ...config, __sporadesTelemetry: options.telemetryProfile === void 0 ? null : await resolveLocalTelemetryConfig(config, options.telemetryProfile) },
+    config: { ...config, __sporadesTelemetry: options.containerTelemetry ? await resolveContainerTelemetryConfig(config, options.telemetryProfile) : options.telemetryProfile === void 0 ? null : await resolveLocalTelemetryConfig(config, options.telemetryProfile) },
     serverEnv: sealedEnvelope ? {} : serverEnv,
     sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
     serverSource,
@@ -144605,6 +144617,8 @@ Commands:
 
 Options:
   --port <number>     Published local port when starting
+  --telemetry <name>  Export HTTP traces using a registered Telemetry profile
+  --no-telemetry      Disable export for this Container session
   --force             Replace stale or conflicting container state when starting
   --json              Write JSON output
   --help, -h          Show this help
@@ -147420,6 +147434,7 @@ function parseDeployArgs(args) {
   let port = null;
   let json = false;
   let force = false;
+  let telemetryProfile;
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     switch (arg) {
@@ -147438,6 +147453,14 @@ function parseDeployArgs(args) {
         }
         force = true;
         break;
+      case "--telemetry":
+        if (subcommand !== "start") throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy --telemetry <profile>` only when starting.");
+        telemetryProfile = readFlagValue(rest, ++index, "--telemetry");
+        break;
+      case "--no-telemetry":
+        if (subcommand !== "start") throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy --no-telemetry` only when starting.");
+        telemetryProfile = null;
+        break;
       default:
         throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
     }
@@ -147446,6 +147469,7 @@ function parseDeployArgs(args) {
     subcommand,
     port,
     force,
+    telemetryProfile,
     json,
     projectDir: process.cwd()
   };
@@ -150907,11 +150931,15 @@ async function startContainerSession(options) {
   const containerName = `sporades-${config.name ?? path18.basename(options.projectDir)}`;
   const bindingPath = path18.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
+  const telemetryProfile = options.telemetryProfile === void 0 ? existingBinding?.telemetryProfile : options.telemetryProfile;
+  const telemetryConfig = await resolveContainerTelemetryConfig(config, telemetryProfile);
+  const selectedTelemetryName = telemetryProfile === null ? null : telemetryProfile ?? config.telemetry?.profile;
+  const telemetrySource = selectedTelemetryName && telemetryConfig ? (await readTelemetryProfiles())[selectedTelemetryName] : null;
   const previousConsumer = await readPublicTreeConsumer(path18.join(runtimeDir, "build"), "container");
   verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
-  const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
+  const bundle = await createBundle(options.projectDir, config, { publishLegacy: false, telemetryProfile, containerTelemetry: true });
   const dataDir = path18.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
   await mkdir10(dataDir, { recursive: true });
@@ -151022,6 +151050,11 @@ async function startContainerSession(options) {
     "--env",
     `${key}=${value}`
   ]);
+  const telemetryArgs = telemetryConfig ? [
+    ...telemetryConfig.tls.mode === "loopback" ? ["--add-host", "host.docker.internal:host-gateway"] : [],
+    ...telemetryConfig.credentialEnv ? ["--env", telemetryConfig.credentialEnv] : [],
+    ...telemetrySource?.tls.caFile ? ["--volume", `${telemetrySource.tls.caFile}:/run/sporades/telemetry-ca.pem:ro`] : []
+  ] : [];
   const dockerRunArgs = [
     "run",
     "--detach",
@@ -151039,6 +151072,7 @@ async function startContainerSession(options) {
     "--user",
     runtimeUser,
     ...capsuleServicesNetworkArgs,
+    ...telemetryArgs,
     ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
     "--label",
     `com.sporades.container-transaction=${containerTransactionToken}`,
@@ -151121,6 +151155,7 @@ async function startContainerSession(options) {
     binding = {
       containerId,
       containerName,
+      ...telemetryProfile !== void 0 ? { telemetryProfile } : {},
       clientRelease,
       pendingDeployFileCleanup: [...existingBinding?.pendingDeployFileCleanup ?? [], ...existingBinding?.deployFilesRoot ? [existingBinding.deployFilesRoot] : []],
       ...bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path: path19, update }) => ({ path: path19, update })) } : {},
