@@ -53,9 +53,14 @@ test("Container telemetry uses an explicit profile, host routing and credential 
     await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: {
       local: { endpoint: "http://127.0.0.1:4318", tls: { mode: "loopback" }, credentialEnv: "TRACE_INGEST_TOKEN" },
     } }));
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SPORADES_CONTAINER_TELEMETRY_CONFIG=null\nSPORADES_SECURITY_SESSION=hosted\n");
     const env = { ...docker.env, SPORADES_CONFIG_DIR: configDir, TRACE_INGEST_TOKEN: "private-container-token" };
+    const reservedEnv = await runCli(["deploy", "--telemetry", "local", "--json"], { cwd: projectDir, env });
+    assert.notEqual(reservedEnv.code, 0);
+    assert.match(reservedEnv.stdout + reservedEnv.stderr, /Remove reserved SPORADES_ keys/);
+    await rm(path.join(projectDir, ".env.sporades.server"));
     const disabled = await runCli(["deploy", "--json"], { cwd: projectDir, env });
-    assert.equal(disabled.code, 0, disabled.stderr);
+    assert.equal(disabled.code, 0, disabled.stdout + disabled.stderr);
     assert(!firstDockerRunCall(await docker.calls()).args.includes("--add-host"));
     assert.doesNotMatch(await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8"), /private-container-token/);
 
@@ -64,11 +69,25 @@ test("Container telemetry uses an explicit profile, host routing and credential 
     const run = (await docker.calls()).filter((call) => call.args[0] === "run").at(-1);
     assert(run.args.includes("host.docker.internal:host-gateway"));
     assert(run.args.includes("TRACE_INGEST_TOKEN"));
+    assert(run.args.includes("SPORADES_SECURITY_SESSION=container"));
     assert(!run.args.some((arg) => arg.includes("private-container-token")));
     const bundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
-    assert.match(bundle, /host\.docker\.internal:4318/);
+    assert.doesNotMatch(bundle, /host\.docker\.internal:4318/, "shared Dev bundle cannot own Container destination");
+    assert(run.args.some((arg) => arg.startsWith("SPORADES_CONTAINER_TELEMETRY_CONFIG=") && arg.includes("host.docker.internal:4318")), "Container launch carries its own descriptor");
     assert.doesNotMatch(bundle, /private-container-token/);
     assert.doesNotMatch(enabled.stdout + enabled.stderr, /private-container-token/);
+    const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+    const currentBinding = await readFile(bindingPath, "utf8");
+    const legacyBinding = JSON.parse(currentBinding);
+    delete legacyBinding.telemetryDescriptorVersion;
+    await writeFile(bindingPath, JSON.stringify(legacyBinding));
+    const beforeLegacyDev = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"));
+    const rejectedDev = await runCli(["dev", "--json"], { cwd: projectDir, env });
+    assert.notEqual(rejectedDev.code, 0);
+    assert.match(rejectedDev.stdout + rejectedDev.stderr, /redeploy.*telemetry descriptor/i);
+    assert.deepEqual(await readFile(path.join(projectDir, ".sporades", "build", "server.mjs")), beforeLegacyDev);
+    assert.equal(await readFile(bindingPath, "utf8"), JSON.stringify(legacyBinding));
+    await writeFile(bindingPath, currentBinding);
     assert.equal((await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env })).code, 0);
     assert.equal((await runCli(["deploy", "restart", "--json"], { cwd: projectDir, env })).code, 0);
     assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env })).code, 0);

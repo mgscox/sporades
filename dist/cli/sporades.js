@@ -1992,8 +1992,15 @@ function createDevRefreshController(timeoutMs = 1_000) {
     };
     return { transport, broadcast };
 }
+async function assertContainerTelemetryDescriptorCompatibleWithBundlePublication(projectDir) {
+    const binding = await readContainerBinding(path.join(projectDir, CONTAINER_BINDING_FILE));
+    if (binding?.containerId && binding.telemetryDescriptorVersion !== 1) {
+        throw commandError("The bound Container predates session-owned telemetry descriptors.", "Redeploy this Container once with the current CLI to install its telemetry descriptor before another command publishes the shared Bundle.");
+    }
+}
 async function startDevSession(options) {
     let config = await readProjectConfig(options.projectDir);
+    await assertContainerTelemetryDescriptorCompatibleWithBundlePublication(options.projectDir);
     const session = options.publicDev ? "public-dev" : "dev";
     let security = resolveEffectiveSecurityPolicy(config, session);
     const restartPolicy = restartPolicyForMode("dev");
@@ -2005,7 +2012,7 @@ async function startDevSession(options) {
             initialDependencySignatures.set(file, readDevInputSignature([{ path: file, dependency: true }]));
         clientDependencies.add(file);
     };
-    let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, telemetryProfile: options.telemetryProfile, onClientDependency: recordClientDependency });
+    let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: recordClientDependency });
     let telemetryConfig = await resolveLocalTelemetryConfig(config, options.telemetryProfile);
     const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
     const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
@@ -2349,10 +2356,11 @@ async function startDevSession(options) {
         });
         try {
             const nextConfig = await readProjectConfig(options.projectDir);
+            await assertContainerTelemetryDescriptorCompatibleWithBundlePublication(options.projectDir);
             const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
             const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
             const nextClientDependencies = new Set();
-            rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, telemetryProfile: options.telemetryProfile, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); } });
+            rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); } });
             const nextTelemetryConfig = await resolveLocalTelemetryConfig(nextConfig, options.telemetryProfile);
             const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
                 wait: true,
@@ -3462,6 +3470,7 @@ async function manageHost(options) {
             const config = await readHostConfig();
             const target = await resolveHostPushTarget(config, options);
             const projectConfig = await readProjectConfig(options.projectDir);
+            await assertContainerTelemetryDescriptorCompatibleWithBundlePublication(options.projectDir);
             const sshAccess = await resolveHostedCapsuleSshAccessForAudit(projectConfig, options.projectDir);
             const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
                 projectDir: options.projectDir,
@@ -4020,7 +4029,7 @@ async function startContainerSession(options) {
     verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
     const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
     const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
-    const bundle = await createBundle(options.projectDir, config, { publishLegacy: false, telemetryProfile, containerTelemetry: true, resolvedContainerTelemetry: telemetryConfig });
+    const bundle = await createBundle(options.projectDir, config, { publishLegacy: false, containerTelemetry: true });
     const dataDir = path.join(runtimeDir, "data");
     const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
     await mkdir(dataDir, { recursive: true });
@@ -4169,6 +4178,12 @@ async function startContainerSession(options) {
         "SPORADES_CLAMAV_MANAGED=1",
         "--env",
         `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbeToken}`,
+        // These explicit values follow the Capsule env file, so even a conflicting plain or
+        // sealed Server env cannot replace the session-owned telemetry decision.
+        "--env",
+        "SPORADES_SECURITY_SESSION=container",
+        "--env",
+        `SPORADES_CONTAINER_TELEMETRY_CONFIG=${JSON.stringify(telemetryConfig)}`,
         SPORADES_BASE_IMAGE.image,
         ...(sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]),
     ];
@@ -4229,6 +4244,7 @@ async function startContainerSession(options) {
             containerId,
             containerName,
             containerTransactionToken,
+            telemetryDescriptorVersion: 1,
             ...(telemetryProfile !== undefined ? { telemetryProfile } : {}),
             ...(telemetryCaStagePath ? { telemetryCaStagePath } : {}),
             clientRelease,

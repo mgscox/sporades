@@ -55,6 +55,12 @@ const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd
 const runtimeConfig = {
     ...sporadesConfig,
     __sporadesSession: process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession,
+    // Local Containers keep their selection in Docker's immutable launch environment. Dev may
+    // rebuild the shared server.mjs while a stopped Container is waiting to restart.
+    __sporadesTelemetry: process.env.SPORADES_SECURITY_SESSION === "container"
+        && process.env.SPORADES_CONTAINER_TELEMETRY_CONFIG !== undefined
+        ? JSON.parse(process.env.SPORADES_CONTAINER_TELEMETRY_CONFIG)
+        : sporadesConfig.__sporadesTelemetry,
     __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN ?? sporadesConfig.__sporadesPublicOrigin,
     __sporadesPublicAliases: JSON.parse(process.env.SPORADES_PUBLIC_ALIASES ?? "[]"),
 };
