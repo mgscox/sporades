@@ -44,9 +44,9 @@ async function fixture(t, tls = false) {
   return { directory, cert, received, origin: `${tls ? 'https://localhost' : 'http://127.0.0.1'}:${gateway.address().port}` };
 }
 
-function run(f, action, env = {}) {
+function run(f, action, env = {}, nodeArgs = []) {
   return new Promise(resolve => {
-    const child = spawn(process.execPath, [join(f.directory, 'smoke.mjs'), action, '0123456789abcdef0123456789abcdef'], { env: { ...process.env, ...env }, timeout: 5000 });
+    const child = spawn(process.execPath, [...nodeArgs, join(f.directory, 'smoke.mjs'), action, '0123456789abcdef0123456789abcdef'], { env: { ...process.env, ...env }, timeout: 5000 });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
@@ -63,7 +63,7 @@ test('DNS-only TLS certificate supports trusted send and query at explicit hostn
   const plain = await run(f, 'send', { SMOKE_ORIGIN: f.origin.replace('https:', 'http:') });
   assert.notEqual(plain.status, 0);
   assert.match(plain.stderr, /SMOKE_ORIGIN must use HTTPS/);
-  const env = { SMOKE_ORIGIN: f.origin, NODE_EXTRA_CA_CERTS: f.cert };
+  const env = { SMOKE_ORIGIN: f.origin.replace('localhost', 'LOCALHOST'), NODE_EXTRA_CA_CERTS: f.cert };
   const sent = await run(f, 'send', env);
   assert.equal(sent.status, 0, sent.stderr);
   assert.match(sent.stdout, /Trace query passed/);
@@ -92,4 +92,17 @@ test('proxy smoke retains loopback HTTP default', async t => {
   const result = await run(f, 'send', { SMOKE_ORIGIN: '' });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Trace query passed/);
+});
+
+test('clean origins accept explicit default ports without contacting another service', async t => {
+  const f = await fixture(t);
+  const preload = join(f.directory, 'fetch-marker.mjs');
+  await writeFile(preload, "globalThis.fetch = async () => { throw new Error('FETCH_MARKER'); };\n");
+  for (const [mode, origin] of [['proxy', 'http://LOCALHOST:80'], ['tls', 'https://LOCALHOST:443']]) {
+    await writeFile(join(f.directory, '.env'), `TRACE_TLS_MODE=${mode}\nTRACE_PORT=8443\nTRACE_UI_USER=viewer\nTRACE_UI_PASSWORD=secret\nTRACE_INGEST_TOKEN=test-token\n`);
+    const result = await run(f, 'send', { SMOKE_ORIGIN: origin }, ['--import', preload]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /FETCH_MARKER/, origin);
+    assert.doesNotMatch(result.stderr, /SMOKE_ORIGIN/, origin);
+  }
 });
