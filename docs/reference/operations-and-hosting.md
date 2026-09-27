@@ -69,6 +69,11 @@ strings and request bodies never populate these fields. To find events for a
 trace, run `sporades logs --json` and select entries whose `traceId` matches
 the trace. Use `sporades logs tail --json` for the durable JSONL stream,
 including events from a handler whose database transaction later rolled back.
+Runtime-owned timers, Job workers, and telemetry export diagnostics do not
+inherit the HTTP request that happened to schedule them. Their platform logs
+have null request and trace identities unless a caller explicitly supplies
+request or correlation metadata. Active HTTP handler logs keep their own
+request and trace identities while background work runs.
 The bounded recent index preserves its transaction behavior and runtime
 sequence; the JSONL stream preserves append order.
 

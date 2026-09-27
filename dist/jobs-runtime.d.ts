@@ -56,7 +56,7 @@ export declare function resolveSchedulePayload(database: LooseRecord, definition
     value?: undefined;
 }>;
 export declare function abortSchedulePayloadFactories(database: LooseRecord): void;
-export declare function createRuntimeClock(clock: LooseRecord | undefined): LooseRecord;
+export declare function createRuntimeClock(clock: LooseRecord | undefined): any;
 /** Internal full-runtime test support; not exported from sporades/server or sporades/client. */
 export declare function createControllableRuntimeClock(initialInstant: string | number | Date): {
     now: () => Date;

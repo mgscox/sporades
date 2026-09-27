@@ -73,6 +73,7 @@
       "src/resource-runtime.ts",
       "src/runtime-errors.ts",
       "src/runtime-log-policy.ts",
+      "src/runtime-request-context.ts",
       "src/runtime-restart-policy.ts",
       "src/runtime-telemetry.ts",
       "src/sealed-server-env.ts",
@@ -107,7 +108,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "d066f84489737b845897774513187754ac3f8869fb91d597349d9b8ca37e200e"
+    "digest": "8cedda91248588008ba78a848f5872ae8fd267a4f161239b221adc76b30ebe49"
   },
   "outputs": {
     "files": [
@@ -369,6 +370,10 @@
       "dist/runtime-log-policy.d.ts.map",
       "dist/runtime-log-policy.js",
       "dist/runtime-log-policy.js.map",
+      "dist/runtime-request-context.d.ts",
+      "dist/runtime-request-context.d.ts.map",
+      "dist/runtime-request-context.js",
+      "dist/runtime-request-context.js.map",
       "dist/runtime-restart-policy.d.ts",
       "dist/runtime-restart-policy.d.ts.map",
       "dist/runtime-restart-policy.js",
@@ -474,6 +479,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "02e0f7fad261665a14f53b5d5c2b549f092aa61b6630c1ad4a84ad2a54ec91f3"
+    "digest": "dcc4938285130192fb554457a1c2720233ce68ad610d50dece09b4d44048fc51"
   }
 }

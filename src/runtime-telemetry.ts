@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -15,6 +14,7 @@ import type { PushMetricExporter } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
 import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { interpretHttpRequestTarget } from "./http-runtime.js";
+import { runtimeRequestScope, withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
 
 export type RuntimeTelemetryConfig = {
   endpoint: string;
@@ -68,15 +68,14 @@ function safeMethod(method: unknown): string {
   return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
 }
 
-const requestScope = new AsyncLocalStorage<{ requestId: string; span?: Span }>();
 const processInstanceId = randomUUID();
 
 /** Internal seam for later operation spans; no Capsule-facing API is exported. */
-export function activeRuntimeRequestSpan(): Span | undefined { return requestScope.getStore()?.span; }
+export function activeRuntimeRequestSpan(): Span | undefined { return runtimeRequestScope.getStore()?.span; }
 
 /** Only runtime-created identities may be attached to the existing log envelope. */
 export function activeRuntimeLogIdentity(): { requestId: string; traceId: string | null; spanId: string | null } | undefined {
-  const scope = requestScope.getStore();
+  const scope = runtimeRequestScope.getStore();
   if (!scope) return undefined;
   const context = scope.span?.spanContext();
   const traceId = context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? context.traceId : null;
@@ -108,7 +107,7 @@ function exportFailureReason(error: unknown): Extract<TelemetryExportDiagnostic,
 }
 
 export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>) {
-  if (!config) return { run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => requestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => {} };
+  if (!config) return { run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => runtimeRequestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => {} };
   if (config.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1000)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
   const endpoint = new URL("/v1/traces", url).toString();
@@ -133,7 +132,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   const lastFailureLoggedAt = new Map<Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"], number>();
   const emitDiagnostic = (diagnostic: TelemetryExportDiagnostic) => {
     try {
-      const recorded = onDiagnostic?.(diagnostic);
+      const recorded = withoutRuntimeRequestIdentity(() => onDiagnostic?.(diagnostic));
       if (recorded && typeof recorded.then === "function") void Promise.resolve(recorded).catch(() => {});
     } catch { /* Telemetry diagnostics cannot affect exports or application work. */ }
   };
@@ -315,7 +314,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = requestScope.run({ requestId: randomUUID(), span }, handle);
+        const result = runtimeRequestScope.run({ requestId: randomUUID(), span }, handle);
         if (result && typeof (result as Promise<unknown>).then === "function") {
           return Promise.resolve(result).catch((error) => { end("error"); throw error; });
         }
