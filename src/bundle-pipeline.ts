@@ -8,7 +8,7 @@ import { buildClientToolchain, validateClientToolchainInput, type ClientToolchai
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
 import { serverRuntimeModuleSource } from "./server.js";
 import { createServerBundleModuleSource } from "./templates/server-bundle-module-graph.js";
-import { resolveLocalTelemetryConfig } from "./cli/telemetry-profile.js";
+import { resolveContainerTelemetryConfig, resolveLocalTelemetryConfig } from "./cli/telemetry-profile.js";
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 import { resolveSporadesPackageRoot } from "./package-root.js";
@@ -66,6 +66,7 @@ export async function createBundle(
     // Dev sessions use project files directly and never snapshot deploy.files.
     deployFiles?: boolean;
     telemetryProfile?: string | null;
+    containerTelemetry?: boolean;
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
   } = {},
 ) {
@@ -132,7 +133,9 @@ export async function createBundle(
   }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); });
   const clientBundle = clientOutput.legacyClientBundle;
   const serverBundleInputs = {
-    config: { ...config, __sporadesTelemetry: options.telemetryProfile === undefined ? null : await resolveLocalTelemetryConfig(config as any, options.telemetryProfile) },
+    config: { ...config, __sporadesTelemetry: options.containerTelemetry
+      ? await resolveContainerTelemetryConfig(config as any, options.telemetryProfile)
+      : options.telemetryProfile === undefined ? null : await resolveLocalTelemetryConfig(config as any, options.telemetryProfile) },
     serverEnv: sealedEnvelope ? {} : serverEnv,
     sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
     serverSource,

@@ -24,7 +24,7 @@ import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServi
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
 import { runMonitoringStack } from "./monitoring-stack.js";
-import { changeTelemetryProfile, readTelemetryProfiles, resolveLocalTelemetryConfig } from "./telemetry-profile.js";
+import { changeTelemetryProfile, readTelemetryProfiles, resolveContainerTelemetryConfig, resolveLocalTelemetryConfig } from "./telemetry-profile.js";
 import { createHttpRequestTelemetry } from "../runtime-telemetry.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, confirmAccessKeyOperatorAction, sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
@@ -480,6 +480,7 @@ function parseDeployArgs(args) {
     let port = null;
     let json = false;
     let force = false;
+    let telemetryProfile;
     for (let index = 0; index < rest.length; index += 1) {
         const arg = rest[index];
         switch (arg) {
@@ -498,6 +499,16 @@ function parseDeployArgs(args) {
                 }
                 force = true;
                 break;
+            case "--telemetry":
+                if (subcommand !== "start")
+                    throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy --telemetry <profile>` only when starting.");
+                telemetryProfile = readFlagValue(rest, ++index, "--telemetry");
+                break;
+            case "--no-telemetry":
+                if (subcommand !== "start")
+                    throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy --no-telemetry` only when starting.");
+                telemetryProfile = null;
+                break;
             default:
                 throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
         }
@@ -506,6 +517,7 @@ function parseDeployArgs(args) {
         subcommand,
         port,
         force,
+        telemetryProfile,
         json,
         projectDir: process.cwd(),
     };
@@ -2005,8 +2017,15 @@ async function startDevSession(options) {
         runtimeProbeToken: inspectionToken,
     });
     let telemetry;
+    const emitTelemetryDiagnostic = (diagnostic) => runtime.database.log.emit({
+        category: "platform",
+        event: diagnostic.event,
+        level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
+        message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
+        data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
+    });
     try {
-        telemetry = createHttpRequestTelemetry(telemetryConfig);
+        telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
     }
     catch (error) {
         await runtime.shutdown();
@@ -2337,7 +2356,7 @@ async function startDevSession(options) {
             rollbackLegacy = await rebuild.publishLegacy();
             if (affectsServerRuntime) {
                 const telemetryChanged = JSON.stringify(nextTelemetryConfig) !== JSON.stringify(telemetryConfig);
-                const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig) : null;
+                const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig, emitTelemetryDiagnostic) : null;
                 await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session)).catch(async (error) => {
                     await nextTelemetry?.shutdown();
                     throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
@@ -3942,11 +3961,15 @@ async function startContainerSession(options) {
     const containerName = `sporades-${config.name ?? path.basename(options.projectDir)}`;
     const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
     const existingBinding = await readContainerBinding(bindingPath);
+    const telemetryProfile = options.telemetryProfile === undefined ? existingBinding?.telemetryProfile : options.telemetryProfile;
+    const telemetryConfig = await resolveContainerTelemetryConfig(config, telemetryProfile);
+    const selectedTelemetryName = telemetryProfile === null ? null : telemetryProfile ?? config.telemetry?.profile;
+    const telemetrySource = selectedTelemetryName && telemetryConfig ? (await readTelemetryProfiles())[selectedTelemetryName] : null;
     const previousConsumer = await readPublicTreeConsumer(path.join(runtimeDir, "build"), "container");
     verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
     const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
     const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
-    const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
+    const bundle = await createBundle(options.projectDir, config, { publishLegacy: false, telemetryProfile, containerTelemetry: true });
     const dataDir = path.join(runtimeDir, "data");
     const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
     await mkdir(dataDir, { recursive: true });
@@ -4049,6 +4072,11 @@ async function startContainerSession(options) {
         "--env",
         `${key}=${value}`,
     ]);
+    const telemetryArgs = telemetryConfig ? [
+        ...(telemetryConfig.tls.mode === "loopback" ? ["--add-host", "host.docker.internal:host-gateway"] : []),
+        ...(telemetryConfig.credentialEnv ? ["--env", telemetryConfig.credentialEnv] : []),
+        ...(telemetrySource?.tls.caFile ? ["--volume", `${telemetrySource.tls.caFile}:/run/sporades/telemetry-ca.pem:ro`] : []),
+    ] : [];
     const dockerRunArgs = [
         "run",
         "--detach",
@@ -4066,6 +4094,7 @@ async function startContainerSession(options) {
         "--user",
         runtimeUser,
         ...capsuleServicesNetworkArgs,
+        ...telemetryArgs,
         ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
         "--label",
         `com.sporades.container-transaction=${containerTransactionToken}`,
@@ -4138,6 +4167,7 @@ async function startContainerSession(options) {
         binding = {
             containerId,
             containerName,
+            ...(telemetryProfile !== undefined ? { telemetryProfile } : {}),
             clientRelease,
             pendingDeployFileCleanup: [...(existingBinding?.pendingDeployFileCleanup ?? []), ...(existingBinding?.deployFilesRoot ? [existingBinding.deployFilesRoot] : [])],
             ...(bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path, update }) => ({ path, update })) } : {}),

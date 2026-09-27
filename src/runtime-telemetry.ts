@@ -7,6 +7,7 @@ import type { Span } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BasicTracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
+import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { interpretHttpRequestTarget } from "./http-runtime.js";
 
 export type RuntimeTelemetryConfig = {
@@ -16,6 +17,10 @@ export type RuntimeTelemetryConfig = {
   serviceName: string;
   samplingRatio?: number;
 };
+
+export type TelemetryExportDiagnostic =
+  | { event: "telemetry.export.failed"; reason: "AUTH_REJECTED" | "DESTINATION_UNAVAILABLE" | "TLS_FAILED" | "EXPORT_FAILED" }
+  | { event: "telemetry.export.recovered" };
 
 type RequestLike = Pick<IncomingMessage, "method" | "url">;
 type EndpointLike = { method: string; path: string };
@@ -72,7 +77,17 @@ function validatedRemoteParent(request: IncomingMessage) {
   });
 }
 
-export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null) {
+function exportFailureReason(error: unknown): Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"] {
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  if (code === 401 || code === 403) return "AUTH_REJECTED";
+  if (typeof code === "string") {
+    if (["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"].includes(code)) return "DESTINATION_UNAVAILABLE";
+    if (code.startsWith("ERR_TLS_") || code.startsWith("CERT_") || ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT"].includes(code)) return "TLS_FAILED";
+  }
+  return "EXPORT_FAILED";
+}
+
+export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>) {
   if (!config) return { run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => handle(), shutdown: async () => {} };
   const url = new URL(config.endpoint);
   const endpoint = new URL("/v1/traces", url).toString();
@@ -86,7 +101,38 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     concurrencyLimit: 1,
     httpAgentOptions: config.tls.caFile ? { ca: readFileSync(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 },
   });
-  const processor = new BatchSpanProcessor(exporter, {
+  let failedReason: Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"] | null = null;
+  let lastFailureLoggedAt = 0;
+  const emitDiagnostic = (diagnostic: TelemetryExportDiagnostic) => {
+    try {
+      const recorded = onDiagnostic?.(diagnostic);
+      if (recorded && typeof recorded.then === "function") void Promise.resolve(recorded).catch(() => {});
+    } catch { /* Telemetry diagnostics cannot affect exports or application work. */ }
+  };
+  const observedExporter: SpanExporter = {
+    export(spans, callback) {
+      exporter.export(spans, (result) => {
+        try {
+          if (result.code === 0) {
+            if (failedReason) emitDiagnostic({ event: "telemetry.export.recovered" });
+            failedReason = null;
+          } else {
+            const reason = exportFailureReason(result.error);
+            const now = Date.now();
+            if (reason !== failedReason || now - lastFailureLoggedAt >= 60_000) {
+              emitDiagnostic({ event: "telemetry.export.failed", reason });
+              lastFailureLoggedAt = now;
+            }
+            failedReason = reason;
+          }
+        } catch { /* A malformed exporter result must not change SDK completion. */ }
+        callback(result);
+      });
+    },
+    forceFlush: () => exporter.forceFlush(),
+    shutdown: () => exporter.shutdown(),
+  };
+  const processor = new BatchSpanProcessor(observedExporter, {
     maxQueueSize: 128,
     maxExportBatchSize: 32,
     scheduledDelayMillis: 500,

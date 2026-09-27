@@ -4,7 +4,7 @@ Capsule creation, project layout, configuration, security policy, database servi
 
 [Back to the feature reference index](../guide/reference.md).
 
-## Dev HTTP tracing
+## Local HTTP tracing
 
 The operator registers a named Telemetry profile separately from a Host profile:
 
@@ -12,6 +12,7 @@ The operator registers a named Telemetry profile separately from a Host profile:
 sporades telemetry profile add local --endpoint http://127.0.0.1:4318 --loopback --credential-env TRACE_INGEST_TOKEN
 sporades telemetry profile list --json
 sporades dev --telemetry local
+sporades deploy --telemetry local
 ```
 
 For a remote collector, use an HTTPS OTLP/HTTP origin and omit `--loopback`.
@@ -20,20 +21,33 @@ verification. The optional `--dashboard` is a credential-free HTTPS URL.
 Profiles live in `$SPORADES_CONFIG_DIR/telemetry.json` (or the Sporades XDG
 configuration directory), with restrictive file permissions. Their descriptors
 contain an ingestion credential **environment variable name**, never its value.
-Set that variable in the CLI process before starting Dev. The token is sent as
+Set that variable in the CLI process before starting Dev or Container. The token is sent as
 `Authorization: Bearer` to `<endpoint>/v1/traces`; it is not written to the
 profile or generated Bundle.
 
-Selection order is `sporades dev --telemetry <name>`, then the explicit project
-binding below, then no export:
+Dev selection order is `sporades dev --telemetry <name>`, then the explicit project
+binding below, then no export. A Container session uses `sporades deploy
+--telemetry <name>`, its previously selected Container profile on redeploy, or
+the project binding. `sporades deploy --no-telemetry` explicitly disables export
+and persists that choice across redeploy and restart. To re-enable, deploy with
+`--telemetry <name>`. A fresh Container with no selection does not export:
 
 ```json
 { "telemetry": { "profile": "local" } }
 ```
 
 The generated server Bundle receives the selected nonsecret profile descriptor.
-Its runtime reads the credential environment reference at startup. A missing
-selected profile or credential fails before the Dev session starts. With no
+Its runtime reads the credential environment reference at startup. Container
+deploy forwards only the named variable from the CLI process into Docker; the
+value is absent from command arguments, the Bundle, browser assets and Capsule
+Sealed Server env. Docker administrators can inspect Container environment, so
+scope this credential to ingestion and use the operator's protected environment.
+A loopback collector URL is routed through `host.docker.internal` with Docker's
+`host-gateway` mapping; the collector must listen on an address reachable from
+the Container, not solely on Host loopback. A verified HTTPS profile uses its
+configured remote address and mounts an optional private CA read-only. Container
+hardening and the self-contained server Bundle stay in effect. A missing
+selected profile or credential fails before the session starts. With no
 selection there is no exporter or retry loop. A collector outage leaves request
 handling available; completed spans use a bounded batch queue and shutdown
 deadline. One SERVER span covers each request, including streams and premature
@@ -41,8 +55,18 @@ closes. Route labels use declared endpoint paths, fixed platform templates, or
 one bounded unknown category. Request bodies, queries, credentials, private
 identifiers, exception text, baggage and trace state are not exported. A valid
 W3C `traceparent` can establish parentage; remote sampling flags do not override
-the local sampling policy. This slice covers Dev HTTP traces; Container and Host
-transport and additional signals are separate work.
+the local sampling policy. This slice covers Dev and local Container HTTP traces;
+Host transport and additional signals are separate work.
+
+When a selected exporter fails, the existing platform log records
+`telemetry.export.failed` with one bounded reason: `AUTH_REJECTED`,
+`DESTINATION_UNAVAILABLE`, `TLS_FAILED`, or `EXPORT_FAILED`. Repeated failures
+are limited to one event per reason per minute; the next successful export
+records `telemetry.export.recovered`. These events include no destination URL,
+credential, response body, or exception text. An authentication rejection or
+unreachable collector does not block Capsule requests. Check the Container's
+platform log and monitoring stack readiness/storage separately when tracing is
+missing.
 
 ## Create a Capsule
 
