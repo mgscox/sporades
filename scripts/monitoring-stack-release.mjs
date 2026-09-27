@@ -14,7 +14,7 @@ const basename = `sporades-monitoring-trace-${version}`;
 try {
   const directory = join(temporary, basename);
   await mkdir(directory);
-  for (const name of ['.dockerignore', '.env.example', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'jaeger.yaml', 'setup.mjs', 'smoke.mjs']) {
+  for (const name of ['.dockerignore', '.env.example', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'setup.mjs', 'smoke.mjs']) {
     await cp(join(source, name), join(directory, name));
   }
   await cp(join(source, 'gitignore.template'), join(directory, '.gitignore'));

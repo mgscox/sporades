@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commandError } from './cli-support.js';
 const STACK_SCHEMA = 1;
-const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'jaeger.yaml', 'setup.mjs', 'smoke.mjs'];
+const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'setup.mjs', 'smoke.mjs'];
 function prerequisite() {
     if (!['arm64', 'x64'].includes(process.arch) || !['linux', 'darwin'].includes(process.platform)) {
         throw commandError('Unsupported monitoring stack architecture.', 'Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.');
@@ -104,7 +104,7 @@ export async function runMonitoringStack(action, directory, packageRoot) {
     }
     return {
         path: target, schemaVersion: STACK_SCHEMA, packageVersion: version, created, overrides, missingAssets, versionDifference, missing,
-        nextSteps: ['Review .env and fill missing settings', 'Run `node setup.mjs` after editing .env', 'Run `docker compose --env-file .compose.env up -d --build` from the stack directory', 'Run `node smoke.mjs send` to verify stored traces'],
+        nextSteps: ['Review .env and fill missing settings', 'Run `node setup.mjs` after editing .env', 'Run `docker compose --env-file .compose.env up -d --build` from the stack directory', 'Run `node smoke.mjs send` to verify stored traces and metrics', 'Open /grafana/d/sporades-api through the protected gateway'],
     };
 }
 //# sourceMappingURL=monitoring-stack.js.map

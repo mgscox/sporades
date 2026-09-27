@@ -507,6 +507,7 @@ async function runTelemetryProfileCommand(args: string[]) {
       if (arg === "--endpoint") { input.endpoint = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--dashboard") { input.dashboard = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--credential-env") { input.credentialEnv = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--metrics-interval-ms") { input.metricsIntervalMs = Number(readFlagValue(rest, ++index, arg)); continue; }
       if (arg === "--ca-file") { input.caFile = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--loopback") { input.loopback = true; continue; }
     }
@@ -518,6 +519,7 @@ async function runTelemetryProfileCommand(args: string[]) {
       ...(input.dashboard ? { dashboard: input.dashboard } : {}),
       tls: { mode: input.loopback ? "loopback" : "verified", ...(input.caFile ? { caFile: input.caFile } : {}) },
       ...(input.credentialEnv ? { credentialEnv: input.credentialEnv } : {}),
+      ...(input.metricsIntervalMs !== undefined ? { metricsIntervalMs: input.metricsIntervalMs } : {}),
     };
     const saved = await changeTelemetryProfile("add", name!, profile);
     if (json) writeResult({ ok: true, data: { name, profile: saved }, error: null });

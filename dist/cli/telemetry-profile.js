@@ -22,7 +22,7 @@ export function validateTelemetryProfile(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
         invalid("Provide an endpoint, TLS mode and optional references.");
     const profile = value;
-    if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv"].includes(key)))
+    if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs"].includes(key)))
         invalid("Remove unsupported Telemetry profile fields.");
     if (typeof profile.endpoint !== "string" || profile.endpoint.length > 2048)
         invalid("Use an OTLP/HTTP base URL without credentials or query strings.");
@@ -51,6 +51,8 @@ export function validateTelemetryProfile(value) {
         invalid("Use an absolute private CA file path with verified TLS.");
     if (profile.credentialEnv !== undefined && (typeof profile.credentialEnv !== "string" || !envPattern.test(profile.credentialEnv)))
         invalid("Use an uppercase credential environment reference such as TRACE_INGEST_TOKEN.");
+    if (profile.metricsIntervalMs !== undefined && (!Number.isSafeInteger(profile.metricsIntervalMs) || profile.metricsIntervalMs < 5_000 || profile.metricsIntervalMs > 300_000))
+        invalid("Use a metrics export interval from 5000 to 300000 milliseconds.");
     if (profile.dashboard !== undefined) {
         if (typeof profile.dashboard !== "string" || profile.dashboard.length > 2048)
             invalid("Use a dashboard HTTPS URL without embedded credentials.");
@@ -132,7 +134,7 @@ export async function resolveLocalTelemetryConfig(config, sessionProfile) {
         throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
     if (profile.credentialEnv && !process.env[profile.credentialEnv])
         throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name}.`);
-    return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule" };
+    return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs };
 }
 /** Docker loopback is the Capsule itself; route an explicitly local profile to its Host. */
 export async function resolveContainerTelemetryConfig(config, sessionProfile) {
@@ -146,6 +148,7 @@ export async function resolveContainerTelemetryConfig(config, sessionProfile) {
         endpoint.hostname = "host.docker.internal";
     return {
         ...resolved,
+        environment: "container",
         endpoint: endpoint.toString(),
         tls: resolved.tls.caFile ? { ...resolved.tls, caFile: "/run/sporades/telemetry-ca.pem" } : resolved.tls,
     };

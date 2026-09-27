@@ -15,6 +15,12 @@ const probe = async () => {
   assert.equal((await fetch(`${origin}/api/services`)).status, 401);
   const denied = await fetch(`${origin}/v1/traces`, { method: 'POST', headers: { authorization: 'Bearer invalid', 'content-type': 'application/json' }, body: '{}' });
   assert.equal(denied.status, 401);
+  const deniedMetrics = await fetch(`${origin}/v1/metrics`, { method: 'POST', headers: { authorization: 'Bearer invalid', 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(deniedMetrics.status, 401);
+  assert.equal((await fetch(`${origin}/grafana/api/dashboards/uid/sporades-api`)).status, 401);
+  const dashboard = await fetch(`${origin}/grafana/api/dashboards/uid/sporades-api`, { headers: { authorization } });
+  assert.equal(dashboard.status, 200);
+  assert.equal((await dashboard.json()).dashboard?.title, 'Sporades Capsule API');
 };
 const query = async () => {
   for (let attempt = 0; attempt < 25; attempt++) {

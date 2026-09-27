@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: Sporades
+    orgId: 1
+    folder: Sporades
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /var/lib/grafana/provisioned

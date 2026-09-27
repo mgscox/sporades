@@ -11,7 +11,7 @@ Use the detailed reference for:
 
 For exact generated paths, see the [runtime layout](../runtime-layout.md).
 
-Local HTTP tracing uses [operator Telemetry profiles](../reference/projects-and-configuration.md#local-http-tracing).
+Local HTTP traces and API metrics use [operator Telemetry profiles](../reference/projects-and-configuration.md#local-http-telemetry).
 Add an explicit `telemetry.profile` binding in `sporades.json` or pass
 `sporades dev --telemetry <name>` for one session. Sessions without either
 selection export nothing. A local Container session can use `sporades deploy

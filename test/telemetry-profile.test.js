@@ -34,6 +34,12 @@ test('installed CLI stores reference-only profiles and Dev selection honors expl
     assert.equal(cli('remove', 'constructor', '--json').status, 0);
     await assert.rejects(resolveLocalTelemetryConfig({ telemetry: { profile: 'constructor' } }), /Unknown Telemetry profile/);
     assert.equal((await resolveLocalTelemetryConfig({ name: 'capsule', telemetry: { profile: 'local' } })).endpoint, 'http://127.0.0.1:4318');
+    assert.equal((await resolveLocalTelemetryConfig({ name: 'capsule', telemetry: { profile: 'local' } })).environment, 'dev');
+    const tuned = cli('add', 'tuned', '--endpoint', 'http://localhost:4318', '--loopback', '--metrics-interval-ms', '5000', '--json');
+    assert.equal(tuned.status, 0, tuned.stderr);
+    assert.equal(JSON.parse(cli('show', 'tuned', '--json').stdout).data.profile.metricsIntervalMs, 5000);
+    assert.equal((await resolveLocalTelemetryConfig({ telemetry: { profile: 'tuned' } })).metricsIntervalMs, 5000);
+    assert.equal(cli('add', 'too-fast', '--endpoint', 'http://localhost:4318', '--loopback', '--metrics-interval-ms', '100', '--json').status, 1);
     const second = cli('add', 'other', '--endpoint', 'http://localhost:4320', '--loopback', '--json');
     assert.equal(second.status, 0, second.stderr);
     assert.equal((await resolveLocalTelemetryConfig({ name: 'capsule', telemetry: { profile: 'local' } }, 'other')).endpoint, 'http://localhost:4320');

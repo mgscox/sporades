@@ -5,8 +5,8 @@ import { chmod, chown, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const owned = ['TRACE_INGEST_TOKEN', 'TRACE_UI_PASSWORD'];
-const defaults = { TRACE_TLS_MODE: 'tls', TRACE_BIND: '127.0.0.1', TRACE_PORT: '8443', TRACE_UI_USER: 'operator', TRACE_RETENTION: '168h' };
+const owned = ['TRACE_INGEST_TOKEN', 'TRACE_UI_PASSWORD', 'GRAFANA_ADMIN_PASSWORD'];
+const defaults = { TRACE_TLS_MODE: 'tls', TRACE_BIND: '127.0.0.1', TRACE_PORT: '8443', TRACE_UI_USER: 'operator', TRACE_RETENTION: '168h', METRIC_RETENTION: '14d', METRIC_DISK_CAP: '8GB' };
 
 export function gatewayRunIdentity(platform = process.platform, uid = process.getuid(), gid = process.getgid()) {
   if (platform === 'darwin') return { uid: 1000, gid: 1000, transferOwnership: false };
@@ -51,6 +51,11 @@ export async function setupEnvironment(path) {
   const entries = parseEnvironment(source);
   const additions = [];
   for (const [key, value] of Object.entries(defaults)) if (!entries.has(key)) { additions.push(`${key}=${value}`); entries.set(key, value); }
+  if (!entries.has('GRAFANA_ROOT_URL')) {
+    const value = `${entries.get('TRACE_TLS_MODE') === 'proxy' ? 'http' : 'https'}://127.0.0.1:${entries.get('TRACE_PORT')}/grafana/`;
+    additions.push(`GRAFANA_ROOT_URL=${value}`);
+    entries.set('GRAFANA_ROOT_URL', value);
+  }
   for (const key of owned) if (!entries.has(key)) { const value = randomBytes(32).toString('hex'); additions.push(`${key}=${value}`); entries.set(key, value); }
   const { missing } = inspectEnvironment(`${source}${source && !source.endsWith('\n') ? '\n' : ''}${additions.join('\n')}`);
   if (additions.length) {
@@ -69,7 +74,11 @@ export async function setupEnvironment(path) {
   })}\n`, { mode: 0o600 });
   await chmod(credentialsPath, 0o600);
   if (identity.transferOwnership) await chown(credentialsPath, identity.uid, identity.gid);
-  const composeKeys = ['TRACE_TLS_MODE', 'TRACE_BIND', 'TRACE_PORT', 'TRACE_CERT_FILE', 'TRACE_KEY_FILE', 'TRACE_RETENTION'];
+  const grafanaSecretPath = join(privateDir, 'grafana-admin-password');
+  await writeFile(grafanaSecretPath, `${entries.get('GRAFANA_ADMIN_PASSWORD')}\n`, { mode: 0o600 });
+  await chmod(grafanaSecretPath, 0o600);
+  if (identity.transferOwnership) await chown(grafanaSecretPath, identity.uid, identity.gid);
+  const composeKeys = ['TRACE_TLS_MODE', 'TRACE_BIND', 'TRACE_PORT', 'TRACE_CERT_FILE', 'TRACE_KEY_FILE', 'TRACE_RETENTION', 'METRIC_RETENTION', 'METRIC_DISK_CAP', 'GRAFANA_ROOT_URL'];
   const composePath = join(dirname(path), '.compose.env');
   const quote = value => `'${String(value ?? '').replaceAll("'", "\\'")}'`;
   await writeFile(composePath, `${composeKeys.map(key => `${key}=${quote(entries.get(key))}`).join('\n')}\nTRACE_RUN_UID=${identity.uid}\nTRACE_RUN_GID=${identity.gid}\n`, { mode: 0o600 });
@@ -83,5 +92,5 @@ if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(f
   if (missing.length) {
     process.stderr.write(`Missing external settings: ${missing.join(', ')}\n`);
     process.exitCode = 1;
-  } else process.stdout.write('Trace stack environment ready.\n');
+  } else process.stdout.write('Monitoring stack environment ready.\n');
 }

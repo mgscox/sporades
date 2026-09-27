@@ -106,3 +106,35 @@ test('gateway rejects bad ingestion credentials and hides backend failures on he
     gateway.close();
   }
 });
+
+test('gateway protects Grafana and requires stored metrics as well as stored traces', async () => {
+  const traces = createServer(async (req, res) => {
+    if (req.url === '/v1/traces' || req.url === '/v1/metrics') { for await (const _ of req) {} res.writeHead(200).end(); return; }
+    if (req.url.startsWith('/api/traces/')) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ data: [{}] })); return; }
+    res.writeHead(404).end();
+  });
+  const metrics = createServer(async (req, res) => {
+    if (req.url === '/v1/metrics') { for await (const _ of req) {} res.writeHead(200).end(); return; }
+    if (req.url.startsWith('/api/v1/query')) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status: 'success', data: { result: [{ value: [Date.now() / 1000, '1'] }] } })); return; }
+    res.writeHead(404).end();
+  });
+  const grafana = createServer((req, res) => res.end(`GRAFANA:${req.url}:${req.headers.cookie ?? ''}`));
+  await Promise.all([traces, metrics, grafana].map(server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve))));
+  const gateway = createGateway({ ingestToken: 'token', uiUser: 'viewer', uiPassword: 'secret', collectorUrl: `http://127.0.0.1:${traces.address().port}`, jaegerUrl: `http://127.0.0.1:${traces.address().port}`, prometheusUrl: `http://127.0.0.1:${metrics.address().port}`, grafanaUrl: `http://127.0.0.1:${grafana.address().port}` });
+  await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${gateway.address().port}`;
+    assert.equal((await fetch(`${base}/grafana/`)).status, 401);
+    const auth = { authorization: `Basic ${Buffer.from('viewer:secret').toString('base64')}`, cookie: 'private=session' };
+    const page = await fetch(`${base}/grafana/d/sporades-api`, { headers: auth });
+    assert.equal(await page.text(), 'GRAFANA:/grafana/d/sporades-api:');
+    const health = await fetch(`${base}/health`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { ok: true });
+    metrics.close();
+    await new Promise(resolve => setTimeout(resolve, 3100));
+    const failed = await fetch(`${base}/health`);
+    assert.equal(failed.status, 503);
+    assert.deepEqual(await failed.json(), { ok: false });
+  } finally { gateway.close(); traces.close(); metrics.close(); grafana.close(); }
+});

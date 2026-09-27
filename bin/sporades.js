@@ -73230,30 +73230,30 @@ var require_AggregationOption = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.toAggregation = exports.AggregationType = void 0;
     var Aggregation_1 = require_Aggregation();
-    var AggregationType;
-    (function(AggregationType2) {
-      AggregationType2[AggregationType2["DEFAULT"] = 0] = "DEFAULT";
-      AggregationType2[AggregationType2["DROP"] = 1] = "DROP";
-      AggregationType2[AggregationType2["SUM"] = 2] = "SUM";
-      AggregationType2[AggregationType2["LAST_VALUE"] = 3] = "LAST_VALUE";
-      AggregationType2[AggregationType2["EXPLICIT_BUCKET_HISTOGRAM"] = 4] = "EXPLICIT_BUCKET_HISTOGRAM";
-      AggregationType2[AggregationType2["EXPONENTIAL_HISTOGRAM"] = 5] = "EXPONENTIAL_HISTOGRAM";
-    })(AggregationType || (exports.AggregationType = AggregationType = {}));
+    var AggregationType2;
+    (function(AggregationType3) {
+      AggregationType3[AggregationType3["DEFAULT"] = 0] = "DEFAULT";
+      AggregationType3[AggregationType3["DROP"] = 1] = "DROP";
+      AggregationType3[AggregationType3["SUM"] = 2] = "SUM";
+      AggregationType3[AggregationType3["LAST_VALUE"] = 3] = "LAST_VALUE";
+      AggregationType3[AggregationType3["EXPLICIT_BUCKET_HISTOGRAM"] = 4] = "EXPLICIT_BUCKET_HISTOGRAM";
+      AggregationType3[AggregationType3["EXPONENTIAL_HISTOGRAM"] = 5] = "EXPONENTIAL_HISTOGRAM";
+    })(AggregationType2 || (exports.AggregationType = AggregationType2 = {}));
     function toAggregation(option) {
       switch (option.type) {
-        case AggregationType.DEFAULT:
+        case AggregationType2.DEFAULT:
           return Aggregation_1.DEFAULT_AGGREGATION;
-        case AggregationType.DROP:
+        case AggregationType2.DROP:
           return Aggregation_1.DROP_AGGREGATION;
-        case AggregationType.SUM:
+        case AggregationType2.SUM:
           return Aggregation_1.SUM_AGGREGATION;
-        case AggregationType.LAST_VALUE:
+        case AggregationType2.LAST_VALUE:
           return Aggregation_1.LAST_VALUE_AGGREGATION;
-        case AggregationType.EXPONENTIAL_HISTOGRAM: {
+        case AggregationType2.EXPONENTIAL_HISTOGRAM: {
           const expOption = option;
           return new Aggregation_1.ExponentialHistogramAggregation(expOption.options?.maxSize, expOption.options?.recordMinMax);
         }
-        case AggregationType.EXPLICIT_BUCKET_HISTOGRAM: {
+        case AggregationType2.EXPLICIT_BUCKET_HISTOGRAM: {
           const expOption = option;
           if (expOption.options == null) {
             return Aggregation_1.HISTOGRAM_AGGREGATION;
@@ -73542,7 +73542,7 @@ var require_PeriodicExportingMetricReader = __commonJS({
     var MetricData_1 = require_MetricData();
     var MetricDataSplitter_1 = require_MetricDataSplitter();
     var semconv_1 = require_semconv2();
-    var PeriodicExportingMetricReader = class extends MetricReader_1.MetricReader {
+    var PeriodicExportingMetricReader2 = class extends MetricReader_1.MetricReader {
       _interval;
       _exporter;
       _exportInterval;
@@ -73702,7 +73702,7 @@ var require_PeriodicExportingMetricReader = __commonJS({
         await this._exporter.shutdown();
       }
     };
-    exports.PeriodicExportingMetricReader = PeriodicExportingMetricReader;
+    exports.PeriodicExportingMetricReader = PeriodicExportingMetricReader2;
   }
 });
 
@@ -76170,7 +76170,7 @@ var require_MeterProvider = __commonJS({
     var MeterProviderSharedState_1 = require_MeterProviderSharedState();
     var MetricCollector_1 = require_MetricCollector();
     var View_1 = require_View();
-    var MeterProvider = class {
+    var MeterProvider2 = class {
       _sharedState;
       _shutdown = false;
       constructor(options) {
@@ -76236,7 +76236,7 @@ var require_MeterProvider = __commonJS({
         }));
       }
     };
-    exports.MeterProvider = MeterProvider;
+    exports.MeterProvider = MeterProvider2;
   }
 });
 
@@ -78294,6 +78294,208 @@ var require_src6 = __commonJS({
   }
 });
 
+// node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/OTLPMetricExporterOptions.js
+var require_OTLPMetricExporterOptions = __commonJS({
+  "node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/OTLPMetricExporterOptions.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.AggregationTemporalityPreference = void 0;
+    var AggregationTemporalityPreference;
+    (function(AggregationTemporalityPreference2) {
+      AggregationTemporalityPreference2[AggregationTemporalityPreference2["DELTA"] = 0] = "DELTA";
+      AggregationTemporalityPreference2[AggregationTemporalityPreference2["CUMULATIVE"] = 1] = "CUMULATIVE";
+      AggregationTemporalityPreference2[AggregationTemporalityPreference2["LOWMEMORY"] = 2] = "LOWMEMORY";
+    })(AggregationTemporalityPreference || (exports.AggregationTemporalityPreference = AggregationTemporalityPreference = {}));
+  }
+});
+
+// node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/OTLPMetricExporterBase.js
+var require_OTLPMetricExporterBase = __commonJS({
+  "node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/OTLPMetricExporterBase.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.OTLPMetricExporterBase = exports.LowMemoryTemporalitySelector = exports.DeltaTemporalitySelector = exports.CumulativeTemporalitySelector = void 0;
+    var core_1 = require_src();
+    var sdk_metrics_1 = require_src4();
+    var OTLPMetricExporterOptions_1 = require_OTLPMetricExporterOptions();
+    var otlp_exporter_base_1 = (init_esm3(), __toCommonJS(esm_exports3));
+    var api_1 = (init_esm(), __toCommonJS(esm_exports));
+    var CumulativeTemporalitySelector = () => sdk_metrics_1.AggregationTemporality.CUMULATIVE;
+    exports.CumulativeTemporalitySelector = CumulativeTemporalitySelector;
+    var DeltaTemporalitySelector = (instrumentType) => {
+      switch (instrumentType) {
+        case sdk_metrics_1.InstrumentType.COUNTER:
+        case sdk_metrics_1.InstrumentType.OBSERVABLE_COUNTER:
+        case sdk_metrics_1.InstrumentType.GAUGE:
+        case sdk_metrics_1.InstrumentType.HISTOGRAM:
+        case sdk_metrics_1.InstrumentType.OBSERVABLE_GAUGE:
+          return sdk_metrics_1.AggregationTemporality.DELTA;
+        case sdk_metrics_1.InstrumentType.UP_DOWN_COUNTER:
+        case sdk_metrics_1.InstrumentType.OBSERVABLE_UP_DOWN_COUNTER:
+          return sdk_metrics_1.AggregationTemporality.CUMULATIVE;
+      }
+    };
+    exports.DeltaTemporalitySelector = DeltaTemporalitySelector;
+    var LowMemoryTemporalitySelector = (instrumentType) => {
+      switch (instrumentType) {
+        case sdk_metrics_1.InstrumentType.COUNTER:
+        case sdk_metrics_1.InstrumentType.HISTOGRAM:
+          return sdk_metrics_1.AggregationTemporality.DELTA;
+        case sdk_metrics_1.InstrumentType.GAUGE:
+        case sdk_metrics_1.InstrumentType.UP_DOWN_COUNTER:
+        case sdk_metrics_1.InstrumentType.OBSERVABLE_UP_DOWN_COUNTER:
+        case sdk_metrics_1.InstrumentType.OBSERVABLE_COUNTER:
+        case sdk_metrics_1.InstrumentType.OBSERVABLE_GAUGE:
+          return sdk_metrics_1.AggregationTemporality.CUMULATIVE;
+      }
+    };
+    exports.LowMemoryTemporalitySelector = LowMemoryTemporalitySelector;
+    function chooseTemporalitySelectorFromEnvironment() {
+      const configuredTemporality = ((0, core_1.getStringFromEnv)("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE") ?? "cumulative").toLowerCase();
+      if (configuredTemporality === "cumulative") {
+        return exports.CumulativeTemporalitySelector;
+      }
+      if (configuredTemporality === "delta") {
+        return exports.DeltaTemporalitySelector;
+      }
+      if (configuredTemporality === "lowmemory") {
+        return exports.LowMemoryTemporalitySelector;
+      }
+      api_1.diag.warn(`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE is set to '${configuredTemporality}', but only 'cumulative' and 'delta' are allowed. Using default ('cumulative') instead.`);
+      return exports.CumulativeTemporalitySelector;
+    }
+    function chooseTemporalitySelector(temporalityPreference) {
+      if (temporalityPreference != null) {
+        if (temporalityPreference === OTLPMetricExporterOptions_1.AggregationTemporalityPreference.DELTA) {
+          return exports.DeltaTemporalitySelector;
+        } else if (temporalityPreference === OTLPMetricExporterOptions_1.AggregationTemporalityPreference.LOWMEMORY) {
+          return exports.LowMemoryTemporalitySelector;
+        }
+        return exports.CumulativeTemporalitySelector;
+      }
+      return chooseTemporalitySelectorFromEnvironment();
+    }
+    var DEFAULT_AGGREGATION = Object.freeze({
+      type: sdk_metrics_1.AggregationType.DEFAULT
+    });
+    function chooseAggregationSelector(config) {
+      return config?.aggregationPreference ?? (() => DEFAULT_AGGREGATION);
+    }
+    var OTLPMetricExporterBase = class extends otlp_exporter_base_1.OTLPExporterBase {
+      _aggregationTemporalitySelector;
+      _aggregationSelector;
+      constructor(delegate, config) {
+        super(delegate);
+        this._aggregationSelector = chooseAggregationSelector(config);
+        this._aggregationTemporalitySelector = chooseTemporalitySelector(config?.temporalityPreference);
+      }
+      selectAggregation(instrumentType) {
+        return this._aggregationSelector(instrumentType);
+      }
+      selectAggregationTemporality(instrumentType) {
+        return this._aggregationTemporalitySelector(instrumentType);
+      }
+    };
+    exports.OTLPMetricExporterBase = OTLPMetricExporterBase;
+  }
+});
+
+// node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/semconv.js
+var require_semconv5 = __commonJS({
+  "node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/semconv.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.OTEL_COMPONENT_TYPE_VALUE_OTLP_HTTP_METRIC_EXPORTER = void 0;
+    exports.OTEL_COMPONENT_TYPE_VALUE_OTLP_HTTP_METRIC_EXPORTER = "otlp_http_metric_exporter";
+  }
+});
+
+// node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/platform/node/OTLPMetricExporter.js
+var require_OTLPMetricExporter = __commonJS({
+  "node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/platform/node/OTLPMetricExporter.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.OTLPMetricExporter = void 0;
+    var OTLPMetricExporterBase_1 = require_OTLPMetricExporterBase();
+    var otlp_transformer_1 = require_src5();
+    var node_http_1 = (init_index_node_http(), __toCommonJS(index_node_http_exports));
+    var semconv_1 = require_semconv5();
+    var OTLPMetricExporter2 = class extends OTLPMetricExporterBase_1.OTLPMetricExporterBase {
+      _url;
+      constructor(config) {
+        super((0, node_http_1.createOtlpHttpExportDelegate)((0, node_http_1.convertLegacyHttpOptions)(config ?? {}, "METRICS", "v1/metrics", {
+          "Content-Type": "application/json"
+        }), otlp_transformer_1.JsonMetricsSerializer, semconv_1.OTEL_COMPONENT_TYPE_VALUE_OTLP_HTTP_METRIC_EXPORTER, otlp_transformer_1.MetricsExporterMetricsHelper, config?.selfObsMeterProvider), config);
+        this._url = config?.url;
+      }
+      /**
+       * Sets the meter provider to use to collect metrics for the exporter itself.
+       * @experimental This method is experimental and is subject to breaking changes in minor releases.
+       */
+      setSelfObsMeterProvider(meterProvider) {
+        this.setMetrics((0, node_http_1.createOtlpHttpExporterMetrics)(semconv_1.OTEL_COMPONENT_TYPE_VALUE_OTLP_HTTP_METRIC_EXPORTER, otlp_transformer_1.MetricsExporterMetricsHelper, this._url, meterProvider));
+      }
+    };
+    exports.OTLPMetricExporter = OTLPMetricExporter2;
+  }
+});
+
+// node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/platform/node/index.js
+var require_node4 = __commonJS({
+  "node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/platform/node/index.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.OTLPMetricExporter = void 0;
+    var OTLPMetricExporter_1 = require_OTLPMetricExporter();
+    Object.defineProperty(exports, "OTLPMetricExporter", { enumerable: true, get: function() {
+      return OTLPMetricExporter_1.OTLPMetricExporter;
+    } });
+  }
+});
+
+// node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/platform/index.js
+var require_platform4 = __commonJS({
+  "node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/platform/index.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.OTLPMetricExporter = void 0;
+    var node_1 = require_node4();
+    Object.defineProperty(exports, "OTLPMetricExporter", { enumerable: true, get: function() {
+      return node_1.OTLPMetricExporter;
+    } });
+  }
+});
+
+// node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/index.js
+var require_src7 = __commonJS({
+  "node_modules/.pnpm/@opentelemetry+exporter-metrics-otlp-http@0.222.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/exporter-metrics-otlp-http/build/src/index.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.OTLPMetricExporterBase = exports.LowMemoryTemporalitySelector = exports.DeltaTemporalitySelector = exports.CumulativeTemporalitySelector = exports.AggregationTemporalityPreference = exports.OTLPMetricExporter = void 0;
+    var platform_1 = require_platform4();
+    Object.defineProperty(exports, "OTLPMetricExporter", { enumerable: true, get: function() {
+      return platform_1.OTLPMetricExporter;
+    } });
+    var OTLPMetricExporterOptions_1 = require_OTLPMetricExporterOptions();
+    Object.defineProperty(exports, "AggregationTemporalityPreference", { enumerable: true, get: function() {
+      return OTLPMetricExporterOptions_1.AggregationTemporalityPreference;
+    } });
+    var OTLPMetricExporterBase_1 = require_OTLPMetricExporterBase();
+    Object.defineProperty(exports, "CumulativeTemporalitySelector", { enumerable: true, get: function() {
+      return OTLPMetricExporterBase_1.CumulativeTemporalitySelector;
+    } });
+    Object.defineProperty(exports, "DeltaTemporalitySelector", { enumerable: true, get: function() {
+      return OTLPMetricExporterBase_1.DeltaTemporalitySelector;
+    } });
+    Object.defineProperty(exports, "LowMemoryTemporalitySelector", { enumerable: true, get: function() {
+      return OTLPMetricExporterBase_1.LowMemoryTemporalitySelector;
+    } });
+    Object.defineProperty(exports, "OTLPMetricExporterBase", { enumerable: true, get: function() {
+      return OTLPMetricExporterBase_1.OTLPMetricExporterBase;
+    } });
+  }
+});
+
 // node_modules/.pnpm/@opentelemetry+sdk-trace@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace/build/src/enums.js
 var require_enums = __commonJS({
   "node_modules/.pnpm/@opentelemetry+sdk-trace@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace/build/src/enums.js"(exports) {
@@ -78742,7 +78944,7 @@ var require_Sampler = __commonJS({
 });
 
 // node_modules/.pnpm/@opentelemetry+sdk-trace@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace/build/src/semconv.js
-var require_semconv5 = __commonJS({
+var require_semconv6 = __commonJS({
   "node_modules/.pnpm/@opentelemetry+sdk-trace@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace/build/src/semconv.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -78768,7 +78970,7 @@ var require_TracerMetrics = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.TracerMetrics = void 0;
     var Sampler_1 = require_Sampler();
-    var semconv_1 = require_semconv5();
+    var semconv_1 = require_semconv6();
     var TracerMetrics = class {
       startedSpans;
       liveSpans;
@@ -79122,7 +79324,7 @@ var require_SpanProcessorMetrics = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.SpanProcessorMetrics = void 0;
     var semantic_conventions_1 = (init_esm2(), __toCommonJS(esm_exports2));
-    var semconv_1 = require_semconv5();
+    var semconv_1 = require_semconv6();
     var componentCounter2 = /* @__PURE__ */ new Map();
     var SpanProcessorMetrics = class {
       processedSpans;
@@ -79193,7 +79395,7 @@ var require_BatchSpanProcessorBase = __commonJS({
     var api_1 = (init_esm(), __toCommonJS(esm_exports));
     var core_1 = require_src();
     var SpanProcessorMetrics_1 = require_SpanProcessorMetrics();
-    var semconv_1 = require_semconv5();
+    var semconv_1 = require_semconv6();
     var BatchSpanProcessorBase = class {
       _maxExportBatchSize;
       _maxQueueSize;
@@ -79426,7 +79628,7 @@ var require_RandomIdGenerator = __commonJS({
 });
 
 // node_modules/.pnpm/@opentelemetry+sdk-trace@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace/build/src/platform/node/index.js
-var require_node4 = __commonJS({
+var require_node5 = __commonJS({
   "node_modules/.pnpm/@opentelemetry+sdk-trace@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace/build/src/platform/node/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -79443,12 +79645,12 @@ var require_node4 = __commonJS({
 });
 
 // node_modules/.pnpm/@opentelemetry+sdk-trace@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace/build/src/platform/index.js
-var require_platform4 = __commonJS({
+var require_platform5 = __commonJS({
   "node_modules/.pnpm/@opentelemetry+sdk-trace@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace/build/src/platform/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.RandomIdGenerator = exports.BatchSpanProcessor = void 0;
-    var node_1 = require_node4();
+    var node_1 = require_node5();
     Object.defineProperty(exports, "BatchSpanProcessor", { enumerable: true, get: function() {
       return node_1.BatchSpanProcessor;
     } });
@@ -79470,7 +79672,7 @@ var require_TracerProvider = __commonJS({
     var MultiSpanProcessor_1 = require_MultiSpanProcessor();
     var ParentBasedSampler_1 = require_ParentBasedSampler();
     var AlwaysOnSampler_1 = require_AlwaysOnSampler();
-    var platform_1 = require_platform4();
+    var platform_1 = require_platform5();
     var inspect_1 = require_inspect();
     var ForceFlushState;
     (function(ForceFlushState2) {
@@ -79694,7 +79896,7 @@ var require_SimpleSpanProcessor = __commonJS({
     var api_1 = (init_esm(), __toCommonJS(esm_exports));
     var core_1 = require_src();
     var SpanProcessorMetrics_1 = require_SpanProcessorMetrics();
-    var semconv_1 = require_semconv5();
+    var semconv_1 = require_semconv6();
     var SimpleSpanProcessor = class {
       _exporter;
       _metrics;
@@ -79864,7 +80066,7 @@ var require_TraceIdRatioBasedSampler = __commonJS({
 });
 
 // node_modules/.pnpm/@opentelemetry+sdk-trace@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace/build/src/index.js
-var require_src7 = __commonJS({
+var require_src8 = __commonJS({
   "node_modules/.pnpm/@opentelemetry+sdk-trace@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace/build/src/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -79873,7 +80075,7 @@ var require_src7 = __commonJS({
     Object.defineProperty(exports, "TracerProvider", { enumerable: true, get: function() {
       return TracerProvider_1.TracerProvider;
     } });
-    var platform_1 = require_platform4();
+    var platform_1 = require_platform5();
     Object.defineProperty(exports, "BatchSpanProcessor", { enumerable: true, get: function() {
       return platform_1.BatchSpanProcessor;
     } });
@@ -79931,7 +80133,7 @@ var require_config = __commonJS({
     exports.buildSamplerFromEnv = exports.loadDefaultConfig = void 0;
     var api_1 = (init_esm(), __toCommonJS(esm_exports));
     var core_1 = require_src();
-    var sdk_trace_1 = require_src7();
+    var sdk_trace_1 = require_src8();
     var TracesSamplerValues;
     (function(TracesSamplerValues2) {
       TracesSamplerValues2["AlwaysOff"] = "always_off";
@@ -80033,7 +80235,7 @@ var require_BasicTracerProvider_shim = __commonJS({
     var core_1 = require_src();
     var config_1 = require_config();
     var utility_1 = require_utility();
-    var sdk_trace_1 = require_src7();
+    var sdk_trace_1 = require_src8();
     var BasicTracerProvider2 = class extends sdk_trace_1.TracerProvider {
       constructor(config = {}) {
         const mergedConfig = (0, core_1.merge)({}, (0, config_1.loadDefaultConfig)(), (0, utility_1.reconfigureLimits)(config));
@@ -80052,7 +80254,7 @@ var require_BatchSpanProcessor_shim = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.BatchSpanProcessor = void 0;
     var core_1 = require_src();
-    var sdk_trace_1 = require_src7();
+    var sdk_trace_1 = require_src8();
     var BatchSpanProcessor2 = class extends sdk_trace_1.BatchSpanProcessor {
       constructor(exporter, config) {
         if (!config) {
@@ -80085,7 +80287,7 @@ var require_SimpleSpanProcessor_shim = __commonJS({
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.SimpleSpanProcessor = void 0;
-    var sdk_trace_1 = require_src7();
+    var sdk_trace_1 = require_src8();
     var SimpleSpanProcessor = class extends sdk_trace_1.SimpleSpanProcessor {
       constructor(exporter) {
         super({ exporter });
@@ -80113,7 +80315,7 @@ var require_index_shim = __commonJS({
     Object.defineProperty(exports, "SimpleSpanProcessor", { enumerable: true, get: function() {
       return SimpleSpanProcessor_shim_1.SimpleSpanProcessor;
     } });
-    var sdk_trace_1 = require_src7();
+    var sdk_trace_1 = require_src8();
     Object.defineProperty(exports, "ConsoleSpanExporter", { enumerable: true, get: function() {
       return sdk_trace_1.ConsoleSpanExporter;
     } });
@@ -99861,7 +100063,7 @@ function validateTelemetryProjectConfig(value) {
 function validateTelemetryProfile(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Provide an endpoint, TLS mode and optional references.");
   const profile = value;
-  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv"].includes(key))) invalid("Remove unsupported Telemetry profile fields.");
+  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs"].includes(key))) invalid("Remove unsupported Telemetry profile fields.");
   if (typeof profile.endpoint !== "string" || profile.endpoint.length > 2048) invalid("Use an OTLP/HTTP base URL without credentials or query strings.");
   let url;
   try {
@@ -99879,6 +100081,7 @@ function validateTelemetryProfile(value) {
   if (trust.mode === "loopback" && (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) invalid("Loopback Telemetry profiles require an HTTP loopback address.");
   if (trust.caFile !== void 0 && (trust.mode !== "verified" || typeof trust.caFile !== "string" || !path8.isAbsolute(trust.caFile) || trust.caFile.length > 1024)) invalid("Use an absolute private CA file path with verified TLS.");
   if (profile.credentialEnv !== void 0 && (typeof profile.credentialEnv !== "string" || !envPattern.test(profile.credentialEnv))) invalid("Use an uppercase credential environment reference such as TRACE_INGEST_TOKEN.");
+  if (profile.metricsIntervalMs !== void 0 && (!Number.isSafeInteger(profile.metricsIntervalMs) || profile.metricsIntervalMs < 5e3 || profile.metricsIntervalMs > 3e5)) invalid("Use a metrics export interval from 5000 to 300000 milliseconds.");
   if (profile.dashboard !== void 0) {
     if (typeof profile.dashboard !== "string" || profile.dashboard.length > 2048) invalid("Use a dashboard HTTPS URL without embedded credentials.");
     let dashboard;
@@ -99943,7 +100146,7 @@ async function resolveLocalTelemetryConfig(config, sessionProfile) {
   const profile = Object.hasOwn(profiles, name2) ? profiles[name2] : void 0;
   if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
   if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name2}.`);
-  return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule" };
+  return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs };
 }
 async function resolveContainerTelemetryConfig(config, sessionProfile) {
   if (sessionProfile === null) return null;
@@ -99953,6 +100156,7 @@ async function resolveContainerTelemetryConfig(config, sessionProfile) {
   if (resolved.tls.mode === "loopback") endpoint.hostname = "host.docker.internal";
   return {
     ...resolved,
+    environment: "container",
     endpoint: endpoint.toString(),
     tls: resolved.tls.caFile ? { ...resolved.tls, caFile: "/run/sporades/telemetry-ca.pem" } : resolved.tls
   };
@@ -144596,6 +144800,7 @@ Options for profile add:
   --endpoint <url>        OTLP/HTTP base origin (HTTPS, or HTTP loopback with --loopback)
   --dashboard <url>       Optional dashboard HTTPS URL
   --credential-env <KEY>  Environment variable containing the ingestion bearer token
+  --metrics-interval-ms <N>  Metrics export period, 5000-300000 ms (default 15000)
   --ca-file <path>        Absolute private CA certificate path for verified TLS
   --loopback              Permit a local HTTP collector for development
   --json                  Write { ok, data, error } JSON output
@@ -144745,7 +144950,7 @@ import { cp, lstat as lstat8, mkdir as mkdir8, readFile as readFile10, readdir a
 import path14 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
 var STACK_SCHEMA = 1;
-var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "jaeger.yaml", "setup.mjs", "smoke.mjs"];
+var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "setup.mjs", "smoke.mjs"];
 function prerequisite() {
   if (!["arm64", "x64"].includes(process.arch) || !["linux", "darwin"].includes(process.platform)) {
     throw commandError("Unsupported monitoring stack architecture.", "Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.");
@@ -144837,14 +145042,16 @@ async function runMonitoringStack(action, directory, packageRoot) {
     missingAssets,
     versionDifference,
     missing,
-    nextSteps: ["Review .env and fill missing settings", "Run `node setup.mjs` after editing .env", "Run `docker compose --env-file .compose.env up -d --build` from the stack directory", "Run `node smoke.mjs send` to verify stored traces"]
+    nextSteps: ["Review .env and fill missing settings", "Run `node setup.mjs` after editing .env", "Run `docker compose --env-file .compose.env up -d --build` from the stack directory", "Run `node smoke.mjs send` to verify stored traces and metrics", "Open /grafana/d/sporades-api through the protected gateway"]
   };
 }
 
 // src/runtime-telemetry.ts
 init_esm();
 var import_exporter_trace_otlp_http = __toESM(require_src6(), 1);
+var import_exporter_metrics_otlp_http = __toESM(require_src7(), 1);
 var import_resources = __toESM(require_src3(), 1);
+var import_sdk_metrics = __toESM(require_src4(), 1);
 var import_sdk_trace_base = __toESM(require_index_shim(), 1);
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
 import { readFileSync as readFileSync3, statSync } from "node:fs";
@@ -144915,6 +145122,32 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     concurrencyLimit: 1,
     httpAgentOptions: config.tls.caFile ? { ca: readFileSync3(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 }
   });
+  const metricExporter = new import_exporter_metrics_otlp_http.OTLPMetricExporter({
+    url: new URL("/v1/metrics", url).toString(),
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+    timeoutMillis: 600,
+    concurrencyLimit: 1,
+    httpAgentOptions: config.tls.caFile ? { ca: readFileSync3(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 }
+  });
+  const metricReader = new import_sdk_metrics.PeriodicExportingMetricReader({
+    exporter: metricExporter,
+    exportIntervalMillis: config.metricsIntervalMs ?? 15e3,
+    exportTimeoutMillis: 800
+  });
+  const meterProvider = new import_sdk_metrics.MeterProvider({
+    resource: (0, import_resources.resourceFromAttributes)({ "service.name": config.serviceName.slice(0, 80), "deployment.environment.name": config.environment ?? "unknown" }),
+    readers: [metricReader],
+    views: [
+      { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
+      { instrumentName: "http.server.active_requests", aggregationCardinalityLimit: 128 },
+      { instrumentName: "http.server.request.duration", aggregationCardinalityLimit: 512, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [5e-3, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } }
+    ]
+  });
+  const meter = meterProvider.getMeter("sporades-runtime-http", "1");
+  const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
+  const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
+  const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
+  const seenRoutes = /* @__PURE__ */ new Set();
   let failedReason = null;
   let lastFailureLoggedAt = 0;
   const emitDiagnostic = (diagnostic) => {
@@ -144966,13 +145199,24 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     run(request, response, endpoints, handle) {
       if (closing) return handle();
       const method = safeMethod(request.method);
-      const route = resolveTelemetryRoute(request, endpoints);
+      let route = resolveTelemetryRoute(request, endpoints);
+      if (!seenRoutes.has(route)) {
+        if (seenRoutes.size < 128) seenRoutes.add(route);
+        else route = "/__other";
+      }
+      const started = process.hrtime.bigint();
+      const activeLabels = { "http.request.method": method, "http.route": route };
+      activeRequests.add(1, activeLabels);
       const span = tracer.startSpan(`${method} ${route}`, { kind: SpanKind.SERVER, attributes: { "http.request.method": method, "http.route": route } }, validatedRemoteParent(request));
       let ended = false;
       const end = (outcome) => {
         if (ended) return;
         ended = true;
-        const status = Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
+        const status = outcome === "error" && !response.headersSent ? 500 : Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
+        const labels = { ...activeLabels, "http.response.status_code": `${Math.floor(status / 100)}xx`, "sporades.http.outcome": outcome };
+        requestCount.add(1, labels);
+        requestDuration.record(Number(process.hrtime.bigint() - started) / 1e9, labels);
+        activeRequests.add(-1, activeLabels);
         span.setAttribute("http.response.status_code", status);
         span.setAttribute("sporades.http.outcome", outcome);
         if (outcome !== "success") span.setStatus({ code: SpanStatusCode.ERROR });
@@ -145001,8 +145245,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     async shutdown() {
       if (closing) return;
       closing = true;
-      await Promise.race([provider.shutdown().catch(() => {
-      }), new Promise((resolve2) => {
+      await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise((resolve2) => {
         const timer = setTimeout(resolve2, 1500);
         timer.unref();
       })]);
@@ -147378,6 +147621,10 @@ async function runTelemetryProfileCommand(args) {
         input.credentialEnv = readFlagValue(rest, ++index, arg);
         continue;
       }
+      if (arg === "--metrics-interval-ms") {
+        input.metricsIntervalMs = Number(readFlagValue(rest, ++index, arg));
+        continue;
+      }
       if (arg === "--ca-file") {
         input.caFile = readFlagValue(rest, ++index, arg);
         continue;
@@ -147394,7 +147641,8 @@ async function runTelemetryProfileCommand(args) {
       endpoint: input.endpoint,
       ...input.dashboard ? { dashboard: input.dashboard } : {},
       tls: { mode: input.loopback ? "loopback" : "verified", ...input.caFile ? { caFile: input.caFile } : {} },
-      ...input.credentialEnv ? { credentialEnv: input.credentialEnv } : {}
+      ...input.credentialEnv ? { credentialEnv: input.credentialEnv } : {},
+      ...input.metricsIntervalMs !== void 0 ? { metricsIntervalMs: input.metricsIntervalMs } : {}
     };
     const saved = await changeTelemetryProfile("add", name2, profile);
     if (json) writeResult({ ok: true, data: { name: name2, profile: saved }, error: null });
