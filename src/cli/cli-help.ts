@@ -152,6 +152,7 @@ Options for profile add:
   --endpoint <url>        OTLP/HTTP base origin (HTTPS, or HTTP loopback with --loopback)
   --dashboard <url>       Optional dashboard HTTPS URL
   --credential-env <KEY>  Environment variable containing the ingestion bearer token
+  --metrics-interval-ms <N>  Metrics export period, 5000-300000 ms (default 15000)
   --ca-file <path>        Absolute private CA certificate path for verified TLS
   --loopback              Permit a local HTTP collector for development
   --json                  Write { ok, data, error } JSON output

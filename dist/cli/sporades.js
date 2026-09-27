@@ -374,6 +374,10 @@ async function runTelemetryProfileCommand(args) {
                 input.credentialEnv = readFlagValue(rest, ++index, arg);
                 continue;
             }
+            if (arg === "--metrics-interval-ms") {
+                input.metricsIntervalMs = Number(readFlagValue(rest, ++index, arg));
+                continue;
+            }
             if (arg === "--ca-file") {
                 input.caFile = readFlagValue(rest, ++index, arg);
                 continue;
@@ -391,6 +395,7 @@ async function runTelemetryProfileCommand(args) {
             ...(input.dashboard ? { dashboard: input.dashboard } : {}),
             tls: { mode: input.loopback ? "loopback" : "verified", ...(input.caFile ? { caFile: input.caFile } : {}) },
             ...(input.credentialEnv ? { credentialEnv: input.credentialEnv } : {}),
+            ...(input.metricsIntervalMs !== undefined ? { metricsIntervalMs: input.metricsIntervalMs } : {}),
         };
         const saved = await changeTelemetryProfile("add", name, profile);
         if (json)

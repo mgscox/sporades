@@ -7,6 +7,7 @@ export type TelemetryProfile = {
         caFile?: string;
     };
     credentialEnv?: string;
+    metricsIntervalMs?: number;
 };
 export declare function validateTelemetryProjectConfig(value: unknown): void;
 export declare function validateTelemetryProfile(value: unknown): TelemetryProfile;

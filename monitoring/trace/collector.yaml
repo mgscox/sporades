@@ -25,6 +25,15 @@ exporters:
     retry_on_failure:
       enabled: true
       max_elapsed_time: 30s
+  otlphttp/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp
+    sending_queue:
+      enabled: true
+      queue_size: 1000
+      num_consumers: 2
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 30s
 service:
   extensions: [health_check]
   pipelines:
@@ -32,3 +41,7 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [otlphttp/jaeger]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/prometheus]

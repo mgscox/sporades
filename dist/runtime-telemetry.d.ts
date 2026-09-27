@@ -9,6 +9,8 @@ export type RuntimeTelemetryConfig = {
     credentialEnv?: string;
     serviceName: string;
     samplingRatio?: number;
+    environment?: "dev" | "container" | "hosted";
+    metricsIntervalMs?: number;
 };
 export type TelemetryExportDiagnostic = {
     event: "telemetry.export.failed";

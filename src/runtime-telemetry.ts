@@ -5,7 +5,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { ROOT_CONTEXT, SpanKind, SpanStatusCode, TraceFlags, trace } from "@opentelemetry/api";
 import type { Span } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
+import { AggregationType, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
 import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { interpretHttpRequestTarget } from "./http-runtime.js";
@@ -16,6 +18,8 @@ export type RuntimeTelemetryConfig = {
   credentialEnv?: string;
   serviceName: string;
   samplingRatio?: number;
+  environment?: "dev" | "container" | "hosted";
+  metricsIntervalMs?: number;
 };
 
 export type TelemetryExportDiagnostic =
@@ -101,6 +105,32 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     concurrencyLimit: 1,
     httpAgentOptions: config.tls.caFile ? { ca: readFileSync(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 },
   });
+  const metricExporter = new OTLPMetricExporter({
+    url: new URL("/v1/metrics", url).toString(),
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+    timeoutMillis: 600,
+    concurrencyLimit: 1,
+    httpAgentOptions: config.tls.caFile ? { ca: readFileSync(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 },
+  });
+  const metricReader = new PeriodicExportingMetricReader({
+    exporter: metricExporter,
+    exportIntervalMillis: config.metricsIntervalMs ?? 15_000,
+    exportTimeoutMillis: 800,
+  });
+  const meterProvider = new MeterProvider({
+    resource: resourceFromAttributes({ "service.name": config.serviceName.slice(0, 80), "deployment.environment.name": config.environment ?? "unknown" }),
+    readers: [metricReader],
+    views: [
+      { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
+      { instrumentName: "http.server.active_requests", aggregationCardinalityLimit: 128 },
+      { instrumentName: "http.server.request.duration", aggregationCardinalityLimit: 512, aggregation: { type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } },
+    ],
+  });
+  const meter = meterProvider.getMeter("sporades-runtime-http", "1");
+  const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
+  const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
+  const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
+  const seenRoutes = new Set<string>();
   let failedReason: Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"] | null = null;
   let lastFailureLoggedAt = 0;
   const emitDiagnostic = (diagnostic: TelemetryExportDiagnostic) => {
@@ -149,13 +179,25 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     run(request: IncomingMessage, response: ServerResponse, endpoints: readonly EndpointLike[], handle: () => unknown) {
       if (closing) return handle();
       const method = safeMethod(request.method);
-      const route = resolveTelemetryRoute(request, endpoints);
+      let route = resolveTelemetryRoute(request, endpoints);
+      if (!seenRoutes.has(route)) {
+        if (seenRoutes.size < 128) seenRoutes.add(route);
+        else route = "/__other";
+      }
+      const started = process.hrtime.bigint();
+      const activeLabels = { "http.request.method": method, "http.route": route };
+      activeRequests.add(1, activeLabels);
       const span = tracer.startSpan(`${method} ${route}`, { kind: SpanKind.SERVER, attributes: { "http.request.method": method, "http.route": route } }, validatedRemoteParent(request));
       let ended = false;
       const end = (outcome: "success" | "failure" | "abort" | "error") => {
         if (ended) return;
         ended = true;
-        const status = Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
+        const status = outcome === "error" && !response.headersSent ? 500
+          : Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
+        const labels = { ...activeLabels, "http.response.status_code": `${Math.floor(status / 100)}xx`, "sporades.http.outcome": outcome };
+        requestCount.add(1, labels);
+        requestDuration.record(Number(process.hrtime.bigint() - started) / 1e9, labels);
+        activeRequests.add(-1, activeLabels);
         span.setAttribute("http.response.status_code", status);
         span.setAttribute("sporades.http.outcome", outcome);
         if (outcome !== "success") span.setStatus({ code: SpanStatusCode.ERROR });
@@ -179,7 +221,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     async shutdown() {
       if (closing) return;
       closing = true;
-      await Promise.race([provider.shutdown().catch(() => {}), new Promise<void>((resolve) => { const timer = setTimeout(resolve, 1_500); timer.unref(); })]);
+      await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise<void>((resolve) => { const timer = setTimeout(resolve, 1_500); timer.unref(); })]);
     },
   };
 }

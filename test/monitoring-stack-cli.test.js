@@ -38,6 +38,10 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   const result = JSON.parse(first.stdout);
   assert.equal(result.ok, true);
   assert.equal(result.data.path, target);
+  assert.deepEqual(result.data.missingAssets, []);
+  assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /prom\/prometheus:v3\.13\.3[\s\S]*grafana\/grafana:13\.2\.2/);
+  assert.equal(JSON.parse(await readFile(join(target, 'api-dashboard.json'), 'utf8')).title, 'Sporades Capsule API');
+  assert.equal((await stat(join(target, '.private', 'grafana-admin-password'))).mode & 0o777, 0o600);
   assert.ok(result.data.missing.includes('TRACE_CERT_FILE'));
   const environment = join(target, '.env');
   const before = await readFile(environment, 'utf8');

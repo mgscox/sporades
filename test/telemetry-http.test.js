@@ -55,7 +55,7 @@ test('stream completion and premature client close each end one SERVER span', as
   const collector = createServer(async (request, response) => {
     let body = '';
     for await (const part of request) body += part;
-    received.push(JSON.parse(body));
+    received.push({ path: request.url, body: JSON.parse(body) });
     response.writeHead(200).end();
   }).listen(0, '127.0.0.1');
   await once(collector, 'listening');
@@ -74,8 +74,13 @@ test('stream completion and premature client close each end one SERVER span', as
     }));
     await new Promise((resolve) => setTimeout(resolve, 100));
     await telemetry.shutdown();
-    const spans = received.flatMap((batch) => batch.resourceSpans ?? []).flatMap((resource) => resource.scopeSpans ?? []).flatMap((scope) => scope.spans ?? []);
+    const spans = received.filter(batch => batch.path === '/v1/traces').flatMap((batch) => batch.body.resourceSpans ?? []).flatMap((resource) => resource.scopeSpans ?? []).flatMap((scope) => scope.spans ?? []);
     assert.deepEqual(spans.map((span) => span.attributes.find((attribute) => attribute.key === 'sporades.http.outcome')?.value.stringValue).sort(), ['abort', 'success']);
+    const metrics = received.filter(batch => batch.path === '/v1/metrics').flatMap(batch => batch.body.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []);
+    const count = metrics.find(metric => metric.name === 'http.server.request.count');
+    const outcomes = count?.sum?.dataPoints?.map(point => point.attributes.find(attribute => attribute.key === 'sporades.http.outcome')?.value.stringValue).sort();
+    assert.deepEqual(outcomes, ['abort', 'success']);
+    assert.equal(metrics.find(metric => metric.name === 'http.server.request.duration')?.histogram?.dataPoints?.reduce((total, point) => total + Number(point.count), 0), 2);
   } finally {
     app.close();
     collector.close();
@@ -85,6 +90,68 @@ test('stream completion and premature client close each end one SERVER span', as
 test('unknown and malformed targets never become route labels', () => {
   assert.equal(resolveTelemetryRoute({ method: 'GET', url: '/private/alice?secret=1' }, []), '/__unknown');
   assert.equal(resolveTelemetryRoute({ method: 'GET', url: '/%GG?secret=1' }, []), '/__unknown');
+});
+
+test('request metrics count sampled-out traffic, failures and streams without private labels', async () => {
+  const batches = [];
+  const collector = createServer(async (request, response) => {
+    let body = '';
+    for await (const part of request) body += part;
+    batches.push({ path: request.url, body: JSON.parse(body) });
+    response.writeHead(200).end();
+  }).listen(0, '127.0.0.1');
+  await once(collector, 'listening');
+  const telemetry = createHttpRequestTelemetry({ endpoint: `http://127.0.0.1:${collector.address().port}`, tls: { mode: 'loopback' }, serviceName: 'metric-test', samplingRatio: 0 });
+  const app = createServer((request, response) => telemetry.run(request, response, [{ method: 'GET', path: '/ok' }, { method: 'GET', path: '/stream' }], () => {
+    if (request.url.startsWith('/ok')) response.writeHead(200).end('ok');
+    else if (request.url === '/stream') { response.writeHead(200).write('first'); setTimeout(() => response.end('last'), 30); }
+    else response.writeHead(404).end();
+  })).listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  try {
+    const origin = `http://127.0.0.1:${app.address().port}`;
+    assert.equal((await fetch(`${origin}/ok?secret=alice`)).status, 200);
+    assert.equal((await fetch(`${origin}/private/alice?secret=bob`)).status, 404);
+    assert.equal(await (await fetch(`${origin}/stream`)).text(), 'firstlast');
+    await new Promise(resolve => get({ hostname: '127.0.0.1', port: app.address().port, path: '/%GG?secret=charlie' }, response => { response.resume(); response.once('end', resolve); }));
+    await telemetry.shutdown();
+    assert.equal(batches.filter(batch => batch.path === '/v1/traces').length, 0);
+    const metrics = batches.filter(batch => batch.path === '/v1/metrics').flatMap(batch => batch.body.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []);
+    const count = metrics.find(metric => metric.name === 'http.server.request.count');
+    const duration = metrics.find(metric => metric.name === 'http.server.request.duration');
+    const inflight = metrics.find(metric => metric.name === 'http.server.active_requests');
+    assert.equal(count?.sum?.dataPoints?.reduce((total, point) => total + Number(point.asInt ?? point.asDouble), 0), 4);
+    assert.equal(duration?.histogram?.dataPoints?.reduce((total, point) => total + Number(point.count), 0), 4);
+    assert.equal(inflight?.sum?.dataPoints?.reduce((total, point) => total + Number(point.asInt ?? point.asDouble), 0), 0);
+    const labels = JSON.stringify(metrics);
+    assert.match(labels, /__unknown|4xx|success/);
+    assert.doesNotMatch(labels, /alice|bob|charlie|secret|traceId/);
+  } finally { app.close(); collector.close(); }
+});
+
+test('an uncaught handler rejection records an error status before the HTTP error response', async () => {
+  const batches = [];
+  const collector = createServer(async (request, response) => {
+    let body = '';
+    for await (const part of request) body += part;
+    batches.push({ path: request.url, body: JSON.parse(body) });
+    response.writeHead(200).end();
+  }).listen(0, '127.0.0.1');
+  await once(collector, 'listening');
+  const telemetry = createHttpRequestTelemetry({ endpoint: `http://127.0.0.1:${collector.address().port}`, tls: { mode: 'loopback' }, serviceName: 'rejection-test', samplingRatio: 0 });
+  const app = createServer((request, response) => Promise.resolve(telemetry.run(request, response, [{ method: 'GET', path: '/throws' }], async () => {
+    throw new Error('private rejected request');
+  })).catch(() => response.writeHead(500).end())).listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  try {
+    assert.equal((await fetch(`http://127.0.0.1:${app.address().port}/throws`)).status, 500);
+    await telemetry.shutdown();
+    const count = batches.filter(batch => batch.path === '/v1/metrics').flatMap(batch => batch.body.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []).find(metric => metric.name === 'http.server.request.count');
+    const attributes = count?.sum?.dataPoints?.[0]?.attributes ?? [];
+    assert.equal(attributes.find(attribute => attribute.key === 'http.response.status_code')?.value.stringValue, '5xx');
+    assert.equal(attributes.find(attribute => attribute.key === 'sporades.http.outcome')?.value.stringValue, 'error');
+    assert.doesNotMatch(JSON.stringify(batches), /private rejected request/);
+  } finally { app.close(); collector.close(); }
 });
 
 test('a valid but unreachable collector does not hold up requests or shutdown', async () => {

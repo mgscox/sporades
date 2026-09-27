@@ -22,11 +22,29 @@ async function pathReady(config) {
   const sent = await deadlineFetch(`${config.collectorUrl}/v1/traces`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
   if (!sent.ok) return false;
   const end = Date.now() + 2500;
+  let traceReady = false;
   do {
     const response = await deadlineFetch(`${config.jaegerUrl}/api/traces/${traceId}`);
-    if (response.ok && (await response.json()).data?.length) return true;
+    if (response.ok && (await response.json()).data?.length) { traceReady = true; break; }
     await new Promise(resolve => setTimeout(resolve, 150));
   } while (Date.now() < end);
+  if (!traceReady) return false;
+  if (!config.prometheusUrl) return true;
+  const metricTime = String(BigInt(Date.now()) * 1000000n);
+  const metric = JSON.stringify({ resourceMetrics: [{ resource: { attributes: [{ key: 'service.name', value: { stringValue: 'sporades-stack-health' } }] }, scopeMetrics: [{ metrics: [{ name: 'sporades.stack.readiness', gauge: { dataPoints: [{ timeUnixNano: metricTime, asDouble: 1 }] } }] }] }] });
+  const metricSent = await deadlineFetch(`${config.collectorUrl}/v1/metrics`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: metric });
+  if (!metricSent.ok) return false;
+  const metricEnd = Date.now() + 2500;
+  do {
+    const query = new URL('/api/v1/query', config.prometheusUrl);
+    query.searchParams.set('query', 'sporades_stack_readiness');
+    const stored = await deadlineFetch(query);
+    if (stored.ok) {
+      const data = await stored.json();
+      if (data.status === 'success' && data.data?.result?.some(item => Number(item.value?.[1]) === 1 && Number(item.value?.[0]) * 1000 >= Date.now() - 10_000)) return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 150));
+  } while (Date.now() < metricEnd);
   return false;
 }
 
@@ -47,13 +65,22 @@ function proxyUi(req, res, target) {
 }
 
 export function createGateway(config, tls) {
+  let recentHealth;
+  let healthUntil = 0;
   const handler = async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
-      try { const ready = await pathReady(config); json(res, ready ? 200 : 503, ready); }
+      try {
+        if (!recentHealth || Date.now() >= healthUntil) {
+          recentHealth = pathReady(config).catch(() => false);
+          healthUntil = Date.now() + 3000;
+        }
+        const ready = await recentHealth;
+        json(res, ready ? 200 : 503, ready);
+      }
       catch { json(res, 503, false); }
       return;
     }
-    if (req.url === '/v1/traces') {
+    if (req.url === '/v1/traces' || req.url === '/v1/metrics') {
       if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
       if (!same(req.headers.authorization, `Bearer ${config.ingestToken}`)) { res.writeHead(401); res.end(); return; }
       let size = 0;
@@ -64,7 +91,7 @@ export function createGateway(config, tls) {
         chunks.push(chunk);
       }
       try {
-        const response = await deadlineFetch(`${config.collectorUrl}/v1/traces`, { method: 'POST', headers: { 'content-type': req.headers['content-type'] ?? 'application/x-protobuf' }, body: Buffer.concat(chunks) });
+        const response = await deadlineFetch(`${config.collectorUrl}${req.url}`, { method: 'POST', headers: { 'content-type': req.headers['content-type'] ?? 'application/x-protobuf' }, body: Buffer.concat(chunks) });
         if (!response.ok) { res.writeHead(response.status >= 500 ? 503 : 400); res.end(); return; }
         res.writeHead(response.status, { 'content-type': response.headers.get('content-type') ?? 'application/json' });
         res.end(Buffer.from(await response.arrayBuffer()));
@@ -75,7 +102,7 @@ export function createGateway(config, tls) {
     if (!same(auth, `${config.uiUser}:${config.uiPassword}`)) {
       res.writeHead(401, { 'www-authenticate': 'Basic realm="Sporades traces"' }); res.end(); return;
     }
-    proxyUi(req, res, config.jaegerUrl);
+    proxyUi(req, res, req.url.startsWith('/grafana/') ? config.grafanaUrl : config.jaegerUrl);
   };
   return tls ? createHttpsServer(tls, handler) : createHttpServer(handler);
 }
@@ -95,6 +122,8 @@ if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   const gateway = createGateway({
     ...credentials, collectorUrl: 'http://collector:4318',
     jaegerUrl: 'http://jaeger:16686',
+    prometheusUrl: 'http://prometheus:9090',
+    grafanaUrl: 'http://grafana:3000',
   }, tls);
   gateway.listen(8443, '0.0.0.0');
 }
