@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:https";
 import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -35,15 +35,15 @@ test("packed CLI exports through a private CA from a disposable Container", {
     const received = [];
     collector = createServer({ key: await readFile(key), cert: await readFile(cert) }, async (request, response) => {
       for await (const _ of request) {}
-      received.push(request.url);
+      received.push({ path: request.url, authorization: request.headers.authorization });
       response.writeHead(200).end();
     }).listen(0, "0.0.0.0");
     await once(collector, "listening");
     const port = collector.address().port;
     await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: {
-      private: { endpoint: `https://host.docker.internal:${port}`, tls: { mode: "verified", caFile: cert }, metricsIntervalMs: 5000 },
+      private: { endpoint: `https://host.docker.internal:${port}`, tls: { mode: "verified", caFile: cert }, credentialEnv: "TELEMETRY_ACCEPTANCE_TOKEN", metricsIntervalMs: 5000 },
     } }));
-    const env = { ...process.env, SPORADES_CONFIG_DIR: configDir };
+    const env = { ...process.env, SPORADES_CONFIG_DIR: configDir, TELEMETRY_ACCEPTANCE_TOKEN: "session-owned-credential" };
     const created = await run(process.execPath, [cli, "create", "ca-acceptance", "--template", "blank", "--no-install", "--no-git", "--json"], { cwd: root, env, timeout: 120_000 });
     assert.equal(JSON.parse(created.stdout.trim().split("\n").at(-1)).ok, true);
     await run("npm", ["install", "--ignore-scripts", "--package-lock=false"], { cwd: projectDir, timeout: 120_000 });
@@ -55,8 +55,24 @@ test("packed CLI exports through a private CA from a disposable Container", {
     const staged = await readFile(binding.telemetryCaStagePath);
     assert.deepEqual(staged, await readFile(cert));
     const deadline = Date.now() + 20_000;
-    while (!received.includes("/v1/metrics") && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 250));
-    assert(received.includes("/v1/metrics"), `No HTTPS metric export from Container: ${JSON.stringify(received)}`);
+    while (!received.some(event => event.path === "/v1/metrics") && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 250));
+    assert(received.some(event => event.path === "/v1/metrics" && event.authorization === "Bearer session-owned-credential"), "Container did not export through its original CA and credential");
+    const originalCount = received.length;
+    await run(process.execPath, [cli, "deploy", "stop", "--json"], { cwd: projectDir, env, timeout: 30_000 });
+    await devBuild(cli, projectDir, env, []);
+    assert.doesNotMatch(await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8"), /host\.docker\.internal/);
+    await run(process.execPath, [cli, "deploy", "restart", "--json"], { cwd: projectDir, env, timeout: 30_000 });
+    assert.equal((await run("docker", ["inspect", "--format", "{{.State.Running}}", containerId])).stdout.trim(), "true");
+    await waitUntil(() => received.length > originalCount && received.slice(originalCount).some(event => event.path === "/v1/metrics" && event.authorization === "Bearer session-owned-credential"), 20_000);
+    const disabled = await run(process.execPath, [cli, "deploy", "--no-telemetry", "--json"], { cwd: projectDir, env, timeout: 120_000 });
+    containerId = JSON.parse(disabled.stdout.trim().split("\n").at(-1)).data.containerId;
+    await run(process.execPath, [cli, "deploy", "stop", "--json"], { cwd: projectDir, env, timeout: 30_000 });
+    await devBuild(cli, projectDir, env, ["--telemetry", "private"]);
+    const beforeDisabledRestart = received.length;
+    await run(process.execPath, [cli, "deploy", "restart", "--json"], { cwd: projectDir, env, timeout: 30_000 });
+    assert.equal((await run("docker", ["inspect", "--format", "{{.State.Running}}", containerId])).stdout.trim(), "true");
+    await new Promise(resolve => setTimeout(resolve, 6500));
+    assert.equal(received.length, beforeDisabledRestart, "disabled Container exported after enabled Dev rebuilt the shared Bundle");
     await writeFile(cert, "malformed CA");
     await assert.rejects(
       run(process.execPath, [cli, "deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env, timeout: 120_000 }),
@@ -70,3 +86,35 @@ test("packed CLI exports through a private CA from a disposable Container", {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+async function devBuild(cli, projectDir, env, selection) {
+  const child = spawn(process.execPath, [cli, "dev", ...selection, "--json"], { cwd: projectDir, env, stdio: ["ignore", "pipe", "pipe"] });
+  const events = [];
+  let buffered = "";
+  let stderr = "";
+  child.stdout.on("data", chunk => {
+    buffered += chunk.toString();
+    let newline;
+    while ((newline = buffered.indexOf("\n")) >= 0) {
+      const line = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      try { events.push(JSON.parse(line)); } catch {}
+    }
+  });
+  child.stderr.on("data", chunk => { stderr += chunk.toString(); });
+  try {
+    await waitUntil(() => events.some(event => event.ok && event.data?.event === "started"), 30_000, () => stderr);
+    const server = path.join(projectDir, "server", "index.ts");
+    await writeFile(server, `${await readFile(server, "utf8")}\n// Trigger a Dev rebuild while the Container is stopped.\n`);
+    await waitUntil(() => events.some(event => event.ok && event.data?.event === "rebuild" && event.data.status === "success"), 30_000, () => stderr);
+  } finally {
+    child.kill("SIGTERM");
+    if (child.exitCode === null) await Promise.race([once(child, "exit"), new Promise((_, reject) => setTimeout(() => reject(new Error("Dev did not stop")), 10_000))]);
+  }
+}
+
+async function waitUntil(predicate, timeoutMs, diagnostics = () => "") {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+  assert(predicate(), `Timed out waiting for session event. ${diagnostics()}`);
+}

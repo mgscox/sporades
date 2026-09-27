@@ -504,6 +504,7 @@ _Avoid_: audit log, security log, admin log
 
 **Telemetry profile**:
 A named, operator-owned OTLP/HTTP monitoring connection separate from a Host profile. It contains a destination, TLS trust reference and optional ingestion credential environment reference, never a secret value. Dev selects an explicit session profile before an explicit project binding; absent both, no telemetry is exported.
+Local Container sessions resolve their selection at deploy and carry the non-secret resolved descriptor (or explicit disabled value) in Docker's saved launch environment. CLI Dev builds embed no telemetry selection in their shared server Bundle, so a Dev rebuild cannot alter a stopped Container's destination, trust path or enablement on restart. Credential values remain in the Container environment, separate from the descriptor; the Container launch values take precedence over Capsule Server env. An existing Container bound by an older CLI has no descriptor version in its binding; Dev and Host push refuse to publish a shared Bundle until that Container is redeployed once with the current CLI, preserving its selected telemetry profile. Directly run generated Bundles without a Container launch descriptor still use their embedded telemetry config.
 _Avoid_: Host profile, Capsule secret, app telemetry endpoint
 
 **sporades.json**:
