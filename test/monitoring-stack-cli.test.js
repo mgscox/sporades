@@ -1,0 +1,66 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const root = new URL('..', import.meta.url).pathname;
+
+function command(bin, args, cwd, env = process.env) {
+  return spawnSync(process.execPath, [bin, ...args], { cwd, env, encoding: 'utf8' });
+}
+
+test('packed CLI generates a stack outside checkout and preserves operator state', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'sporades package '));
+  const packed = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp], { cwd: root, encoding: 'utf8' });
+  assert.equal(packed.status, 0, packed.stderr);
+  const filename = JSON.parse(packed.stdout)[0].filename;
+  const install = join(temp, 'installed package');
+  await mkdir(install);
+  const extracted = spawnSync('tar', ['-xzf', join(temp, filename), '-C', install], { encoding: 'utf8' });
+  assert.equal(extracted.status, 0, extracted.stderr);
+  const bin = join(install, 'package', 'bin', 'sporades.js');
+  const target = join(temp, 'monitoring stack');
+  const first = command(bin, ['monitoring', 'stack', 'init', '--dir', target, '--json'], temp);
+  assert.equal(first.status, 0, first.stderr || first.stdout);
+  const result = JSON.parse(first.stdout);
+  assert.equal(result.ok, true);
+  assert.equal(result.data.path, target);
+  assert.ok(result.data.missing.includes('TRACE_CERT_FILE'));
+  const environment = join(target, '.env');
+  const before = await readFile(environment, 'utf8');
+  const custom = `${before}OPERATOR_EXTRA=keep:$VALUE # literal\n`;
+  await writeFile(environment, custom.replace(/TRACE_INGEST_TOKEN=[^\n]*/, 'TRACE_INGEST_TOKEN=chosen:$VALUE # literal'));
+  await writeFile(join(target, 'compose.override.yaml'), 'services: {}\n');
+  await writeFile(join(target, 'compose.yaml'), `${await readFile(join(target, 'compose.yaml'), 'utf8')}\n# operator override\n`);
+  await mkdir(join(target, 'data'));
+  await writeFile(join(target, 'data', 'keep'), 'history');
+  const second = command(bin, ['monitoring', 'stack', 'init', '--dir', target, '--json'], temp);
+  assert.equal(second.status, 0, second.stderr || second.stdout);
+  assert.match(await readFile(environment, 'utf8'), /OPERATOR_EXTRA=keep:\$VALUE # literal/);
+  assert.match(await readFile(environment, 'utf8'), /TRACE_INGEST_TOKEN=chosen:\$VALUE # literal/);
+  assert.equal((await readFile(join(target, 'data', 'keep'), 'utf8')), 'history');
+  assert.equal((await readFile(join(target, 'compose.override.yaml'), 'utf8')), 'services: {}\n');
+  assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /# operator override/);
+  assert.equal(JSON.parse(await readFile(join(target, '.private', 'credentials.json'), 'utf8')).ingestToken, 'chosen:$VALUE # literal');
+  assert.equal((await stat(environment)).mode & 0o777, 0o600);
+  assert.equal((await stat(join(target, '.private', 'credentials.json'))).mode & 0o777, 0o600);
+  const validation = command(bin, ['monitoring', 'stack', 'validate', '--dir', target, '--json'], temp);
+  assert.equal(validation.status, 0, validation.stderr || validation.stdout);
+  assert.deepEqual(JSON.parse(validation.stdout).data.missing, ['TRACE_CERT_FILE', 'TRACE_KEY_FILE']);
+  assert.ok(JSON.parse(validation.stdout).data.overrides.includes('compose.yaml'));
+  const directSetup = command(join(target, 'setup.mjs'), [], target);
+  assert.equal(directSetup.status, 1);
+  assert.match(directSetup.stderr, /TRACE_CERT_FILE, TRACE_KEY_FILE/);
+  const manifestPath = join(target, 'stack-manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, packageVersion: '0.0.0' }));
+  const different = command(bin, ['monitoring', 'stack', 'validate', '--dir', target, '--json'], temp);
+  assert.equal(different.status, 0, different.stderr || different.stdout);
+  assert.equal(JSON.parse(different.stdout).data.versionDifference.installed, '0.0.0');
+  const unavailable = command(bin, ['monitoring', 'stack', 'validate', '--dir', target, '--json'], temp, { ...process.env, PATH: temp });
+  assert.equal(unavailable.status, 1);
+  assert.match(JSON.parse(unavailable.stdout).error.hint, /Docker Compose 2\.40\.3/);
+  assert.doesNotMatch(`${first.stdout}${second.stdout}${validation.stdout}`, /chosen|\$VALUE/);
+});

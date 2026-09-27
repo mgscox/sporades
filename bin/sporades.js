@@ -23063,14 +23063,14 @@ var require_svgPath = __commonJS({
       ["Z", 0],
       ["z", 0]
     ]);
-    var parse6 = function(path16) {
+    var parse6 = function(path17) {
       var cmd;
       var ret = [];
       var args = [];
       var curArg = "";
       var foundDecimal = false;
       var params = 0;
-      for (var _i = 0, path_1 = path16; _i < path_1.length; _i++) {
+      for (var _i = 0, path_1 = path17; _i < path_1.length; _i++) {
         var c = path_1[_i];
         if (parameters.has(c)) {
           params = parameters.get(c);
@@ -23384,8 +23384,8 @@ var require_svgPath = __commonJS({
       ];
       return result;
     };
-    exports.svgPathToOperators = function(path16) {
-      return apply(parse6(path16));
+    exports.svgPathToOperators = function(path17) {
+      return apply(parse6(path17));
     };
   }
 });
@@ -23568,7 +23568,7 @@ var require_operations = __commonJS({
         operators_1.popGraphicsState()
       ]).filter(Boolean);
     };
-    exports.drawSvgPath = function(path16, options) {
+    exports.drawSvgPath = function(path17, options) {
       var _a, _b, _c;
       return tslib_1.__spreadArrays([
         operators_1.pushGraphicsState(),
@@ -23582,7 +23582,7 @@ var require_operations = __commonJS({
         options.borderWidth && operators_1.setLineWidth(options.borderWidth),
         options.borderLineCap && operators_1.setLineCap(options.borderLineCap),
         operators_1.setDashPattern((_b = options.borderDashArray) !== null && _b !== void 0 ? _b : [], (_c = options.borderDashPhase) !== null && _c !== void 0 ? _c : 0)
-      ], svgPath_1.svgPathToOperators(path16), [
+      ], svgPath_1.svgPathToOperators(path17), [
         // prettier-ignore
         options.color && options.borderWidth ? operators_1.fillAndStroke() : options.color ? operators_1.fill() : options.borderColor ? operators_1.stroke() : operators_1.closePath(),
         operators_1.popGraphicsState()
@@ -27880,12 +27880,12 @@ var require_PDFPage = __commonJS({
             graphicsState: graphicsStateKey
           }));
         };
-        PDFPage2.prototype.drawSvgPath = function(path16, options) {
+        PDFPage2.prototype.drawSvgPath = function(path17, options) {
           var _a, _b, _c, _d, _e2, _f, _g, _h, _j;
           if (options === void 0) {
             options = {};
           }
-          utils_1.assertIs(path16, "path", ["string"]);
+          utils_1.assertIs(path17, "path", ["string"]);
           utils_1.assertOrUndefined(options.x, "options.x", ["number"]);
           utils_1.assertOrUndefined(options.y, "options.y", ["number"]);
           utils_1.assertOrUndefined(options.scale, "options.scale", ["number"]);
@@ -27914,7 +27914,7 @@ var require_PDFPage = __commonJS({
             options.borderColor = colors_1.rgb(0, 0, 0);
           }
           var contentStream = this.getContentStream();
-          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path16, {
+          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path17, {
             x: (_a = options.x) !== null && _a !== void 0 ? _a : this.x,
             y: (_b = options.y) !== null && _b !== void 0 ? _b : this.y,
             scale: options.scale,
@@ -29990,9 +29990,9 @@ var require_decoder = __commonJS({
         return a2 < 0 ? 0 : a2 > 255 ? 255 : a2;
       }
       constructor.prototype = {
-        load: function load(path16) {
+        load: function load(path17) {
           var xhr = new XMLHttpRequest();
-          xhr.open("GET", path16, true);
+          xhr.open("GET", path17, true);
           xhr.responseType = "arraybuffer";
           xhr.onload = (function() {
             var data2 = new Uint8Array(xhr.response || xhr.mozResponseArrayBuffer);
@@ -30281,10 +30281,10 @@ var require_decoder = __commonJS({
           if (frames.length != 1)
             throw new Error("only single frame JPEGs supported");
           for (var i = 0; i < frames.length; i++) {
-            var cp2 = frames[i].components;
-            for (var j in cp2) {
-              cp2[j].quantizationTable = quantizationTables[cp2[j].quantizationIdx];
-              delete cp2[j].quantizationIdx;
+            var cp3 = frames[i].components;
+            for (var j in cp3) {
+              cp3[j].quantizationTable = quantizationTables[cp3[j].quantizationIdx];
+              delete cp3[j].quantizationIdx;
             }
           }
           this.width = frame.samplesPerLine;
@@ -33290,33 +33290,33 @@ function renderRichText({
   container.append(fragment);
 }
 function makePathFromDrawOPS(data2) {
-  const path16 = new Path2D();
+  const path17 = new Path2D();
   if (!data2) {
-    return path16;
+    return path17;
   }
   for (let i = 0, ii = data2.length; i < ii; ) {
     switch (data2[i++]) {
       case DrawOPS.moveTo:
-        path16.moveTo(data2[i++], data2[i++]);
+        path17.moveTo(data2[i++], data2[i++]);
         break;
       case DrawOPS.lineTo:
-        path16.lineTo(data2[i++], data2[i++]);
+        path17.lineTo(data2[i++], data2[i++]);
         break;
       case DrawOPS.curveTo:
-        path16.bezierCurveTo(data2[i++], data2[i++], data2[i++], data2[i++], data2[i++], data2[i++]);
+        path17.bezierCurveTo(data2[i++], data2[i++], data2[i++], data2[i++], data2[i++], data2[i++]);
         break;
       case DrawOPS.quadraticCurveTo:
-        path16.quadraticCurveTo(data2[i++], data2[i++], data2[i++], data2[i++]);
+        path17.quadraticCurveTo(data2[i++], data2[i++], data2[i++], data2[i++]);
         break;
       case DrawOPS.closePath:
-        path16.closePath();
+        path17.closePath();
         break;
       default:
         warn(`Unrecognized drawing path operator: ${data2[i - 1]}`);
         break;
     }
   }
-  return path16;
+  return path17;
 }
 function bindEvents(obj, element, names) {
   for (const name2 of names) {
@@ -46075,11 +46075,11 @@ var init_pdf = __esm({
         } catch (ex) {
           warn(`getPathGenerator - ignoring character: "${ex}".`);
         }
-        const path16 = makePathFromDrawOPS(cmds?.path);
+        const path17 = makePathFromDrawOPS(cmds?.path);
         if (!this.fontExtraProperties) {
           objs.delete(objId);
         }
-        return this.compiledGlyphs[character] = path16;
+        return this.compiledGlyphs[character] = path17;
       }
       get black() {
         return this.#fontData.black;
@@ -47990,7 +47990,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         Util.singularValueDecompose2dScale(this.baseTransform, scale);
         return [matrixScaleX * scale[0], matrixScaleY * scale[1]];
       }
-      drawPattern(owner, path16, useEOFill = false, [n, m3], opIdx) {
+      drawPattern(owner, path17, useEOFill = false, [n, m3], opIdx) {
         const [x0, y0, x1, y1] = this.bbox;
         const dependencyTracker = owner.dependencyTracker;
         if (dependencyTracker) {
@@ -47998,9 +47998,9 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         }
         owner.save();
         if (useEOFill) {
-          owner.ctx.clip(path16, "evenodd");
+          owner.ctx.clip(path17, "evenodd");
         } else {
-          owner.ctx.clip(path16);
+          owner.ctx.clip(path17);
         }
         owner.ctx.setTransform(...this.patternBaseMatrix);
         owner.ctx.translate(n * this.xstep, m3 * this.ystep);
@@ -49091,15 +49091,15 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         if (hasInnerCutout && maskX0 === layerOffsetX && maskY0 === layerOffsetY && maskX1 === layerOffsetX + layerWidth && maskY1 === layerOffsetY + layerHeight) {
           return;
         }
-        const path16 = new Path2D();
-        path16.rect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
+        const path17 = new Path2D();
+        path17.rect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
         if (hasInnerCutout) {
-          path16.rect(maskX0, maskY0, maskX1 - maskX0, maskY1 - maskY0);
+          path17.rect(maskX0, maskY0, maskX1 - maskX0, maskY1 - maskY0);
         }
         layerCtx.save();
         layerCtx.globalAlpha = alpha / 255;
         layerCtx.setTransform(1, 0, 0, 1, 0, 0);
-        layerCtx.clip(path16, "evenodd");
+        layerCtx.clip(path17, "evenodd");
         layerCtx.globalCompositeOperation = "destination-in";
         layerCtx.fillStyle = "#000000";
         layerCtx.fillRect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
@@ -49157,21 +49157,21 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         this._cachedGetSinglePixelWidth = null;
       }
       constructPath(opIdx, op, data2, minMax) {
-        let [path16] = data2;
+        let [path17] = data2;
         if (!minMax) {
-          path16 ||= data2[0] = new Path2D();
+          path17 ||= data2[0] = new Path2D();
           if (op !== OPS.stroke && op !== OPS.closeStroke) {
             this.current.tilingPatternDims = null;
           }
-          this[op](opIdx, path16);
+          this[op](opIdx, path17);
           return;
         }
         if (this.dependencyTracker !== null) {
           const outerExtraSize = op === OPS.stroke ? this.current.lineWidth / 2 : 0;
           this.dependencyTracker.resetBBox(opIdx).recordBBox(opIdx, this.ctx, minMax[0] - outerExtraSize, minMax[2] + outerExtraSize, minMax[1] - outerExtraSize, minMax[3] + outerExtraSize).recordDependencies(opIdx, ["transform"]);
         }
-        if (!(path16 instanceof Path2D)) {
-          path16 = data2[0] = makePathFromDrawOPS(path16);
+        if (!(path17 instanceof Path2D)) {
+          path17 = data2[0] = makePathFromDrawOPS(path17);
         }
         Util.axialAlignedBoundingBox(minMax, getCurrentTransform(this.ctx), this.current.minMax);
         const tilingDims = this.current.tilingPatternDims;
@@ -49183,13 +49183,13 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             this.current.fillColor.updatePatternDims(clippedBBox, tilingDims);
           }
         }
-        this[op](opIdx, path16);
+        this[op](opIdx, path17);
         this._pathStartIdx = opIdx;
       }
       closePath(opIdx) {
         this.ctx.closePath();
       }
-      stroke(opIdx, path16, consumePath = true) {
+      stroke(opIdx, path17, consumePath = true) {
         const started = consumePath && this.#beginKnockoutElement(this.current.strokeAlpha);
         const ctx = this.ctx;
         const strokeColor = this.current.strokeColor;
@@ -49201,26 +49201,26 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             ctx.strokeStyle = strokeColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.STROKE, opIdx);
             if (baseTransform) {
               const newPath = new Path2D();
-              newPath.addPath(path16, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
-              path16 = newPath;
+              newPath.addPath(path17, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
+              path17 = newPath;
             }
-            this.rescaleAndStroke(path16, false);
+            this.rescaleAndStroke(path17, false);
             ctx.restore();
           } else {
-            this.rescaleAndStroke(path16, true);
+            this.rescaleAndStroke(path17, true);
           }
         }
         this.dependencyTracker?.recordDependencies(opIdx, Dependencies.stroke);
         if (consumePath) {
-          this.consumePath(opIdx, path16, this.current.getClippedPathBoundingBox(PathType.STROKE, getCurrentTransform(this.ctx)));
+          this.consumePath(opIdx, path17, this.current.getClippedPathBoundingBox(PathType.STROKE, getCurrentTransform(this.ctx)));
         }
         ctx.globalAlpha = this.current.fillAlpha;
         this.#endKnockoutElement(started);
       }
-      closeStroke(opIdx, path16) {
-        this.stroke(opIdx, path16);
+      closeStroke(opIdx, path17) {
+        this.stroke(opIdx, path17);
       }
-      fill(opIdx, path16, consumePath = true) {
+      fill(opIdx, path17, consumePath = true) {
         const started = consumePath && this.#beginKnockoutElement(this.current.fillAlpha);
         const ctx = this.ctx;
         const fillColor = this.current.fillColor;
@@ -49232,10 +49232,10 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           const dims = this.current.tilingPatternDims;
           const tileIdx = dims && fillColor.canSkipPatternCanvas(dims);
           if (tileIdx) {
-            fillColor.drawPattern(this, path16, this.pendingEOFill, tileIdx, opIdx);
+            fillColor.drawPattern(this, path17, this.pendingEOFill, tileIdx, opIdx);
             this.pendingEOFill = false;
             if (consumePath) {
-              this.consumePath(opIdx, path16, intersect);
+              this.consumePath(opIdx, path17, intersect);
             }
             this.current.tilingPatternDims = null;
             this.#endKnockoutElement(started);
@@ -49247,17 +49247,17 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           ctx.fillStyle = fillColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.FILL, opIdx);
           if (baseTransform) {
             const newPath = new Path2D();
-            newPath.addPath(path16, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
-            path16 = newPath;
+            newPath.addPath(path17, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
+            path17 = newPath;
           }
           needRestore = true;
         }
         if (this.contentVisible && intersect !== null) {
           if (this.pendingEOFill) {
-            ctx.fill(path16, "evenodd");
+            ctx.fill(path17, "evenodd");
             this.pendingEOFill = false;
           } else {
-            ctx.fill(path16);
+            ctx.fill(path17);
           }
         }
         if (needRestore) {
@@ -49265,38 +49265,38 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           this.dependencyTracker?.restore(opIdx);
         }
         if (consumePath) {
-          this.consumePath(opIdx, path16, intersect);
+          this.consumePath(opIdx, path17, intersect);
         }
         this.#endKnockoutElement(started);
       }
-      eoFill(opIdx, path16) {
+      eoFill(opIdx, path17) {
         this.pendingEOFill = true;
-        this.fill(opIdx, path16);
+        this.fill(opIdx, path17);
       }
-      fillStroke(opIdx, path16) {
+      fillStroke(opIdx, path17) {
         const started = this.#beginKnockoutElement(Math.min(this.current.fillAlpha, this.current.strokeAlpha));
-        this.fill(opIdx, path16, false);
-        this.stroke(opIdx, path16, false);
-        this.consumePath(opIdx, path16);
+        this.fill(opIdx, path17, false);
+        this.stroke(opIdx, path17, false);
+        this.consumePath(opIdx, path17);
         this.#endKnockoutElement(started);
       }
-      eoFillStroke(opIdx, path16) {
+      eoFillStroke(opIdx, path17) {
         this.pendingEOFill = true;
-        this.fillStroke(opIdx, path16);
+        this.fillStroke(opIdx, path17);
       }
-      closeFillStroke(opIdx, path16) {
-        this.fillStroke(opIdx, path16);
+      closeFillStroke(opIdx, path17) {
+        this.fillStroke(opIdx, path17);
       }
-      closeEOFillStroke(opIdx, path16) {
+      closeEOFillStroke(opIdx, path17) {
         this.pendingEOFill = true;
-        this.fillStroke(opIdx, path16);
+        this.fillStroke(opIdx, path17);
       }
-      endPath(opIdx, path16) {
-        this.consumePath(opIdx, path16);
+      endPath(opIdx, path17) {
+        this.consumePath(opIdx, path17);
       }
-      rawFillPath(opIdx, path16) {
+      rawFillPath(opIdx, path17) {
         const started = this.#beginKnockoutElement(this.current.fillAlpha);
-        this.ctx.fill(path16);
+        this.ctx.fill(path17);
         this.dependencyTracker?.recordDependencies(opIdx, Dependencies.rawFillPath).recordOperation(opIdx);
         this.#endKnockoutElement(started);
       }
@@ -49335,12 +49335,12 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             x: x2,
             y,
             fontSize,
-            path: path16
+            path: path17
           } of paths) {
-            if (!path16) {
+            if (!path17) {
               continue;
             }
-            newPath.addPath(path16, new DOMMatrix(transform).preMultiplySelf(invTransf).translate(x2, y).scale(fontSize, -fontSize));
+            newPath.addPath(path17, new DOMMatrix(transform).preMultiplySelf(invTransf).translate(x2, y).scale(fontSize, -fontSize));
           }
           ctx.clip(newPath);
         }
@@ -49428,9 +49428,9 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         this.moveText(opIdx, 0, this.current.leading);
         this.dependencyTracker?.recordIncrementalData("moveText", this.dependencyTracker.getSimpleIndex("leading") ?? opIdx);
       }
-      #getScaledPath(path16, currentTransform, transform) {
+      #getScaledPath(path17, currentTransform, transform) {
         const newPath = new Path2D();
-        newPath.addPath(path16, new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform));
+        newPath.addPath(path17, new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform));
         return newPath;
       }
       paintChar(opIdx, character, x2, y, patternFillTransform, patternStrokeTransform) {
@@ -49443,11 +49443,11 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         const isAddToPathSet = !!(textRenderingMode & TextRenderingMode.ADD_TO_PATH_FLAG);
         const patternFill = current2.patternFill && !font.missingFile;
         const patternStroke = current2.patternStroke && !font.missingFile;
-        let path16;
+        let path17;
         if ((font.disableFontFace || isAddToPathSet || patternFill || patternStroke) && !font.missingFile) {
-          path16 = font.getPathGenerator(this.commonObjs, character);
+          path17 = font.getPathGenerator(this.commonObjs, character);
         }
-        if (path16 && (font.disableFontFace || patternFill || patternStroke)) {
+        if (path17 && (font.disableFontFace || patternFill || patternStroke)) {
           ctx.save();
           ctx.translate(x2, y);
           ctx.scale(fontSize, -fontSize);
@@ -49457,10 +49457,10 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             if (patternFillTransform) {
               currentTransform = ctx.getTransform();
               ctx.setTransform(...patternFillTransform);
-              const scaledPath = this.#getScaledPath(path16, currentTransform, patternFillTransform);
+              const scaledPath = this.#getScaledPath(path17, currentTransform, patternFillTransform);
               ctx.fill(scaledPath);
             } else {
-              ctx.fill(path16);
+              ctx.fill(path17);
             }
           }
           if (fillStrokeMode === TextRenderingMode.STROKE || fillStrokeMode === TextRenderingMode.FILL_STROKE) {
@@ -49477,10 +49477,10 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
               const transf = Util.transform([a2, b, c, d2, 0, 0], invPatternTransform);
               Util.singularValueDecompose2dScale(transf, XY);
               ctx.lineWidth *= Math.max(XY[0], XY[1]) / fontSize;
-              ctx.stroke(this.#getScaledPath(path16, currentTransform, patternStrokeTransform));
+              ctx.stroke(this.#getScaledPath(path17, currentTransform, patternStrokeTransform));
             } else {
               ctx.lineWidth /= fontSize;
-              ctx.stroke(path16);
+              ctx.stroke(path17);
             }
           }
           ctx.restore();
@@ -49503,7 +49503,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             x: x2,
             y,
             fontSize,
-            path: path16
+            path: path17
           });
           this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font, fontSize, x2, y);
         }
@@ -49893,9 +49893,9 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             const [x0, y0, x1, y1] = group.bbox;
             clip.rect(x0, y0, x1 - x0, y1 - y0);
             if (group.matrix) {
-              const path16 = new Path2D();
-              path16.addPath(clip, new DOMMatrix(group.matrix));
-              clip = path16;
+              const path17 = new Path2D();
+              path17.addPath(clip, new DOMMatrix(group.matrix));
+              clip = path17;
             }
             currentCtx.clip(clip);
           }
@@ -49954,9 +49954,9 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           const [x0, y0, x1, y1] = group.bbox;
           clip.rect(x0, y0, x1 - x0, y1 - y0);
           if (group.matrix) {
-            const path16 = new Path2D();
-            path16.addPath(clip, new DOMMatrix(group.matrix));
-            clip = path16;
+            const path17 = new Path2D();
+            path17.addPath(clip, new DOMMatrix(group.matrix));
+            clip = path17;
           }
           groupCtx.clip(clip);
         }
@@ -50478,7 +50478,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
       }
       endCompat(opIdx) {
       }
-      consumePath(opIdx, path16, clipBox) {
+      consumePath(opIdx, path17, clipBox) {
         const isEmpty = this.current.isEmptyClip();
         if (this.pendingClip) {
           this.current.updateClipFromPath();
@@ -50490,9 +50490,9 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         if (this.pendingClip) {
           if (!isEmpty) {
             if (this.pendingClip === EO_CLIP) {
-              ctx.clip(path16, "evenodd");
+              ctx.clip(path17, "evenodd");
             } else {
-              ctx.clip(path16);
+              ctx.clip(path17);
             }
           }
           this.pendingClip = null;
@@ -50565,7 +50565,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         }
         return this._cachedScaleForStroking;
       }
-      rescaleAndStroke(path16, saveRestore) {
+      rescaleAndStroke(path17, saveRestore) {
         const {
           ctx,
           current: {
@@ -50575,7 +50575,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         const [scaleX, scaleY] = this.getScaleForStroking();
         if (scaleX === scaleY) {
           ctx.lineWidth = (lineWidth || 1) * scaleX;
-          ctx.stroke(path16);
+          ctx.stroke(path17);
           return;
         }
         const SCALE_MATRIX = _CanvasGraphics.#SCALE_MATRIX ??= new DOMMatrix();
@@ -50587,7 +50587,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         SCALE_MATRIX.a = 1 / scaleX;
         SCALE_MATRIX.d = 1 / scaleY;
         const newPath = new Path2D();
-        newPath.addPath(path16, SCALE_MATRIX);
+        newPath.addPath(path17, SCALE_MATRIX);
         if (dashes.length > 0) {
           const scale = Math.max(scaleX, scaleY);
           ctx.setLineDash(dashes.map((x2) => x2 / scale));
@@ -61803,11 +61803,11 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
     };
     ContourDrawOutline = class extends InkDrawOutline {
       toSVGPath() {
-        let path16 = super.toSVGPath();
-        if (!path16.endsWith("Z")) {
-          path16 += "Z";
+        let path17 = super.toSVGPath();
+        if (!path17.endsWith("Z")) {
+          path17 += "Z";
         }
-        return path16;
+        return path17;
       }
     };
     es_uint8_array_from_base64 = __webpack_require__(5213);
@@ -64495,7 +64495,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           }
           const drawLayer = textLayerData.drawLayer;
           let div = textLayerData.selectionDiv;
-          let path16 = textLayerData.path;
+          let path17 = textLayerData.path;
           if (!div) {
             const clipPathId = `clip_selection_${_DrawLayer.#selectionId++}`;
             div = document.createElement("div");
@@ -64514,18 +64514,18 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             const clipPath = _DrawLayer._svgFactory.createElement("clipPath");
             clipPath.setAttribute("id", clipPathId);
             clipPath.setAttribute("clipPathUnits", "objectBoundingBox");
-            path16 = _DrawLayer._svgFactory.createElement("path");
-            clipPath.append(path16);
+            path17 = _DrawLayer._svgFactory.createElement("path");
+            clipPath.append(path17);
             svg.append(clipPath);
             div.append(svg);
-            textLayerData.path = path16;
+            textLayerData.path = path17;
             textLayerData.selectionDiv = div;
           }
           if (drawLayer.#parent && div.parentNode !== drawLayer.#parent) {
             drawLayer.#parent.append(div);
             this.#selections.add(div);
           }
-          path16.setAttribute("d", boxes.join(" "));
+          path17.setAttribute("d", boxes.join(" "));
         }
       }
       static get _svgFactory() {
@@ -64572,13 +64572,13 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         const root = this.#createSVG();
         const defs = _DrawLayer._svgFactory.createElement("defs");
         root.append(defs);
-        const path16 = _DrawLayer._svgFactory.createElement("path");
-        defs.append(path16);
+        const path17 = _DrawLayer._svgFactory.createElement("path");
+        defs.append(path17);
         const pathId = `path_${id2}`;
-        path16.setAttribute("id", pathId);
-        path16.setAttribute("vector-effect", "non-scaling-stroke");
+        path17.setAttribute("id", pathId);
+        path17.setAttribute("vector-effect", "non-scaling-stroke");
         if (isPathUpdatable) {
-          this.#toUpdate.set(id2, path16);
+          this.#toUpdate.set(id2, path17);
         }
         const clipPathId = hasClip ? this.#createClipPath(defs, pathId) : null;
         const use = _DrawLayer._svgFactory.createElement("use");
@@ -64596,11 +64596,11 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         const root = this.#createSVG();
         const defs = _DrawLayer._svgFactory.createElement("defs");
         root.append(defs);
-        const path16 = _DrawLayer._svgFactory.createElement("path");
-        defs.append(path16);
+        const path17 = _DrawLayer._svgFactory.createElement("path");
+        defs.append(path17);
         const pathId = `path_${id2}`;
-        path16.setAttribute("id", pathId);
-        path16.setAttribute("vector-effect", "non-scaling-stroke");
+        path17.setAttribute("id", pathId);
+        path17.setAttribute("vector-effect", "non-scaling-stroke");
         let maskId;
         if (mustRemoveSelfIntersections) {
           const mask = _DrawLayer._svgFactory.createElement("mask");
@@ -64647,7 +64647,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           root,
           bbox,
           rootClass,
-          path: path16
+          path: path17
         } = properties;
         const element = typeof elementOrId === "number" ? this.#mapping.get(elementOrId) : elementOrId;
         if (!element) {
@@ -64667,10 +64667,10 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             classList.toggle(className, value);
           }
         }
-        if (path16) {
+        if (path17) {
           const defs = element.firstElementChild;
           const pathElement = defs.firstElementChild;
-          this.#updateProperties(pathElement, path16);
+          this.#updateProperties(pathElement, path17);
         }
       }
       updateParent(id2, layer) {
@@ -65274,13 +65274,13 @@ function validateAliasDomains(value) {
 }
 
 // src/cli/sporades.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash14, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual5 } from "node:crypto";
+import { spawnSync as spawnSync3 } from "node:child_process";
+import { createHash as createHash15, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual5 } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat9, mkdir as mkdir8, readdir as readdir3, readFile as readFile11, rename as rename6, rm as rm8, writeFile as writeFile7 } from "node:fs/promises";
-import path15 from "node:path";
-import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL4 } from "node:url";
+import { appendFile, chmod as chmod2, cp as cp2, lstat as lstat10, mkdir as mkdir9, readdir as readdir3, readFile as readFile12, rename as rename6, rm as rm8, writeFile as writeFile8 } from "node:fs/promises";
+import path16 from "node:path";
+import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL5 } from "node:url";
 
 // src/bundle-pipeline.ts
 import { lstat as lstat6, mkdir as mkdir4, readFile as readFile7, rename as rename4, rm as rm4, writeFile as writeFile3 } from "node:fs/promises";
@@ -73593,20 +73593,20 @@ var SEQUENCES = {
   PUBLIC: "public",
   SYSTEM: "system"
 };
-function isSurrogate(cp2) {
-  return cp2 >= 55296 && cp2 <= 57343;
+function isSurrogate(cp3) {
+  return cp3 >= 55296 && cp3 <= 57343;
 }
-function isSurrogatePair(cp2) {
-  return cp2 >= 56320 && cp2 <= 57343;
+function isSurrogatePair(cp3) {
+  return cp3 >= 56320 && cp3 <= 57343;
 }
-function getSurrogatePairCodePoint(cp1, cp2) {
-  return (cp1 - 55296) * 1024 + 9216 + cp2;
+function getSurrogatePairCodePoint(cp1, cp22) {
+  return (cp1 - 55296) * 1024 + 9216 + cp22;
 }
-function isControlCodePoint(cp2) {
-  return cp2 !== 32 && cp2 !== 10 && cp2 !== 13 && cp2 !== 9 && cp2 !== 12 && cp2 >= 1 && cp2 <= 31 || cp2 >= 127 && cp2 <= 159;
+function isControlCodePoint(cp3) {
+  return cp3 !== 32 && cp3 !== 10 && cp3 !== 13 && cp3 !== 9 && cp3 !== 12 && cp3 >= 1 && cp3 <= 31 || cp3 >= 127 && cp3 <= 159;
 }
-function isUndefinedCodePoint(cp2) {
-  return cp2 >= 64976 && cp2 <= 65007 || UNDEFINED_CODE_POINTS.has(cp2);
+function isUndefinedCodePoint(cp3) {
+  return cp3 >= 64976 && cp3 <= 65007 || UNDEFINED_CODE_POINTS.has(cp3);
 }
 
 // node_modules/.pnpm/parse5@8.0.1/node_modules/parse5/dist/common/error-codes.js
@@ -73724,20 +73724,20 @@ var Preprocessor = class {
     this.gapStack.push(this.lastGapPos);
     this.lastGapPos = this.pos;
   }
-  _processSurrogate(cp2) {
+  _processSurrogate(cp3) {
     if (this.pos !== this.html.length - 1) {
       const nextCp = this.html.charCodeAt(this.pos + 1);
       if (isSurrogatePair(nextCp)) {
         this.pos++;
         this._addGap();
-        return getSurrogatePairCodePoint(cp2, nextCp);
+        return getSurrogatePairCodePoint(cp3, nextCp);
       }
     } else if (!this.lastChunkWritten) {
       this.endOfChunkHit = true;
       return CODE_POINTS.EOF;
     }
     this._err(ERR.surrogateInInputStream);
-    return cp2;
+    return cp3;
   }
   willDropParsedChunk() {
     return this.pos > this.bufferWaterline;
@@ -73774,8 +73774,8 @@ var Preprocessor = class {
       return this.html.startsWith(pattern, this.pos);
     }
     for (let i = 0; i < pattern.length; i++) {
-      const cp2 = this.html.charCodeAt(this.pos + i) | 32;
-      if (cp2 !== pattern.charCodeAt(i)) {
+      const cp3 = this.html.charCodeAt(this.pos + i) | 32;
+      if (cp3 !== pattern.charCodeAt(i)) {
         return false;
       }
     }
@@ -73801,13 +73801,13 @@ var Preprocessor = class {
       this.endOfChunkHit = !this.lastChunkWritten;
       return CODE_POINTS.EOF;
     }
-    let cp2 = this.html.charCodeAt(this.pos);
-    if (cp2 === CODE_POINTS.CARRIAGE_RETURN) {
+    let cp3 = this.html.charCodeAt(this.pos);
+    if (cp3 === CODE_POINTS.CARRIAGE_RETURN) {
       this.isEol = true;
       this.skipNextNewLine = true;
       return CODE_POINTS.LINE_FEED;
     }
-    if (cp2 === CODE_POINTS.LINE_FEED) {
+    if (cp3 === CODE_POINTS.LINE_FEED) {
       this.isEol = true;
       if (this.skipNextNewLine) {
         this.line--;
@@ -73817,19 +73817,19 @@ var Preprocessor = class {
       }
     }
     this.skipNextNewLine = false;
-    if (isSurrogate(cp2)) {
-      cp2 = this._processSurrogate(cp2);
+    if (isSurrogate(cp3)) {
+      cp3 = this._processSurrogate(cp3);
     }
-    const isCommonValidRange = this.handler.onParseError === null || cp2 > 31 && cp2 < 127 || cp2 === CODE_POINTS.LINE_FEED || cp2 === CODE_POINTS.CARRIAGE_RETURN || cp2 > 159 && cp2 < 64976;
+    const isCommonValidRange = this.handler.onParseError === null || cp3 > 31 && cp3 < 127 || cp3 === CODE_POINTS.LINE_FEED || cp3 === CODE_POINTS.CARRIAGE_RETURN || cp3 > 159 && cp3 < 64976;
     if (!isCommonValidRange) {
-      this._checkForProblematicCharacters(cp2);
+      this._checkForProblematicCharacters(cp3);
     }
-    return cp2;
+    return cp3;
   }
-  _checkForProblematicCharacters(cp2) {
-    if (isControlCodePoint(cp2)) {
+  _checkForProblematicCharacters(cp3) {
+    if (isControlCodePoint(cp3)) {
       this._err(ERR.controlCharacterInInputStream);
-    } else if (isUndefinedCodePoint(cp2)) {
+    } else if (isUndefinedCodePoint(cp3)) {
       this._err(ERR.noncharacterInInputStream);
     }
   }
@@ -75111,29 +75111,29 @@ var TokenizerMode = {
   PLAINTEXT: State.PLAINTEXT,
   CDATA_SECTION: State.CDATA_SECTION
 };
-function isAsciiDigit(cp2) {
-  return cp2 >= CODE_POINTS.DIGIT_0 && cp2 <= CODE_POINTS.DIGIT_9;
+function isAsciiDigit(cp3) {
+  return cp3 >= CODE_POINTS.DIGIT_0 && cp3 <= CODE_POINTS.DIGIT_9;
 }
-function isAsciiUpper(cp2) {
-  return cp2 >= CODE_POINTS.LATIN_CAPITAL_A && cp2 <= CODE_POINTS.LATIN_CAPITAL_Z;
+function isAsciiUpper(cp3) {
+  return cp3 >= CODE_POINTS.LATIN_CAPITAL_A && cp3 <= CODE_POINTS.LATIN_CAPITAL_Z;
 }
-function isAsciiLower(cp2) {
-  return cp2 >= CODE_POINTS.LATIN_SMALL_A && cp2 <= CODE_POINTS.LATIN_SMALL_Z;
+function isAsciiLower(cp3) {
+  return cp3 >= CODE_POINTS.LATIN_SMALL_A && cp3 <= CODE_POINTS.LATIN_SMALL_Z;
 }
-function isAsciiLetter(cp2) {
-  return isAsciiLower(cp2) || isAsciiUpper(cp2);
+function isAsciiLetter(cp3) {
+  return isAsciiLower(cp3) || isAsciiUpper(cp3);
 }
-function isAsciiAlphaNumeric(cp2) {
-  return isAsciiLetter(cp2) || isAsciiDigit(cp2);
+function isAsciiAlphaNumeric(cp3) {
+  return isAsciiLetter(cp3) || isAsciiDigit(cp3);
 }
-function toAsciiLower(cp2) {
-  return cp2 + 32;
+function toAsciiLower(cp3) {
+  return cp3 + 32;
 }
-function isWhitespace(cp2) {
-  return cp2 === CODE_POINTS.SPACE || cp2 === CODE_POINTS.LINE_FEED || cp2 === CODE_POINTS.TABULATION || cp2 === CODE_POINTS.FORM_FEED;
+function isWhitespace(cp3) {
+  return cp3 === CODE_POINTS.SPACE || cp3 === CODE_POINTS.LINE_FEED || cp3 === CODE_POINTS.TABULATION || cp3 === CODE_POINTS.FORM_FEED;
 }
-function isScriptDataDoubleEscapeSequenceEnd(cp2) {
-  return isWhitespace(cp2) || cp2 === CODE_POINTS.SOLIDUS || cp2 === CODE_POINTS.GREATER_THAN_SIGN;
+function isScriptDataDoubleEscapeSequenceEnd(cp3) {
+  return isWhitespace(cp3) || cp3 === CODE_POINTS.SOLIDUS || cp3 === CODE_POINTS.GREATER_THAN_SIGN;
 }
 function getErrorForNumericCharacterReference(code) {
   if (code === CODE_POINTS.NULL) {
@@ -75167,9 +75167,9 @@ var Tokenizer = class {
     this.currentAttr = { name: "", value: "" };
     this.preprocessor = new Preprocessor(handler);
     this.currentLocation = this.getCurrentLocation(-1);
-    this.entityDecoder = new EntityDecoder(htmlDecodeTree, (cp2, consumed) => {
+    this.entityDecoder = new EntityDecoder(htmlDecodeTree, (cp3, consumed) => {
       this.preprocessor.pos = this.entityStartPos + consumed - 1;
-      this._flushCodePointConsumedAsCharacterReference(cp2);
+      this._flushCodePointConsumedAsCharacterReference(cp3);
     }, handler.onParseError ? {
       missingSemicolonAfterCharacterReference: () => {
         this._err(ERR.missingSemicolonAfterCharacterReference, 1);
@@ -75209,9 +75209,9 @@ var Tokenizer = class {
     this.inLoop = true;
     while (this.active && !this.paused) {
       this.consumedAfterSnapshot = 0;
-      const cp2 = this._consume();
+      const cp3 = this._consume();
       if (!this._ensureHibernation()) {
-        this._callState(cp2);
+        this._callState(cp3);
       }
     }
     this.inLoop = false;
@@ -75446,9 +75446,9 @@ var Tokenizer = class {
     }
     this._createCharacterToken(type, ch);
   }
-  _emitCodePoint(cp2) {
-    const type = isWhitespace(cp2) ? TokenType3.WHITESPACE_CHARACTER : cp2 === CODE_POINTS.NULL ? TokenType3.NULL_CHARACTER : TokenType3.CHARACTER;
-    this._appendCharToCurrentCharacterToken(type, cp2 < 65536 ? String.fromCharCode(cp2) : String.fromCodePoint(cp2));
+  _emitCodePoint(cp3) {
+    const type = isWhitespace(cp3) ? TokenType3.WHITESPACE_CHARACTER : cp3 === CODE_POINTS.NULL ? TokenType3.NULL_CHARACTER : TokenType3.CHARACTER;
+    this._appendCharToCurrentCharacterToken(type, cp3 < 65536 ? String.fromCharCode(cp3) : String.fromCodePoint(cp3));
   }
   //NOTE: used when we emit characters explicitly.
   //This is always for non-whitespace and non-null characters, which allows us to avoid additional checks.
@@ -75465,298 +75465,298 @@ var Tokenizer = class {
   _isCharacterReferenceInAttribute() {
     return this.returnState === State.ATTRIBUTE_VALUE_DOUBLE_QUOTED || this.returnState === State.ATTRIBUTE_VALUE_SINGLE_QUOTED || this.returnState === State.ATTRIBUTE_VALUE_UNQUOTED;
   }
-  _flushCodePointConsumedAsCharacterReference(cp2) {
+  _flushCodePointConsumedAsCharacterReference(cp3) {
     if (this._isCharacterReferenceInAttribute()) {
-      this.currentAttr.value += String.fromCodePoint(cp2);
+      this.currentAttr.value += String.fromCodePoint(cp3);
     } else {
-      this._emitCodePoint(cp2);
+      this._emitCodePoint(cp3);
     }
   }
   // Calling states this way turns out to be much faster than any other approach.
-  _callState(cp2) {
+  _callState(cp3) {
     switch (this.state) {
       case State.DATA: {
-        this._stateData(cp2);
+        this._stateData(cp3);
         break;
       }
       case State.RCDATA: {
-        this._stateRcdata(cp2);
+        this._stateRcdata(cp3);
         break;
       }
       case State.RAWTEXT: {
-        this._stateRawtext(cp2);
+        this._stateRawtext(cp3);
         break;
       }
       case State.SCRIPT_DATA: {
-        this._stateScriptData(cp2);
+        this._stateScriptData(cp3);
         break;
       }
       case State.PLAINTEXT: {
-        this._statePlaintext(cp2);
+        this._statePlaintext(cp3);
         break;
       }
       case State.TAG_OPEN: {
-        this._stateTagOpen(cp2);
+        this._stateTagOpen(cp3);
         break;
       }
       case State.END_TAG_OPEN: {
-        this._stateEndTagOpen(cp2);
+        this._stateEndTagOpen(cp3);
         break;
       }
       case State.TAG_NAME: {
-        this._stateTagName(cp2);
+        this._stateTagName(cp3);
         break;
       }
       case State.RCDATA_LESS_THAN_SIGN: {
-        this._stateRcdataLessThanSign(cp2);
+        this._stateRcdataLessThanSign(cp3);
         break;
       }
       case State.RCDATA_END_TAG_OPEN: {
-        this._stateRcdataEndTagOpen(cp2);
+        this._stateRcdataEndTagOpen(cp3);
         break;
       }
       case State.RCDATA_END_TAG_NAME: {
-        this._stateRcdataEndTagName(cp2);
+        this._stateRcdataEndTagName(cp3);
         break;
       }
       case State.RAWTEXT_LESS_THAN_SIGN: {
-        this._stateRawtextLessThanSign(cp2);
+        this._stateRawtextLessThanSign(cp3);
         break;
       }
       case State.RAWTEXT_END_TAG_OPEN: {
-        this._stateRawtextEndTagOpen(cp2);
+        this._stateRawtextEndTagOpen(cp3);
         break;
       }
       case State.RAWTEXT_END_TAG_NAME: {
-        this._stateRawtextEndTagName(cp2);
+        this._stateRawtextEndTagName(cp3);
         break;
       }
       case State.SCRIPT_DATA_LESS_THAN_SIGN: {
-        this._stateScriptDataLessThanSign(cp2);
+        this._stateScriptDataLessThanSign(cp3);
         break;
       }
       case State.SCRIPT_DATA_END_TAG_OPEN: {
-        this._stateScriptDataEndTagOpen(cp2);
+        this._stateScriptDataEndTagOpen(cp3);
         break;
       }
       case State.SCRIPT_DATA_END_TAG_NAME: {
-        this._stateScriptDataEndTagName(cp2);
+        this._stateScriptDataEndTagName(cp3);
         break;
       }
       case State.SCRIPT_DATA_ESCAPE_START: {
-        this._stateScriptDataEscapeStart(cp2);
+        this._stateScriptDataEscapeStart(cp3);
         break;
       }
       case State.SCRIPT_DATA_ESCAPE_START_DASH: {
-        this._stateScriptDataEscapeStartDash(cp2);
+        this._stateScriptDataEscapeStartDash(cp3);
         break;
       }
       case State.SCRIPT_DATA_ESCAPED: {
-        this._stateScriptDataEscaped(cp2);
+        this._stateScriptDataEscaped(cp3);
         break;
       }
       case State.SCRIPT_DATA_ESCAPED_DASH: {
-        this._stateScriptDataEscapedDash(cp2);
+        this._stateScriptDataEscapedDash(cp3);
         break;
       }
       case State.SCRIPT_DATA_ESCAPED_DASH_DASH: {
-        this._stateScriptDataEscapedDashDash(cp2);
+        this._stateScriptDataEscapedDashDash(cp3);
         break;
       }
       case State.SCRIPT_DATA_ESCAPED_LESS_THAN_SIGN: {
-        this._stateScriptDataEscapedLessThanSign(cp2);
+        this._stateScriptDataEscapedLessThanSign(cp3);
         break;
       }
       case State.SCRIPT_DATA_ESCAPED_END_TAG_OPEN: {
-        this._stateScriptDataEscapedEndTagOpen(cp2);
+        this._stateScriptDataEscapedEndTagOpen(cp3);
         break;
       }
       case State.SCRIPT_DATA_ESCAPED_END_TAG_NAME: {
-        this._stateScriptDataEscapedEndTagName(cp2);
+        this._stateScriptDataEscapedEndTagName(cp3);
         break;
       }
       case State.SCRIPT_DATA_DOUBLE_ESCAPE_START: {
-        this._stateScriptDataDoubleEscapeStart(cp2);
+        this._stateScriptDataDoubleEscapeStart(cp3);
         break;
       }
       case State.SCRIPT_DATA_DOUBLE_ESCAPED: {
-        this._stateScriptDataDoubleEscaped(cp2);
+        this._stateScriptDataDoubleEscaped(cp3);
         break;
       }
       case State.SCRIPT_DATA_DOUBLE_ESCAPED_DASH: {
-        this._stateScriptDataDoubleEscapedDash(cp2);
+        this._stateScriptDataDoubleEscapedDash(cp3);
         break;
       }
       case State.SCRIPT_DATA_DOUBLE_ESCAPED_DASH_DASH: {
-        this._stateScriptDataDoubleEscapedDashDash(cp2);
+        this._stateScriptDataDoubleEscapedDashDash(cp3);
         break;
       }
       case State.SCRIPT_DATA_DOUBLE_ESCAPED_LESS_THAN_SIGN: {
-        this._stateScriptDataDoubleEscapedLessThanSign(cp2);
+        this._stateScriptDataDoubleEscapedLessThanSign(cp3);
         break;
       }
       case State.SCRIPT_DATA_DOUBLE_ESCAPE_END: {
-        this._stateScriptDataDoubleEscapeEnd(cp2);
+        this._stateScriptDataDoubleEscapeEnd(cp3);
         break;
       }
       case State.BEFORE_ATTRIBUTE_NAME: {
-        this._stateBeforeAttributeName(cp2);
+        this._stateBeforeAttributeName(cp3);
         break;
       }
       case State.ATTRIBUTE_NAME: {
-        this._stateAttributeName(cp2);
+        this._stateAttributeName(cp3);
         break;
       }
       case State.AFTER_ATTRIBUTE_NAME: {
-        this._stateAfterAttributeName(cp2);
+        this._stateAfterAttributeName(cp3);
         break;
       }
       case State.BEFORE_ATTRIBUTE_VALUE: {
-        this._stateBeforeAttributeValue(cp2);
+        this._stateBeforeAttributeValue(cp3);
         break;
       }
       case State.ATTRIBUTE_VALUE_DOUBLE_QUOTED: {
-        this._stateAttributeValueDoubleQuoted(cp2);
+        this._stateAttributeValueDoubleQuoted(cp3);
         break;
       }
       case State.ATTRIBUTE_VALUE_SINGLE_QUOTED: {
-        this._stateAttributeValueSingleQuoted(cp2);
+        this._stateAttributeValueSingleQuoted(cp3);
         break;
       }
       case State.ATTRIBUTE_VALUE_UNQUOTED: {
-        this._stateAttributeValueUnquoted(cp2);
+        this._stateAttributeValueUnquoted(cp3);
         break;
       }
       case State.AFTER_ATTRIBUTE_VALUE_QUOTED: {
-        this._stateAfterAttributeValueQuoted(cp2);
+        this._stateAfterAttributeValueQuoted(cp3);
         break;
       }
       case State.SELF_CLOSING_START_TAG: {
-        this._stateSelfClosingStartTag(cp2);
+        this._stateSelfClosingStartTag(cp3);
         break;
       }
       case State.BOGUS_COMMENT: {
-        this._stateBogusComment(cp2);
+        this._stateBogusComment(cp3);
         break;
       }
       case State.MARKUP_DECLARATION_OPEN: {
-        this._stateMarkupDeclarationOpen(cp2);
+        this._stateMarkupDeclarationOpen(cp3);
         break;
       }
       case State.COMMENT_START: {
-        this._stateCommentStart(cp2);
+        this._stateCommentStart(cp3);
         break;
       }
       case State.COMMENT_START_DASH: {
-        this._stateCommentStartDash(cp2);
+        this._stateCommentStartDash(cp3);
         break;
       }
       case State.COMMENT: {
-        this._stateComment(cp2);
+        this._stateComment(cp3);
         break;
       }
       case State.COMMENT_LESS_THAN_SIGN: {
-        this._stateCommentLessThanSign(cp2);
+        this._stateCommentLessThanSign(cp3);
         break;
       }
       case State.COMMENT_LESS_THAN_SIGN_BANG: {
-        this._stateCommentLessThanSignBang(cp2);
+        this._stateCommentLessThanSignBang(cp3);
         break;
       }
       case State.COMMENT_LESS_THAN_SIGN_BANG_DASH: {
-        this._stateCommentLessThanSignBangDash(cp2);
+        this._stateCommentLessThanSignBangDash(cp3);
         break;
       }
       case State.COMMENT_LESS_THAN_SIGN_BANG_DASH_DASH: {
-        this._stateCommentLessThanSignBangDashDash(cp2);
+        this._stateCommentLessThanSignBangDashDash(cp3);
         break;
       }
       case State.COMMENT_END_DASH: {
-        this._stateCommentEndDash(cp2);
+        this._stateCommentEndDash(cp3);
         break;
       }
       case State.COMMENT_END: {
-        this._stateCommentEnd(cp2);
+        this._stateCommentEnd(cp3);
         break;
       }
       case State.COMMENT_END_BANG: {
-        this._stateCommentEndBang(cp2);
+        this._stateCommentEndBang(cp3);
         break;
       }
       case State.DOCTYPE: {
-        this._stateDoctype(cp2);
+        this._stateDoctype(cp3);
         break;
       }
       case State.BEFORE_DOCTYPE_NAME: {
-        this._stateBeforeDoctypeName(cp2);
+        this._stateBeforeDoctypeName(cp3);
         break;
       }
       case State.DOCTYPE_NAME: {
-        this._stateDoctypeName(cp2);
+        this._stateDoctypeName(cp3);
         break;
       }
       case State.AFTER_DOCTYPE_NAME: {
-        this._stateAfterDoctypeName(cp2);
+        this._stateAfterDoctypeName(cp3);
         break;
       }
       case State.AFTER_DOCTYPE_PUBLIC_KEYWORD: {
-        this._stateAfterDoctypePublicKeyword(cp2);
+        this._stateAfterDoctypePublicKeyword(cp3);
         break;
       }
       case State.BEFORE_DOCTYPE_PUBLIC_IDENTIFIER: {
-        this._stateBeforeDoctypePublicIdentifier(cp2);
+        this._stateBeforeDoctypePublicIdentifier(cp3);
         break;
       }
       case State.DOCTYPE_PUBLIC_IDENTIFIER_DOUBLE_QUOTED: {
-        this._stateDoctypePublicIdentifierDoubleQuoted(cp2);
+        this._stateDoctypePublicIdentifierDoubleQuoted(cp3);
         break;
       }
       case State.DOCTYPE_PUBLIC_IDENTIFIER_SINGLE_QUOTED: {
-        this._stateDoctypePublicIdentifierSingleQuoted(cp2);
+        this._stateDoctypePublicIdentifierSingleQuoted(cp3);
         break;
       }
       case State.AFTER_DOCTYPE_PUBLIC_IDENTIFIER: {
-        this._stateAfterDoctypePublicIdentifier(cp2);
+        this._stateAfterDoctypePublicIdentifier(cp3);
         break;
       }
       case State.BETWEEN_DOCTYPE_PUBLIC_AND_SYSTEM_IDENTIFIERS: {
-        this._stateBetweenDoctypePublicAndSystemIdentifiers(cp2);
+        this._stateBetweenDoctypePublicAndSystemIdentifiers(cp3);
         break;
       }
       case State.AFTER_DOCTYPE_SYSTEM_KEYWORD: {
-        this._stateAfterDoctypeSystemKeyword(cp2);
+        this._stateAfterDoctypeSystemKeyword(cp3);
         break;
       }
       case State.BEFORE_DOCTYPE_SYSTEM_IDENTIFIER: {
-        this._stateBeforeDoctypeSystemIdentifier(cp2);
+        this._stateBeforeDoctypeSystemIdentifier(cp3);
         break;
       }
       case State.DOCTYPE_SYSTEM_IDENTIFIER_DOUBLE_QUOTED: {
-        this._stateDoctypeSystemIdentifierDoubleQuoted(cp2);
+        this._stateDoctypeSystemIdentifierDoubleQuoted(cp3);
         break;
       }
       case State.DOCTYPE_SYSTEM_IDENTIFIER_SINGLE_QUOTED: {
-        this._stateDoctypeSystemIdentifierSingleQuoted(cp2);
+        this._stateDoctypeSystemIdentifierSingleQuoted(cp3);
         break;
       }
       case State.AFTER_DOCTYPE_SYSTEM_IDENTIFIER: {
-        this._stateAfterDoctypeSystemIdentifier(cp2);
+        this._stateAfterDoctypeSystemIdentifier(cp3);
         break;
       }
       case State.BOGUS_DOCTYPE: {
-        this._stateBogusDoctype(cp2);
+        this._stateBogusDoctype(cp3);
         break;
       }
       case State.CDATA_SECTION: {
-        this._stateCdataSection(cp2);
+        this._stateCdataSection(cp3);
         break;
       }
       case State.CDATA_SECTION_BRACKET: {
-        this._stateCdataSectionBracket(cp2);
+        this._stateCdataSectionBracket(cp3);
         break;
       }
       case State.CDATA_SECTION_END: {
-        this._stateCdataSectionEnd(cp2);
+        this._stateCdataSectionEnd(cp3);
         break;
       }
       case State.CHARACTER_REFERENCE: {
@@ -75764,7 +75764,7 @@ var Tokenizer = class {
         break;
       }
       case State.AMBIGUOUS_AMPERSAND: {
-        this._stateAmbiguousAmpersand(cp2);
+        this._stateAmbiguousAmpersand(cp3);
         break;
       }
       default: {
@@ -75775,8 +75775,8 @@ var Tokenizer = class {
   // State machine
   // Data state
   //------------------------------------------------------------------
-  _stateData(cp2) {
-    switch (cp2) {
+  _stateData(cp3) {
+    switch (cp3) {
       case CODE_POINTS.LESS_THAN_SIGN: {
         this.state = State.TAG_OPEN;
         break;
@@ -75787,7 +75787,7 @@ var Tokenizer = class {
       }
       case CODE_POINTS.NULL: {
         this._err(ERR.unexpectedNullCharacter);
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
         break;
       }
       case CODE_POINTS.EOF: {
@@ -75795,14 +75795,14 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   //  RCDATA state
   //------------------------------------------------------------------
-  _stateRcdata(cp2) {
-    switch (cp2) {
+  _stateRcdata(cp3) {
+    switch (cp3) {
       case CODE_POINTS.AMPERSAND: {
         this._startCharacterReference();
         break;
@@ -75821,14 +75821,14 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // RAWTEXT state
   //------------------------------------------------------------------
-  _stateRawtext(cp2) {
-    switch (cp2) {
+  _stateRawtext(cp3) {
+    switch (cp3) {
       case CODE_POINTS.LESS_THAN_SIGN: {
         this.state = State.RAWTEXT_LESS_THAN_SIGN;
         break;
@@ -75843,14 +75843,14 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // Script data state
   //------------------------------------------------------------------
-  _stateScriptData(cp2) {
-    switch (cp2) {
+  _stateScriptData(cp3) {
+    switch (cp3) {
       case CODE_POINTS.LESS_THAN_SIGN: {
         this.state = State.SCRIPT_DATA_LESS_THAN_SIGN;
         break;
@@ -75865,14 +75865,14 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // PLAINTEXT state
   //------------------------------------------------------------------
-  _statePlaintext(cp2) {
-    switch (cp2) {
+  _statePlaintext(cp3) {
+    switch (cp3) {
       case CODE_POINTS.NULL: {
         this._err(ERR.unexpectedNullCharacter);
         this._emitChars(REPLACEMENT_CHARACTER);
@@ -75883,19 +75883,19 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // Tag open state
   //------------------------------------------------------------------
-  _stateTagOpen(cp2) {
-    if (isAsciiLetter(cp2)) {
+  _stateTagOpen(cp3) {
+    if (isAsciiLetter(cp3)) {
       this._createStartTagToken();
       this.state = State.TAG_NAME;
-      this._stateTagName(cp2);
+      this._stateTagName(cp3);
     } else
-      switch (cp2) {
+      switch (cp3) {
         case CODE_POINTS.EXCLAMATION_MARK: {
           this.state = State.MARKUP_DECLARATION_OPEN;
           break;
@@ -75908,7 +75908,7 @@ var Tokenizer = class {
           this._err(ERR.unexpectedQuestionMarkInsteadOfTagName);
           this._createCommentToken(1);
           this.state = State.BOGUS_COMMENT;
-          this._stateBogusComment(cp2);
+          this._stateBogusComment(cp3);
           break;
         }
         case CODE_POINTS.EOF: {
@@ -75921,19 +75921,19 @@ var Tokenizer = class {
           this._err(ERR.invalidFirstCharacterOfTagName);
           this._emitChars("<");
           this.state = State.DATA;
-          this._stateData(cp2);
+          this._stateData(cp3);
         }
       }
   }
   // End tag open state
   //------------------------------------------------------------------
-  _stateEndTagOpen(cp2) {
-    if (isAsciiLetter(cp2)) {
+  _stateEndTagOpen(cp3) {
+    if (isAsciiLetter(cp3)) {
       this._createEndTagToken();
       this.state = State.TAG_NAME;
-      this._stateTagName(cp2);
+      this._stateTagName(cp3);
     } else
-      switch (cp2) {
+      switch (cp3) {
         case CODE_POINTS.GREATER_THAN_SIGN: {
           this._err(ERR.missingEndTagName);
           this.state = State.DATA;
@@ -75949,15 +75949,15 @@ var Tokenizer = class {
           this._err(ERR.invalidFirstCharacterOfTagName);
           this._createCommentToken(2);
           this.state = State.BOGUS_COMMENT;
-          this._stateBogusComment(cp2);
+          this._stateBogusComment(cp3);
         }
       }
   }
   // Tag name state
   //------------------------------------------------------------------
-  _stateTagName(cp2) {
+  _stateTagName(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -75985,31 +75985,31 @@ var Tokenizer = class {
         break;
       }
       default: {
-        token.tagName += String.fromCodePoint(isAsciiUpper(cp2) ? toAsciiLower(cp2) : cp2);
+        token.tagName += String.fromCodePoint(isAsciiUpper(cp3) ? toAsciiLower(cp3) : cp3);
       }
     }
   }
   // RCDATA less-than sign state
   //------------------------------------------------------------------
-  _stateRcdataLessThanSign(cp2) {
-    if (cp2 === CODE_POINTS.SOLIDUS) {
+  _stateRcdataLessThanSign(cp3) {
+    if (cp3 === CODE_POINTS.SOLIDUS) {
       this.state = State.RCDATA_END_TAG_OPEN;
     } else {
       this._emitChars("<");
       this.state = State.RCDATA;
-      this._stateRcdata(cp2);
+      this._stateRcdata(cp3);
     }
   }
   // RCDATA end tag open state
   //------------------------------------------------------------------
-  _stateRcdataEndTagOpen(cp2) {
-    if (isAsciiLetter(cp2)) {
+  _stateRcdataEndTagOpen(cp3) {
+    if (isAsciiLetter(cp3)) {
       this.state = State.RCDATA_END_TAG_NAME;
-      this._stateRcdataEndTagName(cp2);
+      this._stateRcdataEndTagName(cp3);
     } else {
       this._emitChars("</");
       this.state = State.RCDATA;
-      this._stateRcdata(cp2);
+      this._stateRcdata(cp3);
     }
   }
   handleSpecialEndTag(_cp) {
@@ -76019,8 +76019,8 @@ var Tokenizer = class {
     this._createEndTagToken();
     const token = this.currentToken;
     token.tagName = this.lastStartTagName;
-    const cp2 = this.preprocessor.peek(this.lastStartTagName.length);
-    switch (cp2) {
+    const cp3 = this.preprocessor.peek(this.lastStartTagName.length);
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -76047,49 +76047,49 @@ var Tokenizer = class {
   }
   // RCDATA end tag name state
   //------------------------------------------------------------------
-  _stateRcdataEndTagName(cp2) {
-    if (this.handleSpecialEndTag(cp2)) {
+  _stateRcdataEndTagName(cp3) {
+    if (this.handleSpecialEndTag(cp3)) {
       this._emitChars("</");
       this.state = State.RCDATA;
-      this._stateRcdata(cp2);
+      this._stateRcdata(cp3);
     }
   }
   // RAWTEXT less-than sign state
   //------------------------------------------------------------------
-  _stateRawtextLessThanSign(cp2) {
-    if (cp2 === CODE_POINTS.SOLIDUS) {
+  _stateRawtextLessThanSign(cp3) {
+    if (cp3 === CODE_POINTS.SOLIDUS) {
       this.state = State.RAWTEXT_END_TAG_OPEN;
     } else {
       this._emitChars("<");
       this.state = State.RAWTEXT;
-      this._stateRawtext(cp2);
+      this._stateRawtext(cp3);
     }
   }
   // RAWTEXT end tag open state
   //------------------------------------------------------------------
-  _stateRawtextEndTagOpen(cp2) {
-    if (isAsciiLetter(cp2)) {
+  _stateRawtextEndTagOpen(cp3) {
+    if (isAsciiLetter(cp3)) {
       this.state = State.RAWTEXT_END_TAG_NAME;
-      this._stateRawtextEndTagName(cp2);
+      this._stateRawtextEndTagName(cp3);
     } else {
       this._emitChars("</");
       this.state = State.RAWTEXT;
-      this._stateRawtext(cp2);
+      this._stateRawtext(cp3);
     }
   }
   // RAWTEXT end tag name state
   //------------------------------------------------------------------
-  _stateRawtextEndTagName(cp2) {
-    if (this.handleSpecialEndTag(cp2)) {
+  _stateRawtextEndTagName(cp3) {
+    if (this.handleSpecialEndTag(cp3)) {
       this._emitChars("</");
       this.state = State.RAWTEXT;
-      this._stateRawtext(cp2);
+      this._stateRawtext(cp3);
     }
   }
   // Script data less-than sign state
   //------------------------------------------------------------------
-  _stateScriptDataLessThanSign(cp2) {
-    switch (cp2) {
+  _stateScriptDataLessThanSign(cp3) {
+    switch (cp3) {
       case CODE_POINTS.SOLIDUS: {
         this.state = State.SCRIPT_DATA_END_TAG_OPEN;
         break;
@@ -76102,57 +76102,57 @@ var Tokenizer = class {
       default: {
         this._emitChars("<");
         this.state = State.SCRIPT_DATA;
-        this._stateScriptData(cp2);
+        this._stateScriptData(cp3);
       }
     }
   }
   // Script data end tag open state
   //------------------------------------------------------------------
-  _stateScriptDataEndTagOpen(cp2) {
-    if (isAsciiLetter(cp2)) {
+  _stateScriptDataEndTagOpen(cp3) {
+    if (isAsciiLetter(cp3)) {
       this.state = State.SCRIPT_DATA_END_TAG_NAME;
-      this._stateScriptDataEndTagName(cp2);
+      this._stateScriptDataEndTagName(cp3);
     } else {
       this._emitChars("</");
       this.state = State.SCRIPT_DATA;
-      this._stateScriptData(cp2);
+      this._stateScriptData(cp3);
     }
   }
   // Script data end tag name state
   //------------------------------------------------------------------
-  _stateScriptDataEndTagName(cp2) {
-    if (this.handleSpecialEndTag(cp2)) {
+  _stateScriptDataEndTagName(cp3) {
+    if (this.handleSpecialEndTag(cp3)) {
       this._emitChars("</");
       this.state = State.SCRIPT_DATA;
-      this._stateScriptData(cp2);
+      this._stateScriptData(cp3);
     }
   }
   // Script data escape start state
   //------------------------------------------------------------------
-  _stateScriptDataEscapeStart(cp2) {
-    if (cp2 === CODE_POINTS.HYPHEN_MINUS) {
+  _stateScriptDataEscapeStart(cp3) {
+    if (cp3 === CODE_POINTS.HYPHEN_MINUS) {
       this.state = State.SCRIPT_DATA_ESCAPE_START_DASH;
       this._emitChars("-");
     } else {
       this.state = State.SCRIPT_DATA;
-      this._stateScriptData(cp2);
+      this._stateScriptData(cp3);
     }
   }
   // Script data escape start dash state
   //------------------------------------------------------------------
-  _stateScriptDataEscapeStartDash(cp2) {
-    if (cp2 === CODE_POINTS.HYPHEN_MINUS) {
+  _stateScriptDataEscapeStartDash(cp3) {
+    if (cp3 === CODE_POINTS.HYPHEN_MINUS) {
       this.state = State.SCRIPT_DATA_ESCAPED_DASH_DASH;
       this._emitChars("-");
     } else {
       this.state = State.SCRIPT_DATA;
-      this._stateScriptData(cp2);
+      this._stateScriptData(cp3);
     }
   }
   // Script data escaped state
   //------------------------------------------------------------------
-  _stateScriptDataEscaped(cp2) {
-    switch (cp2) {
+  _stateScriptDataEscaped(cp3) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         this.state = State.SCRIPT_DATA_ESCAPED_DASH;
         this._emitChars("-");
@@ -76173,14 +76173,14 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // Script data escaped dash state
   //------------------------------------------------------------------
-  _stateScriptDataEscapedDash(cp2) {
-    switch (cp2) {
+  _stateScriptDataEscapedDash(cp3) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         this.state = State.SCRIPT_DATA_ESCAPED_DASH_DASH;
         this._emitChars("-");
@@ -76203,14 +76203,14 @@ var Tokenizer = class {
       }
       default: {
         this.state = State.SCRIPT_DATA_ESCAPED;
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // Script data escaped dash dash state
   //------------------------------------------------------------------
-  _stateScriptDataEscapedDashDash(cp2) {
-    switch (cp2) {
+  _stateScriptDataEscapedDashDash(cp3) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         this._emitChars("-");
         break;
@@ -76237,64 +76237,64 @@ var Tokenizer = class {
       }
       default: {
         this.state = State.SCRIPT_DATA_ESCAPED;
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // Script data escaped less-than sign state
   //------------------------------------------------------------------
-  _stateScriptDataEscapedLessThanSign(cp2) {
-    if (cp2 === CODE_POINTS.SOLIDUS) {
+  _stateScriptDataEscapedLessThanSign(cp3) {
+    if (cp3 === CODE_POINTS.SOLIDUS) {
       this.state = State.SCRIPT_DATA_ESCAPED_END_TAG_OPEN;
-    } else if (isAsciiLetter(cp2)) {
+    } else if (isAsciiLetter(cp3)) {
       this._emitChars("<");
       this.state = State.SCRIPT_DATA_DOUBLE_ESCAPE_START;
-      this._stateScriptDataDoubleEscapeStart(cp2);
+      this._stateScriptDataDoubleEscapeStart(cp3);
     } else {
       this._emitChars("<");
       this.state = State.SCRIPT_DATA_ESCAPED;
-      this._stateScriptDataEscaped(cp2);
+      this._stateScriptDataEscaped(cp3);
     }
   }
   // Script data escaped end tag open state
   //------------------------------------------------------------------
-  _stateScriptDataEscapedEndTagOpen(cp2) {
-    if (isAsciiLetter(cp2)) {
+  _stateScriptDataEscapedEndTagOpen(cp3) {
+    if (isAsciiLetter(cp3)) {
       this.state = State.SCRIPT_DATA_ESCAPED_END_TAG_NAME;
-      this._stateScriptDataEscapedEndTagName(cp2);
+      this._stateScriptDataEscapedEndTagName(cp3);
     } else {
       this._emitChars("</");
       this.state = State.SCRIPT_DATA_ESCAPED;
-      this._stateScriptDataEscaped(cp2);
+      this._stateScriptDataEscaped(cp3);
     }
   }
   // Script data escaped end tag name state
   //------------------------------------------------------------------
-  _stateScriptDataEscapedEndTagName(cp2) {
-    if (this.handleSpecialEndTag(cp2)) {
+  _stateScriptDataEscapedEndTagName(cp3) {
+    if (this.handleSpecialEndTag(cp3)) {
       this._emitChars("</");
       this.state = State.SCRIPT_DATA_ESCAPED;
-      this._stateScriptDataEscaped(cp2);
+      this._stateScriptDataEscaped(cp3);
     }
   }
   // Script data double escape start state
   //------------------------------------------------------------------
-  _stateScriptDataDoubleEscapeStart(cp2) {
+  _stateScriptDataDoubleEscapeStart(cp3) {
     if (this.preprocessor.startsWith(SEQUENCES.SCRIPT, false) && isScriptDataDoubleEscapeSequenceEnd(this.preprocessor.peek(SEQUENCES.SCRIPT.length))) {
-      this._emitCodePoint(cp2);
+      this._emitCodePoint(cp3);
       for (let i = 0; i < SEQUENCES.SCRIPT.length; i++) {
         this._emitCodePoint(this._consume());
       }
       this.state = State.SCRIPT_DATA_DOUBLE_ESCAPED;
     } else if (!this._ensureHibernation()) {
       this.state = State.SCRIPT_DATA_ESCAPED;
-      this._stateScriptDataEscaped(cp2);
+      this._stateScriptDataEscaped(cp3);
     }
   }
   // Script data double escaped state
   //------------------------------------------------------------------
-  _stateScriptDataDoubleEscaped(cp2) {
-    switch (cp2) {
+  _stateScriptDataDoubleEscaped(cp3) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         this.state = State.SCRIPT_DATA_DOUBLE_ESCAPED_DASH;
         this._emitChars("-");
@@ -76316,14 +76316,14 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // Script data double escaped dash state
   //------------------------------------------------------------------
-  _stateScriptDataDoubleEscapedDash(cp2) {
-    switch (cp2) {
+  _stateScriptDataDoubleEscapedDash(cp3) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         this.state = State.SCRIPT_DATA_DOUBLE_ESCAPED_DASH_DASH;
         this._emitChars("-");
@@ -76347,14 +76347,14 @@ var Tokenizer = class {
       }
       default: {
         this.state = State.SCRIPT_DATA_DOUBLE_ESCAPED;
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // Script data double escaped dash dash state
   //------------------------------------------------------------------
-  _stateScriptDataDoubleEscapedDashDash(cp2) {
-    switch (cp2) {
+  _stateScriptDataDoubleEscapedDashDash(cp3) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         this._emitChars("-");
         break;
@@ -76382,39 +76382,39 @@ var Tokenizer = class {
       }
       default: {
         this.state = State.SCRIPT_DATA_DOUBLE_ESCAPED;
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // Script data double escaped less-than sign state
   //------------------------------------------------------------------
-  _stateScriptDataDoubleEscapedLessThanSign(cp2) {
-    if (cp2 === CODE_POINTS.SOLIDUS) {
+  _stateScriptDataDoubleEscapedLessThanSign(cp3) {
+    if (cp3 === CODE_POINTS.SOLIDUS) {
       this.state = State.SCRIPT_DATA_DOUBLE_ESCAPE_END;
       this._emitChars("/");
     } else {
       this.state = State.SCRIPT_DATA_DOUBLE_ESCAPED;
-      this._stateScriptDataDoubleEscaped(cp2);
+      this._stateScriptDataDoubleEscaped(cp3);
     }
   }
   // Script data double escape end state
   //------------------------------------------------------------------
-  _stateScriptDataDoubleEscapeEnd(cp2) {
+  _stateScriptDataDoubleEscapeEnd(cp3) {
     if (this.preprocessor.startsWith(SEQUENCES.SCRIPT, false) && isScriptDataDoubleEscapeSequenceEnd(this.preprocessor.peek(SEQUENCES.SCRIPT.length))) {
-      this._emitCodePoint(cp2);
+      this._emitCodePoint(cp3);
       for (let i = 0; i < SEQUENCES.SCRIPT.length; i++) {
         this._emitCodePoint(this._consume());
       }
       this.state = State.SCRIPT_DATA_ESCAPED;
     } else if (!this._ensureHibernation()) {
       this.state = State.SCRIPT_DATA_DOUBLE_ESCAPED;
-      this._stateScriptDataDoubleEscaped(cp2);
+      this._stateScriptDataDoubleEscaped(cp3);
     }
   }
   // Before attribute name state
   //------------------------------------------------------------------
-  _stateBeforeAttributeName(cp2) {
-    switch (cp2) {
+  _stateBeforeAttributeName(cp3) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -76425,7 +76425,7 @@ var Tokenizer = class {
       case CODE_POINTS.GREATER_THAN_SIGN:
       case CODE_POINTS.EOF: {
         this.state = State.AFTER_ATTRIBUTE_NAME;
-        this._stateAfterAttributeName(cp2);
+        this._stateAfterAttributeName(cp3);
         break;
       }
       case CODE_POINTS.EQUALS_SIGN: {
@@ -76437,14 +76437,14 @@ var Tokenizer = class {
       default: {
         this._createAttr("");
         this.state = State.ATTRIBUTE_NAME;
-        this._stateAttributeName(cp2);
+        this._stateAttributeName(cp3);
       }
     }
   }
   // Attribute name state
   //------------------------------------------------------------------
-  _stateAttributeName(cp2) {
-    switch (cp2) {
+  _stateAttributeName(cp3) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -76454,7 +76454,7 @@ var Tokenizer = class {
       case CODE_POINTS.EOF: {
         this._leaveAttrName();
         this.state = State.AFTER_ATTRIBUTE_NAME;
-        this._stateAfterAttributeName(cp2);
+        this._stateAfterAttributeName(cp3);
         break;
       }
       case CODE_POINTS.EQUALS_SIGN: {
@@ -76466,7 +76466,7 @@ var Tokenizer = class {
       case CODE_POINTS.APOSTROPHE:
       case CODE_POINTS.LESS_THAN_SIGN: {
         this._err(ERR.unexpectedCharacterInAttributeName);
-        this.currentAttr.name += String.fromCodePoint(cp2);
+        this.currentAttr.name += String.fromCodePoint(cp3);
         break;
       }
       case CODE_POINTS.NULL: {
@@ -76475,14 +76475,14 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this.currentAttr.name += String.fromCodePoint(isAsciiUpper(cp2) ? toAsciiLower(cp2) : cp2);
+        this.currentAttr.name += String.fromCodePoint(isAsciiUpper(cp3) ? toAsciiLower(cp3) : cp3);
       }
     }
   }
   // After attribute name state
   //------------------------------------------------------------------
-  _stateAfterAttributeName(cp2) {
-    switch (cp2) {
+  _stateAfterAttributeName(cp3) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -76510,14 +76510,14 @@ var Tokenizer = class {
       default: {
         this._createAttr("");
         this.state = State.ATTRIBUTE_NAME;
-        this._stateAttributeName(cp2);
+        this._stateAttributeName(cp3);
       }
     }
   }
   // Before attribute value state
   //------------------------------------------------------------------
-  _stateBeforeAttributeValue(cp2) {
-    switch (cp2) {
+  _stateBeforeAttributeValue(cp3) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -76540,14 +76540,14 @@ var Tokenizer = class {
       }
       default: {
         this.state = State.ATTRIBUTE_VALUE_UNQUOTED;
-        this._stateAttributeValueUnquoted(cp2);
+        this._stateAttributeValueUnquoted(cp3);
       }
     }
   }
   // Attribute value (double-quoted) state
   //------------------------------------------------------------------
-  _stateAttributeValueDoubleQuoted(cp2) {
-    switch (cp2) {
+  _stateAttributeValueDoubleQuoted(cp3) {
+    switch (cp3) {
       case CODE_POINTS.QUOTATION_MARK: {
         this.state = State.AFTER_ATTRIBUTE_VALUE_QUOTED;
         break;
@@ -76567,14 +76567,14 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this.currentAttr.value += String.fromCodePoint(cp2);
+        this.currentAttr.value += String.fromCodePoint(cp3);
       }
     }
   }
   // Attribute value (single-quoted) state
   //------------------------------------------------------------------
-  _stateAttributeValueSingleQuoted(cp2) {
-    switch (cp2) {
+  _stateAttributeValueSingleQuoted(cp3) {
+    switch (cp3) {
       case CODE_POINTS.APOSTROPHE: {
         this.state = State.AFTER_ATTRIBUTE_VALUE_QUOTED;
         break;
@@ -76594,14 +76594,14 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this.currentAttr.value += String.fromCodePoint(cp2);
+        this.currentAttr.value += String.fromCodePoint(cp3);
       }
     }
   }
   // Attribute value (unquoted) state
   //------------------------------------------------------------------
-  _stateAttributeValueUnquoted(cp2) {
-    switch (cp2) {
+  _stateAttributeValueUnquoted(cp3) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -76631,7 +76631,7 @@ var Tokenizer = class {
       case CODE_POINTS.EQUALS_SIGN:
       case CODE_POINTS.GRAVE_ACCENT: {
         this._err(ERR.unexpectedCharacterInUnquotedAttributeValue);
-        this.currentAttr.value += String.fromCodePoint(cp2);
+        this.currentAttr.value += String.fromCodePoint(cp3);
         break;
       }
       case CODE_POINTS.EOF: {
@@ -76640,14 +76640,14 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this.currentAttr.value += String.fromCodePoint(cp2);
+        this.currentAttr.value += String.fromCodePoint(cp3);
       }
     }
   }
   // After attribute value (quoted) state
   //------------------------------------------------------------------
-  _stateAfterAttributeValueQuoted(cp2) {
-    switch (cp2) {
+  _stateAfterAttributeValueQuoted(cp3) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -76675,14 +76675,14 @@ var Tokenizer = class {
       default: {
         this._err(ERR.missingWhitespaceBetweenAttributes);
         this.state = State.BEFORE_ATTRIBUTE_NAME;
-        this._stateBeforeAttributeName(cp2);
+        this._stateBeforeAttributeName(cp3);
       }
     }
   }
   // Self-closing start tag state
   //------------------------------------------------------------------
-  _stateSelfClosingStartTag(cp2) {
-    switch (cp2) {
+  _stateSelfClosingStartTag(cp3) {
+    switch (cp3) {
       case CODE_POINTS.GREATER_THAN_SIGN: {
         const token = this.currentToken;
         token.selfClosing = true;
@@ -76698,15 +76698,15 @@ var Tokenizer = class {
       default: {
         this._err(ERR.unexpectedSolidusInTag);
         this.state = State.BEFORE_ATTRIBUTE_NAME;
-        this._stateBeforeAttributeName(cp2);
+        this._stateBeforeAttributeName(cp3);
       }
     }
   }
   // Bogus comment state
   //------------------------------------------------------------------
-  _stateBogusComment(cp2) {
+  _stateBogusComment(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.GREATER_THAN_SIGN: {
         this.state = State.DATA;
         this.emitCurrentComment(token);
@@ -76723,13 +76723,13 @@ var Tokenizer = class {
         break;
       }
       default: {
-        token.data += String.fromCodePoint(cp2);
+        token.data += String.fromCodePoint(cp3);
       }
     }
   }
   // Markup declaration open state
   //------------------------------------------------------------------
-  _stateMarkupDeclarationOpen(cp2) {
+  _stateMarkupDeclarationOpen(cp3) {
     if (this._consumeSequenceIfMatch(SEQUENCES.DASH_DASH, true)) {
       this._createCommentToken(SEQUENCES.DASH_DASH.length + 1);
       this.state = State.COMMENT_START;
@@ -76749,13 +76749,13 @@ var Tokenizer = class {
       this._err(ERR.incorrectlyOpenedComment);
       this._createCommentToken(2);
       this.state = State.BOGUS_COMMENT;
-      this._stateBogusComment(cp2);
+      this._stateBogusComment(cp3);
     }
   }
   // Comment start state
   //------------------------------------------------------------------
-  _stateCommentStart(cp2) {
-    switch (cp2) {
+  _stateCommentStart(cp3) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         this.state = State.COMMENT_START_DASH;
         break;
@@ -76769,15 +76769,15 @@ var Tokenizer = class {
       }
       default: {
         this.state = State.COMMENT;
-        this._stateComment(cp2);
+        this._stateComment(cp3);
       }
     }
   }
   // Comment start dash state
   //------------------------------------------------------------------
-  _stateCommentStartDash(cp2) {
+  _stateCommentStartDash(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         this.state = State.COMMENT_END;
         break;
@@ -76797,15 +76797,15 @@ var Tokenizer = class {
       default: {
         token.data += "-";
         this.state = State.COMMENT;
-        this._stateComment(cp2);
+        this._stateComment(cp3);
       }
     }
   }
   // Comment state
   //------------------------------------------------------------------
-  _stateComment(cp2) {
+  _stateComment(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         this.state = State.COMMENT_END_DASH;
         break;
@@ -76827,15 +76827,15 @@ var Tokenizer = class {
         break;
       }
       default: {
-        token.data += String.fromCodePoint(cp2);
+        token.data += String.fromCodePoint(cp3);
       }
     }
   }
   // Comment less-than sign state
   //------------------------------------------------------------------
-  _stateCommentLessThanSign(cp2) {
+  _stateCommentLessThanSign(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.EXCLAMATION_MARK: {
         token.data += "!";
         this.state = State.COMMENT_LESS_THAN_SIGN_BANG;
@@ -76847,44 +76847,44 @@ var Tokenizer = class {
       }
       default: {
         this.state = State.COMMENT;
-        this._stateComment(cp2);
+        this._stateComment(cp3);
       }
     }
   }
   // Comment less-than sign bang state
   //------------------------------------------------------------------
-  _stateCommentLessThanSignBang(cp2) {
-    if (cp2 === CODE_POINTS.HYPHEN_MINUS) {
+  _stateCommentLessThanSignBang(cp3) {
+    if (cp3 === CODE_POINTS.HYPHEN_MINUS) {
       this.state = State.COMMENT_LESS_THAN_SIGN_BANG_DASH;
     } else {
       this.state = State.COMMENT;
-      this._stateComment(cp2);
+      this._stateComment(cp3);
     }
   }
   // Comment less-than sign bang dash state
   //------------------------------------------------------------------
-  _stateCommentLessThanSignBangDash(cp2) {
-    if (cp2 === CODE_POINTS.HYPHEN_MINUS) {
+  _stateCommentLessThanSignBangDash(cp3) {
+    if (cp3 === CODE_POINTS.HYPHEN_MINUS) {
       this.state = State.COMMENT_LESS_THAN_SIGN_BANG_DASH_DASH;
     } else {
       this.state = State.COMMENT_END_DASH;
-      this._stateCommentEndDash(cp2);
+      this._stateCommentEndDash(cp3);
     }
   }
   // Comment less-than sign bang dash dash state
   //------------------------------------------------------------------
-  _stateCommentLessThanSignBangDashDash(cp2) {
-    if (cp2 !== CODE_POINTS.GREATER_THAN_SIGN && cp2 !== CODE_POINTS.EOF) {
+  _stateCommentLessThanSignBangDashDash(cp3) {
+    if (cp3 !== CODE_POINTS.GREATER_THAN_SIGN && cp3 !== CODE_POINTS.EOF) {
       this._err(ERR.nestedComment);
     }
     this.state = State.COMMENT_END;
-    this._stateCommentEnd(cp2);
+    this._stateCommentEnd(cp3);
   }
   // Comment end dash state
   //------------------------------------------------------------------
-  _stateCommentEndDash(cp2) {
+  _stateCommentEndDash(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         this.state = State.COMMENT_END;
         break;
@@ -76898,15 +76898,15 @@ var Tokenizer = class {
       default: {
         token.data += "-";
         this.state = State.COMMENT;
-        this._stateComment(cp2);
+        this._stateComment(cp3);
       }
     }
   }
   // Comment end state
   //------------------------------------------------------------------
-  _stateCommentEnd(cp2) {
+  _stateCommentEnd(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.GREATER_THAN_SIGN: {
         this.state = State.DATA;
         this.emitCurrentComment(token);
@@ -76929,15 +76929,15 @@ var Tokenizer = class {
       default: {
         token.data += "--";
         this.state = State.COMMENT;
-        this._stateComment(cp2);
+        this._stateComment(cp3);
       }
     }
   }
   // Comment end bang state
   //------------------------------------------------------------------
-  _stateCommentEndBang(cp2) {
+  _stateCommentEndBang(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.HYPHEN_MINUS: {
         token.data += "--!";
         this.state = State.COMMENT_END_DASH;
@@ -76958,14 +76958,14 @@ var Tokenizer = class {
       default: {
         token.data += "--!";
         this.state = State.COMMENT;
-        this._stateComment(cp2);
+        this._stateComment(cp3);
       }
     }
   }
   // DOCTYPE state
   //------------------------------------------------------------------
-  _stateDoctype(cp2) {
-    switch (cp2) {
+  _stateDoctype(cp3) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -76975,7 +76975,7 @@ var Tokenizer = class {
       }
       case CODE_POINTS.GREATER_THAN_SIGN: {
         this.state = State.BEFORE_DOCTYPE_NAME;
-        this._stateBeforeDoctypeName(cp2);
+        this._stateBeforeDoctypeName(cp3);
         break;
       }
       case CODE_POINTS.EOF: {
@@ -76990,18 +76990,18 @@ var Tokenizer = class {
       default: {
         this._err(ERR.missingWhitespaceBeforeDoctypeName);
         this.state = State.BEFORE_DOCTYPE_NAME;
-        this._stateBeforeDoctypeName(cp2);
+        this._stateBeforeDoctypeName(cp3);
       }
     }
   }
   // Before DOCTYPE name state
   //------------------------------------------------------------------
-  _stateBeforeDoctypeName(cp2) {
-    if (isAsciiUpper(cp2)) {
-      this._createDoctypeToken(String.fromCharCode(toAsciiLower(cp2)));
+  _stateBeforeDoctypeName(cp3) {
+    if (isAsciiUpper(cp3)) {
+      this._createDoctypeToken(String.fromCharCode(toAsciiLower(cp3)));
       this.state = State.DOCTYPE_NAME;
     } else
-      switch (cp2) {
+      switch (cp3) {
         case CODE_POINTS.SPACE:
         case CODE_POINTS.LINE_FEED:
         case CODE_POINTS.TABULATION:
@@ -77033,16 +77033,16 @@ var Tokenizer = class {
           break;
         }
         default: {
-          this._createDoctypeToken(String.fromCodePoint(cp2));
+          this._createDoctypeToken(String.fromCodePoint(cp3));
           this.state = State.DOCTYPE_NAME;
         }
       }
   }
   // DOCTYPE name state
   //------------------------------------------------------------------
-  _stateDoctypeName(cp2) {
+  _stateDoctypeName(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -77068,15 +77068,15 @@ var Tokenizer = class {
         break;
       }
       default: {
-        token.name += String.fromCodePoint(isAsciiUpper(cp2) ? toAsciiLower(cp2) : cp2);
+        token.name += String.fromCodePoint(isAsciiUpper(cp3) ? toAsciiLower(cp3) : cp3);
       }
     }
   }
   // After DOCTYPE name state
   //------------------------------------------------------------------
-  _stateAfterDoctypeName(cp2) {
+  _stateAfterDoctypeName(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -77104,16 +77104,16 @@ var Tokenizer = class {
           this._err(ERR.invalidCharacterSequenceAfterDoctypeName);
           token.forceQuirks = true;
           this.state = State.BOGUS_DOCTYPE;
-          this._stateBogusDoctype(cp2);
+          this._stateBogusDoctype(cp3);
         }
       }
     }
   }
   // After DOCTYPE public keyword state
   //------------------------------------------------------------------
-  _stateAfterDoctypePublicKeyword(cp2) {
+  _stateAfterDoctypePublicKeyword(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -77151,15 +77151,15 @@ var Tokenizer = class {
         this._err(ERR.missingQuoteBeforeDoctypePublicIdentifier);
         token.forceQuirks = true;
         this.state = State.BOGUS_DOCTYPE;
-        this._stateBogusDoctype(cp2);
+        this._stateBogusDoctype(cp3);
       }
     }
   }
   // Before DOCTYPE public identifier state
   //------------------------------------------------------------------
-  _stateBeforeDoctypePublicIdentifier(cp2) {
+  _stateBeforeDoctypePublicIdentifier(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -77194,15 +77194,15 @@ var Tokenizer = class {
         this._err(ERR.missingQuoteBeforeDoctypePublicIdentifier);
         token.forceQuirks = true;
         this.state = State.BOGUS_DOCTYPE;
-        this._stateBogusDoctype(cp2);
+        this._stateBogusDoctype(cp3);
       }
     }
   }
   // DOCTYPE public identifier (double-quoted) state
   //------------------------------------------------------------------
-  _stateDoctypePublicIdentifierDoubleQuoted(cp2) {
+  _stateDoctypePublicIdentifierDoubleQuoted(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.QUOTATION_MARK: {
         this.state = State.AFTER_DOCTYPE_PUBLIC_IDENTIFIER;
         break;
@@ -77227,15 +77227,15 @@ var Tokenizer = class {
         break;
       }
       default: {
-        token.publicId += String.fromCodePoint(cp2);
+        token.publicId += String.fromCodePoint(cp3);
       }
     }
   }
   // DOCTYPE public identifier (single-quoted) state
   //------------------------------------------------------------------
-  _stateDoctypePublicIdentifierSingleQuoted(cp2) {
+  _stateDoctypePublicIdentifierSingleQuoted(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.APOSTROPHE: {
         this.state = State.AFTER_DOCTYPE_PUBLIC_IDENTIFIER;
         break;
@@ -77260,15 +77260,15 @@ var Tokenizer = class {
         break;
       }
       default: {
-        token.publicId += String.fromCodePoint(cp2);
+        token.publicId += String.fromCodePoint(cp3);
       }
     }
   }
   // After DOCTYPE public identifier state
   //------------------------------------------------------------------
-  _stateAfterDoctypePublicIdentifier(cp2) {
+  _stateAfterDoctypePublicIdentifier(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -77304,15 +77304,15 @@ var Tokenizer = class {
         this._err(ERR.missingQuoteBeforeDoctypeSystemIdentifier);
         token.forceQuirks = true;
         this.state = State.BOGUS_DOCTYPE;
-        this._stateBogusDoctype(cp2);
+        this._stateBogusDoctype(cp3);
       }
     }
   }
   // Between DOCTYPE public and system identifiers state
   //------------------------------------------------------------------
-  _stateBetweenDoctypePublicAndSystemIdentifiers(cp2) {
+  _stateBetweenDoctypePublicAndSystemIdentifiers(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -77345,15 +77345,15 @@ var Tokenizer = class {
         this._err(ERR.missingQuoteBeforeDoctypeSystemIdentifier);
         token.forceQuirks = true;
         this.state = State.BOGUS_DOCTYPE;
-        this._stateBogusDoctype(cp2);
+        this._stateBogusDoctype(cp3);
       }
     }
   }
   // After DOCTYPE system keyword state
   //------------------------------------------------------------------
-  _stateAfterDoctypeSystemKeyword(cp2) {
+  _stateAfterDoctypeSystemKeyword(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -77391,15 +77391,15 @@ var Tokenizer = class {
         this._err(ERR.missingQuoteBeforeDoctypeSystemIdentifier);
         token.forceQuirks = true;
         this.state = State.BOGUS_DOCTYPE;
-        this._stateBogusDoctype(cp2);
+        this._stateBogusDoctype(cp3);
       }
     }
   }
   // Before DOCTYPE system identifier state
   //------------------------------------------------------------------
-  _stateBeforeDoctypeSystemIdentifier(cp2) {
+  _stateBeforeDoctypeSystemIdentifier(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -77434,15 +77434,15 @@ var Tokenizer = class {
         this._err(ERR.missingQuoteBeforeDoctypeSystemIdentifier);
         token.forceQuirks = true;
         this.state = State.BOGUS_DOCTYPE;
-        this._stateBogusDoctype(cp2);
+        this._stateBogusDoctype(cp3);
       }
     }
   }
   // DOCTYPE system identifier (double-quoted) state
   //------------------------------------------------------------------
-  _stateDoctypeSystemIdentifierDoubleQuoted(cp2) {
+  _stateDoctypeSystemIdentifierDoubleQuoted(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.QUOTATION_MARK: {
         this.state = State.AFTER_DOCTYPE_SYSTEM_IDENTIFIER;
         break;
@@ -77467,15 +77467,15 @@ var Tokenizer = class {
         break;
       }
       default: {
-        token.systemId += String.fromCodePoint(cp2);
+        token.systemId += String.fromCodePoint(cp3);
       }
     }
   }
   // DOCTYPE system identifier (single-quoted) state
   //------------------------------------------------------------------
-  _stateDoctypeSystemIdentifierSingleQuoted(cp2) {
+  _stateDoctypeSystemIdentifierSingleQuoted(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.APOSTROPHE: {
         this.state = State.AFTER_DOCTYPE_SYSTEM_IDENTIFIER;
         break;
@@ -77500,15 +77500,15 @@ var Tokenizer = class {
         break;
       }
       default: {
-        token.systemId += String.fromCodePoint(cp2);
+        token.systemId += String.fromCodePoint(cp3);
       }
     }
   }
   // After DOCTYPE system identifier state
   //------------------------------------------------------------------
-  _stateAfterDoctypeSystemIdentifier(cp2) {
+  _stateAfterDoctypeSystemIdentifier(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.SPACE:
       case CODE_POINTS.LINE_FEED:
       case CODE_POINTS.TABULATION:
@@ -77530,15 +77530,15 @@ var Tokenizer = class {
       default: {
         this._err(ERR.unexpectedCharacterAfterDoctypeSystemIdentifier);
         this.state = State.BOGUS_DOCTYPE;
-        this._stateBogusDoctype(cp2);
+        this._stateBogusDoctype(cp3);
       }
     }
   }
   // Bogus DOCTYPE state
   //------------------------------------------------------------------
-  _stateBogusDoctype(cp2) {
+  _stateBogusDoctype(cp3) {
     const token = this.currentToken;
-    switch (cp2) {
+    switch (cp3) {
       case CODE_POINTS.GREATER_THAN_SIGN: {
         this.emitCurrentDoctype(token);
         this.state = State.DATA;
@@ -77558,8 +77558,8 @@ var Tokenizer = class {
   }
   // CDATA section state
   //------------------------------------------------------------------
-  _stateCdataSection(cp2) {
-    switch (cp2) {
+  _stateCdataSection(cp3) {
+    switch (cp3) {
       case CODE_POINTS.RIGHT_SQUARE_BRACKET: {
         this.state = State.CDATA_SECTION_BRACKET;
         break;
@@ -77570,25 +77570,25 @@ var Tokenizer = class {
         break;
       }
       default: {
-        this._emitCodePoint(cp2);
+        this._emitCodePoint(cp3);
       }
     }
   }
   // CDATA section bracket state
   //------------------------------------------------------------------
-  _stateCdataSectionBracket(cp2) {
-    if (cp2 === CODE_POINTS.RIGHT_SQUARE_BRACKET) {
+  _stateCdataSectionBracket(cp3) {
+    if (cp3 === CODE_POINTS.RIGHT_SQUARE_BRACKET) {
       this.state = State.CDATA_SECTION_END;
     } else {
       this._emitChars("]");
       this.state = State.CDATA_SECTION;
-      this._stateCdataSection(cp2);
+      this._stateCdataSection(cp3);
     }
   }
   // CDATA section end state
   //------------------------------------------------------------------
-  _stateCdataSectionEnd(cp2) {
-    switch (cp2) {
+  _stateCdataSectionEnd(cp3) {
+    switch (cp3) {
       case CODE_POINTS.GREATER_THAN_SIGN: {
         this.state = State.DATA;
         break;
@@ -77600,7 +77600,7 @@ var Tokenizer = class {
       default: {
         this._emitChars("]]");
         this.state = State.CDATA_SECTION;
-        this._stateCdataSection(cp2);
+        this._stateCdataSection(cp3);
       }
     }
   }
@@ -77629,15 +77629,15 @@ var Tokenizer = class {
   }
   // Ambiguos ampersand state
   //------------------------------------------------------------------
-  _stateAmbiguousAmpersand(cp2) {
-    if (isAsciiAlphaNumeric(cp2)) {
-      this._flushCodePointConsumedAsCharacterReference(cp2);
+  _stateAmbiguousAmpersand(cp3) {
+    if (isAsciiAlphaNumeric(cp3)) {
+      this._flushCodePointConsumedAsCharacterReference(cp3);
     } else {
-      if (cp2 === CODE_POINTS.SEMICOLON) {
+      if (cp3 === CODE_POINTS.SEMICOLON) {
         this._err(ERR.unknownNamedCharacterReference);
       }
       this.state = this.returnState;
-      this._callState(cp2);
+      this._callState(cp3);
     }
   }
 };
@@ -91128,9 +91128,9 @@ function bindOuterResources(database, context, hooks) {
     return promise;
   };
   const actorDigest = createHash8("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
-  const guardCapability = (name2, value) => wrapCapability(value, (path16) => {
+  const guardCapability = (name2, value) => wrapCapability(value, (path17) => {
     if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
-    if (!["where", "orderBy", "limit"].includes(path16.at(-1))) touched = true;
+    if (!["where", "orderBy", "limit"].includes(path17.at(-1))) touched = true;
   });
   for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name2]) continue;
@@ -91325,7 +91325,7 @@ function bindOuterResources(database, context, hooks) {
   release.guardCapability = guardCapability;
   return release;
 }
-function wrapCapability(value, before, path16 = [], cache = /* @__PURE__ */ new WeakMap(), afterCall) {
+function wrapCapability(value, before, path17 = [], cache = /* @__PURE__ */ new WeakMap(), afterCall) {
   if (!value || typeof value !== "object") return value;
   if (cache.has(value)) return cache.get(value);
   const functions = /* @__PURE__ */ new Map();
@@ -91340,16 +91340,16 @@ function wrapCapability(value, before, path16 = [], cache = /* @__PURE__ */ new 
       if (typeof member === "function") {
         if (functions.has(key)) return functions.get(key);
         const wrapped = (...args) => {
-          const next = [...path16, key];
+          const next = [...path17, key];
           before(next);
           const invoke = () => Reflect.apply(member, value, args);
           const result = afterCall && !["where", "orderBy", "limit"].includes(key) ? afterCall(invoke) : invoke();
-          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path16, cache, afterCall) : result;
+          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path17, cache, afterCall) : result;
         };
         functions.set(key, wrapped);
         return wrapped;
       }
-      return wrapCapability(member, before, [...path16, key], cache, afterCall);
+      return wrapCapability(member, before, [...path17, key], cache, afterCall);
     }
   });
   cache.set(value, proxy);
@@ -91365,9 +91365,9 @@ function bindJobResources(database, context, claim, hooks) {
   const actorDigest = createHash8("sha256").update(actorBinding).digest("hex");
   for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name2]) continue;
-    context[name2] = wrapCapability(context[name2], (path16) => {
+    context[name2] = wrapCapability(context[name2], (path17) => {
       if (used && (name2 !== "log" || scopeRunning || !invocationActive)) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
-      if (name2 !== "log" && !["where", "orderBy", "limit"].includes(path16.at(-1))) touched = true;
+      if (name2 !== "log" && !["where", "orderBy", "limit"].includes(path17.at(-1))) touched = true;
     });
   }
   const execute = async (options, callback, status) => {
@@ -92654,13 +92654,13 @@ function createAclStorageHelpers(database, state) {
 function resolveAclStorageFileReference(database, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path16;
+    let path17;
     try {
-      path16 = normalizeAbsoluteFilePath(value);
+      path17 = normalizeAbsoluteFilePath(value);
     } catch {
       return null;
     }
-    const selected2 = database.adapter.selectLiveFileByPath(path16);
+    const selected2 = database.adapter.selectLiveFileByPath(path17);
     return thenIfPromise(selected2, (rows) => {
       const resolved = rows.length > 1 ? { ambiguous: true } : rows[0] ?? null;
       return resolved?.ambiguous ? null : resolved;
@@ -92817,7 +92817,7 @@ async function drainPendingAclWrites(context) {
 // src/file-storage-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
-  const path16 = await import("node:path");
+  const path17 = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
     return createS3CompatibleFileStorageAdapter({
       endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
@@ -92829,7 +92829,7 @@ async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serv
     });
   }
   return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path16.join(path16.dirname(databasePath), "files")
+    storagePath: config.files?.storagePath ?? path17.join(path17.dirname(databasePath), "files")
   });
 }
 function createLocalFileStorageAdapter({ storagePath }) {
@@ -92840,13 +92840,13 @@ function createLocalFileStorageAdapter({ storagePath }) {
     engine: "local",
     storagePath,
     async writeFileVersion({ fileId, version: version3, bytes }) {
-      const { mkdir: mkdir9, writeFile: writeFile8 } = await import("node:fs/promises");
-      await mkdir9(localFileStoragePath(storagePath, fileId), { recursive: true });
-      await writeFile8(localFileVersionPath(storagePath, fileId, version3), bytes);
+      const { mkdir: mkdir10, writeFile: writeFile9 } = await import("node:fs/promises");
+      await mkdir10(localFileStoragePath(storagePath, fileId), { recursive: true });
+      await writeFile9(localFileVersionPath(storagePath, fileId, version3), bytes);
     },
     async readFileVersion({ fileId, version: version3 }) {
-      const { readFile: readFile12 } = await import("node:fs/promises");
-      return await readFile12(localFileVersionPath(storagePath, fileId, version3));
+      const { readFile: readFile13 } = await import("node:fs/promises");
+      return await readFile13(localFileVersionPath(storagePath, fileId, version3));
     },
     async openFileVersionStream({ fileId, version: version3 }) {
       const { createReadStream } = await import("node:fs");
@@ -92875,13 +92875,13 @@ function createLocalFileStorageAdapter({ storagePath }) {
       await rm9(localFileVersionPath(storagePath, fileId, version3), { force: true });
     },
     async checkHealth() {
-      const { mkdir: mkdir9, rm: rm9, writeFile: writeFile8 } = await import("node:fs/promises");
-      const path16 = await import("node:path");
-      const probeDirectory = path16.join(storagePath, ".sporades-health");
-      const probeFile = path16.join(probeDirectory, `${nodeCryptoModule2.randomUUID()}.tmp`);
+      const { mkdir: mkdir10, rm: rm9, writeFile: writeFile9 } = await import("node:fs/promises");
+      const path17 = await import("node:path");
+      const probeDirectory = path17.join(storagePath, ".sporades-health");
+      const probeFile = path17.join(probeDirectory, `${nodeCryptoModule2.randomUUID()}.tmp`);
       try {
-        await mkdir9(probeDirectory, { recursive: true });
-        await writeFile8(probeFile, "");
+        await mkdir10(probeDirectory, { recursive: true });
+        await writeFile9(probeFile, "");
         await rm9(probeFile, { force: true });
         return { ok: true };
       } catch {
@@ -94108,9 +94108,9 @@ function fileMetadataFromUpload(upload) {
     version: upload.version
   };
 }
-async function withFileUploadPathLock(path16, fn2) {
+async function withFileUploadPathLock(path17, fn2) {
   const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
-  const key = String(path16);
+  const key = String(path17);
   const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
   let release;
   const current2 = new Promise((resolve) => {
@@ -94131,11 +94131,11 @@ async function withFileUploadPathLock(path16, fn2) {
 }
 async function resolveFileWriteTarget(database, ownerId, input, now2) {
   const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path16 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
-  const firstSegment = path16.split("/").filter(Boolean)[0] ?? "default";
+  const path17 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+  const firstSegment = path17.split("/").filter(Boolean)[0] ?? "default";
   const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
   const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now2);
-  return { bucket, path: path16 };
+  return { bucket, path: path17 };
 }
 async function ensureFileBucket(database, ownerId, name2, now2) {
   const existing = await database.adapter.findFileBucket(ownerId, name2);
@@ -94174,13 +94174,13 @@ function isAbsoluteFilePath(value) {
 async function resolveLiveFileReference(database, ownerId, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path16;
+    let path17;
     try {
-      path16 = normalizeAbsoluteFilePath(value);
+      path17 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path16);
+    const resolved = await singleLiveFileRowByPath(database, path17);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -94218,13 +94218,13 @@ async function resolveLockedAccessibleFileReference(database, auth, reference, o
 async function resolvePrivilegedLiveFileReference(database, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path16;
+    let path17;
     try {
-      path16 = normalizeAbsoluteFilePath(value);
+      path17 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path16);
+    const resolved = await singleLiveFileRowByPath(database, path17);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -94236,14 +94236,14 @@ async function resolvePrivilegedLiveFileReference(database, reference) {
   }
   return { ok: true, row };
 }
-function singleLiveFileRowByPath(database, path16) {
-  return thenIfPromise(database.adapter.selectLiveFileByPath(path16), (rows) => {
+function singleLiveFileRowByPath(database, path17) {
+  return thenIfPromise(database.adapter.selectLiveFileByPath(path17), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
 }
-function singleActiveFileRowByPath(database, path16) {
-  return thenIfPromise(database.adapter.selectActiveFileByPath(path16), (rows) => {
+function singleActiveFileRowByPath(database, path17) {
+  return thenIfPromise(database.adapter.selectActiveFileByPath(path17), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
@@ -106289,11 +106289,11 @@ function clamavRemaining(database, deadline) {
 async function verifiedClamavSignature(database, deadline = Number.POSITIVE_INFINITY) {
   if (database.__clamavTest?.signature) return database.__clamavTest.signature;
   const sidecar = database.__clamavDevSidecar;
-  for (const path16 of ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
-    if (!sidecar && !fs.existsSync(path16)) continue;
+  for (const path17 of ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
+    if (!sidecar && !fs.existsSync(path17)) continue;
     const remaining = clamavRemaining(database, deadline);
     if (remaining <= 0) return null;
-    const child = sidecar ? childProcess.spawn("docker", ["exec", sidecar.containerName, "/usr/bin/sigtool", "--info", path16], { stdio: ["ignore", "pipe", "ignore"] }) : childProcess.spawn("/usr/bin/sigtool", ["--info", path16], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = sidecar ? childProcess.spawn("docker", ["exec", sidecar.containerName, "/usr/bin/sigtool", "--info", path17], { stdio: ["ignore", "pipe", "ignore"] }) : childProcess.spawn("/usr/bin/sigtool", ["--info", path17], { stdio: ["ignore", "pipe", "ignore"] });
     const result = await collectBoundedToolOutput(child, Math.min(5e3, remaining));
     if (!result.ok) {
       await terminateChild(child, Math.min(clamavTerminateTimeout(database), clamavRemaining(database, deadline)), database);
@@ -107113,12 +107113,12 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
         if (row.authorityId !== claimAuthorityId || row.endpointMethod !== String(endpoint.options.method) || row.endpointPath !== String(endpoint.options.path) || row.requestKey !== requestKey || expectedLease.leaseId !== lease?.leaseId || expectedLease.partId !== lease?.partId || expectedLease.fieldName !== lease?.fieldName || expectedLease.name !== lease?.name || expectedLease.type !== lease?.type || expectedLease.size !== lease?.size || expectedLease.expiresAt !== lease?.expiresAt) {
           throw ingressAuthorityDenied();
         }
-        const path16 = normalizeAbsoluteFilePath(options?.path);
-        if (!policy.allowedPathPrefixes.some((prefix) => path16 === prefix || path16.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
+        const path17 = normalizeAbsoluteFilePath(options?.path);
+        if (!policy.allowedPathPrefixes.some((prefix) => path17 === prefix || path17.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
         const name2 = safeName(options?.name ?? row.name);
         const type = safeType(options?.type ?? row.type);
         if (inspectionPolicy && (name2 !== row.name || type !== row.type)) throw inspectionRequiredError();
-        const expectedFile = { id: row.fileId, ownerId: row.ownerId, path: path16, name: name2, type, size: row.size, version: row.version };
+        const expectedFile = { id: row.fileId, ownerId: row.ownerId, path: path17, name: name2, type, size: row.size, version: row.version };
         if (row.state === "complete") {
           if (!sameFileDescriptor(row.file, expectedFile)) throw idempotencyConflict();
           if (!inspectionEvidenceIsCurrent(database, row, inspectionPolicy)) throw inspectionRequiredError();
@@ -107129,7 +107129,7 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context) 
         if (row.state !== "leased") throw idempotencyConflict("Ingress lease is not claimable.");
         const now2 = (/* @__PURE__ */ new Date()).toISOString();
         const bucket = await ensureFileBucket(database, row.ownerId, "default", now2);
-        const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path: path16, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
+        const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path: path17, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
         try {
           await database.adapter.insertFileRowIfAbsent(file);
         } catch (error) {
@@ -107418,8 +107418,8 @@ function boundedRequestTargetPath(target) {
   const absolute = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(withoutQuery);
   const afterAuthority = absolute ? withoutQuery.slice(absolute[0].length) : withoutQuery;
   const pathStart = absolute ? afterAuthority.indexOf("/") : 0;
-  const path16 = absolute ? pathStart === -1 ? "/" : afterAuthority.slice(pathStart) : withoutQuery;
-  return path16.replace(/[\u0000-\u001F\u007F]/g, "\uFFFD").slice(0, 1024) || "/";
+  const path17 = absolute ? pathStart === -1 ? "/" : afterAuthority.slice(pathStart) : withoutQuery;
+  return path17.replace(/[\u0000-\u001F\u007F]/g, "\uFFFD").slice(0, 1024) || "/";
 }
 function writeInvalidHttpRequestTarget(database, request, response) {
   const error = new Error("Invalid HTTP request target.");
@@ -107481,7 +107481,7 @@ function writeUnhandledHttpError(database, request, response, error) {
 function emitHttpFailureLog(database, request, error, context = {}) {
   try {
     const target = request.url ?? context.path ?? "/";
-    const path16 = boundedRequestTargetPath(target);
+    const path17 = boundedRequestTargetPath(target);
     database.log?.emit?.({
       category: "platform",
       event: "http.request.failed",
@@ -107489,7 +107489,7 @@ function emitHttpFailureLog(database, request, error, context = {}) {
       message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
       request: {
         method: request.method ?? context.method ?? null,
-        path: path16
+        path: path17
       },
       data: {
         code: error?.code ?? null,
@@ -112505,12 +112505,12 @@ function validateEmailWebhooksConfig(webhooks) {
       `Configure \`mail.webhooks.${provider}\` with optional enabled, path, and secretEnv values.`
     );
     const enabled = data2.get("enabled") ?? true;
-    const path16 = data2.get("path") ?? defaultPath;
+    const path17 = data2.get("path") ?? defaultPath;
     const secretEnv = data2.get("secretEnv") ?? defaultSecretEnv;
     if (typeof enabled !== "boolean") {
       invalidMailConfig(`Invalid ${provider} webhook enabled flag.`, `Set \`mail.webhooks.${provider}.enabled\` to true or false.`);
     }
-    if (!sameOriginWebhookPath(path16) || runtimeOwnedHttpPath(path16)) {
+    if (!sameOriginWebhookPath(path17) || runtimeOwnedHttpPath(path17)) {
       invalidMailConfig(
         `Invalid ${provider} webhook path.`,
         `Set \`mail.webhooks.${provider}.path\` to a same-origin absolute path outside Sporades runtime-owned HTTP namespaces.`
@@ -112522,7 +112522,7 @@ function validateEmailWebhooksConfig(webhooks) {
         `Set \`mail.webhooks.${provider}.secretEnv\` to an uppercase Server env key without the reserved \`SPORADES_\` prefix.`
       );
     }
-    result[provider] = { enabled, path: path16, secretEnv };
+    result[provider] = { enabled, path: path17, secretEnv };
   }
   return result;
 }
@@ -113304,26 +113304,26 @@ function normalizeMailgunProvider(provider) {
 }
 function serializeMailgunJson(value, label, maximumBytes) {
   const seen = /* @__PURE__ */ new Set();
-  const normalize = (candidate, path16) => {
+  const normalize = (candidate, path17) => {
     if (candidate === null || typeof candidate === "string" || typeof candidate === "boolean") return candidate;
     if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
     if (Array.isArray(candidate)) {
-      if (seen.has(candidate)) throw new Error(`${path16} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path17} is cyclic`);
       seen.add(candidate);
-      const result = captureMailProviderDataArray(candidate, path16).map((entry, index) => normalize(entry, `${path16}[${index}]`));
+      const result = captureMailProviderDataArray(candidate, path17).map((entry, index) => normalize(entry, `${path17}[${index}]`));
       seen.delete(candidate);
       return result;
     }
     if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error(`${path16} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path17} is cyclic`);
       seen.add(candidate);
-      const entries = captureMailProviderDataObject(candidate, path16, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+      const entries = captureMailProviderDataObject(candidate, path17, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
       const result = /* @__PURE__ */ Object.create(null);
-      for (const [key, entry] of entries) result[key] = normalize(entry, `${path16}.${key}`);
+      for (const [key, entry] of entries) result[key] = normalize(entry, `${path17}.${key}`);
       seen.delete(candidate);
       return result;
     }
-    throw new Error(`${path16} is not JSON-compatible`);
+    throw new Error(`${path17} is not JSON-compatible`);
   };
   let json;
   try {
@@ -115645,24 +115645,24 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => thenIfPromise(this.prepare(select).get(fileId), (row) => row ?? null)
       );
     },
-    selectLiveFileByPath(path16) {
+    selectLiveFileByPath(path17) {
       return this.prepare(
         sql2("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
-      ).all(path16, "uploaded");
+      ).all(path17, "uploaded");
     },
-    selectActiveFileByPath(path16) {
+    selectActiveFileByPath(path17) {
       return this.prepare(
         sql2("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] IN (?, ?)")
       ).all(
-        path16,
+        path17,
         "pending",
         "uploaded"
       );
     },
-    selectPendingFileUploadByPath(path16) {
+    selectPendingFileUploadByPath(path17) {
       return this.prepare(
         sql2("SELECT * FROM [sporades_file_uploads] WHERE [path] = ? ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")
-      ).get(path16) ?? null;
+      ).get(path17) ?? null;
     },
     selectFileUpload(uploadId) {
       return this.prepare(sql2("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
@@ -115719,8 +115719,8 @@ function createSharedDatabaseAdapterMethods(dialect) {
         )
       );
     },
-    deleteFileUploadsForPath(path16) {
-      return this.prepare(sql2("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path16);
+    deleteFileUploadsForPath(path17) {
+      return this.prepare(sql2("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path17);
     },
     deleteFileUploadsForFile(ownerId, fileId) {
       return this.prepare(sql2("DELETE FROM [sporades_file_uploads] WHERE [ownerId] = ? AND [fileId] = ?")).run(ownerId, fileId);
@@ -116489,8 +116489,8 @@ function createSharedDatabaseAdapterMethods(dialect) {
 }
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
-  const path16 = await import("node:path");
-  if (!options.readOnly) nodeFsModule.mkdirSync(path16.dirname(String(databasePath)), { recursive: true });
+  const path17 = await import("node:path");
+  if (!options.readOnly) nodeFsModule.mkdirSync(path17.dirname(String(databasePath)), { recursive: true });
   let connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   let resourceConnectionQuarantined = false;
   let resourceConnectionDisposed = false;
@@ -118355,7 +118355,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     throw commandError2("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete? } }.", "INVALID_FILE_ACL");
   }
   const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
-  const path16 = await import("node:path");
+  const path17 = await import("node:path");
   const mailConfig = validateMailConfig(config.mail);
   let mailLogSink;
   const mail = createMailRuntime(mailConfig, serverEnv, {
@@ -118949,7 +118949,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     database: sqlite,
     config,
     serverEnv,
-    dataDir: path16.dirname(databasePath)
+    dataDir: path17.dirname(databasePath)
   });
   mailLogSink = database.log;
   database.audit = createPrivilegedAuditEmitter(database.log);
@@ -119891,9 +119891,9 @@ function logRedactedValue() {
 }
 var transactionPendingLogWrites = Symbol("sporades.transactionPendingLogWrites");
 function createRuntimeLogSink(options) {
-  const path16 = requirePathModule();
-  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path16.join(options.dataDir, "logs", "events.jsonl");
-  mkdirSync(path16.dirname(logPath), { recursive: true });
+  const path17 = requirePathModule();
+  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path17.join(options.dataDir, "logs", "events.jsonl");
+  mkdirSync(path17.dirname(logPath), { recursive: true });
   return {
     path: logPath,
     withDatabase(database) {
@@ -128833,7 +128833,7 @@ function createHostReleaseRequest(options) {
     baseImage: baseImageMetadata(options.updatePolicyMode),
     inspection: options.requiredInspectors?.length ? { requiredInspectors: [...options.requiredInspectors] } : null,
     files,
-    deployFiles: (options.bundle.deployFiles ?? []).map(({ path: path16, update }) => ({ path: path16, update })),
+    deployFiles: (options.bundle.deployFiles ?? []).map(({ path: path17, update }) => ({ path: path17, update })),
     directories: {
       capsule: registration.directories.capsule,
       releases: registration.directories.releases,
@@ -129196,6 +129196,16 @@ Options:
   --json              Write JSON output
   --help, -h          Show this help
 `,
+  monitoring: `Usage: sporades monitoring stack <init|validate> [options]
+
+Generate or inspect the versioned trace stack from an installed Sporades package.
+Initialization creates a reviewable directory; it does not start services.
+
+Options:
+  --dir <path>        Target stack directory (default: current directory)
+  --json              Write { ok, data, error } JSON output
+  --help, -h          Show this help
+`,
   deploy: `Usage: sporades deploy [status|stop|restart|reconcile|remove|reset|ssh] [options]
 
 Start and manage a local Container session.
@@ -129313,6 +129323,7 @@ Options:
       security       Inspect effective Capsule security policy
       doctor         Run read-only Sporades diagnostics
       env            Manage Sealed Server env
+      monitoring     Generate and validate a monitoring stack
       deploy         Start a local Container session
       host           Manage Host profiles and Hosted Capsules
       logs           Print Dev session logs
@@ -129327,6 +129338,100 @@ Options:
 };
 function renderCliHelp(command) {
   return HELP_TEXT[command] ?? HELP_TEXT.default;
+}
+
+// src/cli/monitoring-stack.ts
+import { spawnSync } from "node:child_process";
+import { createHash as createHash13 } from "node:crypto";
+import { cp, lstat as lstat8, mkdir as mkdir7, readFile as readFile9, writeFile as writeFile6 } from "node:fs/promises";
+import path13 from "node:path";
+import { pathToFileURL as pathToFileURL4 } from "node:url";
+var STACK_SCHEMA = 1;
+var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "jaeger.yaml", "setup.mjs", "smoke.mjs"];
+function prerequisite() {
+  if (!["arm64", "x64"].includes(process.arch) || !["linux", "darwin"].includes(process.platform)) {
+    throw commandError("Unsupported monitoring stack architecture.", "Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.");
+  }
+  const compose = spawnSync("docker", ["compose", "version", "--short"], { encoding: "utf8" });
+  if (compose.error || compose.status !== 0) {
+    throw commandError("Docker Compose is unavailable.", "Install Docker Engine 29.x and Docker Compose 2.40.3 or later, then run this command again.");
+  }
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(compose.stdout.trim());
+  if (!match || Number(match[1]) < 2 || Number(match[1]) === 2 && (Number(match[2]) < 40 || Number(match[2]) === 40 && Number(match[3]) < 3)) {
+    throw commandError("Unsupported Docker Compose version.", "Install Docker Compose 2.40.3 or later.");
+  }
+}
+async function existingFile(filename) {
+  try {
+    return await lstat8(filename);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+async function runMonitoringStack(action, directory, packageRoot) {
+  prerequisite();
+  const source = path13.join(packageRoot, "monitoring", "trace");
+  const target = path13.resolve(directory);
+  const packageInfo = JSON.parse(await readFile9(path13.join(packageRoot, "package.json"), "utf8"));
+  const version3 = packageInfo.version;
+  const manifestPath = path13.join(target, "stack-manifest.json");
+  if (action === "init") await mkdir7(target, { recursive: true });
+  else if (!await existingFile(target)) throw commandError("Monitoring stack directory does not exist.", "Run `sporades monitoring stack init --dir <path>` first.");
+  const manifestStat = await existingFile(manifestPath);
+  let prior = null;
+  if (manifestStat) {
+    try {
+      prior = JSON.parse(await readFile9(manifestPath, "utf8"));
+    } catch {
+      throw commandError("Invalid monitoring stack manifest.", "Back up the directory and inspect stack-manifest.json before continuing.");
+    }
+  }
+  const versionDifference = prior && (prior.schemaVersion !== STACK_SCHEMA || prior.packageVersion !== version3) ? { installed: prior.packageVersion ?? "unknown", available: version3, schema: prior.schemaVersion ?? null } : null;
+  const created = [];
+  const overrides2 = [];
+  const missingAssets = [];
+  for (const name2 of ASSETS) {
+    const sourcePath = path13.join(source, name2 === ".gitignore" ? "gitignore.template" : name2);
+    const destination = path13.join(target, name2);
+    const sourceBytes = await readFile9(sourcePath);
+    const current2 = await existingFile(destination);
+    if (!current2 && action === "init") {
+      await cp(sourcePath, destination, { errorOnExist: true, force: false });
+      created.push(name2);
+    } else if (!current2) missingAssets.push(name2);
+    else {
+      if (!current2.isFile()) throw commandError(`Monitoring stack asset is not a regular file: ${name2}`, "Inspect the stack directory and remove unsafe links before continuing.");
+      const destinationBytes = await readFile9(destination);
+      if (createHash13("sha256").update(sourceBytes).digest("hex") !== createHash13("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
+    }
+  }
+  if (action === "init" && !manifestStat) {
+    await writeFile6(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3 }, null, 2)}
+`, { flag: "wx", mode: 420 });
+    created.push("stack-manifest.json");
+  }
+  let missing = [];
+  if (action === "init") {
+    const setup = await import(pathToFileURL4(path13.join(target, "setup.mjs")).href);
+    missing = (await setup.setupEnvironment(path13.join(target, ".env"))).missing;
+  } else {
+    const setup = await import(pathToFileURL4(path13.join(source, "setup.mjs")).href);
+    const env = await existingFile(path13.join(target, ".env"));
+    if (!env) missing = [".env"];
+    else missing = setup.inspectEnvironment(await readFile9(path13.join(target, ".env"), "utf8")).missing;
+  }
+  return {
+    path: target,
+    schemaVersion: STACK_SCHEMA,
+    packageVersion: version3,
+    created,
+    overrides: overrides2,
+    missingAssets,
+    versionDifference,
+    missing,
+    nextSteps: ["Review .env and fill missing settings", "Run `node setup.mjs` after editing .env", "Run `docker compose --env-file .compose.env up -d --build` from the stack directory", "Run `node smoke.mjs send` to verify stored traces"]
+  };
 }
 
 // src/cli/schedule-inspection-envelope.ts
@@ -129403,15 +129508,15 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 }
 
 // src/cli/doctor.ts
-import { spawn as spawn2, spawnSync } from "node:child_process";
-import { lstat as lstat8, readFile as readFile10, realpath as realpath4 } from "node:fs/promises";
+import { spawn as spawn2, spawnSync as spawnSync2 } from "node:child_process";
+import { lstat as lstat9, readFile as readFile11, realpath as realpath4 } from "node:fs/promises";
 import { connect } from "node:net";
-import path14 from "node:path";
+import path15 from "node:path";
 
 // src/cli/project-config.ts
-import { createHash as createHash13 } from "node:crypto";
-import { chmod, mkdir as mkdir7, readFile as readFile9, writeFile as writeFile6 } from "node:fs/promises";
-import path13 from "node:path";
+import { createHash as createHash14 } from "node:crypto";
+import { chmod, mkdir as mkdir8, readFile as readFile10, writeFile as writeFile7 } from "node:fs/promises";
+import path14 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -129447,7 +129552,7 @@ var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
   "teams"
 ]);
 async function readProjectConfig(projectDir) {
-  const configPath = path13.join(projectDir, "sporades.json");
+  const configPath = path14.join(projectDir, "sporades.json");
   const raw = await readRequiredFile2(
     configPath,
     "Missing project configuration: sporades.json",
@@ -129646,10 +129751,10 @@ async function resolveLocalContainerSshAccess(config, projectDir) {
   if (lines.length === 0) {
     return { enabled: false, authorizedKeysPath: null, keyCount: 0 };
   }
-  const sshDir = path13.join(projectDir, ".sporades", "ssh");
-  const authorizedKeysPath = path13.join(sshDir, "authorized_keys");
-  await mkdir7(sshDir, { recursive: true });
-  await writeFile6(authorizedKeysPath, `${lines.join("\n")}
+  const sshDir = path14.join(projectDir, ".sporades", "ssh");
+  const authorizedKeysPath = path14.join(sshDir, "authorized_keys");
+  await mkdir8(sshDir, { recursive: true });
+  await writeFile7(authorizedKeysPath, `${lines.join("\n")}
 `, { mode: 420 });
   await chmod(authorizedKeysPath, 420);
   return {
@@ -129700,7 +129805,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash13("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash14("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -129714,7 +129819,7 @@ function readBaseImageUpdatePolicy(config) {
 }
 async function readRequiredFile2(filePath, message, hint) {
   try {
-    return await readFile9(filePath, "utf8");
+    return await readFile10(filePath, "utf8");
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       throw commandError(message, hint);
@@ -129724,7 +129829,7 @@ async function readRequiredFile2(filePath, message, hint) {
 }
 async function readAuthorizedKeysFile(filePath, index) {
   try {
-    return await readFile9(filePath, "utf8");
+    return await readFile10(filePath, "utf8");
   } catch {
     throw commandError(
       `Unable to read SSH authorized key file at ssh.authorizedKeys[${index}].`,
@@ -129736,13 +129841,13 @@ function resolveProjectFileReference(filePath, projectDir) {
   if (filePath.startsWith("~/")) {
     const home = process.env.HOME;
     if (home) {
-      return path13.join(home, filePath.slice(2));
+      return path14.join(home, filePath.slice(2));
     }
   }
-  if (path13.isAbsolute(filePath)) {
+  if (path14.isAbsolute(filePath)) {
     return filePath;
   }
-  return path13.join(projectDir, filePath);
+  return path14.join(projectDir, filePath);
 }
 function normaliseAuthorizedKeyMaterial(material, source) {
   if (looksLikePrivateKey(material)) {
@@ -130000,7 +130105,7 @@ async function publicDevPostureCheck(options) {
 }
 async function readRunningPublicDevSession(projectDir) {
   try {
-    const session = JSON.parse(await readFile10(path14.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+    const session = JSON.parse(await readFile11(path15.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
     return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
   } catch {
     return false;
@@ -130056,9 +130161,9 @@ async function sshFollowUpCommand(options) {
 }
 async function capsuleAuthoringAclPostureCheck(options) {
   const projectDir = typeof options.projectDir === "string" ? options.projectDir : process.cwd();
-  const serverEntry = path14.join(projectDir, "server", "index.ts");
+  const serverEntry = path15.join(projectDir, "server", "index.ts");
   try {
-    const serverSource = await readFile10(serverEntry, "utf8");
+    const serverSource = await readFile11(serverEntry, "utf8");
     const serverModuleSource = await bundleServerCapsuleModule({
       serverSource,
       serverSourcePath: serverEntry
@@ -130248,7 +130353,7 @@ async function resolveHostedDoctorTarget(options) {
 }
 async function readDoctorRemoteBinding(projectDir) {
   try {
-    const binding = JSON.parse(await readFile10(path14.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
+    const binding = JSON.parse(await readFile11(path15.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
     return binding && typeof binding === "object" && !Array.isArray(binding) ? binding : null;
   } catch {
     return null;
@@ -130522,7 +130627,7 @@ async function runHostJsonCommand(args, projectDir) {
   });
 }
 async function devSessionChecks(options) {
-  const session = await readOptionalJsonFile(path14.join(options.projectDir, ".sporades", "dev-session.json"));
+  const session = await readOptionalJsonFile(path15.join(options.projectDir, ".sporades", "dev-session.json"));
   if (!session) {
     return [
       {
@@ -130535,7 +130640,7 @@ async function devSessionChecks(options) {
         hint: "Run `sporades dev status` to inspect Dev session state, or start one with `sporades dev`.",
         commands: ["sporades dev status"],
         details: {
-          bindingPath: path14.join(".sporades", "dev-session.json"),
+          bindingPath: path15.join(".sporades", "dev-session.json"),
           exists: false
         }
       },
@@ -130564,7 +130669,7 @@ async function devSessionChecks(options) {
       hint: bindingValid ? "Inspect live Dev state with `sporades dev status`." : "Restart the Dev session with `sporades dev`.",
       commands: ["sporades dev status"],
       details: {
-        bindingPath: path14.join(".sporades", "dev-session.json"),
+        bindingPath: path15.join(".sporades", "dev-session.json"),
         exists: true,
         port: bindingValid ? port : null,
         pid: session.pid ?? null,
@@ -130589,7 +130694,7 @@ async function devSessionChecks(options) {
   ];
 }
 async function localContainerChecks(options) {
-  const bindingPath = path14.join(options.projectDir, ".sporades", "binding.json");
+  const bindingPath = path15.join(options.projectDir, ".sporades", "binding.json");
   const binding = await readOptionalJsonFile(bindingPath);
   if (!binding?.containerId) {
     return [
@@ -130603,7 +130708,7 @@ async function localContainerChecks(options) {
         hint: "Run `sporades deploy status` to inspect local Container session state, or start one with `sporades deploy`.",
         commands: ["sporades deploy status"],
         details: {
-          bindingPath: path14.join(".sporades", "binding.json"),
+          bindingPath: path15.join(".sporades", "binding.json"),
           exists: false
         }
       }
@@ -130620,7 +130725,7 @@ async function localContainerChecks(options) {
       hint: "Inspect local Container state with `sporades deploy status`.",
       commands: ["sporades deploy status"],
       details: {
-        bindingPath: path14.join(".sporades", "binding.json"),
+        bindingPath: path15.join(".sporades", "binding.json"),
         exists: true,
         containerId: binding.containerId,
         containerName: binding.containerName ?? null
@@ -130735,7 +130840,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
       details: { framework: null, toolchain: null, htmlEntry: null, public: null }
     };
   }
-  const consumer = await readPublicTreeConsumer(path14.join(projectDir, ".sporades", "build"), "container").catch(() => null);
+  const consumer = await readPublicTreeConsumer(path15.join(projectDir, ".sporades", "build"), "container").catch(() => null);
   if (!consumer || consumer.tree !== release.publicTree || consumer.token !== release.consumerToken || consumer.identity !== binding.containerId) {
     return {
       id: "doctor.container.client-release",
@@ -130764,12 +130869,12 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
   }
   const source = publicMount.Source ?? publicMount.SourcePath;
   try {
-    const expected = path14.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
+    const expected = path15.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
     const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
       realpath4(source),
       realpath4(expected),
-      lstat8(source),
-      lstat8(expected)
+      lstat9(source),
+      lstat9(expected)
     ]);
     if (sourceStats.isSymbolicLink() || expectedStats.isSymbolicLink() || !expectedStats.isDirectory() || actualRoot !== expectedRoot) {
       throw new Error("unsafe-or-mismatched-public-root");
@@ -130881,16 +130986,16 @@ function localCapsuleServicesFromConfig(config, projectDir) {
     return null;
   }
   return {
-    path: path14.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path15.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
 }
 async function generatedComposeCheck(capsuleServices, projectDir, scope) {
-  const composePath = path14.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path15.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   let raw = "";
   try {
-    raw = await readFile10(composePath, "utf8");
+    raw = await readFile11(composePath, "utf8");
   } catch (error) {
     if (errorDetails(error).code !== "ENOENT") {
       throw error;
@@ -130941,7 +131046,7 @@ async function capsuleServicesRuntimeStateCheck(capsuleServices, projectDir, sco
       },
       volume: {
         type: "bind",
-        path: path14.join(CAPSULE_SERVICES_STATE_DIR, name2),
+        path: path15.join(CAPSULE_SERVICES_STATE_DIR, name2),
         exists: volumeExists
       },
       containerName: service.name,
@@ -130968,7 +131073,7 @@ async function capsuleServicesRuntimeStateCheck(capsuleServices, projectDir, sco
   };
 }
 function dockerAvailabilityCheck(scope, required, idScope = scope) {
-  const result = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], { encoding: "utf8" });
+  const result = spawnSync2("docker", ["version", "--format", "{{.Server.Version}}"], { encoding: "utf8" });
   const ok = result.status === 0;
   return {
     id: `doctor.${idScope}.docker-availability`,
@@ -130987,7 +131092,7 @@ function dockerAvailabilityCheck(scope, required, idScope = scope) {
   };
 }
 function dockerComposeAvailabilityCheck(scope, required) {
-  const result = spawnSync("docker", ["compose", "version"], { encoding: "utf8" });
+  const result = spawnSync2("docker", ["compose", "version"], { encoding: "utf8" });
   const ok = result.status === 0;
   return {
     id: "doctor.services.compose-availability",
@@ -131006,7 +131111,7 @@ function dockerComposeAvailabilityCheck(scope, required) {
   };
 }
 function inspectDockerJson(args, cwd) {
-  const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
+  const result = spawnSync2("docker", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
     return { ok: false, error: result.stderr?.trim() || result.stdout?.trim() || `docker ${args.join(" ")} failed` };
   }
@@ -131028,7 +131133,7 @@ function inspectComposeService(composePath, serviceName, cwd) {
   };
 }
 function inspectComposeServicePort(composePath, serviceName, targetPort, cwd) {
-  const result = spawnSync("docker", ["compose", "-f", composePath, "port", serviceName, String(targetPort)], { cwd, encoding: "utf8" });
+  const result = spawnSync2("docker", ["compose", "-f", composePath, "port", serviceName, String(targetPort)], { cwd, encoding: "utf8" });
   if (result.status !== 0) {
     return null;
   }
@@ -131036,24 +131141,24 @@ function inspectComposeServicePort(composePath, serviceName, targetPort, cwd) {
   return match ? { host: match[1], port: Number(match[2]), targetPort } : null;
 }
 function dockerStatus(args, cwd) {
-  return spawnSync("docker", args, { cwd, encoding: "utf8" }).status;
+  return spawnSync2("docker", args, { cwd, encoding: "utf8" }).status;
 }
 async function readOptionalJsonFile(filePath) {
   try {
-    return JSON.parse(await readFile10(filePath, "utf8"));
+    return JSON.parse(await readFile11(filePath, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return null;
     }
     if (error instanceof SyntaxError) {
-      throw commandError(`Invalid Runtime metadata: ${path14.basename(filePath)}`, `Delete or fix ${path14.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
+      throw commandError(`Invalid Runtime metadata: ${path15.basename(filePath)}`, `Delete or fix ${path15.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
     }
     throw error;
   }
 }
 async function pathExists(targetPath) {
   try {
-    await lstat8(targetPath);
+    await lstat9(targetPath);
     return true;
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
@@ -131359,11 +131464,11 @@ var CLI_VERSION = "0.9.30";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
-var DEV_SESSION_FILE = path15.join(".sporades", "dev-session.json");
-var DEV_DATABASE_ENV_FILE = path15.join(".sporades", "dev-database-env.json");
+var DEV_SESSION_FILE = path16.join(".sporades", "dev-session.json");
+var DEV_DATABASE_ENV_FILE = path16.join(".sporades", "dev-database-env.json");
 var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
-var CONTAINER_BINDING_FILE = path15.join(".sporades", "binding.json");
-var REMOTE_BINDING_FILE = path15.join(".sporades", "remote-binding.json");
+var CONTAINER_BINDING_FILE = path16.join(".sporades", "binding.json");
+var REMOTE_BINDING_FILE = path16.join(".sporades", "remote-binding.json");
 var DEV_REBUILD_DEBOUNCE_MS = 100;
 var DEV_WATCH_SIGNATURE_POLL_MS = 250;
 var DEFAULT_HOST_SCHEME = "https";
@@ -131375,7 +131480,7 @@ var MAX_HOST_LOG_LINES = 1e4;
 var HOST_LOG_SOURCES = /* @__PURE__ */ new Set(["http", "stdout", "stderr"]);
 var HOST_HEALTH_PATH = "/__sporades/health";
 var DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW = ".github/workflows/sporades-autodeploy.yml";
-var CLI_ROOT = path15.resolve(path15.dirname(fileURLToPath3(import.meta.url)), "..");
+var CLI_ROOT = path16.resolve(path16.dirname(fileURLToPath3(import.meta.url)), "..");
 main().catch((error) => {
   writeResult(
     {
@@ -131459,6 +131564,39 @@ async function main() {
       }
       await manageEnv(parseEnvArgs(args));
       return;
+    case "monitoring": {
+      if (isHelp) {
+        printHelp("monitoring");
+        return;
+      }
+      if (args[0] !== "stack" || !["init", "validate"].includes(args[1] ?? "")) {
+        throw commandError("Unknown monitoring operation.", "Use `sporades monitoring stack init|validate --dir <path>`.");
+      }
+      let directory = process.cwd();
+      let json = false;
+      for (let index = 2; index < args.length; index++) {
+        if (args[index] === "--dir") directory = readFlagValue(args, ++index, "--dir");
+        else if (args[index] === "--json") json = true;
+        else throw commandError("Unknown monitoring option.", "Use `--dir <path>` and optional `--json`.");
+      }
+      const data2 = await runMonitoringStack(args[1], directory, resolveSporadesPackageRoot());
+      if (json) writeResult({ ok: true, data: data2, error: null });
+      else {
+        process.stdout.write(`Monitoring stack ${args[1]}: ${data2.path}
+`);
+        if (data2.missing.length) process.stdout.write(`Missing settings: ${data2.missing.join(", ")}
+`);
+        if (data2.missingAssets.length) process.stdout.write(`Missing stack files: ${data2.missingAssets.join(", ")}
+`);
+        if (data2.versionDifference) process.stdout.write(`Stack version differs: installed ${data2.versionDifference.installed}, package ${data2.versionDifference.available}. Review overrides before upgrading.
+`);
+        if (data2.overrides.length) process.stdout.write(`Preserved local files: ${data2.overrides.join(", ")}
+`);
+        for (const step of data2.nextSteps) process.stdout.write(`${step}
+`);
+      }
+      return;
+    }
     case "deploy":
       if (isHelp) {
         printHelp("deploy");
@@ -131606,7 +131744,7 @@ function parseCreateArgs(args) {
     const details = clientCapabilityError(framework, toolchain);
     throw commandError(details.message, details.hint);
   }
-  const localTemplateDir = isLocalTemplateReference(template) ? path15.resolve(process.cwd(), template) : null;
+  const localTemplateDir = isLocalTemplateReference(template) ? path16.resolve(process.cwd(), template) : null;
   if (!SUPPORTED_TEMPLATES.has(template) && !localTemplateDir) {
     throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }
@@ -131619,11 +131757,11 @@ function parseCreateArgs(args) {
     install,
     git,
     json,
-    projectDir: path15.resolve(process.cwd(), name2)
+    projectDir: path16.resolve(process.cwd(), name2)
   };
 }
 function isLocalTemplateReference(value) {
-  return path15.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
+  return path16.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
 }
 function parseDevArgs(args) {
   const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "reset"]);
@@ -131867,12 +132005,12 @@ async function manageOperatorAccessKeys(options) {
       throw commandError("No running Sporades dev session found.", "Start one with `sporades dev`, then retry the Access-key operation.");
     }
     const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "access-keys");
-    const bundle = path15.join(options.projectDir, ".sporades", "build", "server.mjs");
-    const result = spawnSync2(process.execPath, [bundle, ...accessKeyActionArgs(options)], {
+    const bundle = path16.join(options.projectDir, ".sporades", "build", "server.mjs");
+    const result = spawnSync3(process.execPath, [bundle, ...accessKeyActionArgs(options)], {
       cwd: options.projectDir,
       encoding: "utf8",
       maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER,
-      env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path15.join(options.projectDir, ".sporades", "data.db") }
+      env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path16.join(options.projectDir, ".sporades", "data.db") }
     });
     envelope = parseAccessKeyOperatorProcess(result, options, "Restart `sporades dev` to refresh the generated Bundle, then retry the Access-key operation.");
   } else if (options.session === "container") {
@@ -131884,7 +132022,7 @@ async function manageOperatorAccessKeys(options) {
       "Check Docker and retry the Access-key operation."
     );
     if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry the Access-key operation.");
-    const result = spawnSync2("docker", ["exec", binding.containerId, "node", "/app/server.mjs", ...accessKeyActionArgs(options)], {
+    const result = spawnSync3("docker", ["exec", binding.containerId, "node", "/app/server.mjs", ...accessKeyActionArgs(options)], {
       cwd: options.projectDir,
       encoding: "utf8",
       maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER
@@ -132588,7 +132726,7 @@ function parseHostArgs(args) {
   }
 }
 function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
-  const resolvedPath = path15.resolve(projectDir, clientJsonPath);
+  const resolvedPath = path16.resolve(projectDir, clientJsonPath);
   let raw;
   try {
     raw = readFileSync2(resolvedPath, "utf8");
@@ -132758,16 +132896,16 @@ async function createProject(options) {
     await createProjectFromLocalTemplate(options);
     return;
   }
-  await mkdir8(options.projectDir, { recursive: false });
+  await mkdir9(options.projectDir, { recursive: false });
   const files = scaffoldFiles({
     ...options,
     sporadesDependency: defaultSporadesDependency()
   });
   await Promise.all(
     Object.entries(files).map(async ([relativePath, contents]) => {
-      const filePath = path15.join(options.projectDir, relativePath);
-      await mkdir8(path15.dirname(filePath), { recursive: true });
-      await writeFile7(filePath, contents);
+      const filePath = path16.join(options.projectDir, relativePath);
+      await mkdir9(path16.dirname(filePath), { recursive: true });
+      await writeFile8(filePath, contents);
     })
   );
   if (options.install) {
@@ -132778,25 +132916,25 @@ async function createProject(options) {
   }
 }
 async function createProjectFromLocalTemplate(options) {
-  const sourceDir = path15.resolve(options.localTemplateDir);
-  const projectDir = path15.resolve(options.projectDir);
+  const sourceDir = path16.resolve(options.localTemplateDir);
+  const projectDir = path16.resolve(options.projectDir);
   let sourceStat;
   try {
-    sourceStat = await lstat9(sourceDir);
+    sourceStat = await lstat10(sourceDir);
   } catch {
     throw commandError(`Local template not found: ${options.template}`, "Pass a readable template directory.");
   }
   if (!sourceStat.isDirectory()) {
     throw commandError(`Local template is not a directory: ${options.template}`, "Pass a readable template directory.");
   }
-  const relativeDestination = path15.relative(sourceDir, projectDir);
-  if (!relativeDestination || !relativeDestination.startsWith("..") && !path15.isAbsolute(relativeDestination)) {
+  const relativeDestination = path16.relative(sourceDir, projectDir);
+  if (!relativeDestination || !relativeDestination.startsWith("..") && !path16.isAbsolute(relativeDestination)) {
     throw commandError("The scaffold destination cannot be inside the local template.", "Choose a project name outside the template directory.");
   }
   const ignoreRules = await readLocalTemplateIgnoreRules(sourceDir);
-  await mkdir8(projectDir, { recursive: false });
+  await mkdir9(projectDir, { recursive: false });
   try {
-    await cp(sourceDir, projectDir, {
+    await cp2(sourceDir, projectDir, {
       recursive: true,
       filter: (sourcePath) => shouldCopyLocalTemplatePath(sourceDir, sourcePath, ignoreRules)
     });
@@ -132815,7 +132953,7 @@ async function createProjectFromLocalTemplate(options) {
 async function readLocalTemplateIgnoreRules(sourceDir) {
   let contents = "";
   try {
-    contents = await readFile11(path15.join(sourceDir, ".gitignore"), "utf8");
+    contents = await readFile12(path16.join(sourceDir, ".gitignore"), "utf8");
   } catch {
     return [];
   }
@@ -132830,7 +132968,7 @@ async function readLocalTemplateIgnoreRules(sourceDir) {
   });
 }
 function shouldCopyLocalTemplatePath(sourceDir, sourcePath, rules) {
-  const relative = path15.relative(sourceDir, sourcePath).split(path15.sep).join("/");
+  const relative = path16.relative(sourceDir, sourcePath).split(path16.sep).join("/");
   if (!relative) return true;
   const first = relative.split("/")[0];
   if (first === ".git" || first === "node_modules" || first === ".sporades") return false;
@@ -132842,13 +132980,13 @@ function shouldCopyLocalTemplatePath(sourceDir, sourcePath, rules) {
   return !ignored;
 }
 async function finalizeLocalTemplateProject(options, projectDir) {
-  const packagePath = path15.join(projectDir, "package.json");
-  const configPath = path15.join(projectDir, "sporades.json");
+  const packagePath = path16.join(projectDir, "package.json");
+  const configPath = path16.join(projectDir, "sporades.json");
   let packageJson;
   let projectConfig;
   try {
-    packageJson = JSON.parse(await readFile11(packagePath, "utf8"));
-    projectConfig = JSON.parse(await readFile11(configPath, "utf8"));
+    packageJson = JSON.parse(await readFile12(packagePath, "utf8"));
+    projectConfig = JSON.parse(await readFile12(configPath, "utf8"));
   } catch {
     throw commandError(
       "Local template must include valid package.json and sporades.json files.",
@@ -132885,9 +133023,9 @@ async function finalizeLocalTemplateProject(options, projectDir) {
     }
   };
   const nextConfig = { ...projectConfig, name: options.name };
-  await writeFile7(packagePath, `${JSON.stringify(nextPackage, null, 2)}
+  await writeFile8(packagePath, `${JSON.stringify(nextPackage, null, 2)}
 `);
-  await writeFile7(configPath, `${JSON.stringify(nextConfig, null, 2)}
+  await writeFile8(configPath, `${JSON.stringify(nextConfig, null, 2)}
 `);
 }
 async function runDoctor(options) {
@@ -132903,7 +133041,7 @@ async function runDoctor(options) {
   }
 }
 function defaultSporadesDependency() {
-  const packageJsonPath = path15.join(CLI_ROOT, "package.json");
+  const packageJsonPath = path16.join(CLI_ROOT, "package.json");
   try {
     const packageJson = JSON.parse(readFileSync2(packageJsonPath, "utf8"));
     if (typeof packageJson.version === "string" && packageJson.version.trim()) {
@@ -133018,11 +133156,11 @@ async function inspectDevJobs(options) {
     throw commandError("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir);
-  const bundle = path15.join(options.projectDir, ".sporades", "build", "server.mjs");
-  const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
+  const bundle = path16.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const result = spawnSync3(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path15.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path16.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
 }
@@ -133034,17 +133172,17 @@ async function inspectDevSchedules(options) {
     throw commandError("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades schedules`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "schedules");
-  const bundle = path15.join(options.projectDir, ".sporades", "build", "server.mjs");
-  const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "schedules.inspect"], {
+  const bundle = path16.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const result = spawnSync3(process.execPath, [bundle, "--sporades-action", "schedules.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path15.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path16.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades schedules`.");
 }
 async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
   try {
-    return JSON.parse(await readFile11(path15.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+    return JSON.parse(await readFile12(path16.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
   } catch (error) {
     if (errorDetails(error).code !== "ENOENT") throw commandError("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
   }
@@ -133057,9 +133195,9 @@ async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
 }
 async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
-  const filePath = path15.join(projectDir, DEV_DATABASE_ENV_FILE);
-  await mkdir8(path15.dirname(filePath), { recursive: true });
-  const previous = await readFile11(filePath).catch((error) => {
+  const filePath = path16.join(projectDir, DEV_DATABASE_ENV_FILE);
+  await mkdir9(path16.dirname(filePath), { recursive: true });
+  const previous = await readFile12(filePath).catch((error) => {
     if (errorDetails(error).code === "ENOENT") return null;
     throw error;
   });
@@ -133073,7 +133211,7 @@ async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
 async function replaceFileAtomically(filePath, contents) {
   const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
-    await writeFile7(temporaryPath, contents, { mode: 384 });
+    await writeFile8(temporaryPath, contents, { mode: 384 });
     await rename6(temporaryPath, filePath);
   } finally {
     await rm8(temporaryPath, { force: true });
@@ -133088,7 +133226,7 @@ async function inspectContainerJobs(options) {
     "Check Docker and retry `sporades deploy jobs`."
   );
   if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy jobs`.");
-  const result = spawnSync2("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "jobs.inspect"], { cwd: options.projectDir, encoding: "utf8" });
+  const result = spawnSync3("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "jobs.inspect"], { cwd: options.projectDir, encoding: "utf8" });
   parseInspectionProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy jobs`.");
 }
 async function inspectContainerSchedules(options) {
@@ -133100,7 +133238,7 @@ async function inspectContainerSchedules(options) {
     "Check Docker and retry `sporades deploy schedules`."
   );
   if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy schedules`.");
-  const result = spawnSync2("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "schedules.inspect"], { cwd: options.projectDir, encoding: "utf8" });
+  const result = spawnSync3("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "schedules.inspect"], { cwd: options.projectDir, encoding: "utf8" });
   let envelope;
   try {
     envelope = JSON.parse(result.stdout.trim());
@@ -133203,8 +133341,8 @@ async function startDevSession(options) {
   });
   let runtimeServiceEnv = capsuleServiceEnv;
   const inspectionToken = createDevInspectionToken();
-  const sessionFilePath = path15.join(options.projectDir, DEV_SESSION_FILE);
-  const databasePath = path15.join(options.projectDir, ".sporades", "data.db");
+  const sessionFilePath = path16.join(options.projectDir, DEV_SESSION_FILE);
+  const databasePath = path16.join(options.projectDir, ".sporades", "data.db");
   const runtime = await createDevRuntime({
     projectDir: options.projectDir,
     databasePath,
@@ -133389,7 +133527,7 @@ async function startDevSession(options) {
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
   const url = `http://localhost:${actualPort}`;
-  await writeFile7(
+  await writeFile8(
     sessionFilePath,
     `${JSON.stringify(
       {
@@ -133677,7 +133815,7 @@ async function startDevSession(options) {
     for (const watcher of watchers) {
       watcher.close();
     }
-    rm8(path15.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
+    rm8(path16.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
     });
     websocketHub.disconnectAll();
     let shutdownError;
@@ -133737,22 +133875,22 @@ var stripeCallbackFactoryPromise;
 var stripeTeamBillingProviderFactoryPromise;
 async function stripeCallbackFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
-  stripeCallbackFactoryPromise ??= import(pathToFileURL4(
-    path15.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
+  stripeCallbackFactoryPromise ??= import(pathToFileURL5(
+    path16.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
   ).href).then((module) => module.createStripeCallbackEndpoint);
   return await stripeCallbackFactoryPromise;
 }
 async function stripeTeamBillingProviderFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
-  stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL4(
-    path15.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js")
+  stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL5(
+    path16.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js")
   ).href).then((module) => module.createStripeTeamBillingProvider);
   return await stripeTeamBillingProviderFactoryPromise;
 }
 async function createDevRuntime(options) {
   let clamavSidecar;
   const attachRequiredSidecar = async (candidate) => {
-    const attached = await attachRequiredDevClamavSidecar(clamavSidecar, candidate, async () => await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path15.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() }));
+    const attached = await attachRequiredDevClamavSidecar(clamavSidecar, candidate, async () => await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path16.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() }));
     clamavSidecar = attached.sidecar;
     return attached.attached;
   };
@@ -133870,15 +134008,15 @@ async function importCapsuleDefinition(moduleSource) {
 }
 function watchDevInputs(projectDir, onChange, clientDependencies = () => [], initialDependencySignatures = /* @__PURE__ */ new Map()) {
   const baseWatchedPaths = [
-    { path: path15.join(projectDir, "server"), affectsServerRuntime: true },
-    { path: path15.join(projectDir, "client"), affectsServerRuntime: false },
-    { path: path15.join(projectDir, "shared"), affectsServerRuntime: true },
-    { path: path15.join(projectDir, "index.html"), affectsServerRuntime: false },
-    { path: path15.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
+    { path: path16.join(projectDir, "server"), affectsServerRuntime: true },
+    { path: path16.join(projectDir, "client"), affectsServerRuntime: false },
+    { path: path16.join(projectDir, "shared"), affectsServerRuntime: true },
+    { path: path16.join(projectDir, "index.html"), affectsServerRuntime: false },
+    { path: path16.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
   ];
   const watchedPaths = () => [
     ...baseWatchedPaths,
-    ...clientDependencies().filter((file) => !baseWatchedPaths.some((base) => file === base.path || file.startsWith(`${base.path}${path15.sep}`))).map((file) => ({ path: file, affectsServerRuntime: false, dependency: true }))
+    ...clientDependencies().filter((file) => !baseWatchedPaths.some((base) => file === base.path || file.startsWith(`${base.path}${path16.sep}`))).map((file) => ({ path: file, affectsServerRuntime: false, dependency: true }))
   ];
   const watchers = [];
   let debounceTimer = null;
@@ -133999,7 +134137,7 @@ function collectPathSignature(filePath, entries, dependencyDirectories) {
       return;
     }
     for (const child of children) {
-      const childPath = path15.join(filePath, child);
+      const childPath = path16.join(filePath, child);
       if (dependencyDirectories) {
         let link2;
         try {
@@ -134081,7 +134219,7 @@ async function manageAuth(options) {
   switch (options.subcommand) {
     case "status": {
       const config2 = await readProjectConfig(options.projectDir);
-      const envPath2 = path15.join(options.projectDir, ".env.sporades.server");
+      const envPath2 = path16.join(options.projectDir, ".env.sporades.server");
       const serverEnv = parseServerEnv(await readServerEnvFile(envPath2));
       const status2 = authStatus(config2, serverEnv);
       if (options.json) {
@@ -134145,7 +134283,7 @@ async function manageAuth(options) {
     default:
       break;
   }
-  const configPath = path15.join(options.projectDir, "sporades.json");
+  const configPath = path16.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
   const existingAuth = config.auth && typeof config.auth === "object" ? config.auth : {};
   const existingProviders = existingAuth.providers && typeof existingAuth.providers === "object" ? { ...existingAuth.providers } : {};
@@ -134186,7 +134324,7 @@ async function manageAuth(options) {
     mode: options.disable && existingAuth.mode === options.provider ? enabledSibling ?? "anonymous" : options.disable ? existingAuth.mode ?? "anonymous" : options.provider,
     providers: existingProviders
   };
-  const envPath = path15.join(options.projectDir, ".env.sporades.server");
+  const envPath = path16.join(options.projectDir, ".env.sporades.server");
   await writeAuthConfiguration(configPath, envPath, config, envValues);
   const status = authStatus(config, parseServerEnv(await readServerEnvFile(envPath)));
   if (options.json) {
@@ -134236,7 +134374,7 @@ async function manageEnv(options) {
           }
           values = unsealServerEnv(existingEnvelope, keyPair.privateKey);
         } else {
-          values = parseServerEnv(await readServerEnvFile(path15.join(options.projectDir, ".env.sporades.server")));
+          values = parseServerEnv(await readServerEnvFile(path16.join(options.projectDir, ".env.sporades.server")));
           keyPair = await ensureSealedServerEnvKeyPair(paths);
         }
         values[options.name] = value;
@@ -134260,7 +134398,7 @@ async function manageEnv(options) {
     case "has": {
       const envelope = await readSealedServerEnv(paths);
       const defined = envelope ? Object.hasOwn(envelope.entries, options.name) : Object.hasOwn(
-        parseServerEnv(await readServerEnvFile(path15.join(options.projectDir, ".env.sporades.server"))),
+        parseServerEnv(await readServerEnvFile(path16.join(options.projectDir, ".env.sporades.server"))),
         options.name
       );
       if (options.json) {
@@ -134288,7 +134426,7 @@ async function manageEnv(options) {
     }
     case "import": {
       await withSealedServerEnvMutationLock(paths, async () => {
-        const envPath = path15.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+        const envPath = path16.resolve(options.projectDir, options.file ?? ".env.sporades.server");
         if (options.sealed) {
           const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
           await writeSealedServerEnv(paths, envelope2);
@@ -134296,20 +134434,20 @@ async function manageEnv(options) {
             ...envelopeSummary(envelope2, paths),
             imported: true,
             sealed: true,
-            source: normalisePathForOutput(path15.relative(options.projectDir, envPath) || envPath)
+            source: normalisePathForOutput(path16.relative(options.projectDir, envPath) || envPath)
           });
           return;
         }
         const env = parseServerEnv(await readServerEnvFile(envPath));
         const keyPair = await ensureSealedServerEnvKeyPair(paths);
         const envelope = sealServerEnv(env, keyPair.publicKey, {
-          source: normalisePathForOutput(path15.relative(options.projectDir, envPath) || envPath)
+          source: normalisePathForOutput(path16.relative(options.projectDir, envPath) || envPath)
         });
         await writeSealedServerEnv(paths, envelope);
         await writeEnvResult(options, {
           ...envelopeSummary(envelope, paths),
           imported: true,
-          source: normalisePathForOutput(path15.relative(options.projectDir, envPath) || envPath),
+          source: normalisePathForOutput(path16.relative(options.projectDir, envPath) || envPath),
           privateKeyConfigured: true
         });
       });
@@ -134321,7 +134459,7 @@ async function manageEnv(options) {
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         privateKeyConfigured: Boolean(keyPair?.privateKey),
-        legacyServerEnvFilePresent: (await readServerEnvFile(path15.join(options.projectDir, ".env.sporades.server"))).exists
+        legacyServerEnvFilePresent: (await readServerEnvFile(path16.join(options.projectDir, ".env.sporades.server"))).exists
       });
       return;
     }
@@ -134332,15 +134470,15 @@ async function manageEnv(options) {
       }
       const exported = exportedEnvelope(envelope);
       if (options.output) {
-        const outputPath = path15.resolve(options.projectDir, options.output);
-        await mkdir8(path15.dirname(outputPath), { recursive: true });
-        await writeFile7(outputPath, `${JSON.stringify(exported, null, 2)}
+        const outputPath = path16.resolve(options.projectDir, options.output);
+        await mkdir9(path16.dirname(outputPath), { recursive: true });
+        await writeFile8(outputPath, `${JSON.stringify(exported, null, 2)}
 `, { mode: 384 });
       }
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         exported: true,
-        outputPath: options.output ? path15.resolve(options.projectDir, options.output) : null,
+        outputPath: options.output ? path16.resolve(options.projectDir, options.output) : null,
         envelope: options.output ? null : exported
       });
       return;
@@ -134364,12 +134502,12 @@ async function manageEnv(options) {
         hostDomain: profile.domain,
         ...options.subname ? { subname: options.subname } : {}
       });
-      const hostEnvelopePath = path15.join(
+      const hostEnvelopePath = path16.join(
         paths.hosts,
         options.subname ? `${options.hostAlias}.${options.subname}.server-env.sealed.json` : `${options.hostAlias}.server-env.sealed.json`
       );
-      await mkdir8(path15.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
-      await writeFile7(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
+      await mkdir9(path16.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
+      await writeFile8(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
 `, { mode: 384 });
       if (!options.subname) {
         await writeHostConfig(hostConfig);
@@ -134395,7 +134533,7 @@ function stripOneTrailingLineEnding(value) {
 async function readPortableSealedServerEnvEnvelope(filePath) {
   let envelope;
   try {
-    envelope = JSON.parse(await readFile11(filePath, "utf8"));
+    envelope = JSON.parse(await readFile12(filePath, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       throw commandError(
@@ -134443,7 +134581,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash14("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash15("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -134562,9 +134700,9 @@ async function manageHost(options) {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
       const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
-      const bindingPath = path15.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir8(path15.dirname(bindingPath), { recursive: true });
-      await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
+      const bindingPath = path16.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir9(path16.dirname(bindingPath), { recursive: true });
+      await writeFile8(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       if (options.json) {
         writeResult({ ok: true, data: { bindingPath, binding, localOnly: true, authoritative: false }, error: null });
@@ -134602,9 +134740,9 @@ async function manageHost(options) {
           "Upgrade the Host helper and inspect the remote registration before retrying. The canonical Capsule may have been registered, but alias ownership is unconfirmed; no local binding was written."
         );
       }
-      const bindingPath = path15.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir8(path15.dirname(bindingPath), { recursive: true });
-      await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
+      const bindingPath = path16.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir9(path16.dirname(bindingPath), { recursive: true });
+      await writeFile8(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       const data2 = {
         ...result.data,
@@ -135094,7 +135232,7 @@ async function resolveLocalContainerSshAccessForAudit(config, projectDir, surfac
 }
 async function emitCliSshAuditEvent(config, projectDir, details) {
   const logPath = projectLogPath(config, projectDir);
-  await mkdir8(path15.dirname(logPath), { recursive: true });
+  await mkdir9(path16.dirname(logPath), { recursive: true });
   const input = createPrivilegedAuditLogInput({
     actorKind: "platform",
     source: "cli",
@@ -135127,27 +135265,27 @@ function explicitSshConfigured(config) {
   return Boolean(config && typeof config === "object" && Object.hasOwn(config, "ssh"));
 }
 function projectLogPath(config, projectDir) {
-  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path15.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
+  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path16.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
 }
 function readProjectConfigSync(projectDir) {
-  const raw = readFileSync2(path15.join(projectDir, "sporades.json"), "utf8");
+  const raw = readFileSync2(path16.join(projectDir, "sporades.json"), "utf8");
   return JSON.parse(raw);
 }
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4e3;
-  const runtimeDir = path15.join(options.projectDir, ".sporades");
-  const containerName = `sporades-${config.name ?? path15.basename(options.projectDir)}`;
-  const bindingPath = path15.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const runtimeDir = path16.join(options.projectDir, ".sporades");
+  const containerName = `sporades-${config.name ?? path16.basename(options.projectDir)}`;
+  const bindingPath = path16.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
-  const previousConsumer = await readPublicTreeConsumer(path15.join(runtimeDir, "build"), "container");
+  const previousConsumer = await readPublicTreeConsumer(path16.join(runtimeDir, "build"), "container");
   verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
-  const dataDir = path15.join(runtimeDir, "data");
+  const dataDir = path16.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
-  await mkdir8(dataDir, { recursive: true });
+  await mkdir9(dataDir, { recursive: true });
   await prepareRuntimeDataPath(dataDir);
   const updatePolicyMode = readBaseImageUpdatePolicy(config);
   const containerCapsuleServices = await startCapsuleServices(capsuleServices, options.projectDir, {
@@ -135164,7 +135302,7 @@ async function startContainerSession(options) {
     clientRelease = {
       framework: config.client?.framework ?? "react",
       toolchain: configuredClientToolchain(config),
-      publicTree: path15.basename(bundle.staticFiles.publicDir),
+      publicTree: path16.basename(bundle.staticFiles.publicDir),
       ...await summarizePublicTree(bundle.staticFiles.publicDir)
     };
   } catch (error) {
@@ -135214,18 +135352,18 @@ async function startContainerSession(options) {
     "127.0.0.1::22"
   ] : [];
   if (bundle.deployFiles.length) {
-    await mkdir8(path15.join(runtimeDir, "deploy-files"), { recursive: true, mode: 448 });
-    await chmod2(path15.join(runtimeDir, "deploy-files"), 448);
+    await mkdir9(path16.join(runtimeDir, "deploy-files"), { recursive: true, mode: 448 });
+    await chmod2(path16.join(runtimeDir, "deploy-files"), 448);
   }
-  const deployReleaseRoot = path15.join(runtimeDir, "deploy-files", randomBytes9(16).toString("hex"));
-  const preservedRoot = path15.join(runtimeDir, "preserved-files");
+  const deployReleaseRoot = path16.join(runtimeDir, "deploy-files", randomBytes9(16).toString("hex"));
+  const preservedRoot = path16.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
   const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0);
   try {
     for (const file of bundle.deployFiles) {
-      const destination = path15.join(deployReleaseRoot, file.path);
-      await mkdir8(path15.dirname(destination), { recursive: true });
-      await writeFile7(destination, file.contents, { mode: 420 });
+      const destination = path16.join(deployReleaseRoot, file.path);
+      await mkdir9(path16.dirname(destination), { recursive: true });
+      await writeFile8(destination, file.contents, { mode: 420 });
     }
     await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, void 0, createdSeeds, seedJournal);
   } catch (error) {
@@ -135356,7 +135494,7 @@ async function startContainerSession(options) {
       containerName,
       clientRelease,
       pendingDeployFileCleanup: [...existingBinding?.pendingDeployFileCleanup ?? [], ...existingBinding?.deployFilesRoot ? [existingBinding.deployFilesRoot] : []],
-      ...bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path: path16, update }) => ({ path: path16, update })) } : {},
+      ...bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path: path17, update }) => ({ path: path17, update })) } : {},
       ...sshAccess.enabled ? {
         ssh: {
           enabled: true,
@@ -135579,7 +135717,7 @@ async function awaitContainerRuntimeReadiness(options) {
 }
 async function inspectLocalContainerSsh(options) {
   const config = await readProjectConfig(options.projectDir);
-  const bindingPath = path15.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path16.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     const data3 = localContainerSshState({
@@ -135675,7 +135813,7 @@ function inspectDockerContainer(projectDir, containerId) {
   return JSON.parse(output);
 }
 function inspectDockerContainerOptional(projectDir, containerId) {
-  const result = spawnSync2("docker", ["inspect", "--format", "{{json .}}", containerId], { cwd: projectDir, encoding: "utf8" });
+  const result = spawnSync3("docker", ["inspect", "--format", "{{json .}}", containerId], { cwd: projectDir, encoding: "utf8" });
   if (result.status === 0) return JSON.parse(result.stdout.trim());
   if (isMissingDockerContainerError(result)) return null;
   throw commandError("Failed to inspect the existing Container session.", "Check Docker is running, then retry deployment.");
@@ -135759,7 +135897,7 @@ async function fetchInspectionDatabase(options) {
   ) ?? inspectContainerDatabase(options);
 }
 async function readDevSession(projectDir) {
-  const sessionPath = path15.join(projectDir, DEV_SESSION_FILE);
+  const sessionPath = path16.join(projectDir, DEV_SESSION_FILE);
   const raw = await readRequiredFile3(
     sessionPath,
     "No running Sporades dev session found.",
@@ -135834,7 +135972,7 @@ function devSessionMatchesPort(session, port) {
 }
 function readContainerLogs(options) {
   const container = resolveLocalContainerTarget(options);
-  const result = spawnSync2("docker", ["logs", "--tail", "200", container.containerId], {
+  const result = spawnSync3("docker", ["logs", "--tail", "200", container.containerId], {
     cwd: options.projectDir,
     encoding: "utf8"
   });
@@ -135913,12 +136051,12 @@ async function inspectContainerDatabase(options) {
 function resolveLocalContainerDatabasePath(options) {
   const container = resolveLocalContainerTarget(options);
   const mount = container.mounts.find((entry) => entry.Destination === "/app/data");
-  const dataDir = mount?.Source ?? path15.join(options.projectDir, ".sporades", "data");
-  return path15.join(dataDir, "data.db");
+  const dataDir = mount?.Source ?? path16.join(options.projectDir, ".sporades", "data");
+  return path16.join(dataDir, "data.db");
 }
 function resolveLocalContainerTarget(options) {
   if (options.port) {
-    const result = spawnSync2("docker", ["ps", "--filter", `publish=${options.port}`, "--format", "{{.ID}}"], {
+    const result = spawnSync3("docker", ["ps", "--filter", `publish=${options.port}`, "--format", "{{.ID}}"], {
       cwd: options.projectDir,
       encoding: "utf8"
     });
@@ -135927,7 +136065,7 @@ function resolveLocalContainerTarget(options) {
       return { containerId, mounts: inspectDockerMounts(options.projectDir, containerId) };
     }
   }
-  const bindingPath = path15.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path16.join(options.projectDir, CONTAINER_BINDING_FILE);
   let binding = null;
   try {
     binding = JSON.parse(readFileSync2(bindingPath, "utf8"));
@@ -135945,7 +136083,7 @@ function resolveLocalContainerTarget(options) {
   return { containerId: binding.containerId, mounts: inspectDockerMounts(options.projectDir, binding.containerId) };
 }
 function inspectDockerMounts(cwd, containerId) {
-  const result = spawnSync2("docker", ["inspect", "--format", "{{json .Mounts}}", containerId], {
+  const result = spawnSync3("docker", ["inspect", "--format", "{{json .Mounts}}", containerId], {
     cwd,
     encoding: "utf8"
   });
@@ -136074,7 +136212,7 @@ async function writeAuthConfiguration(configPath, envPath, config, envValues) {
 }
 async function readRequiredFile3(filePath, message, hint) {
   try {
-    return await readFile11(filePath, "utf8");
+    return await readFile12(filePath, "utf8");
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       throw commandError(message, hint);
@@ -136084,7 +136222,7 @@ async function readRequiredFile3(filePath, message, hint) {
 }
 async function readContainerBinding(bindingPath) {
   try {
-    return JSON.parse(await readFile11(bindingPath, "utf8"));
+    return JSON.parse(await readFile12(bindingPath, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return null;
@@ -136100,7 +136238,7 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile11(path15.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile12(path16.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return null;
@@ -136130,7 +136268,7 @@ async function resolveHostPushTarget(config, options) {
 }
 async function readHostConfig() {
   try {
-    const parsed = JSON.parse(await readFile11(hostConfigPath(), "utf8"));
+    const parsed = JSON.parse(await readFile12(hostConfigPath(), "utf8"));
     return normaliseHostConfig(parsed);
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
@@ -136147,13 +136285,13 @@ async function readHostConfig() {
 }
 async function writeHostConfig(config) {
   const filePath = hostConfigPath();
-  await mkdir8(path15.dirname(filePath), { recursive: true });
-  await writeFile7(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}
+  await mkdir9(path16.dirname(filePath), { recursive: true });
+  await writeFile8(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}
 `);
 }
 function hostConfigPath() {
-  const configDir = process.env.SPORADES_CONFIG_DIR ?? path15.join(process.env.XDG_CONFIG_HOME ?? path15.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
-  return path15.join(configDir, "hosts.json");
+  const configDir = process.env.SPORADES_CONFIG_DIR ?? path16.join(process.env.XDG_CONFIG_HOME ?? path16.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
+  return path16.join(configDir, "hosts.json");
 }
 function normaliseHostConfig(value = {}) {
   return {
@@ -136270,7 +136408,7 @@ function invokeRemoteHostHelper(options) {
   if (options.delete) {
     request.delete = options.delete;
   }
-  const result = spawnSync2("ssh", [options.profile.server, helperPath], {
+  const result = spawnSync3("ssh", [options.profile.server, helperPath], {
     cwd: options.projectDir,
     encoding: "utf8",
     ...String(options.action).startsWith("access-keys.") ? { maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER } : {},
@@ -136283,7 +136421,7 @@ async function prepareHostPushSealedServerEnv(options) {
   const paths = sealedServerEnvPaths(options.projectDir);
   const envelope = await readSealedServerEnv(paths);
   if (!envelope) {
-    const legacyEnvFile = await readServerEnvFile(path15.join(options.projectDir, ".env.sporades.server"));
+    const legacyEnvFile = await readServerEnvFile(path16.join(options.projectDir, ".env.sporades.server"));
     const legacyValues = legacyEnvFile.exists ? parseServerEnv(legacyEnvFile) : {};
     if (Object.keys(legacyValues).length > 0) {
       throw commandError(
@@ -136300,7 +136438,7 @@ async function prepareHostPushSealedServerEnv(options) {
     return null;
   }
   const keyPair = await readKeyPair(paths);
-  const legacyServerEnvFilePresent = (await readServerEnvFile(path15.join(options.projectDir, ".env.sporades.server"))).exists;
+  const legacyServerEnvFilePresent = (await readServerEnvFile(path16.join(options.projectDir, ".env.sporades.server"))).exists;
   if (!keyPair?.privateKey) {
     throw missingLocalSealedServerEnvSourceError({
       localPrivateKeyConfigured: false,
@@ -136383,11 +136521,11 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
 }
 async function createHostReleaseArchive(options) {
   const releaseId = createHostReleaseId();
-  const hostPushDir = path15.join(options.projectDir, ".sporades", "host-push");
-  await mkdir8(hostPushDir, { recursive: true, mode: 448 });
+  const hostPushDir = path16.join(options.projectDir, ".sporades", "host-push");
+  await mkdir9(hostPushDir, { recursive: true, mode: 448 });
   await chmod2(hostPushDir, 448);
-  const localArchive = path15.join(hostPushDir, `${releaseId}.tar.gz`);
-  const packageDir = path15.join(hostPushDir, `${releaseId}-files`);
+  const localArchive = path16.join(hostPushDir, `${releaseId}.tar.gz`);
+  const packageDir = path16.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin2(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
   const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
   const publicFiles = await listHostedPublicFiles(options.bundle.staticFiles.publicDir);
@@ -136409,34 +136547,34 @@ async function createHostReleaseArchive(options) {
     requiredInspectors
   });
   await rm8(packageDir, { recursive: true, force: true });
-  await mkdir8(packageDir, { mode: 448 });
-  await mkdir8(path15.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true, mode: 448 });
-  await mkdir8(path15.join(packageDir, ".sporades", "ssh"), { recursive: true, mode: 448 });
-  await cp(options.bundle.staticFiles.publicDir, path15.join(packageDir, "public"), { recursive: true, errorOnExist: true });
+  await mkdir9(packageDir, { mode: 448 });
+  await mkdir9(path16.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true, mode: 448 });
+  await mkdir9(path16.join(packageDir, ".sporades", "ssh"), { recursive: true, mode: 448 });
+  await cp2(options.bundle.staticFiles.publicDir, path16.join(packageDir, "public"), { recursive: true, errorOnExist: true });
   for (const file of options.bundle.deployFiles) {
-    const destination = path15.join(packageDir, file.path);
-    await mkdir8(path15.dirname(destination), { recursive: true, mode: 448 });
-    await writeFile7(destination, file.contents, { mode: 384 });
+    const destination = path16.join(packageDir, file.path);
+    await mkdir9(path16.dirname(destination), { recursive: true, mode: 448 });
+    await writeFile8(destination, file.contents, { mode: 384 });
   }
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
-    writeFile7(path15.join(packageDir, "server.mjs"), await readFile11(path15.join(options.bundle.buildDir, "server.mjs"), "utf8")),
-    writeFile7(path15.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
+    writeFile8(path16.join(packageDir, "server.mjs"), await readFile12(path16.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile8(path16.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
 `)
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile7(path15.join(packageDir, ".env.sporades.server"), await readFile11(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile8(path16.join(packageDir, ".env.sporades.server"), await readFile12(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
-    await writeFile7(
-      path15.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+    await writeFile8(
+      path16.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
       `${JSON.stringify(sealedServerEnv.envelope, null, 2)}
 `
     );
   }
   if (options.sshAccess?.enabled) {
-    const authorizedKeysPath = path15.join(packageDir, ".sporades", "ssh", "authorized_keys");
-    await writeFile7(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
+    const authorizedKeysPath = path16.join(packageDir, ".sporades", "ssh", "authorized_keys");
+    await writeFile8(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
 `, { mode: 420 });
     await chmod2(authorizedKeysPath, 420);
   }
@@ -136457,7 +136595,7 @@ async function createHostReleaseArchive(options) {
   if (options.sshAccess?.enabled) {
     tarArgs.push(".sporades/ssh/authorized_keys");
   }
-  const result = spawnSync2("tar", tarArgs, {
+  const result = spawnSync3("tar", tarArgs, {
     cwd: packageDir,
     encoding: "utf8",
     env: { ...process.env, COPYFILE_DISABLE: "1" }
@@ -136479,9 +136617,9 @@ async function createHostReleaseArchive(options) {
 async function listHostedPublicFiles(root, directory = root) {
   const files = [];
   for (const entry of await readdir3(directory, { withFileTypes: true })) {
-    const entryPath = path15.join(directory, entry.name);
+    const entryPath = path16.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await listHostedPublicFiles(root, entryPath));
-    else if (entry.isFile()) files.push(`public/${path15.relative(root, entryPath).split(path15.sep).join("/")}`);
+    else if (entry.isFile()) files.push(`public/${path16.relative(root, entryPath).split(path16.sep).join("/")}`);
     else throw commandError("Invalid Hosted Capsule public tree.", "Rebuild a normalized public tree containing regular files only.");
   }
   return files.sort();
@@ -136559,7 +136697,7 @@ async function createHostReleaseSealedServerEnv(options) {
   };
 }
 function uploadHostReleaseArchive(options) {
-  const result = spawnSync2("scp", [options.archivePath, `${options.profile.server}:${options.remoteArchive}`], {
+  const result = spawnSync3("scp", [options.archivePath, `${options.profile.server}:${options.remoteArchive}`], {
     cwd: options.projectDir,
     encoding: "utf8"
   });
@@ -136772,18 +136910,18 @@ function remoteHostHelperPath(profile) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
 }
 function localHostHelperPath() {
-  return path15.join(path15.dirname(fileURLToPath3(import.meta.url)), "sporades-host-helper.js");
+  return path16.join(path16.dirname(fileURLToPath3(import.meta.url)), "sporades-host-helper.js");
 }
 function upgradeHostHelper(options) {
   const localHelper = localHostHelperPath();
   const remoteHelper = remoteHostHelperPath(options.profile);
-  const remoteBin = path15.posix.dirname(remoteHelper);
+  const remoteBin = path16.posix.dirname(remoteHelper);
   let helperChecksum;
   try {
     if (!statSync(localHelper).isFile()) {
       throw new Error("not a file");
     }
-    helperChecksum = createHash14("sha256").update(readFileSync2(localHelper)).digest("hex");
+    helperChecksum = createHash15("sha256").update(readFileSync2(localHelper)).digest("hex");
   } catch {
     throw commandError(
       "Local Host helper file was not found.",
@@ -136791,7 +136929,7 @@ function upgradeHostHelper(options) {
     );
   }
   const stagedHelper = `${remoteBin}/.sporades-host-helper-stage-${helperChecksum}.mjs`;
-  const prepare = spawnSync2("ssh", [options.profile.server, `mkdir -p ${quoteRemoteShell(remoteBin)}`], {
+  const prepare = spawnSync3("ssh", [options.profile.server, `mkdir -p ${quoteRemoteShell(remoteBin)}`], {
     cwd: options.projectDir,
     encoding: "utf8"
   });
@@ -136801,7 +136939,7 @@ function upgradeHostHelper(options) {
       "Check the Host profile SSH target, network connectivity, SSH key access, and remote root permissions."
     );
   }
-  const upload = spawnSync2("scp", [localHelper, `${options.profile.server}:${stagedHelper}`], {
+  const upload = spawnSync3("scp", [localHelper, `${options.profile.server}:${stagedHelper}`], {
     cwd: options.projectDir,
     encoding: "utf8"
   });
@@ -136815,7 +136953,7 @@ function upgradeHostHelper(options) {
     `chmod 0755 ${quoteRemoteShell(stagedHelper)}`,
     `${quoteRemoteShell(stagedHelper)} --install-host-helper ${quoteRemoteShell(remoteHelper)} ${quoteRemoteShell(helperChecksum)}`
   ].join(" && ");
-  const chmod3 = spawnSync2("ssh", [options.profile.server, activateCommand], {
+  const chmod3 = spawnSync3("ssh", [options.profile.server, activateCommand], {
     cwd: options.projectDir,
     encoding: "utf8"
   });
@@ -136845,9 +136983,9 @@ async function writeGithubAutodeployWorkflow(options) {
     subname: options.subname,
     branch: options.branch
   });
-  const outputPath = path15.resolve(options.projectDir, options.file);
-  const relativeFile = path15.relative(options.projectDir, outputPath) || options.file;
-  if (relativeFile === ".." || relativeFile.startsWith(`..${path15.sep}`) || path15.isAbsolute(relativeFile)) {
+  const outputPath = path16.resolve(options.projectDir, options.file);
+  const relativeFile = path16.relative(options.projectDir, outputPath) || options.file;
+  if (relativeFile === ".." || relativeFile.startsWith(`..${path16.sep}`) || path16.isAbsolute(relativeFile)) {
     throw commandError(
       "Invalid GitHub workflow file path.",
       "Pass a relative path inside the project, such as `.github/workflows/sporades-autodeploy.yml`."
@@ -136874,7 +137012,7 @@ async function writeGithubAutodeployWorkflow(options) {
     };
   }
   try {
-    await readFile11(outputPath, "utf8");
+    await readFile12(outputPath, "utf8");
     if (!options.force) {
       throw commandError(
         "GitHub Actions workflow already exists.",
@@ -136886,8 +137024,8 @@ async function writeGithubAutodeployWorkflow(options) {
       throw error;
     }
   }
-  await mkdir8(path15.dirname(outputPath), { recursive: true });
-  await writeFile7(outputPath, workflow);
+  await mkdir9(path16.dirname(outputPath), { recursive: true });
+  await writeFile8(outputPath, workflow);
   return {
     ok: true,
     data: {
@@ -136900,7 +137038,7 @@ async function writeGithubAutodeployWorkflow(options) {
   };
 }
 function normalisePathForOutput(filePath) {
-  return filePath.split(path15.sep).join("/");
+  return filePath.split(path16.sep).join("/");
 }
 function posixJoin2(...segments) {
   return segments.map((segment, index) => {
@@ -137003,7 +137141,7 @@ function validateGithubWorkflowBranch(branch) {
   }
 }
 function validateGithubWorkflowFile(filePath) {
-  if (!filePath || path15.isAbsolute(filePath) || filePath.includes("\0")) {
+  if (!filePath || path16.isAbsolute(filePath) || filePath.includes("\0")) {
     throw commandError("Invalid GitHub workflow file path.", "Pass a relative path such as `.github/workflows/sporades-autodeploy.yml`.");
   }
 }
@@ -137030,13 +137168,13 @@ function validateRemoteHelperAction(action) {
   }
 }
 function run(command, args, cwd, message, hint) {
-  const result = spawnSync2(command, args, { cwd, stdio: "inherit" });
+  const result = spawnSync3(command, args, { cwd, stdio: "inherit" });
   if (result.status !== 0) {
     throw commandError(message, hint);
   }
 }
 function runDocker(args, cwd, message, hint) {
-  const result = spawnSync2("docker", args, { cwd, encoding: "utf8" });
+  const result = spawnSync3("docker", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
     throw commandError(message, hint);
   }
@@ -137045,7 +137183,7 @@ function runDocker(args, cwd, message, hint) {
 async function printLocalCapsuleServiceStatus(options, surface) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = localCapsuleServicesFromConfig2(config, options.projectDir);
-  const binding = surface === "deploy" ? await readContainerBinding(path15.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
+  const binding = surface === "deploy" ? await readContainerBinding(path16.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
   const data2 = {
     ...binding?.containerId ? {
       container: {
@@ -137072,7 +137210,7 @@ function localCapsuleServicesFromConfig2(config, projectDir) {
   }
   validateCapsuleServicesConfig(config.services);
   return {
-    path: path15.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path16.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
@@ -137081,7 +137219,7 @@ function hasDeclaredLocalCapsuleServices(config) {
   return Boolean(config.services?.database || config.services?.storage);
 }
 async function requireLocalContainerBinding(options, action) {
-  const bindingPath = path15.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path16.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     throw commandError(
@@ -137120,7 +137258,7 @@ async function prepareLocalPreservedFiles(options, binding, hint = "Restore a re
   }
 }
 function localPreservedFilesRoot(options) {
-  return path15.join(options.projectDir, ".sporades", "preserved-files");
+  return path16.join(options.projectDir, ".sporades", "preserved-files");
 }
 async function assertNoLocalDeployFileAttempt(options, action) {
   try {
@@ -137134,14 +137272,14 @@ async function assertNoLocalDeployFileAttempt(options, action) {
   }
 }
 async function reconcileLocalContainerSession(options) {
-  const runtimeDir = path15.join(options.projectDir, ".sporades");
+  const runtimeDir = path16.join(options.projectDir, ".sporades");
   const preservedRoot = localPreservedFilesRoot(options);
   const journal = attemptJournalPath(preservedRoot);
   const attempt = await readPreservedFileAttempt(journal);
   if (!attempt) {
     return { status: "clean", journal, committed: null, actions: [] };
   }
-  const bindingPath = path15.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path16.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   const committed = Boolean(attempt.release && binding?.deployFilesRoot === attempt.release);
   const candidate = attempt.records.find((record) => record.candidate)?.candidate;
@@ -137235,7 +137373,7 @@ async function restartLocalContainerSession(options) {
 }
 async function removeLocalContainerSession(options) {
   await assertNoLocalDeployFileAttempt(options, "remove");
-  const bindingPath = path15.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path16.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     if (options.missingOk) {
@@ -137246,7 +137384,7 @@ async function removeLocalContainerSession(options) {
       "Run `sporades deploy` before `sporades deploy remove`."
     );
   }
-  const buildDir = path15.join(options.projectDir, ".sporades", "build");
+  const buildDir = path16.join(options.projectDir, ".sporades", "build");
   const currentConsumer = await readPublicTreeConsumer(buildDir, "container");
   const bindingExpectation = binding.clientRelease?.consumerToken ? { token: binding.clientRelease.consumerToken, identity: binding.containerId } : null;
   let claimedConsumer = null;
@@ -137257,7 +137395,7 @@ async function removeLocalContainerSession(options) {
     claimedConsumer = await writePublicTreeConsumer(
       buildDir,
       "container",
-      path15.join(buildDir, ".public-trees", currentConsumer.tree),
+      path16.join(buildDir, ".public-trees", currentConsumer.tree),
       currentConsumer.identity,
       bindingExpectation
     );
@@ -137271,7 +137409,7 @@ async function removeLocalContainerSession(options) {
       true
     );
     for (const snapshot of [...binding.pendingDeployFileCleanup ?? [], binding.deployFilesRoot]) {
-      await removeDeployFileSnapshot(path15.join(options.projectDir, ".sporades"), snapshot);
+      await removeDeployFileSnapshot(path16.join(options.projectDir, ".sporades"), snapshot);
     }
   } catch (error) {
     if (claimedConsumer && currentConsumer) {
@@ -137387,7 +137525,7 @@ async function localCapsuleServicesStatus(capsuleServices, projectDir) {
       },
       volume: {
         type: "bind",
-        path: path15.join(CAPSULE_SERVICES_STATE_DIR, name2),
+        path: path16.join(CAPSULE_SERVICES_STATE_DIR, name2),
         exists: await pathExists2(service.stateDir)
       },
       containerName: service.name,
@@ -137426,19 +137564,19 @@ function removeSporadesOwnedCapsuleImages(capsuleServices, projectDir) {
   return [...images];
 }
 function dockerList(args, cwd) {
-  const result = spawnSync2("docker", args, { cwd, encoding: "utf8" });
+  const result = spawnSync3("docker", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
     return [];
   }
   return result.stdout.trim().split("\n").map((line) => line.trim()).filter(Boolean);
 }
 function dockerResourceExists(args, cwd) {
-  const result = spawnSync2("docker", args, { cwd, encoding: "utf8" });
+  const result = spawnSync3("docker", args, { cwd, encoding: "utf8" });
   return result.status === 0;
 }
 async function pathExists2(targetPath) {
   try {
-    await lstat9(targetPath);
+    await lstat10(targetPath);
     return true;
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
@@ -137457,7 +137595,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name2,
       status: "starting",
       engine: service.engine,
-      statePath: path15.join(CAPSULE_SERVICES_STATE_DIR, name2)
+      statePath: path16.join(CAPSULE_SERVICES_STATE_DIR, name2)
     });
   }
   try {
@@ -137508,7 +137646,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name2,
       status: "ready",
       engine: service.engine,
-      statePath: path15.join(CAPSULE_SERVICES_STATE_DIR, name2),
+      statePath: path16.join(CAPSULE_SERVICES_STATE_DIR, name2),
       host: connection.host,
       port: connection.port
     });
@@ -137570,7 +137708,7 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
         engine: service.engine,
         network: capsuleServices.networks.services,
         containerName: service.name,
-        statePath: path15.join(CAPSULE_SERVICES_STATE_DIR, name2)
+        statePath: path16.join(CAPSULE_SERVICES_STATE_DIR, name2)
       }
     ])
   );
@@ -137807,15 +137945,15 @@ function parseComposeJsonOutput(output) {
   }
 }
 function ensureLocalBaseImage(cwd) {
-  const inspect = spawnSync2("docker", ["image", "inspect", SPORADES_BASE_IMAGE.image], { cwd, encoding: "utf8" });
+  const inspect = spawnSync3("docker", ["image", "inspect", SPORADES_BASE_IMAGE.image], { cwd, encoding: "utf8" });
   if (inspect.status === 0) {
     return;
   }
-  const pull = spawnSync2("docker", ["pull", SPORADES_BASE_IMAGE.image], { cwd, encoding: "utf8" });
+  const pull = spawnSync3("docker", ["pull", SPORADES_BASE_IMAGE.image], { cwd, encoding: "utf8" });
   if (pull.status === 0) {
     return;
   }
-  const dockerfilePath = path15.join(CLI_ROOT, "Dockerfile.base");
+  const dockerfilePath = path16.join(CLI_ROOT, "Dockerfile.base");
   try {
     const stats = statSync(dockerfilePath);
     if (!stats.isFile()) {
@@ -137827,7 +137965,7 @@ function ensureLocalBaseImage(cwd) {
       `Check Docker can pull ${SPORADES_BASE_IMAGE.image}, then retry \`sporades deploy\`.`
     );
   }
-  const build2 = spawnSync2("docker", ["build", "-f", dockerfilePath, "-t", SPORADES_BASE_IMAGE.image, CLI_ROOT], {
+  const build2 = spawnSync3("docker", ["build", "-f", dockerfilePath, "-t", SPORADES_BASE_IMAGE.image, CLI_ROOT], {
     cwd,
     encoding: "utf8"
   });
@@ -137839,7 +137977,7 @@ function ensureLocalBaseImage(cwd) {
   }
 }
 function runDockerCleanup(args, cwd, message, hint, force = false) {
-  const result = spawnSync2("docker", args, { cwd, encoding: "utf8" });
+  const result = spawnSync3("docker", args, { cwd, encoding: "utf8" });
   if (result.status === 0) {
     return result.stdout.trim();
   }
@@ -137851,7 +137989,7 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
 async function replaceContainerBinding(bindingPath, binding) {
   const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes9(8).toString("hex")}.tmp`;
   try {
-    await writeFile7(temporaryPath, `${JSON.stringify(binding, null, 2)}
+    await writeFile8(temporaryPath, `${JSON.stringify(binding, null, 2)}
 `, { flag: "wx" });
     await rename6(temporaryPath, bindingPath);
   } finally {
@@ -137871,25 +138009,25 @@ function verifyContainerReplacementOwnership(binding, consumer, expectedContaine
   }
 }
 async function acquireContainerLifecycleLock(projectDir) {
-  const lockDir = path15.join(projectDir, ".sporades", ".container-lifecycle-lock");
-  await mkdir8(path15.dirname(lockDir), { recursive: true });
+  const lockDir = path16.join(projectDir, ".sporades", ".container-lifecycle-lock");
+  await mkdir9(path16.dirname(lockDir), { recursive: true });
   const token = randomBytes9(16).toString("hex");
-  const ownerPath = path15.join(lockDir, "owner.json");
+  const ownerPath = path16.join(lockDir, "owner.json");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
-      await mkdir8(lockDir);
-      await writeFile7(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
+      await mkdir9(lockDir);
+      await writeFile8(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
 `);
       return async () => {
-        const owner = await readFile11(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        const owner = await readFile12(ownerPath, "utf8").then(JSON.parse).catch(() => null);
         if (owner?.token !== token) throw commandError("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
         await rm8(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile11(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+      const owner = await readFile12(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       if (owner === null) {
-        const age = Date.now() - await lstat9(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        const age = Date.now() - await lstat10(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (age <= 1e3) {
           await new Promise((resolve) => setTimeout(resolve, 10));
           continue;
@@ -137927,7 +138065,7 @@ function formatMount(mount) {
 async function prepareRuntimeDataPath(targetPath) {
   let stats;
   try {
-    stats = await lstat9(targetPath);
+    stats = await lstat10(targetPath);
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return;
@@ -137944,7 +138082,7 @@ async function prepareRuntimeDataPath(targetPath) {
     await chmod2(targetPath, 448);
     const entries = await readdir3(targetPath, { withFileTypes: true });
     for (const entry of entries) {
-      await prepareRuntimeDataPath(path15.join(targetPath, entry.name));
+      await prepareRuntimeDataPath(path16.join(targetPath, entry.name));
     }
     return;
   }

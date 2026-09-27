@@ -100,6 +100,7 @@ import {
   createHostUnregisterRequest,
 } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
+import { runMonitoringStack } from "./monitoring-stack.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, confirmAccessKeyOperatorAction, sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
 import {
@@ -262,6 +263,31 @@ async function main() {
       }
       await manageEnv(parseEnvArgs(args));
       return;
+
+    case "monitoring": {
+      if (isHelp) { printHelp('monitoring'); return; }
+      if (args[0] !== 'stack' || !['init', 'validate'].includes(args[1] ?? '')) {
+        throw commandError('Unknown monitoring operation.', 'Use `sporades monitoring stack init|validate --dir <path>`.');
+      }
+      let directory = process.cwd();
+      let json = false;
+      for (let index = 2; index < args.length; index++) {
+        if (args[index] === '--dir') directory = readFlagValue(args, ++index, '--dir');
+        else if (args[index] === '--json') json = true;
+        else throw commandError('Unknown monitoring option.', 'Use `--dir <path>` and optional `--json`.');
+      }
+      const data = await runMonitoringStack(args[1] as 'init' | 'validate', directory, resolveSporadesPackageRoot());
+      if (json) writeResult({ ok: true, data, error: null });
+      else {
+        process.stdout.write(`Monitoring stack ${args[1]}: ${data.path}\n`);
+        if (data.missing.length) process.stdout.write(`Missing settings: ${data.missing.join(', ')}\n`);
+        if (data.missingAssets.length) process.stdout.write(`Missing stack files: ${data.missingAssets.join(', ')}\n`);
+        if (data.versionDifference) process.stdout.write(`Stack version differs: installed ${data.versionDifference.installed}, package ${data.versionDifference.available}. Review overrides before upgrading.\n`);
+        if (data.overrides.length) process.stdout.write(`Preserved local files: ${data.overrides.join(', ')}\n`);
+        for (const step of data.nextSteps) process.stdout.write(`${step}\n`);
+      }
+      return;
+    }
 
     case "deploy":
       if (isHelp) {

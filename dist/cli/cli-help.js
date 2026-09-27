@@ -129,6 +129,16 @@ Options:
   --json              Write JSON output
   --help, -h          Show this help
 `,
+    monitoring: `Usage: sporades monitoring stack <init|validate> [options]
+
+Generate or inspect the versioned trace stack from an installed Sporades package.
+Initialization creates a reviewable directory; it does not start services.
+
+Options:
+  --dir <path>        Target stack directory (default: current directory)
+  --json              Write { ok, data, error } JSON output
+  --help, -h          Show this help
+`,
     deploy: `Usage: sporades deploy [status|stop|restart|reconcile|remove|reset|ssh] [options]
 
 Start and manage a local Container session.
@@ -246,6 +256,7 @@ Options:
       security       Inspect effective Capsule security policy
       doctor         Run read-only Sporades diagnostics
       env            Manage Sealed Server env
+      monitoring     Generate and validate a monitoring stack
       deploy         Start a local Container session
       host           Manage Host profiles and Hosted Capsules
       logs           Print Dev session logs

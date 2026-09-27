@@ -1,0 +1,6 @@
+.env
+.private/
+.compose.env
+certs/
+backups/
+data/
