@@ -4095,7 +4095,7 @@ async function startContainerSession(options) {
     const telemetryCaStagePath = telemetryCa ? path.join(runtimeDir, "telemetry-ca", `${randomBytes(16).toString("hex")}.pem`) : null;
     const preservedRoot = path.join(runtimeDir, "preserved-files");
     const createdSeeds = [];
-    const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0 || Boolean(telemetryCaStagePath));
+    const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0 || Boolean(telemetryCaStagePath || existingBinding?.telemetryCaStagePath));
     try {
         for (const file of bundle.deployFiles) {
             const destination = path.join(deployReleaseRoot, file.path);
@@ -4225,6 +4225,7 @@ async function startContainerSession(options) {
         binding = {
             containerId,
             containerName,
+            containerTransactionToken,
             ...(telemetryProfile !== undefined ? { telemetryProfile } : {}),
             ...(telemetryCaStagePath ? { telemetryCaStagePath } : {}),
             clientRelease,
@@ -5978,9 +5979,10 @@ async function reconcileLocalContainerSession(options) {
     const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
     const binding = await readContainerBinding(bindingPath);
     const candidateCaStagePath = attempt.records.find((record) => record.telemetryCaStagePath)?.telemetryCaStagePath;
-    const committed = Boolean((attempt.release && binding?.deployFilesRoot === attempt.release)
-        || (candidateCaStagePath && binding?.telemetryCaStagePath === candidateCaStagePath));
     const candidate = attempt.records.find((record) => record.candidate)?.candidate;
+    const committed = Boolean((attempt.release && binding?.deployFilesRoot === attempt.release)
+        || (candidateCaStagePath && binding?.telemetryCaStagePath === candidateCaStagePath)
+        || (typeof candidate?.transaction === "string" && /^[a-f0-9]{32}$/.test(candidate.transaction) && binding?.containerTransactionToken === candidate.transaction));
     const previous = attempt.records.find((record) => record.previous)?.previous;
     const actions = [];
     if (committed) {
