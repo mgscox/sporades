@@ -113,8 +113,52 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
         concurrencyLimit: 1,
         httpAgentOptions: config.tls.caFile ? { ca: readFileSync(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 },
     });
+    const failedExports = { traces: false, metrics: false };
+    const lastFailureLoggedAt = new Map();
+    const emitDiagnostic = (diagnostic) => {
+        try {
+            const recorded = onDiagnostic?.(diagnostic);
+            if (recorded && typeof recorded.then === "function")
+                void Promise.resolve(recorded).catch(() => { });
+        }
+        catch { /* Telemetry diagnostics cannot affect exports or application work. */ }
+    };
+    const observeExport = (signal, result) => {
+        try {
+            if (result.code === 0) {
+                const wasFailed = failedExports.traces || failedExports.metrics;
+                failedExports[signal] = false;
+                if (wasFailed && !failedExports.traces && !failedExports.metrics) {
+                    emitDiagnostic({ event: "telemetry.export.recovered" });
+                    lastFailureLoggedAt.clear();
+                }
+            }
+            else {
+                failedExports[signal] = true;
+                const reason = exportFailureReason(result.error);
+                const now = Date.now();
+                if (!lastFailureLoggedAt.has(reason) || now - lastFailureLoggedAt.get(reason) >= 60_000) {
+                    emitDiagnostic({ event: "telemetry.export.failed", reason });
+                    lastFailureLoggedAt.set(reason, now);
+                }
+            }
+        }
+        catch { /* A malformed exporter result must not change SDK completion. */ }
+    };
+    const observedMetricExporter = {
+        export(metrics, callback) {
+            metricExporter.export(metrics, (result) => {
+                observeExport("metrics", result);
+                callback(result);
+            });
+        },
+        forceFlush: () => metricExporter.forceFlush(),
+        shutdown: () => metricExporter.shutdown(),
+        selectAggregation: metricExporter.selectAggregation?.bind(metricExporter),
+        selectAggregationTemporality: metricExporter.selectAggregationTemporality?.bind(metricExporter),
+    };
     const metricReader = new PeriodicExportingMetricReader({
-        exporter: metricExporter,
+        exporter: observedMetricExporter,
         exportIntervalMillis: config.metricsIntervalMs ?? 15_000,
         exportTimeoutMillis: 800,
     });
@@ -205,36 +249,10 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             result.observe(loopUtilization, intervalElu.utilization);
     }, [cpuTime, rss, heapUsed, heapAllocated, heapLimit, external, arrayBuffers, uptime, gcCount, gcDuration, delayMax, delayMean, delayP99, loopUtilization]);
     const seenRoutes = new Set();
-    let failedReason = null;
-    let lastFailureLoggedAt = 0;
-    const emitDiagnostic = (diagnostic) => {
-        try {
-            const recorded = onDiagnostic?.(diagnostic);
-            if (recorded && typeof recorded.then === "function")
-                void Promise.resolve(recorded).catch(() => { });
-        }
-        catch { /* Telemetry diagnostics cannot affect exports or application work. */ }
-    };
     const observedExporter = {
         export(spans, callback) {
             exporter.export(spans, (result) => {
-                try {
-                    if (result.code === 0) {
-                        if (failedReason)
-                            emitDiagnostic({ event: "telemetry.export.recovered" });
-                        failedReason = null;
-                    }
-                    else {
-                        const reason = exportFailureReason(result.error);
-                        const now = Date.now();
-                        if (reason !== failedReason || now - lastFailureLoggedAt >= 60_000) {
-                            emitDiagnostic({ event: "telemetry.export.failed", reason });
-                            lastFailureLoggedAt = now;
-                        }
-                        failedReason = reason;
-                    }
-                }
-                catch { /* A malformed exporter result must not change SDK completion. */ }
+                observeExport("traces", result);
                 callback(result);
             });
         },

@@ -74,11 +74,12 @@ the local sampling policy. This slice covers Dev and local Container HTTP traces
 periodic process CPU, memory, GC and event-loop signals. Host transport and
 independent blocked-loop detection are separate work.
 
-When a selected exporter fails, the existing platform log records
-`telemetry.export.failed` with one bounded reason: `AUTH_REJECTED`,
-`DESTINATION_UNAVAILABLE`, `TLS_FAILED`, or `EXPORT_FAILED`. Repeated failures
-are limited to one event per reason per minute; the next successful export
-records `telemetry.export.recovered`. These events include no destination URL,
+When either the selected trace or periodic metric exporter fails, the existing
+platform log records `telemetry.export.failed` with one bounded reason:
+`AUTH_REJECTED`, `DESTINATION_UNAVAILABLE`, `TLS_FAILED`, or `EXPORT_FAILED`.
+Repeated failures are limited to one event per reason per minute. Once a failure
+has been reported, `telemetry.export.recovered` is recorded only after every
+failed exporter has succeeded again. These events include no destination URL,
 credential, response body, or exception text. An authentication rejection or
 unreachable collector does not block Capsule requests. Check the Container's
 platform log and monitoring stack readiness/storage separately when tracing is
