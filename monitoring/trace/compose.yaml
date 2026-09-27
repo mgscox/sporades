@@ -62,7 +62,7 @@ services:
     command: ["--config=/etc/jaeger/config.yaml"]
     restart: unless-stopped
     environment:
-      TRACE_RETENTION: ${TRACE_RETENTION:-168h}
+      TRACE_RETENTION: ${TRACE_RETENTION:-72h}
     volumes:
       - ./jaeger.yaml:/etc/jaeger/config.yaml:ro
       - traces:/badger

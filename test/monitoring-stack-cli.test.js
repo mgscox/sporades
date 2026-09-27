@@ -59,6 +59,26 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert.match(resources.panels.find(panel => panel.title === 'Event-loop utilization')?.targets[0].expr ?? '', /process_event_loop_utilization_ratio.*instance=~/);
   assert.match(resources.panels.find(panel => panel.title === 'API request p95 latency')?.targets[0].expr ?? '', /http_server_request_duration_seconds_bucket.*instance=~/);
 
+  const copiedExample = join(temp, 'copied example stack');
+  await mkdir(copiedExample);
+  await writeFile(join(copiedExample, '.env'), await readFile(join(install, 'package', 'monitoring', 'trace', '.env.example'), 'utf8'));
+  const copiedInit = command(bin, ['monitoring', 'stack', 'init', '--dir', copiedExample, '--json'], temp);
+  assert.equal(copiedInit.status, 0, copiedInit.stderr || copiedInit.stdout);
+  assert.doesNotMatch(await readFile(join(copiedExample, '.private', 'credentials.json'), 'utf8'), /REPLACE_WITH_GENERATED_SECRET/);
+  assert.equal(command(bin, ['monitoring', 'stack', 'validate', '--dir', copiedExample, '--json'], temp).status, 0);
+
+  const placeholder = join(temp, 'placeholder stack');
+  await mkdir(placeholder);
+  await writeFile(join(placeholder, '.env'), 'TRACE_TLS_MODE=proxy\nTRACE_UI_PASSWORD=REPLACE_WITH_GENERATED_SECRET\n');
+  const rejectedInit = command(bin, ['monitoring', 'stack', 'init', '--dir', placeholder, '--json'], temp);
+  assert.equal(rejectedInit.status, 1);
+  assert.match(rejectedInit.stdout, /TRACE_UI_PASSWORD/);
+  assert.doesNotMatch(rejectedInit.stdout + rejectedInit.stderr, /REPLACE_WITH_GENERATED_SECRET/);
+  await assert.rejects(stat(join(placeholder, '.private', 'credentials.json')), /ENOENT/);
+  const rejectedValidate = command(bin, ['monitoring', 'stack', 'validate', '--dir', placeholder, '--json'], temp);
+  assert.equal(rejectedValidate.status, 1);
+  assert.match(rejectedValidate.stdout, /TRACE_UI_PASSWORD/);
+
   assert.equal((await stat(join(target, '.private', 'grafana-admin-password'))).mode & 0o777, 0o600);
   assert.ok(result.data.missing.includes('TRACE_CERT_FILE'));
   const environment = join(target, '.env');
