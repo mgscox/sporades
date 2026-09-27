@@ -796,11 +796,15 @@ export function createRuntimeClock(clock) {
         setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
         clearTimer: (timer) => clearTimeout(timer),
     };
-    // Preserve injected clock behavior and timer handles. Only Sporades-owned
-    // callbacks lose the ambient HTTP identity at registration and execution.
-    return Object.assign(Object.create(source), {
-        setTimer(callback, delayMs) {
-            return withoutRuntimeRequestIdentity(() => source.setTimer(() => withoutRuntimeRequestIdentity(callback), delayMs));
+    // A class-backed test clock may keep state in private fields. Forward every
+    // method with the original receiver while detaching only runtime timers.
+    const setTimer = (callback, delayMs) => withoutRuntimeRequestIdentity(() => source.setTimer(() => withoutRuntimeRequestIdentity(callback), delayMs));
+    return new Proxy(source, {
+        get(target, property) {
+            if (property === "setTimer")
+                return setTimer;
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
         },
     });
 }

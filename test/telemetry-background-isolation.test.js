@@ -146,14 +146,27 @@ test('export failure and recovery use uncorrelated durable platform log envelope
 });
 
 test('injected clock timer rearming detaches request identity without changing handles or explicit metadata', async () => {
-  const timers = new Map();
-  let nextHandle = 1;
-  const source = {
-    now: () => new Date('2030-01-01T00:00:00.000Z'),
-    setTimer(callback, delay) { const handle = nextHandle++; timers.set(handle, { callback, delay }); return handle; },
-    clearTimer(handle) { timers.delete(handle); },
-  };
+  class StatefulClock {
+    #instant = new Date('2030-01-01T00:00:00.000Z');
+    #timers = new Map();
+    #nextHandle = 1;
+    now() { return new Date(this.#instant); }
+    setTimer(callback, delay) {
+      const handle = this.#nextHandle++;
+      this.#timers.set(handle, { callback, delay });
+      return handle;
+    }
+    clearTimer(handle) { this.#timers.delete(handle); }
+    timer(handle) { return this.#timers.get(handle); }
+    fire(handle) {
+      const timer = this.#timers.get(handle);
+      this.#timers.delete(handle);
+      timer.callback();
+    }
+  }
+  const source = new StatefulClock();
   const clock = createRuntimeClock(source);
+  assert.equal(clock.now().toISOString(), '2030-01-01T00:00:00.000Z');
   const telemetry = createHttpRequestTelemetry();
   const logs = [];
   let firstHandle;
@@ -170,9 +183,9 @@ test('injected clock timer rearming detaches request identity without changing h
       response.end('scheduled');
     } else {
       logs.push(envelope('B-before'));
-      timers.get(firstHandle).callback();
-      timers.delete(firstHandle);
-      timers.get(secondHandle).callback();
+      clock.fire(firstHandle);
+      assert.equal(clock.timer(secondHandle).delay, 25);
+      clock.fire(secondHandle);
       logs.push(envelope('B-after'));
       response.end('ran');
     }
@@ -181,17 +194,18 @@ test('injected clock timer rearming detaches request identity without changing h
   try {
     const origin = `http://127.0.0.1:${app.address().port}`;
     assert.equal(await (await fetch(`${origin}/A`)).text(), 'scheduled');
-    assert.equal(timers.get(firstHandle).delay, 10);
+    assert.equal(clock.timer(firstHandle).delay, 10);
     assert.equal(await (await fetch(`${origin}/B`)).text(), 'ran');
-    assert.equal(timers.get(secondHandle).delay, 25);
     const byMessage = Object.fromEntries(logs.map(log => [log.message, log]));
     assert.equal(byMessage['first-background'].request, null);
     assert.equal(byMessage['second-background'].request.id, 'explicit-job-request');
     assert.deepEqual(byMessage['second-background'].correlation, { id: 'explicit-job-correlation' });
     assert.equal(byMessage['B-before'].request.id, byMessage['B-after'].request.id);
     assert.notEqual(byMessage.A.request.id, byMessage['B-before'].request.id);
-    clock.clearTimer(secondHandle);
-    assert.equal(timers.has(secondHandle), false);
+    const cancelledHandle = clock.setTimer(() => assert.fail('cancelled timer fired'), 30);
+    assert.equal(clock.timer(cancelledHandle).delay, 30);
+    clock.clearTimer(cancelledHandle);
+    assert.equal(clock.timer(cancelledHandle), undefined);
   } finally {
     await telemetry.shutdown();
     await new Promise(resolve => app.close(resolve));
