@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getHeapStatistics } from "node:v8";
+import { constants as performanceConstants, monitorEventLoopDelay, performance, PerformanceObserver } from "node:perf_hooks";
 
 import { ROOT_CONTEXT, SpanKind, SpanStatusCode, TraceFlags, trace } from "@opentelemetry/api";
 import type { Span } from "@opentelemetry/api";
@@ -22,6 +23,7 @@ export type RuntimeTelemetryConfig = {
   samplingRatio?: number;
   environment?: "dev" | "container" | "hosted";
   metricsIntervalMs?: number;
+  eventLoopDelayResolutionMs?: number;
 };
 
 export type TelemetryExportDiagnostic =
@@ -106,6 +108,7 @@ function exportFailureReason(error: unknown): Extract<TelemetryExportDiagnostic,
 
 export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>) {
   if (!config) return { run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => requestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => {} };
+  if (config.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1000)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
   const endpoint = new URL("/v1/traces", url).toString();
   const token = config.credentialEnv ? process.env[config.credentialEnv] : undefined;
@@ -149,6 +152,28 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
   const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
   const processMeter = meterProvider.getMeter("sporades-runtime-process", "1");
+  const gcKinds = new Map([
+    [performanceConstants.NODE_PERFORMANCE_GC_MAJOR, "major"],
+    [performanceConstants.NODE_PERFORMANCE_GC_MINOR, "minor"],
+    [performanceConstants.NODE_PERFORMANCE_GC_INCREMENTAL, "incremental"],
+    [performanceConstants.NODE_PERFORMANCE_GC_WEAKCB, "weakcb"],
+  ]);
+  const gcTotals = new Map<string, { count: number; durationSeconds: number }>();
+  const recordGc = (entries: readonly { duration: number; detail?: { kind?: number } }[]) => {
+    for (const entry of entries) {
+      if (!Number.isFinite(entry.duration) || entry.duration < 0) continue;
+      const kind = gcKinds.get(entry.detail?.kind ?? -1) ?? "other";
+      const total = gcTotals.get(kind) ?? { count: 0, durationSeconds: 0 };
+      total.count += 1;
+      total.durationSeconds += entry.duration / 1000;
+      gcTotals.set(kind, total);
+    }
+  };
+  const gcObserver = new PerformanceObserver((list) => recordGc(list.getEntries()));
+  gcObserver.observe({ entryTypes: ["gc"] });
+  const loopDelay = monitorEventLoopDelay({ resolution: config.eventLoopDelayResolutionMs ?? 20 });
+  loopDelay.enable();
+  let previousElu = performance.eventLoopUtilization();
   const cpuTime = processMeter.createObservableCounter("process.cpu.time", { unit: "s" });
   const rss = processMeter.createObservableGauge("process.memory.rss", { unit: "By" });
   const heapUsed = processMeter.createObservableGauge("process.memory.heap.used", { unit: "By" });
@@ -157,6 +182,12 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   const external = processMeter.createObservableGauge("process.memory.external", { unit: "By" });
   const arrayBuffers = processMeter.createObservableGauge("process.memory.array_buffers", { unit: "By" });
   const uptime = processMeter.createObservableGauge("process.uptime", { unit: "s" });
+  const gcCount = processMeter.createObservableCounter("process.gc.count", { unit: "1" });
+  const gcDuration = processMeter.createObservableCounter("process.gc.duration", { unit: "s" });
+  const delayMax = processMeter.createObservableGauge("process.event_loop.delay.max", { unit: "ms" });
+  const delayMean = processMeter.createObservableGauge("process.event_loop.delay.mean", { unit: "ms" });
+  const delayP99 = processMeter.createObservableGauge("process.event_loop.delay.p99", { unit: "ms" });
+  const loopUtilization = processMeter.createObservableGauge("process.event_loop.utilization", { unit: "1" });
   // The metric reader owns the only collection interval. No process API runs per request.
   processMeter.addBatchObservableCallback((result) => {
     const cpu = process.cpuUsage();
@@ -170,7 +201,22 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     result.observe(external, memory.external);
     result.observe(arrayBuffers, memory.arrayBuffers);
     result.observe(uptime, process.uptime());
-  }, [cpuTime, rss, heapUsed, heapAllocated, heapLimit, external, arrayBuffers, uptime]);
+    recordGc(gcObserver.takeRecords());
+    for (const [kind, total] of gcTotals) {
+      result.observe(gcCount, total.count, { kind });
+      result.observe(gcDuration, total.durationSeconds, { kind });
+    }
+    if (loopDelay.count > 0) {
+      result.observe(delayMax, loopDelay.max / 1e6);
+      result.observe(delayMean, loopDelay.mean / 1e6);
+      result.observe(delayP99, loopDelay.percentile(99) / 1e6);
+    }
+    loopDelay.reset();
+    const currentElu = performance.eventLoopUtilization();
+    const intervalElu = performance.eventLoopUtilization(previousElu);
+    previousElu = currentElu;
+    if (Number.isFinite(intervalElu.utilization) && intervalElu.active + intervalElu.idle > 0) result.observe(loopUtilization, intervalElu.utilization);
+  }, [cpuTime, rss, heapUsed, heapAllocated, heapLimit, external, arrayBuffers, uptime, gcCount, gcDuration, delayMax, delayMean, delayP99, loopUtilization]);
   const seenRoutes = new Set<string>();
   let failedReason: Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"] | null = null;
   let lastFailureLoggedAt = 0;
@@ -262,6 +308,8 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     async shutdown() {
       if (closing) return;
       closing = true;
+      gcObserver.disconnect();
+      loopDelay.disable();
       await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise<void>((resolve) => { const timer = setTimeout(resolve, 1_500); timer.unref(); })]);
     },
   };

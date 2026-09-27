@@ -10,6 +10,7 @@ export type TelemetryProfile = {
   tls: { mode: "verified" | "loopback"; caFile?: string };
   credentialEnv?: string;
   metricsIntervalMs?: number;
+  eventLoopDelayResolutionMs?: number;
 };
 
 const aliasPattern = /^[a-z][a-z0-9-]{0,39}$/;
@@ -34,7 +35,7 @@ export function validateTelemetryProjectConfig(value: unknown) {
 export function validateTelemetryProfile(value: unknown): TelemetryProfile {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Provide an endpoint, TLS mode and optional references.");
   const profile = value as Record<string, unknown>;
-  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs"].includes(key))) invalid("Remove unsupported Telemetry profile fields.");
+  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid("Remove unsupported Telemetry profile fields.");
   if (typeof profile.endpoint !== "string" || profile.endpoint.length > 2048) invalid("Use an OTLP/HTTP base URL without credentials or query strings.");
   let url: URL;
   try { url = new URL(profile.endpoint); } catch { return invalid("Use a valid OTLP/HTTP base URL."); }
@@ -49,6 +50,7 @@ export function validateTelemetryProfile(value: unknown): TelemetryProfile {
   if (trust.caFile !== undefined && (trust.mode !== "verified" || typeof trust.caFile !== "string" || !path.isAbsolute(trust.caFile) || trust.caFile.length > 1024)) invalid("Use an absolute private CA file path with verified TLS.");
   if (profile.credentialEnv !== undefined && (typeof profile.credentialEnv !== "string" || !envPattern.test(profile.credentialEnv))) invalid("Use an uppercase credential environment reference such as TRACE_INGEST_TOKEN.");
   if (profile.metricsIntervalMs !== undefined && (!Number.isSafeInteger(profile.metricsIntervalMs) || (profile.metricsIntervalMs as number) < 5_000 || (profile.metricsIntervalMs as number) > 300_000)) invalid("Use a metrics export interval from 5000 to 300000 milliseconds.");
+  if (profile.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(profile.eventLoopDelayResolutionMs) || (profile.eventLoopDelayResolutionMs as number) < 10 || (profile.eventLoopDelayResolutionMs as number) > 1000)) invalid("Use an event-loop delay resolution from 10 to 1000 milliseconds.");
   if (profile.dashboard !== undefined) {
     if (typeof profile.dashboard !== "string" || profile.dashboard.length > 2048) invalid("Use a dashboard HTTPS URL without embedded credentials.");
     let dashboard: URL;
@@ -111,7 +113,7 @@ export async function resolveLocalTelemetryConfig(config: { name?: string; telem
   const profile = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
   if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
   if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name}.`);
-  return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs };
+  return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs, eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs };
 }
 
 /** Docker loopback is the Capsule itself; route an explicitly local profile to its Host. */

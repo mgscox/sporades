@@ -100063,7 +100063,7 @@ function validateTelemetryProjectConfig(value) {
 function validateTelemetryProfile(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Provide an endpoint, TLS mode and optional references.");
   const profile = value;
-  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs"].includes(key))) invalid("Remove unsupported Telemetry profile fields.");
+  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid("Remove unsupported Telemetry profile fields.");
   if (typeof profile.endpoint !== "string" || profile.endpoint.length > 2048) invalid("Use an OTLP/HTTP base URL without credentials or query strings.");
   let url;
   try {
@@ -100082,6 +100082,7 @@ function validateTelemetryProfile(value) {
   if (trust.caFile !== void 0 && (trust.mode !== "verified" || typeof trust.caFile !== "string" || !path8.isAbsolute(trust.caFile) || trust.caFile.length > 1024)) invalid("Use an absolute private CA file path with verified TLS.");
   if (profile.credentialEnv !== void 0 && (typeof profile.credentialEnv !== "string" || !envPattern.test(profile.credentialEnv))) invalid("Use an uppercase credential environment reference such as TRACE_INGEST_TOKEN.");
   if (profile.metricsIntervalMs !== void 0 && (!Number.isSafeInteger(profile.metricsIntervalMs) || profile.metricsIntervalMs < 5e3 || profile.metricsIntervalMs > 3e5)) invalid("Use a metrics export interval from 5000 to 300000 milliseconds.");
+  if (profile.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(profile.eventLoopDelayResolutionMs) || profile.eventLoopDelayResolutionMs < 10 || profile.eventLoopDelayResolutionMs > 1e3)) invalid("Use an event-loop delay resolution from 10 to 1000 milliseconds.");
   if (profile.dashboard !== void 0) {
     if (typeof profile.dashboard !== "string" || profile.dashboard.length > 2048) invalid("Use a dashboard HTTPS URL without embedded credentials.");
     let dashboard;
@@ -100146,7 +100147,7 @@ async function resolveLocalTelemetryConfig(config, sessionProfile) {
   const profile = Object.hasOwn(profiles, name2) ? profiles[name2] : void 0;
   if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
   if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name2}.`);
-  return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs };
+  return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs, eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs };
 }
 async function resolveContainerTelemetryConfig(config, sessionProfile) {
   if (sessionProfile === null) return null;
@@ -127987,6 +127988,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID8 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
+import { constants as performanceConstants, monitorEventLoopDelay, performance as performance2, PerformanceObserver } from "node:perf_hooks";
 var builtinRoutes = [
   ["GET", "/__sporades/connection-token"],
   ["GET", "/__sporades/health/runtime"],
@@ -128051,6 +128053,7 @@ function exportFailureReason(error) {
 function createHttpRequestTelemetry(config, onDiagnostic) {
   if (!config) return { run: (_request, _response, _endpoints, handle) => requestScope.run({ requestId: randomUUID8() }, handle), shutdown: async () => {
   } };
+  if (config.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1e3)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
   const endpoint = new URL("/v1/traces", url).toString();
   const token = config.credentialEnv ? process.env[config.credentialEnv] : void 0;
@@ -128094,6 +128097,28 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
   const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
   const processMeter = meterProvider.getMeter("sporades-runtime-process", "1");
+  const gcKinds = /* @__PURE__ */ new Map([
+    [performanceConstants.NODE_PERFORMANCE_GC_MAJOR, "major"],
+    [performanceConstants.NODE_PERFORMANCE_GC_MINOR, "minor"],
+    [performanceConstants.NODE_PERFORMANCE_GC_INCREMENTAL, "incremental"],
+    [performanceConstants.NODE_PERFORMANCE_GC_WEAKCB, "weakcb"]
+  ]);
+  const gcTotals = /* @__PURE__ */ new Map();
+  const recordGc = (entries) => {
+    for (const entry of entries) {
+      if (!Number.isFinite(entry.duration) || entry.duration < 0) continue;
+      const kind = gcKinds.get(entry.detail?.kind ?? -1) ?? "other";
+      const total = gcTotals.get(kind) ?? { count: 0, durationSeconds: 0 };
+      total.count += 1;
+      total.durationSeconds += entry.duration / 1e3;
+      gcTotals.set(kind, total);
+    }
+  };
+  const gcObserver = new PerformanceObserver((list) => recordGc(list.getEntries()));
+  gcObserver.observe({ entryTypes: ["gc"] });
+  const loopDelay = monitorEventLoopDelay({ resolution: config.eventLoopDelayResolutionMs ?? 20 });
+  loopDelay.enable();
+  let previousElu = performance2.eventLoopUtilization();
   const cpuTime = processMeter.createObservableCounter("process.cpu.time", { unit: "s" });
   const rss = processMeter.createObservableGauge("process.memory.rss", { unit: "By" });
   const heapUsed = processMeter.createObservableGauge("process.memory.heap.used", { unit: "By" });
@@ -128102,6 +128127,12 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const external = processMeter.createObservableGauge("process.memory.external", { unit: "By" });
   const arrayBuffers = processMeter.createObservableGauge("process.memory.array_buffers", { unit: "By" });
   const uptime = processMeter.createObservableGauge("process.uptime", { unit: "s" });
+  const gcCount = processMeter.createObservableCounter("process.gc.count", { unit: "1" });
+  const gcDuration = processMeter.createObservableCounter("process.gc.duration", { unit: "s" });
+  const delayMax = processMeter.createObservableGauge("process.event_loop.delay.max", { unit: "ms" });
+  const delayMean = processMeter.createObservableGauge("process.event_loop.delay.mean", { unit: "ms" });
+  const delayP99 = processMeter.createObservableGauge("process.event_loop.delay.p99", { unit: "ms" });
+  const loopUtilization = processMeter.createObservableGauge("process.event_loop.utilization", { unit: "1" });
   processMeter.addBatchObservableCallback((result) => {
     const cpu = process.cpuUsage();
     const memory = process.memoryUsage();
@@ -128114,7 +128145,22 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     result.observe(external, memory.external);
     result.observe(arrayBuffers, memory.arrayBuffers);
     result.observe(uptime, process.uptime());
-  }, [cpuTime, rss, heapUsed, heapAllocated, heapLimit, external, arrayBuffers, uptime]);
+    recordGc(gcObserver.takeRecords());
+    for (const [kind, total] of gcTotals) {
+      result.observe(gcCount, total.count, { kind });
+      result.observe(gcDuration, total.durationSeconds, { kind });
+    }
+    if (loopDelay.count > 0) {
+      result.observe(delayMax, loopDelay.max / 1e6);
+      result.observe(delayMean, loopDelay.mean / 1e6);
+      result.observe(delayP99, loopDelay.percentile(99) / 1e6);
+    }
+    loopDelay.reset();
+    const currentElu = performance2.eventLoopUtilization();
+    const intervalElu = performance2.eventLoopUtilization(previousElu);
+    previousElu = currentElu;
+    if (Number.isFinite(intervalElu.utilization) && intervalElu.active + intervalElu.idle > 0) result.observe(loopUtilization, intervalElu.utilization);
+  }, [cpuTime, rss, heapUsed, heapAllocated, heapLimit, external, arrayBuffers, uptime, gcCount, gcDuration, delayMax, delayMean, delayP99, loopUtilization]);
   const seenRoutes = /* @__PURE__ */ new Set();
   let failedReason = null;
   let lastFailureLoggedAt = 0;
@@ -128213,6 +128259,8 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     async shutdown() {
       if (closing) return;
       closing = true;
+      gcObserver.disconnect();
+      loopDelay.disable();
       await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise((resolve2) => {
         const timer = setTimeout(resolve2, 1500);
         timer.unref();
@@ -145054,6 +145102,7 @@ Options for profile add:
   --dashboard <url>       Optional dashboard HTTPS URL
   --credential-env <KEY>  Environment variable containing the ingestion bearer token
   --metrics-interval-ms <N>  Metrics export period, 5000-300000 ms (default 15000)
+  --event-loop-delay-resolution-ms <N>  Delay timer precision, 10-1000 ms (default 20)
   --ca-file <path>        Absolute private CA certificate path for verified TLS
   --loopback              Permit a local HTTP collector for development
   --json                  Write { ok, data, error } JSON output
@@ -147671,6 +147720,10 @@ async function runTelemetryProfileCommand(args) {
         input.metricsIntervalMs = Number(readFlagValue(rest, ++index, arg));
         continue;
       }
+      if (arg === "--event-loop-delay-resolution-ms") {
+        input.eventLoopDelayResolutionMs = Number(readFlagValue(rest, ++index, arg));
+        continue;
+      }
       if (arg === "--ca-file") {
         input.caFile = readFlagValue(rest, ++index, arg);
         continue;
@@ -147688,7 +147741,8 @@ async function runTelemetryProfileCommand(args) {
       ...input.dashboard ? { dashboard: input.dashboard } : {},
       tls: { mode: input.loopback ? "loopback" : "verified", ...input.caFile ? { caFile: input.caFile } : {} },
       ...input.credentialEnv ? { credentialEnv: input.credentialEnv } : {},
-      ...input.metricsIntervalMs !== void 0 ? { metricsIntervalMs: input.metricsIntervalMs } : {}
+      ...input.metricsIntervalMs !== void 0 ? { metricsIntervalMs: input.metricsIntervalMs } : {},
+      ...input.eventLoopDelayResolutionMs !== void 0 ? { eventLoopDelayResolutionMs: input.eventLoopDelayResolutionMs } : {}
     };
     const saved = await changeTelemetryProfile("add", name2, profile);
     if (json) writeResult({ ok: true, data: { name: name2, profile: saved }, error: null });

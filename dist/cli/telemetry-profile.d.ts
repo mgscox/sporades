@@ -8,6 +8,7 @@ export type TelemetryProfile = {
     };
     credentialEnv?: string;
     metricsIntervalMs?: number;
+    eventLoopDelayResolutionMs?: number;
 };
 export declare function validateTelemetryProjectConfig(value: unknown): void;
 export declare function validateTelemetryProfile(value: unknown): TelemetryProfile;

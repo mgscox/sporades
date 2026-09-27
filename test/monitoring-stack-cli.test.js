@@ -46,6 +46,12 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert.match(resources.panels.find(panel => panel.title === 'CPU cores used')?.targets[0].expr ?? '', /rate\(process_cpu_time_seconds_total.*instance=~/);
   assert.equal(resources.panels.find(panel => panel.title === 'JavaScript heap')?.targets.length, 2);
   assert(resources.panels.some(panel => panel.title === 'V8 heap limit'));
+  assert.match(resources.panels.find(panel => panel.title === 'GC collections per second')?.targets[0].expr ?? '', /rate\(process_gc_count_total.*instance=~/);
+  assert.match(resources.panels.find(panel => panel.title === 'GC pause time per second')?.targets[0].expr ?? '', /rate\(process_gc_duration_seconds_total.*instance=~/);
+  assert.match(resources.panels.find(panel => panel.title === 'Event-loop delay')?.targets[0].expr ?? '', /max_over_time\(process_event_loop_delay_max_milliseconds.*\[20s\]\)/);
+  assert.match(resources.panels.find(panel => panel.title === 'Event-loop utilization')?.targets[0].expr ?? '', /process_event_loop_utilization_ratio.*instance=~/);
+  assert.match(resources.panels.find(panel => panel.title === 'API request p95 latency')?.targets[0].expr ?? '', /http_server_request_duration_seconds_bucket.*instance=~/);
+
   assert.equal((await stat(join(target, '.private', 'grafana-admin-password'))).mode & 0o777, 0o600);
   assert.ok(result.data.missing.includes('TRACE_CERT_FILE'));
   const environment = join(target, '.env');

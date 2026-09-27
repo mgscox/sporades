@@ -378,6 +378,10 @@ async function runTelemetryProfileCommand(args) {
                 input.metricsIntervalMs = Number(readFlagValue(rest, ++index, arg));
                 continue;
             }
+            if (arg === "--event-loop-delay-resolution-ms") {
+                input.eventLoopDelayResolutionMs = Number(readFlagValue(rest, ++index, arg));
+                continue;
+            }
             if (arg === "--ca-file") {
                 input.caFile = readFlagValue(rest, ++index, arg);
                 continue;
@@ -396,6 +400,7 @@ async function runTelemetryProfileCommand(args) {
             tls: { mode: input.loopback ? "loopback" : "verified", ...(input.caFile ? { caFile: input.caFile } : {}) },
             ...(input.credentialEnv ? { credentialEnv: input.credentialEnv } : {}),
             ...(input.metricsIntervalMs !== undefined ? { metricsIntervalMs: input.metricsIntervalMs } : {}),
+            ...(input.eventLoopDelayResolutionMs !== undefined ? { eventLoopDelayResolutionMs: input.eventLoopDelayResolutionMs } : {}),
         };
         const saved = await changeTelemetryProfile("add", name, profile);
         if (json)
