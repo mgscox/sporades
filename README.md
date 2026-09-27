@@ -217,6 +217,8 @@ Sporades currently includes:
 - Local Docker Container sessions for production-like staging tests.
 - Hosted Capsules on SSH-reachable Host servers, routed through Caddy and run in
   hardened Docker containers.
+- A [standalone trace stack](monitoring/trace/README.md) with authenticated
+  OTLP/HTTP ingestion, persistent Jaeger storage, and protected trace UI.
 - Runtime-owned auth with anonymous sessions, email auth, Google OAuth,
   Microsoft OpenID Connect, Sign in with Apple, Facebook Login, and
   local identity simulation for tests and agents.
