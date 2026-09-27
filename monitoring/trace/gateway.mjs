@@ -51,19 +51,61 @@ async function pathReady(config) {
   return false;
 }
 
-function proxyUi(req, res, target) {
+// Covers the entire UI exchange, including backend response bodies. The ingest
+// body and Collector deadlines are separate and intentionally shorter.
+const UI_REQUEST_DEADLINE_MS = 15000;
+
+function proxyUi(req, res, target, deadlineMs = UI_REQUEST_DEADLINE_MS) {
   if (!req.url.startsWith('/') || req.url.startsWith('//')) { res.writeHead(400); res.end(); return; }
   const url = new URL(target);
   const headers = { host: url.host };
   for (const name of ['accept', 'accept-encoding', 'content-type', 'content-length']) {
     if (req.headers[name]) headers[name] = req.headers[name];
   }
-  const upstream = httpRequest({ protocol: url.protocol, hostname: url.hostname, port: url.port, path: req.url, method: req.method, headers, timeout: 3000 }, response => {
-    res.writeHead(response.statusCode, response.headers);
-    response.pipe(res);
+  let response;
+  let finished = false;
+  const upstream = httpRequest({ protocol: url.protocol, hostname: url.hostname, port: url.port, path: req.url, method: req.method, headers }, incoming => {
+    response = incoming;
+    if (finished) { incoming.destroy(); return; }
+    const outgoingHeaders = { ...incoming.headers };
+    // UI authentication belongs to the gateway. Backend cookies must not
+    // create a second browser session outside that boundary.
+    delete outgoingHeaders['set-cookie'];
+    res.writeHead(incoming.statusCode, outgoingHeaders);
+    incoming.on('aborted', () => fail(502));
+    incoming.on('error', () => fail(502));
+    incoming.pipe(res);
   });
-  upstream.on('timeout', () => upstream.destroy());
-  upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+  const stop = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(deadline);
+    req.unpipe(upstream);
+    response?.unpipe(res);
+    response?.destroy();
+    upstream.destroy();
+    // A backend may answer before a client finishes uploading. Once the
+    // response has flushed, close that client socket instead of leaving the
+    // HTTP parser waiting indefinitely for the remainder of its body.
+    if (!req.complete) {
+      res.shouldKeepAlive = false;
+      if (res.writableFinished || res.destroyed) req.destroy();
+      else res.once('finish', () => req.destroy());
+    }
+  };
+  const fail = status => {
+    if (finished) return;
+    stop();
+    if (res.destroyed) return;
+    if (res.headersSent) res.destroy();
+    else { res.writeHead(status); res.end(); }
+  };
+  const deadline = setTimeout(() => fail(504), deadlineMs);
+  upstream.on('error', () => fail(502));
+  req.on('aborted', () => fail(502));
+  req.on('error', () => fail(502));
+  res.on('finish', stop);
+  res.on('close', stop);
   req.pipe(upstream);
 }
 
@@ -115,7 +157,7 @@ export function createGateway(config, tls) {
     if (!same(auth, `${config.uiUser}:${config.uiPassword}`)) {
       res.writeHead(401, { 'www-authenticate': 'Basic realm="Sporades traces"' }); res.end(); return;
     }
-    proxyUi(req, res, req.url.startsWith('/grafana/') ? config.grafanaUrl : config.jaegerUrl);
+    proxyUi(req, res, req.url.startsWith('/grafana/') ? config.grafanaUrl : config.jaegerUrl, config.uiRequestDeadlineMs);
   };
   return tls ? createHttpsServer(tls, handler) : createHttpServer(handler);
 }
