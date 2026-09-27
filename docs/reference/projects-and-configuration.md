@@ -23,6 +23,9 @@ Container. It mounts a deployment-owned, read-only copy that the Container's
 runtime user can read; the operator file and its permissions stay unchanged.
 Keep the operator CA available for later redeploys. The optional `--dashboard`
 is a credential-free HTTPS URL.
+If deployment is interrupted, `sporades deploy reconcile` retires an unbound
+staged CA after settling the Container attempt; a bound CA remains until that
+Container is replaced or removed.
 `--event-loop-delay-resolution-ms` tunes Node event-loop delay sampling from
 10 to 1000 ms (default 20 ms); shorter intervals use more timer work.
 `--metrics-interval-ms` tunes metric export from 5000 to 300000 ms; the default

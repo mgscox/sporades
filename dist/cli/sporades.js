@@ -4092,9 +4092,10 @@ async function startContainerSession(options) {
         await chmod(path.join(runtimeDir, "deploy-files"), 0o700);
     }
     const deployReleaseRoot = path.join(runtimeDir, "deploy-files", randomBytes(16).toString("hex"));
+    const telemetryCaStagePath = telemetryCa ? path.join(runtimeDir, "telemetry-ca", `${randomBytes(16).toString("hex")}.pem`) : null;
     const preservedRoot = path.join(runtimeDir, "preserved-files");
     const createdSeeds = [];
-    const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0);
+    const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0 || Boolean(telemetryCaStagePath));
     try {
         for (const file of bundle.deployFiles) {
             const destination = path.join(deployReleaseRoot, file.path);
@@ -4123,7 +4124,6 @@ async function startContainerSession(options) {
         "--env",
         `${key}=${value}`,
     ]);
-    const telemetryCaStagePath = telemetryCa ? path.join(runtimeDir, "telemetry-ca", `${randomBytes(16).toString("hex")}.pem`) : null;
     const telemetryArgs = telemetryConfig ? [
         ...(telemetryConfig.tls.mode === "loopback" ? ["--add-host", "host.docker.internal:host-gateway"] : []),
         ...(telemetryConfig.credentialEnv ? ["--env", telemetryConfig.credentialEnv] : []),
@@ -4183,6 +4183,7 @@ async function startContainerSession(options) {
     let binding = null;
     try {
         if (telemetryCaStagePath && telemetryCa) {
+            await recordPreservedFileAttempt(seedJournal, { telemetryCaStagePath });
             await mkdir(path.dirname(telemetryCaStagePath), { recursive: true, mode: 0o700 });
             await writeFile(telemetryCaStagePath, telemetryCa, { flag: "wx", mode: 0o644 });
             await chmod(telemetryCaStagePath, 0o644);
@@ -4191,7 +4192,7 @@ async function startContainerSession(options) {
         // can settle an interrupted attempt from the journal alone.
         await recordPreservedFileAttempt(seedJournal, {
             candidate: { name: containerName, transaction: containerTransactionToken },
-            ...(existingContainer ? { previous: { containerId: existingBinding.containerId, name: oldName, rollbackName, wasRunning: oldWasRunning } } : {}),
+            ...(existingContainer ? { previous: { containerId: existingBinding.containerId, name: oldName, rollbackName, wasRunning: oldWasRunning, telemetryCaStagePath: existingBinding?.telemetryCaStagePath } } : {}),
         });
         if (existingContainer) {
             runDocker(["rename", existingBinding.containerId, rollbackName], options.projectDir, "Failed to stage the existing Container for replacement.", "Retry after Docker can rename the bound Container.");
@@ -4354,10 +4355,10 @@ async function startContainerSession(options) {
     }
     if (!containerId || !binding)
         throw commandError("Container replacement did not commit.", "Retry deployment.");
-    await finishPreservedFileAttempt(seedJournal);
     if (existingBinding?.telemetryCaStagePath && existingBinding.telemetryCaStagePath !== telemetryCaStagePath) {
         await removeContainerTelemetryCaStage(runtimeDir, existingBinding.telemetryCaStagePath);
     }
+    await finishPreservedFileAttempt(seedJournal);
     for (const snapshot of binding.pendingDeployFileCleanup)
         await removeDeployFileSnapshot(runtimeDir, snapshot);
     binding.pendingDeployFileCleanup = [];
@@ -5976,7 +5977,9 @@ async function reconcileLocalContainerSession(options) {
     }
     const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
     const binding = await readContainerBinding(bindingPath);
-    const committed = Boolean(attempt.release && binding?.deployFilesRoot === attempt.release);
+    const candidateCaStagePath = attempt.records.find((record) => record.telemetryCaStagePath)?.telemetryCaStagePath;
+    const committed = Boolean((attempt.release && binding?.deployFilesRoot === attempt.release)
+        || (candidateCaStagePath && binding?.telemetryCaStagePath === candidateCaStagePath));
     const candidate = attempt.records.find((record) => record.candidate)?.candidate;
     const previous = attempt.records.find((record) => record.previous)?.previous;
     const actions = [];
@@ -5985,6 +5988,10 @@ async function reconcileLocalContainerSession(options) {
         if (previous?.rollbackName && binding?.containerId !== previous.containerId) {
             runDockerCleanup(["rm", "-f", previous.rollbackName], options.projectDir, "Failed to remove the staged previous Container.", "Retry `sporades deploy reconcile` after Docker can remove the retained rollback Container.", true);
             actions.push("previous-container-removed");
+        }
+        if (previous?.telemetryCaStagePath && previous.telemetryCaStagePath !== binding?.telemetryCaStagePath) {
+            await removeContainerTelemetryCaStage(runtimeDir, previous.telemetryCaStagePath);
+            actions.push("previous-telemetry-ca-removed");
         }
     }
     else {
@@ -6002,10 +6009,14 @@ async function reconcileLocalContainerSession(options) {
                 actions.push("previous-container-renamed");
             }
         }
+        if (candidateCaStagePath && candidateCaStagePath !== binding?.telemetryCaStagePath) {
+            await removeContainerTelemetryCaStage(runtimeDir, candidateCaStagePath);
+            actions.push("candidate-telemetry-ca-removed");
+        }
         await rollbackPreservedFiles(attempt.seeds);
         if (attempt.seeds.length)
             actions.push("seeds-rolled-back");
-        if (attempt.release && attempt.release !== binding?.deployFilesRoot) {
+        if (attempt.release && attempt.release !== binding?.deployFilesRoot && await lstat(attempt.release).catch(() => null)) {
             await removeDeployFileSnapshot(runtimeDir, attempt.release);
             actions.push("candidate-snapshot-removed");
         }

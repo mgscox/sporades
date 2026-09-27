@@ -151477,9 +151477,10 @@ async function startContainerSession(options) {
     await chmod3(path18.join(runtimeDir, "deploy-files"), 448);
   }
   const deployReleaseRoot = path18.join(runtimeDir, "deploy-files", randomBytes9(16).toString("hex"));
+  const telemetryCaStagePath = telemetryCa ? path18.join(runtimeDir, "telemetry-ca", `${randomBytes9(16).toString("hex")}.pem`) : null;
   const preservedRoot = path18.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
-  const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0);
+  const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0 || Boolean(telemetryCaStagePath));
   try {
     for (const file of bundle.deployFiles) {
       const destination = path18.join(deployReleaseRoot, file.path);
@@ -151514,7 +151515,6 @@ async function startContainerSession(options) {
     "--env",
     `${key}=${value}`
   ]);
-  const telemetryCaStagePath = telemetryCa ? path18.join(runtimeDir, "telemetry-ca", `${randomBytes9(16).toString("hex")}.pem`) : null;
   const telemetryArgs = telemetryConfig ? [
     ...telemetryConfig.tls.mode === "loopback" ? ["--add-host", "host.docker.internal:host-gateway"] : [],
     ...telemetryConfig.credentialEnv ? ["--env", telemetryConfig.credentialEnv] : [],
@@ -151574,13 +151574,14 @@ async function startContainerSession(options) {
   let binding = null;
   try {
     if (telemetryCaStagePath && telemetryCa) {
+      await recordPreservedFileAttempt(seedJournal, { telemetryCaStagePath });
       await mkdir10(path18.dirname(telemetryCaStagePath), { recursive: true, mode: 448 });
       await writeFile9(telemetryCaStagePath, telemetryCa, { flag: "wx", mode: 420 });
       await chmod3(telemetryCaStagePath, 420);
     }
     await recordPreservedFileAttempt(seedJournal, {
       candidate: { name: containerName, transaction: containerTransactionToken },
-      ...existingContainer ? { previous: { containerId: existingBinding.containerId, name: oldName, rollbackName, wasRunning: oldWasRunning } } : {}
+      ...existingContainer ? { previous: { containerId: existingBinding.containerId, name: oldName, rollbackName, wasRunning: oldWasRunning, telemetryCaStagePath: existingBinding?.telemetryCaStagePath } } : {}
     });
     if (existingContainer) {
       runDocker(["rename", existingBinding.containerId, rollbackName], options.projectDir, "Failed to stage the existing Container for replacement.", "Retry after Docker can rename the bound Container.");
@@ -151746,10 +151747,10 @@ async function startContainerSession(options) {
     throw error;
   }
   if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");
-  await finishPreservedFileAttempt(seedJournal);
   if (existingBinding?.telemetryCaStagePath && existingBinding.telemetryCaStagePath !== telemetryCaStagePath) {
     await removeContainerTelemetryCaStage(runtimeDir, existingBinding.telemetryCaStagePath);
   }
+  await finishPreservedFileAttempt(seedJournal);
   for (const snapshot of binding.pendingDeployFileCleanup) await removeDeployFileSnapshot(runtimeDir, snapshot);
   binding.pendingDeployFileCleanup = [];
   await replaceContainerBinding(bindingPath, binding);
@@ -153426,7 +153427,8 @@ async function reconcileLocalContainerSession(options) {
   }
   const bindingPath = path18.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
-  const committed = Boolean(attempt.release && binding?.deployFilesRoot === attempt.release);
+  const candidateCaStagePath = attempt.records.find((record) => record.telemetryCaStagePath)?.telemetryCaStagePath;
+  const committed = Boolean(attempt.release && binding?.deployFilesRoot === attempt.release || candidateCaStagePath && binding?.telemetryCaStagePath === candidateCaStagePath);
   const candidate = attempt.records.find((record) => record.candidate)?.candidate;
   const previous = attempt.records.find((record) => record.previous)?.previous;
   const actions = [];
@@ -153440,6 +153442,10 @@ async function reconcileLocalContainerSession(options) {
         true
       );
       actions.push("previous-container-removed");
+    }
+    if (previous?.telemetryCaStagePath && previous.telemetryCaStagePath !== binding?.telemetryCaStagePath) {
+      await removeContainerTelemetryCaStage(runtimeDir, previous.telemetryCaStagePath);
+      actions.push("previous-telemetry-ca-removed");
     }
   } else {
     if (typeof candidate?.transaction === "string" && /^[a-f0-9]{32}$/.test(candidate.transaction)) {
@@ -153472,9 +153478,13 @@ async function reconcileLocalContainerSession(options) {
         actions.push("previous-container-renamed");
       }
     }
+    if (candidateCaStagePath && candidateCaStagePath !== binding?.telemetryCaStagePath) {
+      await removeContainerTelemetryCaStage(runtimeDir, candidateCaStagePath);
+      actions.push("candidate-telemetry-ca-removed");
+    }
     await rollbackPreservedFiles(attempt.seeds);
     if (attempt.seeds.length) actions.push("seeds-rolled-back");
-    if (attempt.release && attempt.release !== binding?.deployFilesRoot) {
+    if (attempt.release && attempt.release !== binding?.deployFilesRoot && await lstat10(attempt.release).catch(() => null)) {
       await removeDeployFileSnapshot(runtimeDir, attempt.release);
       actions.push("candidate-snapshot-removed");
     }
