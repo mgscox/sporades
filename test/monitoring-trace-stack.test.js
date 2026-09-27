@@ -4,6 +4,9 @@ import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { request as httpRequest } from 'node:http';
+import { spawn } from 'node:child_process';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { gatewayRunIdentity, setupEnvironment } from '../monitoring/trace/setup.mjs';
 
 test('root Linux setup keeps the gateway non-root; unprivileged setup keeps its owner', () => {
@@ -107,15 +110,79 @@ test('gateway rejects bad ingestion credentials and hides backend failures on he
   }
 });
 
+test('an interrupted authenticated upload leaves the gateway alive for health and ingestion', async () => {
+  const collector = createServer(async (req, res) => { for await (const _ of req) {} res.writeHead(200).end('{}'); });
+  await new Promise(resolve => collector.listen(0, '127.0.0.1', resolve));
+  const child = spawn(process.execPath, [new URL('./fixtures/monitoring-gateway-child.mjs', import.meta.url).pathname], {
+    env: { ...process.env, TEST_COLLECTOR_URL: `http://127.0.0.1:${collector.address().port}` },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  try {
+    const port = await Promise.race([
+      new Promise((resolve, reject) => {
+        let output = '';
+        child.stdout.on('data', chunk => { output += chunk; if (output.includes('\n')) resolve(Number(output.trim())); });
+        child.once('exit', code => reject(new Error(`gateway exited ${code}: ${stderr}`)));
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('gateway did not start')), 3000)),
+    ]);
+    const upload = httpRequest({ hostname: '127.0.0.1', port, path: '/v1/traces', method: 'POST', headers: { authorization: 'Bearer test-token', 'content-type': 'application/json', 'content-length': '1000' } });
+    upload.on('error', () => {});
+    upload.write('{"partial":');
+    await new Promise(resolve => upload.once('socket', socket => socket.once('connect', resolve)));
+    upload.destroy();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const health = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(health.status, 503);
+    assert.deepEqual(await health.json(), { ok: false });
+    const accepted = await fetch(`http://127.0.0.1:${port}/v1/traces`, { method: 'POST', headers: { authorization: 'Bearer test-token', 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(accepted.status, 200);
+    assert.equal(child.exitCode, null, stderr);
+  } finally { child.kill(); collector.close(); }
+});
+
+test('gateway passes gzip bytes and encoding to Collector but rejects unsupported encoding', async () => {
+  const payload = Buffer.from('{"resourceSpans":[]}');
+  const compressed = gzipSync(payload);
+  let accepted = 0;
+  const collector = createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    assert.equal(req.headers['content-encoding'], 'gzip');
+    assert.equal(req.headers.authorization, undefined);
+    assert.deepEqual(Buffer.concat(chunks), compressed);
+    assert.deepEqual(gunzipSync(Buffer.concat(chunks)), payload);
+    accepted++;
+    res.writeHead(200).end('{}');
+  });
+  await new Promise(resolve => collector.listen(0, '127.0.0.1', resolve));
+  const gateway = createGateway({ ingestToken: 'token', uiUser: 'viewer', uiPassword: 'secret', collectorUrl: `http://127.0.0.1:${collector.address().port}`, jaegerUrl: 'http://127.0.0.1:1' });
+  await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${gateway.address().port}/v1/traces`;
+    const headers = { authorization: 'Bearer token', 'content-type': 'application/json', 'content-encoding': 'gzip' };
+    assert.equal((await fetch(base, { method: 'POST', headers, body: compressed })).status, 200);
+    assert.equal(accepted, 1);
+    assert.equal((await fetch(base, { method: 'POST', headers: { ...headers, 'content-encoding': 'br' }, body: compressed })).status, 415);
+    assert.equal(accepted, 1);
+  } finally { gateway.close(); collector.close(); }
+});
+
 test('gateway protects Grafana and requires stored metrics as well as stored traces', async () => {
+  let storedReadinessValue;
   const traces = createServer(async (req, res) => {
-    if (req.url === '/v1/traces' || req.url === '/v1/metrics') { for await (const _ of req) {} res.writeHead(200).end(); return; }
+    if (req.url === '/v1/traces' || req.url === '/v1/metrics') {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      if (req.url === '/v1/metrics') storedReadinessValue = JSON.parse(Buffer.concat(chunks)).resourceMetrics[0].scopeMetrics[0].metrics[0].gauge.dataPoints[0].asDouble;
+      res.writeHead(200).end(); return;
+    }
     if (req.url.startsWith('/api/traces/')) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ data: [{}] })); return; }
     res.writeHead(404).end();
   });
   const metrics = createServer(async (req, res) => {
     if (req.url === '/v1/metrics') { for await (const _ of req) {} res.writeHead(200).end(); return; }
-    if (req.url.startsWith('/api/v1/query')) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status: 'success', data: { result: [{ value: [Date.now() / 1000, '1'] }] } })); return; }
+    if (req.url.startsWith('/api/v1/query')) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ status: 'success', data: { result: storedReadinessValue === undefined ? [] : [{ value: [Date.now() / 1000, String(storedReadinessValue)] }] } })); return; }
     res.writeHead(404).end();
   });
   const grafana = createServer((req, res) => res.end(`GRAFANA:${req.url}:${req.headers.cookie ?? ''}`));
@@ -137,4 +204,36 @@ test('gateway protects Grafana and requires stored metrics as well as stored tra
     assert.equal(failed.status, 503);
     assert.deepEqual(await failed.json(), { ok: false });
   } finally { gateway.close(); traces.close(); metrics.close(); grafana.close(); }
+});
+
+test('readiness rejects stale readable metrics while writes fail and recovers after a current write', async () => {
+  let writesEnabled = false;
+  let storedValue = 1;
+  const collector = createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    if (req.url === '/v1/metrics') {
+      if (writesEnabled) storedValue = JSON.parse(Buffer.concat(chunks)).resourceMetrics[0].scopeMetrics[0].metrics[0].gauge.dataPoints[0].asDouble;
+    }
+    res.writeHead(200).end();
+  });
+  const jaeger = createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"data":[{}]}'); });
+  const prometheus = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ status: 'success', data: { result: [{ value: [Date.now() / 1000, String(storedValue)] }] } }));
+  });
+  await Promise.all([collector, jaeger, prometheus].map(server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve))));
+  const gateway = createGateway({ ingestToken: 'token', uiUser: 'viewer', uiPassword: 'secret', collectorUrl: `http://127.0.0.1:${collector.address().port}`, jaegerUrl: `http://127.0.0.1:${jaeger.address().port}`, prometheusUrl: `http://127.0.0.1:${prometheus.address().port}` });
+  await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${gateway.address().port}/health`;
+    const stale = await fetch(base);
+    assert.equal(stale.status, 503);
+    assert.deepEqual(await stale.json(), { ok: false });
+    writesEnabled = true;
+    await new Promise(resolve => setTimeout(resolve, 3100));
+    const recovered = await fetch(base);
+    assert.equal(recovered.status, 200);
+    assert.deepEqual(await recovered.json(), { ok: true });
+    assert.notEqual(storedValue, 1);
+  } finally { gateway.close(); collector.close(); jaeger.close(); prometheus.close(); }
 });
