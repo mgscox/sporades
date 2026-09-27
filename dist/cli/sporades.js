@@ -157,7 +157,7 @@ async function main() {
                 if (data.missingAssets.length)
                     process.stdout.write(`Missing stack files: ${data.missingAssets.join(', ')}\n`);
                 if (data.versionDifference)
-                    process.stdout.write(`Stack version differs: installed ${data.versionDifference.installed}, package ${data.versionDifference.available}. Review overrides before upgrading.\n`);
+                    process.stdout.write(`Stack provenance: installed ${data.versionDifference.installed}, package ${data.versionDifference.available}. Review overrides before upgrading.\n`);
                 if (data.overrides.length)
                     process.stdout.write(`Preserved local files: ${data.overrides.join(', ')}\n`);
                 for (const step of data.nextSteps)

@@ -65278,7 +65278,7 @@ import { spawnSync as spawnSync3 } from "node:child_process";
 import { createHash as createHash15, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual5 } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
-import { appendFile, chmod as chmod2, cp as cp2, lstat as lstat10, mkdir as mkdir9, readdir as readdir3, readFile as readFile12, rename as rename6, rm as rm8, writeFile as writeFile8 } from "node:fs/promises";
+import { appendFile, chmod as chmod2, cp as cp2, lstat as lstat10, mkdir as mkdir9, readdir as readdir4, readFile as readFile12, rename as rename6, rm as rm8, writeFile as writeFile8 } from "node:fs/promises";
 import path16 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL5 } from "node:url";
 
@@ -129343,7 +129343,7 @@ function renderCliHelp(command) {
 // src/cli/monitoring-stack.ts
 import { spawnSync } from "node:child_process";
 import { createHash as createHash13 } from "node:crypto";
-import { cp, lstat as lstat8, mkdir as mkdir7, readFile as readFile9, writeFile as writeFile6 } from "node:fs/promises";
+import { cp, lstat as lstat8, mkdir as mkdir7, readFile as readFile9, readdir as readdir3, writeFile as writeFile6 } from "node:fs/promises";
 import path13 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
 var STACK_SCHEMA = 1;
@@ -129359,6 +129359,14 @@ function prerequisite() {
   const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(compose.stdout.trim());
   if (!match || Number(match[1]) < 2 || Number(match[1]) === 2 && (Number(match[2]) < 40 || Number(match[2]) === 40 && Number(match[3]) < 3)) {
     throw commandError("Unsupported Docker Compose version.", "Install Docker Compose 2.40.3 or later.");
+  }
+  const engine = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], { encoding: "utf8" });
+  if (engine.error || engine.status !== 0) {
+    throw commandError("Docker Engine is unavailable.", "Start Docker Engine 29.x and check that the selected Docker context is reachable.");
+  }
+  const engineVersion = /^v?(\d+)\.(\d+)\.(\d+)/.exec(engine.stdout.trim());
+  if (!engineVersion || Number(engineVersion[1]) !== 29) {
+    throw commandError("Unsupported Docker Engine version.", "Use Docker Engine 29.x on the selected Docker context.");
   }
 }
 async function existingFile(filename) {
@@ -129378,6 +129386,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
   const manifestPath = path13.join(target, "stack-manifest.json");
   if (action === "init") await mkdir7(target, { recursive: true });
   else if (!await existingFile(target)) throw commandError("Monitoring stack directory does not exist.", "Run `sporades monitoring stack init --dir <path>` first.");
+  const preexistingContent = (await readdir3(target)).length > 0;
   const manifestStat = await existingFile(manifestPath);
   let prior = null;
   if (manifestStat) {
@@ -129387,7 +129396,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
       throw commandError("Invalid monitoring stack manifest.", "Back up the directory and inspect stack-manifest.json before continuing.");
     }
   }
-  const versionDifference = prior && (prior.schemaVersion !== STACK_SCHEMA || prior.packageVersion !== version3) ? { installed: prior.packageVersion ?? "unknown", available: version3, schema: prior.schemaVersion ?? null } : null;
+  const versionDifference = !prior && preexistingContent ? { installed: "unknown", available: version3, schema: null } : prior && (prior.schemaVersion !== STACK_SCHEMA || prior.packageVersion !== version3) ? { installed: prior.packageVersion ?? "unknown", available: version3, schema: prior.schemaVersion ?? null } : null;
   const created = [];
   const overrides2 = [];
   const missingAssets = [];
@@ -129406,14 +129415,14 @@ async function runMonitoringStack(action, directory, packageRoot) {
       if (createHash13("sha256").update(sourceBytes).digest("hex") !== createHash13("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
     }
   }
-  if (action === "init" && !manifestStat) {
+  if (action === "init" && !manifestStat && !preexistingContent) {
     await writeFile6(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3 }, null, 2)}
 `, { flag: "wx", mode: 420 });
     created.push("stack-manifest.json");
   }
   let missing = [];
   if (action === "init") {
-    const setup = await import(pathToFileURL4(path13.join(target, "setup.mjs")).href);
+    const setup = await import(pathToFileURL4(path13.join(source, "setup.mjs")).href);
     missing = (await setup.setupEnvironment(path13.join(target, ".env"))).missing;
   } else {
     const setup = await import(pathToFileURL4(path13.join(source, "setup.mjs")).href);
@@ -131588,7 +131597,7 @@ async function main() {
 `);
         if (data2.missingAssets.length) process.stdout.write(`Missing stack files: ${data2.missingAssets.join(", ")}
 `);
-        if (data2.versionDifference) process.stdout.write(`Stack version differs: installed ${data2.versionDifference.installed}, package ${data2.versionDifference.available}. Review overrides before upgrading.
+        if (data2.versionDifference) process.stdout.write(`Stack provenance: installed ${data2.versionDifference.installed}, package ${data2.versionDifference.available}. Review overrides before upgrading.
 `);
         if (data2.overrides.length) process.stdout.write(`Preserved local files: ${data2.overrides.join(", ")}
 `);
@@ -136616,7 +136625,7 @@ async function createHostReleaseArchive(options) {
 }
 async function listHostedPublicFiles(root, directory = root) {
   const files = [];
-  for (const entry of await readdir3(directory, { withFileTypes: true })) {
+  for (const entry of await readdir4(directory, { withFileTypes: true })) {
     const entryPath = path16.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await listHostedPublicFiles(root, entryPath));
     else if (entry.isFile()) files.push(`public/${path16.relative(root, entryPath).split(path16.sep).join("/")}`);
@@ -138080,7 +138089,7 @@ async function prepareRuntimeDataPath(targetPath) {
   }
   if (stats.isDirectory()) {
     await chmod2(targetPath, 448);
-    const entries = await readdir3(targetPath, { withFileTypes: true });
+    const entries = await readdir4(targetPath, { withFileTypes: true });
     for (const entry of entries) {
       await prepareRuntimeDataPath(path16.join(targetPath, entry.name));
     }

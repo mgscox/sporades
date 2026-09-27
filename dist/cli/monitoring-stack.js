@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commandError } from './cli-support.js';
@@ -17,6 +17,14 @@ function prerequisite() {
     const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(compose.stdout.trim());
     if (!match || Number(match[1]) < 2 || (Number(match[1]) === 2 && (Number(match[2]) < 40 || (Number(match[2]) === 40 && Number(match[3]) < 3)))) {
         throw commandError('Unsupported Docker Compose version.', 'Install Docker Compose 2.40.3 or later.');
+    }
+    const engine = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'], { encoding: 'utf8' });
+    if (engine.error || engine.status !== 0) {
+        throw commandError('Docker Engine is unavailable.', 'Start Docker Engine 29.x and check that the selected Docker context is reachable.');
+    }
+    const engineVersion = /^v?(\d+)\.(\d+)\.(\d+)/.exec(engine.stdout.trim());
+    if (!engineVersion || Number(engineVersion[1]) !== 29) {
+        throw commandError('Unsupported Docker Engine version.', 'Use Docker Engine 29.x on the selected Docker context.');
     }
 }
 async function existingFile(filename) {
@@ -40,6 +48,7 @@ export async function runMonitoringStack(action, directory, packageRoot) {
         await mkdir(target, { recursive: true });
     else if (!(await existingFile(target)))
         throw commandError('Monitoring stack directory does not exist.', 'Run `sporades monitoring stack init --dir <path>` first.');
+    const preexistingContent = (await readdir(target)).length > 0;
     const manifestStat = await existingFile(manifestPath);
     let prior = null;
     if (manifestStat) {
@@ -50,8 +59,10 @@ export async function runMonitoringStack(action, directory, packageRoot) {
             throw commandError('Invalid monitoring stack manifest.', 'Back up the directory and inspect stack-manifest.json before continuing.');
         }
     }
-    const versionDifference = prior && (prior.schemaVersion !== STACK_SCHEMA || prior.packageVersion !== version)
-        ? { installed: prior.packageVersion ?? 'unknown', available: version, schema: prior.schemaVersion ?? null } : null;
+    const versionDifference = !prior && preexistingContent
+        ? { installed: 'unknown', available: version, schema: null }
+        : prior && (prior.schemaVersion !== STACK_SCHEMA || prior.packageVersion !== version)
+            ? { installed: prior.packageVersion ?? 'unknown', available: version, schema: prior.schemaVersion ?? null } : null;
     const created = [];
     const overrides = [];
     const missingAssets = [];
@@ -74,13 +85,13 @@ export async function runMonitoringStack(action, directory, packageRoot) {
                 overrides.push(name);
         }
     }
-    if (action === 'init' && !manifestStat) {
+    if (action === 'init' && !manifestStat && !preexistingContent) {
         await writeFile(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version }, null, 2)}\n`, { flag: 'wx', mode: 0o644 });
         created.push('stack-manifest.json');
     }
     let missing = [];
     if (action === 'init') {
-        const setup = await import(pathToFileURL(path.join(target, 'setup.mjs')).href);
+        const setup = await import(pathToFileURL(path.join(source, 'setup.mjs')).href);
         missing = (await setup.setupEnvironment(path.join(target, '.env'))).missing;
     }
     else {
