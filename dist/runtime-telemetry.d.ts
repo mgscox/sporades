@@ -11,6 +11,7 @@ export type RuntimeTelemetryConfig = {
     samplingRatio?: number;
     environment?: "dev" | "container" | "hosted";
     metricsIntervalMs?: number;
+    eventLoopDelayResolutionMs?: number;
 };
 export type TelemetryExportDiagnostic = {
     event: "telemetry.export.failed";

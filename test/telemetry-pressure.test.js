@@ -1,0 +1,70 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { createHttpRequestTelemetry } from '../dist/runtime-telemetry.js';
+
+function metrics(batches) { return batches.flatMap(batch => batch.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []); }
+function metricPoints(batches, name) { return metrics(batches).filter(metric => metric.name === name).flatMap(metric => metric.gauge?.dataPoints ?? metric.sum?.dataPoints ?? []); }
+function value(point) { return Number(point?.asDouble ?? point?.asInt); }
+
+async function collector() {
+  const batches = [];
+  const server = createServer(async (request, response) => {
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    if (request.url === '/v1/metrics') batches.push(JSON.parse(body));
+    response.writeHead(200).end();
+  }).listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  return { batches, server, endpoint: `http://127.0.0.1:${server.address().port}` };
+}
+
+test('finite synchronous blocking is exported as event-loop delay after recovery', async () => {
+  const sink = await collector();
+  const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'pressure-test', metricsIntervalMs: 1000, eventLoopDelayResolutionMs: 20 });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const end = Date.now() + 170;
+    while (Date.now() < end) { /* finite stall */ }
+    await new Promise(resolve => setTimeout(resolve, 1300));
+    const max = metricPoints(sink.batches, 'process.event_loop.delay.max');
+    assert(max.some(point => value(point) >= 100), `expected recovered delay >=100 ms, got ${max.map(value)}`);
+    assert(max.every(point => Number.isFinite(value(point))));
+    for (const name of ['process.event_loop.delay.max', 'process.event_loop.delay.mean', 'process.event_loop.delay.p99']) {
+      assert.equal(metrics(sink.batches).find(metric => metric.name === name)?.unit, 'ms');
+      assert(metricPoints(sink.batches, name).every(point => value(point) >= 0 && Number.isFinite(value(point))));
+    }
+    const utilization = metricPoints(sink.batches, 'process.event_loop.utilization');
+    assert(utilization.length > 0);
+    assert.equal(metrics(sink.batches).find(metric => metric.name === 'process.event_loop.utilization')?.unit, '1');
+    assert(utilization.every(point => value(point) >= 0 && value(point) <= 1));
+  } finally { await telemetry.shutdown(); sink.server.close(); }
+});
+
+test('allocation churn exports GC count and duration with bounded kind labels', { skip: typeof global.gc !== 'function' ? 'run with --expose-gc for GC evidence' : false }, async () => {
+  const sink = await collector();
+  const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'gc-test', metricsIntervalMs: 1000 });
+  try {
+    for (let i = 0; i < 12; i++) { const allocation = new Array(100_000).fill(i); assert.equal(allocation.length, 100_000); }
+    global.gc();
+    await new Promise(resolve => setTimeout(resolve, 1250));
+    const count = metricPoints(sink.batches, 'process.gc.count');
+    const duration = metricPoints(sink.batches, 'process.gc.duration');
+    assert(count.some(point => value(point) > 0), 'real GC count exported');
+    assert(duration.some(point => value(point) > 0), 'real GC duration exported');
+    assert.equal(metrics(sink.batches).find(metric => metric.name === 'process.gc.count')?.unit, '1');
+    assert.equal(metrics(sink.batches).find(metric => metric.name === 'process.gc.duration')?.unit, 's');
+    for (const point of [...count, ...duration]) {
+      const kind = point.attributes?.find(attribute => attribute.key === 'kind')?.value.stringValue;
+      assert(['major', 'minor', 'incremental', 'weakcb', 'other'].includes(kind), `bounded GC kind: ${kind}`);
+      assert(Number.isFinite(value(point)) && value(point) >= 0);
+    }
+  } finally { await telemetry.shutdown(); sink.server.close(); }
+});
+
+test('invalid direct runtime precision fails before starting telemetry', () => {
+  for (const invalid of [0, 9, 1001, NaN, 20.5]) {
+    assert.throws(() => createHttpRequestTelemetry({ endpoint: 'http://127.0.0.1:1', tls: { mode: 'loopback' }, serviceName: 'bad', eventLoopDelayResolutionMs: invalid }), /resolution/);
+  }
+});

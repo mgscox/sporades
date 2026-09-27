@@ -1,9 +1,9 @@
 {
   "uid": "sporades-resources",
   "title": "Sporades Capsule Resources",
-  "description": "Process CPU and memory for enabled Capsules. Each instance is a distinct process lifetime.",
+  "description": "Process CPU, memory, GC and event-loop pressure alongside API latency for enabled Capsules. Rate and delay lookback follow the Metric window selector; each instance is a distinct process lifetime.",
   "schemaVersion": 41,
-  "version": 2,
+  "version": 4,
   "refresh": "15s",
   "time": {
     "from": "now-15m",
@@ -32,7 +32,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (service_name,instance) (rate(process_cpu_time_seconds_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}[2m]))",
+          "expr": "sum by (service_name,instance) (rate(process_cpu_time_seconds_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}[${metric_window}]))",
           "legendFormat": "{{service_name}} {{instance}}"
         }
       ],
@@ -227,6 +227,156 @@
         }
       },
       "description": "Maximum V8 heap size. This is not a container or RSS memory limit."
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "GC collections per second",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service_name,instance,kind) (rate(process_gc_count_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}[${metric_window}]))",
+          "legendFormat": "GC/s {{kind}} {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "description": "Reset-aware collection rate by bounded GC kind, per process instance."
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "GC pause time per second",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service_name,instance,kind) (rate(process_gc_duration_seconds_total{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}[${metric_window}]))",
+          "legendFormat": "{{kind}} {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        }
+      },
+      "description": "Reset-aware GC pause seconds per elapsed second, by bounded GC kind."
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Event-loop delay",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max_over_time(process_event_loop_delay_max_milliseconds{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}[${metric_window}])",
+          "legendFormat": "max {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "process_event_loop_delay_p99_milliseconds{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}",
+          "legendFormat": "p99 {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0
+        }
+      },
+      "description": "Timer delay in milliseconds. Max retains the largest export-window peak within the selected Metric window; p99 is the latest export sample. A permanently blocked loop cannot export."
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Event-loop utilization",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_event_loop_utilization_ratio{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}",
+          "legendFormat": "utilization {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0
+        }
+      },
+      "description": "Fraction of wall time spent outside the event provider in the latest export interval. This is not CPU utilization."
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "API request p95 latency",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le,service_name,instance) (rate(http_server_request_duration_seconds_bucket{service_name=~\"${service:regex}\",deployment_environment_name=~\"${environment:regex}\",instance=~\"${instance:regex}\"}[${metric_window}])))",
+          "legendFormat": "p95 {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        }
+      },
+      "description": "Declared-route API request p95 from the same process instance. Needs at least two exports in the selected Metric window; longer windows smooth brief latency changes."
     }
   ],
   "templating": {
@@ -290,6 +440,32 @@
           "text": "All",
           "value": "$__all"
         }
+      },
+      {
+        "name": "metric_window",
+        "label": "Metric window",
+        "type": "custom",
+        "query": "2m,12m",
+        "options": [
+          {
+            "selected": false,
+            "text": "2m",
+            "value": "2m"
+          },
+          {
+            "selected": true,
+            "text": "12m",
+            "value": "12m"
+          }
+        ],
+        "current": {
+          "selected": true,
+          "text": "12m",
+          "value": "12m"
+        },
+        "multi": false,
+        "includeAll": false,
+        "description": "12m supports metric exports up to 300s; use 2m only with exports at most 30s apart. Longer windows smooth rates and retain older delay peaks."
       }
     ]
   }

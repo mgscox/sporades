@@ -18,8 +18,14 @@ sporades deploy --telemetry local
 For a remote collector, use an HTTPS OTLP/HTTP origin and omit `--loopback`.
 `--ca-file /absolute/path/to/ca.pem` trusts a private CA while retaining TLS
 verification. The optional `--dashboard` is a credential-free HTTPS URL.
+`--event-loop-delay-resolution-ms` tunes Node event-loop delay sampling from
+10 to 1000 ms (default 20 ms); shorter intervals use more timer work.
 `--metrics-interval-ms` tunes metric export from 5000 to 300000 ms; the default
-is 15000 ms. The monitoring stack's [operator README](https://github.com/mgscox/sporades/blob/main/monitoring/trace/README.md)
+is 15000 ms. The monitoring dashboards default to a 12-minute Metric window
+so even a 300-second profile has at least two samples for rates and p95. Select
+2 minutes only for profiles exporting every 30 seconds or faster. GC counts and pause duration, event-loop delay and utilization use
+the same process instance identity as CPU and memory. A finite stall appears
+after recovery; a permanently blocked process may stop exporting. The monitoring stack's [operator README](https://github.com/mgscox/sporades/blob/main/monitoring/trace/README.md)
 documents its separate scrape interval, retention, disk cap, and Grafana URL.
 Profiles live in `$SPORADES_CONFIG_DIR/telemetry.json` (or the Sporades XDG
 configuration directory), with restrictive file permissions. Their descriptors
@@ -64,8 +70,9 @@ Trace IDs and release IDs are not metric labels. Request bodies, queries,
 credentials, private identifiers, exception text, baggage, and trace state are
 not exported. A valid
 W3C `traceparent` can establish parentage; remote sampling flags do not override
-the local sampling policy. This slice covers Dev and local Container HTTP traces and metrics;
-Host transport and additional signals are separate work.
+the local sampling policy. This slice covers Dev and local Container HTTP traces and metrics, plus
+periodic process CPU, memory, GC and event-loop signals. Host transport and
+independent blocked-loop detection are separate work.
 
 When a selected exporter fails, the existing platform log records
 `telemetry.export.failed` with one bounded reason: `AUTH_REJECTED`,

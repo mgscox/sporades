@@ -40,6 +40,13 @@ test('installed CLI stores reference-only profiles and Dev selection honors expl
     assert.equal(JSON.parse(cli('show', 'tuned', '--json').stdout).data.profile.metricsIntervalMs, 5000);
     assert.equal((await resolveLocalTelemetryConfig({ telemetry: { profile: 'tuned' } })).metricsIntervalMs, 5000);
     assert.equal(cli('add', 'too-fast', '--endpoint', 'http://localhost:4318', '--loopback', '--metrics-interval-ms', '100', '--json').status, 1);
+    const precision = cli('add', 'precise', '--endpoint', 'http://localhost:4318', '--loopback', '--event-loop-delay-resolution-ms', '40', '--json');
+    assert.equal(precision.status, 0, precision.stderr);
+    assert.equal((await resolveLocalTelemetryConfig({ telemetry: { profile: 'precise' } })).eventLoopDelayResolutionMs, 40);
+    for (const invalid of ['0', '9', '1001', '20.5', 'NaN']) {
+      assert.equal(cli('add', 'invalid-precision', '--endpoint', 'http://localhost:4318', '--loopback', '--event-loop-delay-resolution-ms', invalid, '--json').status, 1, invalid);
+    }
+
     const second = cli('add', 'other', '--endpoint', 'http://localhost:4320', '--loopback', '--json');
     assert.equal(second.status, 0, second.stderr);
     assert.equal((await resolveLocalTelemetryConfig({ name: 'capsule', telemetry: { profile: 'local' } }, 'other')).endpoint, 'http://localhost:4320');
