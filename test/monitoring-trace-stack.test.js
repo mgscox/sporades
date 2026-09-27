@@ -120,7 +120,7 @@ test('setup decodes a quoted operator value without disclosing malformed input',
 test('UI proxy cannot change origin or forward browser cookies', async () => {
   let attackerRequests = 0;
   const attacker = createServer((req, res) => { attackerRequests++; res.end(`SIDE:${req.url}:${req.headers.cookie}`); });
-  const jaeger = createServer((req, res) => res.end(`JAEGER:${req.url}:${req.headers.cookie ?? ''}`));
+  const jaeger = createServer((req, res) => { res.setHeader('set-cookie', 'backend=private'); res.end(`JAEGER:${req.url}:${req.headers.cookie ?? ''}`); });
   await Promise.all([new Promise(resolve => attacker.listen(0, '127.0.0.1', resolve)), new Promise(resolve => jaeger.listen(0, '127.0.0.1', resolve))]);
   const gateway = createGateway({ ingestToken: 'token', uiUser: 'viewer', uiPassword: 'secret', collectorUrl: 'http://127.0.0.1:1', jaegerUrl: `http://127.0.0.1:${jaeger.address().port}` });
   await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
@@ -134,6 +134,7 @@ test('UI proxy cannot change origin or forward browser cookies', async () => {
       headers: { authorization: `Basic ${Buffer.from('viewer:secret').toString('base64')}`, cookie: 'session=secret' },
     });
     assert.equal(await normal.text(), 'JAEGER:/api/services:');
+    assert.equal(normal.headers.get('set-cookie'), null);
   } finally {
     gateway.close(); attacker.close(); jaeger.close();
   }
@@ -285,4 +286,71 @@ test('readiness rejects stale readable metrics while writes fail and recovers af
     assert.deepEqual(await recovered.json(), { ok: true });
     assert.notEqual(storedValue, 1);
   } finally { gateway.close(); collector.close(); jaeger.close(); prometheus.close(); }
+});
+
+
+test('UI gateway child handles slow, stalled, broken, and cancelled responses', async () => {
+  let cancelled = false;
+  const backend = createServer((req, res) => {
+    if (req.url === '/slow') { setTimeout(() => res.end('slow success'), 3300); return; }
+    if (req.url === '/stall') { req.on('close', () => { cancelled = true; }); return; }
+    if (req.url === '/fail-before') { req.socket.destroy(); return; }
+    if (req.url === '/broken') { res.writeHead(200).write('partial'); setTimeout(() => res.destroy(), 40); return; }
+    if (req.url === '/stream') { res.writeHead(200).write('part'); res.on('close', () => { cancelled = true; }); return; }
+    res.end('still alive');
+  });
+  await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve));
+  const child = spawn(process.execPath, [new URL('./fixtures/monitoring-gateway-child.mjs', import.meta.url).pathname], {
+    env: { ...process.env, TEST_COLLECTOR_URL: 'http://127.0.0.1:1', TEST_UI_URL: `http://127.0.0.1:${backend.address().port}`, TEST_UI_DEADLINE_MS: '5000' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  try {
+    const port = await Promise.race([
+      new Promise((resolve, reject) => {
+        let output = '';
+        child.stdout.on('data', chunk => { output += chunk; if (output.includes('\n')) resolve(Number(output.trim())); });
+        child.once('exit', code => reject(new Error(`gateway exited ${code}: ${stderr}`)));
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('gateway did not start')), 3000)),
+    ]);
+    const base = `http://127.0.0.1:${port}`;
+    const auth = { authorization: `Basic ${Buffer.from('viewer:secret').toString('base64')}` };
+    const slow = await fetch(`${base}/slow`, { headers: auth });
+    assert.equal(slow.status, 200);
+    assert.equal(await slow.text(), 'slow success');
+    assert.equal((await fetch(`${base}/fail-before`, { headers: auth })).status, 502);
+    const broken = await fetch(`${base}/broken`, { headers: auth });
+    await assert.rejects(broken.text());
+    const started = Date.now();
+    const stalled = await fetch(`${base}/stall`, { headers: auth });
+    assert.equal(stalled.status, 504);
+    assert.ok(Date.now() - started < 6000);
+    assert.equal(cancelled, true);
+    cancelled = false;
+    await new Promise((resolve, reject) => {
+      const request = httpRequest(`${base}/stream`, { headers: auth }, response => {
+        response.once('data', () => { request.destroy(); resolve(); });
+      });
+      request.once('error', reject);
+      request.end();
+    });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(cancelled, true);
+    const alive = await fetch(`${base}/api/services`, { headers: auth });
+    assert.equal(alive.status, 200);
+    assert.equal(await alive.text(), 'still alive');
+    assert.equal(child.exitCode, null, stderr);
+  } finally { child.kill(); backend.closeAllConnections(); backend.close(); }
+});
+
+
+test('Resources API p95 excludes aborted requests like the API dashboard', async () => {
+  const resource = JSON.parse(await readFile(new URL('../monitoring/trace/resource-dashboard.json', import.meta.url), 'utf8'));
+  const api = JSON.parse(await readFile(new URL('../monitoring/trace/api-dashboard.json', import.meta.url), 'utf8'));
+  const resourceP95 = resource.panels.find(panel => panel.title === 'API request p95 latency').targets[0].expr;
+  const apiP95 = api.panels.find(panel => panel.title === 'p95 request latency').targets[0].expr;
+  assert.match(apiP95, /sporades_http_outcome!=\"abort\"/);
+  assert.match(resourceP95, /sporades_http_outcome!=\"abort\"/);
 });
