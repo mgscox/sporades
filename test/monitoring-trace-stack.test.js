@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
-import { setupEnvironment } from '../monitoring/trace/setup.mjs';
+import { gatewayRunIdentity, setupEnvironment } from '../monitoring/trace/setup.mjs';
+
+test('root Linux setup keeps the gateway non-root; unprivileged setup keeps its owner', () => {
+  assert.deepEqual(gatewayRunIdentity('linux', 0, 0), { uid: 1000, gid: 1000, transferOwnership: true });
+  assert.deepEqual(gatewayRunIdentity('linux', 1234, 4321), { uid: 1234, gid: 4321, transferOwnership: false });
+  assert.deepEqual(gatewayRunIdentity('darwin', 501, 20), { uid: 1000, gid: 1000, transferOwnership: false });
+});
 import { createGateway } from '../monitoring/trace/gateway.mjs';
 
 test('setup preserves operator settings and generates only missing owned credentials', async () => {
@@ -34,7 +40,11 @@ test('setup preserves literal credential characters for the gateway', async () =
   const path = join(directory, '.env');
   await writeFile(path, 'TRACE_TLS_MODE=proxy\nTRACE_BIND=127.0.0.1\nTRACE_INGEST_TOKEN=t#1:$TOKEN\nTRACE_UI_USER=viewer\nTRACE_UI_PASSWORD=before$MISSING_after:# space\n');
   await setupEnvironment(path);
-  const credentials = JSON.parse(await readFile(join(directory, '.credentials.json'), 'utf8'));
+  const privateDir = join(directory, '.private');
+  assert.equal((await stat(privateDir)).mode & 0o777, 0o700);
+  const credentialsPath = join(privateDir, 'credentials.json');
+  assert.equal((await stat(credentialsPath)).mode & 0o777, 0o600);
+  const credentials = JSON.parse(await readFile(credentialsPath, 'utf8'));
   assert.deepEqual(credentials, {
     ingestToken: 't#1:$TOKEN', uiUser: 'viewer', uiPassword: 'before$MISSING_after:# space',
   });
@@ -50,7 +60,7 @@ test('setup decodes a quoted operator value without disclosing malformed input',
   const path = join(directory, '.env');
   await writeFile(path, "TRACE_TLS_MODE=proxy\nTRACE_BIND=127.0.0.1\nTRACE_UI_PASSWORD='Say \\'hi\\' $HOME'\n");
   await setupEnvironment(path);
-  assert.equal(JSON.parse(await readFile(join(directory, '.credentials.json'), 'utf8')).uiPassword, "Say 'hi' $HOME");
+  assert.equal(JSON.parse(await readFile(join(directory, '.private', 'credentials.json'), 'utf8')).uiPassword, "Say 'hi' $HOME");
   await writeFile(path, "TRACE_UI_PASSWORD='unterminated\n");
   await assert.rejects(setupEnvironment(path), /Invalid quoted value for TRACE_UI_PASSWORD/);
 });

@@ -1,5 +1,5 @@
 .env
-.credentials.json
+.private/
 .compose.env
 certs/
 backups/

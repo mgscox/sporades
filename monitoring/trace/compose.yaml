@@ -25,7 +25,7 @@ services:
       TRACE_KEY_FILE: ${TRACE_KEY_FILE:-}
     volumes:
       - ./certs:/certs:ro
-      - ./.credentials.json:/run/secrets/trace-credentials.json:ro
+      - ./.private/credentials.json:/run/secrets/trace-credentials.json:ro
     depends_on:
       - collector
       - jaeger

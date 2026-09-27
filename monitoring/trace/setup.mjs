@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
-import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { chmod, chown, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 const owned = ['TRACE_INGEST_TOKEN', 'TRACE_UI_PASSWORD'];
 const defaults = { TRACE_TLS_MODE: 'tls', TRACE_BIND: '127.0.0.1', TRACE_PORT: '8443', TRACE_UI_USER: 'operator', TRACE_RETENTION: '168h' };
+
+export function gatewayRunIdentity(platform = process.platform, uid = process.getuid(), gid = process.getgid()) {
+  if (platform === 'darwin') return { uid: 1000, gid: 1000, transferOwnership: false };
+  if (uid === 0) return { uid: 1000, gid: 1000, transferOwnership: true };
+  return { uid, gid, transferOwnership: false };
+}
 
 export function parseEnvironment(source) {
   const entries = new Map();
@@ -44,18 +50,22 @@ export async function setupEnvironment(path) {
     await writeFile(path, `${source}${source && !source.endsWith('\n') ? '\n' : ''}${additions.join('\n')}\n`, { mode: 0o600 });
   }
   await chmod(path, 0o600);
-  const credentialsPath = join(dirname(path), '.credentials.json');
+  const identity = gatewayRunIdentity();
+  const privateDir = join(dirname(path), '.private');
+  await mkdir(privateDir, { recursive: true, mode: 0o700 });
+  await chmod(privateDir, 0o700);
+  if (identity.transferOwnership) await chown(privateDir, 0, 0);
+  const credentialsPath = join(privateDir, 'credentials.json');
   await writeFile(credentialsPath, `${JSON.stringify({
     ingestToken: entries.get('TRACE_INGEST_TOKEN'), uiUser: entries.get('TRACE_UI_USER'),
     uiPassword: entries.get('TRACE_UI_PASSWORD'),
   })}\n`, { mode: 0o600 });
   await chmod(credentialsPath, 0o600);
+  if (identity.transferOwnership) await chown(credentialsPath, identity.uid, identity.gid);
   const composeKeys = ['TRACE_TLS_MODE', 'TRACE_BIND', 'TRACE_PORT', 'TRACE_CERT_FILE', 'TRACE_KEY_FILE', 'TRACE_RETENTION'];
   const composePath = join(dirname(path), '.compose.env');
   const quote = value => `'${String(value ?? '').replaceAll("'", "\\'")}'`;
-  const runUser = process.platform === 'darwin' ? 1000 : process.getuid();
-  const runGroup = process.platform === 'darwin' ? 1000 : process.getgid();
-  await writeFile(composePath, `${composeKeys.map(key => `${key}=${quote(entries.get(key))}`).join('\n')}\nTRACE_RUN_UID=${runUser}\nTRACE_RUN_GID=${runGroup}\n`, { mode: 0o600 });
+  await writeFile(composePath, `${composeKeys.map(key => `${key}=${quote(entries.get(key))}`).join('\n')}\nTRACE_RUN_UID=${identity.uid}\nTRACE_RUN_GID=${identity.gid}\n`, { mode: 0o600 });
   await chmod(composePath, 0o600);
   return { missing };
 }
