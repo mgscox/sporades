@@ -12,14 +12,19 @@ function median(values) { return [...values].sort((a, b) => a - b)[Math.floor(va
 
 async function collector() {
   const batches = [];
+  let firstBatchResolve;
+  const firstBatch = new Promise(resolve => { firstBatchResolve = resolve; });
   const server = createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
-    if (request.url === '/v1/metrics') batches.push(JSON.parse(body));
+    if (request.url === '/v1/metrics') {
+      batches.push(JSON.parse(body));
+      if (batches.length === 1) firstBatchResolve();
+    }
     response.writeHead(200).end();
   }).listen(0, '127.0.0.1');
   await once(server, 'listening');
-  return { batches, server, endpoint: `http://127.0.0.1:${server.address().port}` };
+  return { batches, firstBatch, server, endpoint: `http://127.0.0.1:${server.address().port}` };
 }
 
 test('idle event-loop lag does not include the configured sampling interval', async () => {
@@ -38,6 +43,17 @@ test('idle event-loop lag does not include the configured sampling interval', as
   } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
 });
 
+test('minimum supported delay resolution keeps an idle max finite and small', async () => {
+  const sink = await collector();
+  const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'minimum-resolution-pressure-test', metricsIntervalMs: 1000, eventLoopDelayResolutionMs: 10 });
+  try {
+    await sink.firstBatch;
+    const max = metricPoints([sink.batches[0]], 'process.event_loop.delay.max').map(value);
+    assert(max.length > 0, 'expected a sampled delay at the 10 ms resolution');
+    assert(max.every(sample => Number.isFinite(sample) && sample >= 0 && sample < 100), `idle max at 10 ms resolution: ${max}`);
+  } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
+});
+
 test('a recovered stall crossing collection is retained in exported delay', async () => {
   const sink = await collector();
   const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'boundary-pressure-test', metricsIntervalMs: 5000, eventLoopDelayResolutionMs: 1000 });
@@ -52,6 +68,26 @@ test('a recovered stall crossing collection is retained in exported delay', asyn
   } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
 });
 
+test('a second stall just after export remains visible in its own collection window', async () => {
+  const sink = await collector();
+  const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'reset-gap-pressure-test', metricsIntervalMs: 5000, eventLoopDelayResolutionMs: 1000 });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    let started = performance.now();
+    while (performance.now() - started < 3500) { /* stall across first export */ }
+    await sink.firstBatch;
+    const firstMax = metricPoints([sink.batches[0]], 'process.event_loop.delay.max').map(value);
+    assert(firstMax.some(sample => sample >= 1500), `first stall must be in first batch: ${firstMax}`);
+    started = performance.now();
+    while (performance.now() - started < 3500) { /* stall before first post-reset monitor tick */ }
+    await new Promise(resolve => setTimeout(resolve, 6500));
+    assert(sink.batches.length >= 2, `expected a second receiver-backed batch, got ${sink.batches.length}`);
+    const secondMax = metricPoints([sink.batches[1]], 'process.event_loop.delay.max').map(value);
+    assert(secondMax.some(sample => sample >= 500), `second stall should be visible in its own window: ${secondMax}`);
+    assert(secondMax.every(sample => Number.isFinite(sample) && sample >= 0));
+  } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
+});
+
 test('shutdown before the first histogram tick does not invent delay', async () => {
   const sink = await collector();
   const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'early-pressure-test', metricsIntervalMs: 5000, eventLoopDelayResolutionMs: 1000 });
@@ -61,6 +97,22 @@ test('shutdown before the first histogram tick does not invent delay', async () 
     for (const name of ['process.event_loop.delay.max', 'process.event_loop.delay.mean', 'process.event_loop.delay.p99']) {
       assert.equal(metricPoints(sink.batches, name).length, 0, `${name} should wait for a real histogram observation`);
     }
+  } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
+});
+
+test('shutdown export does not turn time after monitor disable into delay', async () => {
+  const sink = await collector();
+  const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'shutdown-pressure-test', metricsIntervalMs: 5000, eventLoopDelayResolutionMs: 20 });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const shutdown = telemetry.shutdown();
+    const started = performance.now();
+    while (performance.now() - started < 600) { /* monitor is disabled; final collection awaits its next turn */ }
+    await shutdown;
+    assert(sink.batches.length > 0, 'shutdown exported final metrics');
+    const max = metricPoints(sink.batches, 'process.event_loop.delay.max').map(value);
+    assert(max.length > 0, 'histogram had observations before shutdown');
+    assert(max.every(sample => Number.isFinite(sample) && sample >= 0 && sample < 100), `disabled monitor must not add the later stall: ${max}`);
   } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
 });
 
