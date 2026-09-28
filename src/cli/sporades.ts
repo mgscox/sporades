@@ -2511,6 +2511,10 @@ async function startDevSession(options: LooseRecord) {
   const actualPort = typeof address === "object" && address ? address.port : port;
   const url = `http://localhost:${actualPort}`;
   let actionBundleCreated = false;
+  let watchers: ReturnType<typeof watchDevInputs> = [];
+  let onUnhandledRejection: ((reason: any) => void) | null = null;
+  let onUncaughtException: ((error: Error) => void) | null = null;
+  let shutdown: (() => Promise<void>) | null = null;
   try {
     await createDevActionBundle(options.projectDir, actionBundleId, bundle.serverBundle);
     actionBundleCreated = true;
@@ -2531,11 +2535,6 @@ async function startDevSession(options: LooseRecord) {
         2,
       )}\n`,
     );
-  } catch (error) {
-    try { await shutdownHttpServerAndRuntime(server, async () => { await runtime.shutdown(); await telemetry.shutdown(); }); }
-    finally { if (actionBundleCreated) await removeOwnedDevActionBundle(options.projectDir, actionBundleId); }
-    throw error;
-  }
   let fatalRestartAttempts = 0;
   let fatalRestartInFlight = false;
   const restartAfterFatal = async (fatalEvent: string, error: Error) => {
@@ -2645,16 +2644,16 @@ async function startDevSession(options: LooseRecord) {
       fatalRestartInFlight = false;
     }
   };
-  const onUnhandledRejection = (reason: any) => {
+  onUnhandledRejection = (reason: any) => {
     restartAfterFatal("unhandledRejection", reason instanceof Error ? reason : new Error(String(reason)));
   };
-  const onUncaughtException = (error: any) => {
+  onUncaughtException = (error: any) => {
     restartAfterFatal("uncaughtException", error);
   };
   process.on("unhandledRejection", onUnhandledRejection);
   process.on("uncaughtException", onUncaughtException);
 
-  const watchers = watchDevInputs(options.projectDir, async (change: { affectsServerRuntime: boolean; configChanged: any; }) => {
+  watchers = watchDevInputs(options.projectDir, async (change: { affectsServerRuntime: boolean; configChanged: any; }) => {
     let rebuild: Awaited<ReturnType<typeof createBundle>> | null = null;
     let rollbackLegacy: (() => Promise<void>) | null = null;
     let rollbackActionBundle: (() => Promise<void>) | null = null;
@@ -2836,7 +2835,7 @@ async function startDevSession(options: LooseRecord) {
   emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
 
   let shutdownStarted = false;
-  const shutdown = async () => {
+  shutdown = async () => {
     if (shutdownStarted) return;
     shutdownStarted = true;
     // JSON mode is an event stream consumed by scripts and test harnesses; a
@@ -2854,15 +2853,47 @@ async function startDevSession(options: LooseRecord) {
     catch (error) { shutdownError ??= error; }
     try { await removeOwnedDevActionBundle(options.projectDir, actionBundleId); }
     catch (error) { shutdownError ??= error; }
-    process.off("unhandledRejection", onUnhandledRejection);
-    process.off("uncaughtException", onUncaughtException);
-    process.off("SIGHUP", shutdown);
+    if (onUnhandledRejection) process.off("unhandledRejection", onUnhandledRejection);
+    if (onUncaughtException) process.off("uncaughtException", onUncaughtException);
+    if (shutdown) process.off("SIGHUP", shutdown);
     if (shutdownError) process.stderr.write(`${errorDetails(shutdownError).message}\n`);
     process.exit(shutdownError ? 1 : 0);
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
   process.on("SIGHUP", shutdown);
+  } catch (error) {
+    let cleanupFailure: unknown;
+    for (const watcher of watchers) {
+      try { watcher.close(); } catch (failure) { cleanupFailure ??= failure; }
+    }
+    if (onUnhandledRejection) process.off("unhandledRejection", onUnhandledRejection);
+    if (onUncaughtException) process.off("uncaughtException", onUncaughtException);
+    if (shutdown) {
+      process.off("SIGTERM", shutdown);
+      process.off("SIGINT", shutdown);
+      process.off("SIGHUP", shutdown);
+    }
+    const ownedSession = await readFile(sessionFilePath, "utf8").then(JSON.parse).catch(() => null);
+    if (ownedSession?.pid === process.pid && ownedSession.actionBundleId === actionBundleId) {
+      try { await rm(sessionFilePath, { force: true }); } catch (failure) { cleanupFailure ??= failure; }
+    }
+    try { websocketHub.disconnectAll(); } catch (failure) { cleanupFailure ??= failure; }
+    try {
+      await shutdownHttpServerAndRuntime(server, async () => {
+        await Promise.allSettled([
+          Promise.resolve().then(() => runtime.shutdown()),
+          Promise.resolve().then(() => telemetry.shutdown()),
+        ]);
+      });
+    } catch (failure) { cleanupFailure ??= failure; }
+    if (actionBundleCreated) {
+      try { await removeOwnedDevActionBundle(options.projectDir, actionBundleId); }
+      catch (failure) { cleanupFailure ??= failure; }
+    }
+    if (cleanupFailure) throw new AggregateError([error, cleanupFailure], "Dev startup cleanup failed.");
+    throw error;
+  }
 }
 
 function tagDevRebuildError(
@@ -3159,28 +3190,37 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
     schedule(watchedPath);
   };
 
-  for (const watchedPath of watchedPaths()) {
-    const signature = readDevInputSignature([watchedPath]);
-    observedSignatures.set(watchedPath.path, signature);
-    handledSignatures.set(watchedPath.path, signature);
-    try {
-      watchers.push(watch(watchedPath.path, { recursive: true }, () => observe(watchedPath)));
-    } catch (error) {
-      if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") {
-        throw error;
+  try {
+    for (const watchedPath of watchedPaths()) {
+      const signature = readDevInputSignature([watchedPath]);
+      observedSignatures.set(watchedPath.path, signature);
+      handledSignatures.set(watchedPath.path, signature);
+      try {
+        watchers.push(watch(watchedPath.path, { recursive: true }, () => observe(watchedPath)));
+      } catch (error) {
+        if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") {
+          throw error;
+        }
       }
     }
-  }
-  lastHandledSignature = readDevInputSignature(watchedPaths());
-  const signaturePoll = setInterval(() => {
-    for (const watchedPath of watchedPaths()) {
-      observe(watchedPath);
-      if (handledSignatures.get(watchedPath.path) !== readDevInputSignature([watchedPath])) schedule(watchedPath);
+    lastHandledSignature = readDevInputSignature(watchedPaths());
+    const signaturePoll = setInterval(() => {
+      for (const watchedPath of watchedPaths()) {
+        observe(watchedPath);
+        if (handledSignatures.get(watchedPath.path) !== readDevInputSignature([watchedPath])) schedule(watchedPath);
+      }
+    }, DEV_WATCH_SIGNATURE_POLL_MS);
+    watchers.push({ close: () => clearInterval(signaturePoll) });
+    return watchers;
+  } catch (error) {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    let closeFailure: unknown;
+    for (const watcher of watchers) {
+      try { watcher.close(); } catch (failure) { closeFailure ??= failure; }
     }
-  }, DEV_WATCH_SIGNATURE_POLL_MS);
-  watchers.push({ close: () => clearInterval(signaturePoll) });
-
-  return watchers;
+    if (closeFailure) throw new AggregateError([error, closeFailure], "Dev watcher setup cleanup failed.");
+    throw error;
+  }
 }
 
 function configChangeAffectsServerRuntime(currentConfig: any, nextConfig: any) {

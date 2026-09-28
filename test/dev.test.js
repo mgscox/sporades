@@ -5300,6 +5300,28 @@ test("failed Dev listen removes its private action Bundle with embedded Server e
   });
 });
 
+test("failed Dev watcher setup removes its session and private action Bundle", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "failed-watch-start", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "failed-watch-start");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "STALE_SECRET=watcher-old-secret\n", { mode: 0o600 });
+    const preload = path.join(dir, "fail-second-watch.cjs");
+    await writeFile(preload, `const fs = require("node:fs");\nconst moduleApi = require("node:module");\nconst originalWatch = fs.watch;\nlet count = 0;\nfs.watch = (...args) => {\n  if (++count === 2) throw Object.assign(new Error("injected watch failure"), { code: "EMFILE" });\n  return originalWatch(...args);\n};\nmoduleApi.syncBuiltinESMExports();\n`);
+    const failed = await runCli(["dev", "--json"], { cwd: projectDir, env: { NODE_OPTIONS: `--require=${preload}` } });
+    assert.notEqual(failed.code, 0);
+    assert.match(failed.stdout + failed.stderr, /injected watch failure/);
+    const actionRoot = path.join(projectDir, ".sporades", "build", ".dev-actions");
+    assert.deepEqual(await readdir(actionRoot).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error)), []);
+    await assert.rejects(access(path.join(projectDir, ".sporades", "dev-session.json")), { code: "ENOENT" });
+  });
+});
+
 test("Dev reclaims dead owned action Bundles while preserving live, ambiguous and symlink entries", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "action-recovery", "--no-install", "--no-git", "--json"], { cwd: dir });
