@@ -508,6 +508,10 @@ Local Container sessions resolve their selection at deploy and carry the non-sec
 Private Dev action Bundles are created only after the session starts listening. Each records process identity before containing Server env bytes; a later Dev start removes only Bundles whose recorded owner is known to have exited. Ownership-ambiguous directories from older CLI runs are retained and require manual inspection after confirming no Dev session still owns them.
 _Avoid_: Host profile, Capsule secret, app telemetry endpoint
 
+**Hosted Telemetry coverage**:
+Connecting a Host to the shared relay selects telemetry for all current and future Hosted Capsules by default. The Host registry stores each Capsule's explicit opt-out. Every start, restart, push and rollback resolves the Host connection and opt-out into a Host-owned launch descriptor. The protected runtime health probe confirms the running configuration; a saved setting alone does not prove instrumentation. Dev and local Container sessions keep their separate opt-in selection.
+_Avoid_: project-owned Hosted telemetry policy, per-Capsule relay
+
 **sporades.json**:
 The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, enabled auth providers (or legacy auth mode), security and scheduling policy, optional payment configuration, deploy port, optional dev port override.
 _Avoid_: config file (too generic — it's the specific project config)

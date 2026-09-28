@@ -102,9 +102,11 @@ Trace IDs and release IDs are not metric labels. Request bodies, queries,
 credentials, private identifiers, exception text, baggage, and trace state are
 not exported. A valid
 W3C `traceparent` can establish parentage; remote sampling flags do not override
-the local sampling policy. This slice covers Dev and local Container HTTP traces and metrics, plus
-periodic process CPU, memory, GC and event-loop signals. Host transport and
-independent blocked-loop detection are separate work.
+the local sampling policy. Dev and local Container sessions use these explicit
+profiles for HTTP traces, request metrics and periodic process signals. Hosted
+Capsules use the Host's shared relay connection by default with a Host-owned
+per-Capsule opt-out; project settings cannot replace that decision. Independent
+blocked-loop detection remains separate work.
 
 When either the selected trace or periodic metric exporter fails, the existing
 platform log records `telemetry.export.failed` with one bounded reason:

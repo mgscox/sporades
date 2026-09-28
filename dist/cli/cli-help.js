@@ -192,6 +192,8 @@ Profile commands:
   health [subname]    Check Host server or Hosted Capsule health
   telemetry connect|reconcile|status|check
                       Manage the shared Host Telemetry relay
+  telemetry enable|disable <subname>
+                      Change a Hosted Capsule's Telemetry opt-out
 
 Capsule commands:
   bind <subname>      Bind this project to a Hosted Capsule

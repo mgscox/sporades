@@ -669,7 +669,8 @@ async function createRuntimeHealthResult(database) {
     return {
         ok: ready,
         data: {
-            runtime: { ready, fileMaxSizeBytes: database.fileMaxSizeBytes, httpMaxBodyBytes: database.httpMaxBodyBytes },
+            runtime: { ready, fileMaxSizeBytes: database.fileMaxSizeBytes, httpMaxBodyBytes: database.httpMaxBodyBytes,
+                ...(database.runtimeTelemetry ? { telemetry: database.runtimeTelemetry } : {}) },
             checks,
         },
         error: ready

@@ -13,7 +13,7 @@
 // analysis decides what a Capsule carries. That was worth stating while a registry existed —
 // importing it would have pinned all 528 functions into the graph — and it is still the rule: an
 // import added here for convenience carries its whole subgraph into every deployed Capsule.
-import { createDecipheriv, privateDecrypt } from "node:crypto";
+import { createDecipheriv, createHash, privateDecrypt } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -57,10 +57,13 @@ const runtimeConfig = {
     __sporadesSession: process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession,
     // Local Containers keep their selection in Docker's immutable launch environment. Dev may
     // rebuild the shared server.mjs while a stopped Container is waiting to restart.
-    __sporadesTelemetry: process.env.SPORADES_SECURITY_SESSION === "container"
-        && process.env.SPORADES_CONTAINER_TELEMETRY_CONFIG !== undefined
-        ? JSON.parse(process.env.SPORADES_CONTAINER_TELEMETRY_CONFIG)
-        : sporadesConfig.__sporadesTelemetry,
+    __sporadesTelemetry: process.env.SPORADES_SECURITY_SESSION === "hosted"
+        && process.env.SPORADES_HOSTED_TELEMETRY_CONFIG !== undefined
+        ? JSON.parse(process.env.SPORADES_HOSTED_TELEMETRY_CONFIG)
+        : process.env.SPORADES_SECURITY_SESSION === "container"
+            && process.env.SPORADES_CONTAINER_TELEMETRY_CONFIG !== undefined
+            ? JSON.parse(process.env.SPORADES_CONTAINER_TELEMETRY_CONFIG)
+            : sporadesConfig.__sporadesTelemetry,
     __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN ?? sporadesConfig.__sporadesPublicOrigin,
     __sporadesPublicAliases: JSON.parse(process.env.SPORADES_PUBLIC_ALIASES ?? "[]"),
 };
@@ -141,6 +144,12 @@ const telemetry = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry, 
     message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
     data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
 }));
+database.runtimeTelemetry = {
+    supported: true,
+    enabled: runtimeConfig.__sporadesTelemetry !== null && runtimeConfig.__sporadesTelemetry !== undefined,
+    serviceName: runtimeConfig.__sporadesTelemetry?.serviceName ?? null,
+    configHash: createHash("sha256").update(JSON.stringify(runtimeConfig.__sporadesTelemetry ?? null)).digest("hex"),
+};
 const server = createServer(async (request, response) => telemetry.run(request, response, database.endpoints, async () => {
     try {
         if (prepareHttpSecurity(database, request, response)) {

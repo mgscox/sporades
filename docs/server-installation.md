@@ -329,8 +329,30 @@ Run `sporades host telemetry reconcile --host personal --json` to restore a
 missing or stopped relay from the Host-owned connection without the workstation
 credential.
 
-`status` reports relay readiness separately from Capsule coverage. Connecting
-this relay alone does not turn on Hosted Capsule export. `check` sends a
+`status` reports relay readiness separately from per-Capsule coverage. Connecting
+the Host enables current and future Capsules by default. Existing running
+Capsules need a controlled restart using `sporades host restart <subname>`;
+Capsules with older Bundles need a fresh release containing the current runtime.
+`status` counts a Capsule as instrumented only when its protected runtime health
+probe confirms the Host-selected setting. `pending-restart` means the running
+setting differs; `unverified` means runtime support or health could not be
+confirmed, so restart necessity is unknown. `pendingCoverage` includes running
+Capsules that cannot yet be confirmed. The Host registry retains each Capsule's
+opt-out across workstations:
+
+```sh
+sporades host telemetry disable tickets --host personal --json
+sporades host restart tickets --host personal --json
+sporades host telemetry enable tickets --host personal --json
+sporades host restart tickets --host personal --json
+```
+
+Enable and disable save the desired setting and report whether a restart is
+required; neither restarts a running Capsule. An opt-out changes only that
+Capsule. The Host passes a nonsecret, internal relay descriptor through the
+Capsule's launch environment after Server env, so project settings and Sealed
+Server env cannot redirect export or undo the operator's disable. Dev and local
+Container sessions still require their explicit Telemetry selection. `check` sends a
 synthetic trace from VM A to the HTTPS ingestion endpoint and through the
 private relay. It reports DNS, TLS, authorization, destination acceptance, and
 relay acceptance separately. An ingestion-only credential cannot query stored
