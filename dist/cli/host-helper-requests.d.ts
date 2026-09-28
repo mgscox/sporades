@@ -1,7 +1,7 @@
 import type { DeployFile } from "../deploy-files.js";
 import type { JsonObject, JsonValue } from "./host-helper-json.js";
 import type { HostHelperCapsuleTarget, HostHelperHost, HostHelperSealedServerEnv, HostLifecycleOptions, HostedCapsuleBaseImage, HostTlsMode } from "./hosted-capsule-contract.js";
-export type HostHelperAction = "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.release.reconcile" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "jobs.inspect" | "schedules.inspect" | "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete" | "capsule.list" | "host.stats" | "host.logs" | "host.version" | "host.bootstrap";
+export type HostHelperAction = "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.release.reconcile" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "jobs.inspect" | "schedules.inspect" | "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete" | "capsule.list" | "host.stats" | "host.logs" | "host.version" | "host.bootstrap" | "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check";
 export type HostHelperVerification = JsonObject & {
     enabled?: boolean;
     fallbackToPreviousRelease?: boolean;
@@ -54,6 +54,13 @@ export type HostHelperRequestBase = JsonObject & {
     lines?: number;
     verification?: HostHelperVerification;
     accessKeys?: JsonObject;
+    telemetry?: {
+        endpoint: string;
+        credential: string;
+        caPem?: string;
+        metricsIntervalMs?: number;
+        eventLoopDelayResolutionMs?: number;
+    };
 };
 export type HostRegistrationOptions = JsonObject & {
     aliasDomains?: string[];
@@ -165,6 +172,9 @@ export type HostCapsuleListRequest = HostHelperRequestBase & {
 export type HostVersionRequest = HostHelperRequestBase & {
     action: "host.version";
 };
+export type HostTelemetryRequest = HostHelperRequestBase & {
+    action: "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check";
+};
 export type HostJobsInspectRequest = HostHelperRequestBase & {
     action: "jobs.inspect";
     capsule: HostHelperCapsuleTarget;
@@ -178,7 +188,7 @@ export type HostAccessKeyRequest = HostHelperRequestBase & {
     capsule: HostHelperCapsuleTarget;
     accessKeys: JsonObject;
 };
-export type HostHelperRequest = HostBootstrapRequest | HostRegistrationRequest | HostSealedEnvRotationRequest | HostUnregisterRequest | HostDeleteRequest | HostReleaseInstallRequest | HostReleaseListRequest | HostReleaseRollbackRequest | HostLifecycleRequest | HostStatsRequest | HostSshRequest | HostHealthRequest | HostLogsRequest | HostCapsuleListRequest | HostVersionRequest | HostJobsInspectRequest | HostSchedulesInspectRequest | HostAccessKeyRequest;
+export type HostHelperRequest = HostBootstrapRequest | HostRegistrationRequest | HostSealedEnvRotationRequest | HostUnregisterRequest | HostDeleteRequest | HostReleaseInstallRequest | HostReleaseListRequest | HostReleaseRollbackRequest | HostLifecycleRequest | HostStatsRequest | HostSshRequest | HostHealthRequest | HostLogsRequest | HostCapsuleListRequest | HostVersionRequest | HostTelemetryRequest | HostJobsInspectRequest | HostSchedulesInspectRequest | HostAccessKeyRequest;
 export type HostHelperErrorBody = JsonObject & {
     message: string;
     hint: string;

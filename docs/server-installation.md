@@ -291,6 +291,53 @@ Bootstrap prepares the Host server substrate for the selected Hosted domain:
 Bootstrap does not configure Cloudflare, create DNS records, create origin
 certificates, register Capsules, push releases, or start containers.
 
+### Optional shared Host Telemetry relay
+
+For monitoring on another VM, install the same Sporades CLI and upgrade the
+Host helper first. VM A runs the Host and shared relay; VM B runs the OTLP/HTTP
+ingestion service. VM A needs outbound DNS and verified HTTPS access to VM B's
+OTLP origin. Give the relay a credential scoped to ingestion only. The
+credential does not need dashboard, query, or administration access.
+
+```sh
+sporades telemetry profile add remote \
+  --endpoint https://monitor.example:4318 \
+  --credential-env TRACE_INGEST_TOKEN \
+  --ca-file /absolute/path/to/private-ca.pem
+export TRACE_INGEST_TOKEN='scoped-ingestion-token'
+sporades host telemetry connect --host personal --profile remote --json
+sporades host telemetry status --host personal --json
+sporades host telemetry check --host personal --json
+```
+
+Omit `--ca-file` when VM B uses a public trusted CA. The CLI transfers the
+resolved destination, optional CA, and credential over SSH. The Host stores
+connection metadata and a protected credential file under
+`<remote-root>/telemetry/`; the public status omits the credential. The relay
+also preserves the selected profile's metric interval and event-loop sampling
+settings in the nonsecret Host descriptor for later Capsule activation; when
+omitted, the runtime's normal defaults apply.
+The relay
+uses the existing private Hosted Docker network and internal address
+`http://sporades-telemetry:4318/`. It publishes no Host port, needs no Docker
+TCP endpoint, and mounts no Docker socket into a Capsule. Its container uses
+an unprivileged UID, a read-only root, a 192 MiB memory limit, half a CPU,
+and a bounded in-memory export queue of 1000 batches. When VM B is unavailable,
+queued data can be dropped after bounded retry; the Host and Capsules continue
+serving. Docker's restart policy brings the relay back after a Host restart.
+Run `sporades host telemetry reconcile --host personal --json` to restore a
+missing or stopped relay from the Host-owned connection without the workstation
+credential.
+
+`status` reports relay readiness separately from Capsule coverage. Connecting
+this relay alone does not turn on Hosted Capsule export. `check` sends a
+synthetic trace from VM A to the HTTPS ingestion endpoint and through the
+private relay. It reports DNS, TLS, authorization, destination acceptance, and
+relay acceptance separately. An ingestion-only credential cannot query stored
+traces, so `backendStorage: verification-unavailable` is expected even after
+HTTP acceptance. Confirm storage with the monitoring service's own query
+access if required; do not give the relay dashboard credentials.
+
 ## 7. Register and Push a Capsule - Smoke Test
 
 From a Sporades Capsule project directory:

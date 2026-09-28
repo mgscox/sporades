@@ -190,6 +190,8 @@ Profile commands:
   bootstrap           Provision the remote Host server
   upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
+  telemetry connect|reconcile|status|check
+                      Manage the shared Host Telemetry relay
 
 Capsule commands:
   bind <subname>      Bind this project to a Hosted Capsule
@@ -219,6 +221,7 @@ Other commands:
 
 Options:
   --host <alias>      Host profile alias
+  --profile <name>    Verified HTTPS Telemetry profile for host telemetry connect
   --server <target>   SSH target for host add
   --domain <domain>   Hosted domain for host add
   --alias-domain <hostname>
