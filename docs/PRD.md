@@ -269,8 +269,10 @@ The following work is intentionally deferred:
   Dev and local Container HTTP SERVER tracing, API request metrics, and periodic
   process CPU/memory and GC/event-loop metrics are available through explicit operator Telemetry
   profiles. A local Container's resolved telemetry selection persists in its launch
-  environment across restart even when a Dev build replaces the shared server Bundle.
-  Container/Host collection, Hosted telemetry
+  environment across restart when a Dev build publishes a new Bundle.
+  Legacy Containers without a launch descriptor retain their mounted server Bundle
+  during Dev builds and Host push; their previous implicit selection cannot be
+  reconstructed if another build already replaced that Bundle. Container/Host collection, Hosted telemetry
   transport, and operation spans remain deferred under
   [automatic monitoring issue #107](https://github.com/mgscox/sporades/issues/107).
   Centralized JSON logging remains deferred in

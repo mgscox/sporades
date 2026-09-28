@@ -45,6 +45,7 @@ export type FrameworkBundleConfig = {
 };
 export declare function createBundle(projectDir: string, config: ProjectConfig, options?: {
     publishLegacy?: boolean;
+    preserveServerBundle?: boolean;
     devClientRefresh?: boolean;
     onClientDependency?: (file: string) => void;
     deployFiles?: boolean;
@@ -64,7 +65,10 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
     clientDiagnostics: import("./client-toolchain.js").ClientToolchainDiagnostics;
     deployFiles: import("./deploy-files.js").BuiltDeployFile[];
     buildDir: string;
-    publishLegacy: () => Promise<() => Promise<void>>;
+    serverBundle: string;
+    publishLegacy: (publication?: {
+        preserveServerBundle?: boolean;
+    }) => Promise<() => Promise<void>>;
     releasePublicTreeLease: () => Promise<void>;
     serverRuntime: {
         source: string;
