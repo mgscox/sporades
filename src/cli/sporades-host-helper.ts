@@ -867,7 +867,12 @@ async function hostTelemetryStatusWithCoverage(request: HostHelperRequest, relay
   for (const record of records) {
     if (record.status !== "unregistered") capsules.push(await inspectHostedTelemetryCoverage(request, record, connection));
   }
-  return { ...relay, capsuleCoverage: { capsules, pendingRestart: capsules.filter((capsule) => capsule.restartRequired).length, instrumented: capsules.filter((capsule) => capsule.state === "instrumented").length } };
+  return { ...relay, capsuleCoverage: {
+    capsules,
+    pendingRestart: capsules.filter((capsule) => capsule.restartRequired === true).length,
+    pendingCoverage: capsules.filter((capsule) => capsule.state !== "instrumented" && capsule.state !== "disabled").length,
+    instrumented: capsules.filter((capsule) => capsule.state === "instrumented").length,
+  } };
 }
 
 async function main(request: HostHelperRequest) {

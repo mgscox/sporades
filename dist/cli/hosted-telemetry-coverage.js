@@ -17,7 +17,7 @@ export function hostedTelemetryCoverage(desired, running, runtime, expectedServi
     if (!running)
         return { state: desired ? "pending-start" : "disabled", restartRequired: false };
     if (!runtime || runtime.supported !== true)
-        return { state: desired ? "unverified" : "pending-restart", restartRequired: !desired };
+        return { state: "unverified", restartRequired: null };
     if (runtime.enabled !== desired || (desired && runtime.serviceName !== expectedServiceName) || (expectedConfigHash && runtime.configHash !== expectedConfigHash))
         return { state: "pending-restart", restartRequired: true };
     return { state: desired ? "instrumented" : "disabled", restartRequired: false };

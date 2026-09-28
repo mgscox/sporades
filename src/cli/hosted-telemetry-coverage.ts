@@ -19,7 +19,7 @@ export function hostedTelemetryConfig(connection: Connection, capsule: Capsule):
 
 export function hostedTelemetryCoverage(desired: boolean, running: boolean, runtime: { supported: boolean; enabled: boolean; serviceName?: string; configHash?: string } | null, expectedServiceName?: string, expectedConfigHash?: string) {
   if (!running) return { state: desired ? "pending-start" : "disabled", restartRequired: false };
-  if (!runtime || runtime.supported !== true) return { state: desired ? "unverified" : "pending-restart", restartRequired: !desired };
+  if (!runtime || runtime.supported !== true) return { state: "unverified", restartRequired: null };
   if (runtime.enabled !== desired || (desired && runtime.serviceName !== expectedServiceName) || (expectedConfigHash && runtime.configHash !== expectedConfigHash)) return { state: "pending-restart", restartRequired: true };
   return { state: desired ? "instrumented" : "disabled", restartRequired: false };
 }

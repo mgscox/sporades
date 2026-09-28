@@ -43704,7 +43704,7 @@ function hostedTelemetryConfig(connection, capsule) {
 }
 function hostedTelemetryCoverage(desired, running, runtime, expectedServiceName, expectedConfigHash) {
   if (!running) return { state: desired ? "pending-start" : "disabled", restartRequired: false };
-  if (!runtime || runtime.supported !== true) return { state: desired ? "unverified" : "pending-restart", restartRequired: !desired };
+  if (!runtime || runtime.supported !== true) return { state: "unverified", restartRequired: null };
   if (runtime.enabled !== desired || desired && runtime.serviceName !== expectedServiceName || expectedConfigHash && runtime.configHash !== expectedConfigHash) return { state: "pending-restart", restartRequired: true };
   return { state: desired ? "instrumented" : "disabled", restartRequired: false };
 }
@@ -44711,7 +44711,12 @@ async function hostTelemetryStatusWithCoverage(request, relayStatus) {
   for (const record of records) {
     if (record.status !== "unregistered") capsules.push(await inspectHostedTelemetryCoverage(request, record, connection));
   }
-  return { ...relay, capsuleCoverage: { capsules, pendingRestart: capsules.filter((capsule) => capsule.restartRequired).length, instrumented: capsules.filter((capsule) => capsule.state === "instrumented").length } };
+  return { ...relay, capsuleCoverage: {
+    capsules,
+    pendingRestart: capsules.filter((capsule) => capsule.restartRequired === true).length,
+    pendingCoverage: capsules.filter((capsule) => capsule.state !== "instrumented" && capsule.state !== "disabled").length,
+    instrumented: capsules.filter((capsule) => capsule.state === "instrumented").length
+  } };
 }
 async function main(request) {
   if (request.action === "schedules.inspect") validateScheduleInspectionRequest(request);

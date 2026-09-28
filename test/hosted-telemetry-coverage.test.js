@@ -14,6 +14,8 @@ test('Host connection enables Capsules by default with a canonical identity', ()
 test('coverage distinguishes desired settings from live runtime proof', () => {
   assert.equal(hostedTelemetryCoverage(true, false, null).state, 'pending-start');
   assert.equal(hostedTelemetryCoverage(true, true, null).state, 'unverified');
+  assert.equal(hostedTelemetryCoverage(true, true, null).restartRequired, null);
+  assert.equal(hostedTelemetryCoverage(false, true, null).state, 'unverified');
   assert.equal(hostedTelemetryCoverage(true, true, { supported: true, enabled: true, serviceName: 'capsules.example/alpha' }, 'capsules.example/alpha').state, 'instrumented');
   assert.equal(hostedTelemetryCoverage(true, true, { supported: true, enabled: true, serviceName: 'other' }, 'capsules.example/alpha').state, 'pending-restart');
   assert.equal(hostedTelemetryCoverage(false, true, { supported: true, enabled: true }).state, 'pending-restart');

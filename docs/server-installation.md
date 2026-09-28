@@ -336,7 +336,9 @@ Capsules with older Bundles need a fresh release containing the current runtime.
 `status` counts a Capsule as instrumented only when its protected runtime health
 probe confirms the Host-selected setting. `pending-restart` means the running
 setting differs; `unverified` means runtime support or health could not be
-confirmed. The Host registry retains each Capsule's opt-out across workstations:
+confirmed, so restart necessity is unknown. `pendingCoverage` includes running
+Capsules that cannot yet be confirmed. The Host registry retains each Capsule's
+opt-out across workstations:
 
 ```sh
 sporades host telemetry disable tickets --host personal --json

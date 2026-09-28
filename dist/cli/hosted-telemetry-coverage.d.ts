@@ -21,6 +21,9 @@ export declare function hostedTelemetryCoverage(desired: boolean, running: boole
 } | null, expectedServiceName?: string, expectedConfigHash?: string): {
     state: string;
     restartRequired: boolean;
+} | {
+    state: string;
+    restartRequired: null;
 };
 export {};
 //# sourceMappingURL=hosted-telemetry-coverage.d.ts.map
