@@ -149396,6 +149396,7 @@ async function mustPreserveLegacyContainerBundle(projectDir) {
   return Boolean(binding?.containerId && binding.telemetryDescriptorVersion !== 1);
 }
 async function startDevSession(options) {
+  await reclaimStaleDevActionBundles(options.projectDir);
   let config = await readProjectConfig(options.projectDir);
   const preserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
   const session = options.publicDev ? "public-dev" : "dev";
@@ -149419,8 +149420,6 @@ async function startDevSession(options) {
   const inspectionToken = createDevInspectionToken();
   const actionBundleId = randomBytes9(16).toString("hex");
   const actionBundlePath = path18.join(options.projectDir, ".sporades", "build", ".dev-actions", actionBundleId, "server.mjs");
-  await mkdir10(path18.dirname(actionBundlePath), { recursive: true, mode: 448 });
-  await writeFile9(actionBundlePath, bundle.serverBundle, { flag: "wx", mode: 384 });
   const sessionFilePath = path18.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path18.join(options.projectDir, ".sporades", "data.db");
   const runtime = await createDevRuntime({
@@ -149621,24 +149620,39 @@ async function startDevSession(options) {
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
   const url = `http://localhost:${actualPort}`;
-  await writeFile9(
-    sessionFilePath,
-    `${JSON.stringify(
-      {
-        url,
-        port: actualPort,
-        pid: process.pid,
-        session,
-        inspectionToken,
-        actionBundleId,
-        publicDev: security.cors.publicDev,
-        security
-      },
-      null,
-      2
-    )}
+  let actionBundleCreated = false;
+  try {
+    await createDevActionBundle(options.projectDir, actionBundleId, bundle.serverBundle);
+    actionBundleCreated = true;
+    await writeFile9(
+      sessionFilePath,
+      `${JSON.stringify(
+        {
+          url,
+          port: actualPort,
+          pid: process.pid,
+          session,
+          inspectionToken,
+          actionBundleId,
+          publicDev: security.cors.publicDev,
+          security
+        },
+        null,
+        2
+      )}
 `
-  );
+    );
+  } catch (error) {
+    try {
+      await shutdownHttpServerAndRuntime(server, async () => {
+        await runtime.shutdown();
+        await telemetry.shutdown();
+      });
+    } finally {
+      if (actionBundleCreated) await removeOwnedDevActionBundle(options.projectDir, actionBundleId);
+    }
+    throw error;
+  }
   let fatalRestartAttempts = 0;
   let fatalRestartInFlight = false;
   const restartAfterFatal = async (fatalEvent, error) => {
@@ -149928,16 +149942,14 @@ async function startDevSession(options) {
   const shutdown = async () => {
     if (shutdownStarted) return;
     shutdownStarted = true;
-    if (!options.json) process.stdout.write(`Stopping Sporades dev session...
-`);
-    for (const watcher of watchers) {
-      watcher.close();
-    }
-    rm8(path18.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
-    });
-    websocketHub.disconnectAll();
     let shutdownError;
     try {
+      if (!options.json) process.stdout.write(`Stopping Sporades dev session...
+`);
+      for (const watcher of watchers) watcher.close();
+      rm8(path18.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
+      });
+      websocketHub.disconnectAll();
       await shutdownHttpServerAndRuntime(server, async () => {
         await runtime.shutdown();
         await telemetry.shutdown();
@@ -149945,16 +149957,26 @@ async function startDevSession(options) {
     } catch (error) {
       shutdownError = error;
     }
-    await rm8(sessionFilePath, { force: true });
-    await rm8(path18.dirname(actionBundlePath), { recursive: true, force: true });
+    try {
+      await rm8(sessionFilePath, { force: true });
+    } catch (error) {
+      shutdownError ??= error;
+    }
+    try {
+      await removeOwnedDevActionBundle(options.projectDir, actionBundleId);
+    } catch (error) {
+      shutdownError ??= error;
+    }
     process.off("unhandledRejection", onUnhandledRejection);
     process.off("uncaughtException", onUncaughtException);
+    process.off("SIGHUP", shutdown);
     if (shutdownError) process.stderr.write(`${errorDetails(shutdownError).message}
 `);
     process.exit(shutdownError ? 1 : 0);
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+  process.on("SIGHUP", shutdown);
 }
 function tagDevRebuildError(error, phase, config, options = {}) {
   const details = errorDetails(error);
@@ -152103,6 +152125,73 @@ async function readDevSession(projectDir) {
       "Invalid Sporades dev session metadata.",
       "Restart the dev session with `sporades dev`, then retry the command."
     );
+  }
+}
+async function createDevActionBundle(projectDir, id2, contents) {
+  const root = path18.join(projectDir, ".sporades", "build", ".dev-actions");
+  await mkdir10(root, { recursive: true, mode: 448 });
+  const rootStat = await lstat10(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw commandError("Invalid Dev action Bundle directory.", "Remove the unsafe .sporades/build/.dev-actions entry and retry.");
+  }
+  const directory = path18.join(root, id2);
+  await mkdir10(directory, { mode: 448 });
+  try {
+    await writeFile9(path18.join(directory, "owner.json"), `${JSON.stringify({
+      id: id2,
+      pid: process.pid,
+      processStart: await getProcessStartIdentity(process.pid)
+    })}
+`, { flag: "wx", mode: 384 });
+    await writeFile9(path18.join(directory, "server.mjs"), contents, { flag: "wx", mode: 384 });
+  } catch (error) {
+    await rm8(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+async function removeOwnedDevActionBundle(projectDir, id2) {
+  const root = path18.join(projectDir, ".sporades", "build", ".dev-actions");
+  const rootStat = await lstat10(root).catch(() => null);
+  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) {
+    throw commandError("Dev action Bundle directory changed.", "Inspect the private Bundle directory before removing it.");
+  }
+  const directory = path18.join(root, id2);
+  const directoryStat = await lstat10(directory).catch(() => null);
+  if (!directoryStat) return;
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+    throw commandError("Dev action Bundle ownership changed.", "Preserve the unexpected entry for inspection.");
+  }
+  const ownerPath = path18.join(directory, "owner.json");
+  const ownerStat = await lstat10(ownerPath).catch(() => null);
+  const owner = ownerStat?.isFile() && !ownerStat.isSymbolicLink() && ownerStat.size <= 1024 ? await readFile13(ownerPath, "utf8").then(JSON.parse).catch(() => null) : null;
+  if (owner?.id !== id2 || owner.pid !== process.pid) {
+    throw commandError("Dev action Bundle ownership changed.", "Preserve the unexpected entry for inspection.");
+  }
+  await rm8(directory, { recursive: true, force: true });
+}
+async function reclaimStaleDevActionBundles(projectDir) {
+  const root = path18.join(projectDir, ".sporades", "build", ".dev-actions");
+  const rootStat = await lstat10(root).catch((error) => {
+    if (errorDetails(error).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!rootStat) return;
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw commandError("Invalid Dev action Bundle directory.", "Remove the unsafe .sporades/build/.dev-actions entry and retry.");
+  }
+  for (const id2 of await readdir4(root)) {
+    if (!/^[a-f0-9]{32}$/.test(id2)) continue;
+    const directory = path18.join(root, id2);
+    const directoryStat = await lstat10(directory).catch(() => null);
+    if (!directoryStat?.isDirectory() || directoryStat.isSymbolicLink()) continue;
+    const ownerPath = path18.join(directory, "owner.json");
+    const ownerStat = await lstat10(ownerPath).catch(() => null);
+    if (!ownerStat?.isFile() || ownerStat.isSymbolicLink() || ownerStat.size > 1024) continue;
+    const owner = await readFile13(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+    if (owner?.id !== id2 || !Number.isInteger(owner.pid) || owner.pid <= 0 || owner.processStart !== null && typeof owner.processStart !== "string") continue;
+    const actualStart = await getProcessStartIdentity(owner.pid);
+    if (owner.processStart === null ? processIsLiveForContainerLock(owner.pid) : actualStart === owner.processStart || actualStart === null && processIsLiveForContainerLock(owner.pid)) continue;
+    await rm8(directory, { recursive: true, force: true });
   }
 }
 async function devActionBundlePath(projectDir, session) {
