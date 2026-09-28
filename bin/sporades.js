@@ -123480,7 +123480,12 @@ async function createRuntimeHealthResult(database) {
   return {
     ok: ready,
     data: {
-      runtime: { ready, fileMaxSizeBytes: database.fileMaxSizeBytes, httpMaxBodyBytes: database.httpMaxBodyBytes },
+      runtime: {
+        ready,
+        fileMaxSizeBytes: database.fileMaxSizeBytes,
+        httpMaxBodyBytes: database.httpMaxBodyBytes,
+        ...database.runtimeTelemetry ? { telemetry: database.runtimeTelemetry } : {}
+      },
       checks
     },
     error: ready ? null : {
@@ -148529,13 +148534,15 @@ function parseHostArgs(args) {
   switch (subcommand) {
     case "telemetry": {
       const [operation, ...extra] = positional;
-      if (!operation || !["connect", "reconcile", "status", "check"].includes(operation) || extra.length > 0) {
-        throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check --host <alias>`.");
+      if (!operation || !["connect", "reconcile", "status", "check", "enable", "disable"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
+        throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
       }
+      if ((operation === "enable" || operation === "disable") && extra.length !== 1) throw commandError("Missing Capsule subname.", `Use \`sporades host telemetry ${operation} <subname> --host <alias>\`.`);
+      if (extra.length) validateCapsuleSubname(extra[0]);
       if (operation === "connect" && !telemetryProfileName) throw commandError("Missing Telemetry profile.", "Pass `--profile <name>` with a verified HTTPS destination.");
       if (operation !== "connect" && telemetryProfileName) throw commandError("Unexpected Telemetry profile.", "Use `--profile` only with `sporades host telemetry connect`.");
       if (hostAlias) validateHostAlias(hostAlias);
-      return { subcommand, operation, telemetryProfileName, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, operation, subname: extra[0], telemetryProfileName, hostAlias, json, projectDir: process.cwd() };
     }
     case "add": {
       const [alias, ...extra] = positional;
@@ -150851,7 +150858,7 @@ async function manageHost(options) {
         }
         telemetry = { endpoint: profile.endpoint, credential, ...caPem ? { caPem } : {}, ...profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}, ...profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {} };
       }
-      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, telemetry, projectDir: options.projectDir });
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);
       else if (!result.ok) throw commandError(result.error.message, result.error.hint);
       else process.stdout.write(`${JSON.stringify(result.data, null, 2)}

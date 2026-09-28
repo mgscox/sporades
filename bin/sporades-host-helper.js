@@ -43689,6 +43689,26 @@ async function checkHostTelemetryDelivery(remoteRoot) {
   return { ...result, origin: "host", traceId, relayReady, relayAccepted, backendStorage: "verification-unavailable", capsuleCoverage: "not-configured" };
 }
 
+// src/cli/hosted-telemetry-coverage.ts
+function hostedTelemetryConfig(connection, capsule) {
+  if (!connection || capsule.telemetry?.disabled === true) return null;
+  if (connection.internalEndpoint !== "http://sporades-telemetry:4318/") throw new Error("Invalid Host Telemetry relay endpoint.");
+  return {
+    endpoint: connection.internalEndpoint,
+    tls: { mode: "loopback" },
+    serviceName: `${capsule.domain}/${capsule.subname}`,
+    environment: "hosted",
+    ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {},
+    ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}
+  };
+}
+function hostedTelemetryCoverage(desired, running, runtime, expectedServiceName, expectedConfigHash) {
+  if (!running) return { state: desired ? "pending-start" : "disabled", restartRequired: false };
+  if (!runtime || runtime.supported !== true) return { state: desired ? "unverified" : "pending-restart", restartRequired: !desired };
+  if (runtime.enabled !== desired || desired && runtime.serviceName !== expectedServiceName || expectedConfigHash && runtime.configHash !== expectedConfigHash) return { state: "pending-restart", restartRequired: true };
+  return { state: desired ? "instrumented" : "disabled", restartRequired: false };
+}
+
 // src/cli/host-helper-validation.ts
 import path5 from "node:path";
 function missingCapsuleHint(request, purpose) {
@@ -43996,7 +44016,10 @@ try {
   const hasFileMaxSizeBytes = runtime?.fileMaxSizeBytes !== undefined; const hasHttpMaxBodyBytes = runtime?.httpMaxBodyBytes !== undefined;
   const validBounds = (!hasFileMaxSizeBytes && !hasHttpMaxBodyBytes) || (hasFileMaxSizeBytes && hasHttpMaxBodyBytes && Number.isInteger(runtime.fileMaxSizeBytes) && runtime.fileMaxSizeBytes > 0 && Number.isInteger(runtime.httpMaxBodyBytes) && runtime.httpMaxBodyBytes > 0);
   const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && validBounds && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean");
-  process.stdout.write(JSON.stringify({ kind: "response", status: response.status, valid, ok: body?.ok === true, ready: ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true }));
+  const t = runtime?.telemetry;
+  const telemetry = t?.supported === true && typeof t?.enabled === "boolean" && (t.enabled === false || typeof t.serviceName === "string") && /^[a-f0-9]{64}$/.test(t.configHash)
+    ? { supported: true, enabled: t.enabled, ...(t.enabled ? { serviceName: t.serviceName } : {}), configHash: t.configHash } : null;
+  process.stdout.write(JSON.stringify({ kind: "response", status: response.status, valid, ok: body?.ok === true, ready: ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true, telemetry }));
 } catch { process.stdout.write(JSON.stringify({ kind: "connection" })); }`;
 var CLOUDFLARE_ORIGIN_IP_RANGES = Object.freeze([
   "173.245.48.0/20",
@@ -44410,6 +44433,10 @@ function managedRouteMutationLockIdentity(request) {
     case "capsule.restart":
       validateLifecycleRequest(request);
       break;
+    case "host.telemetry.enable":
+    case "host.telemetry.disable":
+      validateLifecycleRequest(request);
+      break;
     case "capsule.sealed-env.rotate-key":
       validateSealedEnvRotationRequest(request);
       break;
@@ -44638,16 +44665,65 @@ function routeTrustError() {
     "Require helper-owned, non-writable, non-symlink Host route directories and retry the command."
   );
 }
+async function setCapsuleTelemetryDisabled(request, disabled) {
+  validateCanonicalHostRouteRoot(request);
+  if (!request.capsule || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(request.capsule.subname)) {
+    throw helperError("Invalid Hosted Capsule Telemetry request.", "Use a registered Capsule subname.");
+  }
+  await verifyRegisteredCapsule(request, "lifecycle");
+  await mutateRegistryRecord(request, (record2) => {
+    assertRegistryRecordMatchesRequest(request, record2);
+    return { ...record2, telemetry: { disabled }, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  });
+  const record = await verifyRegisteredCapsule(request, "lifecycle");
+  const connection = await readHostTelemetryConnection(request.host.remoteRoot);
+  return {
+    capsule: `${request.host.domain}/${request.capsule.subname}`,
+    disabled,
+    connected: Boolean(connection),
+    coverage: await inspectHostedTelemetryCoverage(request, record, connection)
+  };
+}
+async function inspectHostedTelemetryCoverage(request, record, connection) {
+  const serviceName = `${request.host.domain}/${record.subname}`;
+  const desired = Boolean(connection) && record.telemetry?.disabled !== true;
+  const expectedConfig = hostedTelemetryConfig(connection, { domain: request.host.domain, subname: record.subname, telemetry: record.telemetry });
+  const expectedHash = createHash2("sha256").update(JSON.stringify(expectedConfig)).digest("hex");
+  const name2 = createHostedContainerName(request.host.domain, record.subname);
+  const state = inspectContainerRunning(name2);
+  if (!state.ok || !state.running) return { capsule: serviceName, optedOut: record.telemetry?.disabled === true, ...hostedTelemetryCoverage(desired, false, null) };
+  const probe = runDocker(["exec", name2, "node", "--input-type=module", "--eval", HOSTED_RUNTIME_PROBE_SCRIPT, "1000", "4000"], { maxBuffer: 128 * 1024, timeoutMs: 1500 });
+  let runtime = null;
+  if (probe.ok) {
+    try {
+      const body = JSON.parse(probe.stdout);
+      if (body.kind === "response" && body.status === 200 && body.valid === true) runtime = body.telemetry;
+    } catch {
+    }
+  }
+  return { capsule: serviceName, optedOut: record.telemetry?.disabled === true, ...hostedTelemetryCoverage(desired, true, runtime, serviceName, expectedHash) };
+}
+async function hostTelemetryStatusWithCoverage(request, relayStatus) {
+  const relay = relayStatus ?? await statusHostTelemetryRelay(request.host.remoteRoot);
+  const connection = await readHostTelemetryConnection(request.host.remoteRoot);
+  const records = await readCapsuleRegistryRecords(request);
+  const capsules = [];
+  for (const record of records) {
+    if (record.status !== "unregistered") capsules.push(await inspectHostedTelemetryCoverage(request, record, connection));
+  }
+  return { ...relay, capsuleCoverage: { capsules, pendingRestart: capsules.filter((capsule) => capsule.restartRequired).length, instrumented: capsules.filter((capsule) => capsule.state === "instrumented").length } };
+}
 async function main(request) {
   if (request.action === "schedules.inspect") validateScheduleInspectionRequest(request);
   hostHelperConfig = await loadHostHelperConfig(request);
   if (request.action.startsWith("host.telemetry.")) {
-    if (!request.host || typeof request.host.remoteRoot !== "string" || typeof request.host.domain !== "string" || typeof request.host.alias !== "string" || request.capsule || request.action !== "host.telemetry.connect" && request.telemetry) {
+    const capsuleOperation = request.action === "host.telemetry.enable" || request.action === "host.telemetry.disable";
+    if (!request.host || typeof request.host.remoteRoot !== "string" || typeof request.host.domain !== "string" || typeof request.host.alias !== "string" || Boolean(request.capsule) !== capsuleOperation || request.action !== "host.telemetry.connect" && request.telemetry) {
       throw helperError("Invalid Host Telemetry request.", "Upgrade the local CLI and Host helper together.");
     }
     validateCanonicalHostRouteRoot(request);
-    const data2 = request.action === "host.telemetry.connect" ? await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry) : request.action === "host.telemetry.reconcile" ? await reconcileHostTelemetryRelay(request.host.remoteRoot) : request.action === "host.telemetry.status" ? await statusHostTelemetryRelay(request.host.remoteRoot) : request.action === "host.telemetry.check" ? await checkHostTelemetryDelivery(request.host.remoteRoot) : null;
-    if (!data2) throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, or check.");
+    const data2 = capsuleOperation ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable") : request.action === "host.telemetry.connect" ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry)) : request.action === "host.telemetry.reconcile" ? await hostTelemetryStatusWithCoverage(request, await reconcileHostTelemetryRelay(request.host.remoteRoot)) : request.action === "host.telemetry.status" ? await hostTelemetryStatusWithCoverage(request) : request.action === "host.telemetry.check" ? await checkHostTelemetryDelivery(request.host.remoteRoot) : null;
+    if (!data2) throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, check, enable, or disable.");
     writeEnvelope({ ok: true, data: data2, error: null });
     return;
   }
@@ -45746,7 +45822,8 @@ async function startCapsule(request, options = {}) {
   await recordReleaseStartAttempt(request, releaseId);
   ensureHostedBaseImage(lifecycle);
   const runtimeProbe = await ensureRuntimeProbeCredential(request);
-  const runArgs = await dockerRunArgs(lifecycle, releaseId, runtimeProbe);
+  const connection = await readHostTelemetryConnection(request.host.remoteRoot);
+  const runArgs = await dockerRunArgs(lifecycle, releaseId, runtimeProbe, hostedTelemetryConfig(connection, { domain: request.host.domain, subname: request.capsule.subname, telemetry: registryRecord.telemetry }));
   const run = runDocker(runArgs);
   if (!run.ok) {
     await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, "Hosted Capsule container failed to start.");
@@ -48263,7 +48340,7 @@ function parseDockerByteSize(value) {
   }
   return Math.round(amount * multipliers[unit]);
 }
-async function dockerRunArgs(lifecycle, releaseId, runtimeProbe) {
+async function dockerRunArgs(lifecycle, releaseId, runtimeProbe, hostedTelemetry) {
   const args = [
     "run",
     "--detach",
@@ -48342,7 +48419,9 @@ async function dockerRunArgs(lifecycle, releaseId, runtimeProbe) {
     "--env",
     `SPORADES_PUBLIC_ALIASES=${JSON.stringify(validateAliasDomains(lifecycle.routes.running.aliasDomains).map((hostname) => `https://${hostname}`))}`,
     "--env",
-    `SPORADES_RELEASE_ID=${releaseId}`
+    `SPORADES_RELEASE_ID=${releaseId}`,
+    "--env",
+    `SPORADES_HOSTED_TELEMETRY_CONFIG=${JSON.stringify(hostedTelemetry)}`
   );
   args.push("--publish", `127.0.0.1::${lifecycle.routes.running.port ?? 4e3}`);
   const sshEnabled = lifecycle.mounts.files.some((mount) => mount.container === "/run/sporades/ssh/authorized_keys");

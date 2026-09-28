@@ -36,6 +36,7 @@
       "src/cli/host-request-builders.ts",
       "src/cli/host-telemetry-relay.ts",
       "src/cli/hosted-capsule-contract.ts",
+      "src/cli/hosted-telemetry-coverage.ts",
       "src/cli/monitoring-stack.ts",
       "src/cli/project-config.ts",
       "src/cli/schedule-inspection-envelope.ts",
@@ -109,7 +110,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "68489d93376744764e1f08afde0c59565a45039d104c34e31765f97980205137"
+    "digest": "13c850cd146fa5daeb027be829da4f559f04949dd1efe049f4838ef8fbb795d9"
   },
   "outputs": {
     "files": [
@@ -223,6 +224,10 @@
       "dist/cli/hosted-capsule-contract.d.ts.map",
       "dist/cli/hosted-capsule-contract.js",
       "dist/cli/hosted-capsule-contract.js.map",
+      "dist/cli/hosted-telemetry-coverage.d.ts",
+      "dist/cli/hosted-telemetry-coverage.d.ts.map",
+      "dist/cli/hosted-telemetry-coverage.js",
+      "dist/cli/hosted-telemetry-coverage.js.map",
       "dist/cli/monitoring-stack.d.ts",
       "dist/cli/monitoring-stack.d.ts.map",
       "dist/cli/monitoring-stack.js",
@@ -484,6 +489,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "3b5877417e522def517e9c919858c5f1593db71776ee4d5d1411c956db467733"
+    "digest": "942ef54758d8cf33823751a19b8c18bbe3deafb4ad67118344c3c4156cea3fea"
   }
 }

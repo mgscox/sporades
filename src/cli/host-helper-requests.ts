@@ -39,7 +39,9 @@ export type HostHelperAction =
   | "host.telemetry.connect"
   | "host.telemetry.reconcile"
   | "host.telemetry.status"
-  | "host.telemetry.check";
+  | "host.telemetry.check"
+  | "host.telemetry.enable"
+  | "host.telemetry.disable";
 
 export type HostHelperVerification = JsonObject & {
   enabled?: boolean;
@@ -187,7 +189,7 @@ export type HostLogsRequest = HostHelperRequestBase & {
 };
 export type HostCapsuleListRequest = HostHelperRequestBase & { action: "capsule.list" };
 export type HostVersionRequest = HostHelperRequestBase & { action: "host.version" };
-export type HostTelemetryRequest = HostHelperRequestBase & { action: "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" };
+export type HostTelemetryRequest = HostHelperRequestBase & { action: "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" | "host.telemetry.enable" | "host.telemetry.disable" };
 export type HostJobsInspectRequest = HostHelperRequestBase & { action: "jobs.inspect"; capsule: HostHelperCapsuleTarget };
 export type HostSchedulesInspectRequest = HostHelperRequestBase & { action: "schedules.inspect"; capsule: HostHelperCapsuleTarget };
 export type HostAccessKeyRequest = HostHelperRequestBase & {

@@ -272,8 +272,11 @@ The following work is intentionally deferred:
   environment across restart when a Dev build publishes a new Bundle.
   Legacy Containers without a launch descriptor retain their mounted server Bundle
   during Dev builds and Host push; their previous implicit selection cannot be
-  reconstructed if another build already replaced that Bundle. Container/Host collection, Hosted telemetry
-  transport, and operation spans remain deferred under
+  reconstructed if another build already replaced that Bundle. Shared Host relay
+  transport and Host-owned Hosted Capsule activation are available; each Host
+  connection enables its Capsules by default with per-Capsule opt-out, and
+  running Capsules need a controlled restart before coverage is confirmed.
+  Container/Host resource collection and operation spans remain deferred under
   [automatic monitoring issue #107](https://github.com/mgscox/sporades/issues/107).
   Centralized JSON logging remains deferred in
   `.scratch/post-v2-platform-hardening-and-ops/issues/05-centralize-json-server-logging.md`.

@@ -6695,6 +6695,10 @@ test("sporades host helper marks previous releases non-current and records start
 test("sporades host helper starts the current release in Docker and routes through a loopback-published port", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
+    const telemetryDir = path.join(remoteRoot, "telemetry");
+    await mkdir(telemetryDir, { recursive: true, mode: 0o700 });
+    await chmod(telemetryDir, 0o700);
+    await writeFile(path.join(telemetryDir, "connection.json"), JSON.stringify({ schemaVersion: 1, endpoint: "https://monitor.example:4318/", network: "sporades-hosted-capsules", internalEndpoint: "http://sporades-telemetry:4318/", caConfigured: false, connectedAt: "2026-09-28T00:00:00.000Z" }), { mode: 0o600 });
     const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
     const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
@@ -6826,6 +6830,9 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert(runCall.args.includes(`${path.join(capsuleDir, "data")}:/app/data:rw`));
     assert(runCall.args.includes("SPORADES_LOG_STDOUT=1"));
     assert(runCall.args.includes("SPORADES_SECURITY_SESSION=hosted"));
+    const hostedTelemetry = runCall.args.find((arg) => arg.startsWith("SPORADES_HOSTED_TELEMETRY_CONFIG="));
+    assert.deepEqual(JSON.parse(hostedTelemetry.slice(hostedTelemetry.indexOf("=") + 1)), { endpoint: "http://sporades-telemetry:4318/", tls: { mode: "loopback" }, serviceName: "capsules.example.dev/team-notes", environment: "hosted" });
+    assert(runCall.args.indexOf(hostedTelemetry) > runCall.args.indexOf("--env-file"), "Host-owned descriptor must override Capsule Server env");
     assert(runCall.args.includes("SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev"));
     assert(runCall.args.includes("SPORADES_RELEASE_ID=20260630T221500Z-feedface"));
     assert.deepEqual(runCall.args.slice(runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.2.0-node22-alpine")), [
@@ -6865,6 +6872,13 @@ test("sporades host helper starts the current release in Docker and routes throu
       assert.equal(preparedDatabase.uid, 10001);
       assert.equal(preparedDatabase.gid, 10001);
     }
+    const disabled = await runHostHelper({ action: "host.telemetry.disable", host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot }, capsule: { subname: "team-notes" } }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(disabled.stdout).ok, true, disabled.stdout);
+    assert.equal(JSON.parse(disabled.stdout).data.coverage.state, "pending-restart");
+    assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).telemetry.disabled, true);
+    const enabled = await runHostHelper({ action: "host.telemetry.enable", host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot }, capsule: { subname: "team-notes" } }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(enabled.stdout).ok, true, enabled.stdout);
+    assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).telemetry.disabled, false);
   });
 });
 

@@ -50,5 +50,13 @@ test('installed CLI resolves a verified Host profile and redacts the scoped cred
     const status = cli('host', 'telemetry', 'status', '--host', 'remote', '--json');
     assert.equal(status.status, 0, status.stderr);
     assert.equal(JSON.parse(await readFile(capture, 'utf8')).telemetry, undefined);
+    const disabled = cli('host', 'telemetry', 'disable', 'tickets', '--host', 'remote', '--json');
+    assert.equal(disabled.status, 0, disabled.stderr);
+    assert.equal(JSON.parse(await readFile(capture, 'utf8')).action, 'host.telemetry.disable');
+    assert.equal(JSON.parse(await readFile(capture, 'utf8')).capsule.subname, 'tickets');
+    const enabled = cli('host', 'telemetry', 'enable', 'tickets', '--host', 'remote', '--json');
+    assert.equal(enabled.status, 0, enabled.stderr);
+    assert.equal(JSON.parse(await readFile(capture, 'utf8')).action, 'host.telemetry.enable');
+    assert.notEqual(cli('host', 'telemetry', 'disable', '--host', 'remote', '--json').status, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
