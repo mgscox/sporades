@@ -14,17 +14,20 @@ async function collector() {
   const batches = [];
   let firstBatchResolve;
   const firstBatch = new Promise(resolve => { firstBatchResolve = resolve; });
+  let secondBatchResolve;
+  const secondBatch = new Promise(resolve => { secondBatchResolve = resolve; });
   const server = createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
     if (request.url === '/v1/metrics') {
       batches.push(JSON.parse(body));
       if (batches.length === 1) firstBatchResolve();
+      if (batches.length === 2) secondBatchResolve();
     }
     response.writeHead(200).end();
   }).listen(0, '127.0.0.1');
   await once(server, 'listening');
-  return { batches, firstBatch, server, endpoint: `http://127.0.0.1:${server.address().port}` };
+  return { batches, firstBatch, secondBatch, server, endpoint: `http://127.0.0.1:${server.address().port}` };
 }
 
 test('idle event-loop lag does not include the configured sampling interval', async () => {
@@ -85,6 +88,25 @@ test('a second stall just after export remains visible in its own collection win
     const secondMax = metricPoints([sink.batches[1]], 'process.event_loop.delay.max').map(value);
     assert(secondMax.some(sample => sample >= 500), `second stall should be visible in its own window: ${secondMax}`);
     assert(secondMax.every(sample => Number.isFinite(sample) && sample >= 0));
+  } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
+});
+
+test('a long post-export stall gets a fresh max even without a native histogram sample', async () => {
+  const sink = await collector();
+  const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'empty-window-pressure-test', metricsIntervalMs: 5000, eventLoopDelayResolutionMs: 1000 });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    let started = performance.now();
+    while (performance.now() - started < 3500) { /* first stall crosses first export */ }
+    await sink.firstBatch;
+    const firstMax = metricPoints([sink.batches[0]], 'process.event_loop.delay.max').map(value)[0];
+    assert(firstMax >= 1500, `expected first stall in first batch, got ${firstMax}`);
+    started = performance.now();
+    while (performance.now() - started < 6500) { /* crosses next export before a recorded tick */ }
+    await Promise.race([sink.secondBatch, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('second OTLP batch timed out')), 6000); timer.unref(); })]);
+    const secondMax = metricPoints([sink.batches[1]], 'process.event_loop.delay.max').map(value)[0];
+    assert(Number.isFinite(secondMax) && secondMax >= 1500, `long second stall must have a substantial current-window max: ${secondMax}`);
+    assert(Math.abs(secondMax - firstMax) > 250, `second-window max must be fresh, not the first batch replayed: ${firstMax}, ${secondMax}`);
   } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
 });
 

@@ -258,14 +258,16 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             result.observe(gcCount, total.count, { kind });
             result.observe(gcDuration, total.durationSeconds, { kind });
         }
-        if (loopDelay.count > 0) {
-            const rawMaxMs = loopDelay.max / 1e6;
-            const elapsedMs = Math.max(0, (delayMonitorStoppedAt ?? performance.now()) - lastDelayResetAt);
-            // Reset drops the first monitor interval. The unrecorded time can lie at
-            // either edge of this window, so half its lower bound belongs to at least
-            // one edge. Histogram max bounds each recorded interval from above.
-            const unrecordedMaxLowerBoundMs = Math.max(0, (elapsedMs - loopDelay.count * rawMaxMs) / 2 - delayResolutionMs);
+        const rawMaxMs = loopDelay.count > 0 ? loopDelay.max / 1e6 : 0;
+        const elapsedMs = Math.max(0, (delayMonitorStoppedAt ?? performance.now()) - lastDelayResetAt);
+        // Reset drops the first monitor interval. The unrecorded time can lie at
+        // either edge of this window, so half its lower bound belongs to at least
+        // one edge. Histogram max bounds each recorded interval from above.
+        const unrecordedMaxLowerBoundMs = Math.max(0, (elapsedMs - loopDelay.count * rawMaxMs) / 2 - delayResolutionMs);
+        if (loopDelay.count > 0 || unrecordedMaxLowerBoundMs > 0) {
             result.observe(delayMax, Math.max(0, rawMaxMs - delayResolutionMs, unrecordedMaxLowerBoundMs));
+        }
+        if (loopDelay.count > 0) {
             result.observe(delayMean, Math.max(0, loopDelay.mean / 1e6 - delayResolutionMs));
             result.observe(delayP99, Math.max(0, loopDelay.percentile(99) / 1e6 - delayResolutionMs));
         }

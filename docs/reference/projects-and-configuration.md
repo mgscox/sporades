@@ -32,7 +32,9 @@ exported delay max, mean, and p99 are nonnegative milliseconds of event-loop
 lag beyond that sampling interval, not the interval itself. Max uses the larger
 of Node's measured peak and a conservative lower bound for time missed at a
 histogram reset. That bound can understate a stall; mean and p99 use only Node's
-recorded samples. Windows without recorded histogram samples omit the gauges.
+recorded samples. A positive max bound may export even when Node records no
+sample in a window. Mean and p99 receive no new observation then, although the
+metric exporter may repeat their previous gauge values.
 `--metrics-interval-ms` tunes metric export from 5000 to 300000 ms; the default
 is 15000 ms. The monitoring dashboards default to a 12-minute Metric window
 so even a 300-second profile has at least two samples for rates and p95. Select
