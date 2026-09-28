@@ -56,6 +56,7 @@ import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, sanitizeAccessKeyOperatorEnvelo
 import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
+import { checkHostTelemetryDelivery, connectHostTelemetryRelay, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
 import {
   hostRegistryRetryCommand,
   missingCapsuleHint,
@@ -807,6 +808,24 @@ function routeTrustError() {
 async function main(request: HostHelperRequest) {
   if (request.action === "schedules.inspect") validateScheduleInspectionRequest(request);
   hostHelperConfig = await loadHostHelperConfig(request);
+  if (request.action.startsWith("host.telemetry.")) {
+    if (!request.host || typeof request.host.remoteRoot !== "string" || typeof request.host.domain !== "string" || typeof request.host.alias !== "string" || request.capsule || (request.action !== "host.telemetry.connect" && request.telemetry)) {
+      throw helperError("Invalid Host Telemetry request.", "Upgrade the local CLI and Host helper together.");
+    }
+    validateCanonicalHostRouteRoot(request);
+    const data = request.action === "host.telemetry.connect"
+      ? await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry)
+      : request.action === "host.telemetry.reconcile"
+        ? await reconcileHostTelemetryRelay(request.host.remoteRoot)
+      : request.action === "host.telemetry.status"
+        ? await statusHostTelemetryRelay(request.host.remoteRoot)
+        : request.action === "host.telemetry.check"
+          ? await checkHostTelemetryDelivery(request.host.remoteRoot)
+          : null;
+    if (!data) throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, or check.");
+    writeEnvelope({ ok: true, data, error: null });
+    return;
+  }
   if (request.action === "capsule.register") {
     await registerCapsule(request);
     return;

@@ -34,6 +34,7 @@
       "src/cli/host-helper-requests.ts",
       "src/cli/host-helper-validation.ts",
       "src/cli/host-request-builders.ts",
+      "src/cli/host-telemetry-relay.ts",
       "src/cli/hosted-capsule-contract.ts",
       "src/cli/monitoring-stack.ts",
       "src/cli/project-config.ts",
@@ -108,7 +109,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "107f9374b06b47bfbb80f4112d18cc0b282084b6129dfe6839c752cc51b77f9e"
+    "digest": "f5f5d88404510c0e0f47ddd5404c03a3dfcf2bd1027b0dd3b1f47b9445b52cec"
   },
   "outputs": {
     "files": [
@@ -214,6 +215,10 @@
       "dist/cli/host-request-builders.d.ts.map",
       "dist/cli/host-request-builders.js",
       "dist/cli/host-request-builders.js.map",
+      "dist/cli/host-telemetry-relay.d.ts",
+      "dist/cli/host-telemetry-relay.d.ts.map",
+      "dist/cli/host-telemetry-relay.js",
+      "dist/cli/host-telemetry-relay.js.map",
       "dist/cli/hosted-capsule-contract.d.ts",
       "dist/cli/hosted-capsule-contract.d.ts.map",
       "dist/cli/hosted-capsule-contract.js",
@@ -479,6 +484,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "7a38db378158ef410d176a9cc763c57ade48271f890afed4d7ad1c79cddf0536"
+    "digest": "7ab2d976a46542ca45bbf8196525ea419811b6fb962bb5400625c7cf408fe8c0"
   }
 }

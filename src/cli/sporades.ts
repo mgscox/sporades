@@ -1199,6 +1199,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   let file = DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW;
   let dryRun = false;
   let force = false;
+  let telemetryProfileName: string | null = null;
   const positional = [];
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -1211,6 +1212,11 @@ function parseHostArgs(args: string[]): LooseRecord {
 
       case "--host":
         hostAlias = readFlagValue(rest, ++index, "--host");
+        break;
+
+      case "--profile":
+        if (subcommand !== "telemetry") throw commandError("--profile is only supported by host telemetry.", "Use `sporades host telemetry connect --profile <name>`.");
+        telemetryProfileName = readFlagValue(rest, ++index, "--profile");
         break;
 
       case "--server":
@@ -1284,6 +1290,16 @@ function parseHostArgs(args: string[]): LooseRecord {
   }
 
   switch (subcommand) {
+    case "telemetry": {
+      const [operation, ...extra] = positional;
+      if (!operation || !["connect", "reconcile", "status", "check"].includes(operation) || extra.length > 0) {
+        throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check --host <alias>`.");
+      }
+      if (operation === "connect" && !telemetryProfileName) throw commandError("Missing Telemetry profile.", "Pass `--profile <name>` with a verified HTTPS destination.");
+      if (operation !== "connect" && telemetryProfileName) throw commandError("Unexpected Telemetry profile.", "Use `--profile` only with `sporades host telemetry connect`.");
+      if (hostAlias) validateHostAlias(hostAlias);
+      return { subcommand, operation, telemetryProfileName, hostAlias, json, projectDir: process.cwd() };
+    }
     case "add": {
       const [alias, ...extra] = positional;
       if (!alias) {
@@ -3764,6 +3780,33 @@ async function ensureHostProfileEnvKey(config: LooseRecord, alias: string | numb
 
 async function manageHost(options: LooseRecord) {
   switch (options.subcommand) {
+    case "telemetry": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      let telemetry: LooseRecord | undefined;
+      if (options.operation === "connect") {
+        const profiles = await readTelemetryProfiles();
+        const profile = Object.hasOwn(profiles, options.telemetryProfileName) ? profiles[options.telemetryProfileName] : undefined;
+        if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before connecting the Host.");
+        if (profile.tls.mode !== "verified" || !profile.credentialEnv) throw commandError("Host Telemetry requires a verified HTTPS profile with a scoped credential.", "Use a verified profile with --credential-env.");
+        const credential = process.env[profile.credentialEnv];
+        if (!credential) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${options.telemetryProfileName}.`);
+        let caPem: string | undefined;
+        if (profile.tls.caFile) {
+          try {
+            const details = statSync(profile.tls.caFile);
+            if (!details.isFile() || details.size > 1024 * 1024) throw new Error("invalid certificate");
+            caPem = readFileSync(profile.tls.caFile, "utf8");
+          } catch { throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB."); }
+        }
+        telemetry = { endpoint: profile.endpoint, credential, ...(caPem ? { caPem } : {}) };
+      }
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, telemetry, projectDir: options.projectDir });
+      if (options.json) writeResult(result, !result.ok);
+      else if (!result.ok) throw commandError(result.error.message, result.error.hint);
+      else process.stdout.write(`${JSON.stringify(result.data, null, 2)}\n`);
+      return;
+    }
     case "schedules": {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
@@ -5844,6 +5887,9 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
   };
   if (options.bootstrap) {
     request.bootstrap = options.bootstrap;
+  }
+  if (options.telemetry) {
+    request.telemetry = options.telemetry;
   }
   if (options.registration) {
     request.registration = options.registration;
