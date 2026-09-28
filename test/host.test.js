@@ -4468,6 +4468,16 @@ process.exit(0);
     await mkdir(path.join(projectDir, ".sporades/host-push"), { recursive: true, mode: 0o755 });
     await chmod(path.join(projectDir, ".sporades/host-push"), 0o755);
     await writeFile(path.join(projectDir, "defaults.json"), "defaults seed");
+    // A pre-telemetry Container keeps its mounted server Bundle while Host push
+    // packages the current candidate built from changed Capsule source.
+    const legacyBundle = await createBundle(projectDir, config);
+    const canonicalServer = await readFile(legacyBundle.paths.serverBundle);
+    await writeFile(path.join(projectDir, ".sporades", "binding.json"), JSON.stringify({
+      containerId: "legacy-container", containerName: "legacy-container",
+      clientRelease: { framework: "react", toolchain: "esbuild", publicTree: "legacy-public-tree" },
+    }));
+    const serverEntry = path.join(projectDir, "server", "index.ts");
+    await writeFile(serverEntry, (await readFile(serverEntry, "utf8")).replace('name: "todo-island"', 'name: "fresh-host-code"'));
 
     const env = {
       ...hostEnv(configDir),
@@ -4485,6 +4495,7 @@ process.exit(0);
 
     const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
     assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);
+    assert.deepEqual(await readFile(legacyBundle.paths.serverBundle), canonicalServer);
 
     const output = JSON.parse(push.stdout);
     assert.equal(output.ok, true);
@@ -4519,6 +4530,7 @@ process.exit(0);
     assert.deepEqual(uploadedArchives, [`${output.data.release.id}.tar.gz`]);
     const entries = await listArchiveEntries(path.join(fakeScp.uploadDir, uploadedArchives[0]), projectDir);
     assert.equal(await extractArchiveFile(path.join(fakeScp.uploadDir, uploadedArchives[0]), "config/settings.json", projectDir), "settings seed");
+    assert.match(await extractArchiveFile(path.join(fakeScp.uploadDir, uploadedArchives[0]), "server.mjs", projectDir), /fresh-host-code/);
     assert.deepEqual(entries, [
       "config/settings.json",
       "defaults.json",

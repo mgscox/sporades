@@ -5082,7 +5082,7 @@ test("sporades dev reports public candidate failures without changing the active
   });
 });
 
-test("sporades dev activates client output only after the replacement Runtime starts", async () => {
+test("legacy-bound Dev rolls back client and action Bundles when replacement Runtime fails", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "activation-island", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(createResult.code, 0, createResult.stderr);
@@ -5092,6 +5092,12 @@ test("sporades dev activates client output only after the replacement Runtime st
     config.dev.port = 0;
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     await installFakeReact(projectDir);
+    const initialBundle = await createBundle(projectDir, config);
+    const containerServer = await readFile(initialBundle.paths.serverBundle);
+    await writeFile(path.join(projectDir, ".sporades", "binding.json"), JSON.stringify({
+      containerId: "legacy-container", containerName: "legacy-container",
+      clientRelease: { framework: "react", toolchain: "esbuild", publicTree: "legacy-public-tree" },
+    }));
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     try {
@@ -5100,7 +5106,11 @@ test("sporades dev activates client output only after the replacement Runtime st
       const legacyServerPath = path.join(projectDir, ".sporades", "build", "server.mjs");
       const legacyClientPath = path.join(projectDir, ".sporades", "build", "client.js");
       const legacyServerBefore = await readFile(legacyServerPath, "utf8");
+      assert.deepEqual(Buffer.from(legacyServerBefore), containerServer);
       const legacyClientBefore = await readFile(legacyClientPath, "utf8");
+      const devSession = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+      const actionBundlePath = path.join(projectDir, ".sporades", "build", ".dev-actions", devSession.actionBundleId, "server.mjs");
+      const actionBefore = await readFile(actionBundlePath);
       const serverPath = path.join(projectDir, "server", "index.ts");
       const clientPath = path.join(projectDir, "client", "index.tsx");
       const serverSource = await readFile(serverPath, "utf8");
@@ -5114,6 +5124,7 @@ test("sporades dev activates client output only after the replacement Runtime st
       assert.equal(await (await fetch(`${started.data.url}/client.js`)).text(), before);
       assert.equal(await readFile(legacyServerPath, "utf8"), legacyServerBefore);
       assert.equal(await readFile(legacyClientPath, "utf8"), legacyClientBefore);
+      assert.deepEqual(await readFile(actionBundlePath), actionBefore);
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
@@ -5167,6 +5178,100 @@ test("sporades dev keeps the old Runtime active when service-env state cannot be
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
+  });
+});
+
+test("candidate publication can preserve a legacy Container server bundle", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "legacy-publication", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "legacy-publication");
+    await installFakeReact(projectDir);
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    await createBundle(projectDir, config);
+    const serverPath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const originalServer = await readFile(serverPath);
+    const clientPath = path.join(projectDir, "client", "index.tsx");
+    await writeFile(clientPath, (await readFile(clientPath, "utf8")).replace("Blank Sporades Capsule", "New Candidate Capsule"));
+    const candidate = await createBundle(projectDir, config, { publishLegacy: false });
+    try {
+      assert.equal(typeof candidate.serverBundle, "string");
+      const rollback = await candidate.publishLegacy({ preserveServerBundle: true });
+      assert.deepEqual(await readFile(serverPath), originalServer);
+      assert.match(await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8"), /New Candidate Capsule/);
+      await rollback();
+      assert.deepEqual(await readFile(serverPath), originalServer);
+    } finally {
+      await candidate.releasePublicTreeLease();
+      await discardPublicTree(candidate.staticFiles.publicTree).catch(() => {});
+    }
+  });
+});
+
+test("pre-telemetry Container binding permits Dev without Docker while preserving its server bundle", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "legacy-dev", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "legacy-dev");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config)}\n`);
+    await createBundle(projectDir, config);
+    const serverPath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const originalServer = await readFile(serverPath);
+    const serverEntry = path.join(projectDir, "server", "index.ts");
+    const originalSource = await readFile(serverEntry, "utf8");
+    await writeFile(serverEntry, originalSource.replace('name: "legacy-dev"', 'name: "fresh-dev-code"'));
+    config.name = "fresh-dev-code";
+    await writeFile(configPath, `${JSON.stringify(config)}\n`);
+    await writeFile(path.join(projectDir, ".sporades", "binding.json"), JSON.stringify({
+      containerId: "legacy-container", containerName: "legacy-container",
+      clientRelease: { framework: "react", toolchain: "esbuild", publicTree: "legacy-public-tree" },
+    }));
+    const noDocker = path.join(dir, "no-docker");
+    await mkdir(noDocker);
+    let actionBundlePath;
+    const child = startCli(["dev", "--json"], { cwd: projectDir, env: { PATH: noDocker } });
+    try {
+      const started = await waitForJsonEvent(child, (event) => event.data?.event === "started");
+      assert.equal(started.ok, true);
+      assert.deepEqual(await readFile(serverPath), originalServer);
+      const session = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+      assert.match(session.actionBundleId, /^[a-f0-9]{32}$/);
+      actionBundlePath = path.join(projectDir, ".sporades", "build", ".dev-actions", session.actionBundleId, "server.mjs");
+      const actionBeforeFailure = await readFile(actionBundlePath);
+      assert.notDeepEqual(actionBeforeFailure, originalServer);
+      assert.match(actionBeforeFailure.toString("utf8"), /fresh-dev-code/);
+      const jobs = await runCli(["jobs"], { cwd: projectDir, env: { PATH: noDocker } });
+      assert.equal(jobs.code, 0, jobs.stderr || jobs.stdout);
+      assert.equal(JSON.parse(jobs.stdout).data.capsule.name, "fresh-dev-code");
+      const successfulRebuild = waitForJsonEvent(child, (event) => event.data?.event === "rebuild" && event.data?.status === "success");
+      config.name = "newer-dev-code";
+      await writeFile(configPath, `${JSON.stringify(config)}\n`);
+      await successfulRebuild;
+      const actionAfterRebuild = await readFile(actionBundlePath);
+      assert.match(actionAfterRebuild.toString("utf8"), /newer-dev-code/);
+      assert.notDeepEqual(actionAfterRebuild, actionBeforeFailure);
+      assert.deepEqual(await readFile(serverPath), originalServer);
+      const rebuiltJobs = await runCli(["jobs"], { cwd: projectDir, env: { PATH: noDocker } });
+      assert.equal(rebuiltJobs.code, 0, rebuiltJobs.stderr || rebuiltJobs.stdout);
+      assert.equal(JSON.parse(rebuiltJobs.stdout).data.capsule.name, "newer-dev-code");
+      const failedRebuild = waitForJsonEvent(child, (event) => event.data?.event === "rebuild" && event.data?.status === "failed");
+      await writeFile(serverEntry, "export default ???");
+      await failedRebuild;
+      assert.deepEqual(await readFile(actionBundlePath), actionAfterRebuild);
+      assert.deepEqual(await readFile(serverPath), originalServer);
+      const rolledBackJobs = await runCli(["jobs"], { cwd: projectDir, env: { PATH: noDocker } });
+      assert.equal(rolledBackJobs.code, 0, rolledBackJobs.stderr || rolledBackJobs.stdout);
+      assert.equal(JSON.parse(rolledBackJobs.stdout).data.capsule.name, "newer-dev-code");
+    } finally {
+      child.kill("SIGTERM");
+      if (child.exitCode === null) await new Promise((resolve) => child.once("exit", resolve));
+    }
+    assert.deepEqual(await readFile(serverPath), originalServer);
+    await assert.rejects(access(path.dirname(actionBundlePath)), { code: "ENOENT" });
   });
 });
 

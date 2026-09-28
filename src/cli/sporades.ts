@@ -800,7 +800,7 @@ async function manageOperatorAccessKeys(options: LooseRecord) {
     try { process.kill(Number(session.pid), 0); }
     catch { throw commandError("No running Sporades dev session found.", "Start one with `sporades dev`, then retry the Access-key operation."); }
     const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "access-keys");
-    const bundle = path.join(options.projectDir, ".sporades", "build", "server.mjs");
+    const bundle = await devActionBundlePath(options.projectDir, session);
     const result = spawnSync(process.execPath, [bundle, ...accessKeyActionArgs(options)], {
       cwd: options.projectDir, encoding: "utf8",
       maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER,
@@ -2108,7 +2108,7 @@ async function inspectDevJobs(options: LooseRecord) {
   try { process.kill(Number(session.pid), 0); }
   catch { throw commandError("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`."); }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir);
-  const bundle = path.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const bundle = await devActionBundlePath(options.projectDir, session);
   const result = spawnSync(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
     cwd: options.projectDir, encoding: "utf8",
     env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
@@ -2121,7 +2121,7 @@ async function inspectDevSchedules(options: LooseRecord) {
   try { process.kill(Number(session.pid), 0); }
   catch { throw commandError("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades schedules`."); }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "schedules");
-  const bundle = path.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const bundle = await devActionBundlePath(options.projectDir, session);
   const result = spawnSync(process.execPath, [bundle, "--sporades-action", "schedules.inspect"], {
     cwd: options.projectDir, encoding: "utf8",
     env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
@@ -2260,19 +2260,14 @@ function createDevRefreshController(timeoutMs = 1_000) {
   return { transport, broadcast };
 }
 
-async function assertContainerTelemetryDescriptorCompatibleWithBundlePublication(projectDir: string) {
+async function mustPreserveLegacyContainerBundle(projectDir: string) {
   const binding = await readContainerBinding(path.join(projectDir, CONTAINER_BINDING_FILE));
-  if (binding?.containerId && binding.telemetryDescriptorVersion !== 1) {
-    throw commandError(
-      "The bound Container predates session-owned telemetry descriptors.",
-      "Redeploy this Container once with the current CLI to install its telemetry descriptor before another command publishes the shared Bundle.",
-    );
-  }
+  return Boolean(binding?.containerId && binding.telemetryDescriptorVersion !== 1);
 }
 
 async function startDevSession(options: LooseRecord) {
   let config = await readProjectConfig(options.projectDir);
-  await assertContainerTelemetryDescriptorCompatibleWithBundlePublication(options.projectDir);
+  const preserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
   const session = options.publicDev ? "public-dev" : "dev";
   let security = resolveEffectiveSecurityPolicy(config, session);
   const restartPolicy = restartPolicyForMode("dev");
@@ -2283,7 +2278,7 @@ async function startDevSession(options: LooseRecord) {
     if (!clientDependencies.has(file)) initialDependencySignatures.set(file, readDevInputSignature([{ path: file, dependency: true }]));
     clientDependencies.add(file);
   };
-  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: recordClientDependency });
+  let bundle = await createBundle(options.projectDir, config, { preserveServerBundle, devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: recordClientDependency });
   let telemetryConfig = await resolveLocalTelemetryConfig(config, options.telemetryProfile);
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
   const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
@@ -2292,6 +2287,10 @@ async function startDevSession(options: LooseRecord) {
   });
   let runtimeServiceEnv = capsuleServiceEnv;
   const inspectionToken = createDevInspectionToken();
+  const actionBundleId = randomBytes(16).toString("hex");
+  const actionBundlePath = path.join(options.projectDir, ".sporades", "build", ".dev-actions", actionBundleId, "server.mjs");
+  await mkdir(path.dirname(actionBundlePath), { recursive: true, mode: 0o700 });
+  await writeFile(actionBundlePath, bundle.serverBundle, { flag: "wx", mode: 0o600 });
 
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
@@ -2521,6 +2520,7 @@ async function startDevSession(options: LooseRecord) {
         pid: process.pid,
         session,
         inspectionToken,
+        actionBundleId,
         publicDev: security.cors.publicDev,
         security,
       },
@@ -2649,6 +2649,7 @@ async function startDevSession(options: LooseRecord) {
   const watchers = watchDevInputs(options.projectDir, async (change: { affectsServerRuntime: boolean; configChanged: any; }) => {
     let rebuild: Awaited<ReturnType<typeof createBundle>> | null = null;
     let rollbackLegacy: (() => Promise<void>) | null = null;
+    let rollbackActionBundle: (() => Promise<void>) | null = null;
     let rollbackServiceEnv: (() => Promise<void>) | null = null;
     let refresh: Awaited<ReturnType<typeof devRefresh.broadcast>> | null = null;
     emitDevEvent(options, {
@@ -2660,7 +2661,7 @@ async function startDevSession(options: LooseRecord) {
     });
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
-      await assertContainerTelemetryDescriptorCompatibleWithBundlePublication(options.projectDir);
+      const nextPreserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
       const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
       const nextClientDependencies = new Set<string>();
@@ -2676,7 +2677,10 @@ async function startDevSession(options: LooseRecord) {
         rollbackServiceEnv = await writeActiveDevDatabaseServiceEnv(options.projectDir, nextCapsuleServiceEnv)
           .catch((error) => { throw tagDevRebuildError(error, "runtime", nextConfig); });
       }
-      rollbackLegacy = await rebuild.publishLegacy();
+      rollbackLegacy = await rebuild.publishLegacy({ preserveServerBundle: nextPreserveServerBundle });
+      const previousActionBundle = await readFile(actionBundlePath);
+      rollbackActionBundle = async () => replaceFileAtomically(actionBundlePath, previousActionBundle);
+      await replaceFileAtomically(actionBundlePath, rebuild.serverBundle);
       if (affectsServerRuntime) {
         const telemetryChanged = JSON.stringify(nextTelemetryConfig) !== JSON.stringify(telemetryConfig);
         const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig, emitTelemetryDiagnostic) : null;
@@ -2733,6 +2737,7 @@ async function startDevSession(options: LooseRecord) {
       }
       const previousBundle = bundle;
       bundle = rebuild;
+      rollbackActionBundle = null;
       clientDependencies = nextClientDependencies;
       for (const file of initialDependencySignatures.keys()) if (!clientDependencies.has(file)) initialDependencySignatures.delete(file);
       rebuild.releasePublicTreeLease().catch((error) => {
@@ -2766,6 +2771,10 @@ async function startDevSession(options: LooseRecord) {
         } catch (rollbackError) {
           rebuildError = tagDevRebuildError(rollbackError, "publish", config);
         }
+      }
+      if (rollbackActionBundle) {
+        try { await rollbackActionBundle(); }
+        catch (rollbackError) { rebuildError = tagDevRebuildError(rollbackError, "runtime", config); }
       }
       if (rollbackServiceEnv) {
         try {
@@ -2834,6 +2843,7 @@ async function startDevSession(options: LooseRecord) {
     try { await shutdownHttpServerAndRuntime(server, async () => { await runtime.shutdown(); await telemetry.shutdown(); }); }
     catch (error) { shutdownError = error; }
     await rm(sessionFilePath, { force: true });
+    await rm(path.dirname(actionBundlePath), { recursive: true, force: true });
     process.off("unhandledRejection", onUnhandledRejection);
     process.off("uncaughtException", onUncaughtException);
     if (shutdownError) process.stderr.write(`${errorDetails(shutdownError).message}\n`);
@@ -3887,7 +3897,7 @@ async function manageHost(options: LooseRecord) {
       const config = await readHostConfig();
       const target = await resolveHostPushTarget(config, options);
       const projectConfig = await readProjectConfig(options.projectDir);
-      await assertContainerTelemetryDescriptorCompatibleWithBundlePublication(options.projectDir);
+      const preserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
       const sshAccess = await resolveHostedCapsuleSshAccessForAudit(projectConfig, options.projectDir);
       const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
         projectDir: options.projectDir,
@@ -3895,7 +3905,7 @@ async function manageHost(options: LooseRecord) {
         profile: target.profile,
         subname: target.subname,
       });
-      const bundle = await createBundle(options.projectDir, projectConfig);
+      const bundle = await createBundle(options.projectDir, projectConfig, { preserveServerBundle });
       const release = await createHostReleaseArchive({
         projectDir: options.projectDir,
         alias: target.alias,
@@ -5163,6 +5173,28 @@ async function readDevSession(projectDir: string) {
   }
 }
 
+async function devActionBundlePath(projectDir: string, session: LooseRecord) {
+  if (session.actionBundleId === undefined) {
+    // Dev sessions started by an older CLI still use the canonical Bundle.
+    return path.join(projectDir, ".sporades", "build", "server.mjs");
+  }
+  if (typeof session.actionBundleId !== "string" || !/^[a-f0-9]{32}$/.test(session.actionBundleId)) {
+    throw commandError("Invalid Dev action Bundle metadata.", "Restart `sporades dev`, then retry the command.");
+  }
+  const bundlePath = path.join(projectDir, ".sporades", "build", ".dev-actions", session.actionBundleId, "server.mjs");
+  for (const directory of [path.dirname(bundlePath), path.dirname(path.dirname(bundlePath))]) {
+    const metadata = await lstat(directory).catch(() => null);
+    if (!metadata?.isDirectory() || metadata.isSymbolicLink()) {
+      throw commandError("Dev action Bundle is unavailable.", "Restart `sporades dev`, then retry the command.");
+    }
+  }
+  const metadata = await lstat(bundlePath).catch(() => null);
+  if (!metadata?.isFile() || metadata.isSymbolicLink()) {
+    throw commandError("Dev action Bundle is unavailable.", "Restart `sporades dev`, then retry the command.");
+  }
+  return bundlePath;
+}
+
 async function readOptionalDevSession(projectDir: any) {
   try {
     return await readDevSession(projectDir);
@@ -5879,7 +5911,7 @@ async function createHostReleaseArchive(options: LooseRecord) {
   }
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
-    writeFile(path.join(packageDir, "server.mjs"), await readFile(path.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile(path.join(packageDir, "server.mjs"), options.bundle.serverBundle),
     writeFile(path.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}\n`),
   ]);
   if (options.bundle.containerMounts.serverEnv) {

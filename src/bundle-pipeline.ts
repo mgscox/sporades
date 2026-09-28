@@ -61,6 +61,7 @@ export async function createBundle(
   config: ProjectConfig,
   options: {
     publishLegacy?: boolean;
+    preserveServerBundle?: boolean;
     devClientRefresh?: boolean;
     onClientDependency?: (file: string) => void;
     // Dev sessions use project files directly and never snapshot deploy.files.
@@ -163,16 +164,17 @@ export async function createBundle(
     { target: paths.clientBundle, contents: clientBundle },
   ];
   let legacyPublished = false;
-  const publishLegacy = async () => {
+  const publishLegacy = async (publication: { preserveServerBundle?: boolean } = {}) => {
     if (legacyPublished) {
       throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.framework, toolchain);
     }
+    const publishedFiles = publication.preserveServerBundle ? legacyFiles.slice(1) : legacyFiles;
     let previous: Array<{ target: string; contents: Buffer | null }>;
     const activeTreePath = path.join(buildDir, ".public-trees", "active.json");
     const candidateTreeName = path.basename(publicTree.root);
     let previousActiveTree: Buffer | null;
     try {
-      previous = await Promise.all(legacyFiles.map(async (file) => ({
+      previous = await Promise.all(publishedFiles.map(async (file) => ({
         target: file.target,
         contents: await readFile(file.target).catch((error) => {
           if (errorDetails(error).code === "ENOENT") return null;
@@ -183,8 +185,8 @@ export async function createBundle(
         if (errorDetails(error).code === "ENOENT") return null;
         throw error;
       });
-      await publishLegacyBundles(buildDir, legacyFiles.filter((file): file is { target: string; contents: string } => file.contents !== null));
-      await Promise.all(legacyFiles.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
+      await publishLegacyBundles(buildDir, publishedFiles.filter((file): file is { target: string; contents: string } => file.contents !== null));
+      await Promise.all(publishedFiles.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
       try {
         options.activeReferenceFault?.("before-active-write");
         await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: candidateTreeName })}\n`);
@@ -222,7 +224,7 @@ export async function createBundle(
 
   if (options.publishLegacy !== false) {
     try {
-      const rollback = await publishLegacy();
+      const rollback = await publishLegacy({ preserveServerBundle: options.preserveServerBundle });
       try {
         await releasePublicTreeLease(publicTree);
       } catch (error) {
@@ -241,6 +243,7 @@ export async function createBundle(
     clientDiagnostics: clientOutput.diagnostics,
     deployFiles,
     buildDir,
+    serverBundle,
     publishLegacy,
     releasePublicTreeLease: () => releasePublicTreeLease(publicTree),
     serverRuntime: {

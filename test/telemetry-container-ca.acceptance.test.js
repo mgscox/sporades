@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:https";
+import { createServer as createHttpServer } from "node:http";
 import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +13,69 @@ import { fileURLToPath } from "node:url";
 const run = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const enabled = process.env.SPORADES_REAL_TELEMETRY_CA_CONTAINER === "1";
+const legacyCli = process.env.SPORADES_LEGACY_CLI_PATH;
+
+test("a real pre-descriptor Container retains its implicit telemetry after a current Dev rebuild", {
+  skip: legacyCli ? false : "Set SPORADES_LEGACY_CLI_PATH to an installed pre-descriptor CLI for disposable Docker acceptance.",
+  timeout: 300_000,
+}, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-legacy-container-"));
+  const packageDir = path.join(root, "package");
+  const configDir = path.join(root, "config");
+  const projectDir = path.join(root, "legacy-acceptance");
+  let containerId;
+  let collector;
+  try {
+    await mkdir(packageDir);
+    await mkdir(configDir);
+    const packed = await run("npm", ["pack", "--pack-destination", root, "--silent"], { cwd: repoRoot, timeout: 120_000 });
+    await run("npm", ["install", "--prefix", packageDir, path.join(root, packed.stdout.trim()), "--ignore-scripts", "--omit=dev"], { timeout: 120_000 });
+    const currentCli = path.join(packageDir, "node_modules", "sporades", "bin", "sporades.js");
+    const received = [];
+    collector = createHttpServer(async (request, response) => {
+      for await (const _chunk of request) { /* Drain the OTLP request body. */ }
+      received.push({ path: request.url, authorization: request.headers.authorization });
+      response.writeHead(200).end();
+    }).listen(0, "0.0.0.0");
+    await once(collector, "listening");
+    const port = collector.address().port;
+    await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: {
+      old: { endpoint: `http://127.0.0.1:${port}`, tls: { mode: "loopback" }, credentialEnv: "LEGACY_TRACE_TOKEN", metricsIntervalMs: 5000 },
+      next: { endpoint: `http://127.0.0.1:${port}`, tls: { mode: "loopback" }, credentialEnv: "NEXT_TRACE_TOKEN", metricsIntervalMs: 5000 },
+    } }));
+    const env = { ...process.env, SPORADES_CONFIG_DIR: configDir, LEGACY_TRACE_TOKEN: "original-container-token", NEXT_TRACE_TOKEN: "new-dev-token" };
+    await run(process.execPath, [legacyCli, "create", "legacy-acceptance", "--template", "blank", "--no-install", "--no-git", "--json"], { cwd: root, env, timeout: 120_000 });
+    await run("npm", ["install", "--ignore-scripts", "--package-lock=false"], { cwd: projectDir, timeout: 120_000 });
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.telemetry = { profile: "old" };
+    await writeFile(configPath, `${JSON.stringify(config)}\n`);
+    const deployed = await run(process.execPath, [legacyCli, "deploy", "--json"], { cwd: projectDir, env, timeout: 120_000 });
+    containerId = JSON.parse(deployed.stdout.trim().split("\n").at(-1)).data.containerId;
+    const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    assert.equal(binding.telemetryDescriptorVersion, undefined);
+    const dockerEnv = JSON.parse((await run("docker", ["inspect", "--format", "{{json .Config.Env}}", containerId])).stdout);
+    assert(!dockerEnv.some(value => value.startsWith("SPORADES_CONTAINER_TELEMETRY_CONFIG=")));
+    await waitUntil(() => received.some(event => event.path === "/v1/metrics" && event.authorization === "Bearer original-container-token"), 20_000);
+    await run(process.execPath, [legacyCli, "deploy", "stop", "--json"], { cwd: projectDir, env, timeout: 30_000 });
+    const serverPath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const originalBundle = await readFile(serverPath);
+    config.telemetry = { profile: "next" };
+    await writeFile(configPath, `${JSON.stringify(config)}\n`);
+    await devBuild(currentCli, projectDir, env, []);
+    assert.deepEqual(await readFile(serverPath), originalBundle);
+    assert.equal((await run("docker", ["inspect", "--format", "{{.State.Running}}", containerId])).stdout.trim(), "false");
+    const beforeRestart = received.length;
+    await run(process.execPath, [currentCli, "deploy", "restart", "--json"], { cwd: projectDir, env, timeout: 30_000 });
+    assert.equal((await run("docker", ["inspect", "--format", "{{.State.Running}}", containerId])).stdout.trim(), "true");
+    await waitUntil(() => received.slice(beforeRestart).some(event => event.path === "/v1/metrics" && event.authorization === "Bearer original-container-token"), 20_000);
+    assert.equal(received.slice(beforeRestart).filter(event => event.path === "/v1/metrics" && event.authorization === "Bearer new-dev-token").length, 0);
+  } finally {
+    if (containerId) await run("docker", ["rm", "-f", containerId]).catch(() => {});
+    collector?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("packed CLI exports through a private CA from a disposable Container", {
   skip: enabled ? false : "Set SPORADES_REAL_TELEMETRY_CA_CONTAINER=1 for disposable Docker acceptance.",
@@ -63,12 +127,22 @@ test("packed CLI exports through a private CA from a disposable Container", {
     while (!received.some(isContainerMetric) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 250));
     assert(received.some(event => isContainerMetric(event) && event.authorization === "Bearer session-owned-credential"), "Container did not export through its original CA, credential and resource identity");
     await run(process.execPath, [cli, "deploy", "stop", "--json"], { cwd: projectDir, env, timeout: 30_000 });
+    const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+    const legacyBinding = { ...binding };
+    delete legacyBinding.telemetryDescriptorVersion;
+    delete legacyBinding.telemetryProfile;
+    delete legacyBinding.telemetryCaStagePath;
+    await writeFile(bindingPath, `${JSON.stringify(legacyBinding)}\n`);
+    const mountedServerBeforeDev = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"));
     await devBuild(cli, projectDir, env, []);
+    assert.deepEqual(await readFile(path.join(projectDir, ".sporades", "build", "server.mjs")), mountedServerBeforeDev,
+      "Dev replaced a Bundle mounted by a Container with pre-telemetry binding metadata");
     assert.doesNotMatch(await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8"), /host\.docker\.internal/);
     const afterDevExit = received.length;
     await run(process.execPath, [cli, "deploy", "restart", "--json"], { cwd: projectDir, env, timeout: 30_000 });
     assert.equal((await run("docker", ["inspect", "--format", "{{.State.Running}}", containerId])).stdout.trim(), "true");
     await waitUntil(() => received.slice(afterDevExit).some(event => isContainerMetric(event) && event.authorization === "Bearer session-owned-credential"), 20_000);
+    await writeFile(bindingPath, `${JSON.stringify(binding)}\n`);
     const disabled = await run(process.execPath, [cli, "deploy", "--no-telemetry", "--json"], { cwd: projectDir, env, timeout: 120_000 });
     containerId = JSON.parse(disabled.stdout.trim().split("\n").at(-1)).data.containerId;
     await run(process.execPath, [cli, "deploy", "stop", "--json"], { cwd: projectDir, env, timeout: 30_000 });
