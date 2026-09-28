@@ -128213,7 +128213,8 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const delayMean = processMeter.createObservableGauge("process.event_loop.delay.mean", { unit: "ms" });
   const delayP99 = processMeter.createObservableGauge("process.event_loop.delay.p99", { unit: "ms" });
   const loopUtilization = processMeter.createObservableGauge("process.event_loop.utilization", { unit: "1" });
-  processMeter.addBatchObservableCallback((result) => {
+  processMeter.addBatchObservableCallback(async (result) => {
+    await new Promise((resolve2) => setImmediate(resolve2));
     const cpu = process.cpuUsage();
     const memory = process.memoryUsage();
     result.observe(cpuTime, cpu.user / 1e6, { state: "user" });
