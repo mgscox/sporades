@@ -77,6 +77,9 @@ SERVER span and one metric completion cover each request, including streams and
 premature closes. Counters, duration histograms, and in-flight counts ignore
 trace sampling. Metric dimensions are bounded method, declared route (at most
 128 distinct routes per runtime), status class, outcome, service, and environment.
+An abort before response headers has status class `none` in request metrics and
+no response status attribute on its trace; an abort after headers keeps the
+status that was sent. Both retain the `abort` outcome and count once.
 Unknown targets collapse to `/__unknown`; surplus routes collapse to `/__other`.
 Trace IDs and release IDs are not metric labels. Request bodies, queries,
 credentials, private identifiers, exception text, baggage, and trace state are

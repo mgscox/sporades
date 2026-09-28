@@ -304,13 +304,15 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
                 if (ended)
                     return;
                 ended = true;
-                const status = outcome === "error" && !response.headersSent ? 500
-                    : Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
-                const labels = { ...activeLabels, "http.response.status_code": `${Math.floor(status / 100)}xx`, "sporades.http.outcome": outcome };
+                const status = outcome === "abort" && !response.headersSent ? null
+                    : outcome === "error" && !response.headersSent ? 500
+                        : Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
+                const labels = { ...activeLabels, "http.response.status_code": status === null ? "none" : `${Math.floor(status / 100)}xx`, "sporades.http.outcome": outcome };
                 requestCount.add(1, labels);
                 requestDuration.record(Number(process.hrtime.bigint() - started) / 1e9, labels);
                 activeRequests.add(-1, activeLabels);
-                span.setAttribute("http.response.status_code", status);
+                if (status !== null)
+                    span.setAttribute("http.response.status_code", status);
                 span.setAttribute("sporades.http.outcome", outcome);
                 if (outcome !== "success")
                     span.setStatus({ code: SpanStatusCode.ERROR });
