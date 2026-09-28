@@ -88,23 +88,30 @@ test('HTTP telemetry exports bounded route labels, terminal outcomes and isolate
       await new Promise((resolve) => setTimeout(resolve, request.url.includes('slow') ? 70 : 10));
       seenContexts.set(request.url.includes('slow') ? 'slow' : 'fast', activeRuntimeRequestSpan()?.spanContext().traceId);
       response.writeHead(200).end('ok');
-    } else response.writeHead(404).end();
+    } else response.writeHead(request.url === '/broken' ? 503 : 404).end();
   })).listen(0, '127.0.0.1');
   await once(app, 'listening');
   try {
     const origin = `http://127.0.0.1:${app.address().port}`;
-    const [slow, fast, missing] = await Promise.all([
+    const [slow, fast, missing, broken] = await Promise.all([
       fetch(`${origin}/items?slow=secret-one`, { headers: { traceparent: '00-11111111111111111111111111111111-aaaaaaaaaaaaaaaa-01', baggage: 'secret-baggage=secret-four' } }),
       fetch(`${origin}/items?fast=secret-two`, { headers: { traceparent: '00-22222222222222222222222222222222-bbbbbbbbbbbbbbbb-01' } }),
       fetch(`${origin}/private/alice?token=secret-three`),
+      fetch(`${origin}/broken`),
     ]);
-    assert.deepEqual([slow.status, fast.status, missing.status], [200, 200, 404]);
+    assert.deepEqual([slow.status, fast.status, missing.status, broken.status], [200, 200, 404, 503]);
     await telemetry.shutdown();
     const spans = received.flatMap((batch) => batch.resourceSpans ?? []).flatMap((resource) => resource.scopeSpans ?? []).flatMap((scope) => scope.spans ?? []);
-    assert.equal(spans.length, 3);
+    assert.equal(spans.length, 4);
     assert.equal(spans.filter((span) => span.name === 'GET /items').length, 2);
-    assert.equal(spans.filter((span) => span.name === 'GET /__unknown').length, 1);
-    assert.equal(new Set(spans.map((span) => span.traceId)).size, 3);
+    assert.equal(spans.filter((span) => span.name === 'GET /__unknown').length, 2);
+    const missingSpan = spans.find((span) => span.attributes.find((attribute) => attribute.key === 'http.response.status_code')?.value.intValue === 404);
+    assert.equal(missingSpan.attributes.find((attribute) => attribute.key === 'http.response.status_code')?.value.intValue, 404);
+    assert.equal(missingSpan.attributes.find((attribute) => attribute.key === 'sporades.http.outcome')?.value.stringValue, 'failure');
+    assert.equal(missingSpan.status?.code ?? 0, 0, 'ordinary completed 4xx SERVER spans have unset status');
+    const brokenSpan = spans.find((span) => span.attributes.find((attribute) => attribute.key === 'http.response.status_code')?.value.intValue === 503);
+    assert.equal(brokenSpan.status?.code, 2, 'completed 5xx SERVER spans retain error status');
+    assert.equal(new Set(spans.map((span) => span.traceId)).size, 4);
     assert.equal(seenContexts.get('slow'), '11111111111111111111111111111111');
     assert.equal(seenContexts.get('fast'), '22222222222222222222222222222222');
     assert.deepEqual(new Set(spans.filter((span) => span.name === 'GET /items').map((span) => span.parentSpanId)), new Set(['aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb']));
