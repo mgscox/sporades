@@ -7,6 +7,7 @@ import { createHttpRequestTelemetry } from '../dist/runtime-telemetry.js';
 function metrics(batches) { return batches.flatMap(batch => batch.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []); }
 function metricPoints(batches, name) { return metrics(batches).filter(metric => metric.name === name).flatMap(metric => metric.gauge?.dataPoints ?? metric.sum?.dataPoints ?? []); }
 function value(point) { return Number(point?.asDouble ?? point?.asInt); }
+function median(values) { return [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]; }
 
 async function collector() {
   const batches = [];
@@ -19,6 +20,22 @@ async function collector() {
   await once(server, 'listening');
   return { batches, server, endpoint: `http://127.0.0.1:${server.address().port}` };
 }
+
+test('idle event-loop lag does not include the configured sampling interval', async () => {
+  const sink = await collector();
+  const resolutionMs = 200;
+  const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'idle-pressure-test', metricsIntervalMs: 1000, eventLoopDelayResolutionMs: resolutionMs });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 3400));
+    for (const name of ['process.event_loop.delay.max', 'process.event_loop.delay.mean', 'process.event_loop.delay.p99']) {
+      const samples = metricPoints(sink.batches, name).map(value);
+      assert(samples.length >= 2, `expected repeated ${name} samples, got ${samples.length}`);
+      assert(samples.every(sample => Number.isFinite(sample) && sample >= 0), `${name} must be finite nonnegative milliseconds: ${samples}`);
+      assert(median(samples) < 150, `${name} must measure idle lag, not the ${resolutionMs} ms sampling interval: ${samples}`);
+      assert.equal(metrics(sink.batches).find(metric => metric.name === name)?.unit, 'ms');
+    }
+  } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
+});
 
 test('finite synchronous blocking is exported as event-loop delay after recovery', async () => {
   const sink = await collector();

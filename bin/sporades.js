@@ -128195,7 +128195,8 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   };
   const gcObserver = new PerformanceObserver((list) => recordGc(list.getEntries()));
   gcObserver.observe({ entryTypes: ["gc"] });
-  const loopDelay = monitorEventLoopDelay({ resolution: config.eventLoopDelayResolutionMs ?? 20 });
+  const delayResolutionMs = config.eventLoopDelayResolutionMs ?? 20;
+  const loopDelay = monitorEventLoopDelay({ resolution: delayResolutionMs });
   loopDelay.enable();
   let previousElu = performance2.eventLoopUtilization();
   const cpuTime = processMeter.createObservableCounter("process.cpu.time", { unit: "s" });
@@ -128230,9 +128231,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       result.observe(gcDuration, total.durationSeconds, { kind });
     }
     if (loopDelay.count > 0) {
-      result.observe(delayMax, loopDelay.max / 1e6);
-      result.observe(delayMean, loopDelay.mean / 1e6);
-      result.observe(delayP99, loopDelay.percentile(99) / 1e6);
+      result.observe(delayMax, Math.max(0, loopDelay.max / 1e6 - delayResolutionMs));
+      result.observe(delayMean, Math.max(0, loopDelay.mean / 1e6 - delayResolutionMs));
+      result.observe(delayP99, Math.max(0, loopDelay.percentile(99) / 1e6 - delayResolutionMs));
     }
     loopDelay.reset();
     const currentElu = performance2.eventLoopUtilization();
