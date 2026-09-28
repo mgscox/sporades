@@ -128198,6 +128198,8 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const delayResolutionMs = config.eventLoopDelayResolutionMs ?? 20;
   const loopDelay = monitorEventLoopDelay({ resolution: delayResolutionMs });
   loopDelay.enable();
+  let lastDelayResetAt = performance2.now();
+  let delayMonitorStoppedAt;
   let previousElu = performance2.eventLoopUtilization();
   const cpuTime = processMeter.createObservableCounter("process.cpu.time", { unit: "s" });
   const rss = processMeter.createObservableGauge("process.memory.rss", { unit: "By" });
@@ -128231,12 +128233,18 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       result.observe(gcCount, total.count, { kind });
       result.observe(gcDuration, total.durationSeconds, { kind });
     }
+    const rawMaxMs = loopDelay.count > 0 ? loopDelay.max / 1e6 : 0;
+    const elapsedMs = Math.max(0, (delayMonitorStoppedAt ?? performance2.now()) - lastDelayResetAt);
+    const unrecordedMaxLowerBoundMs = Math.max(0, (elapsedMs - loopDelay.count * rawMaxMs) / 2 - delayResolutionMs);
+    if (loopDelay.count > 0 || unrecordedMaxLowerBoundMs > 0) {
+      result.observe(delayMax, Math.max(0, rawMaxMs - delayResolutionMs, unrecordedMaxLowerBoundMs));
+    }
     if (loopDelay.count > 0) {
-      result.observe(delayMax, Math.max(0, loopDelay.max / 1e6 - delayResolutionMs));
       result.observe(delayMean, Math.max(0, loopDelay.mean / 1e6 - delayResolutionMs));
       result.observe(delayP99, Math.max(0, loopDelay.percentile(99) / 1e6 - delayResolutionMs));
     }
     loopDelay.reset();
+    lastDelayResetAt = delayMonitorStoppedAt ?? performance2.now();
     const currentElu = performance2.eventLoopUtilization();
     const intervalElu = performance2.eventLoopUtilization(previousElu);
     previousElu = currentElu;
@@ -128317,6 +128325,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       if (closing) return;
       closing = true;
       gcObserver.disconnect();
+      delayMonitorStoppedAt = performance2.now();
       loopDelay.disable();
       await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise((resolve2) => {
         const timer = setTimeout(resolve2, 1500);

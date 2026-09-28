@@ -318,7 +318,7 @@
           "min": 0
         }
       },
-      "description": "Timer delay in milliseconds. Max retains the largest export-window peak within the selected Metric window; p99 is the latest export sample. A permanently blocked loop cannot export."
+      "description": "Timer delay in milliseconds. Max retains the largest export-window peak within the selected Metric window and includes a conservative lower bound for reset gaps, even with no native sample; it can understate a missed stall. P99 uses only native samples and may repeat its prior value when none are recorded. A permanently blocked loop cannot export."
     },
     {
       "id": 10,

@@ -220,6 +220,8 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
     const delayResolutionMs = config.eventLoopDelayResolutionMs ?? 20;
     const loopDelay = monitorEventLoopDelay({ resolution: delayResolutionMs });
     loopDelay.enable();
+    let lastDelayResetAt = performance.now();
+    let delayMonitorStoppedAt;
     let previousElu = performance.eventLoopUtilization();
     const cpuTime = processMeter.createObservableCounter("process.cpu.time", { unit: "s" });
     const rss = processMeter.createObservableGauge("process.memory.rss", { unit: "By" });
@@ -256,12 +258,21 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             result.observe(gcCount, total.count, { kind });
             result.observe(gcDuration, total.durationSeconds, { kind });
         }
+        const rawMaxMs = loopDelay.count > 0 ? loopDelay.max / 1e6 : 0;
+        const elapsedMs = Math.max(0, (delayMonitorStoppedAt ?? performance.now()) - lastDelayResetAt);
+        // Reset drops the first monitor interval. The unrecorded time can lie at
+        // either edge of this window, so half its lower bound belongs to at least
+        // one edge. Histogram max bounds each recorded interval from above.
+        const unrecordedMaxLowerBoundMs = Math.max(0, (elapsedMs - loopDelay.count * rawMaxMs) / 2 - delayResolutionMs);
+        if (loopDelay.count > 0 || unrecordedMaxLowerBoundMs > 0) {
+            result.observe(delayMax, Math.max(0, rawMaxMs - delayResolutionMs, unrecordedMaxLowerBoundMs));
+        }
         if (loopDelay.count > 0) {
-            result.observe(delayMax, Math.max(0, loopDelay.max / 1e6 - delayResolutionMs));
             result.observe(delayMean, Math.max(0, loopDelay.mean / 1e6 - delayResolutionMs));
             result.observe(delayP99, Math.max(0, loopDelay.percentile(99) / 1e6 - delayResolutionMs));
         }
         loopDelay.reset();
+        lastDelayResetAt = delayMonitorStoppedAt ?? performance.now();
         const currentElu = performance.eventLoopUtilization();
         const intervalElu = performance.eventLoopUtilization(previousElu);
         previousElu = currentElu;
@@ -349,6 +360,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
                 return;
             closing = true;
             gcObserver.disconnect();
+            delayMonitorStoppedAt = performance.now();
             loopDelay.disable();
             await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise((resolve) => { const timer = setTimeout(resolve, 1_500); timer.unref(); })]);
         },
