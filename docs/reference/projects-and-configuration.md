@@ -77,6 +77,13 @@ SERVER span and one metric completion cover each request, including streams and
 premature closes. Counters, duration histograms, and in-flight counts ignore
 trace sampling. Metric dimensions are bounded method, declared route (at most
 128 distinct routes per runtime), status class, outcome, service, and environment.
+The trace queue holds at most 128 completed spans and exports in batches of 32;
+up to five trace requests may be in flight during shutdown so a scheduled batch
+and four queued batches can drain within the deadline. The independent metric
+exporter permits one request at a time, and its final collection waits for an
+in-progress periodic export. A completed ordinary 4xx SERVER span keeps its
+response status and `failure` outcome with unset span status. Completed 5xx,
+handler errors, and aborts mark the span as an error.
 An abort before response headers has status class `none` in request metrics and
 no response status attribute on its trace; an abort after headers keeps the
 status that was sent. Both retain the `abort` outcome and count once.

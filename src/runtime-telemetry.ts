@@ -128,13 +128,14 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   if (config.credentialEnv && !token) throw new Error("Telemetry ingestion credential is unavailable.");
   if (config.tls.caFile && statSync(config.tls.caFile).size > 1024 * 1024) throw new Error("Telemetry CA file is too large.");
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
-  const httpAgentOptions = { ...(config.tls.caFile ? { ca: readFileSync(config.tls.caFile) } : {}), rejectUnauthorized: true, keepAlive: false, maxSockets: 1 };
+  const httpAgentOptions = { ...(config.tls.caFile ? { ca: readFileSync(config.tls.caFile) } : {}), rejectUnauthorized: true, keepAlive: false };
   const compression = "none" as NonNullable<ConstructorParameters<typeof OTLPTraceExporter>[0]>["compression"];
   const { trace: exporter, metrics: metricExporter } = createProfileExporters({
-    url: endpoint, headers, compression, timeoutMillis: 600, concurrencyLimit: 1, httpAgentOptions,
+    // Shutdown may flush four queued 32-span batches beside one scheduled batch.
+    url: endpoint, headers, compression, timeoutMillis: 600, concurrencyLimit: 5, httpAgentOptions: { ...httpAgentOptions, maxSockets: 5 },
   }, {
     url: new URL("/v1/metrics", url).toString(), headers, compression, temporalityPreference: AggregationTemporalityPreference.CUMULATIVE,
-    timeoutMillis: 600, concurrencyLimit: 1, httpAgentOptions,
+    timeoutMillis: 600, concurrencyLimit: 1, httpAgentOptions: { ...httpAgentOptions, maxSockets: 1 },
   });
   const failedExports: Record<"traces" | "metrics", boolean> = { traces: false, metrics: false };
   const lastFailureLoggedAt = new Map<Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"], number>();
@@ -317,7 +318,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
         activeRequests.add(-1, activeLabels);
         if (status !== null) span.setAttribute("http.response.status_code", status);
         span.setAttribute("sporades.http.outcome", outcome);
-        if (outcome !== "success") span.setStatus({ code: SpanStatusCode.ERROR });
+        if (outcome === "error" || outcome === "abort") span.setStatus({ code: SpanStatusCode.ERROR });
         span.end();
       };
       response.once("finish", () => end(response.statusCode >= 500 ? "error" : response.statusCode >= 400 ? "failure" : "success"));
