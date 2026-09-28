@@ -314,6 +314,10 @@ Omit `--ca-file` when VM B uses a public trusted CA. The CLI transfers the
 resolved destination, optional CA, and credential over SSH. The Host stores
 connection metadata and a protected credential file under
 `<remote-root>/telemetry/`; the public status omits the credential. The relay
+also preserves the selected profile's metric interval and event-loop sampling
+settings in the nonsecret Host descriptor for later Capsule activation; when
+omitted, the runtime's normal defaults apply.
+The relay
 uses the existing private Hosted Docker network and internal address
 `http://sporades-telemetry:4318/`. It publishes no Host port, needs no Docker
 TCP endpoint, and mounts no Docker socket into a Capsule. Its container uses

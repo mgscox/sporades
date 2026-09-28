@@ -2,6 +2,8 @@ export type HostRelayConnection = {
     endpoint: string;
     credential: string;
     caPem?: string;
+    metricsIntervalMs?: number;
+    eventLoopDelayResolutionMs?: number;
 };
 export declare function validateHostRelayConnection(value: unknown): HostRelayConnection;
 export declare function renderHostRelayCollectorConfig(options: {
@@ -15,8 +17,12 @@ export declare function readHostTelemetryConnection(remoteRoot: string): Promise
     internalEndpoint: string;
     caConfigured: boolean;
     connectedAt: string;
+    metricsIntervalMs?: number;
+    eventLoopDelayResolutionMs?: number;
 } | null>;
 export declare function statusHostTelemetryRelay(remoteRoot: string): Promise<{
+    eventLoopDelayResolutionMs?: number | undefined;
+    metricsIntervalMs?: number | undefined;
     endpoint?: string | undefined;
     internalEndpoint?: string | undefined;
     network?: string | undefined;
@@ -28,6 +34,8 @@ export declare function statusHostTelemetryRelay(remoteRoot: string): Promise<{
     backendVerification: string;
 }>;
 export declare function connectHostTelemetryRelay(remoteRoot: string, network: string, input: unknown): Promise<{
+    eventLoopDelayResolutionMs?: number | undefined;
+    metricsIntervalMs?: number | undefined;
     endpoint?: string | undefined;
     internalEndpoint?: string | undefined;
     network?: string | undefined;
@@ -39,6 +47,8 @@ export declare function connectHostTelemetryRelay(remoteRoot: string, network: s
     backendVerification: string;
 }>;
 export declare function reconcileHostTelemetryRelay(remoteRoot: string): Promise<{
+    eventLoopDelayResolutionMs?: number | undefined;
+    metricsIntervalMs?: number | undefined;
     endpoint?: string | undefined;
     internalEndpoint?: string | undefined;
     network?: string | undefined;

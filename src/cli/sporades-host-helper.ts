@@ -558,6 +558,15 @@ function managedRouteMutationLockIdentity(request: HostHelperRequest) {
         bootstrapTrust,
       };
       }
+    case "host.telemetry.connect":
+    case "host.telemetry.reconcile": {
+      const remoteRoot = validateCanonicalHostRouteRoot(request);
+      return {
+        globalLockFile: path.join(remoteRoot, "bin", ".sporades-host-helper.host-route.lock"),
+        routeLockFile: null,
+        domainDirectory: canonicalManagedRouteDomainDirectory(request, remoteRoot),
+      };
+    }
     default: return null;
   }
   const remoteRoot = validateCanonicalHostRouteRoot(request);

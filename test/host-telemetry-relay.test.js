@@ -13,6 +13,8 @@ test('Host relay accepts only a scoped verified HTTPS destination', () => {
     assert.throws(() => validateHostRelayConnection({ endpoint, credential: 'scope-test-token' }));
   }
   assert.throws(() => validateHostRelayConnection({ endpoint: connection.endpoint, credential: 'bad\nTOKEN=leak' }));
+  assert.equal(validateHostRelayConnection({ endpoint: connection.endpoint, credential: 'scope-test-token', metricsIntervalMs: 5000, eventLoopDelayResolutionMs: 20 }).metricsIntervalMs, 5000);
+  assert.throws(() => validateHostRelayConnection({ endpoint: connection.endpoint, credential: 'scope-test-token', metricsIntervalMs: 100 }));
 });
 
 test('collector config has private receiver and bounded delivery without embedding credentials', () => {

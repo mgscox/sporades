@@ -26672,7 +26672,7 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
 // src/cli/sporades-host-helper.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
-import { access, chmod as chmod2, lstat as lstat3, mkdir as mkdir3, open as open2, opendir, readdir as readdir3, readFile as readFile5, readlink, rename as rename3, rm as rm2, stat, statfs, symlink, writeFile as writeFile2 } from "node:fs/promises";
+import { access, chmod as chmod2, lstat as lstat3, mkdir as mkdir3, open as open2, opendir, readdir as readdir3, readFile as readFile5, readlink, rename as rename3, rm as rm3, stat, statfs, symlink, writeFile as writeFile2 } from "node:fs/promises";
 import { createHash as createHash2, generateKeyPairSync, randomBytes as randomBytes2 } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path6 from "node:path";
@@ -43450,7 +43450,7 @@ function readConfigPositiveInteger(value, key, configPath) {
 // src/cli/host-telemetry-relay.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { lstat as lstat2, mkdir as mkdir2, readFile as readFile4, rename as rename2, writeFile, chmod } from "node:fs/promises";
+import { lstat as lstat2, mkdir as mkdir2, readFile as readFile4, rename as rename2, writeFile, chmod, rm as rm2 } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import path4 from "node:path";
 var RELAY_IMAGE = "otel/opentelemetry-collector-contrib:0.138.0";
@@ -43464,7 +43464,7 @@ function invalid() {
 function validateHostRelayConnection(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const input = value;
-  if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem"].includes(key))) invalid();
+  if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid();
   if (typeof input.endpoint !== "string" || input.endpoint.length > 2048) invalid();
   let url;
   try {
@@ -43475,6 +43475,8 @@ function validateHostRelayConnection(value) {
   if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash || url.pathname !== "/") invalid();
   if (typeof input.credential !== "string" || !input.credential || input.credential.length > 4096 || /[\x00-\x1f\x7f]/.test(input.credential)) invalid();
   if (input.caPem !== void 0 && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----"))) invalid();
+  if (input.metricsIntervalMs !== void 0 && (!Number.isSafeInteger(input.metricsIntervalMs) || input.metricsIntervalMs < 5e3 || input.metricsIntervalMs > 3e5)) invalid();
+  if (input.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || input.eventLoopDelayResolutionMs < 10 || input.eventLoopDelayResolutionMs > 1e3)) invalid();
   return input;
 }
 function renderHostRelayCollectorConfig(options) {
@@ -43593,7 +43595,7 @@ async function statusHostTelemetryRelay(remoteRoot) {
     relayReady: Boolean(connection && relay?.State?.Running === true),
     capsuleCoverage: "not-configured",
     backendVerification: "unavailable",
-    ...connection ? { endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt } : {}
+    ...connection ? { endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} } : {}
   };
 }
 async function connectHostTelemetryRelay(remoteRoot, network, input) {
@@ -43603,23 +43605,46 @@ async function connectHostTelemetryRelay(remoteRoot, network, input) {
   const files = paths(remoteRoot);
   await mkdir2(files.directory, { recursive: true, mode: 448 });
   await assertOwnedDirectory(files.directory);
-  const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  const previous = await readHostTelemetryConnection(remoteRoot);
+  const previousConfig = previous ? await readProtected(files.config) : null;
+  const previousCredential = previous ? await readProtected(files.credential) : null;
+  const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
+  const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: (/* @__PURE__ */ new Date()).toISOString(), ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} };
   await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem) }), 420);
   await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}
 `, 384);
   if (connection.caPem) await atomicWrite(files.ca, connection.caPem, 420);
-  await startRelay(files, network, Boolean(connection.caPem));
+  try {
+    await startRelay(files, network, Boolean(connection.caPem));
+  } catch (error) {
+    if (previous && previousConfig && previousCredential && (!previous.caConfigured || previousCa)) {
+      await atomicWrite(files.config, previousConfig, 420);
+      await atomicWrite(files.credential, previousCredential, 384);
+      if (previousCa) await atomicWrite(files.ca, previousCa, 420);
+      try {
+        await startRelay(files, previous.network, previous.caConfigured);
+      } catch {
+        throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile.");
+      }
+    } else {
+      await rm2(files.config, { force: true });
+      await rm2(files.credential, { force: true });
+    }
+    throw error;
+  }
   await atomicWrite(files.descriptor, `${JSON.stringify(descriptor, null, 2)}
 `, 384);
   return await statusHostTelemetryRelay(remoteRoot);
 }
-function startRelay(files, network, caConfigured) {
+async function startRelay(files, network, caConfigured) {
   const existing = inspectRelay();
   if (existing) {
     if (!docker(["rm", "-f", RELAY_NAME]).ok) throw helperError("Host Telemetry relay could not be reconciled.", "Inspect Docker relay state and retry.");
   }
   const args = ["run", "--detach", "--name", RELAY_NAME, "--label", RELAY_LABEL, "--network", network, "--network-alias", RELAY_ALIAS, "--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--memory", "192m", "--cpus", "0.5", "--pids-limit", "128", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", files.credential, "--mount", `type=bind,source=${files.config},target=/etc/otelcol/config.yaml,readonly`, ...caConfigured ? ["--mount", `type=bind,source=${files.ca},target=/etc/otelcol/ca.pem,readonly`] : [], RELAY_IMAGE, "--config=/etc/otelcol/config.yaml"];
   if (!docker(args).ok) throw helperError("Host Telemetry relay failed to start.", "Inspect protected relay configuration and Docker logs, then retry `sporades host telemetry connect`.");
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  if (inspectRelay()?.State?.Running !== true) throw helperError("Host Telemetry relay exited during startup.", "Inspect Docker relay logs for collector configuration errors, then retry.");
 }
 async function reconcileHostTelemetryRelay(remoteRoot) {
   const connection = await readHostTelemetryConnection(remoteRoot);
@@ -43630,7 +43655,7 @@ async function reconcileHostTelemetryRelay(remoteRoot) {
   }
   if (!docker(["network", "inspect", connection.network]).ok) throw helperError("Hosted Docker network is unavailable.", "Bootstrap the Host before reconciling Telemetry.");
   const existing = inspectRelay();
-  if (!existing?.State?.Running || !existing?.NetworkSettings?.Networks?.[connection.network]) startRelay(files, connection.network, connection.caConfigured);
+  if (!existing?.State?.Running || !existing?.NetworkSettings?.Networks?.[connection.network]) await startRelay(files, connection.network, connection.caConfigured);
   return statusHostTelemetryRelay(remoteRoot);
 }
 var syntheticTrace = (id2) => JSON.stringify({ resourceSpans: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: "sporades-host-relay-check" } }] }, scopeSpans: [{ spans: [{ traceId: id2, spanId: id2.slice(0, 16), name: "sporades.host.relay.check", kind: 1, startTimeUnixNano: String(Date.now() * 1e6), endTimeUnixNano: String((Date.now() + 1) * 1e6) }] }] }] });
@@ -44160,9 +44185,9 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
   try {
     if (firstCooperativeUpgrade || await pathExists(needsDrain)) await drainUncooperativeHostHelpers(target);
     await writeHostHelperPointer(pointer, newPayloadName);
-    await rm2(needsDrain, { force: true });
-    await rm2(blocked, { force: true });
-    await rm2(stage, { force: true });
+    await rm3(needsDrain, { force: true });
+    await rm3(blocked, { force: true });
+    await rm3(stage, { force: true });
   } catch (error) {
     await writeFile2(blocked, "upgrade-recovery-required\n", { mode: 384 });
     throw error;
@@ -44179,7 +44204,7 @@ async function publishHostHelperBytes(contents, target, mode) {
     await chmod2(temporary, mode);
     await rename3(temporary, target);
   } finally {
-    await rm2(temporary, { force: true });
+    await rm3(temporary, { force: true });
   }
 }
 async function writeHostHelperPointer(pointer, payloadName) {
@@ -44404,6 +44429,15 @@ function managedRouteMutationLockIdentity(request) {
           bootstrapTrust
         };
       }
+    case "host.telemetry.connect":
+    case "host.telemetry.reconcile": {
+      const remoteRoot2 = validateCanonicalHostRouteRoot(request);
+      return {
+        globalLockFile: path6.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"),
+        routeLockFile: null,
+        domainDirectory: canonicalManagedRouteDomainDirectory(request, remoteRoot2)
+      };
+    }
     default:
       return null;
   }
@@ -44892,7 +44926,7 @@ async function registerCapsule(request) {
   }
   if (claimWritten && recoveryErrors.length === 0 && (!admissionError || !pendingClaim)) {
     try {
-      await rm2(claimPath);
+      await rm3(claimPath);
     } catch (error) {
       recoveryErrors.push(`Reservation cleanup: ${errorDetails(error).message}`);
     }
@@ -45087,8 +45121,8 @@ async function installRelease(request) {
     await installClaimedRelease(request, previousRecord, { ...paths2, release: paths2.release }, claimedArchive);
   } finally {
     activePreservedAttempts.delete(attemptJournalPath(hostedPreservedFilesRoot(paths2)));
-    await rm2(claimedArchive.path, { force: true });
-    await rm2(request.release.remoteArchive, { force: true });
+    await rm3(claimedArchive.path, { force: true });
+    await rm3(request.release.remoteArchive, { force: true });
   }
 }
 async function installClaimedRelease(request, previousRecord, paths2, claimedArchive) {
@@ -45112,14 +45146,14 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
   await mkdir3(paths2.logs, { recursive: true });
   const tempReleaseDirectory = `${paths2.release}.tmp-${process.pid}`;
   const tempCurrentLink = `${paths2.currentLink}.tmp-${process.pid}`;
-  await rm2(tempReleaseDirectory, { recursive: true, force: true });
-  await rm2(tempCurrentLink, { force: true });
+  await rm3(tempReleaseDirectory, { recursive: true, force: true });
+  await rm3(tempCurrentLink, { force: true });
   await mkdir3(tempReleaseDirectory, { recursive: true });
   const extract = spawnSync3("tar", ["-xzf", claimedArchive.path, "-C", tempReleaseDirectory], {
     encoding: "utf8"
   });
   if (extract.error || extract.status !== 0) {
-    await rm2(tempReleaseDirectory, { recursive: true, force: true });
+    await rm3(tempReleaseDirectory, { recursive: true, force: true });
     throw helperError(
       "Failed to extract Hosted Capsule release archive.",
       "Upload the release again with `sporades host push` and check that tar is installed on the Host server."
@@ -45138,13 +45172,13 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
       throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
     }
   } catch (error) {
-    await rm2(tempReleaseDirectory, { recursive: true, force: true });
+    await rm3(tempReleaseDirectory, { recursive: true, force: true });
     throw error;
   }
   try {
     await rename3(tempReleaseDirectory, paths2.release);
   } catch (error) {
-    await rm2(tempReleaseDirectory, { recursive: true, force: true });
+    await rm3(tempReleaseDirectory, { recursive: true, force: true });
     const details = errorDetails(error);
     if (details.code === "EEXIST" || details.code === "ENOTEMPTY") {
       throw helperError(
@@ -45158,7 +45192,7 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
     try {
       await installSealedServerEnvPrivateKey(release, paths2);
     } catch (error) {
-      await rm2(paths2.release, { recursive: true, force: true });
+      await rm3(paths2.release, { recursive: true, force: true });
       throw error;
     }
   }
@@ -45169,7 +45203,7 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
     if (seedJournal) activePreservedAttempts.add(seedJournal);
   } catch (error) {
     await removeInstalledReleasePrivateKey(release, paths2);
-    await rm2(paths2.release, { recursive: true, force: true });
+    await rm3(paths2.release, { recursive: true, force: true });
     throw error;
   }
   try {
@@ -45188,7 +45222,7 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
         if (pointerRestored) await removeInstalledReleasePrivateKey(release, paths2);
       },
       async () => {
-        if (pointerRestored) await rm2(paths2.release, { recursive: true, force: true });
+        if (pointerRestored) await rm3(paths2.release, { recursive: true, force: true });
       },
       async () => {
         if (pointerRestored) {
@@ -45328,7 +45362,7 @@ async function claimReleaseArchive(request) {
     await chmod2(claimedPath, 384);
     return { path: claimedPath, sha256: await releaseArchiveSha256(claimedPath) };
   } catch (error) {
-    await rm2(claimedPath, { force: true });
+    await rm3(claimedPath, { force: true });
     throw error;
   }
 }
@@ -45584,7 +45618,7 @@ async function maybeFallbackToPreviousRelease(request, failedReleaseId, previous
 }
 async function switchCurrentReleaseLink(currentLink, releaseDirectory) {
   const tempCurrentLink = `${currentLink}.tmp-${process.pid}`;
-  await rm2(tempCurrentLink, { force: true });
+  await rm3(tempCurrentLink, { force: true });
   await symlink(releaseDirectory, tempCurrentLink);
   await rename3(tempCurrentLink, currentLink);
 }
@@ -45885,7 +45919,7 @@ async function removeReleasePrivateKeyIfPresent(paths2, releaseId) {
           const identity = await retained.stat();
           if (!identity.isFile()) throw runtimeDataTrustError(privateKeyPath);
           await assertRuntimeDataPathIdentity(privateKeyPath, { dev: identity.dev, ino: identity.ino }, false);
-          await rm2(descriptorPath, { force: true });
+          await rm3(descriptorPath, { force: true });
         } finally {
           await retained.close();
         }
@@ -45910,9 +45944,9 @@ async function captureReleaseInstallRoute(request, previousRecord) {
 }
 async function restoreCurrentReleasePointerTarget(currentLink, previousTarget) {
   const temporary = `${currentLink}.restore-${process.pid}-${randomBytes2(8).toString("hex")}`;
-  await rm2(temporary, { force: true });
+  await rm3(temporary, { force: true });
   if (!previousTarget) {
-    await rm2(currentLink, { force: true });
+    await rm3(currentLink, { force: true });
     return;
   }
   await symlink(previousTarget, temporary);
@@ -45955,7 +45989,7 @@ async function restoreFailedReleaseInstall(request, paths2, previousRecord, prev
     if (!runningRouteRestored && !missingRunningRuntimeSettled) await restoreReleaseInstallRoute(previousRoute);
     if (!missingRunningRuntimeSettled) await writeRegistryContentsAtomic(registryPath(request), previousRegistryContents);
     await removeInstalledReleasePrivateKey(release, paths2);
-    await rm2(paths2.release, { recursive: true, force: true });
+    await rm3(paths2.release, { recursive: true, force: true });
   } catch {
     throw helperError(
       "Hosted Capsule runtime restoration failed.",
@@ -46417,7 +46451,7 @@ async function rollbackRelease(request) {
   await assertRollbackReleaseFiles(request, paths2.release, selectedRelease);
   const previousCurrentRelease = record.currentRelease ?? null;
   const tempCurrentLink = `${paths2.currentLink}.tmp-${process.pid}`;
-  await rm2(tempCurrentLink, { force: true });
+  await rm3(tempCurrentLink, { force: true });
   await symlink(paths2.release, tempCurrentLink);
   await rename3(tempCurrentLink, paths2.currentLink);
   await recordReleaseRollbackSelected(request, releaseId);
@@ -47545,7 +47579,7 @@ async function publishRuntimeFile(parentHandle, targetPath, contents, mode, boun
       await installed.close();
     }
   } finally {
-    await rm2(temporaryDescriptor, { force: true }).catch(() => {
+    await rm3(temporaryDescriptor, { force: true }).catch(() => {
     });
   }
 }
@@ -47582,7 +47616,7 @@ async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFin
             await pauseRuntimeTreePublication("sealed-key-cleanup", targetPath);
             await assertRuntimeDataPathIdentity(paths2.keys, { dev: keysIdentity.dev, ino: keysIdentity.ino }, true);
             await assertRuntimeDataPathIdentity(targetPath, { dev: details.dev, ino: details.ino }, false);
-            await rm2(descriptorPath, { force: true });
+            await rm3(descriptorPath, { force: true });
           } finally {
             await retained.close();
           }
@@ -48142,7 +48176,7 @@ async function atomicPublishBootstrapFile(target, contents, boundary) {
     await refreshTrustedBootstrapFinalFileIdentity(target);
   } catch (error) {
     await assertBootstrapMutationBoundary(`${boundary}-cleanup`, [target, temporary]);
-    await rm2(temporary, { force: true });
+    await rm3(temporary, { force: true });
     throw error;
   }
 }
@@ -48613,16 +48647,16 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
   const tempRouteFile = `${routeFile}.tmp`;
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
   await assertManagedRouteMutationBoundary(routeFile, "apply-remove-temp", [tempRouteFile, previousRouteFile]);
-  await rm2(tempRouteFile, { force: true });
+  await rm3(tempRouteFile, { force: true });
   await assertManagedRouteMutationBoundary(routeFile, "apply-remove-previous", [previousRouteFile]);
-  await rm2(previousRouteFile, { force: true });
+  await rm3(previousRouteFile, { force: true });
   await assertManagedRouteMutationBoundary(routeFile, "apply-write-temp", [tempRouteFile]);
   await writeFile2(tempRouteFile, contents, { flag: "wx", mode: 420 });
   try {
     validateCaddyRoute(tempRouteFile);
   } catch (error) {
     await assertManagedRouteMutationBoundary(routeFile, "apply-validation-cleanup", [tempRouteFile]);
-    await rm2(tempRouteFile, { force: true });
+    await rm3(tempRouteFile, { force: true });
     throw error;
   }
   const hadPreviousRoute = await pathExists(routeFile);
@@ -48638,9 +48672,9 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
     reloadCaddy(lifecycle);
   } catch (error) {
     await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-remove-temp", [tempRouteFile, previousRouteFile]);
-    await rm2(tempRouteFile, { force: true });
+    await rm3(tempRouteFile, { force: true });
     await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-remove-current", [previousRouteFile]);
-    await rm2(routeFile, { force: true });
+    await rm3(routeFile, { force: true });
     if (previousRouteMoved) {
       await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-restore", [previousRouteFile]);
       await rename3(previousRouteFile, routeFile);
@@ -48658,12 +48692,12 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
     throw error;
   }
   await assertManagedRouteMutationBoundary(routeFile, "apply-finalize-previous", [previousRouteFile]);
-  await rm2(previousRouteFile, { force: true });
+  await rm3(previousRouteFile, { force: true });
 }
 async function removeManagedRouteLocked(lifecycle, routeFile) {
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
   await assertManagedRouteMutationBoundary(routeFile, "remove-remove-previous", [previousRouteFile]);
-  await rm2(previousRouteFile, { force: true });
+  await rm3(previousRouteFile, { force: true });
   const hadRoute = await pathExists(routeFile);
   if (!hadRoute) {
     return { routeFile, removed: false };
@@ -48693,7 +48727,7 @@ async function removeManagedRouteLocked(lifecycle, routeFile) {
 async function finalizeRemovedRouteLocked(route) {
   if (route?.previousRouteFile) {
     await assertManagedRouteMutationBoundary(route.routeFile, "remove-finalize-previous", [route.previousRouteFile]);
-    await rm2(route.previousRouteFile, { force: true });
+    await rm3(route.previousRouteFile, { force: true });
   }
 }
 async function restoreRemovedRouteLocked(lifecycle, route) {
@@ -48701,7 +48735,7 @@ async function restoreRemovedRouteLocked(lifecycle, route) {
     return;
   }
   await assertManagedRouteMutationBoundary(route.routeFile, "restore-remove-current", [route.previousRouteFile]);
-  await rm2(route.routeFile, { force: true });
+  await rm3(route.routeFile, { force: true });
   await assertManagedRouteMutationBoundary(route.routeFile, "restore-publish-previous", [route.previousRouteFile]);
   await rename3(route.previousRouteFile, route.routeFile);
   reloadCaddy(lifecycle);
@@ -48873,7 +48907,7 @@ async function cleanupManagedRouteProtocolArtifacts(lockFile) {
     const artifactPath = path6.join(directory, entry);
     const owner = await readManagedRouteProtocolOwner(artifactPath);
     if (owner.state === "owner" && !managedRouteProtocolOwnerIsLive(owner.owner)) {
-      await rm2(artifactPath, { force: true });
+      await rm3(artifactPath, { force: true });
     }
   }
 }
@@ -48888,7 +48922,7 @@ async function removePathIfPresent(targetPath, options = {}) {
   if (!existed) {
     return { path: targetPath, removed: false };
   }
-  await rm2(targetPath, { recursive: Boolean(options.recursive), force: true });
+  await rm3(targetPath, { recursive: Boolean(options.recursive), force: true });
   return { path: targetPath, removed: true };
 }
 async function prepareWritableDataPath(targetPath) {
@@ -49541,7 +49575,7 @@ async function writeRegistryContentsAtomic(registryRecordPath, contents) {
     }
     await rename3(tempPath, registryRecordPath);
   } catch (error) {
-    await rm2(tempPath, { force: true });
+    await rm3(tempPath, { force: true });
     throw error;
   }
 }
@@ -49569,7 +49603,7 @@ async function withRegistryLock(request, fn) {
   try {
     return await fn();
   } finally {
-    await rm2(lockDir, { recursive: true, force: true });
+    await rm3(lockDir, { recursive: true, force: true });
   }
 }
 function registryPath(request) {
@@ -49791,7 +49825,7 @@ async function reconcileReleaseAttempt(request) {
     const candidate = canonicalRollbackPaths(request, attempt.release);
     await removeReleasePrivateKeyIfPresent(candidate, attempt.release);
     if (await pathExists(candidate.release)) {
-      await rm2(candidate.release, { recursive: true, force: true });
+      await rm3(candidate.release, { recursive: true, force: true });
       actions.push("candidate-release-removed");
     }
   }

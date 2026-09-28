@@ -150849,7 +150849,7 @@ async function manageHost(options) {
             throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB.");
           }
         }
-        telemetry = { endpoint: profile.endpoint, credential, ...caPem ? { caPem } : {} };
+        telemetry = { endpoint: profile.endpoint, credential, ...caPem ? { caPem } : {}, ...profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}, ...profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {} };
       }
       const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, telemetry, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);

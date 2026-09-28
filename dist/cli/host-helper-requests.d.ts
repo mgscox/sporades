@@ -58,6 +58,8 @@ export type HostHelperRequestBase = JsonObject & {
         endpoint: string;
         credential: string;
         caPem?: string;
+        metricsIntervalMs?: number;
+        eventLoopDelayResolutionMs?: number;
     };
 };
 export type HostRegistrationOptions = JsonObject & {

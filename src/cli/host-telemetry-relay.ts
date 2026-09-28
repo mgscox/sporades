@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { lstat, mkdir, readFile, rename, writeFile, chmod } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, writeFile, chmod, rm } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import path from "node:path";
 
@@ -17,6 +17,8 @@ export type HostRelayConnection = {
   endpoint: string;
   credential: string;
   caPem?: string;
+  metricsIntervalMs?: number;
+  eventLoopDelayResolutionMs?: number;
 };
 
 function invalid(): never {
@@ -26,13 +28,15 @@ function invalid(): never {
 export function validateHostRelayConnection(value: unknown): HostRelayConnection {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem"].includes(key))) invalid();
+  if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid();
   if (typeof input.endpoint !== "string" || input.endpoint.length > 2048) invalid();
   let url: URL;
   try { url = new URL(input.endpoint); } catch { return invalid(); }
   if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash || url.pathname !== "/") invalid();
   if (typeof input.credential !== "string" || !input.credential || input.credential.length > 4096 || /[\x00-\x1f\x7f]/.test(input.credential)) invalid();
   if (input.caPem !== undefined && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----"))) invalid();
+  if (input.metricsIntervalMs !== undefined && (!Number.isSafeInteger(input.metricsIntervalMs) || (input.metricsIntervalMs as number) < 5_000 || (input.metricsIntervalMs as number) > 300_000)) invalid();
+  if (input.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || (input.eventLoopDelayResolutionMs as number) < 10 || (input.eventLoopDelayResolutionMs as number) > 1000)) invalid();
   return input as HostRelayConnection;
 }
 
@@ -104,7 +108,7 @@ export async function readHostTelemetryConnection(remoteRoot: string) {
   if (value.schemaVersion !== 1 || typeof value.endpoint !== "string" || typeof value.network !== "string" || value.internalEndpoint !== `http://${RELAY_ALIAS}:4318/`) {
     throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
   }
-  return value as { schemaVersion: 1; endpoint: string; network: string; internalEndpoint: string; caConfigured: boolean; connectedAt: string };
+  return value as { schemaVersion: 1; endpoint: string; network: string; internalEndpoint: string; caConfigured: boolean; connectedAt: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
 }
 
 export async function statusHostTelemetryRelay(remoteRoot: string) {
@@ -115,7 +119,7 @@ export async function statusHostTelemetryRelay(remoteRoot: string) {
     relayReady: Boolean(connection && relay?.State?.Running === true),
     capsuleCoverage: "not-configured",
     backendVerification: "unavailable",
-    ...(connection ? { endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt } : {}),
+    ...(connection ? { endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) } : {}),
   };
 }
 
@@ -126,22 +130,42 @@ export async function connectHostTelemetryRelay(remoteRoot: string, network: str
   const files = paths(remoteRoot);
   await mkdir(files.directory, { recursive: true, mode: 0o700 });
   await assertOwnedDirectory(files.directory);
-  const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString() };
+  const previous = await readHostTelemetryConnection(remoteRoot);
+  const previousConfig = previous ? await readProtected(files.config) : null;
+  const previousCredential = previous ? await readProtected(files.credential) : null;
+  const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
+  const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
   await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem) }), 0o644);
   await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
   if (connection.caPem) await atomicWrite(files.ca, connection.caPem, 0o644);
-  await startRelay(files, network, Boolean(connection.caPem));
+  try {
+    await startRelay(files, network, Boolean(connection.caPem));
+  } catch (error) {
+    if (previous && previousConfig && previousCredential && (!previous.caConfigured || previousCa)) {
+      await atomicWrite(files.config, previousConfig, 0o644);
+      await atomicWrite(files.credential, previousCredential, 0o600);
+      if (previousCa) await atomicWrite(files.ca, previousCa, 0o644);
+      try { await startRelay(files, previous.network, previous.caConfigured); }
+      catch { throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile."); }
+    } else {
+      await rm(files.config, { force: true });
+      await rm(files.credential, { force: true });
+    }
+    throw error;
+  }
   await atomicWrite(files.descriptor, `${JSON.stringify(descriptor, null, 2)}\n`, 0o600);
   return await statusHostTelemetryRelay(remoteRoot);
 }
 
-function startRelay(files: ReturnType<typeof paths>, network: string, caConfigured: boolean) {
+async function startRelay(files: ReturnType<typeof paths>, network: string, caConfigured: boolean) {
   const existing = inspectRelay();
   if (existing) {
     if (!docker(["rm", "-f", RELAY_NAME]).ok) throw helperError("Host Telemetry relay could not be reconciled.", "Inspect Docker relay state and retry.");
   }
   const args = ["run", "--detach", "--name", RELAY_NAME, "--label", RELAY_LABEL, "--network", network, "--network-alias", RELAY_ALIAS, "--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--memory", "192m", "--cpus", "0.5", "--pids-limit", "128", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", files.credential, "--mount", `type=bind,source=${files.config},target=/etc/otelcol/config.yaml,readonly`, ...(caConfigured ? ["--mount", `type=bind,source=${files.ca},target=/etc/otelcol/ca.pem,readonly`] : []), RELAY_IMAGE, "--config=/etc/otelcol/config.yaml"];
   if (!docker(args).ok) throw helperError("Host Telemetry relay failed to start.", "Inspect protected relay configuration and Docker logs, then retry `sporades host telemetry connect`.");
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  if (inspectRelay()?.State?.Running !== true) throw helperError("Host Telemetry relay exited during startup.", "Inspect Docker relay logs for collector configuration errors, then retry.");
 }
 
 export async function reconcileHostTelemetryRelay(remoteRoot: string) {
@@ -153,7 +177,7 @@ export async function reconcileHostTelemetryRelay(remoteRoot: string) {
   }
   if (!docker(["network", "inspect", connection.network]).ok) throw helperError("Hosted Docker network is unavailable.", "Bootstrap the Host before reconciling Telemetry.");
   const existing = inspectRelay();
-  if (!existing?.State?.Running || !existing?.NetworkSettings?.Networks?.[connection.network]) startRelay(files, connection.network, connection.caConfigured);
+  if (!existing?.State?.Running || !existing?.NetworkSettings?.Networks?.[connection.network]) await startRelay(files, connection.network, connection.caConfigured);
   return statusHostTelemetryRelay(remoteRoot);
 }
 
