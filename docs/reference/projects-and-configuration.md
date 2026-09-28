@@ -27,7 +27,9 @@ If deployment is interrupted, `sporades deploy reconcile` retires an unbound
 staged CA after settling the Container attempt; a bound CA remains until that
 Container is replaced or removed.
 `--event-loop-delay-resolution-ms` tunes Node event-loop delay sampling from
-10 to 1000 ms (default 20 ms); shorter intervals use more timer work.
+10 to 1000 ms (default 20 ms); shorter intervals use more timer work. The
+exported delay max, mean, and p99 are nonnegative milliseconds of event-loop
+lag beyond that sampling interval, not the interval itself.
 `--metrics-interval-ms` tunes metric export from 5000 to 300000 ms; the default
 is 15000 ms. The monitoring dashboards default to a 12-minute Metric window
 so even a 300-second profile has at least two samples for rates and p95. Select
