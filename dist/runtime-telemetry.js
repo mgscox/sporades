@@ -236,7 +236,10 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
     const delayP99 = processMeter.createObservableGauge("process.event_loop.delay.p99", { unit: "ms" });
     const loopUtilization = processMeter.createObservableGauge("process.event_loop.utilization", { unit: "1" });
     // The metric reader owns the only collection interval. No process API runs per request.
-    processMeter.addBatchObservableCallback((result) => {
+    processMeter.addBatchObservableCallback(async (result) => {
+        // A resumed collection timer may run before the delay monitor's overdue tick.
+        // Yield once so that tick can record the stall before this window is reset.
+        await new Promise((resolve) => setImmediate(resolve));
         const cpu = process.cpuUsage();
         const memory = process.memoryUsage();
         result.observe(cpuTime, cpu.user / 1e6, { state: "user" });

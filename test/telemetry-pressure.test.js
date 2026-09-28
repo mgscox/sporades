@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { performance } from 'node:perf_hooks';
 import { createHttpRequestTelemetry } from '../dist/runtime-telemetry.js';
 
 function metrics(batches) { return batches.flatMap(batch => batch.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []); }
@@ -33,6 +34,32 @@ test('idle event-loop lag does not include the configured sampling interval', as
       assert(samples.every(sample => Number.isFinite(sample) && sample >= 0), `${name} must be finite nonnegative milliseconds: ${samples}`);
       assert(median(samples) < 150, `${name} must measure idle lag, not the ${resolutionMs} ms sampling interval: ${samples}`);
       assert.equal(metrics(sink.batches).find(metric => metric.name === name)?.unit, 'ms');
+    }
+  } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
+});
+
+test('a recovered stall crossing collection is retained in exported delay', async () => {
+  const sink = await collector();
+  const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'boundary-pressure-test', metricsIntervalMs: 5000, eventLoopDelayResolutionMs: 1000 });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    setTimeout(() => {}, 1);
+    const started = performance.now();
+    while (performance.now() - started < 3500) { /* finite stall over first export */ }
+    await new Promise(resolve => setTimeout(resolve, 6000));
+    const max = metricPoints(sink.batches, 'process.event_loop.delay.max').map(value);
+    assert(max.some(sample => sample >= 1500), `expected recovered boundary stall >=1500 ms, got ${max}`);
+  } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
+});
+
+test('shutdown before the first histogram tick does not invent delay', async () => {
+  const sink = await collector();
+  const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'early-pressure-test', metricsIntervalMs: 5000, eventLoopDelayResolutionMs: 1000 });
+  try {
+    await telemetry.shutdown();
+    assert(sink.batches.length > 0, 'shutdown exported final metrics');
+    for (const name of ['process.event_loop.delay.max', 'process.event_loop.delay.mean', 'process.event_loop.delay.p99']) {
+      assert.equal(metricPoints(sink.batches, name).length, 0, `${name} should wait for a real histogram observation`);
     }
   } finally { await telemetry.shutdown(); await new Promise(resolve => sink.server.close(resolve)); }
 });
