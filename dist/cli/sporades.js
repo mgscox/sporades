@@ -1997,6 +1997,7 @@ async function mustPreserveLegacyContainerBundle(projectDir) {
     return Boolean(binding?.containerId && binding.telemetryDescriptorVersion !== 1);
 }
 async function startDevSession(options) {
+    await reclaimStaleDevActionBundles(options.projectDir);
     let config = await readProjectConfig(options.projectDir);
     const preserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
     const session = options.publicDev ? "public-dev" : "dev";
@@ -2021,8 +2022,6 @@ async function startDevSession(options) {
     const inspectionToken = createDevInspectionToken();
     const actionBundleId = randomBytes(16).toString("hex");
     const actionBundlePath = path.join(options.projectDir, ".sporades", "build", ".dev-actions", actionBundleId, "server.mjs");
-    await mkdir(path.dirname(actionBundlePath), { recursive: true, mode: 0o700 });
-    await writeFile(actionBundlePath, bundle.serverBundle, { flag: "wx", mode: 0o600 });
     const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
     const databasePath = path.join(options.projectDir, ".sporades", "data.db");
     const runtime = await createDevRuntime({
@@ -2230,333 +2229,413 @@ async function startDevSession(options) {
     const address = server.address();
     const actualPort = typeof address === "object" && address ? address.port : port;
     const url = `http://localhost:${actualPort}`;
-    await writeFile(sessionFilePath, `${JSON.stringify({
-        url,
-        port: actualPort,
-        pid: process.pid,
-        session,
-        inspectionToken,
-        actionBundleId,
-        publicDev: security.cors.publicDev,
-        security,
-    }, null, 2)}\n`);
-    let fatalRestartAttempts = 0;
-    let fatalRestartInFlight = false;
-    const restartAfterFatal = async (fatalEvent, error) => {
-        if (fatalRestartInFlight) {
-            return;
-        }
-        fatalRestartInFlight = true;
-        fatalRestartAttempts += 1;
-        const attempt = fatalRestartAttempts;
-        const errorData = {
-            fatalEvent,
-            attempt,
-            maxAttempts: restartPolicy.maxAttempts,
-            message: error?.message ?? String(error),
-        };
-        runtime.database.log.emit({
-            category: "platform",
-            event: "runtime.fatal",
-            level: "error",
-            message: "Dev runtime fatal event detected",
-            data: errorData,
-        });
-        emitDevEvent(options, {
-            event: "fatal",
-            status: "detected",
+    let actionBundleCreated = false;
+    let watchers = [];
+    let onUnhandledRejection = null;
+    let onUncaughtException = null;
+    let shutdown = null;
+    try {
+        await createDevActionBundle(options.projectDir, actionBundleId, bundle.serverBundle);
+        actionBundleCreated = true;
+        await writeFile(sessionFilePath, `${JSON.stringify({
             url,
             port: actualPort,
-            restartPolicy: restartPolicyStatus("dev"),
-            fatal: errorData,
-        });
-        if (attempt > restartPolicy.maxAttempts) {
+            pid: process.pid,
+            session,
+            inspectionToken,
+            actionBundleId,
+            publicDev: security.cors.publicDev,
+            security,
+        }, null, 2)}\n`);
+        let fatalRestartAttempts = 0;
+        let fatalRestartInFlight = false;
+        const restartAfterFatal = async (fatalEvent, error) => {
+            if (fatalRestartInFlight) {
+                return;
+            }
+            fatalRestartInFlight = true;
+            fatalRestartAttempts += 1;
+            const attempt = fatalRestartAttempts;
+            const errorData = {
+                fatalEvent,
+                attempt,
+                maxAttempts: restartPolicy.maxAttempts,
+                message: error?.message ?? String(error),
+            };
             runtime.database.log.emit({
                 category: "platform",
-                event: "runtime.restart.exhausted",
+                event: "runtime.fatal",
                 level: "error",
-                message: "Dev runtime restart attempts exhausted",
+                message: "Dev runtime fatal event detected",
                 data: errorData,
             });
             emitDevEvent(options, {
-                event: "restart",
-                status: "exhausted",
-                url,
-                port: actualPort,
-                restartPolicy: restartPolicyStatus("dev"),
-                fatal: errorData,
-            }, {
-                message: "Dev runtime restart attempts exhausted.",
-                hint: "Restart `sporades dev` after fixing the fatal runtime error.",
-            });
-            fatalRestartInFlight = false;
-            return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, restartPolicy.backoffMs * attempt));
-        try {
-            await runtime.restart(bundle.serverRuntime.source, bundle.serverRuntime.env, runtimeServiceEnv, bundle.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(config, session));
-            websocketHub.disconnectAll();
-            runtime.database.log.emit({
-                category: "platform",
-                event: "runtime.restart.attempted",
-                level: "info",
-                message: "Dev runtime restarted after fatal event",
-                data: { ...errorData, restarted: true },
-            });
-            emitDevEvent(options, {
-                event: "restart",
-                status: "success",
+                event: "fatal",
+                status: "detected",
                 url,
                 port: actualPort,
                 restartPolicy: restartPolicyStatus("dev"),
                 fatal: errorData,
             });
-        }
-        catch (restartError) {
-            const details = errorDetails(restartError);
-            runtime.database.log.emit({
-                category: "platform",
-                event: "runtime.restart.failed",
-                level: "error",
-                message: "Dev runtime restart failed",
-                data: { ...errorData, restartError: details.message },
-            });
-            emitDevEvent(options, {
-                event: "restart",
-                status: "failed",
-                url,
-                port: actualPort,
-                restartPolicy: restartPolicyStatus("dev"),
-                fatal: errorData,
-            }, {
-                message: details.message,
-                hint: details.hint ?? "Fix the fatal runtime error and save again.",
-            });
-        }
-        finally {
-            fatalRestartInFlight = false;
-        }
-    };
-    const onUnhandledRejection = (reason) => {
-        restartAfterFatal("unhandledRejection", reason instanceof Error ? reason : new Error(String(reason)));
-    };
-    const onUncaughtException = (error) => {
-        restartAfterFatal("uncaughtException", error);
-    };
-    process.on("unhandledRejection", onUnhandledRejection);
-    process.on("uncaughtException", onUncaughtException);
-    const watchers = watchDevInputs(options.projectDir, async (change) => {
-        let rebuild = null;
-        let rollbackLegacy = null;
-        let rollbackActionBundle = null;
-        let rollbackServiceEnv = null;
-        let refresh = null;
-        emitDevEvent(options, {
-            event: "rebuild",
-            status: "started",
-            url,
-            port: actualPort,
-            build: { phase: change.affectsServerRuntime ? "bundle" : "client", framework: config.client?.framework ?? "react", toolchain: configuredClientToolchain(config) },
-        });
-        try {
-            const nextConfig = await readProjectConfig(options.projectDir);
-            const nextPreserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
-            const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
-            const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
-            const nextClientDependencies = new Set();
-            rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); } });
-            const nextTelemetryConfig = await resolveLocalTelemetryConfig(nextConfig, options.telemetryProfile);
-            const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
-                wait: true,
-                emit: (data, error) => emitDevEvent(options, data, error),
-            }).catch((error) => { throw tagDevRebuildError(error, "services", nextConfig); });
-            const affectsServerRuntime = change.affectsServerRuntime || (change.configChanged && configChangeAffectsServerRuntime(config, nextConfig));
-            if (affectsServerRuntime) {
-                rollbackServiceEnv = await writeActiveDevDatabaseServiceEnv(options.projectDir, nextCapsuleServiceEnv)
-                    .catch((error) => { throw tagDevRebuildError(error, "runtime", nextConfig); });
-            }
-            rollbackLegacy = await rebuild.publishLegacy({ preserveServerBundle: nextPreserveServerBundle });
-            const previousActionBundle = await readFile(actionBundlePath);
-            rollbackActionBundle = async () => replaceFileAtomically(actionBundlePath, previousActionBundle);
-            await replaceFileAtomically(actionBundlePath, rebuild.serverBundle);
-            if (affectsServerRuntime) {
-                const telemetryChanged = JSON.stringify(nextTelemetryConfig) !== JSON.stringify(telemetryConfig);
-                const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig, emitTelemetryDiagnostic) : null;
-                await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session)).catch(async (error) => {
-                    await nextTelemetry?.shutdown();
-                    throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
+            if (attempt > restartPolicy.maxAttempts) {
+                runtime.database.log.emit({
+                    category: "platform",
+                    event: "runtime.restart.exhausted",
+                    level: "error",
+                    message: "Dev runtime restart attempts exhausted",
+                    data: errorData,
                 });
-                if (nextTelemetry) {
-                    const previousTelemetry = telemetry;
-                    telemetry = nextTelemetry;
-                    telemetryConfig = nextTelemetryConfig;
-                    void previousTelemetry.shutdown();
-                }
-                runtimeServiceEnv = nextCapsuleServiceEnv;
-                fatalRestartAttempts = 0;
-                refresh = await devRefresh.broadcast();
+                emitDevEvent(options, {
+                    event: "restart",
+                    status: "exhausted",
+                    url,
+                    port: actualPort,
+                    restartPolicy: restartPolicyStatus("dev"),
+                    fatal: errorData,
+                }, {
+                    message: "Dev runtime restart attempts exhausted.",
+                    hint: "Restart `sporades dev` after fixing the fatal runtime error.",
+                });
+                fatalRestartInFlight = false;
+                return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, restartPolicy.backoffMs * attempt));
+            try {
+                await runtime.restart(bundle.serverRuntime.source, bundle.serverRuntime.env, runtimeServiceEnv, bundle.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(config, session));
                 websocketHub.disconnectAll();
-                // A capsule reload is in-process, so nothing outside the session — not the pid, not its
-                // uptime — records that a server change took effect. Without this the only trace of a
-                // reload is stdout the developer has usually scrolled past, and an empty `sporades logs`
-                // reads as "the server never reloaded" when it equally means "it reloaded cleanly".
-                //
-                // Best-effort, and it must stay that way. The reload is already committed here: the
-                // candidate runtime is promoted and the outgoing database is shut down. `log.emit`
-                // appends to the JSONL sink synchronously, so a full disk or an unwritable log file
-                // throws — and an escaping throw would reach the rebuild catch below, which rolls the
-                // published Bundle and service env back while `runtime.database` stays on the new
-                // Capsule. That trades a missing log line for split runtime, config and static state
-                // plus a rebuild reported as failed. Observability never gets to invalidate a
-                // completed reload.
-                //
-                // Awaited, unlike the other `log.emit` call sites here, because this one is the record the
-                // guide tells a developer to go and read. On the Postgres and libSQL services `emit`
-                // resolves only once the Log-index write lands, so returning early would let
-                // `rebuild: success` reach a script that then reads `sporades logs` — which serves the
-                // index — before the entry exists, and reports the reload as never having happened.
-                try {
-                    await runtime.database.log.emit({
-                        category: "platform",
-                        event: "dev.capsule.reloaded",
-                        level: "info",
-                        message: "Dev capsule reloaded after a server change",
-                        data: capsuleReloadSurface(runtime.database, nextConfig),
-                    });
-                }
-                catch {
-                    // The reload stands; only its record is missing.
-                }
+                runtime.database.log.emit({
+                    category: "platform",
+                    event: "runtime.restart.attempted",
+                    level: "info",
+                    message: "Dev runtime restarted after fatal event",
+                    data: { ...errorData, restarted: true },
+                });
+                emitDevEvent(options, {
+                    event: "restart",
+                    status: "success",
+                    url,
+                    port: actualPort,
+                    restartPolicy: restartPolicyStatus("dev"),
+                    fatal: errorData,
+                });
             }
-            const previousBundle = bundle;
-            bundle = rebuild;
-            rollbackActionBundle = null;
-            clientDependencies = nextClientDependencies;
-            for (const file of initialDependencySignatures.keys())
-                if (!clientDependencies.has(file))
-                    initialDependencySignatures.delete(file);
-            rebuild.releasePublicTreeLease().catch((error) => {
-                reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
-            });
-            discardPublicTree(previousBundle.staticFiles.publicTree).catch((error) => {
-                reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
-            });
-            config = nextConfig;
-            security = nextSecurity;
-            if (!affectsServerRuntime)
-                refresh = await devRefresh.broadcast();
+            catch (restartError) {
+                const details = errorDetails(restartError);
+                runtime.database.log.emit({
+                    category: "platform",
+                    event: "runtime.restart.failed",
+                    level: "error",
+                    message: "Dev runtime restart failed",
+                    data: { ...errorData, restartError: details.message },
+                });
+                emitDevEvent(options, {
+                    event: "restart",
+                    status: "failed",
+                    url,
+                    port: actualPort,
+                    restartPolicy: restartPolicyStatus("dev"),
+                    fatal: errorData,
+                }, {
+                    message: details.message,
+                    hint: details.hint ?? "Fix the fatal runtime error and save again.",
+                });
+            }
+            finally {
+                fatalRestartInFlight = false;
+            }
+        };
+        onUnhandledRejection = (reason) => {
+            restartAfterFatal("unhandledRejection", reason instanceof Error ? reason : new Error(String(reason)));
+        };
+        onUncaughtException = (error) => {
+            restartAfterFatal("uncaughtException", error);
+        };
+        process.on("unhandledRejection", onUnhandledRejection);
+        process.on("uncaughtException", onUncaughtException);
+        watchers = watchDevInputs(options.projectDir, async (change) => {
+            let rebuild = null;
+            let rollbackLegacy = null;
+            let rollbackActionBundle = null;
+            let rollbackServiceEnv = null;
+            let refresh = null;
             emitDevEvent(options, {
                 event: "rebuild",
-                status: "success",
+                status: "started",
                 url,
                 port: actualPort,
-                security,
-                build: {
-                    phase: affectsServerRuntime ? "bundle" : "client",
-                    framework: nextConfig.client?.framework ?? "react",
-                    toolchain: configuredClientToolchain(nextConfig),
-                },
-                ...(rebuild.clientDiagnostics.warnings?.length ? { warnings: rebuild.clientDiagnostics.warnings } : {}),
-                ...(refresh ? { refresh } : {}),
+                build: { phase: change.affectsServerRuntime ? "bundle" : "client", framework: config.client?.framework ?? "react", toolchain: configuredClientToolchain(config) },
             });
-        }
-        catch (error) {
-            let rebuildError = error;
-            if (rollbackLegacy) {
-                try {
-                    await rollbackLegacy();
+            try {
+                const nextConfig = await readProjectConfig(options.projectDir);
+                const nextPreserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
+                const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
+                const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
+                const nextClientDependencies = new Set();
+                rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); } });
+                const nextTelemetryConfig = await resolveLocalTelemetryConfig(nextConfig, options.telemetryProfile);
+                const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
+                    wait: true,
+                    emit: (data, error) => emitDevEvent(options, data, error),
+                }).catch((error) => { throw tagDevRebuildError(error, "services", nextConfig); });
+                const affectsServerRuntime = change.affectsServerRuntime || (change.configChanged && configChangeAffectsServerRuntime(config, nextConfig));
+                if (affectsServerRuntime) {
+                    rollbackServiceEnv = await writeActiveDevDatabaseServiceEnv(options.projectDir, nextCapsuleServiceEnv)
+                        .catch((error) => { throw tagDevRebuildError(error, "runtime", nextConfig); });
                 }
-                catch (rollbackError) {
-                    rebuildError = tagDevRebuildError(rollbackError, "publish", config);
-                }
-            }
-            if (rollbackActionBundle) {
-                try {
-                    await rollbackActionBundle();
-                }
-                catch (rollbackError) {
-                    rebuildError = tagDevRebuildError(rollbackError, "runtime", config);
-                }
-            }
-            if (rollbackServiceEnv) {
-                try {
-                    await rollbackServiceEnv();
-                }
-                catch (rollbackError) {
-                    rebuildError = tagDevRebuildError(rollbackError, "runtime", config);
-                }
-            }
-            if (rebuild && rebuild !== bundle) {
-                if (errorDetails(rebuildError).diagnostics?.candidateDiscard === "forbidden") {
-                    await rebuild.releasePublicTreeLease().catch((cleanupError) => {
-                        reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
+                rollbackLegacy = await rebuild.publishLegacy({ preserveServerBundle: nextPreserveServerBundle });
+                const previousActionBundle = await readFile(actionBundlePath);
+                rollbackActionBundle = async () => replaceFileAtomically(actionBundlePath, previousActionBundle);
+                await replaceFileAtomically(actionBundlePath, rebuild.serverBundle);
+                if (affectsServerRuntime) {
+                    const telemetryChanged = JSON.stringify(nextTelemetryConfig) !== JSON.stringify(telemetryConfig);
+                    const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig, emitTelemetryDiagnostic) : null;
+                    await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session)).catch(async (error) => {
+                        await nextTelemetry?.shutdown();
+                        throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
                     });
+                    if (nextTelemetry) {
+                        const previousTelemetry = telemetry;
+                        telemetry = nextTelemetry;
+                        telemetryConfig = nextTelemetryConfig;
+                        void previousTelemetry.shutdown();
+                    }
+                    runtimeServiceEnv = nextCapsuleServiceEnv;
+                    fatalRestartAttempts = 0;
+                    refresh = await devRefresh.broadcast();
+                    websocketHub.disconnectAll();
+                    // A capsule reload is in-process, so nothing outside the session — not the pid, not its
+                    // uptime — records that a server change took effect. Without this the only trace of a
+                    // reload is stdout the developer has usually scrolled past, and an empty `sporades logs`
+                    // reads as "the server never reloaded" when it equally means "it reloaded cleanly".
+                    //
+                    // Best-effort, and it must stay that way. The reload is already committed here: the
+                    // candidate runtime is promoted and the outgoing database is shut down. `log.emit`
+                    // appends to the JSONL sink synchronously, so a full disk or an unwritable log file
+                    // throws — and an escaping throw would reach the rebuild catch below, which rolls the
+                    // published Bundle and service env back while `runtime.database` stays on the new
+                    // Capsule. That trades a missing log line for split runtime, config and static state
+                    // plus a rebuild reported as failed. Observability never gets to invalidate a
+                    // completed reload.
+                    //
+                    // Awaited, unlike the other `log.emit` call sites here, because this one is the record the
+                    // guide tells a developer to go and read. On the Postgres and libSQL services `emit`
+                    // resolves only once the Log-index write lands, so returning early would let
+                    // `rebuild: success` reach a script that then reads `sporades logs` — which serves the
+                    // index — before the entry exists, and reports the reload as never having happened.
+                    try {
+                        await runtime.database.log.emit({
+                            category: "platform",
+                            event: "dev.capsule.reloaded",
+                            level: "info",
+                            message: "Dev capsule reloaded after a server change",
+                            data: capsuleReloadSurface(runtime.database, nextConfig),
+                        });
+                    }
+                    catch {
+                        // The reload stands; only its record is missing.
+                    }
                 }
-                else {
-                    await discardPublicTree(rebuild.staticFiles.publicTree).catch((cleanupError) => {
-                        reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
-                    });
-                }
-            }
-            const details = errorDetails(rebuildError);
-            runtime.database.log.emit({
-                category: "platform",
-                event: "dev.rebuild.failed",
-                level: "error",
-                message: "Dev rebuild failed",
-                data: { message: details.message },
-            });
-            emitDevEvent(options, {
-                event: "rebuild",
-                status: "failed",
-                url,
-                port: actualPort,
-                ...(typeof details.phase === "string" ? {
+                const previousBundle = bundle;
+                bundle = rebuild;
+                rollbackActionBundle = null;
+                clientDependencies = nextClientDependencies;
+                for (const file of initialDependencySignatures.keys())
+                    if (!clientDependencies.has(file))
+                        initialDependencySignatures.delete(file);
+                rebuild.releasePublicTreeLease().catch((error) => {
+                    reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
+                });
+                discardPublicTree(previousBundle.staticFiles.publicTree).catch((error) => {
+                    reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
+                });
+                config = nextConfig;
+                security = nextSecurity;
+                if (!affectsServerRuntime)
+                    refresh = await devRefresh.broadcast();
+                emitDevEvent(options, {
+                    event: "rebuild",
+                    status: "success",
+                    url,
+                    port: actualPort,
+                    security,
                     build: {
-                        phase: details.phase,
-                        framework: typeof details.framework === "string" ? details.framework : config.client?.framework ?? "react",
-                        toolchain: typeof details.toolchain === "string" ? details.toolchain : "esbuild",
+                        phase: affectsServerRuntime ? "bundle" : "client",
+                        framework: nextConfig.client?.framework ?? "react",
+                        toolchain: configuredClientToolchain(nextConfig),
                     },
-                } : {}),
-            }, {
-                message: details.message,
-                hint: details.hint ?? "Fix the build error and save again.",
-                ...(details.diagnostics ? { diagnostics: details.diagnostics } : {}),
+                    ...(rebuild.clientDiagnostics.warnings?.length ? { warnings: rebuild.clientDiagnostics.warnings } : {}),
+                    ...(refresh ? { refresh } : {}),
+                });
+            }
+            catch (error) {
+                let rebuildError = error;
+                if (rollbackLegacy) {
+                    try {
+                        await rollbackLegacy();
+                    }
+                    catch (rollbackError) {
+                        rebuildError = tagDevRebuildError(rollbackError, "publish", config);
+                    }
+                }
+                if (rollbackActionBundle) {
+                    try {
+                        await rollbackActionBundle();
+                    }
+                    catch (rollbackError) {
+                        rebuildError = tagDevRebuildError(rollbackError, "runtime", config);
+                    }
+                }
+                if (rollbackServiceEnv) {
+                    try {
+                        await rollbackServiceEnv();
+                    }
+                    catch (rollbackError) {
+                        rebuildError = tagDevRebuildError(rollbackError, "runtime", config);
+                    }
+                }
+                if (rebuild && rebuild !== bundle) {
+                    if (errorDetails(rebuildError).diagnostics?.candidateDiscard === "forbidden") {
+                        await rebuild.releasePublicTreeLease().catch((cleanupError) => {
+                            reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
+                        });
+                    }
+                    else {
+                        await discardPublicTree(rebuild.staticFiles.publicTree).catch((cleanupError) => {
+                            reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
+                        });
+                    }
+                }
+                const details = errorDetails(rebuildError);
+                runtime.database.log.emit({
+                    category: "platform",
+                    event: "dev.rebuild.failed",
+                    level: "error",
+                    message: "Dev rebuild failed",
+                    data: { message: details.message },
+                });
+                emitDevEvent(options, {
+                    event: "rebuild",
+                    status: "failed",
+                    url,
+                    port: actualPort,
+                    ...(typeof details.phase === "string" ? {
+                        build: {
+                            phase: details.phase,
+                            framework: typeof details.framework === "string" ? details.framework : config.client?.framework ?? "react",
+                            toolchain: typeof details.toolchain === "string" ? details.toolchain : "esbuild",
+                        },
+                    } : {}),
+                }, {
+                    message: details.message,
+                    hint: details.hint ?? "Fix the build error and save again.",
+                    ...(details.diagnostics ? { diagnostics: details.diagnostics } : {}),
+                });
+            }
+        }, () => [...clientDependencies], initialDependencySignatures);
+        emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
+        let shutdownStarted = false;
+        shutdown = async () => {
+            if (shutdownStarted)
+                return;
+            shutdownStarted = true;
+            // JSON mode is an event stream consumed by scripts and test harnesses; a
+            // human lifecycle line on stdout would corrupt that stream during SIGTERM.
+            let shutdownError;
+            try {
+                if (!options.json)
+                    process.stdout.write(`Stopping Sporades dev session...\n`);
+                for (const watcher of watchers)
+                    watcher.close();
+                rm(path.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => { });
+                websocketHub.disconnectAll();
+                await shutdownHttpServerAndRuntime(server, async () => { await runtime.shutdown(); await telemetry.shutdown(); });
+            }
+            catch (error) {
+                shutdownError = error;
+            }
+            try {
+                await rm(sessionFilePath, { force: true });
+            }
+            catch (error) {
+                shutdownError ??= error;
+            }
+            try {
+                await removeOwnedDevActionBundle(options.projectDir, actionBundleId);
+            }
+            catch (error) {
+                shutdownError ??= error;
+            }
+            if (onUnhandledRejection)
+                process.off("unhandledRejection", onUnhandledRejection);
+            if (onUncaughtException)
+                process.off("uncaughtException", onUncaughtException);
+            if (shutdown)
+                process.off("SIGHUP", shutdown);
+            if (shutdownError)
+                process.stderr.write(`${errorDetails(shutdownError).message}\n`);
+            process.exit(shutdownError ? 1 : 0);
+        };
+        process.on("SIGTERM", shutdown);
+        process.on("SIGINT", shutdown);
+        process.on("SIGHUP", shutdown);
+    }
+    catch (error) {
+        let cleanupFailure;
+        for (const watcher of watchers) {
+            try {
+                watcher.close();
+            }
+            catch (failure) {
+                cleanupFailure ??= failure;
+            }
+        }
+        if (onUnhandledRejection)
+            process.off("unhandledRejection", onUnhandledRejection);
+        if (onUncaughtException)
+            process.off("uncaughtException", onUncaughtException);
+        if (shutdown) {
+            process.off("SIGTERM", shutdown);
+            process.off("SIGINT", shutdown);
+            process.off("SIGHUP", shutdown);
+        }
+        const ownedSession = await readFile(sessionFilePath, "utf8").then(JSON.parse).catch(() => null);
+        if (ownedSession?.pid === process.pid && ownedSession.actionBundleId === actionBundleId) {
+            try {
+                await rm(sessionFilePath, { force: true });
+            }
+            catch (failure) {
+                cleanupFailure ??= failure;
+            }
+        }
+        try {
+            websocketHub.disconnectAll();
+        }
+        catch (failure) {
+            cleanupFailure ??= failure;
+        }
+        try {
+            await shutdownHttpServerAndRuntime(server, async () => {
+                await Promise.allSettled([
+                    Promise.resolve().then(() => runtime.shutdown()),
+                    Promise.resolve().then(() => telemetry.shutdown()),
+                ]);
             });
         }
-    }, () => [...clientDependencies], initialDependencySignatures);
-    emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
-    let shutdownStarted = false;
-    const shutdown = async () => {
-        if (shutdownStarted)
-            return;
-        shutdownStarted = true;
-        // JSON mode is an event stream consumed by scripts and test harnesses; a
-        // human lifecycle line on stdout would corrupt that stream during SIGTERM.
-        if (!options.json)
-            process.stdout.write(`Stopping Sporades dev session...\n`);
-        for (const watcher of watchers) {
-            watcher.close();
+        catch (failure) {
+            cleanupFailure ??= failure;
         }
-        rm(path.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => { });
-        websocketHub.disconnectAll();
-        let shutdownError;
-        try {
-            await shutdownHttpServerAndRuntime(server, async () => { await runtime.shutdown(); await telemetry.shutdown(); });
+        if (actionBundleCreated) {
+            try {
+                await removeOwnedDevActionBundle(options.projectDir, actionBundleId);
+            }
+            catch (failure) {
+                cleanupFailure ??= failure;
+            }
         }
-        catch (error) {
-            shutdownError = error;
-        }
-        await rm(sessionFilePath, { force: true });
-        await rm(path.dirname(actionBundlePath), { recursive: true, force: true });
-        process.off("unhandledRejection", onUnhandledRejection);
-        process.off("uncaughtException", onUncaughtException);
-        if (shutdownError)
-            process.stderr.write(`${errorDetails(shutdownError).message}\n`);
-        process.exit(shutdownError ? 1 : 0);
-    };
-    process.on("SIGTERM", shutdown);
-    process.on("SIGINT", shutdown);
+        if (cleanupFailure)
+            throw new AggregateError([error, cleanupFailure], "Dev startup cleanup failed.");
+        throw error;
+    }
 }
 function tagDevRebuildError(error, phase, config, options = {}) {
     const details = errorDetails(error);
@@ -2813,29 +2892,47 @@ function watchDevInputs(projectDir, onChange, clientDependencies = () => [], ini
         observedSignatures.set(watchedPath.path, signature);
         schedule(watchedPath);
     };
-    for (const watchedPath of watchedPaths()) {
-        const signature = readDevInputSignature([watchedPath]);
-        observedSignatures.set(watchedPath.path, signature);
-        handledSignatures.set(watchedPath.path, signature);
-        try {
-            watchers.push(watch(watchedPath.path, { recursive: true }, () => observe(watchedPath)));
-        }
-        catch (error) {
-            if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") {
-                throw error;
+    try {
+        for (const watchedPath of watchedPaths()) {
+            const signature = readDevInputSignature([watchedPath]);
+            observedSignatures.set(watchedPath.path, signature);
+            handledSignatures.set(watchedPath.path, signature);
+            try {
+                watchers.push(watch(watchedPath.path, { recursive: true }, () => observe(watchedPath)));
+            }
+            catch (error) {
+                if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") {
+                    throw error;
+                }
             }
         }
+        lastHandledSignature = readDevInputSignature(watchedPaths());
+        const signaturePoll = setInterval(() => {
+            for (const watchedPath of watchedPaths()) {
+                observe(watchedPath);
+                if (handledSignatures.get(watchedPath.path) !== readDevInputSignature([watchedPath]))
+                    schedule(watchedPath);
+            }
+        }, DEV_WATCH_SIGNATURE_POLL_MS);
+        watchers.push({ close: () => clearInterval(signaturePoll) });
+        return watchers;
     }
-    lastHandledSignature = readDevInputSignature(watchedPaths());
-    const signaturePoll = setInterval(() => {
-        for (const watchedPath of watchedPaths()) {
-            observe(watchedPath);
-            if (handledSignatures.get(watchedPath.path) !== readDevInputSignature([watchedPath]))
-                schedule(watchedPath);
+    catch (error) {
+        if (debounceTimer)
+            clearTimeout(debounceTimer);
+        let closeFailure;
+        for (const watcher of watchers) {
+            try {
+                watcher.close();
+            }
+            catch (failure) {
+                closeFailure ??= failure;
+            }
         }
-    }, DEV_WATCH_SIGNATURE_POLL_MS);
-    watchers.push({ close: () => clearInterval(signaturePoll) });
-    return watchers;
+        if (closeFailure)
+            throw new AggregateError([error, closeFailure], "Dev watcher setup cleanup failed.");
+        throw error;
+    }
 }
 function configChangeAffectsServerRuntime(currentConfig, nextConfig) {
     return JSON.stringify(serverRuntimeConfig(currentConfig)) !== JSON.stringify(serverRuntimeConfig(nextConfig));
@@ -4683,6 +4780,84 @@ async function readDevSession(projectDir) {
     }
     catch {
         throw commandError("Invalid Sporades dev session metadata.", "Restart the dev session with `sporades dev`, then retry the command.");
+    }
+}
+async function createDevActionBundle(projectDir, id, contents) {
+    const root = path.join(projectDir, ".sporades", "build", ".dev-actions");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    const rootStat = await lstat(root);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+        throw commandError("Invalid Dev action Bundle directory.", "Remove the unsafe .sporades/build/.dev-actions entry and retry.");
+    }
+    const directory = path.join(root, id);
+    await mkdir(directory, { mode: 0o700 });
+    try {
+        // Ownership precedes secret-bearing bytes, including across abrupt process death.
+        await writeFile(path.join(directory, "owner.json"), `${JSON.stringify({
+            id, pid: process.pid, processStart: await getProcessStartIdentity(process.pid),
+        })}\n`, { flag: "wx", mode: 0o600 });
+        await writeFile(path.join(directory, "server.mjs"), contents, { flag: "wx", mode: 0o600 });
+    }
+    catch (error) {
+        await rm(directory, { recursive: true, force: true });
+        throw error;
+    }
+}
+async function removeOwnedDevActionBundle(projectDir, id) {
+    const root = path.join(projectDir, ".sporades", "build", ".dev-actions");
+    const rootStat = await lstat(root).catch(() => null);
+    if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) {
+        throw commandError("Dev action Bundle directory changed.", "Inspect the private Bundle directory before removing it.");
+    }
+    const directory = path.join(root, id);
+    const directoryStat = await lstat(directory).catch(() => null);
+    if (!directoryStat)
+        return;
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+        throw commandError("Dev action Bundle ownership changed.", "Preserve the unexpected entry for inspection.");
+    }
+    const ownerPath = path.join(directory, "owner.json");
+    const ownerStat = await lstat(ownerPath).catch(() => null);
+    const owner = ownerStat?.isFile() && !ownerStat.isSymbolicLink() && ownerStat.size <= 1024
+        ? await readFile(ownerPath, "utf8").then(JSON.parse).catch(() => null)
+        : null;
+    if (owner?.id !== id || owner.pid !== process.pid) {
+        throw commandError("Dev action Bundle ownership changed.", "Preserve the unexpected entry for inspection.");
+    }
+    await rm(directory, { recursive: true, force: true });
+}
+async function reclaimStaleDevActionBundles(projectDir) {
+    const root = path.join(projectDir, ".sporades", "build", ".dev-actions");
+    const rootStat = await lstat(root).catch((error) => {
+        if (errorDetails(error).code === "ENOENT")
+            return null;
+        throw error;
+    });
+    if (!rootStat)
+        return;
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+        throw commandError("Invalid Dev action Bundle directory.", "Remove the unsafe .sporades/build/.dev-actions entry and retry.");
+    }
+    for (const id of await readdir(root)) {
+        if (!/^[a-f0-9]{32}$/.test(id))
+            continue;
+        const directory = path.join(root, id);
+        const directoryStat = await lstat(directory).catch(() => null);
+        if (!directoryStat?.isDirectory() || directoryStat.isSymbolicLink())
+            continue;
+        const ownerPath = path.join(directory, "owner.json");
+        const ownerStat = await lstat(ownerPath).catch(() => null);
+        if (!ownerStat?.isFile() || ownerStat.isSymbolicLink() || ownerStat.size > 1024)
+            continue;
+        const owner = await readFile(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        if (owner?.id !== id || !Number.isInteger(owner.pid) || owner.pid <= 0
+            || (owner.processStart !== null && typeof owner.processStart !== "string"))
+            continue;
+        const actualStart = await getProcessStartIdentity(owner.pid);
+        if (owner.processStart === null ? processIsLiveForContainerLock(owner.pid)
+            : actualStart === owner.processStart || (actualStart === null && processIsLiveForContainerLock(owner.pid)))
+            continue;
+        await rm(directory, { recursive: true, force: true });
     }
 }
 async function devActionBundlePath(projectDir, session) {

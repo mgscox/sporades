@@ -5275,6 +5275,200 @@ test("pre-telemetry Container binding permits Dev without Docker while preservin
   });
 });
 
+test("failed Dev listen removes its private action Bundle with embedded Server env", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "failed-action-start", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "failed-action-start");
+    await installFakeReact(projectDir);
+    const occupied = createServer().listen(0, "127.0.0.1");
+    try {
+      await new Promise((resolve) => occupied.once("listening", resolve));
+      const configPath = path.join(projectDir, "sporades.json");
+      const config = JSON.parse(await readFile(configPath, "utf8"));
+      config.dev.port = occupied.address().port;
+      await writeFile(configPath, `${JSON.stringify(config)}\n`);
+      await writeFile(path.join(projectDir, ".env.sporades.server"), "STALE_SECRET=private-old-value\n", { mode: 0o600 });
+      const failed = await runCli(["dev", "--json"], { cwd: projectDir });
+      assert.notEqual(failed.code, 0);
+      assert.match(failed.stdout + failed.stderr, /EADDRINUSE|address already in use/i);
+      const actionRoot = path.join(projectDir, ".sporades", "build", ".dev-actions");
+      assert.deepEqual(await readdir(actionRoot).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error)), []);
+    } finally {
+      occupied.close();
+    }
+  });
+});
+
+test("failed Dev watcher setup removes its session and private action Bundle", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "failed-watch-start", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "failed-watch-start");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "STALE_SECRET=watcher-old-secret\n", { mode: 0o600 });
+    const preload = path.join(dir, "fail-second-watch.cjs");
+    await writeFile(preload, `const fs = require("node:fs");\nconst moduleApi = require("node:module");\nconst originalWatch = fs.watch;\nlet count = 0;\nfs.watch = (...args) => {\n  if (++count === 2) throw Object.assign(new Error("injected watch failure"), { code: "EMFILE" });\n  return originalWatch(...args);\n};\nmoduleApi.syncBuiltinESMExports();\n`);
+    const failed = await runCli(["dev", "--json"], { cwd: projectDir, env: { NODE_OPTIONS: `--require=${preload}` } });
+    assert.notEqual(failed.code, 0);
+    assert.match(failed.stdout + failed.stderr, /injected watch failure/);
+    const actionRoot = path.join(projectDir, ".sporades", "build", ".dev-actions");
+    assert.deepEqual(await readdir(actionRoot).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error)), []);
+    await assert.rejects(access(path.join(projectDir, ".sporades", "dev-session.json")), { code: "ENOENT" });
+  });
+});
+
+test("Dev reclaims dead owned action Bundles while preserving live, ambiguous and symlink entries", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "action-recovery", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "action-recovery");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = await getTestAvailablePort();
+    await writeFile(configPath, `${JSON.stringify(config)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "STALE_SECRET=old-private-secret\n", { mode: 0o600 });
+    const actionRoot = path.join(projectDir, ".sporades", "build", ".dev-actions");
+    const first = startCli(["dev", "--json"], { cwd: projectDir });
+    let second;
+    try {
+      await waitForJsonEvent(first, (event) => event.data?.event === "started");
+      const liveId = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8")).actionBundleId;
+      const liveDir = path.join(actionRoot, liveId);
+      assert.match(await readFile(path.join(liveDir, "server.mjs"), "utf8"), /old-private-secret/);
+      const unknownId = "a".repeat(32);
+      const reusedId = "b".repeat(32);
+      const ownerlessId = "d".repeat(32);
+      for (const id of [unknownId, reusedId]) {
+        await mkdir(path.join(actionRoot, id));
+        await writeFile(path.join(actionRoot, id, "server.mjs"), "old-private-secret");
+        await writeFile(path.join(actionRoot, id, "owner.json"), JSON.stringify({ id, pid: process.pid, processStart: id === unknownId ? null : "reused-pid" }));
+      }
+      await mkdir(path.join(actionRoot, ownerlessId));
+      await writeFile(path.join(actionRoot, ownerlessId, "server.mjs"), "historical-ambiguous-secret");
+      const outside = path.join(dir, "outside-action-root");
+      await mkdir(outside);
+      await writeFile(path.join(outside, "sentinel"), "outside-safe");
+      const linkId = "c".repeat(32);
+      await symlink(outside, path.join(actionRoot, linkId));
+      const competing = await runCli(["dev", "--json"], { cwd: projectDir });
+      assert.notEqual(competing.code, 0);
+      assert.match(competing.stdout + competing.stderr, /EADDRINUSE|address already in use/i);
+      await access(liveDir);
+      await access(path.join(actionRoot, unknownId));
+      await access(path.join(actionRoot, ownerlessId));
+      await assert.rejects(access(path.join(actionRoot, reusedId)), { code: "ENOENT" });
+      assert.equal(await readFile(path.join(outside, "sentinel"), "utf8"), "outside-safe");
+      first.kill("SIGKILL");
+      if (first.exitCode === null && first.signalCode === null) await new Promise((resolve) => first.once("exit", resolve));
+      assert.match(await readFile(path.join(liveDir, "server.mjs"), "utf8"), /old-private-secret/);
+      const serverEntry = path.join(projectDir, "server", "index.ts");
+      const serverSource = await readFile(serverEntry, "utf8");
+      await writeFile(serverEntry, "export default ???");
+      const failedBuild = await runCli(["dev", "--json"], { cwd: projectDir });
+      assert.notEqual(failedBuild.code, 0);
+      await assert.rejects(access(liveDir), { code: "ENOENT" });
+      await writeFile(serverEntry, serverSource);
+      second = startCli(["dev", "--json"], { cwd: projectDir });
+      await waitForJsonEvent(second, (event) => event.data?.event === "started");
+      await assert.rejects(access(liveDir), { code: "ENOENT" });
+      await access(path.join(actionRoot, unknownId));
+      await access(path.join(actionRoot, ownerlessId));
+      assert.equal(await readFile(path.join(outside, "sentinel"), "utf8"), "outside-safe");
+    } finally {
+      if (first.exitCode === null && first.signalCode === null) { first.kill("SIGKILL"); await new Promise((resolve) => first.once("exit", resolve)); }
+      if (second && second.exitCode === null && second.signalCode === null) { second.kill("SIGTERM"); await new Promise((resolve) => second.once("exit", resolve)); }
+    }
+  });
+});
+
+test("SIGHUP removes the owned Dev action Bundle", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "hungup-action", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "hungup-action");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config)}\n`);
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      await waitForJsonEvent(child, (event) => event.data?.event === "started");
+      const sessionPath = path.join(projectDir, ".sporades", "dev-session.json");
+      const id = JSON.parse(await readFile(sessionPath, "utf8")).actionBundleId;
+      const ownedDir = path.join(projectDir, ".sporades", "build", ".dev-actions", id);
+      await access(path.join(ownedDir, "server.mjs"));
+      child.kill("SIGHUP");
+      if (child.exitCode === null && child.signalCode === null) await new Promise((resolve) => child.once("exit", resolve));
+      await assert.rejects(access(ownedDir), { code: "ENOENT" });
+      await assert.rejects(access(sessionPath), { code: "ENOENT" });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await new Promise((resolve) => child.once("exit", resolve)); }
+    }
+  });
+});
+
+test("Dev action cleanup survives session metadata write and shutdown removal failures", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "action-metadata-failure", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "action-metadata-failure");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config)}\n`);
+    const sessionPath = path.join(projectDir, ".sporades", "dev-session.json");
+    const actionRoot = path.join(projectDir, ".sporades", "build", ".dev-actions");
+    await mkdir(path.dirname(sessionPath), { recursive: true });
+    await mkdir(sessionPath);
+    const failed = await runCli(["dev", "--json"], { cwd: projectDir });
+    assert.notEqual(failed.code, 0);
+    assert.deepEqual(await readdir(actionRoot), []);
+    await rm(sessionPath, { recursive: true });
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      await waitForJsonEvent(child, (event) => event.data?.event === "started");
+      const id = JSON.parse(await readFile(sessionPath, "utf8")).actionBundleId;
+      const ownedDir = path.join(actionRoot, id);
+      await access(path.join(ownedDir, "server.mjs"));
+      await rm(sessionPath);
+      await mkdir(sessionPath);
+      child.kill("SIGTERM");
+      if (child.exitCode === null && child.signalCode === null) await new Promise((resolve) => child.once("exit", resolve));
+      await assert.rejects(access(ownedDir), { code: "ENOENT" });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await new Promise((resolve) => child.once("exit", resolve)); }
+    }
+  });
+});
+
+test("Dev rejects a symlinked action root without touching its target", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "unsafe-action-root", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "unsafe-action-root");
+    await installFakeReact(projectDir);
+    const buildDir = path.join(projectDir, ".sporades", "build");
+    await mkdir(buildDir, { recursive: true });
+    const outside = path.join(dir, "outside-action-root");
+    await mkdir(outside);
+    await writeFile(path.join(outside, "sentinel"), "untouched");
+    await symlink(outside, path.join(buildDir, ".dev-actions"));
+    const failed = await runCli(["dev", "--json"], { cwd: projectDir });
+    assert.notEqual(failed.code, 0);
+    assert.match(failed.stdout + failed.stderr, /Invalid Dev action Bundle directory/);
+    assert.deepEqual(await readdir(outside), ["sentinel"]);
+    assert.equal(await readFile(path.join(outside, "sentinel"), "utf8"), "untouched");
+  });
+});
+
 test("active-reference rollback failure preserves the referenced candidate and matching legacy Bundles", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "reference-island", "--no-install", "--no-git", "--json"], { cwd: dir });
