@@ -26,6 +26,12 @@ test('collector config has private receiver and bounded delivery without embeddi
   assert.doesNotMatch(config, /scope-test-token/);
 });
 
+test('shipped Host help advertises Capsule Telemetry opt-out commands', () => {
+  const help = spawnSync(process.execPath, ['bin/sporades.js', 'host', '--help'], { cwd: process.cwd(), encoding: 'utf8' });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /telemetry enable\|disable <subname>/);
+});
+
 test('installed CLI resolves a verified Host profile and redacts the scoped credential', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'sporades-host-relay-'));
   const bin = path.join(root, 'bin');
