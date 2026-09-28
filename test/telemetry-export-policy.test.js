@@ -5,9 +5,10 @@ import { once } from 'node:events';
 import { gunzipSync } from 'node:zlib';
 import { createServer as createSecureServer } from 'node:https';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { connect as connectTls } from 'node:tls';
 import { promisify } from 'node:util';
 
 import { createHttpRequestTelemetry } from '../dist/runtime-telemetry.js';
@@ -148,6 +149,50 @@ test('verified profile rejects an untrusted collector even when Node ambient TLS
     assert(events.some(event => event.event === 'telemetry.export.failed' && event.reason === 'TLS_FAILED'));
     assert.equal(events.some(event => event.event === 'telemetry.export.failed' && event.reason !== 'TLS_FAILED'), false);
     assert.equal(accepted, 1, 'only the explicitly trusted export reaches the collector');
+  } finally {
+    collector?.closeAllConnections();
+    collector?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CA-issued leaf chain reports bounded TLS failure without trust and exports with explicit CA trust', async () => {
+  const run = promisify(execFile);
+  const dir = await mkdtemp(path.join(tmpdir(), 'sporades-telemetry-ca-chain-'));
+  let collector;
+  try {
+    const caKey = path.join(dir, 'ca.key');
+    const caCert = path.join(dir, 'ca.pem');
+    const leafKey = path.join(dir, 'leaf.key');
+    const leafCsr = path.join(dir, 'leaf.csr');
+    const leafCert = path.join(dir, 'leaf.pem');
+    const extension = path.join(dir, 'leaf.ext');
+    await writeFile(extension, 'subjectAltName=IP:127.0.0.1\n');
+    await run('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', caKey, '-out', caCert, '-days', '1', '-subj', '/CN=Fixture CA', '-addext', 'basicConstraints=critical,CA:TRUE']);
+    await run('openssl', ['req', '-newkey', 'rsa:2048', '-nodes', '-keyout', leafKey, '-out', leafCsr, '-subj', '/CN=127.0.0.1']);
+    await run('openssl', ['x509', '-req', '-in', leafCsr, '-CA', caCert, '-CAkey', caKey, '-CAcreateserial', '-out', leafCert, '-days', '1', '-extfile', extension]);
+    const accepted = [];
+    collector = createSecureServer({ key: await readFile(leafKey), cert: Buffer.concat([await readFile(leafCert), await readFile(caCert)]) }, async (request, response) => {
+      for await (const _ of request) { /* drain */ }
+      accepted.push(request.url);
+      response.writeHead(200).end('{}');
+    }).listen(0, '127.0.0.1');
+    await once(collector, 'listening');
+    const endpoint = `https://127.0.0.1:${collector.address().port}`;
+    const socketCode = await new Promise(resolve => {
+      const socket = connectTls({ host: '127.0.0.1', port: collector.address().port });
+      socket.once('error', error => { socket.destroy(); resolve(error.code); });
+    });
+    assert(['SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY'].includes(socketCode), `Unexpected pinned Node trust failure: ${socketCode}`);
+    const diagnostic = [];
+    const denied = createHttpRequestTelemetry({ endpoint, tls: { mode: 'verified' }, serviceName: 'chain-denied' }, event => diagnostic.push(event));
+    await denied.shutdown();
+    assert.deepEqual(diagnostic, [{ event: 'telemetry.export.failed', reason: 'TLS_FAILED' }]);
+    assert.deepEqual(accepted, []);
+    const trusted = createHttpRequestTelemetry({ endpoint, tls: { mode: 'verified', caFile: caCert }, serviceName: 'chain-trusted' }, event => diagnostic.push(event));
+    await trusted.shutdown();
+    assert.deepEqual(new Set(accepted), new Set(['/v1/metrics']));
+    assert.deepEqual(diagnostic, [{ event: 'telemetry.export.failed', reason: 'TLS_FAILED' }]);
   } finally {
     collector?.closeAllConnections();
     collector?.close();

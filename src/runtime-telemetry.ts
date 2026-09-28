@@ -101,7 +101,11 @@ function exportFailureReason(error: unknown): Extract<TelemetryExportDiagnostic,
   if (code === 401 || code === 403) return "AUTH_REJECTED";
   if (typeof code === "string") {
     if (["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"].includes(code)) return "DESTINATION_UNAVAILABLE";
-    if (code.startsWith("ERR_TLS_") || code.startsWith("CERT_") || ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT"].includes(code)) return "TLS_FAILED";
+    if (code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_") || code.startsWith("CERT_") || [
+      "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN",
+      "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "INVALID_CA",
+      "EPROTO",
+    ].includes(code)) return "TLS_FAILED";
   }
   return "EXPORT_FAILED";
 }

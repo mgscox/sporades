@@ -202,7 +202,14 @@ const shutdown = async () => {
     websocketHub.disconnectAll();
     let shutdownError;
     try {
-        await shutdownHttpServerAndRuntime(server, async () => { await shutdownAndCloseDatabase(database); await telemetry.shutdown(); });
+        await shutdownHttpServerAndRuntime(server, async () => {
+            try {
+                await shutdownAndCloseDatabase(database);
+            }
+            finally {
+                await telemetry.shutdown();
+            }
+        });
     }
     catch (error) {
         shutdownError = error;

@@ -2846,7 +2846,10 @@ async function startDevSession(options: LooseRecord) {
       for (const watcher of watchers) watcher.close();
       rm(path.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {});
       websocketHub.disconnectAll();
-      await shutdownHttpServerAndRuntime(server, async () => { await runtime.shutdown(); await telemetry.shutdown(); });
+      await shutdownHttpServerAndRuntime(server, async () => {
+        try { await runtime.shutdown(); }
+        finally { await telemetry.shutdown(); }
+      });
     }
     catch (error) { shutdownError = error; }
     try { await rm(sessionFilePath, { force: true }); }

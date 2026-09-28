@@ -234,7 +234,10 @@ const shutdown = async () => {
   shutdownStarted = true;
   websocketHub.disconnectAll();
   let shutdownError: unknown;
-  try { await shutdownHttpServerAndRuntime(server, async () => { await shutdownAndCloseDatabase(database); await telemetry.shutdown(); }); }
+  try { await shutdownHttpServerAndRuntime(server, async () => {
+    try { await shutdownAndCloseDatabase(database); }
+    finally { await telemetry.shutdown(); }
+  }); }
   catch (error) { shutdownError = error; }
   if (shutdownError) process.stderr.write(`${shutdownError instanceof Error ? shutdownError.stack ?? shutdownError.message : String(shutdownError)}\n`);
   process.exit(shutdownError ? 1 : 0);
