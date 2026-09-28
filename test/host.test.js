@@ -6874,7 +6874,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     }
     const disabled = await runHostHelper({ action: "host.telemetry.disable", host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot }, capsule: { subname: "team-notes" } }, { cwd: dir, env: docker.env });
     assert.equal(JSON.parse(disabled.stdout).ok, true, disabled.stdout);
-    assert.equal(JSON.parse(disabled.stdout).data.coverage.state, "pending-restart");
+    assert.equal(JSON.parse(disabled.stdout).data.coverage.state, "unverified", "the fixture does not prove the running runtime's Telemetry capability");
     assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).telemetry.disabled, true);
     const enabled = await runHostHelper({ action: "host.telemetry.enable", host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot }, capsule: { subname: "team-notes" } }, { cwd: dir, env: docker.env });
     assert.equal(JSON.parse(enabled.stdout).ok, true, enabled.stdout);
