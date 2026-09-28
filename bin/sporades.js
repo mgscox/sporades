@@ -78300,12 +78300,12 @@ var require_OTLPMetricExporterOptions = __commonJS({
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.AggregationTemporalityPreference = void 0;
-    var AggregationTemporalityPreference;
-    (function(AggregationTemporalityPreference2) {
-      AggregationTemporalityPreference2[AggregationTemporalityPreference2["DELTA"] = 0] = "DELTA";
-      AggregationTemporalityPreference2[AggregationTemporalityPreference2["CUMULATIVE"] = 1] = "CUMULATIVE";
-      AggregationTemporalityPreference2[AggregationTemporalityPreference2["LOWMEMORY"] = 2] = "LOWMEMORY";
-    })(AggregationTemporalityPreference || (exports.AggregationTemporalityPreference = AggregationTemporalityPreference = {}));
+    var AggregationTemporalityPreference2;
+    (function(AggregationTemporalityPreference3) {
+      AggregationTemporalityPreference3[AggregationTemporalityPreference3["DELTA"] = 0] = "DELTA";
+      AggregationTemporalityPreference3[AggregationTemporalityPreference3["CUMULATIVE"] = 1] = "CUMULATIVE";
+      AggregationTemporalityPreference3[AggregationTemporalityPreference3["LOWMEMORY"] = 2] = "LOWMEMORY";
+    })(AggregationTemporalityPreference2 || (exports.AggregationTemporalityPreference = AggregationTemporalityPreference2 = {}));
   }
 });
 
@@ -128059,6 +128059,15 @@ function exportFailureReason(error) {
   }
   return "EXPORT_FAILED";
 }
+function createProfileExporters(traceOptions, metricOptions) {
+  const ambient = Object.entries(process.env).filter(([key]) => key.startsWith("OTEL_EXPORTER_OTLP_"));
+  try {
+    for (const [key] of ambient) delete process.env[key];
+    return { trace: new import_exporter_trace_otlp_http.OTLPTraceExporter(traceOptions), metrics: new import_exporter_metrics_otlp_http.OTLPMetricExporter(metricOptions) };
+  } finally {
+    for (const [key, value] of ambient) process.env[key] = value;
+  }
+}
 function createHttpRequestTelemetry(config, onDiagnostic) {
   if (!config) return { run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID8() }, handle), shutdown: async () => {
   } };
@@ -128068,19 +128077,24 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const token = config.credentialEnv ? process.env[config.credentialEnv] : void 0;
   if (config.credentialEnv && !token) throw new Error("Telemetry ingestion credential is unavailable.");
   if (config.tls.caFile && statSync(config.tls.caFile).size > 1024 * 1024) throw new Error("Telemetry CA file is too large.");
-  const exporter = new import_exporter_trace_otlp_http.OTLPTraceExporter({
+  const headers = token ? { authorization: `Bearer ${token}` } : {};
+  const httpAgentOptions = { ...config.tls.caFile ? { ca: readFileSync2(config.tls.caFile) } : {}, rejectUnauthorized: true, keepAlive: false, maxSockets: 1 };
+  const compression = "none";
+  const { trace: exporter, metrics: metricExporter } = createProfileExporters({
     url: endpoint,
-    headers: token ? { authorization: `Bearer ${token}` } : {},
+    headers,
+    compression,
     timeoutMillis: 600,
     concurrencyLimit: 1,
-    httpAgentOptions: config.tls.caFile ? { ca: readFileSync2(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 }
-  });
-  const metricExporter = new import_exporter_metrics_otlp_http.OTLPMetricExporter({
+    httpAgentOptions
+  }, {
     url: new URL("/v1/metrics", url).toString(),
-    headers: token ? { authorization: `Bearer ${token}` } : {},
+    headers,
+    compression,
+    temporalityPreference: import_exporter_metrics_otlp_http.AggregationTemporalityPreference.CUMULATIVE,
     timeoutMillis: 600,
     concurrencyLimit: 1,
-    httpAgentOptions: config.tls.caFile ? { ca: readFileSync2(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 }
+    httpAgentOptions
   });
   const failedExports = { traces: false, metrics: false };
   const lastFailureLoggedAt = /* @__PURE__ */ new Map();

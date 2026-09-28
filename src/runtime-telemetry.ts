@@ -7,7 +7,7 @@ import { constants as performanceConstants, monitorEventLoopDelay, performance, 
 import { ROOT_CONTEXT, SpanKind, SpanStatusCode, TraceFlags, trace } from "@opentelemetry/api";
 import type { Span } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
+import { AggregationTemporalityPreference, OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { AggregationType, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import type { PushMetricExporter } from "@opentelemetry/sdk-metrics";
@@ -106,6 +106,19 @@ function exportFailureReason(error: unknown): Extract<TelemetryExportDiagnostic,
   return "EXPORT_FAILED";
 }
 
+/** The pinned OTLP SDK merges process OTLP headers even when headers are supplied.
+ * It snapshots those fallbacks during synchronous construction; export callbacks
+ * use only that snapshot. Keep this isolation scoped to the two constructors. */
+function createProfileExporters(traceOptions: ConstructorParameters<typeof OTLPTraceExporter>[0], metricOptions: ConstructorParameters<typeof OTLPMetricExporter>[0]) {
+  const ambient = Object.entries(process.env).filter(([key]) => key.startsWith("OTEL_EXPORTER_OTLP_"));
+  try {
+    for (const [key] of ambient) delete process.env[key];
+    return { trace: new OTLPTraceExporter(traceOptions), metrics: new OTLPMetricExporter(metricOptions) };
+  } finally {
+    for (const [key, value] of ambient) process.env[key] = value;
+  }
+}
+
 export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>) {
   if (!config) return { run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => runtimeRequestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => {} };
   if (config.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1000)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
@@ -114,19 +127,14 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   const token = config.credentialEnv ? process.env[config.credentialEnv] : undefined;
   if (config.credentialEnv && !token) throw new Error("Telemetry ingestion credential is unavailable.");
   if (config.tls.caFile && statSync(config.tls.caFile).size > 1024 * 1024) throw new Error("Telemetry CA file is too large.");
-  const exporter = new OTLPTraceExporter({
-    url: endpoint,
-    headers: token ? { authorization: `Bearer ${token}` } : {},
-    timeoutMillis: 600,
-    concurrencyLimit: 1,
-    httpAgentOptions: config.tls.caFile ? { ca: readFileSync(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 },
-  });
-  const metricExporter = new OTLPMetricExporter({
-    url: new URL("/v1/metrics", url).toString(),
-    headers: token ? { authorization: `Bearer ${token}` } : {},
-    timeoutMillis: 600,
-    concurrencyLimit: 1,
-    httpAgentOptions: config.tls.caFile ? { ca: readFileSync(config.tls.caFile), keepAlive: false, maxSockets: 1 } : { keepAlive: false, maxSockets: 1 },
+  const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
+  const httpAgentOptions = { ...(config.tls.caFile ? { ca: readFileSync(config.tls.caFile) } : {}), rejectUnauthorized: true, keepAlive: false, maxSockets: 1 };
+  const compression = "none" as NonNullable<ConstructorParameters<typeof OTLPTraceExporter>[0]>["compression"];
+  const { trace: exporter, metrics: metricExporter } = createProfileExporters({
+    url: endpoint, headers, compression, timeoutMillis: 600, concurrencyLimit: 1, httpAgentOptions,
+  }, {
+    url: new URL("/v1/metrics", url).toString(), headers, compression, temporalityPreference: AggregationTemporalityPreference.CUMULATIVE,
+    timeoutMillis: 600, concurrencyLimit: 1, httpAgentOptions,
   });
   const failedExports: Record<"traces" | "metrics", boolean> = { traces: false, metrics: false };
   const lastFailureLoggedAt = new Map<Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"], number>();
