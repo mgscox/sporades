@@ -115,7 +115,7 @@ test('HTTP telemetry exports bounded route labels, terminal outcomes and isolate
   }
 });
 
-test('stream completion and premature client close each end one SERVER span', async () => {
+test('stream completion and client closes before and after headers each end one SERVER span', async () => {
   const received = [];
   const collector = createServer(async (request, response) => {
     let body = '';
@@ -125,7 +125,16 @@ test('stream completion and premature client close each end one SERVER span', as
   }).listen(0, '127.0.0.1');
   await once(collector, 'listening');
   const telemetry = createHttpRequestTelemetry({ endpoint: `http://127.0.0.1:${collector.address().port}`, tls: { mode: 'loopback' }, serviceName: 'stream-test' });
+  let beforeHeadersStarted;
+  const beforeHeadersReady = new Promise(resolve => { beforeHeadersStarted = resolve; });
+  let beforeHeadersClosed;
+  const beforeHeadersDone = new Promise(resolve => { beforeHeadersClosed = resolve; });
   const app = createServer((request, response) => telemetry.run(request, response, [{ method: 'GET', path: '/stream' }], () => {
+    if (request.url === '/before-headers') {
+      beforeHeadersStarted();
+      response.once('close', beforeHeadersClosed);
+      return;
+    }
     response.writeHead(200, { 'content-type': 'text/plain' });
     response.write('first');
     setTimeout(() => { if (!response.destroyed) response.end('last'); }, 60);
@@ -137,15 +146,36 @@ test('stream completion and premature client close each end one SERVER span', as
     await new Promise((resolve) => get(`${origin}/stream`, (response) => {
       response.once('data', () => { response.destroy(); resolve(); });
     }));
+    const earlyRequest = get(`${origin}/before-headers`);
+    earlyRequest.on('error', () => {});
+    await beforeHeadersReady;
+    earlyRequest.destroy();
+    await beforeHeadersDone;
     await new Promise((resolve) => setTimeout(resolve, 100));
     await telemetry.shutdown();
     const spans = received.filter(batch => batch.path === '/v1/traces').flatMap((batch) => batch.body.resourceSpans ?? []).flatMap((resource) => resource.scopeSpans ?? []).flatMap((scope) => scope.spans ?? []);
-    assert.deepEqual(spans.map((span) => span.attributes.find((attribute) => attribute.key === 'sporades.http.outcome')?.value.stringValue).sort(), ['abort', 'success']);
+    assert.deepEqual(spans.map((span) => span.attributes.find((attribute) => attribute.key === 'sporades.http.outcome')?.value.stringValue).sort(), ['abort', 'abort', 'success']);
+    const earlySpan = spans.find(span => span.name === 'GET /__unknown');
+    assert(earlySpan);
+    assert.equal(earlySpan.attributes.find(attribute => attribute.key === 'http.response.status_code'), undefined);
+    assert.equal(earlySpan.status?.code, 2);
+    const afterHeadersSpan = spans.find(span => span.name === 'GET /stream' && span.attributes.find(attribute => attribute.key === 'sporades.http.outcome')?.value.stringValue === 'abort');
+    assert.equal(afterHeadersSpan?.attributes.find(attribute => attribute.key === 'http.response.status_code')?.value.intValue, 200);
     const metrics = received.filter(batch => batch.path === '/v1/metrics').flatMap(batch => batch.body.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []);
     const count = metrics.find(metric => metric.name === 'http.server.request.count');
-    const outcomes = count?.sum?.dataPoints?.map(point => point.attributes.find(attribute => attribute.key === 'sporades.http.outcome')?.value.stringValue).sort();
-    assert.deepEqual(outcomes, ['abort', 'success']);
-    assert.equal(metrics.find(metric => metric.name === 'http.server.request.duration')?.histogram?.dataPoints?.reduce((total, point) => total + Number(point.count), 0), 2);
+    const outcome = point => point.attributes.find(attribute => attribute.key === 'sporades.http.outcome')?.value.stringValue;
+    const status = point => point.attributes.find(attribute => attribute.key === 'http.response.status_code')?.value.stringValue;
+    assert.deepEqual(count?.sum?.dataPoints?.map(outcome).sort(), ['abort', 'abort', 'success']);
+    const byAbortedRoute = (points, route) => points.find(point => point.attributes.find(attribute => attribute.key === 'http.route')?.value.stringValue === route && outcome(point) === 'abort');
+    const earlyCount = byAbortedRoute(count.sum.dataPoints, '/__unknown');
+    assert.equal(Number(earlyCount?.asInt ?? earlyCount?.asDouble), 1);
+    assert.equal(status(earlyCount), 'none');
+    assert.equal(status(byAbortedRoute(count.sum.dataPoints, '/stream')), '2xx');
+    const duration = metrics.find(metric => metric.name === 'http.server.request.duration');
+    assert.equal(duration?.histogram?.dataPoints?.reduce((total, point) => total + Number(point.count), 0), 3);
+    assert.equal(status(byAbortedRoute(duration.histogram.dataPoints, '/__unknown')), 'none');
+    assert.equal(status(byAbortedRoute(duration.histogram.dataPoints, '/stream')), '2xx');
+    assert.equal(metrics.find(metric => metric.name === 'http.server.active_requests')?.sum?.dataPoints?.reduce((total, point) => total + Number(point.asInt ?? point.asDouble), 0), 0);
   } finally {
     app.close();
     collector.close();
