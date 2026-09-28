@@ -58,10 +58,13 @@ and persists that choice across redeploy and restart. To re-enable, deploy with
 { "telemetry": { "profile": "local" } }
 ```
 
-The generated server Bundle receives the selected nonsecret profile descriptor.
-Its runtime reads the credential environment reference at startup. Container
-deploy forwards only the named variable from the CLI process into Docker; the
-value is absent from command arguments, the Bundle, browser assets and Capsule
+Dev resolves the selected profile in the CLI process. A local Container stores
+the resolved nonsecret descriptor (or explicit disabled value) in Docker's saved
+launch environment for its runtime to read at startup. CLI-generated server
+Bundles contain no telemetry selection. The selected profile's credential
+environment reference is read at startup. Container deploy forwards only the
+named variable from the CLI process into Docker; its value is absent from
+command arguments, the Bundle, browser assets and Capsule
 Sealed Server env. Docker administrators can inspect Container environment, so
 scope this credential to ingestion and use the operator's protected environment.
 A loopback collector URL is routed through `host.docker.internal` with Docker's
