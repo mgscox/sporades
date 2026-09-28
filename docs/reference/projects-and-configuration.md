@@ -42,6 +42,10 @@ Set that variable in the CLI process before starting Dev or Container. The token
 `Authorization: Bearer` to `<endpoint>/v1/traces` and `<endpoint>/v1/metrics`;
 it is not written to the
 profile or generated Bundle.
+The selected profile alone sets the OTLP destination, authorization and TLS
+trust. Sporades sends uncompressed OTLP/HTTP with cumulative metrics for its
+monitoring stack; ambient `OTEL_EXPORTER_OTLP_*` settings from other tooling do
+not alter these exports. For a private CA, select the profile's `--ca-file`.
 
 Dev selection order is `sporades dev --telemetry <name>`, then the explicit project
 binding below, then no export. A Container session uses `sporades deploy
