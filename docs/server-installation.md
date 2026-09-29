@@ -683,3 +683,40 @@ at `/srv/119-data`. The script refuses a VM whose hostname is not
 `node --test test/host-metrics.acceptance.test.js`; normal tests skip it unless
 explicitly configured. Real workload, reboot and rendered-dashboard checks
 complement this harness and must be recorded before production rollout.
+
+### Capsule autostart after Host reboot
+
+`sporades host bootstrap` installs and enables a per-Host
+`sporades-capsules-<identity>.service` on systemd Hosts. The bootstrap JSON output
+includes its exact unit name under `autostart.unit`. The shared installation
+script runs bootstrap, so this applies to fresh manual and automatic installs.
+For existing Hosts, run `sporades host upgrade --host <alias>` followed by
+`sporades host bootstrap --host <alias> --json`. Installing the service does not
+restart running Capsules.
+
+After Docker and Caddy start, the service performs one recovery pass through the
+Host helper. Previously running Capsules resume through the normal startup path:
+selected current release, protected configuration, data access checks,
+authenticated readiness, and Caddy route publication using the actual new
+loopback port. A release uploaded without restart becomes active at this next
+startup, just as with an explicit `sporades host start`. Registry and route
+locking serializes recovery with operator lifecycle commands.
+
+Stopped, unregistered, failed, never-started and already-running Capsules are
+left alone. A retained runtime that exhausted its non-zero-exit crash retries is
+also left unavailable for operator repair. Docker retains `on-failure:3`; the
+boot service has no restart loop and does not supervise running Capsules. A
+missing retained container requires an explicit start. Use Sporades stop commands
+for durable operator intent rather than stopping containers directly in Docker.
+
+The service also participates in an explicit Docker service restart once active.
+Check `systemctl status <unit>` and `journalctl -u <unit>` over SSH for per-Capsule
+results; one failed Capsule does not prevent recovery attempts for the others.
+A repaired service can be run with `systemctl restart <unit>`; already-running
+Capsules are skipped. To suspend Host-wide boot recovery use
+`systemctl disable --now <unit>`; bootstrap enables it again. These commands do
+not stop running Capsules. Non-systemd installations report
+`systemd-docker-unavailable` and require an equivalent operator-managed boot hook.
+
+Docker documents that `on-failure` does not resume containers after daemon restart:
+[Docker restart policies](https://docs.docker.com/engine/containers/start-containers-automatically/).

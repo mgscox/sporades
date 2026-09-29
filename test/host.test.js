@@ -1949,6 +1949,12 @@ test("first Host helper upgrade drains legacy actions and blocks new commands be
     await assert.rejects(stat(path.join(remoteBin, ".sporades-host-helper.needs-drain")), { code: "ENOENT" });
     assert.deepEqual((await readdir(remoteBin)).filter((entry) => entry.includes(".tmp-")), []);
 
+    const bootHost = { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: path.join(dir, "remote") };
+    await mkdir(path.join(bootHost.remoteRoot, "hosts", bootHost.domain, "registry", "capsules"), { recursive: true });
+    const boot = await startExecutable(target, ["--resume-host", Buffer.from(JSON.stringify(bootHost)).toString("base64url")], { cwd: dir, env }).result;
+    assert.equal(boot.code, 0, boot.stderr || boot.stdout);
+    assert.deepEqual(JSON.parse(boot.stdout), { ok: true, data: { capsules: [] }, error: null }, "upgraded dispatcher must forward boot arguments unchanged");
+
     await writeFile(path.join(remoteBin, payloadName), Buffer.concat([await readFile(path.join(remoteBin, payloadName)), Buffer.from("\ncorrupt\n")]));
     const corrupted = await startExecutable(target, [], { cwd: dir, env, input: request }).result;
     assert.equal(JSON.parse(corrupted.stdout).error.message, "Host helper payload integrity check failed.");
@@ -15438,5 +15444,54 @@ child.spawnSync = function(command, args, ...rest) {
     assert(events.findIndex((event) => event.docker === "stop") > 0);
     assert.equal((await stat(stored)).mode & 0o777, 0o600);
     assert.equal(await readFile(stored, "utf8"), "atomic edit");
+  });
+});
+
+test("Host boot recovery resumes a previously running Capsule through authenticated startup", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "boot-resume", restart: false });
+    await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.status = "running";
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: {
+      FAKE_DOCKER_INSPECT_JSON: JSON.stringify({ State: { Running: false, Status: "exited", ExitCode: 0 }, RestartCount: 0, Config: { Labels: {
+        "com.sporades.managed": "true", "com.sporades.hosted-domain": fixture.domain, "com.sporades.capsule-subname": fixture.subname,
+      } } }),
+    } });
+    const result = await runHostHelper({ action: "capsule.resume", host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } }, { cwd: dir, env: docker.env });
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true, result.stdout);
+    assert.equal(output.data.resumed, true);
+    const calls = await docker.calls();
+    assert(calls.some(c => c.args[0] === "exec"), "resumed runtime must pass authenticated readiness");
+    const run = calls.find(c => c.args[0] === "run");
+    assert.equal(run.args[run.args.indexOf("--restart") + 1], "on-failure:3");
+    assert.match(await readFile(fixture.routeFile, "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
+  });
+});
+
+test("Host boot recovery preserves stopped state, running instances and exhausted crash limits", async (t) => {
+  for (const scenario of ["stopped", "failed", "unregistered", "already-running", "exhausted", "foreign-container", "never-started"]) await t.test(scenario, async () => {
+    await withTempDir(async (dir) => {
+      const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "boot-policy", restart: false });
+      await alignSealedFixtureWithBuiltLifecycle(fixture);
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      record.status = ["stopped", "failed", "unregistered"].includes(scenario) ? scenario : scenario === "never-started" ? "released" : "running";
+      await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      const docker = await installFakeDocker(path.join(dir, "docker"), { env: {
+        FAKE_DOCKER_INSPECT_STATUS: scenario === "never-started" ? "1" : "0",
+        FAKE_DOCKER_INSPECT_JSON: JSON.stringify({ State: { Running: scenario === "already-running", Status: "exited", ExitCode: scenario === "exhausted" ? 1 : 0 }, RestartCount: scenario === "exhausted" ? 3 : 0, Config: { Labels: {
+          "com.sporades.managed": scenario === "foreign-container" ? "false" : "true", "com.sporades.hosted-domain": fixture.domain, "com.sporades.capsule-subname": fixture.subname,
+        } } }),
+      } });
+      const result = await runHostHelper({ action: "capsule.resume", host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } }, { cwd: dir, env: docker.env });
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.ok, scenario !== "foreign-container", result.stdout);
+      if (output.ok) assert.equal(output.data.resumed, false);
+      const calls = await docker.calls().catch(e => { if (e.code === "ENOENT") return []; throw e; });
+      assert(!calls.some(c => ["run", "start", "stop", "rm"].includes(c.args[0])), "boot policy must not restart or replace this container");
+      if (scenario === "exhausted") assert.match(await readFile(fixture.routeFile, "utf8"), /Hosted Capsule unavailable/);
+    });
   });
 });

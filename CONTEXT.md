@@ -610,3 +610,9 @@ these sources independently of Capsule runtime exports. New connection and
 existing-Host reconciliation share the same installation contract; bootstrap
 preserves it. No Docker socket, external container-resource collector, Caddy
 OTLP metric exporter or Caddy tracing is required.
+
+Host bootstrap installs a per-domain systemd boot recovery service. It resumes
+previously running Hosted Capsules through the existing readiness/route-lock
+path after Docker/Caddy startup, while Docker retains bounded `on-failure:3`
+crash recovery. Explicitly stopped/failed Capsules remain stopped. The service
+is installed by the common manual/automatic Host installation contract.
