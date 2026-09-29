@@ -18,6 +18,7 @@ export type HostHelperAction =
   | "capsule.release.list"
   | "capsule.release.rollback"
   | "capsule.release.reconcile"
+  | "capsule.resume"
   | "capsule.start"
   | "capsule.stop"
   | "capsule.restart"
@@ -168,7 +169,7 @@ export type HostReleaseRollbackRequest = HostHelperRequestBase & {
   rollback: { releaseId: string };
 };
 export type HostLifecycleRequest = HostHelperRequestBase & {
-  action: "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.release.reconcile";
+  action: "capsule.resume" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.release.reconcile";
   capsule: HostHelperCapsuleTarget;
 };
 export type HostStatsRequest =

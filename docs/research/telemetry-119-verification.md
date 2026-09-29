@@ -42,3 +42,6 @@ Grafana's existing anonymous-viewer stars API returns 401 and the gateway does n
 ## Automated validation
 
 Build, TypeScript checks, generated CLI/helper parity and `git diff --check` passed. The full suite ran 2,831 tests: 2,580 passed, 202 skipped and 49 Host archive-fixture failures caused by macOS AppleDouble metadata. Rerunning the entire affected Host/relay/monitoring suite with `COPYFILE_DISABLE=1` passed 302 tests, with 9 skips and no failures. The installed-CLI disposable acceptance test also passed. The raw-bundle helper upgrade regression was demonstrated red, then green; a real installed-CLI upgrade succeeded on the disposable VM and Live.
+
+Follow-up: the clean-reboot Capsule limitation above was addressed by the shared
+Host autostart installation; see [autostart verification](host-autostart-verification.md).

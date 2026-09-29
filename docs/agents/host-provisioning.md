@@ -699,3 +699,15 @@ Caddy service loads the managed master so sites and metrics survive reboot.
 Verification must include fresh stored Host/Caddy samples and both provisioned
 dashboards. Test fresh-install/retrofit parity and reboot/link-loss on disposable
 Hosts; do not run pressure workloads against Live CIC or SaaS Tickets.
+
+### Capsule boot recovery
+
+The shared bootstrap step also installs/enables the per-Host systemd Capsule
+recovery service (`autostart.unit` in its JSON response). No provider-specific
+script is needed. Manual and automatic fresh installs use this same contract;
+existing installations run helper upgrade plus bootstrap. The service starts
+previously running Capsules after Docker/Caddy startup, preserving stopped state
+and bounded crash retries. Installation alone does not restart Capsules. Verify
+reboot behavior on disposable infrastructure with one running and one explicitly
+stopped Capsule. See [Capsule autostart](../server-installation.md#capsule-autostart-after-host-reboot)
+for eligibility, current-release behavior, diagnostics and rollback.

@@ -57,6 +57,7 @@ import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
 import { checkHostTelemetryDelivery, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
+import { installHostAutostart } from "./host-autostart.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import {
   hostRegistryRetryCommand,
@@ -164,12 +165,16 @@ runHostHelperEntry().catch((error: HelperError) => {
     },
     false,
   );
-  if (HOST_HELPER_INSTALL_MODE) process.exitCode = 1;
+  if (HOST_HELPER_INSTALL_MODE || process.argv[2] === "--resume-host") process.exitCode = 1;
 });
 
 async function runHostHelperEntry() {
   if (process.argv[2] === "--install-host-helper" || process.argv[2] === "--install-host-helper-internal") {
     await runHostHelperInstaller();
+    return;
+  }
+  if (process.argv[2] === "--resume-host") {
+    await resumeHostAtBoot();
     return;
   }
   await runHostHelperProcess();
@@ -198,8 +203,9 @@ fi
 expected=\${payload%.mjs}
 expected=\${expected##*-}
 checksum=\${SPORADES_TEST_SHA256_PATH:-/usr/bin/sha256sum}
-set -- \$(\"$checksum\" \"$dir/$payload\")
-if [ \"\${1:-}\" != \"$expected\" ]; then
+actual=\$(\"$checksum\" \"$dir/$payload\")
+actual=\${actual%% *}
+if [ \"$actual\" != \"$expected\" ]; then
   printf '%s\\n' '{"ok":false,"data":null,"error":{"message":"Host helper payload integrity check failed.","hint":"Retry sporades host upgrade before running Host commands."}}'
   exit 0
 fi
@@ -544,6 +550,7 @@ function managedRouteMutationLockIdentity(request: HostHelperRequest) {
     case "capsule.release.install": validateInstallRequest(request); break;
     case "capsule.release.rollback": validateRollbackRequest(request); break;
     case "capsule.release.reconcile":
+    case "capsule.resume":
     case "capsule.start":
     case "capsule.stop":
     case "capsule.restart": validateLifecycleRequest(request); break;
@@ -593,6 +600,7 @@ function actionCanProvisionCapsuleHttpLog(action: string) {
   return action === "capsule.register"
     || action === "capsule.release.install"
     || action === "capsule.release.rollback"
+    || action === "capsule.resume"
     || action === "capsule.start"
     || action === "capsule.stop"
     || action === "capsule.restart"
@@ -934,6 +942,10 @@ async function main(request: HostHelperRequest) {
     await reconcileReleaseAttempt(request);
     return;
   }
+  if (request.action === "capsule.resume") {
+    await resumeCapsuleAtBoot(request);
+    return;
+  }
   if (request.action === "capsule.start") {
     await startCapsule(request);
     return;
@@ -1072,6 +1084,7 @@ async function bootstrapHost(request: HostHelperRequest) {
   const network = ensureDockerNetwork(bootstrap.network);
   const accessLog = await provisionCaddyAccessLog(request, bootstrap);
   const caddy = await installCaddyBootstrapConfig(request, bootstrap);
+  const autostart = await installHostAutostart(request.host);
   const telemetry = await readHostTelemetryConnection(request.host.remoteRoot)
     ? await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain) : null;
 
@@ -1079,6 +1092,7 @@ async function bootstrapHost(request: HostHelperRequest) {
     ok: true,
     data: {
       bootstrapped: true,
+      autostart,
       telemetry,
       domain: request.host.domain,
       remoteRoot: request.host.remoteRoot,
@@ -2052,6 +2066,61 @@ async function waitForHostedRuntimeReadiness(lifecycle: HostedCapsuleLifecycle, 
     const waitMs = deadline - performance.now(); if (waitMs > 0) await delay(Math.min(100, waitMs));
   }
   return lastFailure.ok ? lastFailure : { ok: false, failure: lastFailure.failure === "connection" ? "timeout" : lastFailure.failure };
+}
+
+async function resumeHostAtBoot() {
+  const host = JSON.parse(Buffer.from(process.argv[3] ?? "", "base64url").toString("utf8"));
+  const request = { action: "capsule.list", host } as HostHelperRequest;
+  validateListRequest(request);
+  const root = validateCanonicalHostRouteRoot(request);
+  canonicalManagedRouteDomainDirectory(request, root);
+  const directory = path.join(root, "hosts", host.domain, "registry", "capsules");
+  await trustedDirectoryChain(directory, false, root);
+  const results = [];
+  for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a,b) => a.name.localeCompare(b.name))) {
+    if (!entry.isFile() || !/^[a-z0-9][a-z0-9-]*\.json$/.test(entry.name)) continue;
+    const subname = entry.name.slice(0, -5);
+    const child = spawnSync(process.execPath, [process.argv[1]], {
+      input: JSON.stringify({ action: "capsule.resume", host, capsule: { subname } }),
+      encoding: "utf8", timeout: 300_000, maxBuffer: 1024 * 1024,
+    });
+    let result;
+    try { result = JSON.parse(child.stdout); } catch { result = null; }
+    results.push({ subname, ok: child.status === 0 && result?.ok === true, ...(result?.data ?? {}), ...(result?.error ? { error: result.error.message } : {}) });
+  }
+  const ok = results.every(result => result.ok);
+  writeEnvelope({ ok, data: { capsules: results }, error: ok ? null : { message: "Some Capsules could not resume.", hint: "Inspect journalctl for the Host boot recovery service and Capsule logs." } });
+  if (!ok) process.exitCode = 1;
+}
+
+async function resumeCapsuleAtBoot(request: HostHelperRequest) {
+  validateLifecycleRequest(request);
+  const record = await readRegistryRecordForCapsule(request, "lifecycle");
+  assertRegistryRecordMatchesRequest(request, record);
+  const skip = (reason: string) => writeEnvelope({ ok: true, data: { resumed: false, reason }, error: null });
+  if (!["running", "released"].includes(record.status)) return skip("not-running-before-shutdown");
+  const name = createHostedContainerName(request.host.domain, request.capsule.subname);
+  const inspected = runDocker(["inspect", "--format", "{{json .}}", name]);
+  if (!inspected.ok) {
+    const names = runDocker(["ps", "-a", "--format", "{{.Names}}"]);
+    if (names.ok && !names.stdout.split(/\r?\n/).includes(name)) return skip("no-retained-container");
+    throw helperError("Cannot inspect Capsule for boot recovery.", "Check Docker and run sporades host start explicitly if its container was removed.");
+  }
+  let container;
+  try { container = JSON.parse(inspected.stdout); } catch { throw helperError("Invalid boot recovery inspection.", "Check Docker and retry."); }
+  const labels = container.Config?.Labels;
+  if (labels?.["com.sporades.managed"] !== "true" || labels?.["com.sporades.hosted-domain"] !== request.host.domain || labels?.["com.sporades.capsule-subname"] !== request.capsule.subname) {
+    throw helperError("Boot recovery container identity does not match the Capsule.", "Resolve the container name conflict before starting the Capsule.");
+  }
+  if (container.State?.Running === true || container.State?.Restarting === true) return skip("already-running");
+  if (container.State?.Status !== "exited" || !Number.isInteger(container.RestartCount) || !Number.isInteger(container.State?.ExitCode)) return skip("not-a-stopped-runtime");
+  if (container.State.ExitCode !== 0 && container.RestartCount >= restartPolicyForMode("hosted").maxAttempts) {
+    await routeRuntimeExhaustionToUnavailable(request, record, { container: { name } });
+    return skip("crash-retries-exhausted");
+  }
+  await writeUnavailableRoute(normaliseLifecycle(request, record, { ignoreProvidedLifecycle: true }));
+  const data = await startCapsule(request, { write: false, trustedRegistryLifecycle: true });
+  writeEnvelope({ ok: Boolean(data), data: data ? { ...data, resumed: true } : null, error: data ? null : { message: "Capsule boot recovery failed.", hint: "Inspect Capsule logs and use sporades host start after repair." } });
 }
 
 async function startCapsule(request: HostHelperRequest, options: LooseRecord = {}) {
