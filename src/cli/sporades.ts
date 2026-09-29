@@ -1292,7 +1292,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   switch (subcommand) {
     case "telemetry": {
       const [operation, ...extra] = positional;
-      if (!operation || !["connect", "reconcile", "status", "check", "enable", "disable"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
+      if (!operation || !["connect", "reconcile", "status", "check", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
         throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
       }
       if ((operation === "enable" || operation === "disable") && extra.length !== 1) throw commandError("Missing Capsule subname.", `Use \`sporades host telemetry ${operation} <subname> --host <alias>\`.`);

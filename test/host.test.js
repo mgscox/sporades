@@ -1896,7 +1896,7 @@ test("first Host helper upgrade drains legacy actions and blocks new commands be
     const procRoot = path.join(dir, "proc");
     await mkdir(remoteBin, { recursive: true });
     await mkdir(procRoot, { recursive: true });
-    await writeFile(target, "#!/bin/sh\nprintf '%s\\n' legacy-helper\n", { mode: 0o755 });
+    await copyFile(hostHelperPath, target); // A raw installed bundle contains the dispatcher marker as JavaScript source.
     await chmod(target, 0o755);
     const helperBytes = await readFile(hostHelperPath);
     const checksum = createHash("sha256").update(helperBytes).digest("hex");
@@ -1917,7 +1917,7 @@ test("first Host helper upgrade drains legacy actions and blocks new commands be
     };
     const upgrade = startExecutable(stage, ["--install-host-helper", target, checksum], { cwd: dir, env });
     await Promise.race([
-      waitForFileText(target, (contents) => contents.includes("SPORADES_HOST_HELPER_DISPATCHER_V1")),
+      waitForFileText(target, (contents) => contents.startsWith("#!/bin/sh\n# SPORADES_HOST_HELPER_DISPATCHER_V1\n")),
       upgrade.result.then((result) => assert.fail(`upgrade exited before dispatcher publication: ${JSON.stringify(result)}`)),
     ]);
     await writeFakeProcEntry(procRoot, 41002, target, [], "start-during-replacement window");

@@ -584,3 +584,102 @@ updated instead of copying the tree into procedural install docs.
   check that Caddy is installed and running on the Host server.
 - Node warning that SQLite integration is experimental - this is expected and can 
   be safely ignored. To avoid this use a plugin for an alternative database (roadmap feature)
+
+### Host pressure and Caddy metrics
+
+Connecting a monitored Linux Host also installs pinned `node_exporter` 1.12.1
+and privately scrapes Caddy with the Host relay's Collector 0.138.0. For an
+existing connection, upgrade the CLI/helper together, then run:
+
+```sh
+sporades host telemetry reconcile --host personal --json
+sporades host telemetry status --host personal --json
+```
+
+New installations use the same path through `host telemetry connect`. Repeated
+bootstrap reconciles an existing connection; an unconfigured Host exports
+nothing. No Capsule restart is required for Host/Caddy collection. Existing
+Capsule instrumentation and its opt-outs remain independent.
+
+The relay retains its Capsule network/alias and joins the internal Docker
+network `sporades-host-metrics`. The exporter uses Host PID/network namespaces
+and a read-only recursive `/` mount at `/host`, with matching root/proc/sys paths.
+Its HTTP listener binds only the metrics bridge gateway on port 9100. Caddy's
+metrics-only listener binds that gateway on port 20190. The Collector scrapes
+both every 15 seconds with a five-second timeout and a 10,000-sample cap, then
+uses the existing authenticated OTLP/HTTPS destination. Never publish these
+ports or Caddy's administration endpoint. Container localhost is not Host
+localhost. No Docker socket or privileged exporter is used; the exporter has a
+128 MiB memory limit, 0.25 CPU limit and a restricted collector set.
+
+Caddy 2.6.2 is the minimum tested version. The helper enables `servers { metrics }`
+and the `metrics /metrics` handler, validates the candidate Caddyfile, then
+performs a graceful reload. It preserves other global options, sites and TLS.
+A rejected candidate never replaces the working file; failed reload restores
+the previous file. Managed blocks are marked `Sporades Host metrics`. On systemd
+Hosts, an owned drop-in orders Caddy after Docker, retries failed startup and
+sets its start/reload command to the managed `<remote-root>/caddy/Caddyfile`.
+This preserves the same sites and metrics configuration across reboot; existing
+service environment, user and other overrides are retained. The supported
+Debian/Ubuntu package installs Caddy at `/usr/bin/caddy`. No native Caddy OTLP export or Caddy tracing is added.
+
+Open `/grafana/d/sporades-hosts` and `/grafana/d/sporades-caddy` through the
+protected monitoring gateway. Select the canonical Hosted domain in **Host**;
+this is independent of workstation aliases. Measurements carry `sporades_host`
+and `telemetry_source` labels. Host identity persists across exporter restarts.
+
+The Host dashboard includes normalized CPU/load/iowait/steal, available RAM,
+swap/paging, free filesystem bytes/inodes, disk throughput/mean operation time,
+and network errors/drops. CPU/memory/I/O PSI needs Linux kernel support;
+`status.resources.psi` reports support. Unavailable panels or failed collectors
+are not healthy zero. Disk busy fraction alone is not a saturation guarantee.
+Filesystem measurements cover real mounted volumes backing Sporades and Docker;
+pseudo-filesystems and container overlays are excluded. Docker Desktop reports
+its Linux VM, not the physical Mac. Check additional data mounts in stored
+`node_filesystem_*` series after installation. Caddy panels select only the
+top-level `subroute` handler to avoid counting each middleware pass as another request.
+
+For disable/remove without affecting Capsule exports or retained history:
+
+```sh
+sporades host telemetry resources-disable --host personal --json
+sporades host telemetry resources-enable --host personal --json
+sporades host telemetry resources-remove --host personal --json
+```
+
+Disable stops the exporter, removes the managed Caddy metrics configuration,
+and removes resource scrapes. Remove also deletes the exporter container;
+protected disabled state is retained so later bootstrap does not reinstall it.
+The shared relay, its credentials, the internal network, boot-order drop-in and
+stored backend history are retained. Enable reinstalls/reconciles the resources.
+These operations never delete Capsule data or rotate credentials.
+
+Before upgrades, keep protected backups of the helper, Caddyfile and
+`<remote-root>/telemetry/` directory. The helper saves the immediately previous
+Caddyfile at `telemetry/caddy-before-resources.conf`; preserve a separate operator
+backup before a sequence of changes. To roll back, disable resource collection
+using the current helper first, then restore the previous helper and protected
+configuration. Validate and gracefully reload Caddy after restoring its file.
+Do not restore old state over unrelated route changes or delete monitoring volumes.
+
+A running container or OTLP acceptance does not prove stored data. Confirm recent
+`up{telemetry_source="node"}` and `up{telemetry_source="caddy"}` samples with the
+expected `sporades_host`, real Host RAM/filesystem values, and rendered dashboards.
+An exporter outage yields `up=0`; an unavailable relay yields stale/absent data.
+Queues are bounded and may drop data during an outage. Drill pressure, link loss
+and reboot on disposable Hosts, not production Capsules.
+
+For repeatable developer acceptance, `scripts/verify-host-metrics.mjs` exercises
+the installed CLI, Caddy validation, configuration preservation, source failure,
+PSI absence and resource lifecycle against the prepared disposable Host. It
+requires `SPORADES_HOST_METRICS_TEST_ROOT` (containing the installed `cli` wrapper,
+`ssh_config` alias `sporades119`, `certs/cert.pem` and the generated
+`monitoring/.private/credentials.json`) and `SPORADES_HOST_METRICS_TEST_URL` for
+the separate monitoring stack. Register profile `acceptance` with domain
+`acceptance119.example`, connect it, and mount a disposable 128 MiB ext4 volume
+at `/srv/119-data`. The script refuses a VM whose hostname is not
+`sporades-119-test`; never reuse this hostname for production. Results go to
+`SPORADES_HOST_METRICS_TEST_EVIDENCE` or `<test-root>/evidence`. Run through
+`node --test test/host-metrics.acceptance.test.js`; normal tests skip it unless
+explicitly configured. Real workload, reboot and rendered-dashboard checks
+complement this harness and must be recorded before production rollout.

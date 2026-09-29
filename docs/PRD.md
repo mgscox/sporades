@@ -276,7 +276,7 @@ The following work is intentionally deferred:
   transport and Host-owned Hosted Capsule activation are available; each Host
   connection enables its Capsules by default with per-Capsule opt-out, and
   running Capsules need a controlled restart before coverage is confirmed.
-  Container/Host resource collection and operation spans remain deferred under
+  Host OS pressure and Caddy Prometheus collection are available through the Host relay; external container-resource collection is out of scope, and operation spans remain deferred under
   [automatic monitoring issue #107](https://github.com/mgscox/sporades/issues/107).
   Centralized JSON logging remains deferred in
   `.scratch/post-v2-platform-hardening-and-ops/issues/05-centralize-json-server-logging.md`.
@@ -1433,3 +1433,11 @@ only unchanged seeds and always retaining edits.
 Ordinary Jobs, Custom mutations, and Custom endpoints may opt into one first-operation resource scope with current anchor authorization and durable actor/input-bound replay receipts. SQLite Jobs use a dedicated writer transaction; PostgreSQL verifies ordinary permanent resource tables with no partitioning or inheritance, exact ordered lock and receipt columns, text types, nullability, absence of extras, primary keys, and absence of every index except the primary-key backing index before resource admission. If initialization or folded-legacy upgrade is needed, a short separate transaction holds its transaction-scoped advisory guard through schema-publication commit; initialized scopes bypass that bootstrap and lock only the runtime resource row with `FOR UPDATE NOWAIT`, then Jobs lock the exact Job claim. Every PostgreSQL scope locks its authorization anchor before the current ACL decision and protected reads. Mutations and endpoints retain both rows in their outer transaction without committing early. All scopes retain their authority locks through outer commit or rollback and expose a provisional result while unsettled. Non-Job scopes use a 30-second outer-transaction budget with a one-second admission reserve. Scope handles expire, unsupported effects fail closed, and an uncertain PostgreSQL COMMIT acknowledgement discards its connection before a later locked receipt lookup reconciles it. Notification acceptance commits immutable per-recipient intents atomically with the receipt; a separate durable SMTP worker retries uncertain outcomes after commit and may produce duplicate receiver acceptance. It promises neither exactly-once nor unconditional eventual delivery. libSQL fails closed and is outside this conformance. [Contract and bounds](reference/jobs-and-schedules.md#sqlite-resource-transactions-ticket-02).
 
 The v1 resource adapter matrix is explicit: SQLite is supported, PostgreSQL is supported, and libSQL is unsupported. Every libSQL `run` or `status` call returns `RESOURCE_ADAPTER_UNSUPPORTED` before callback execution, receipt lookup, application or intent writes, or network submission. Future libSQL support requires a separate approved proposal and real representative remote transaction expiry, connection loss, and restart conformance. This rejection gate does not certify libSQL support.
+
+Host resource monitoring (#119) uses pinned node_exporter and Caddy Prometheus
+scrapes through the private Host relay, with Host pressure and Caddy dashboards.
+`host telemetry resources-enable|resources-disable|resources-remove` controls
+these sources independently of Capsule runtime exports. New connection and
+existing-Host reconciliation share the same installation contract; bootstrap
+preserves it. No Docker socket, external container-resource collector, Caddy
+OTLP metric exporter or Caddy tracing is required.

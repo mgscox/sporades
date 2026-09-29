@@ -33,6 +33,7 @@
       "src/cli/host-helper-release-files.ts",
       "src/cli/host-helper-requests.ts",
       "src/cli/host-helper-validation.ts",
+      "src/cli/host-metrics.ts",
       "src/cli/host-request-builders.ts",
       "src/cli/host-telemetry-relay.ts",
       "src/cli/hosted-capsule-contract.ts",
@@ -110,7 +111,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "8cfb831bf91e42be58186228b2bd2ccac6b783a4a72f914369fa3837faeef85e"
+    "digest": "448184850655075343493545bcbe294c49faa8cddb5aa87f456beb49dec3a884"
   },
   "outputs": {
     "files": [
@@ -212,6 +213,10 @@
       "dist/cli/host-helper-validation.d.ts.map",
       "dist/cli/host-helper-validation.js",
       "dist/cli/host-helper-validation.js.map",
+      "dist/cli/host-metrics.d.ts",
+      "dist/cli/host-metrics.d.ts.map",
+      "dist/cli/host-metrics.js",
+      "dist/cli/host-metrics.js.map",
       "dist/cli/host-request-builders.d.ts",
       "dist/cli/host-request-builders.d.ts.map",
       "dist/cli/host-request-builders.js",
@@ -489,6 +494,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "f2a3c2a997e3ff02c5fd2ae31e0b3661fd4d476bf15657a1c031f1819b5bda59"
+    "digest": "ecd034b0791ce505b1565f080a7be7c398916d5b1ca0d7072b18ee7fea356234"
   }
 }
