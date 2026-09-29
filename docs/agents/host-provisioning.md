@@ -559,6 +559,13 @@ $SPORADES_CLI host add "$SPORADES_HOST_ALIAS" \
 $SPORADES_CLI host use "$SPORADES_HOST_ALIAS"
 $SPORADES_CLI host bootstrap --host "$SPORADES_HOST_ALIAS" --json
 
+# Optional: use an existing operator Telemetry profile and its credential env.
+# Existing connected Hosts reconcile Host/Caddy collection during bootstrap.
+if [ -n "${SPORADES_TELEMETRY_PROFILE:-}" ]; then
+  $SPORADES_CLI host telemetry connect --host "$SPORADES_HOST_ALIAS" \
+    --profile "$SPORADES_TELEMETRY_PROFILE" --json
+fi
+
 for attempt in 1 2 3 4 5; do
   if $SPORADES_CLI host health --host "$SPORADES_HOST_ALIAS" --json; then
     break
@@ -671,3 +678,24 @@ packages the Host-encrypted envelope for the Hosted Capsule release.
   can write there.
 - Capsule starts but remains unavailable: run `sporades host logs stdout` and
   `sporades host logs stderr` for the Capsule subname.
+
+## Host OS and Caddy monitoring
+
+Set `SPORADES_TELEMETRY_PROFILE` to a previously registered verified-HTTPS Telemetry
+profile to connect a fresh Host during the shared installation script. Supply
+its referenced ingestion credential through the local environment; do not put
+secret values into `sporades-host.env` or diagnostic output. Omit the variable
+for an unmonitored Host. DigitalOcean/Hetzner wrappers use this same shared path.
+
+For an existing connected Host, install the current helper/CLI and run
+`sporades host telemetry reconcile --host <alias> --json`. This installs the
+pinned node_exporter, configures private Caddy Prometheus scraping and reconciles
+the relay without restarting Capsules. Repeated bootstrap preserves this policy.
+See [Host pressure and Caddy metrics](../server-installation.md#host-pressure-and-caddy-metrics)
+for private network/mount requirements, Caddy version support, systemd boot
+ordering, metrics, diagnostics, disable/remove and rollback. Ensure the system
+Caddy service loads the managed master so sites and metrics survive reboot.
+
+Verification must include fresh stored Host/Caddy samples and both provisioned
+dashboards. Test fresh-install/retrofit parity and reboot/link-loss on disposable
+Hosts; do not run pressure workloads against Live CIC or SaaS Tickets.

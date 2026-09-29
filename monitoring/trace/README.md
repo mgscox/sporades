@@ -34,3 +34,20 @@ After startup, choose the origin the smoke command will contact. Direct TLS requ
 ## Backup, restore, and upgrades
 
 Stop the stack for a consistent backup of Jaeger, Prometheus, and Grafana. Back up all three named volumes plus private `.env`, `.private/`, `certs/`, configuration, and any proxy config. Protect backups like credentials. To restore, stop the stack, restore those volumes/files, run `node setup.mjs`, then `docker compose --env-file .compose.env up -d --build`; the one-shot initializers restore non-root volume ownership. Verify with smoke and stored metric queries. For upgrades, save a backup and pinned files, review image/config changes, then run `docker compose --env-file .compose.env pull` and `docker compose --env-file .compose.env up -d --build`. Roll back with saved files and volumes if a new version changes storage format. Setup never rotates a present credential.
+
+## Host pressure and Caddy dashboards
+
+The distribution includes `/grafana/d/sporades-hosts` and
+`/grafana/d/sporades-caddy`. Upgrade the Sporades CLI/helper and run
+`sporades host telemetry reconcile --host <alias> --json` on connected Hosts
+(or `connect` for a new connection). The Host relay privately scrapes pinned
+node_exporter and Caddy and sends metrics over its existing authenticated
+OTLP/HTTPS connection. No new public scrape port is needed, including when
+this stack runs on a separate VM. Deploy the new Compose/dashboard assets and
+recreate Grafana to mount the new dashboards; preserve `.env` and data volumes.
+
+Select a Host using `sporades_host`. Missing data/unsupported PSI is not zero.
+Caddy graphs use the top-level subroute handler only; do not add these edge counters
+to Capsule request counts. Host data does not attribute resource use to a
+container. See the Sporades server-installation guide for resource lifecycle,
+private networking, real filesystem coverage and rollback.

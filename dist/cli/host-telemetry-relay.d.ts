@@ -1,3 +1,4 @@
+import { type HostMetrics } from "./host-metrics.js";
 export type HostRelayConnection = {
     endpoint: string;
     credential: string;
@@ -9,6 +10,7 @@ export declare function validateHostRelayConnection(value: unknown): HostRelayCo
 export declare function renderHostRelayCollectorConfig(options: {
     endpoint: string;
     caFile: boolean;
+    resources?: HostMetrics | null;
 }): string;
 export declare function readHostTelemetryConnection(remoteRoot: string): Promise<{
     schemaVersion: 1;
@@ -28,12 +30,27 @@ export declare function statusHostTelemetryRelay(remoteRoot: string): Promise<{
     network?: string | undefined;
     caConfigured?: boolean | undefined;
     connectedAt?: string | undefined;
+    resources: {
+        configured: boolean;
+        enabled: boolean;
+        backendVerification: string;
+        host?: undefined;
+        exporterRunning?: undefined;
+        psi?: undefined;
+    } | {
+        configured: boolean;
+        enabled: boolean;
+        host: string;
+        exporterRunning: boolean;
+        psi: string;
+        backendVerification: string;
+    };
     connected: boolean;
     relayReady: boolean;
     capsuleCoverage: string;
     backendVerification: string;
 }>;
-export declare function connectHostTelemetryRelay(remoteRoot: string, network: string, input: unknown): Promise<{
+export declare function connectHostTelemetryRelay(remoteRoot: string, network: string, input: unknown, host?: string): Promise<{
     eventLoopDelayResolutionMs?: number | undefined;
     metricsIntervalMs?: number | undefined;
     endpoint?: string | undefined;
@@ -41,12 +58,27 @@ export declare function connectHostTelemetryRelay(remoteRoot: string, network: s
     network?: string | undefined;
     caConfigured?: boolean | undefined;
     connectedAt?: string | undefined;
+    resources: {
+        configured: boolean;
+        enabled: boolean;
+        backendVerification: string;
+        host?: undefined;
+        exporterRunning?: undefined;
+        psi?: undefined;
+    } | {
+        configured: boolean;
+        enabled: boolean;
+        host: string;
+        exporterRunning: boolean;
+        psi: string;
+        backendVerification: string;
+    };
     connected: boolean;
     relayReady: boolean;
     capsuleCoverage: string;
     backendVerification: string;
 }>;
-export declare function reconcileHostTelemetryRelay(remoteRoot: string): Promise<{
+export declare function reconcileHostTelemetryRelay(remoteRoot: string, host?: string, operation?: "reconcile" | "enable" | "disable" | "remove"): Promise<{
     eventLoopDelayResolutionMs?: number | undefined;
     metricsIntervalMs?: number | undefined;
     endpoint?: string | undefined;
@@ -54,6 +86,21 @@ export declare function reconcileHostTelemetryRelay(remoteRoot: string): Promise
     network?: string | undefined;
     caConfigured?: boolean | undefined;
     connectedAt?: string | undefined;
+    resources: {
+        configured: boolean;
+        enabled: boolean;
+        backendVerification: string;
+        host?: undefined;
+        exporterRunning?: undefined;
+        psi?: undefined;
+    } | {
+        configured: boolean;
+        enabled: boolean;
+        host: string;
+        exporterRunning: boolean;
+        psi: string;
+        backendVerification: string;
+    };
     connected: boolean;
     relayReady: boolean;
     capsuleCoverage: string;

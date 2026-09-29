@@ -196,7 +196,7 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
     catch {
         throw helperError("Current Host helper was not found.", "Install the current Host helper before retrying the upgrade.");
     }
-    if (currentTarget.toString("utf8").includes(HOST_HELPER_DISPATCHER_MARKER)) {
+    if (currentTarget.toString("utf8").startsWith(`#!/bin/sh\n# ${HOST_HELPER_DISPATCHER_MARKER}\n`)) {
         firstCooperativeUpgrade = false;
         previousPayloadName = (await readFile(pointer, "utf8")).trim();
         await validateHostHelperPayload(directory, previousPayloadName);
@@ -465,6 +465,9 @@ function managedRouteMutationLockIdentity(request) {
                 };
             }
         case "host.telemetry.connect":
+        case "host.telemetry.resources-enable":
+        case "host.telemetry.resources-disable":
+        case "host.telemetry.resources-remove":
         case "host.telemetry.reconcile": {
             const remoteRoot = validateCanonicalHostRouteRoot(request);
             return {
@@ -792,9 +795,9 @@ async function main(request) {
         const data = capsuleOperation
             ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable")
             : request.action === "host.telemetry.connect"
-                ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry))
-                : request.action === "host.telemetry.reconcile"
-                    ? await hostTelemetryStatusWithCoverage(request, await reconcileHostTelemetryRelay(request.host.remoteRoot))
+                ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain))
+                : ["host.telemetry.reconcile", "host.telemetry.resources-enable", "host.telemetry.resources-disable", "host.telemetry.resources-remove"].includes(request.action)
+                    ? await hostTelemetryStatusWithCoverage(request, await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain, request.action === "host.telemetry.reconcile" ? "reconcile" : request.action.slice("host.telemetry.resources-".length)))
                     : request.action === "host.telemetry.status"
                         ? await hostTelemetryStatusWithCoverage(request)
                         : request.action === "host.telemetry.check"
@@ -974,10 +977,13 @@ async function bootstrapHost(request) {
     const network = ensureDockerNetwork(bootstrap.network);
     const accessLog = await provisionCaddyAccessLog(request, bootstrap);
     const caddy = await installCaddyBootstrapConfig(request, bootstrap);
+    const telemetry = await readHostTelemetryConnection(request.host.remoteRoot)
+        ? await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain) : null;
     writeEnvelope({
         ok: true,
         data: {
             bootstrapped: true,
+            telemetry,
             domain: request.host.domain,
             remoteRoot: request.host.remoteRoot,
             network,

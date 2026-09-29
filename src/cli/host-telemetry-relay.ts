@@ -1,11 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, rename, writeFile, chmod, rm } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import path from "node:path";
 
 import { SPORADES_BASE_IMAGE } from "../base-image.js";
 import { helperError } from "./cli-support.js";
+
+import { configureHostMetrics, hostMetricsStatus, hostScrapeConfig, readHostMetrics, HOST_METRICS_NETWORK, type HostMetrics } from "./host-metrics.js";
 
 const RELAY_IMAGE = "otel/opentelemetry-collector-contrib:0.138.0";
 const RELAY_NAME = "sporades-telemetry-relay";
@@ -40,10 +42,10 @@ export function validateHostRelayConnection(value: unknown): HostRelayConnection
   return input as HostRelayConnection;
 }
 
-export function renderHostRelayCollectorConfig(options: { endpoint: string; caFile: boolean }): string {
+export function renderHostRelayCollectorConfig(options: { endpoint: string; caFile: boolean; resources?: HostMetrics | null }): string {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") invalid();
-  return `receivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: 0.0.0.0:4318\n        max_request_body_size: 2097152\nprocessors:\n  memory_limiter:\n    check_interval: 1s\n    limit_mib: 96\n    spike_limit_mib: 24\n  batch:\n    send_batch_size: 256\n    timeout: 1s\nexporters:\n  otlphttp/remote:\n    endpoint: ${JSON.stringify(options.endpoint)}\n    headers:\n      Authorization: \"\${env:SPORADES_INGEST_AUTH}\"\n${options.caFile ? "    tls:\n      ca_file: /etc/otelcol/ca.pem\n" : ""}    sending_queue:\n      enabled: true\n      queue_size: 1000\n      num_consumers: 2\n    retry_on_failure:\n      enabled: true\n      max_elapsed_time: 300s\nservice:\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [otlphttp/remote]\n    metrics:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [otlphttp/remote]\n`;
+  return `receivers:\n${options.resources ? hostScrapeConfig(options.resources) : ""}  otlp:\n    protocols:\n      http:\n        endpoint: 0.0.0.0:4318\n        max_request_body_size: 2097152\nprocessors:\n  memory_limiter:\n    check_interval: 1s\n    limit_mib: 96\n    spike_limit_mib: 24\n  batch:\n    send_batch_size: 256\n    timeout: 1s\nexporters:\n  otlphttp/remote:\n    endpoint: ${JSON.stringify(options.endpoint)}\n    headers:\n      Authorization: \"\${env:SPORADES_INGEST_AUTH}\"\n${options.caFile ? "    tls:\n      ca_file: /etc/otelcol/ca.pem\n" : ""}    sending_queue:\n      enabled: true\n      queue_size: 1000\n      num_consumers: 2\n    retry_on_failure:\n      enabled: true\n      max_elapsed_time: 300s\nservice:\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [otlphttp/remote]\n    metrics:\n      receivers: [otlp${options.resources?.enabled ? ", prometheus/host" : ""}]\n      processors: [memory_limiter, batch]\n      exporters: [otlphttp/remote]\n`;
 }
 
 function paths(remoteRoot: string) {
@@ -115,6 +117,7 @@ export async function statusHostTelemetryRelay(remoteRoot: string) {
   const connection = await readHostTelemetryConnection(remoteRoot);
   const relay = inspectRelay();
   return {
+    resources: await hostMetricsStatus(remoteRoot),
     connected: Boolean(connection),
     relayReady: Boolean(connection && relay?.State?.Running === true),
     capsuleCoverage: "not-configured",
@@ -123,19 +126,20 @@ export async function statusHostTelemetryRelay(remoteRoot: string) {
   };
 }
 
-export async function connectHostTelemetryRelay(remoteRoot: string, network: string, input: unknown) {
+export async function connectHostTelemetryRelay(remoteRoot: string, network: string, input: unknown, host?: string) {
   const connection = validateHostRelayConnection(input);
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(network)) invalid();
   if (!docker(["network", "inspect", network]).ok) throw helperError("Hosted Docker network is unavailable.", "Bootstrap the Host before connecting Telemetry.");
   const files = paths(remoteRoot);
   await mkdir(files.directory, { recursive: true, mode: 0o700 });
   await assertOwnedDirectory(files.directory);
+  const resources = host ? await configureHostMetrics(remoteRoot, host) : await readHostMetrics(remoteRoot);
   const previous = await readHostTelemetryConnection(remoteRoot);
   const previousConfig = previous ? await readProtected(files.config) : null;
   const previousCredential = previous ? await readProtected(files.credential) : null;
   const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
   const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
-  await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem) }), 0o644);
+  await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 0o644);
   await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
   if (connection.caPem) await atomicWrite(files.ca, connection.caPem, 0o644);
   try {
@@ -162,13 +166,16 @@ async function startRelay(files: ReturnType<typeof paths>, network: string, caCo
   if (existing) {
     if (!docker(["rm", "-f", RELAY_NAME]).ok) throw helperError("Host Telemetry relay could not be reconciled.", "Inspect Docker relay state and retry.");
   }
-  const args = ["run", "--detach", "--name", RELAY_NAME, "--label", RELAY_LABEL, "--network", network, "--network-alias", RELAY_ALIAS, "--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--memory", "192m", "--cpus", "0.5", "--pids-limit", "128", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", files.credential, "--mount", `type=bind,source=${files.config},target=/etc/otelcol/config.yaml,readonly`, ...(caConfigured ? ["--mount", `type=bind,source=${files.ca},target=/etc/otelcol/ca.pem,readonly`] : []), RELAY_IMAGE, "--config=/etc/otelcol/config.yaml"];
+  const hash = createHash("sha256").update(await readFile(files.config)).digest("hex");
+  const resources = await readHostMetrics(path.dirname(files.directory));
+  const args = ["run", "--detach", "--name", RELAY_NAME, "--label", RELAY_LABEL, "--label", `com.sporades.relay-config=${hash}`, "--network", network, "--network-alias", RELAY_ALIAS, "--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--memory", "192m", "--cpus", "0.5", "--pids-limit", "128", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", files.credential, "--mount", `type=bind,source=${files.config},target=/etc/otelcol/config.yaml,readonly`, ...(caConfigured ? ["--mount", `type=bind,source=${files.ca},target=/etc/otelcol/ca.pem,readonly`] : []), RELAY_IMAGE, "--config=/etc/otelcol/config.yaml"];
   if (!docker(args).ok) throw helperError("Host Telemetry relay failed to start.", "Inspect protected relay configuration and Docker logs, then retry `sporades host telemetry connect`.");
+  if (resources?.enabled && !docker(["network", "connect", HOST_METRICS_NETWORK, RELAY_NAME]).ok) throw helperError("Could not attach relay to the private metrics network.", "Retry telemetry reconcile.");
   await new Promise((resolve) => setTimeout(resolve, 1200));
   if (inspectRelay()?.State?.Running !== true) throw helperError("Host Telemetry relay exited during startup.", "Inspect Docker relay logs for collector configuration errors, then retry.");
 }
 
-export async function reconcileHostTelemetryRelay(remoteRoot: string) {
+export async function reconcileHostTelemetryRelay(remoteRoot: string, host?: string, operation: "reconcile" | "enable" | "disable" | "remove" = "reconcile") {
   const connection = await readHostTelemetryConnection(remoteRoot);
   if (!connection) throw helperError("Host Telemetry is not connected.", "Run `sporades host telemetry connect` first.");
   const files = paths(remoteRoot);
@@ -176,8 +183,24 @@ export async function reconcileHostTelemetryRelay(remoteRoot: string) {
     throw helperError("Host Telemetry configuration is incomplete.", "Reconnect the relay with a verified Telemetry profile.");
   }
   if (!docker(["network", "inspect", connection.network]).ok) throw helperError("Hosted Docker network is unavailable.", "Bootstrap the Host before reconciling Telemetry.");
+  const resources = host ? await configureHostMetrics(remoteRoot, host, operation) : await readHostMetrics(remoteRoot);
+  const oldConfig = await readProtected(files.config);
+  const config = renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: connection.caConfigured, resources });
+  const hash = createHash("sha256").update(config).digest("hex");
   const existing = inspectRelay();
-  if (!existing?.State?.Running || !existing?.NetworkSettings?.Networks?.[connection.network]) await startRelay(files, connection.network, connection.caConfigured);
+  const restart = !existing?.State?.Running || !existing?.NetworkSettings?.Networks?.[connection.network] || existing?.Config?.Labels?.["com.sporades.relay-config"] !== hash || (resources?.enabled && !existing?.NetworkSettings?.Networks?.[HOST_METRICS_NETWORK]);
+  if (oldConfig !== config) await atomicWrite(files.config, config, 0o644);
+  if (restart) {
+    try { await startRelay(files, connection.network, connection.caConfigured); }
+    catch (error) {
+      if (oldConfig) {
+        await atomicWrite(files.config, oldConfig, 0o644);
+        try { await startRelay(files, connection.network, connection.caConfigured); }
+        catch { throw helperError("Host relay recovery failed.", "Inspect Docker and retry reconcile; protected connection credentials are preserved."); }
+      }
+      throw error;
+    }
+  }
   return statusHostTelemetryRelay(remoteRoot);
 }
 

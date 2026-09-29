@@ -1,0 +1,726 @@
+{
+  "uid": "sporades-hosts",
+  "title": "Sporades Host Pressure",
+  "description": "Host capacity and Linux pressure; unavailable PSI never means healthy zero.",
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "15s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "tags": [
+    "sporades",
+    "host"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "host",
+        "label": "Host",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sporades-prometheus"
+        },
+        "query": "label_values(up{telemetry_source=~\"node|caddy\"}, sporades_host)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Host pressure",
+      "type": "link",
+      "url": "/grafana/d/sporades-hosts",
+      "includeVars": true
+    },
+    {
+      "title": "Caddy",
+      "type": "link",
+      "url": "/grafana/d/sporades-caddy",
+      "includeVars": true
+    },
+    {
+      "title": "Capsule runtime",
+      "type": "link",
+      "url": "/grafana/d/sporades-resources"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Collection health (1 = success)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{sporades_host=~`${host:regex}`,telemetry_source=\"node\"}",
+          "legendFormat": "{{sporades_host}} scrape"
+        },
+        {
+          "refId": "B",
+          "expr": "node_scrape_collector_success{sporades_host=~`${host:regex}`}",
+          "legendFormat": "{{sporades_host}} {{collector}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Missing data is unavailable, not zero. A zero scrape or collector value means collection failed. Unsupported PSI may have no series.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "CPU busy / iowait / steal",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - avg by (sporades_host) (rate(node_cpu_seconds_total{sporades_host=~`${host:regex}`,mode=\"idle\"}[$__rate_interval]))",
+          "legendFormat": "{{sporades_host}} busy"
+        },
+        {
+          "refId": "B",
+          "expr": "avg by (sporades_host) (rate(node_cpu_seconds_total{sporades_host=~`${host:regex}`,mode=\"iowait\"}[$__rate_interval]))",
+          "legendFormat": "{{sporades_host}} iowait"
+        },
+        {
+          "refId": "C",
+          "expr": "avg by (sporades_host) (rate(node_cpu_seconds_total{sporades_host=~`${host:regex}`,mode=\"steal\"}[$__rate_interval]))",
+          "legendFormat": "{{sporades_host}} steal"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Whole-Host fraction normalized over logical CPUs. Utilization alone is not contention.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Load / logical CPUs",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_load1{sporades_host=~`${host:regex}`}",
+          "legendFormat": "{{sporades_host}} load 1m"
+        },
+        {
+          "refId": "B",
+          "expr": "node_load5{sporades_host=~`${host:regex}`}",
+          "legendFormat": "{{sporades_host}} load 5m"
+        },
+        {
+          "refId": "C",
+          "expr": "count by (sporades_host) (node_cpu_seconds_total{sporades_host=~`${host:regex}`,mode=\"idle\"})",
+          "legendFormat": "{{sporades_host}} CPUs"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Linux load includes runnable and uninterruptible tasks; compare with CPU count and PSI.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Available / total RAM",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_memory_MemAvailable_bytes{sporades_host=~`${host:regex}`}",
+          "legendFormat": "{{sporades_host}} available"
+        },
+        {
+          "refId": "B",
+          "expr": "node_memory_MemTotal_bytes{sporades_host=~`${host:regex}`}",
+          "legendFormat": "{{sporades_host}} total"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Available RAM includes reclaimable memory; this is Host memory, not Capsule allocation.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Swap use",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_memory_SwapTotal_bytes{sporades_host=~`${host:regex}`} - node_memory_SwapFree_bytes{sporades_host=~`${host:regex}`}",
+          "legendFormat": "{{sporades_host}} used"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "A Host without swap reports zero capacity; inspect paging and memory pressure alongside use.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Swap paging",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(node_vmstat_pswpin{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} pages in/s"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(node_vmstat_pswpout{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} pages out/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Kernel counters in pages/second, not bytes.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "PSI: tasks waiting for resources",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(node_pressure_cpu_waiting_seconds_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} CPU some"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(node_pressure_memory_waiting_seconds_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} memory some"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(node_pressure_io_waiting_seconds_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} I/O some"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Fraction of time at least some work is stalled. Kernel PSI required; missing data means unavailable/unsupported, not zero pressure.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "PSI: all non-idle tasks stalled",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(node_pressure_memory_stalled_seconds_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} memory full"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(node_pressure_io_stalled_seconds_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} I/O full"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Full memory/I/O stalls indicate lost progress. CPU full is deliberately omitted because support/semantics differ.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Filesystem available capacity",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_filesystem_avail_bytes{sporades_host=~`${host:regex}`,fstype!=\"tmpfs\"}",
+          "legendFormat": "{{sporades_host}} {{mountpoint}} available"
+        },
+        {
+          "refId": "B",
+          "expr": "node_filesystem_size_bytes{sporades_host=~`${host:regex}`,fstype!=\"tmpfs\"}",
+          "legendFormat": "{{sporades_host}} {{mountpoint}} size"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Includes actual data filesystems, excluding overlay duplicates. Mount labels refer to Host paths.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Filesystem free inodes",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_filesystem_files_free{sporades_host=~`${host:regex}`,fstype!=\"tmpfs\"}",
+          "legendFormat": "{{sporades_host}} {{mountpoint}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Inode exhaustion can prevent writes even with available bytes.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Disk throughput",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(node_disk_read_bytes_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} read"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(node_disk_written_bytes_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} write"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Per-device counters; do not sum partitions, RAID and their backing devices as independent work.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Disk mean operation time",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(node_disk_read_time_seconds_total{sporades_host=~`${host:regex}`}[$__rate_interval]) / rate(node_disk_reads_completed_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} read"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(node_disk_write_time_seconds_total{sporades_host=~`${host:regex}`}[$__rate_interval]) / rate(node_disk_writes_completed_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} write"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Counter-derived average time per completed operation, not p95; idle intervals with no operations are unavailable.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Disk busy / queued work",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(node_disk_io_time_seconds_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} busy fraction"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(node_disk_io_time_weighted_seconds_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} weighted I/O"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Busy fraction is not a universal saturation measure on parallel devices. Correlate with latency and PSI.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Network throughput",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(node_network_receive_bytes_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} receive"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(node_network_transmit_bytes_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} transmit"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Host interfaces; ephemeral bridges/veth and loopback excluded.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Network errors / drops",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(node_network_receive_errs_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} RX errors"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(node_network_transmit_errs_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} TX errors"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(node_network_receive_drop_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} RX drops"
+        },
+        {
+          "refId": "D",
+          "expr": "rate(node_network_transmit_drop_total{sporades_host=~`${host:regex}`}[$__rate_interval])",
+          "legendFormat": "{{sporades_host}} {{device}} TX drops"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Rates reset safely after Host restart.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Last stored sample age",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 56
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - timestamp(up{sporades_host=~`${host:regex}`,telemetry_source=\"node\"})",
+          "legendFormat": "{{sporades_host}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "No series means missing source/history; age indicates last received scrape. Check relay status when absent.",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}

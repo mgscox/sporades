@@ -3,7 +3,7 @@
   "title": "Sporades Capsule API",
   "description": "Independent request metrics for enabled Capsules. Rate and latency lookback follow the Metric window selector; streams are included in throughput and latency excludes aborted requests.",
   "schemaVersion": 41,
-  "version": 5,
+  "version": 6,
   "refresh": "15s",
   "time": {
     "from": "now-1h",
@@ -245,5 +245,17 @@
         "description": "12m supports metric exports up to 300s; use 2m only with exports at most 30s apart. Longer windows smooth rates and retain older delay peaks."
       }
     ]
-  }
+  },
+  "links": [
+    {
+      "title": "Host pressure",
+      "type": "link",
+      "url": "/grafana/d/sporades-hosts"
+    },
+    {
+      "title": "Caddy",
+      "type": "link",
+      "url": "/grafana/d/sporades-caddy"
+    }
+  ]
 }
