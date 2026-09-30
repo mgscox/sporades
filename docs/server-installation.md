@@ -709,6 +709,17 @@ boot service has no restart loop and does not supervise running Capsules. A
 missing retained container requires an explicit start. Use Sporades stop commands
 for durable operator intent rather than stopping containers directly in Docker.
 
+Bootstrap also installs and activates an inert
+`sporades-capsules-<identity>-shutdown.service` (`autostart.shutdownUnit`). Its
+stop hook runs before Docker/Caddy stop and records authenticated readiness,
+the exact container instance, its start time, and its current release in the
+Host-owned registry. This evidence allows a healthy runtime forcibly terminated
+with exit code 137 or 143 during shutdown to resume despite historical retry
+counts. OOM exits, stale instance/release evidence, and genuine crash exhaustion
+remain unavailable. If shutdown evidence is missing or cannot be validated,
+non-zero exits at the retry limit remain stopped for operator repair.
+Activating this observer does not start, stop, or restart Capsules.
+
 The service also participates in an explicit Docker service restart once active.
 Check `systemctl status <unit>` and `journalctl -u <unit>` over SSH for per-Capsule
 results; one failed Capsule does not prevent recovery attempts for the others.

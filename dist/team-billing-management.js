@@ -200,10 +200,15 @@ async function performDesired(database, _context, payload, kind) {
     }
     const acknowledged = await inTransaction(database, async (transaction) => {
         const current = await desiredByIntent(transaction, snapshot.desired.intentId);
-        await releaseLane(transaction, snapshot.desired.teamId, claimToken, database);
-        if (!current)
+        const ownedLane = await releaseLane(transaction, snapshot.desired.teamId, claimToken, database);
+        if (!ownedLane || !current || current.activeJobGenerationId !== snapshot.desired.activeJobGenerationId
+            || current.operationId !== snapshot.desired.operationId || current.status !== "running")
             return false;
-        await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [status] = 'awaiting-observation', [providerAcknowledgedAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?")).run(nowIso(database), nowIso(database), current.intentId);
+        const updated = await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [status] = 'awaiting-observation', [providerAcknowledgedAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? " +
+            "WHERE [intentId] = ? AND [activeJobGenerationId] = ? AND [status] = 'running' " +
+            "AND ([operationId] = ? OR ([operationId] IS NULL AND CAST(? AS TEXT) IS NULL))")).run(nowIso(database), nowIso(database), current.intentId, snapshot.desired.activeJobGenerationId, snapshot.desired.operationId, snapshot.desired.operationId);
+        if (Number(updated?.changes ?? updated?.changesCount ?? 0) !== 1)
+            return false;
         if (current.operationId)
             await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'awaiting-observation', [updatedAt] = ? WHERE [id] = ?")).run(nowIso(database), current.operationId);
         return true;
@@ -453,7 +458,8 @@ async function claimLane(transaction, teamId, token, database) {
     return Number(result?.changes ?? result?.changesCount ?? 0) === 1;
 }
 async function releaseLane(transaction, teamId, token, database) {
-    await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?")).run(nowIso(database), teamId, token);
+    const released = await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?")).run(nowIso(database), teamId, token);
+    return Number(released?.changes ?? released?.changesCount ?? 0) === 1;
 }
 async function releaseAfterFailure(database, desired, token, classified) {
     await inTransaction(database, async (transaction) => {

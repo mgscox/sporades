@@ -81535,6 +81535,10 @@ function createConnection() {
   const journeySubscriptions = new Map();
   let latestAuthUserId = null;
   let pageRetired = false;
+  let pageCached = false;
+  let cachedConnectionPending = false;
+  let connectionEpoch = 0;
+  let retryTimer = null;
   const maxAutomaticConnectionAttempts = 4;
   let automaticConnectionAttempts = 0;
   const stableConnectionMs = 5 * 60 * 1000;
@@ -81543,11 +81547,38 @@ function createConnection() {
   let connectionErrorPanel = null;
   ${options.devRefresh ? "let latestDevRefreshSequence = 0;" : ""}
   let journeyRetireOwner = null;
-  window.addEventListener?.("pagehide", () => {
+  window.addEventListener?.("pagehide", (event) => {
+    if (pageRetired) return;
+    pageCached = event?.persisted === true;
+    if (pageCached) stopJourneyCapture();
+    else journeyRetireOwner?.();
     pageRetired = true;
-    journeyRetireOwner?.();
+    connectionEpoch += 1;
+    retryInFlight = false;
+    if (retryTimer !== null) clearTimeout(retryTimer);
+    retryTimer = null;
     socket?.close();
-  }, { once: true });
+    retryQueue.length = 0;
+    for (const [id, entry] of pending) {
+      entry.resolve({ id, type: "error", data: null, error: retiredConnectionError() });
+      pending.delete(id);
+    }
+  });
+  window.addEventListener?.("pageshow", (event) => {
+    if (event?.persisted !== true || !pageCached) return;
+    pageCached = false;
+    pageRetired = false;
+    connectionEpoch += 1;
+    retryInFlight = false;
+    latestAuthSocket = null;
+    cachedConnectionPending = true;
+    open();
+  });
+
+  function retiredConnectionError() {
+    return { code: "TRANSPORT_CLOSED", message: "The Sporades page is no longer active.",
+      hint: "Return to the page before starting another operation." };
+  }
 
   function syncSessionTokenFromStorage() {
     const storedToken = localStorage.getItem("sporades.sessionToken");
@@ -81558,7 +81589,7 @@ function createConnection() {
   }
 
   function open() {
-    if (terminalConnectionError) return null;
+    if (pageRetired || terminalConnectionError) return null;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
       return socket;
     }
@@ -81571,7 +81602,9 @@ function createConnection() {
     if (typeof connectionToken === "string" && connectionToken.length > 0) {
       url.searchParams.set("connectionToken", connectionToken);
     }
-    automaticConnectionAttempts += 1;
+    // Returning to a cached page is intentional navigation, not failed recovery.
+    if (!cachedConnectionPending) automaticConnectionAttempts += 1;
+    cachedConnectionPending = false;
     const openedSocket = new WebSocket(url);
     let openedAt = null;
     let receivedMessage = false;
@@ -81580,12 +81613,16 @@ function createConnection() {
       openedAt = Date.now();
       retryInFlight = false;
       ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
-      request("auth.get");
-      if (journeyConsentOptions) {
-        request("journey.enable", { options: journeyConsentOptions }).then((result) => {
-          if (!result.error && result.data?.capture) startJourneyCapture(result.data.capture);
+      const consent = journeyConsentOptions;
+      const consentUserId = journeyEnabledUserId;
+      const stillOwnsConsent = () => !pageRetired && socket === openedSocket && journeyConsentOptions === consent
+        && journeyEnabledUserId === consentUserId && latestAuthUserId === consentUserId;
+      request("auth.get").then((confirmation) => {
+        if (!consent || confirmation.error || !stillOwnsConsent()) return;
+        request("journey.enable", { options: consent }).then((result) => {
+          if (!result.error && result.data?.capture && stillOwnsConsent()) startJourneyCapture(result.data.capture);
         });
-      }
+      });
       for (const subscription of journeySubscriptions.values()) send({ id: subscription.id, type: "journey.subscribe", resume: subscription.started });
       for (const subscription of subscriptions.values()) {
         send({
@@ -81651,7 +81688,6 @@ function createConnection() {
       }
     });
     openedSocket.addEventListener("close", async () => {
-      stopJourneyCapture();
       for (const [id, entry] of pending) {
         if (entry.socket !== openedSocket) continue;
         entry.resolve({
@@ -81667,6 +81703,9 @@ function createConnection() {
         pending.delete(id);
       }
       if (socket !== openedSocket || pageRetired) return;
+      // A cached return may have waited for this socket to finish closing.
+      if (cachedConnectionPending) { open(); return; }
+      stopJourneyCapture();
       // A response alone is not recovery: flapping sockets may answer then die.
       // Only a continuously healthy five-minute connection rearms the budget.
       if (openedAt !== null && receivedMessage && Date.now() - openedAt >= stableConnectionMs) {
@@ -81686,6 +81725,7 @@ function createConnection() {
   async function scheduleConnectionRetry(refreshToken, currentToken = null) {
     if (pageRetired || retryInFlight) return;
     retryInFlight = true;
+    const epoch = connectionEpoch;
     if (refreshToken) {
       const controller = typeof AbortController === "undefined" ? null : new AbortController();
       let timeoutId;
@@ -81710,20 +81750,23 @@ function createConnection() {
             .then(async (response) => response.ok ? await response.json() : null),
           timeout,
         ]);
-        if (typeof result?.token === "string" && result.token.length > 0) {
+        if (epoch === connectionEpoch && !pageRetired && typeof result?.token === "string" && result.token.length > 0) {
           window.__SPORADES_CONNECTION_TOKEN = result.token;
         }
       } catch {} finally {
         if (timeoutId !== undefined) clearTimeout(timeoutId);
       }
     }
+    if (epoch !== connectionEpoch) return;
     if (pageRetired) {
       retryInFlight = false;
       return;
     }
     const baseDelay = Math.min(2_000, 250 * (2 ** Math.max(0, automaticConnectionAttempts - 1)));
     const delay = baseDelay + Math.floor(Math.random() * Math.max(1, baseDelay * 0.2));
-    setTimeout(() => {
+    retryTimer = setTimeout(() => {
+      if (epoch !== connectionEpoch) return;
+      retryTimer = null;
       retryInFlight = false;
       if (!pageRetired) open();
     }, delay);
@@ -81811,8 +81854,8 @@ function createConnection() {
 
   function request(type, fields = {}) {
     const id = nextId++;
-    if (terminalConnectionError) {
-      return Promise.resolve({ id, type: "error", data: null, error: terminalConnectionError });
+    if (pageRetired || terminalConnectionError) {
+      return Promise.resolve({ id, type: "error", data: null, error: pageRetired ? retiredConnectionError() : terminalConnectionError });
     }
     return new Promise((resolve) => {
       const entry = { resolve, socket: null };
@@ -103086,11 +103129,19 @@ async function performDesired(database, _context, payload, kind) {
   }
   const acknowledged = await inTransaction(database, async (transaction) => {
     const current2 = await desiredByIntent(transaction, snapshot.desired.intentId);
-    await releaseLane(transaction, snapshot.desired.teamId, claimToken, database);
-    if (!current2) return false;
-    await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'awaiting-observation', [providerAcknowledgedAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
-    )).run(nowIso(database), nowIso(database), current2.intentId);
+    const ownedLane = await releaseLane(transaction, snapshot.desired.teamId, claimToken, database);
+    if (!ownedLane || !current2 || current2.activeJobGenerationId !== snapshot.desired.activeJobGenerationId || current2.operationId !== snapshot.desired.operationId || current2.status !== "running") return false;
+    const updated = await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'awaiting-observation', [providerAcknowledgedAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ? AND [activeJobGenerationId] = ? AND [status] = 'running' AND ([operationId] = ? OR ([operationId] IS NULL AND CAST(? AS TEXT) IS NULL))"
+    )).run(
+      nowIso(database),
+      nowIso(database),
+      current2.intentId,
+      snapshot.desired.activeJobGenerationId,
+      snapshot.desired.operationId,
+      snapshot.desired.operationId
+    );
+    if (Number(updated?.changes ?? updated?.changesCount ?? 0) !== 1) return false;
     if (current2.operationId) await transaction.prepare(transaction.dialect.sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'awaiting-observation', [updatedAt] = ? WHERE [id] = ?"
     )).run(nowIso(database), current2.operationId);
@@ -103370,9 +103421,10 @@ async function claimLane(transaction, teamId, token, database) {
   return Number(result?.changes ?? result?.changesCount ?? 0) === 1;
 }
 async function releaseLane(transaction, teamId, token, database) {
-  await transaction.prepare(transaction.dialect.sql(
+  const released = await transaction.prepare(transaction.dialect.sql(
     "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
   )).run(nowIso(database), teamId, token);
+  return Number(released?.changes ?? released?.changesCount ?? 0) === 1;
 }
 async function releaseAfterFailure(database, desired, token, classified) {
   await inTransaction(database, async (transaction) => {
@@ -108956,7 +109008,6 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
       error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK.")
     };
   }
-  let wroteFileVersion = false;
   const previousFile = await database.adapter.selectFileById(upload.fileId);
   try {
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
@@ -108966,19 +109017,22 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
       total: upload.expectedSize
     });
     const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
-    await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
-    wroteFileVersion = true;
     const now2 = (/* @__PURE__ */ new Date()).toISOString();
     const completion = await database.adapter.withTransaction(async (sqlite) => {
       const completed = await sqlite.completeFileUpload(upload, bytes.length, now2);
       if (completed?.changes === 0) {
         return { ok: false, superseded: true };
       }
-      await sqlite.revokePublicFileUrlsForFile(upload.fileId, now2);
-      return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
+      try {
+        await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
+        await sqlite.revokePublicFileUrlsForFile(upload.fileId, now2);
+        return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
+      } catch (error) {
+        await removeFileVersionBestEffort(database, upload.fileId, upload.version);
+        throw error;
+      }
     });
     if (!completion.ok && completion.superseded) {
-      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
       return {
         ok: false,
         data: null,
@@ -108998,9 +109052,6 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
     });
     return { ok: true, data: { file }, error: null };
   } catch (error) {
-    if (wroteFileVersion) {
-      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-    }
     const structuredError = isUniqueConstraintError(error) ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.") : {
       message: error.message,
       hint: error.hint ?? "Request a fresh upload URL and retry."

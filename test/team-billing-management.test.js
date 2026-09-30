@@ -717,7 +717,9 @@ test("stale Job generation exhaustion cannot release or fail a shared live provi
       )).get(teamId)).status, "failed");
 
       releaseProvider();
-      assert.deepEqual(await liveCall, { providerAcknowledged: true });
+      assert.deepEqual(await liveCall, { superseded: true });
+      assert.deepEqual(await performTeamBillingSeatConvergence(second, {}, enqueued.at(-1).payload),
+        { providerAcknowledged: true }, "only the replacement generation can acknowledge its intent");
       assert.deepEqual(await settleExhaustedTeamBillingManagementJob(
         second, staleBusyGeneration, "TEAM_BILLING_PROVIDER_LANE_BUSY",
       ), { settled: false, stale: true });
@@ -839,3 +841,37 @@ function generationPayload(staged) {
 function desiredPayload(desired) {
   return { intentId: desired.intentId, generationId: desired.activeJobGenerationId };
 }
+
+test("a superseded provider acknowledgement cannot overwrite a replacement operation's denial", async () => {
+  const fixture = openFixture({ productKey: "studio", quantity: 1 });
+  let finishProvider;
+  try {
+    fixture.setMembers(3);
+    const firstRequest = randomRequestId("a");
+    const secondRequest = randomRequestId("b");
+    await requestTeamBillingPlanTransition(fixture.database, actor, teamId, firstRequest, "agency");
+    const first = fixture.desired();
+    let entered;
+    const providerEntered = new Promise((resolve) => { entered = resolve; });
+    fixture.database.updateTeamBillingSubscription = async () => {
+      entered();
+      return new Promise((resolve) => { finishProvider = resolve; });
+    };
+    const oldAttempt = performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(first));
+    await providerEntered;
+    await requestTeamBillingPlanTransition(fixture.database, actor, teamId, secondRequest, "agency");
+    fixture.setRole("member");
+    await assert.rejects(performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired())),
+      (error) => error.code === "TEAM_BILLING_DENIED");
+    const failed = fixture.operationForRequest(secondRequest);
+    assert.equal(failed.status, "failed");
+    finishProvider({ ok: true, outcome: "acknowledged" });
+    assert.deepEqual(await oldAttempt, { superseded: true });
+    assert.equal(fixture.operationForRequest(firstRequest).status, "superseded");
+    assert.equal(fixture.operationForRequest(secondRequest).status, "failed");
+    assert.equal(fixture.operationForRequest(secondRequest).safeFailureCode, failed.safeFailureCode);
+  } finally {
+    finishProvider?.({ ok: true, outcome: "acknowledged" });
+    fixture.close();
+  }
+});

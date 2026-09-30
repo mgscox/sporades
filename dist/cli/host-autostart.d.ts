@@ -3,10 +3,12 @@ export declare function installHostAutostart(host: HostHelperHost): Promise<{
     installed: boolean;
     reason: string;
     unit?: undefined;
+    shutdownUnit?: undefined;
     startsExistingCapsules?: undefined;
 } | {
     installed: boolean;
     unit: string;
+    shutdownUnit: string;
     startsExistingCapsules: boolean;
     reason?: undefined;
 }>;

@@ -323,7 +323,9 @@ and reconstructs absent, failed, or drifted work. This is eventual provider
 convergence, not a database transaction held across Stripe I/O.
 
 A successful Stripe update is only acknowledgement: public state remains
-pending. Exact verified `customer.subscription.*` evidence settles the desired
+pending. The acknowledgement must still own its provider lane, desired intent,
+Job generation, and operation; a superseded response cannot replace a newer
+operation's failure or authorization denial. Exact verified `customer.subscription.*` evidence settles the desired
 Price and quantity through the atomic Stripe consequence. Older or mismatched
 evidence leaves or requeues the latest desired target, so provider-response
 races cannot grant entitlement.

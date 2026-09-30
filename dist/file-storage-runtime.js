@@ -658,7 +658,6 @@ export async function completePendingFileUpload(database, uploadId, request, web
             error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK."),
         };
     }
-    let wroteFileVersion = false;
     const previousFile = await database.adapter.selectFileById(upload.fileId);
     try {
         websocketHub?.notifyFileEvent?.(upload.ownerId, {
@@ -668,19 +667,26 @@ export async function completePendingFileUpload(database, uploadId, request, web
             total: upload.expectedSize,
         });
         const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
-        await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
-        wroteFileVersion = true;
         const now = new Date().toISOString();
         const completion = await database.adapter.withTransaction(async (sqlite) => {
             const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
             if (completed?.changes === 0) {
                 return { ok: false, superseded: true };
             }
-            await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
-            return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
+            // Consume the upload under its metadata lock before publishing shared version bytes.
+            // Losing PUTs never write this version. Keep compensation inside the transaction so a
+            // retried upload cannot acquire ownership before a failed writer finishes cleanup.
+            try {
+                await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
+                await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
+                return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
+            }
+            catch (error) {
+                await removeFileVersionBestEffort(database, upload.fileId, upload.version);
+                throw error;
+            }
         });
         if (!completion.ok && completion.superseded) {
-            await removeFileVersionBestEffort(database, upload.fileId, upload.version);
             return {
                 ok: false,
                 data: null,
@@ -698,9 +704,6 @@ export async function completePendingFileUpload(database, uploadId, request, web
         return { ok: true, data: { file }, error: null };
     }
     catch (error) {
-        if (wroteFileVersion) {
-            await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-        }
         const structuredError = isUniqueConstraintError(error)
             ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.")
             : {

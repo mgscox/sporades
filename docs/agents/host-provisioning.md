@@ -707,7 +707,11 @@ recovery service (`autostart.unit` in its JSON response). No provider-specific
 script is needed. Manual and automatic fresh installs use this same contract;
 existing installations run helper upgrade plus bootstrap. The service starts
 previously running Capsules after Docker/Caddy startup, preserving stopped state
-and bounded crash retries. Installation alone does not restart Capsules. Verify
+and bounded crash retries. Installation alone does not restart Capsules. Bootstrap also activates the inert
+`autostart.shutdownUnit` observer: its stop hook checkpoints healthy exact runtime
+instances before Docker stops. Boot recovery uses that Host-owned evidence to
+distinguish shutdown termination from historical crash retry counts; OOM, stale,
+and absent evidence remain fail-closed. Verify
 reboot behavior on disposable infrastructure with one running and one explicitly
 stopped Capsule. See [Capsule autostart](../server-installation.md#capsule-autostart-after-host-reboot)
 for eligibility, current-release behavior, diagnostics and rollback.

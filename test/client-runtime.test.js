@@ -3108,3 +3108,135 @@ test("expired established sessions that cannot reauthenticate stop after four re
     assert.equal(h.timers.pending().length, 0);
   } finally { h.cleanup(); }
 });
+
+test("cached page restoration reconfirms auth, resubscribes, and preserves bounded recovery across visits", async () => {
+  const timers = createDeterministicTimers();
+  const queries = [], enables = [];
+  const linked = { ...anonymousAuth, isAuthenticated: true, isGuest: false };
+  const browser = installBrowserFakes(linked, { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout, handlers: {
+    "query.subscribe": async (message) => {
+      queries.push(message);
+      return { type: "query.result", data: ["restored"], error: null };
+    },
+    "journey.enable": async (message) => {
+      enables.push(message.options);
+      return { type: "journey.enable.result", data: { userId: linked.userId, capture: { navigation: false, focus: false, interactions: false } }, error: null };
+    },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    const subscription = runtime.queries.subscribe("notes", () => {});
+    await runtime.auth.get();
+    await runtime.journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+    for (let visit = 0; visit < 6; visit += 1) {
+      const retiringSocket = browser.sockets.at(-1);
+      if (visit % 2 === 0) retiringSocket.close = () => { retiringSocket.readyState = WebSocket.CLOSING; };
+      browser.emitWindow("pagehide", { persisted: true });
+      assert.equal(runtime.auth.sessionToken(), null);
+      browser.emitWindow("pageshow", { persisted: true });
+      assert.equal(runtime.auth.sessionToken(), null, "the old socket cannot confirm restoration");
+      if (retiringSocket.readyState === WebSocket.CLOSING) {
+        retiringSocket.readyState = 3;
+        retiringSocket.emit("close", {});
+      }
+      await settleMicrotasks();
+      assert.equal(runtime.auth.sessionToken(), "session-token");
+      assert.equal(queries.length, visit + 2);
+      assert.equal(enables.length, visit + 2, "only consented capture restores, once per visit");
+    }
+    browser.sockets.at(-1).close();
+    await settleMicrotasks();
+    assert.equal(timers.pending().length, 1, "a restored page still retries a later socket failure");
+    timers.runNext();
+    await settleMicrotasks();
+    assert.equal(runtime.auth.sessionToken(), "session-token");
+    subscription.unsubscribe();
+    browser.emitWindow("pagehide", { persisted: false });
+    browser.emitWindow("pageshow", { persisted: true });
+    const count = browser.sockets.length;
+    assert.equal((await runtime.auth.get()).error.code, "TRANSPORT_CLOSED");
+    assert.equal(browser.sockets.length, count, "permanently retired pages cannot reopen transport");
+  } finally { browser.cleanup(); }
+});
+
+test("cached restoration drops Journey consent when another tab changes the confirmed principal", async () => {
+  let userId = "first-user", token = "first-token", enables = 0;
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "auth.get": async () => ({ type: "auth.result", data: { sessionToken: token, auth: { ...anonymousAuth, userId, isAuthenticated: true, isGuest: false } }, error: null }),
+    "journey.enable": async () => { enables += 1; return { type: "journey.enable.result", data: { userId, capture: { navigation: false, focus: false, interactions: false } }, error: null }; },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.auth.get();
+    await runtime.journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+    browser.emitWindow("pagehide", { persisted: true });
+    userId = "second-user"; token = "second-token";
+    browser.storage.set("sporades.sessionToken", token);
+    browser.emitWindow("pageshow", { persisted: true });
+    await settleMicrotasks();
+    assert.equal(runtime.auth.sessionToken(), "second-token");
+    assert.equal(enables, 1, "the previous principal's consent cannot enable capture for a replacement principal");
+    browser.emitWindow("pagehide", {});
+  } finally { browser.cleanup(); }
+});
+
+test("a token refresh from before cached retirement cannot mutate restored recovery", async () => {
+  const timers = createDeterministicTimers();
+  let finishRefresh;
+  const browser = installBrowserFakes(anonymousAuth, {
+    setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+    fetch: async () => new Promise((resolve) => { finishRefresh = resolve; }),
+  });
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.auth.get();
+    browser.sockets[0].close();
+    await settleMicrotasks();
+    browser.emitWindow("pagehide", { persisted: true });
+    browser.emitWindow("pageshow", { persisted: true });
+    await settleMicrotasks();
+    finishRefresh({ ok: true, async json() { return { token: "obsolete-page-token" }; } });
+    await settleMicrotasks();
+    assert.equal(window.__SPORADES_CONNECTION_TOKEN, "fake-page-connection-token");
+    assert.equal(browser.sockets.length, 2);
+    assert.equal(timers.pending().length, 0, "the retired epoch cannot schedule a duplicate socket");
+    browser.emitWindow("pagehide", {});
+  } finally { browser.cleanup(); }
+});
+
+
+test("a delayed retired socket close cannot stop restored Journey capture", async () => {
+  const linked = { ...anonymousAuth, isAuthenticated: true, isGuest: false };
+  const browser = installBrowserFakes(linked, { handlers: {
+    "journey.enable": async () => ({ type: "journey.enable.result", data: { userId: linked.userId,
+      capture: { navigation: false, focus: true, interactions: false } }, error: null }),
+  }});
+  const originalDocument = globalThis.document;
+  const listeners = new Map();
+  globalThis.document = {
+    hidden: false,
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type); },
+  };
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.auth.get();
+    await runtime.journey.enable({ capture: { navigation: false, focus: true, interactions: false } });
+    const retiredSocket = browser.sockets[0];
+    // The browser may freeze after closing the socket but before delivering its close event.
+    retiredSocket.close = () => { retiredSocket.readyState = 3; };
+    browser.emitWindow("pagehide", { persisted: true });
+    browser.emitWindow("pageshow", { persisted: true });
+    await settleMicrotasks();
+    assert.equal(listeners.has("visibilitychange"), true);
+    retiredSocket.emit("close", {});
+    assert.equal(runtime.auth.sessionToken(), "session-token");
+    assert.equal(listeners.has("visibilitychange"), true, "only the active socket owns restored capture");
+    browser.emitWindow("pagehide", {});
+    assert.equal(listeners.has("visibilitychange"), false);
+  } finally {
+    browser.cleanup();
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  }
+});

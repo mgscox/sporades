@@ -15495,3 +15495,54 @@ test("Host boot recovery preserves stopped state, running instances and exhauste
     });
   });
 });
+
+test("Host shutdown evidence resumes a healthy runtime with historical retries after forced termination", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "boot-recovered", restart: false });
+    await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.status = "running";
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    const retained = { Id: "a".repeat(64), State: { Running: true, Status: "running", StartedAt: startedAt, OOMKilled: false }, RestartCount: 3,
+      Config: { Labels: { "com.sporades.managed": "true", "com.sporades.hosted-domain": fixture.domain, "com.sporades.capsule-subname": fixture.subname } } };
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: { FAKE_DOCKER_INSPECT_JSON: JSON.stringify(retained) } });
+    const request = { host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+    const checkpoint = await runHostHelper({ ...request, action: "capsule.shutdown.checkpoint" }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(checkpoint.stdout).ok, true, checkpoint.stdout);
+    assert(!(await docker.calls()).some((call) => ["run", "start", "stop", "rm"].includes(call.args[0])), "checkpointing cannot interrupt Capsules");
+    const stopped = { ...retained, State: { ...retained.State, Running: false, Status: "exited", ExitCode: 137, FinishedAt: new Date().toISOString() } };
+    const result = await runHostHelper({ ...request, action: "capsule.resume" }, { cwd: dir, env: { ...docker.env, FAKE_DOCKER_INSPECT_JSON: JSON.stringify(stopped) } });
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true, result.stdout);
+    assert.equal(output.data.resumed, true, result.stdout);
+    assert.match(await readFile(fixture.routeFile, "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
+  });
+});
+
+test("Host shutdown evidence cannot authorize OOM, stale containers, or stale releases", async (t) => {
+  for (const scenario of ["oom", "container", "release", "no-checkpoint", "late-checkpoint"]) await t.test(scenario, async () => {
+    await withTempDir(async (dir) => {
+      const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "boot-checkpoint-deny", restart: false });
+      await alignSealedFixtureWithBuiltLifecycle(fixture);
+      const startedAt = new Date(Date.now() - 60_000).toISOString();
+      const finishedAt = new Date(Date.now() - 1_000).toISOString();
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      record.status = "running";
+      record.shutdownCheckpoint = scenario === "no-checkpoint" ? null : {
+        containerId: scenario === "container" ? "b".repeat(64) : "a".repeat(64),
+        releaseId: scenario === "release" ? "different-release" : record.currentRelease.id,
+        startedAt, capturedAt: scenario === "late-checkpoint" ? new Date().toISOString() : new Date(Date.now() - 5_000).toISOString(),
+      };
+      await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      const docker = await installFakeDocker(path.join(dir, "docker"), { env: { FAKE_DOCKER_INSPECT_JSON: JSON.stringify({
+        Id: "a".repeat(64), RestartCount: 3,
+        State: { Running: false, Status: "exited", ExitCode: 137, OOMKilled: scenario === "oom", StartedAt: startedAt, FinishedAt: finishedAt },
+        Config: { Labels: { "com.sporades.managed": "true", "com.sporades.hosted-domain": fixture.domain, "com.sporades.capsule-subname": fixture.subname } },
+      }) } });
+      const result = await runHostHelper({ action: "capsule.resume", host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } }, { cwd: dir, env: docker.env });
+      assert.equal(JSON.parse(result.stdout).data.resumed, false, result.stdout);
+      assert(!(await docker.calls()).some((call) => ["run", "start"].includes(call.args[0])));
+    });
+  });
+});

@@ -1,7 +1,7 @@
 import type { DeployFile } from "../deploy-files.js";
 import type { JsonObject, JsonValue } from "./host-helper-json.js";
 import type { HostHelperCapsuleTarget, HostHelperHost, HostHelperSealedServerEnv, HostLifecycleOptions, HostedCapsuleBaseImage, HostTlsMode } from "./hosted-capsule-contract.js";
-export type HostHelperAction = "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.release.reconcile" | "capsule.resume" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "jobs.inspect" | "schedules.inspect" | "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete" | "capsule.list" | "host.stats" | "host.logs" | "host.version" | "host.bootstrap" | "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable";
+export type HostHelperAction = "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.release.reconcile" | "capsule.shutdown.checkpoint" | "capsule.resume" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "jobs.inspect" | "schedules.inspect" | "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete" | "capsule.list" | "host.stats" | "host.logs" | "host.version" | "host.bootstrap" | "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable";
 export type HostHelperVerification = JsonObject & {
     enabled?: boolean;
     fallbackToPreviousRelease?: boolean;
@@ -144,7 +144,7 @@ export type HostReleaseRollbackRequest = HostHelperRequestBase & {
     };
 };
 export type HostLifecycleRequest = HostHelperRequestBase & {
-    action: "capsule.resume" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.release.reconcile";
+    action: "capsule.shutdown.checkpoint" | "capsule.resume" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.release.reconcile";
     capsule: HostHelperCapsuleTarget;
 };
 export type HostStatsRequest = (HostHelperRequestBase & {

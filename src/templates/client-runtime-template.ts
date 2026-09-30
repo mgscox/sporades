@@ -779,6 +779,10 @@ function createConnection() {
   const journeySubscriptions = new Map();
   let latestAuthUserId = null;
   let pageRetired = false;
+  let pageCached = false;
+  let cachedConnectionPending = false;
+  let connectionEpoch = 0;
+  let retryTimer = null;
   const maxAutomaticConnectionAttempts = 4;
   let automaticConnectionAttempts = 0;
   const stableConnectionMs = 5 * 60 * 1000;
@@ -787,11 +791,38 @@ function createConnection() {
   let connectionErrorPanel = null;
   ${options.devRefresh ? "let latestDevRefreshSequence = 0;" : ""}
   let journeyRetireOwner = null;
-  window.addEventListener?.("pagehide", () => {
+  window.addEventListener?.("pagehide", (event) => {
+    if (pageRetired) return;
+    pageCached = event?.persisted === true;
+    if (pageCached) stopJourneyCapture();
+    else journeyRetireOwner?.();
     pageRetired = true;
-    journeyRetireOwner?.();
+    connectionEpoch += 1;
+    retryInFlight = false;
+    if (retryTimer !== null) clearTimeout(retryTimer);
+    retryTimer = null;
     socket?.close();
-  }, { once: true });
+    retryQueue.length = 0;
+    for (const [id, entry] of pending) {
+      entry.resolve({ id, type: "error", data: null, error: retiredConnectionError() });
+      pending.delete(id);
+    }
+  });
+  window.addEventListener?.("pageshow", (event) => {
+    if (event?.persisted !== true || !pageCached) return;
+    pageCached = false;
+    pageRetired = false;
+    connectionEpoch += 1;
+    retryInFlight = false;
+    latestAuthSocket = null;
+    cachedConnectionPending = true;
+    open();
+  });
+
+  function retiredConnectionError() {
+    return { code: "TRANSPORT_CLOSED", message: "The Sporades page is no longer active.",
+      hint: "Return to the page before starting another operation." };
+  }
 
   function syncSessionTokenFromStorage() {
     const storedToken = localStorage.getItem("sporades.sessionToken");
@@ -802,7 +833,7 @@ function createConnection() {
   }
 
   function open() {
-    if (terminalConnectionError) return null;
+    if (pageRetired || terminalConnectionError) return null;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
       return socket;
     }
@@ -815,7 +846,9 @@ function createConnection() {
     if (typeof connectionToken === "string" && connectionToken.length > 0) {
       url.searchParams.set("connectionToken", connectionToken);
     }
-    automaticConnectionAttempts += 1;
+    // Returning to a cached page is intentional navigation, not failed recovery.
+    if (!cachedConnectionPending) automaticConnectionAttempts += 1;
+    cachedConnectionPending = false;
     const openedSocket = new WebSocket(url);
     let openedAt = null;
     let receivedMessage = false;
@@ -824,12 +857,16 @@ function createConnection() {
       openedAt = Date.now();
       retryInFlight = false;
       ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
-      request("auth.get");
-      if (journeyConsentOptions) {
-        request("journey.enable", { options: journeyConsentOptions }).then((result) => {
-          if (!result.error && result.data?.capture) startJourneyCapture(result.data.capture);
+      const consent = journeyConsentOptions;
+      const consentUserId = journeyEnabledUserId;
+      const stillOwnsConsent = () => !pageRetired && socket === openedSocket && journeyConsentOptions === consent
+        && journeyEnabledUserId === consentUserId && latestAuthUserId === consentUserId;
+      request("auth.get").then((confirmation) => {
+        if (!consent || confirmation.error || !stillOwnsConsent()) return;
+        request("journey.enable", { options: consent }).then((result) => {
+          if (!result.error && result.data?.capture && stillOwnsConsent()) startJourneyCapture(result.data.capture);
         });
-      }
+      });
       for (const subscription of journeySubscriptions.values()) send({ id: subscription.id, type: "journey.subscribe", resume: subscription.started });
       for (const subscription of subscriptions.values()) {
         send({
@@ -895,7 +932,6 @@ function createConnection() {
       }
     });
     openedSocket.addEventListener("close", async () => {
-      stopJourneyCapture();
       for (const [id, entry] of pending) {
         if (entry.socket !== openedSocket) continue;
         entry.resolve({
@@ -911,6 +947,9 @@ function createConnection() {
         pending.delete(id);
       }
       if (socket !== openedSocket || pageRetired) return;
+      // A cached return may have waited for this socket to finish closing.
+      if (cachedConnectionPending) { open(); return; }
+      stopJourneyCapture();
       // A response alone is not recovery: flapping sockets may answer then die.
       // Only a continuously healthy five-minute connection rearms the budget.
       if (openedAt !== null && receivedMessage && Date.now() - openedAt >= stableConnectionMs) {
@@ -930,6 +969,7 @@ function createConnection() {
   async function scheduleConnectionRetry(refreshToken, currentToken = null) {
     if (pageRetired || retryInFlight) return;
     retryInFlight = true;
+    const epoch = connectionEpoch;
     if (refreshToken) {
       const controller = typeof AbortController === "undefined" ? null : new AbortController();
       let timeoutId;
@@ -954,20 +994,23 @@ function createConnection() {
             .then(async (response) => response.ok ? await response.json() : null),
           timeout,
         ]);
-        if (typeof result?.token === "string" && result.token.length > 0) {
+        if (epoch === connectionEpoch && !pageRetired && typeof result?.token === "string" && result.token.length > 0) {
           window.__SPORADES_CONNECTION_TOKEN = result.token;
         }
       } catch {} finally {
         if (timeoutId !== undefined) clearTimeout(timeoutId);
       }
     }
+    if (epoch !== connectionEpoch) return;
     if (pageRetired) {
       retryInFlight = false;
       return;
     }
     const baseDelay = Math.min(2_000, 250 * (2 ** Math.max(0, automaticConnectionAttempts - 1)));
     const delay = baseDelay + Math.floor(Math.random() * Math.max(1, baseDelay * 0.2));
-    setTimeout(() => {
+    retryTimer = setTimeout(() => {
+      if (epoch !== connectionEpoch) return;
+      retryTimer = null;
       retryInFlight = false;
       if (!pageRetired) open();
     }, delay);
@@ -1055,8 +1098,8 @@ function createConnection() {
 
   function request(type, fields = {}) {
     const id = nextId++;
-    if (terminalConnectionError) {
-      return Promise.resolve({ id, type: "error", data: null, error: terminalConnectionError });
+    if (pageRetired || terminalConnectionError) {
+      return Promise.resolve({ id, type: "error", data: null, error: pageRetired ? retiredConnectionError() : terminalConnectionError });
     }
     return new Promise((resolve) => {
       const entry = { resolve, socket: null };

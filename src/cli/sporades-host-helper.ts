@@ -165,7 +165,7 @@ runHostHelperEntry().catch((error: HelperError) => {
     },
     false,
   );
-  if (HOST_HELPER_INSTALL_MODE || process.argv[2] === "--resume-host") process.exitCode = 1;
+  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host"].includes(process.argv[2])) process.exitCode = 1;
 });
 
 async function runHostHelperEntry() {
@@ -173,7 +173,7 @@ async function runHostHelperEntry() {
     await runHostHelperInstaller();
     return;
   }
-  if (process.argv[2] === "--resume-host") {
+  if (["--resume-host", "--checkpoint-host"].includes(process.argv[2])) {
     await resumeHostAtBoot();
     return;
   }
@@ -551,6 +551,7 @@ function managedRouteMutationLockIdentity(request: HostHelperRequest) {
     case "capsule.release.rollback": validateRollbackRequest(request); break;
     case "capsule.release.reconcile":
     case "capsule.resume":
+    case "capsule.shutdown.checkpoint":
     case "capsule.start":
     case "capsule.stop":
     case "capsule.restart": validateLifecycleRequest(request); break;
@@ -940,6 +941,10 @@ async function main(request: HostHelperRequest) {
   }
   if (request.action === "capsule.release.reconcile") {
     await reconcileReleaseAttempt(request);
+    return;
+  }
+  if (request.action === "capsule.shutdown.checkpoint") {
+    await checkpointCapsuleAtShutdown(request);
     return;
   }
   if (request.action === "capsule.resume") {
@@ -2069,6 +2074,8 @@ async function waitForHostedRuntimeReadiness(lifecycle: HostedCapsuleLifecycle, 
 }
 
 async function resumeHostAtBoot() {
+  const checkpointing = process.argv[2] === "--checkpoint-host";
+  const action = checkpointing ? "capsule.shutdown.checkpoint" : "capsule.resume";
   const host = JSON.parse(Buffer.from(process.argv[3] ?? "", "base64url").toString("utf8"));
   const request = { action: "capsule.list", host } as HostHelperRequest;
   validateListRequest(request);
@@ -2081,8 +2088,8 @@ async function resumeHostAtBoot() {
     if (!entry.isFile() || !/^[a-z0-9][a-z0-9-]*\.json$/.test(entry.name)) continue;
     const subname = entry.name.slice(0, -5);
     const child = spawnSync(process.execPath, [process.argv[1]], {
-      input: JSON.stringify({ action: "capsule.resume", host, capsule: { subname } }),
-      encoding: "utf8", timeout: 300_000, maxBuffer: 1024 * 1024,
+      input: JSON.stringify({ action, host, capsule: { subname } }),
+      encoding: "utf8", timeout: checkpointing ? 15_000 : 300_000, maxBuffer: 1024 * 1024,
     });
     let result;
     try { result = JSON.parse(child.stdout); } catch { result = null; }
@@ -2091,6 +2098,46 @@ async function resumeHostAtBoot() {
   const ok = results.every(result => result.ok);
   writeEnvelope({ ok, data: { capsules: results }, error: ok ? null : { message: "Some Capsules could not resume.", hint: "Inspect journalctl for the Host boot recovery service and Capsule logs." } });
   if (!ok) process.exitCode = 1;
+}
+
+async function checkpointCapsuleAtShutdown(request: HostHelperRequest) {
+  validateLifecycleRequest(request);
+  const record = await readRegistryRecordForCapsule(request, "lifecycle");
+  assertRegistryRecordMatchesRequest(request, record);
+  let checkpoint = null;
+  if (record.status === "running") {
+    const name = createHostedContainerName(request.host.domain, request.capsule.subname);
+    const inspected = runDocker(["inspect", "--format", "{{json .}}", name]);
+    if (!inspected.ok) throw helperError("Cannot checkpoint Capsule shutdown.", "Inspect Docker before shutting down the Host.");
+    const container = JSON.parse(inspected.stdout);
+    const labels = container.Config?.Labels;
+    if (labels?.["com.sporades.managed"] !== "true" || labels?.["com.sporades.hosted-domain"] !== request.host.domain
+      || labels?.["com.sporades.capsule-subname"] !== request.capsule.subname) {
+      throw helperError("Shutdown container identity does not match the Capsule.", "Resolve the container identity conflict.");
+    }
+    const startedAt = Date.parse(container.State?.StartedAt);
+    if (container.State?.Running === true && /^[a-f0-9]{64}$/.test(container.Id ?? "") && Number.isFinite(startedAt)
+      && (await waitForHostedRuntimeReadiness(normaliseLifecycle(request, record), 1_000)).ok) {
+      checkpoint = { containerId: container.Id, startedAt: container.State.StartedAt,
+        releaseId: record.currentRelease?.id ?? null, capturedAt: new Date().toISOString() };
+    }
+  }
+  // Registry state is Host-owned and outside every Capsule data mount. Capture under the same
+  // lifecycle lock as start/stop so a stopped or replaced runtime cannot inherit this evidence.
+  await mutateRegistryRecord(request, (current: any) => ({ ...current, shutdownCheckpoint: checkpoint }));
+  writeEnvelope({ ok: true, data: { checkpointed: checkpoint !== null }, error: null });
+}
+
+function matchesHostShutdownCheckpoint(record: any, container: any) {
+  const checkpoint = record.shutdownCheckpoint;
+  const capturedAt = Date.parse(checkpoint?.capturedAt);
+  const startedAt = Date.parse(container.State?.StartedAt);
+  const finishedAt = Date.parse(container.State?.FinishedAt);
+  return checkpoint && /^[a-f0-9]{64}$/.test(container.Id ?? "") && checkpoint.containerId === container.Id
+    && checkpoint.startedAt === container.State?.StartedAt && checkpoint.releaseId === record.currentRelease?.id
+    && Number.isFinite(capturedAt) && Number.isFinite(startedAt) && Number.isFinite(finishedAt)
+    && capturedAt >= startedAt && capturedAt <= finishedAt
+    && container.State?.OOMKilled === false && [137, 143].includes(container.State?.ExitCode);
 }
 
 async function resumeCapsuleAtBoot(request: HostHelperRequest) {
@@ -2114,7 +2161,8 @@ async function resumeCapsuleAtBoot(request: HostHelperRequest) {
   }
   if (container.State?.Running === true || container.State?.Restarting === true) return skip("already-running");
   if (container.State?.Status !== "exited" || !Number.isInteger(container.RestartCount) || !Number.isInteger(container.State?.ExitCode)) return skip("not-a-stopped-runtime");
-  if (container.State.ExitCode !== 0 && container.RestartCount >= restartPolicyForMode("hosted").maxAttempts) {
+  if (container.State.ExitCode !== 0 && container.RestartCount >= restartPolicyForMode("hosted").maxAttempts
+    && !matchesHostShutdownCheckpoint(record, container)) {
     await routeRuntimeExhaustionToUnavailable(request, record, { container: { name } });
     return skip("crash-retries-exhausted");
   }
@@ -2667,7 +2715,8 @@ async function evaluateCapsuleHealth(request: HostHelperRequest, options: { time
 async function routeRuntimeExhaustionToUnavailable(request: HostHelperRequest, record: any, health: any) {
   const inspected = inspectContainerLifecycle(health.container.name);
   const policy = restartPolicyForMode("hosted");
-  if (!Number.isFinite(inspected.restartCount) || inspected.restartCount < policy.maxAttempts) {
+  if (!Number.isFinite(inspected.restartCount) || inspected.restartCount < policy.maxAttempts
+    || inspected.raw?.State?.ExitCode === 0 || matchesHostShutdownCheckpoint(record, inspected.raw)) {
     return;
   }
   const releaseId = record.currentRelease?.id;
@@ -3687,19 +3736,20 @@ function readCapsuleLifecycle(_request: HostHelperRequest, registryRecord: any, 
 function inspectContainerLifecycle(containerName: string) {
   const result = runDocker(["inspect", "--format", "{{json .}}", containerName]);
   if (!result.ok) {
-    return { startedAt: null, uptimeSeconds: null, restartCount: null };
+    return { startedAt: null, uptimeSeconds: null, restartCount: null, raw: null };
   }
   let raw;
   try {
     raw = JSON.parse(result.stdout);
   } catch {
-    return { startedAt: null, uptimeSeconds: null, restartCount: null };
+    return { startedAt: null, uptimeSeconds: null, restartCount: null, raw: null };
   }
   const startedAt = typeof raw.State?.StartedAt === "string" && raw.State.StartedAt !== "0001-01-01T00:00:00Z" ? raw.State.StartedAt : null;
   return {
     startedAt,
     uptimeSeconds: startedAt ? Math.max(0, Math.floor((Date.now() - Date.parse(startedAt)) / 1000)) : null,
     restartCount: Number.isFinite(raw.RestartCount) ? raw.RestartCount : null,
+    raw,
   };
 }
 

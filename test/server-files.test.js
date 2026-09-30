@@ -145,6 +145,52 @@ async function uploadFile(database, auth, filePath, contents) {
   return completed.data.file;
 }
 
+test("overlapping PUTs retain the winning File bytes for initial uploads and replacements", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-upload-race-"));
+  const definition = capsule({ name: "upload-race" });
+  const database = await openDevDatabase(path.join(directory, "data.db"), "", {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } }, definition);
+  const owner = guestAuth("upload-race-owner");
+  const token = "upload-race-session";
+  let server;
+  try {
+    await seedSession(database, owner, token);
+    server = await startEndpointServer(database);
+    let file = null;
+    for (const replacing of [false, true]) {
+      const pending = await createPendingFileUpload(database, owner, {
+        file: { path: "/race.txt", name: "race.txt", type: "text/plain", size: 4 },
+        ...(replacing ? { replace: true, fileReference: file.id } : {}),
+      });
+      assert.equal(pending.ok, true);
+      let reading = 0, release;
+      const bothReading = new Promise((resolve) => { release = resolve; });
+      const contents = ["AAAA", "BBBB"];
+      const results = await Promise.all(contents.map((body) => completePendingFileUpload(database,
+        pending.data.uploadUrl.split("/").pop(), Readable.from((async function* () {
+          if (++reading === 2) release();
+          await bothReading;
+          yield Buffer.from(body);
+        })()))));
+      const winner = results.findIndex((result) => result.ok);
+      assert.notEqual(winner, -1);
+      assert.equal(results.filter((result) => result.ok).length, 1);
+      file = results[winner].data.file;
+      const url = await getPrivateFileUrl(database, owner, file.id);
+      assert.equal(url.ok, true);
+      const downloaded = await fetch(new URL(url.data.url, server.baseUrl), {
+        headers: { "x-sporades-session-token": token },
+      });
+      assert.equal(downloaded.status, 200, "the losing PUT must not delete live bytes");
+      assert.equal(await downloaded.text(), contents[winner], "only the committed attempt publishes bytes");
+    }
+  } finally {
+    await server?.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 async function seedSession(database, auth, token) {
   await database.adapter.insertAuthUser({
     id: auth.userId,
@@ -1370,4 +1416,33 @@ test("query middleware cannot retain user File deletion authority", async () => 
     database.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("a failed replacement write preserves the live File and permits retrying the upload", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sporades-upload-rollback-"));
+  const definition = capsule({ name: "upload-rollback" });
+  const database = await openDevDatabase(path.join(directory, "data.db"), "", {},
+    { name: definition.name, files: { storagePath: path.join(directory, "files") } }, definition);
+  const owner = guestAuth("upload-rollback-owner");
+  const token = "upload-rollback-session";
+  let server;
+  try {
+    await seedSession(database, owner, token);
+    server = await startEndpointServer(database);
+    const file = await uploadFile(database, owner, "/retry.txt", "original");
+    const pending = await createPendingFileUpload(database, owner, { replace: true, fileReference: file.id,
+      file: { name: "retry.txt", path: "/retry.txt", type: "text/plain", size: 8 } });
+    const uploadId = pending.data.uploadUrl.split("/").pop();
+    const write = database.fileStorage.writeFileVersion.bind(database.fileStorage);
+    database.fileStorage.writeFileVersion = async (input) => { await write(input); throw new Error("storage interrupted"); };
+    const failed = await completePendingFileUpload(database, uploadId, Readable.from([Buffer.from("replaced")]));
+    assert.equal(failed.ok, false);
+    const oldUrl = await getPrivateFileUrl(database, owner, file.id);
+    assert.equal(await (await fetch(new URL(oldUrl.data.url, server.baseUrl), { headers: { "x-sporades-session-token": token } })).text(), "original");
+    database.fileStorage.writeFileVersion = write;
+    const retried = await completePendingFileUpload(database, uploadId, Readable.from([Buffer.from("replaced")]));
+    assert.equal(retried.ok, true);
+    const newUrl = await getPrivateFileUrl(database, owner, file.id);
+    assert.equal(await (await fetch(new URL(newUrl.data.url, server.baseUrl), { headers: { "x-sporades-session-token": token } })).text(), "replaced");
+  } finally { await server?.close(); database.close(); await rm(directory, { recursive: true, force: true }); }
 });

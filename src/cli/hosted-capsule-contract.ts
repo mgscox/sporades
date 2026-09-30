@@ -62,6 +62,7 @@ export type HostedCapsuleRegistryRecord = JsonObject & {
   aliasDomains?: string[];
   status?: HostedCapsuleStatus | string;
   currentRelease?: { id: string } | null;
+  shutdownCheckpoint?: { containerId: string; startedAt: string; releaseId: string | null; capturedAt: string } | null;
   releases?: HostedCapsuleReleaseEntry[];
   sealedServerEnv?: HostHelperSealedServerEnv | null;
 };

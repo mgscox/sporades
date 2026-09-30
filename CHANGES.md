@@ -1,11 +1,15 @@
 # Changes
 
-## Unreleased - 2026-09-24
+## Unreleased - 2026-09-30
 
 Changes since v0.9.29.
 
 ### 🐛 Bug Fixes
 
+- Preserve committed File bytes when concurrent PUTs share an upload URL (#179).
+- Fence Team Billing acknowledgements to their current Job generation, operation, and provider lane (#180).
+- Restore authentication, subscriptions, consented capture, and bounded recovery after cached browser navigation (#181).
+- Checkpoint healthy Hosted runtimes before Host shutdown so historical Docker retries do not suppress recovery (#182).
 - Refresh only live queries that read a written table (6942754d).
 - Detect Promise combinators from call sites, not formatted stacks (a55a4fd3).
 
@@ -100,7 +104,6 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
 
 
 

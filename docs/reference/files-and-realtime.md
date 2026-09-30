@@ -21,7 +21,10 @@ const explicitPathFile = await files.upload(selectedFile, {
 const defaultBucketFile = await files.upload(selectedFile);
 ```
 
-Sporades negotiates and transfers the upload bytes internally.
+Sporades negotiates and transfers the upload bytes internally. Concurrent PUTs to
+one upload URL have one transactional owner: losing attempts cannot write,
+overwrite, or delete the committed File version. Failed writer cleanup finishes
+before another attempt can acquire the upload.
 The returned file metadata includes fields such as `id`, `name`, `type`, `size`,
 `path`, and `version`. `path` is the absolute Capsule-scoped File path, not a
 runtime URL, filesystem path, object key, or Object bucket location. Passing
@@ -359,7 +362,9 @@ events; removal includes the complete last state. Unsubscribe stops delivery.
 
 Consent belongs to the page runtime, not a Journey session. An ordinary
 transport reconnect automatically re-enables with the retained narrowed policy,
-but a new transport connection always gets a new server-owned Journey session
+including restoration of the same page runtime from the browser Back/Forward
+cache after fresh authentication confirms the consenting identity. A
+new transport connection always gets a new server-owned Journey session
 on its first accepted publication. Explicit disablement, an authentication
 transition, or page reload/replacement clears consent. Apps that want a durable
 user choice may store that choice separately in current-user preferences and

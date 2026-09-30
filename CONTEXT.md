@@ -397,7 +397,7 @@ The app-scoped record returned by an Upload call, including the file's absolute 
 _Avoid_: file field, attachment row, upload result
 
 **File metadata transaction**:
-The Transaction boundary for file metadata changes during Upload calls, replacement, deletion, and public file URL changes. Browser `files.delete(fileReference)` and server `ctx.files.delete(fileReference)` use this boundary; a server deletion inside a mutation, App message, or Custom endpoint rolls back with that handler transaction. Uploaded file bytes live in Capsule storage, so byte removal is deferred until a surrounding handler transaction commits and other byte side effects that cannot share the database transaction use explicit compensating cleanup when metadata changes fail.
+The Transaction boundary for file metadata changes during Upload calls, replacement, deletion, and public file URL changes. Browser `files.delete(fileReference)` and server `ctx.files.delete(fileReference)` use this boundary; a server deletion inside a mutation, App message, or Custom endpoint rolls back with that handler transaction. Uploaded file bytes live in Capsule storage, so byte removal is deferred until a surrounding handler transaction commits and other byte side effects that cannot share the database transaction use explicit compensating cleanup when metadata changes fail. Upload completion claims its URL under the metadata transaction before writing a version; losing PUTs never publish or compensate that version. Failed writer compensation finishes before the transaction releases ownership.
 _Avoid_: file-byte transaction, storage transaction, best-effort upload metadata
 
 **File version**:
@@ -615,4 +615,7 @@ Host bootstrap installs a per-domain systemd boot recovery service. It resumes
 previously running Hosted Capsules through the existing readiness/route-lock
 path after Docker/Caddy startup, while Docker retains bounded `on-failure:3`
 crash recovery. Explicitly stopped/failed Capsules remain stopped. The service
-is installed by the common manual/automatic Host installation contract.
+is installed by the common manual/automatic Host installation contract. A separate,
+inert shutdown observer records healthy container-instance and release evidence
+before Docker stops. Recovery uses matching evidence for forced shutdown signals,
+never lifetime restart counts alone; OOM and stale evidence cannot authorize it.
