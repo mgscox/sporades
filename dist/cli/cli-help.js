@@ -166,6 +166,8 @@ Commands:
   deploy status       Print Container session status
   deploy stop         Stop the running Container session
   deploy restart      Restart the running Container session
+  deploy policy publish <file>|remove
+                      Publish or remove the declared admission policy
   deploy reconcile    Settle an interrupted deployment-file attempt
   deploy ssh          Inspect effective Container SSH access
   deploy remove       Remove the Container session
@@ -204,6 +206,8 @@ Capsule commands:
   start <subname>     Start a Hosted Capsule
   stop <subname>      Stop a Hosted Capsule
   restart <subname>   Restart a Hosted Capsule
+  policy publish <file>|remove --host <alias> --subname <name>
+                      Publish or remove the recorded admission policy
   reconcile <subname> Settle an interrupted deployment-file attempt
   ssh [subname]       Inspect effective Hosted Capsule SSH access
   stats [subname]     Print Host server or Hosted Capsule stats

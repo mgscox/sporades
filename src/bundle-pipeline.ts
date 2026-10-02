@@ -1,3 +1,4 @@
+import { buildAdmissionPolicy, resolveAdmissionPolicy } from "./admission-policy.js";
 import { buildDeployFiles } from "./deploy-files.js";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -72,7 +73,9 @@ export async function createBundle(
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
   } = {},
 ) {
+  resolveAdmissionPolicy(config.admissionPolicy, (config.deploy as { files?: unknown } | undefined)?.files);
   const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, (config.deploy as { files?: unknown } | undefined)?.files);
+  if (options.deployFiles !== false) deployFiles.push(...await buildAdmissionPolicy(projectDir, config.admissionPolicy, (config.deploy as { files?: unknown } | undefined)?.files));
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
   let prerender: ClientPrerenderFragment[];

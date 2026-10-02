@@ -22,6 +22,7 @@ export type HostHelperAction =
   | "capsule.resume"
   | "capsule.start"
   | "capsule.stop"
+  | "capsule.admission.publish"
   | "capsule.restart"
   | "capsule.stats"
   | "capsule.ssh"
@@ -200,7 +201,13 @@ export type HostAccessKeyRequest = HostHelperRequestBase & {
   accessKeys: JsonObject;
 };
 
+export type HostAdmissionPublishRequest = HostHelperRequestBase & {
+  action: "capsule.admission.publish";
+  capsule: HostHelperCapsuleTarget;
+  admission: { contents: string | null };
+};
 export type HostHelperRequest =
+  | HostAdmissionPublishRequest
   | HostBootstrapRequest
   | HostRegistrationRequest
   | HostSealedEnvRotationRequest

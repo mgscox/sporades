@@ -1,3 +1,4 @@
+import { buildAdmissionPolicy, resolveAdmissionPolicy } from "./admission-policy.js";
 import { buildDeployFiles } from "./deploy-files.js";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -16,7 +17,10 @@ const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple
 const SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
 const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 export async function createBundle(projectDir, config, options = {}) {
+    resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
     const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, config.deploy?.files);
+    if (options.deployFiles !== false)
+        deployFiles.push(...await buildAdmissionPolicy(projectDir, config.admissionPolicy, config.deploy?.files));
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
     const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
     let prerender;
