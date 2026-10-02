@@ -108,6 +108,44 @@ Capsules use the Host's shared relay connection by default with a Host-owned
 per-Capsule opt-out; project settings cannot replace that decision. Independent
 blocked-loop detection remains separate work.
 
+### Database time in request traces
+
+An enabled, sampled HTTP request automatically contains CLIENT spans from the
+internal Database adapter, across SQLite, PostgreSQL and libSQL. No Capsule import,
+new configuration, or adapter/plugin API is needed. Existing profile selection,
+sampling, export limits and shutdown deadlines also govern these spans.
+
+| Span / attribute | Meaning |
+| --- | --- |
+| `db.TRANSACTION` | The runtime transaction interval, including connection acquisition wait, callback work, commit or rollback. |
+| `db.SELECT`, `db.INSERT`, etc. | One adapter statement call, including any connection wait. Children of the owning transaction, or directly of the HTTP SERVER span. |
+| `db.system.name` | `sqlite`, `postgres`, or `libsql`. |
+| `db.operation.name` | `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `CREATE`, `ALTER`, `DROP`, `BEGIN`, `COMMIT`, `ROLLBACK`, `PRAGMA`, `TRANSACTION`, or `OTHER`. |
+| `db.collection.name` | A declared app-table name (up to 128 names per adapter, at most 64 ASCII identifier characters), `__runtime` for the reserved runtime namespace, or `__other`. Absent on transaction spans. |
+| `sporades.db.outcome` | `success` or `error`; failures also set ERROR span status without a message or exception event. |
+
+Expand a request in Jaeger to distinguish statement time from callback work and
+transaction wait. Transaction duration overlaps its children: adding both would
+double-count time. Some engine-owned commit/rollback mechanics are included only
+in the transaction interval. This measures adapter calls, not a database query
+plan or an application-wide SQL profiler. Complex statements and statements over
+8,192 characters use conservative labels. SQL text, parameters, rows, connection URLs,
+credentials, private row IDs and exception details are never attached.
+
+Initialization, detached Jobs and work after HTTP completion create no database
+spans in this slice. Disabled or sampled-out requests keep the same database
+behavior without operation spans. A collector outage does not change database
+results, ACL checks, retries, transaction ownership, rollback or handle revocation.
+
+The generated-Bundle tests exercise SQLite by default. To also verify PostgreSQL,
+set `SPORADES_TELEMETRY_POSTGRES_BUNDLE_URL` to a dedicated disposable database.
+The focused adapter tests use a separate disposable database selected through
+`SPORADES_TELEMETRY_POSTGRES_TEST_URL`. For stored-trace acceptance, set
+`SPORADES_TELEMETRY_TRACE_INGEST_URL` to a disposable Jaeger OTLP/HTTP origin and
+`SPORADES_TELEMETRY_TRACE_QUERY_URL` to its query origin; the Bundle tests verify
+stored traces through `/api/v3/traces/:id`. These test settings never configure a
+real Host or the operator's saved Telemetry profiles.
+
 When either the selected trace or periodic metric exporter fails, the existing
 platform log records `telemetry.export.failed` with one bounded reason:
 `AUTH_REJECTED`, `DESTINATION_UNAVAILABLE`, `TLS_FAILED`, or `EXPORT_FAILED`.

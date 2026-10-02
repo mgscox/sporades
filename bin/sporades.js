@@ -128672,7 +128672,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span }, handle);
+        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span, tracer, isOpen: () => !ended && !closing }, handle);
         if (result && typeof result.then === "function") {
           return Promise.resolve(result).catch((error) => {
             end("error");
@@ -131471,12 +131471,111 @@ function chainSchemaOperation(previous, operation) {
   return operation();
 }
 
+// src/database-telemetry.ts
+init_esm();
+import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
+var databaseTelemetry = Symbol("sporades.database.telemetry");
+var operationScope = new AsyncLocalStorage3();
+var instrumentedPrimitives = /* @__PURE__ */ new WeakSet();
+function withDatabaseSpan(engine, operation, table, run2) {
+  const request = runtimeRequestScope.getStore();
+  if (!request?.tracer || !request.span || !request.isOpen?.() || !request.span.isRecording()) return run2();
+  const owner = operationScope.getStore();
+  const parent = owner?.requestId === request.requestId ? owner.span : request.span;
+  let span;
+  try {
+    span = request.tracer.startSpan(`db.${operation}`, {
+      kind: SpanKind.CLIENT,
+      attributes: { "db.system.name": engine, "db.operation.name": operation, ...table ? { "db.collection.name": table } : {} }
+    }, trace.setSpan(ROOT_CONTEXT, parent));
+  } catch {
+    return run2();
+  }
+  const end = (failed) => {
+    try {
+      span.setAttribute("sporades.db.outcome", failed ? "error" : "success");
+      if (failed) span.setStatus({ code: SpanStatusCode.ERROR });
+      span.end();
+    } catch {
+    }
+  };
+  try {
+    const result = operationScope.run({ requestId: request.requestId, span }, run2);
+    if (result && typeof result.then === "function") {
+      return Promise.resolve(result).then((value) => {
+        end(false);
+        return value;
+      }, (error) => {
+        end(true);
+        throw error;
+      });
+    }
+    end(false);
+    return result;
+  } catch (error) {
+    end(true);
+    throw error;
+  }
+}
+function createDatabaseTelemetry(engine) {
+  const tables = /* @__PURE__ */ new Set();
+  const metadata = (sql2) => {
+    if (typeof sql2 !== "string" || sql2.length > 8192) return { operation: "OTHER", table: "__other" };
+    const operation = /^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|BEGIN|COMMIT|ROLLBACK|PRAGMA)\b/i.exec(sql2)?.[1].toUpperCase() ?? "OTHER";
+    const match = /\b(?:FROM|INTO|UPDATE|TABLE(?:\s+IF\s+(?:NOT\s+)?EXISTS)?)\s+(?:"([a-zA-Z_][a-zA-Z0-9_]{0,63})"|\[([a-zA-Z_][a-zA-Z0-9_]{0,63})\]|([a-zA-Z_][a-zA-Z0-9_]{0,63})\b)/i.exec(sql2);
+    const name2 = match?.[1] ?? match?.[2] ?? match?.[3];
+    return { operation, table: name2 && tables.has(name2) ? name2 : name2?.startsWith("sporades_") || name2 === "sporades" ? "__runtime" : "__other" };
+  };
+  return {
+    registerTables(schema) {
+      for (const table of schema?.tables ?? []) {
+        if (tables.size >= 128) break;
+        if (typeof table?.name === "string" && /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(table.name)) tables.add(table.name);
+      }
+    },
+    operations(operations) {
+      if (instrumentedPrimitives.has(operations.exec) && instrumentedPrimitives.has(operations.prepare)) return operations;
+      const exec = operations.exec;
+      const prepare = operations.prepare;
+      const wrapped = {
+        exec(sql2) {
+          const { operation, table } = metadata(sql2);
+          return withDatabaseSpan(engine, operation, table, () => Reflect.apply(exec, operations, [sql2]));
+        },
+        prepare(sql2) {
+          let statement;
+          try {
+            statement = Reflect.apply(prepare, operations, [sql2]);
+          } catch (error) {
+            const { operation, table } = metadata(sql2);
+            return withDatabaseSpan(engine, operation, table, () => {
+              throw error;
+            });
+          }
+          const wrappedStatement = Object.create(statement);
+          for (const method of ["all", "get", "run", "columns"]) {
+            if (typeof statement[method] !== "function") continue;
+            wrappedStatement[method] = (...params) => {
+              const { operation, table } = metadata(sql2);
+              return withDatabaseSpan(engine, operation, table, () => Reflect.apply(statement[method], statement, params));
+            };
+          }
+          return wrappedStatement;
+        }
+      };
+      instrumentedPrimitives.add(wrapped.exec);
+      instrumentedPrimitives.add(wrapped.prepare);
+      return wrapped;
+    }
+  };
+}
+
 // src/database-runtime.ts
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");
-function createConnectionTransactionGate() {
-  const AsyncLocalStorage3 = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
-  const transactionOwnership = new AsyncLocalStorage3();
+function createConnectionTransactionGate(engine) {
+  const AsyncLocalStorage4 = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
+  const transactionOwnership = new AsyncLocalStorage4();
   const transactionOwner = Object.freeze({});
   let transactionTail = Promise.resolve();
   let transactionActive = false;
@@ -131545,7 +131644,12 @@ function createConnectionTransactionGate() {
   };
   const whenIdle = async () => await transactionTail.catch(() => {
   });
-  return { runOperation, runTransaction, whenIdle, isBusy: () => transactionWaiters > 0 };
+  return {
+    runOperation,
+    runTransaction: (operation, options = {}) => withDatabaseSpan(engine, "TRANSACTION", void 0, () => runTransaction(operation, options)),
+    whenIdle,
+    isBusy: () => transactionWaiters > 0
+  };
 }
 async function rejectNestedTransactionScope() {
   throw commandError2(
@@ -131568,7 +131672,8 @@ function createTransactionScopedAdapter(adapter, operations, owner, kind) {
       "Do not retain ctx.db operations after the trusted handler has completed."
     );
   };
-  const operationOwner = typeof operations.exec === "function" ? operations : adapter;
+  const suppliedOperations = typeof operations.exec === "function" ? operations : adapter;
+  const operationOwner = owner[databaseTelemetry]?.operations(suppliedOperations) ?? suppliedOperations;
   const exec = operationOwner.exec;
   const prepare = operationOwner.prepare;
   const guardedOperations = {
@@ -132647,6 +132752,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     // unawaited `exec("BEGIN")` leaves the enclosing `try`/`catch` unable to see an asynchronous
     // rejection, and the COMMIT fires before the migration it is meant to enclose has finished.
     migrateAppSchema(schema) {
+      this[databaseTelemetry]?.registerTables(schema);
       return this.withTransaction((transaction) => migrateAppSchemaInTransaction(transaction, schema));
     },
     createAppTable(table, tableName = table.name) {
@@ -132809,7 +132915,8 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   let resourceConnectionQuarantined = false;
   let resourceConnectionDisposed = false;
   const dialect = sqliteDatabaseDialect();
-  const connectionGate = createConnectionTransactionGate();
+  const connectionGate = createConnectionTransactionGate("sqlite");
+  const telemetry = createDatabaseTelemetry("sqlite");
   const runDirectly = (operation) => operation();
   const discardUncertainResourceConnection = () => {
     const uncertainConnection = connection;
@@ -132825,7 +132932,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       if (resourceConnectionQuarantined) throw resourceError("RESOURCE_COMMIT_UNKNOWN");
       return operation();
     };
-    return {
+    return telemetry.operations({
       exec(sql2) {
         return run2(() => useConnection(() => {
           const result = connection.exec(sql2);
@@ -132855,7 +132962,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
           }
         };
       }
-    };
+    });
   };
   const adapter = {
     ...createSharedDatabaseAdapterMethods(dialect),
@@ -133014,6 +133121,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   if (!options.readOnly) {
     adapter.exec("PRAGMA journal_mode = WAL");
   }
+  Object.defineProperty(adapter, databaseTelemetry, { value: telemetry });
   return adapter;
 }
 async function createPostgresDatabaseAdapter(options) {
@@ -133027,7 +133135,8 @@ async function createPostgresDatabaseAdapter(options) {
   let client = await createPostgresConnection(url);
   let needsReconnect = false;
   let reconnecting;
-  const connectionGate = createConnectionTransactionGate();
+  const connectionGate = createConnectionTransactionGate("postgres");
+  const telemetry = createDatabaseTelemetry("postgres");
   const runDirectly = (operation) => operation();
   let closed = false;
   const dialect = postgresDatabaseDialect();
@@ -133183,7 +133292,7 @@ async function createPostgresDatabaseAdapter(options) {
     }
     return await client.query(postgresInterpolate(sql2, params));
   };
-  const createOperations = (run2) => ({
+  const createOperations = (run2) => telemetry.operations({
     exec(sql2) {
       return run2(() => rawQuery(sql2).then(() => void 0));
     },
@@ -133408,6 +133517,7 @@ async function createPostgresDatabaseAdapter(options) {
       await client.close();
     }
   };
+  Object.defineProperty(adapter, databaseTelemetry, { value: telemetry });
   return adapter;
 }
 var postgresRejectedTransactions = /* @__PURE__ */ new WeakSet();
@@ -133876,11 +133986,12 @@ async function createLibsqlDatabaseAdapter(options) {
   const authToken = typeof options === "object" ? options.authToken : null;
   let closed = false;
   const activeTransactions = /* @__PURE__ */ new Set();
-  const connectionGate = createConnectionTransactionGate();
+  const connectionGate = createConnectionTransactionGate("libsql");
+  const telemetry = createDatabaseTelemetry("libsql");
   const runDirectly = (operation) => operation();
   const dialect = sqliteDatabaseDialect();
   const normalization = libsqlRowNormalization();
-  const createOperations = (transaction = null, run2 = runDirectly) => ({
+  const createOperations = (transaction = null, run2 = runDirectly) => telemetry.operations({
     exec(sql2) {
       assertLibsqlOpen(closed);
       const request = libsqlHasMultipleStatements(sql2) ? { type: "sequence", sql: sql2 } : { type: "execute", stmt: { sql: sql2 } };
@@ -134013,6 +134124,7 @@ async function createLibsqlDatabaseAdapter(options) {
       activeTransactions.clear();
     }
   };
+  Object.defineProperty(adapter, databaseTelemetry, { value: telemetry });
   return adapter;
 }
 function libsqlPipelineUrl(url) {
