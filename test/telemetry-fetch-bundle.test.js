@@ -88,7 +88,7 @@ export default capsule({ name: 'fetch-bundle', endpoints: { work: endpoint({ met
         if (child.exitCode === null) await Promise.race([once(child, 'exit'), pause(5000)]);
         assert.equal(child.exitCode, 0, stderr);
         const spans = payloads.slice(offset).flatMap(p => (p.resourceSpans ?? []).flatMap(r => r.scopeSpans.flatMap(s => s.spans)));
-        const children = spans.filter(s => s.kind === 3), parents = spans.filter(s => s.kind === 2 && s.name === 'GET /work');
+        const children = spans.filter(s => s.kind === 3 && s.attributes.some(a => a.key === 'http.request.method')), parents = spans.filter(s => s.kind === 2 && s.name === 'GET /work');
         assert.equal(children.length, modes.length, stderr); assert.equal(parents.length, modes.length);
         const outcome = s => s.attributes.find(a => a.key === 'sporades.http.outcome').value.stringValue;
         for (const child of children) assert.equal(child.parentSpanId, parents.find(p => p.traceId === child.traceId)?.spanId);

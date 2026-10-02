@@ -350,7 +350,8 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = runtimeRequestScope.run({ requestId: randomUUID(), span, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, () => !closing && !ended) }, handle);
+        const isOpen = () => !ended && !closing;
+        const result = runtimeRequestScope.run({ requestId: randomUUID(), span, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
         if (result && typeof (result as Promise<unknown>).then === "function") {
           return Promise.resolve(result).catch((error) => { end("error"); throw error; });
         }

@@ -348,7 +348,8 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             response.once("error", () => end("error"));
             request.once("aborted", () => end("abort"));
             try {
-                const result = runtimeRequestScope.run({ requestId: randomUUID(), span, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, () => !closing && !ended) }, handle);
+                const isOpen = () => !ended && !closing;
+                const result = runtimeRequestScope.run({ requestId: randomUUID(), span, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
                 if (result && typeof result.then === "function") {
                     return Promise.resolve(result).catch((error) => { end("error"); throw error; });
                 }
