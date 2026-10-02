@@ -129,7 +129,7 @@ transaction wait. Transaction duration overlaps its children: adding both would
 double-count time. Some engine-owned commit/rollback mechanics are included only
 in the transaction interval. This measures adapter calls, not a database query
 plan or an application-wide SQL profiler. Complex statements and statements over
-8 KiB use conservative labels. SQL text, parameters, rows, connection URLs,
+8,192 characters use conservative labels. SQL text, parameters, rows, connection URLs,
 credentials, private row IDs and exception details are never attached.
 
 Initialization, detached Jobs and work after HTTP completion create no database
