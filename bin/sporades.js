@@ -144294,10 +144294,17 @@ async function devClamavContainerIsRunning(dockerCommand, containerName, deadlin
   const result = await commandResult(dockerCommand, ["container", "inspect", "--format", "{{.State.Running}}", containerName], Math.max(1, Math.ceil(remaining)));
   return result.code === 0 && result.stdout.trim() === "true" && now2() <= deadline;
 }
+async function createDevClamavSocketDirectory() {
+  const socketDir = await mkdtemp(path13.join(tmpdir(), "sporades-dev-clamav-"));
+  const maxSocketBytes = process.platform === "linux" ? 107 : 103;
+  if (process.platform === "win32" || Buffer.byteLength(path13.join(socketDir, "clamd.sock")) <= maxSocketBytes) return socketDir;
+  await rm6(socketDir, { recursive: true, force: true });
+  return await mkdtemp("/tmp/sporades-dev-clamav-");
+}
 async function startDevClamavSidecar(options) {
   const dataRoot = path13.join(options.projectDir, ".sporades", "clamav");
   await mkdir6(path13.join(dataRoot, "clamav"), { recursive: true });
-  const socketDir = await mkdtemp(path13.join(tmpdir(), "sporades-dev-clamav-"));
+  const socketDir = await createDevClamavSocketDirectory();
   const identity = createHash12("sha256").update(`${path13.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
   const socketPath = path13.join(socketDir, "clamd.sock");

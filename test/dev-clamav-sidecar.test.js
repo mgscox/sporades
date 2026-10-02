@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -206,6 +206,59 @@ test("Dev ClamAV readiness is unpublished when the container exits during proxy 
     await assert.rejects(startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 1_000, proxyServerFactory }), (error) => error?.code === "FILE_INSPECTION_UNAVAILABLE");
     assert.equal(proxyClosed, true, "a proxy racing publication is closed before startup rejects");
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Dev ClamAV socket paths respect temporary overrides, byte limits, and cleanup", async (t) => {
+  const dir = await mkdtemp("/tmp/sc-"); const docker = path.join(dir, "docker.mjs"); const state = path.join(dir, "state.json");
+  await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));process.stdout.write("sporades-clamav-ready-v1\\n");process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="container"&&args[1]==="inspect"&&args.includes("--format")){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),0);process.stdout.write("true\\n");}catch{process.exit(1);}}\nelse if(args[0]==="container"&&args[1]==="inspect")process.exit(1);\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse process.exit(1);\n`); await chmod(docker, 0o755);
+  const originalTmpdir = process.env.TMPDIR;
+  const maxBytes = process.platform === "linux" ? 107 : 103;
+  // The final suffix is /sporades-dev-clamav-XXXXXX/clamd.sock (38 bytes).
+  const boundary = path.join(dir, "s".repeat(maxBytes - Buffer.byteLength(dir) - 39));
+  const cases = [
+    { name: "oversized temporary base", base: path.join(dir, "temporary-".repeat(16)), fallback: true },
+    { name: "UTF-8 bytes exceed limit despite short character count", base: path.join(dir, "é".repeat(36)), fallback: true },
+    { name: "socket at the platform limit retains TMPDIR", base: boundary, fallback: false },
+    { name: "socket beyond the platform limit falls back", base: boundary + "s", fallback: true },
+    { name: "failed publication removes fallback directory", base: path.join(dir, "failure-".repeat(16)), fallback: true, fail: true },
+  ];
+  try {
+    for (const { name, base, fallback, fail } of cases) await t.test(name, async () => {
+      await mkdir(base);
+      let manager;
+      let failedSocket;
+      try {
+        process.env.TMPDIR = base;
+        const options = { projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker };
+        if (fail) {
+          options.proxyServerFactory = () => ({
+            once(_event, callback) { this.onError = callback; },
+            listen(socketPath) { failedSocket = socketPath; queueMicrotask(() => this.onError(new Error("socket unavailable"))); },
+            close(callback) { callback(); },
+          });
+          await assert.rejects(startDevClamavSidecar(options), /socket unavailable/);
+          assert.equal(path.dirname(path.dirname(failedSocket)), "/tmp");
+          await assert.rejects(access(path.dirname(failedSocket)), { code: "ENOENT" });
+        } else {
+          manager = await startDevClamavSidecar(options);
+          const socketPath = manager.descriptor.socketPath;
+          assert.equal((await stat(socketPath)).isSocket(), true, "the real proxy bound its advertised socket");
+          assert(Buffer.byteLength(socketPath) <= maxBytes);
+          assert.equal(path.dirname(path.dirname(socketPath)), fallback ? "/tmp" : base);
+          if (!fallback) assert.equal(Buffer.byteLength(socketPath), maxBytes);
+          await manager.stop();
+          await assert.rejects(access(path.dirname(socketPath)), { code: "ENOENT" });
+        }
+        assert.equal(tmpdir(), base, "other runtime files retain the configured temporary directory");
+        assert.deepEqual(await readdir(base), [], "no socket directory remains in the configured base");
+      } finally {
+        await manager?.stop().catch(() => {});
+      }
+    });
+  } finally {
+    if (originalTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = originalTmpdir;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("Dev ClamAV stable readiness can be published and cleaned across repeated starts", async () => {
