@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, removeDeployFileSnapshot } from "../deploy-files.js";
+import { openAdmissionPolicy, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
+import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
@@ -483,7 +484,26 @@ function parseDevArgs(args) {
         projectDir: process.cwd(),
     };
 }
+function parsePolicyOperation(positional) {
+    const [operation, source, ...extra] = positional;
+    if (extra.length || !["publish", "remove"].includes(operation) || (operation === "publish" ? !source : source !== undefined))
+        throw commandError("Invalid policy publication command.", "Use `policy publish <file>` or `policy remove`.");
+    return { operation, source };
+}
+async function policyPublicationBytes(options) {
+    if (options.operation === "remove")
+        return null;
+    const source = path.resolve(options.projectDir, options.source);
+    const bytes = await readDeployFile(path.dirname(source), path.basename(source), ADMISSION_LIMITS.bytes);
+    parseAdmissionPolicy(bytes);
+    return bytes;
+}
 function parseDeployArgs(args) {
+    if (args[0] === "policy") {
+        const json = args.includes("--json");
+        const operation = parsePolicyOperation(args.slice(1).filter(arg => arg !== "--json"));
+        return { subcommand: "policy", ...operation, json, projectDir: process.cwd() };
+    }
     const lifecycleCommands = new Set(["status", "stop", "restart", "remove", "reconcile", "reset", "ssh", "jobs", "schedules"]);
     const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
     const rest = subcommand === "start" ? args : args.slice(1);
@@ -1241,6 +1261,13 @@ function parseHostArgs(args) {
             }
             return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
         }
+        case "policy": {
+            if (!hostAlias || !subname)
+                throw commandError("Missing Host policy target.", "Pass --host <alias> --subname <name>.");
+            validateHostAlias(hostAlias);
+            validateCapsuleSubname(subname);
+            return { subcommand, ...parsePolicyOperation(positional), hostAlias, subname, json, projectDir: process.cwd() };
+        }
         case "jobs":
             if (positional.length > 0)
                 throw commandError("Too many positional arguments.", "Use `sporades host jobs --host <alias> --subname <name>`.");
@@ -1739,6 +1766,23 @@ async function manageLocalLifecycle(surface, options) {
 }
 async function manageLocalLifecycleUnlocked(surface, options) {
     switch (options.subcommand) {
+        case "policy": {
+            if (surface !== "deploy")
+                throw commandError("Unsupported policy command.", "Use `sporades deploy policy`.");
+            await assertNoLocalDeployFileAttempt(options, "policy");
+            const { binding } = await requireLocalContainerBinding(options, "policy");
+            const policy = resolveDeployFiles(binding.deployFiles, true).find(file => file.update === "admission");
+            if (!policy)
+                throw commandError("The deployed Capsule has no admission policy.", "Declare admissionPolicy.path and deploy it first.");
+            const bytes = await policyPublicationBytes(options);
+            await publishAdmissionPolicy(admissionStorageRoot(localPreservedFilesRoot(options)), policy.path, bytes);
+            const data = { published: true, removed: bytes === null, digest: bytes ? parseAdmissionPolicy(bytes).digest : null };
+            if (options.json)
+                writeResult({ ok: true, data, error: null });
+            else
+                process.stdout.write("Admission policy publication committed.\n");
+            return;
+        }
         case "status":
             await printLocalCapsuleServiceStatus(options, surface);
             return;
@@ -2725,18 +2769,31 @@ async function createDevRuntime(options) {
         clamavSidecar = attached.sidecar;
         return attached.attached;
     };
-    let database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), {
-        serviceEnv: options.serviceEnv,
-        createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
-        createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
-    });
-    database.runtimeProbeToken = options.runtimeProbeToken;
+    let database;
+    const reportAdmissionHealth = (health) => {
+        try {
+            database?.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+        }
+        catch { /* Policy diagnostics never interrupt runtime work. */ }
+    };
+    let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
+    let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
     try {
+        database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), {
+            serviceEnv: options.serviceEnv,
+            createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
+            createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
+        });
+        database.runtimeProbeToken = options.runtimeProbeToken;
         await attachRequiredSidecar(database);
         await database.init();
+        if (admissionPolicy) {
+            database.admissionPolicy = admissionPolicy;
+            reportAdmissionHealth(admissionPolicy.health());
+        }
     }
     catch (error) {
-        const cleanup = await Promise.allSettled([Promise.resolve().then(() => database.close()), clamavSidecar?.stop?.()].filter(Boolean));
+        const cleanup = await Promise.allSettled([Promise.resolve().then(() => database?.close()), admissionPolicy?.close(), clamavSidecar?.stop?.()].filter(Boolean));
         const failures = cleanup.filter((item) => item.status === "rejected").map((item) => item.reason);
         if (failures.length)
             throw new AggregateError([error, ...failures], "Dev runtime startup and scanner cleanup both failed.");
@@ -2747,22 +2804,49 @@ async function createDevRuntime(options) {
             return database;
         },
         async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
-            const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), {
-                serviceEnv,
-                createStripeCallbackEndpoint: await stripeCallbackFactory(config),
-                createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
-            });
-            nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
-            const sidecarBeforePreparation = clamavSidecar;
-            database = await replacePreparedRuntimeDatabase(database, nextDatabase, attachRequiredSidecar, async () => {
-                if (clamavSidecar === sidecarBeforePreparation || !clamavSidecar)
-                    return;
-                clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
-            });
-            clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
+            const nextPath = resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
+            const changed = nextPath !== admissionPath;
+            let nextAdmission = admissionPolicy;
+            if (changed) {
+                nextAdmission = null;
+                nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, health => {
+                    if (nextAdmission && nextAdmission === admissionPolicy)
+                        reportAdmissionHealth(health);
+                }) : null;
+            }
+            try {
+                const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), {
+                    serviceEnv,
+                    createStripeCallbackEndpoint: await stripeCallbackFactory(config),
+                    createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
+                });
+                nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
+                if (nextAdmission)
+                    nextDatabase.admissionPolicy = nextAdmission;
+                const sidecarBeforePreparation = clamavSidecar;
+                database = await replacePreparedRuntimeDatabase(database, nextDatabase, attachRequiredSidecar, async () => {
+                    if (clamavSidecar === sidecarBeforePreparation || !clamavSidecar)
+                        return;
+                    clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
+                });
+                const previousAdmission = admissionPolicy;
+                admissionPath = nextPath;
+                admissionPolicy = nextAdmission;
+                if (changed) {
+                    await previousAdmission?.close();
+                    if (admissionPolicy)
+                        reportAdmissionHealth(admissionPolicy.health());
+                }
+                clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
+            }
+            catch (error) {
+                if (changed && nextAdmission !== admissionPolicy)
+                    await nextAdmission?.close();
+                throw error;
+            }
         },
         async shutdown() {
-            const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean));
+            const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), admissionPolicy?.close(), clamavSidecar?.stop?.()].filter(Boolean));
             const failures = settled.filter((item) => item.status === "rejected").map((item) => item.reason);
             if (failures.length === 1)
                 throw failures[0];
@@ -3492,6 +3576,18 @@ async function manageHost(options) {
                 throw commandError(result.error.message, result.error.hint);
             else
                 process.stdout.write(`${JSON.stringify(result.data, null, 2)}\n`);
+            return;
+        }
+        case "policy": {
+            const bytes = await policyPublicationBytes(options);
+            const resolved = resolveHostProfile(await readHostConfig(), options.hostAlias);
+            const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: "capsule.admission.publish", subname: options.subname, admission: { contents: bytes ? bytes.toString("base64") : null }, projectDir: options.projectDir });
+            if (options.json)
+                writeResult(result, !result.ok);
+            else if (!result.ok)
+                throw commandError(result.error.message, result.error.hint);
+            else
+                process.stdout.write("Admission policy publication committed.\n");
             return;
         }
         case "schedules": {
@@ -4377,6 +4473,8 @@ async function startContainerSession(options) {
         // sealed Server env cannot replace the session-owned telemetry decision.
         "--env",
         "SPORADES_SECURITY_SESSION=container",
+        "--env",
+        `SPORADES_ADMISSION_POLICY_PATH=${bundle.deployFiles.find(file => file.update === "admission")?.path ?? ""}`,
         "--env",
         `SPORADES_CONTAINER_TELEMETRY_CONFIG=${JSON.stringify(telemetryConfig)}`,
         SPORADES_BASE_IMAGE.image,
@@ -5418,6 +5516,8 @@ function invokeRemoteHostHelper(options) {
         },
         capsule: options.subname ? { subname: options.subname } : null,
     };
+    if (options.admission)
+        request.admission = options.admission;
     if (options.bootstrap) {
         request.bootstrap = options.bootstrap;
     }
@@ -6261,7 +6361,7 @@ async function stopLocalContainerSession(options) {
 // SSH-enabled sessions reach them the same way they reach `/app/data`.
 async function prepareLocalPreservedFiles(options, binding, hint = "Restore a regular owner-writable preserved file before restarting the bound Container.") {
     const preservedRoot = localPreservedFilesRoot(options);
-    for (const relative of new Set(resolveDeployFiles(binding.deployFiles).filter((file) => file.update === "preserve").map((file) => file.path.normalize("NFC")))) {
+    for (const relative of new Set(resolveDeployFiles(binding.deployFiles, true).filter((file) => file.update === "preserve").map((file) => file.path.normalize("NFC")))) {
         try {
             await preparePreservedFileStorage(preservedRoot, relative);
         }

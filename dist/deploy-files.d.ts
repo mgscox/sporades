@@ -1,7 +1,7 @@
 import type { FileHandle } from "node:fs/promises";
 export type DeployFile = {
     path: string;
-    update: "replace" | "preserve";
+    update: "replace" | "preserve" | "admission";
 };
 export type PreservedSeed = {
     root: string;
@@ -14,9 +14,11 @@ export type PreservedSeed = {
 export type BuiltDeployFile = DeployFile & {
     contents: Buffer;
 };
-export declare function resolveDeployFiles(value: unknown): DeployFile[];
+export declare function resolveDeployFiles(value: unknown, allowAdmission?: boolean): DeployFile[];
 export declare function preservedDeployFilePath(root: string, relative: string): string;
 export declare function assertPreservedDeployFile(root: string, relative: string): Promise<string>;
+export declare function readDeployFile(root: string, relative: string, maxBytes?: number): Promise<Buffer<ArrayBuffer>>;
+export declare function deployFileStorageRoot(file: DeployFile, preservedRoot: string): string;
 export declare function buildDeployFiles(projectDir: string, value: unknown): Promise<BuiltDeployFile[]>;
 export declare function deployFileMounts(files: DeployFile[], releaseRoot: string, preservedRoot: string): {
     host: string;

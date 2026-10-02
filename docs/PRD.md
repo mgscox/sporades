@@ -1463,3 +1463,15 @@ checkpoint binds authenticated readiness to the exact container instance, start
 time, and current release. Matching non-OOM shutdown signal exits can recover
 despite historical restart counts; absent, stale, or OOM evidence cannot override
 exhausted crash retry state.
+
+### Deployer-owned request-admission generations
+
+One optional `admissionPolicy.path` declares a validated v1 JSON seed. Container
+and Hosted runtimes receive isolated read-only persistent storage; CLI/Host
+publication and explicit removal are atomic and survive redeploy and restart.
+Startup rejects invalid configured policy before app traffic. Bounded immutable
+generations reload within ten seconds under normal scheduling; hot failures
+retain the last-known-good generation and report redacted digest/health.
+This lifecycle slice does not yet enforce requests. See the
+[configuration reference](reference/projects-and-configuration.md#request-admission-policy-publication)
+and [ADR-0054](adr/0054-request-admission-policy-is-deployer-owned.md).

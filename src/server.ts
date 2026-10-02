@@ -1,3 +1,4 @@
+export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceNotificationIntentStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 import type {
   EndpointBodyBytes as CanonicalEndpointBodyBytes,

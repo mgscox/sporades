@@ -5,7 +5,7 @@ export function expectedReleaseFiles(release: HostHelperRelease) {
   const publicFiles = Array.isArray(release.files)
     ? release.files.filter((file): file is string => typeof file === "string" && file.startsWith("public/"))
     : [];
-  const files = ["server.mjs", "sporades.json", ...publicFiles, ...resolveDeployFiles(release.deployFiles).map((file) => file.path)];
+  const files = ["server.mjs", "sporades.json", ...publicFiles, ...resolveDeployFiles(release.deployFiles, true).map((file) => file.path)];
   if (release.serverEnvIncluded) {
     files.push(".env.sporades.server");
   }

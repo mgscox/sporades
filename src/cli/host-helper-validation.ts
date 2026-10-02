@@ -309,7 +309,7 @@ export function validateInstallRequest(request: HostHelperRequest) {
   if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(release.id)) {
     throw helperError("Invalid Hosted Capsule release ID.", "Push again to generate a fresh UTC-sortable release ID.");
   }
-  const deployFiles = resolveDeployFiles(release.deployFiles);
+  const deployFiles = resolveDeployFiles(release.deployFiles, true);
   if (JSON.stringify(release.deployFiles ?? []) !== JSON.stringify(deployFiles)) throw helperError("Invalid release deploy.files manifest.", "Rebuild with canonical relative paths and retry.");
   if (!Array.isArray(release.files) || release.files.some((file: unknown) => !isExpectedClaimedReleaseFile(file, deployFiles.map((entry) => entry.path)))) {
     throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
