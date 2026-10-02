@@ -60,3 +60,23 @@ These test changes do not implement any of #120's alert acceptance criteria.
 Native dependencies were rechecked after QA: #118 remains open and #112 closed.
 The PR must remain draft until the availability implementation and its required
 isolated acceptance work are complete.
+
+## QA round 2 follow-up
+
+Poirot independently verified the fixture fixes at `c439fa90`: the full suite
+passed with 2,670 tests passed, zero failed and 204 optional skips. Host archive,
+gateway cancellation, Docker telemetry and documentation checks also passed.
+This verifies the fixture repairs, not the unimplemented availability slice.
+
+The todo Capsule's **Sign in with Anonymous** action returned
+`Unsupported auth provider: anonymous`. Sign-in smoke therefore **failed**.
+The scaffold and auth implementation are unchanged from `origin/main`; the
+defect is tracked separately in
+[#194: Todo scaffold offers unsupported anonymous sign-in](https://github.com/mgscox/sporades/issues/194).
+It is not repaired by this telemetry PR.
+
+The native dependency graph was rechecked after round 2: #118 remains open and
+#112 closed. Keep #192 draft. Availability configuration, inventory-derived
+probes, durable expectations, timed rules and notification/recovery delivery
+remain the work listed above, followed by authorized disposable separate-VM
+acceptance using an operator-selected test notification channel.
