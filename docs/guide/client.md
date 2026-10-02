@@ -15,6 +15,25 @@ not change the server contract. See
 [Choose a client framework](./projects.md#choose-a-client-framework) for all
 eight supported choices and their scaffolded reactivity model.
 
+## Public asset caching
+
+The generated Capsule server serves Vite-style content-hashed assets beneath
+`/assets/` with `Cache-Control: public, max-age=31536000, immutable`. This applies
+to filenames ending in `-<hash>.<extension>` (and their `.map` files), where
+`<hash>` is the eight-character URL-safe hash emitted by the Vite pipeline.
+Nested asset directories are supported. Keep this naming convention reserved
+for content-versioned output: changed bytes must receive a new URL.
+
+HTML always receives `Cache-Control: no-store` and `Pragma: no-cache`, including
+the `/` and `/index.html` entry document that carries a fresh connection token
+on document navigation. Other assets receive `Cache-Control: no-cache`, requiring
+revalidation instead of an edge's default freshness lifetime. A query string or
+placement inside `/assets/` alone does not make an asset immutable. Unversioned
+esbuild output such as `client.js` also uses this conservative policy.
+
+The policy is shared by Dev, Container and Hosted Capsules through the generated
+server Bundle; no per-app proxy configuration is needed.
+
 ## Build static prerender fragments
 
 A Vite-backed Capsule can publish useful static HTML before its client starts.
