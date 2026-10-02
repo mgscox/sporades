@@ -10,6 +10,7 @@ import { serverRuntimeModuleSource } from "./server.js";
 import { createServerBundleModuleSource } from "./templates/server-bundle-module-graph.js";
 import { resolveLocalTelemetryConfig } from "./cli/telemetry-profile.js";
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
+import { mergeProjectPublicFiles } from "./project-public.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 import { resolveSporadesPackageRoot } from "./package-root.js";
 import { validateStripePaymentsRuntimeConfig, validateStripePaymentsSealedServerEnv } from "./stripe-payment-config.js";
@@ -156,7 +157,8 @@ export async function createBundle(
     .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain); });
 
   await mkdir(buildDir, { recursive: true });
-  const publicTree = await createPublicTree(buildDir, clientOutput.publicFiles)
+  const publicTree = await mergeProjectPublicFiles(projectDir, clientOutput.publicFiles)
+    .then(files => createPublicTree(buildDir, files))
     .catch((error) => { throw tagBuildError(error, "public", frameworkBundleConfig.framework, toolchain); });
 
   const legacyFiles = [

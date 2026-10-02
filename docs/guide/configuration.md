@@ -6,6 +6,7 @@ server-only values. `.sporades/` is generated runtime state and must not be hand
 Use the detailed reference for:
 
 - [HTTP security policy](../reference/projects-and-configuration.md#security-policy)
+- [Project public files](../reference/projects-and-configuration.md#project-public-files) for optional `public/` assets shared by esbuild and Vite
 - [Sealed Server env](../reference/server-runtime.md#use-sealed-server-env)
 - [current-user preferences](../reference/client-auth-and-preferences.md#user-preferences)
 

@@ -35,7 +35,8 @@ At module scope, redeclaring a wrapper binding from a block-local function is
 unsupported: Annex B hoisting cannot preserve Node's implicit parameter exemption
 through bundling. Use an explicit assignment instead.
 Renderer-only CSS, image or other asset output is unsupported;
-assets used by static HTML must already belong to the ordinary Vite client graph.
+assets used by static HTML must already belong to the ordinary Vite client graph
+or be included through the project's optional `public/` directory.
 After placement in `transformIndexHtml`, later Vite output hooks must leave each
 Sporades-owned boundary pair and its enclosed HTML unchanged. Final validation
 rejects replacement ranges; derive final fragment content in the renderer.

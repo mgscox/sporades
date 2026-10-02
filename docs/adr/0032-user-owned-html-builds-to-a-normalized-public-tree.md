@@ -18,6 +18,26 @@ extracted assets. Sporades may apply its bounded page-connection bootstrap when
 serving the built HTML, but it does not replace or rewrite the author's source
 file. Static serving does not imply SPA fallback routing.
 
+An optional project-owned `public/` directory contributes regular files through
+the shared Bundle pipeline, for both esbuild and Vite. Relative paths and bytes
+are preserved without hashing: `public/favicon.ico`, `public/sitemap.xml`, and
+`public/robots.txt` become `/favicon.ico`, `/sitemap.xml`, and `/robots.txt`.
+These files are explicitly unauthenticated assets. Missing `public/` is valid.
+They cannot replace generated output (including `index.html`), use the reserved
+`__sporades` namespace, follow symlinks, escape the directory, or exceed the
+combined public-tree limits. Case and Unicode aliases are rejected on every
+platform using a conservative comparison (compatibility normalization, case
+expansion, and removal of default-ignorable code points). This includes
+`client.jſ` versus `client.js`; original paths and bytes remain unchanged.
+Staging creates files exclusively, so native filesystem aliases cannot silently
+overwrite an existing entry even if the portable comparison misses one. Conflicts reject
+the candidate with a deterministic path diagnostic. Dev observes additions,
+edits, and removals with its sole watcher;
+failed candidates retain the last successful tree. Container and Hosted releases
+carry the same tree, and restart or rollback consumes those release-owned bytes
+without mounting source `public/`. XML uses `application/xml; charset=utf-8`;
+ICO and TXT retain their existing MIME types and unversioned assets revalidate.
+
 Client toolchains are internal Bundle pipeline adapters. The Sporades Dev
 session remains responsible for watching, structured rebuild events, and
 browser refresh; a Vite adapter does not start a separate development server,
@@ -35,7 +55,8 @@ parent directories or follow a symlinked configuration file.
 Sporades applies a final invariant layer after project plugin configuration.
 The Capsule configuration cannot replace the project root, `/` base, MPA mode,
 author-owned `index.html` entry, normalized hashed output names, in-memory
-output capture, disabled public-directory copying, disabled `.env*` loading,
+output capture, disabled Vite-native public-directory copying (Sporades owns
+the shared merge described above), disabled `.env*` loading,
 isolated `import.meta.env`, external source maps, CSS splitting, non-inlined
 assets, or the no-watch/no-library/no-SSR build shape. Project PostCSS config
 discovery remains disabled; Vite plugins may transform CSS directly. Sporades'

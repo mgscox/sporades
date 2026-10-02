@@ -222,6 +222,25 @@ Migrating an existing React or Preact esbuild Capsule requires replacing the
 Vue source shell uses `/client/index.ts`. Sporades reports a mismatched source
 entry as a write-free preflight error and never rewrites the source shell.
 
+## Project public files
+
+The optional project `public/` directory is merged by the Bundle pipeline for
+both esbuild and Vite; no configuration setting is required. Regular files keep
+their relative names and bytes: `public/favicon.ico`, `public/sitemap.xml`, and
+`public/robots.txt` become `/favicon.ico`, `/sitemap.xml`, and `/robots.txt`.
+Nested paths are supported, and a missing directory preserves existing behavior.
+These assets are unauthenticated; other project directories are not published.
+
+Generated output, including the required HTML entry, cannot be overwritten.
+Symlinks, unsafe paths, `__sporades` paths, case and Unicode alias collisions, and combined
+public-tree limit violations fail before publication. Dev watches additions,
+edits, and removals and retains the last successful tree after a failed build.
+Container and Hosted packaging, restart, and rollback use the same release-owned
+tree. XML uses `application/xml; charset=utf-8` for GET and HEAD; ICO and TXT
+retain their usual types. Unversioned assets use conservative caching.
+See [Project public files](../guide/client.md#project-public-files) for limits
+and [Public asset caching](../guide/client.md#public-asset-caching) for caching.
+
 ## How Sporades Projects Fit Together
 
 ### Project Files
@@ -239,8 +258,8 @@ APIs, Server env, and Sporades runtime imports.
 
 `index.html` is user-owned and served at `/`. esbuild clients load `/client.js`.
 React/Vite and Preact/Vite source HTML instead load `/client/index.tsx`;
-Vue/Vite loads `/client/index.ts`. Released HTML references only transformed
-hashed assets.
+Vue/Vite loads `/client/index.ts`. Released HTML references transformed hashed
+toolchain assets and stable URLs for project public files.
 
 `sporades.json` configures the Capsule name, template, client framework and
 toolchain, auth, optional payments, and default ports. Omitting `client.toolchain` preserves the

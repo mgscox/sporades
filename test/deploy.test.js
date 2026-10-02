@@ -1436,6 +1436,8 @@ test("Container replacement switches one complete public tree while persistent d
     assert.equal(created.code, 0, created.stderr);
     const projectDir = await realpath(path.join(dir, "replacement-island"));
     await installFakeReact(projectDir);
+    await mkdir(path.join(projectDir, "public"));
+    await writeFile(path.join(projectDir, "public/robots.txt"), "first crawler rules");
     const dataMarker = path.join(projectDir, ".sporades", "data", "persistent.txt");
     await mkdir(path.dirname(dataMarker), { recursive: true });
     await writeFile(dataMarker, "keep me");
@@ -1449,11 +1451,14 @@ test("Container replacement switches one complete public tree while persistent d
 
     const clientEntry = path.join(projectDir, "client", "index.tsx");
     await writeFile(clientEntry, (await readFile(clientEntry, "utf8")).replaceAll("Sporades Todos", "Sporades Replacement Todos"));
+    await writeFile(path.join(projectDir, "public/robots.txt"), "second crawler rules");
     const second = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(second.code, 0, second.stderr);
     const secondBinding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
     const secondRoot = path.join(projectDir, ".sporades", "build", ".public-trees", secondBinding.clientRelease.publicTree);
     assert.notEqual(secondRoot, firstRoot);
+    assert.equal(await readFile(path.join(firstRoot, "robots.txt"), "utf8"), "first crawler rules");
+    assert.equal(await readFile(path.join(secondRoot, "robots.txt"), "utf8"), "second crawler rules");
     assert.doesNotMatch(await readFile(path.join(firstRoot, "client.js"), "utf8"), /Replacement Todos/);
     assert.match(await readFile(path.join(secondRoot, "client.js"), "utf8"), /Sporades Replacement Todos/);
     assert.equal(await readFile(dataMarker, "utf8"), "keep me");
@@ -1583,6 +1588,8 @@ test("Container replacement restores the previous committed state across Docker 
         assert.equal(created.code, 0, created.stderr);
         const projectDir = await realpath(path.join(dir, `rollback-${failedAction}-island`));
         await installFakeReact(projectDir);
+        await mkdir(path.join(projectDir, "public"));
+        await writeFile(path.join(projectDir, "public/sitemap.xml"), "<first-release/>");
         const initialDocker = await installFakeDocker(path.join(dir, "initial"), `container-old-${failedAction}`);
         const initial = await runCli(["deploy", "--json"], { cwd: projectDir, env: initialDocker.env });
         assert.equal(initial.code, 0, initial.stderr);
@@ -1595,6 +1602,8 @@ test("Container replacement restores the previous committed state across Docker 
           client: path.join(buildDir, "client.js"),
         };
         const before = Object.fromEntries(await Promise.all(Object.entries(statePaths).map(async ([key, value]) => [key, await readFile(value, "utf8")])));
+        const retainedRoot = path.join(buildDir, ".public-trees", JSON.parse(before.active).tree);
+        await writeFile(path.join(projectDir, "public/sitemap.xml"), "<failed-candidate/>");
         const entry = path.join(projectDir, "client", "index.tsx");
         await writeFile(entry, `${await readFile(entry, "utf8")}\nconsole.log('candidate-${failedAction}');\n`);
         const failingDocker = await installFakeDocker(path.join(dir, "failure"), `container-new-${failedAction}`, { failOnceActions: [failedAction] });
@@ -1603,6 +1612,7 @@ test("Container replacement restores the previous committed state across Docker 
         for (const [key, value] of Object.entries(statePaths)) {
           assert.equal(await readFile(value, "utf8"), before[key], `${failedAction} changed ${key}`);
         }
+        assert.equal(await readFile(path.join(retainedRoot, "sitemap.xml"), "utf8"), "<first-release/>");
         const calls = await failingDocker.calls();
         if (failedAction === "rename") {
           assert.equal(calls.some((call) => call.args[0] === "rm"), false, "rename failure must not remove the old canonical Container");
@@ -2384,12 +2394,13 @@ test("direct runtime prefers the active built tree over a conventional source pu
     assert.equal(created.code, 0, created.stderr);
     const projectDir = await realpath(path.join(dir, "active-tree-island"));
     await installFakeReact(projectDir);
-    await mkdir(path.join(projectDir, "public"));
-    await writeFile(path.join(projectDir, "public", "favicon.ico"), "source-only favicon");
     const docker = await installFakeDocker(dir, "container-active-tree");
     const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(deployed.code, 0, deployed.stderr);
 
+    // A file authored after publication is still outside the active release.
+    await mkdir(path.join(projectDir, "public"));
+    await writeFile(path.join(projectDir, "public", "favicon.ico"), "source-only favicon");
     const serverBundle = path.join(projectDir, ".sporades", "build", "server.mjs");
     const start = async () => {
       const port = await getAvailablePort();

@@ -30,6 +30,14 @@ export function publicTreePathFromRequest(rawPathname) {
         return null;
     return normalizePublicTreePath(decoded.slice(1));
 }
+/** Conservative, platform-independent comparison only; never rewrite asset URLs. */
+export function publicTreeCollisionKey(value) {
+    // Compatibility normalization includes long s and ligatures. Upper/lower
+    // folding also includes sigma variants and multi-character case expansions.
+    // Ignore Unicode format aliases which some filesystems omit in name matching.
+    return value.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC")
+        .replace(/\p{Default_Ignorable_Code_Point}/gu, "").normalize("NFKC");
+}
 export function validatePublicTreeFileSet(files) {
     if (files.length > PUBLIC_TREE_LIMITS.files)
         return { ok: false, reason: "files" };
@@ -46,7 +54,7 @@ export function validatePublicTreeFileSet(files) {
         let raw = "";
         for (let index = 0; index < segments.length; index += 1) {
             raw = raw ? `${raw}/${segments[index]}` : segments[index];
-            const canonicalSegment = segments[index].normalize("NFC");
+            const canonicalSegment = publicTreeCollisionKey(segments[index]);
             canonical = canonical ? `${canonical}/${canonicalSegment}` : canonicalSegment;
             const existingRaw = canonicalPrefixes.get(canonical);
             if (existingRaw !== undefined && existingRaw !== raw)

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { access, mkdtemp, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -60,6 +62,38 @@ test("a failed candidate leaves the active immutable public tree continuously re
     assert.equal(css.body.toString("utf8"), "body { color: teal; }");
     assert.equal(css.contentType, "text/css; charset=utf-8");
     assert.equal(await readFile(path.join(active.root, "assets", "client.js"), "utf8"), "console.log('good')");
+  });
+});
+
+test("an existing staging entry cannot be overwritten or published", async (t) => {
+  await withTempDir(async buildDir => {
+    const active = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "last good HTML" },
+      { path: "client.js", contents: "last good JavaScript" },
+    ]);
+    const originalMkdir = fsPromises.mkdir;
+    let staging;
+    // Inject an actual entry after staging creation, before the candidate writer
+    // proceeds. This exercises native exclusive creation, independently of keys.
+    t.mock.method(fsPromises, "mkdir", async (directory, options) => {
+      const result = await originalMkdir(directory, options);
+      if (path.basename(directory).startsWith(".staging-")) {
+        staging = directory;
+        await writeFile(path.join(directory, "client.js"), "pre-existing bytes");
+      }
+      return result;
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(createPublicTree(buildDir, [
+        { path: "index.html", contents: "candidate HTML" },
+        { path: "client.js", contents: "candidate JavaScript" },
+      ]), error => /Conflicting public path: client.js/.test(error.hint));
+      assert.ok(staging);
+      await assert.rejects(access(staging), error => error.code === "ENOENT");
+      assert.equal(await readFile(path.join(active.root, "client.js"), "utf8"), "last good JavaScript");
+      assert.equal(await readFile(path.join(active.root, "index.html"), "utf8"), "last good HTML");
+    } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
   });
 });
 
@@ -685,6 +719,16 @@ test("the shared public-tree contract admits nested assets and rejects ambiguous
   ]), { ok: false, reason: "collision" });
 
   const prefixCollisions = [
+    ["client.js", "client.j\u017f"],
+    ["client.js", "CLIENT.JS"],
+    ["assets/\u03c3.js", "assets/\u03c2.js"],
+    ["assets/strasse.js", "assets/stra\u00dfe.js"],
+    ["assets/K.js", "assets/\u212a.js"],
+    ["assets/file.js", "assets/\ufb01le.js"],
+    ["assets/client.js", "assets/cli\u200cent.js"],
+    ["assets/\u00e9.js", "assets/e\u200c\u0301.js"],
+    ["assets/FILES/a.js", "assets/file\u017f/b.js"],
+    ["assets/file\u017f", "assets/files/a.js"],
     ["assets/caf\u00e9/a.js", "assets/cafe\u0301/b.js"],
     ["assets/icons/caf\u00e9/dark/a.js", "assets/icons/cafe\u0301/light/b.js"],
     ["assets/caf\u00e9", "assets/cafe\u0301/a.js"],
