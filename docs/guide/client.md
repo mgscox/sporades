@@ -99,7 +99,7 @@ or Server-env context and does not load project environment files into the clien
 build. This is static generation, not SSR or hydration. Returned HTML is not
 sanitized; active markup retains normal browser behavior. Renderer imports do not
 create a second public asset graph: local CSS, images and fonts must already be
-emitted by the ordinary Vite client graph.
+emitted by the ordinary Vite client graph or included through project `public/`.
 See the [render-module contract](../reference/prerender-modules.md) for CommonJS,
 ESM, Worker isolation and literal dynamic-import requirements. Dev tracks renderer
 modules and their transitive code imports through its existing rebuild watcher.

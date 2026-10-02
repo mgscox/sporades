@@ -258,8 +258,8 @@ APIs, Server env, and Sporades runtime imports.
 
 `index.html` is user-owned and served at `/`. esbuild clients load `/client.js`.
 React/Vite and Preact/Vite source HTML instead load `/client/index.tsx`;
-Vue/Vite loads `/client/index.ts`. Released HTML references only transformed
-hashed assets.
+Vue/Vite loads `/client/index.ts`. Released HTML references transformed hashed
+toolchain assets and stable URLs for project public files.
 
 `sporades.json` configures the Capsule name, template, client framework and
 toolchain, auth, optional payments, and default ports. Omitting `client.toolchain` preserves the
