@@ -80840,6 +80840,7 @@ async function publishAdmissionPolicy(root, relative, bytes) {
     if (previous && (!previous.isFile() || previous.isSymbolicLink() || previous.nlink !== 1)) throw new Error("Unsafe admission policy file.");
     output = await open2(path2.join(anchored, temporary), constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, 292);
     await output.writeFile(bytes ?? REMOVED);
+    await output.chmod(292);
     await output.sync();
     await output.close();
     output = void 0;
@@ -80852,6 +80853,49 @@ async function publishAdmissionPolicy(root, relative, bytes) {
     await rm2(path2.join(anchored, temporary), { force: true });
     await handle.close();
   }
+}
+async function openAdmissionPolicy(root, relative, onHealth) {
+  let active = null;
+  let health = Object.freeze({ state: "disabled", digest: null });
+  let closed = false;
+  let pending = null;
+  function report(state) {
+    const next = Object.freeze({ state, digest: active?.digest ?? null });
+    if (next.state === health.state && next.digest === health.digest) return;
+    health = next;
+    try {
+      onHealth?.(health);
+    } catch {
+    }
+  }
+  async function load(cold) {
+    try {
+      const bytes = await readDeployFile(root, relative, ADMISSION_LIMITS.bytes);
+      const next = bytes.equals(REMOVED) ? null : parseAdmissionPolicy(bytes);
+      active = next;
+      report(next ? "healthy" : "disabled");
+    } catch {
+      report("degraded");
+      if (cold) throw new Error("Configured admission policy could not be loaded.");
+    }
+  }
+  await load(true);
+  const reload = () => {
+    if (closed) return Promise.resolve();
+    if (!pending) pending = load(false).finally(() => {
+      pending = null;
+    });
+    return pending;
+  };
+  const timer = setInterval(() => {
+    void reload();
+  }, ADMISSION_LIMITS.reloadMs);
+  timer.unref();
+  return Object.freeze({ current: () => active, health: () => health, reload, close: async () => {
+    closed = true;
+    clearInterval(timer);
+    await pending;
+  } });
 }
 
 // src/cli/cli-support.ts
@@ -150495,24 +150539,37 @@ async function createDevRuntime(options) {
     clamavSidecar = attached.sidecar;
     return attached.attached;
   };
-  let database = await openDevDatabase(
-    options.databasePath,
-    options.serverSource,
-    options.serverEnv,
-    options.config,
-    await importCapsuleDefinition(options.capsuleModuleSource),
-    {
-      serviceEnv: options.serviceEnv,
-      createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
-      createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config)
+  let database;
+  const reportAdmissionHealth = (health) => {
+    try {
+      database?.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+    } catch {
     }
-  );
-  database.runtimeProbeToken = options.runtimeProbeToken;
+  };
+  let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
+  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
   try {
+    database = await openDevDatabase(
+      options.databasePath,
+      options.serverSource,
+      options.serverEnv,
+      options.config,
+      await importCapsuleDefinition(options.capsuleModuleSource),
+      {
+        serviceEnv: options.serviceEnv,
+        createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
+        createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config)
+      }
+    );
+    database.runtimeProbeToken = options.runtimeProbeToken;
     await attachRequiredSidecar(database);
     await database.init();
+    if (admissionPolicy) {
+      database.admissionPolicy = admissionPolicy;
+      reportAdmissionHealth(admissionPolicy.health());
+    }
   } catch (error) {
-    const cleanup = await Promise.allSettled([Promise.resolve().then(() => database.close()), clamavSidecar?.stop?.()].filter(Boolean));
+    const cleanup = await Promise.allSettled([Promise.resolve().then(() => database?.close()), admissionPolicy?.close(), clamavSidecar?.stop?.()].filter(Boolean));
     const failures = cleanup.filter((item) => item.status === "rejected").map((item) => item.reason);
     if (failures.length) throw new AggregateError([error, ...failures], "Dev runtime startup and scanner cleanup both failed.");
     throw error;
@@ -150522,33 +150579,55 @@ async function createDevRuntime(options) {
       return database;
     },
     async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
-      const nextDatabase = await openDevDatabase(
-        options.databasePath,
-        serverSource,
-        serverEnv,
-        config,
-        await importCapsuleDefinition(capsuleModuleSource),
-        {
-          serviceEnv,
-          createStripeCallbackEndpoint: await stripeCallbackFactory(config),
-          createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config)
+      const nextPath = resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
+      const changed = nextPath !== admissionPath;
+      let nextAdmission = admissionPolicy;
+      if (changed) {
+        nextAdmission = null;
+        nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health) => {
+          if (nextAdmission && nextAdmission === admissionPolicy) reportAdmissionHealth(health);
+        }) : null;
+      }
+      try {
+        const nextDatabase = await openDevDatabase(
+          options.databasePath,
+          serverSource,
+          serverEnv,
+          config,
+          await importCapsuleDefinition(capsuleModuleSource),
+          {
+            serviceEnv,
+            createStripeCallbackEndpoint: await stripeCallbackFactory(config),
+            createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config)
+          }
+        );
+        nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
+        if (nextAdmission) nextDatabase.admissionPolicy = nextAdmission;
+        const sidecarBeforePreparation = clamavSidecar;
+        database = await replacePreparedRuntimeDatabase(
+          database,
+          nextDatabase,
+          attachRequiredSidecar,
+          async () => {
+            if (clamavSidecar === sidecarBeforePreparation || !clamavSidecar) return;
+            clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
+          }
+        );
+        const previousAdmission = admissionPolicy;
+        admissionPath = nextPath;
+        admissionPolicy = nextAdmission;
+        if (changed) {
+          await previousAdmission?.close();
+          if (admissionPolicy) reportAdmissionHealth(admissionPolicy.health());
         }
-      );
-      nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
-      const sidecarBeforePreparation = clamavSidecar;
-      database = await replacePreparedRuntimeDatabase(
-        database,
-        nextDatabase,
-        attachRequiredSidecar,
-        async () => {
-          if (clamavSidecar === sidecarBeforePreparation || !clamavSidecar) return;
-          clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
-        }
-      );
-      clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
+        clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
+      } catch (error) {
+        if (changed && nextAdmission !== admissionPolicy) await nextAdmission?.close();
+        throw error;
+      }
     },
     async shutdown() {
-      const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean));
+      const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), admissionPolicy?.close(), clamavSidecar?.stop?.()].filter(Boolean));
       const failures = settled.filter((item) => item.status === "rejected").map((item) => item.reason);
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");

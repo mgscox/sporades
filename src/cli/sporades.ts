@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
+import { openAdmissionPolicy, type AdmissionHealth, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
 import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
@@ -3040,7 +3040,15 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     const attached = await attachRequiredDevClamavSidecar(clamavSidecar, candidate, async () => await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() }));
     clamavSidecar = attached.sidecar; return attached.attached;
   };
-  let database: any = await openDevDatabase(
+  let database: any;
+  const reportAdmissionHealth = (health: AdmissionHealth) => {
+    try { database?.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health }); }
+    catch { /* Policy diagnostics never interrupt runtime work. */ }
+  };
+  let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
+  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
+  try {
+  database = await openDevDatabase(
     options.databasePath,
     options.serverSource,
     options.serverEnv,
@@ -3053,9 +3061,11 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     },
   );
   database.runtimeProbeToken = options.runtimeProbeToken;
-  try { await attachRequiredSidecar(database); await database.init(); }
+  await attachRequiredSidecar(database); await database.init();
+  if (admissionPolicy) { database.admissionPolicy = admissionPolicy; reportAdmissionHealth(admissionPolicy.health()); }
+  }
   catch (error) {
-    const cleanup = await Promise.allSettled([Promise.resolve().then(() => database.close()), clamavSidecar?.stop?.()].filter(Boolean));
+    const cleanup = await Promise.allSettled([Promise.resolve().then(() => database?.close()), admissionPolicy?.close(), clamavSidecar?.stop?.()].filter(Boolean));
     const failures = cleanup.filter((item) => item.status === "rejected").map((item: any) => item.reason);
     if (failures.length) throw new AggregateError([error, ...failures], "Dev runtime startup and scanner cleanup both failed."); throw error;
   }
@@ -3065,6 +3075,16 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
       return database;
     },
     async restart(serverSource: any, serverEnv: {}, serviceEnv: any, capsuleModuleSource: any, config: {}) {
+      const nextPath = resolveAdmissionPolicy((config as LooseRecord).admissionPolicy, (config as LooseRecord).deploy?.files);
+      const changed = nextPath !== admissionPath;
+      let nextAdmission = admissionPolicy;
+      if (changed) {
+        nextAdmission = null;
+        nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, health => {
+          if (nextAdmission && nextAdmission === admissionPolicy) reportAdmissionHealth(health);
+        }) : null;
+      }
+      try {
       const nextDatabase: any = await openDevDatabase(
         options.databasePath,
         serverSource,
@@ -3078,6 +3098,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
         },
       );
       nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
+      if (nextAdmission) nextDatabase.admissionPolicy = nextAdmission;
       const sidecarBeforePreparation = clamavSidecar;
       database = await replacePreparedRuntimeDatabase(
         database,
@@ -3088,10 +3109,17 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
           clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
         },
       );
+      const previousAdmission = admissionPolicy;
+      admissionPath = nextPath; admissionPolicy = nextAdmission;
+      if (changed) {
+        await previousAdmission?.close();
+        if (admissionPolicy) reportAdmissionHealth(admissionPolicy.health());
+      }
       clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
+      } catch (error) { if (changed && nextAdmission !== admissionPolicy) await nextAdmission?.close(); throw error; }
     },
     async shutdown() {
-      const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean)); const failures = settled.filter((item) => item.status === "rejected").map((item: any) => item.reason); if (failures.length === 1) throw failures[0]; if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");
+      const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), admissionPolicy?.close(), clamavSidecar?.stop?.()].filter(Boolean)); const failures = settled.filter((item) => item.status === "rejected").map((item: any) => item.reason); if (failures.length === 1) throw failures[0]; if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");
     },
   };
 }

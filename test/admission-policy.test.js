@@ -107,3 +107,10 @@ test('polling observes an atomic replacement without a caller-triggered reload w
     assert.equal(runtime.current().policy.rules[0].id,'polled');
   } finally { await runtime.close(); }
 }));
+test('publication grants runtime read access even with a restrictive operator umask', async () => temporary(async root => {
+  const {stat} = await import('node:fs/promises'); const relative='policy.json'; const target=preservedDeployFilePath(root,relative);
+  await writeFile(target,JSON.stringify(policy())); const previous = process.umask(0o077);
+  try { await publishAdmissionPolicy(root,relative,Buffer.from(JSON.stringify(policy('readable')))); }
+  finally { process.umask(previous); }
+  assert.equal((await stat(target)).mode & 0o777,0o444);
+}));

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { admissionStorageRoot, publishAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
+import { openAdmissionPolicy, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
 import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
@@ -2769,18 +2769,31 @@ async function createDevRuntime(options) {
         clamavSidecar = attached.sidecar;
         return attached.attached;
     };
-    let database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), {
-        serviceEnv: options.serviceEnv,
-        createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
-        createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
-    });
-    database.runtimeProbeToken = options.runtimeProbeToken;
+    let database;
+    const reportAdmissionHealth = (health) => {
+        try {
+            database?.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+        }
+        catch { /* Policy diagnostics never interrupt runtime work. */ }
+    };
+    let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
+    let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
     try {
+        database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), {
+            serviceEnv: options.serviceEnv,
+            createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
+            createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
+        });
+        database.runtimeProbeToken = options.runtimeProbeToken;
         await attachRequiredSidecar(database);
         await database.init();
+        if (admissionPolicy) {
+            database.admissionPolicy = admissionPolicy;
+            reportAdmissionHealth(admissionPolicy.health());
+        }
     }
     catch (error) {
-        const cleanup = await Promise.allSettled([Promise.resolve().then(() => database.close()), clamavSidecar?.stop?.()].filter(Boolean));
+        const cleanup = await Promise.allSettled([Promise.resolve().then(() => database?.close()), admissionPolicy?.close(), clamavSidecar?.stop?.()].filter(Boolean));
         const failures = cleanup.filter((item) => item.status === "rejected").map((item) => item.reason);
         if (failures.length)
             throw new AggregateError([error, ...failures], "Dev runtime startup and scanner cleanup both failed.");
@@ -2791,22 +2804,49 @@ async function createDevRuntime(options) {
             return database;
         },
         async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
-            const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), {
-                serviceEnv,
-                createStripeCallbackEndpoint: await stripeCallbackFactory(config),
-                createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
-            });
-            nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
-            const sidecarBeforePreparation = clamavSidecar;
-            database = await replacePreparedRuntimeDatabase(database, nextDatabase, attachRequiredSidecar, async () => {
-                if (clamavSidecar === sidecarBeforePreparation || !clamavSidecar)
-                    return;
-                clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
-            });
-            clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
+            const nextPath = resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
+            const changed = nextPath !== admissionPath;
+            let nextAdmission = admissionPolicy;
+            if (changed) {
+                nextAdmission = null;
+                nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, health => {
+                    if (nextAdmission && nextAdmission === admissionPolicy)
+                        reportAdmissionHealth(health);
+                }) : null;
+            }
+            try {
+                const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), {
+                    serviceEnv,
+                    createStripeCallbackEndpoint: await stripeCallbackFactory(config),
+                    createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
+                });
+                nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
+                if (nextAdmission)
+                    nextDatabase.admissionPolicy = nextAdmission;
+                const sidecarBeforePreparation = clamavSidecar;
+                database = await replacePreparedRuntimeDatabase(database, nextDatabase, attachRequiredSidecar, async () => {
+                    if (clamavSidecar === sidecarBeforePreparation || !clamavSidecar)
+                        return;
+                    clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
+                });
+                const previousAdmission = admissionPolicy;
+                admissionPath = nextPath;
+                admissionPolicy = nextAdmission;
+                if (changed) {
+                    await previousAdmission?.close();
+                    if (admissionPolicy)
+                        reportAdmissionHealth(admissionPolicy.health());
+                }
+                clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
+            }
+            catch (error) {
+                if (changed && nextAdmission !== admissionPolicy)
+                    await nextAdmission?.close();
+                throw error;
+            }
         },
         async shutdown() {
-            const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean));
+            const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), admissionPolicy?.close(), clamavSidecar?.stop?.()].filter(Boolean));
             const failures = settled.filter((item) => item.status === "rejected").map((item) => item.reason);
             if (failures.length === 1)
                 throw failures[0];

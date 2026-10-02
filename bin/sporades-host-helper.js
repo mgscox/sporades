@@ -26720,6 +26720,7 @@ async function publishAdmissionPolicy(root, relative, bytes) {
     if (previous && (!previous.isFile() || previous.isSymbolicLink() || previous.nlink !== 1)) throw new Error("Unsafe admission policy file.");
     output = await open2(path2.join(anchored, temporary), constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, 292);
     await output.writeFile(bytes ?? REMOVED);
+    await output.chmod(292);
     await output.sync();
     await output.close();
     output = void 0;

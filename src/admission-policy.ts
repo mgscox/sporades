@@ -95,7 +95,7 @@ export async function publishAdmissionPolicy(root: string, relative: string, byt
     const previous = await lstat(target).catch(error => { if (error.code === "ENOENT") return null; throw error; });
     if (previous && (!previous.isFile() || previous.isSymbolicLink() || previous.nlink !== 1)) throw new Error("Unsafe admission policy file.");
     output = await open(path.join(anchored, temporary), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o444);
-    await output.writeFile(bytes ?? REMOVED); await output.sync(); await output.close(); output = undefined;
+    await output.writeFile(bytes ?? REMOVED); await output.chmod(0o444); await output.sync(); await output.close(); output = undefined;
     const current = await lstat(root);
     if (current.dev !== identity.dev || current.ino !== identity.ino || current.isSymbolicLink()) throw new Error("Unsafe admission storage.");
     await rename(path.join(anchored, temporary), target); await handle.sync();
