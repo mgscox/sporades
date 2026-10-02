@@ -141,6 +141,11 @@ imported fetch implementations, a fetch reference captured before telemetry
 startup, WebSocket operations or Jobs. It supplies no public instrumentation API.
 Do not layer another fetch instrumentation package over this owned wrapper.
 The original global fetch is restored when the last telemetry owner shuts down.
+Instrumentation supports native string/URL/Request inputs and ordinary data
+`RequestInit` dictionaries (including frozen or inherited data fields). Accessor
+or Proxy options, subclasses, custom coercion, custom dispatchers and custom header iterators are
+delegated directly to native fetch without spans or injected context. Evaluating
+those options ahead of fetch could change redirect or rejection behavior.
 
 Propagation defaults to off. An operator may repeat
 `--trace-propagation-origin <origin>` when adding a profile:

@@ -1,6 +1,59 @@
 import { ROOT_CONTEXT, SpanKind, SpanStatusCode, TraceFlags, trace } from "@opentelemetry/api";
+import { types as utilTypes } from "node:util";
 import { runtimeRequestScope } from "./runtime-request-context.js";
 const fetchStateKey = Symbol.for("sporades.runtime.fetch-telemetry.v1");
+const dictionaryFields = ["body", "cache", "credentials", "dispatcher", "duplex", "headers", "integrity", "keepalive", "method", "mode", "priority", "redirect", "referrer", "referrerPolicy", "signal", "window"];
+const stringFields = ["cache", "credentials", "duplex", "integrity", "method", "mode", "priority", "redirect", "referrer", "referrerPolicy"];
+// Reading a WebIDL accessor ahead of fetch can change what fetch will do, including
+// turning manual redirects into follow. Select ordinary data dictionaries only.
+function stableDictionary(value) {
+    if (value === undefined || value === null)
+        return true;
+    if (typeof value !== "object")
+        return false;
+    for (let current = value; current; current = Object.getPrototypeOf(current)) {
+        if (utilTypes.isProxy(current))
+            return false;
+        for (const field of dictionaryFields) {
+            const descriptor = Object.getOwnPropertyDescriptor(current, field);
+            if (descriptor && !("value" in descriptor))
+                return false;
+        }
+    }
+    return true;
+}
+function stableHeaders(value) {
+    if (value === undefined || value === null)
+        return true;
+    if (typeof value !== "object" || utilTypes.isProxy(value))
+        return false;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype === Headers.prototype)
+        return !Object.hasOwn(value, Symbol.iterator);
+    if (Array.isArray(value)) {
+        if (prototype !== Array.prototype || Object.hasOwn(value, Symbol.iterator))
+            return false;
+        return Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => "value" in descriptor)
+            && Array.prototype.every.call(value, (pair) => Array.isArray(pair) && !utilTypes.isProxy(pair) && Object.getPrototypeOf(pair) === Array.prototype
+                && !Object.hasOwn(pair, Symbol.iterator) && Object.values(Object.getOwnPropertyDescriptors(pair)).every(descriptor => "value" in descriptor)
+                && pair.length === 2 && Array.prototype.every.call(pair, (entry) => typeof entry === "string"));
+    }
+    if (prototype !== Object.prototype && prototype !== null)
+        return false;
+    return Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => "value" in descriptor && typeof descriptor.value === "string");
+}
+function stableBody(value) {
+    if (value === undefined || value === null || typeof value === "string")
+        return true;
+    if (typeof value !== "object" || utilTypes.isProxy(value))
+        return false;
+    if (utilTypes.isArrayBuffer(value) || ArrayBuffer.isView(value))
+        return true;
+    const prototype = Object.getPrototypeOf(value);
+    return [Blob.prototype, FormData.prototype, URLSearchParams.prototype, ReadableStream.prototype].includes(prototype)
+        && Object.getOwnPropertyNames(value).length === 0
+        && ![Symbol.iterator, Symbol.toPrimitive].some(key => Object.hasOwn(value, key));
+}
 /** Shared across generated Bundles: dispatch to exactly one active request owner. */
 export function installRuntimeFetchTelemetry() {
     const globals = globalThis;
@@ -47,13 +100,24 @@ export function outboundFetchTelemetry(tracer, parent, origins, active) {
         let signal;
         let redirect;
         try {
+            if (utilTypes.isProxy(input) || !stableDictionary(init))
+                return original(input, init);
+            if (init?.dispatcher !== undefined)
+                return original(input, init);
+            if (init && (!stringFields.every(key => init[key] === undefined || init[key] === null || typeof init[key] === "string")
+                || !stableHeaders(init.headers) || !stableBody(init.body)))
+                return original(input, init);
             request = input instanceof Request ? input : undefined;
+            if (request && (Object.getPrototypeOf(request) !== Request.prototype || Object.getOwnPropertyNames(request).length > 0))
+                return original(input, init);
+            if (input instanceof URL && (Object.getPrototypeOf(input) !== URL.prototype || Object.getOwnPropertyNames(input).length > 0 || Object.hasOwn(input, Symbol.toPrimitive)))
+                return original(input, init);
             if (!request && typeof input !== "string" && !(input instanceof URL))
                 return original(input, init);
             url = new URL(request ? request.url : String(input));
             if (!["http:", "https:"].includes(url.protocol))
                 return original(input, init);
-            const rawMethod = init?.method ?? request?.method ?? "GET";
+            const rawMethod = init?.method === undefined ? request?.method ?? "GET" : String(init.method);
             method = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"].includes(rawMethod.toUpperCase()) ? rawMethod.toUpperCase() : "_OTHER";
             signal = init?.signal === undefined ? request?.signal : init.signal;
             redirect = init?.redirect ?? request?.redirect ?? "follow";

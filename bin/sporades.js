@@ -128394,7 +128394,41 @@ import { constants as performanceConstants, monitorEventLoopDelay, performance a
 
 // src/runtime-fetch-telemetry.ts
 init_esm();
+import { types as utilTypes } from "node:util";
 var fetchStateKey = Symbol.for("sporades.runtime.fetch-telemetry.v1");
+var dictionaryFields = ["body", "cache", "credentials", "dispatcher", "duplex", "headers", "integrity", "keepalive", "method", "mode", "priority", "redirect", "referrer", "referrerPolicy", "signal", "window"];
+var stringFields = ["cache", "credentials", "duplex", "integrity", "method", "mode", "priority", "redirect", "referrer", "referrerPolicy"];
+function stableDictionary(value) {
+  if (value === void 0 || value === null) return true;
+  if (typeof value !== "object") return false;
+  for (let current2 = value; current2; current2 = Object.getPrototypeOf(current2)) {
+    if (utilTypes.isProxy(current2)) return false;
+    for (const field of dictionaryFields) {
+      const descriptor = Object.getOwnPropertyDescriptor(current2, field);
+      if (descriptor && !("value" in descriptor)) return false;
+    }
+  }
+  return true;
+}
+function stableHeaders(value) {
+  if (value === void 0 || value === null) return true;
+  if (typeof value !== "object" || utilTypes.isProxy(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype === Headers.prototype) return !Object.hasOwn(value, Symbol.iterator);
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype || Object.hasOwn(value, Symbol.iterator)) return false;
+    return Object.values(Object.getOwnPropertyDescriptors(value)).every((descriptor) => "value" in descriptor) && Array.prototype.every.call(value, (pair2) => Array.isArray(pair2) && !utilTypes.isProxy(pair2) && Object.getPrototypeOf(pair2) === Array.prototype && !Object.hasOwn(pair2, Symbol.iterator) && Object.values(Object.getOwnPropertyDescriptors(pair2)).every((descriptor) => "value" in descriptor) && pair2.length === 2 && Array.prototype.every.call(pair2, (entry) => typeof entry === "string"));
+  }
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  return Object.values(Object.getOwnPropertyDescriptors(value)).every((descriptor) => "value" in descriptor && typeof descriptor.value === "string");
+}
+function stableBody(value) {
+  if (value === void 0 || value === null || typeof value === "string") return true;
+  if (typeof value !== "object" || utilTypes.isProxy(value)) return false;
+  if (utilTypes.isArrayBuffer(value) || ArrayBuffer.isView(value)) return true;
+  const prototype = Object.getPrototypeOf(value);
+  return [Blob.prototype, FormData.prototype, URLSearchParams.prototype, ReadableStream.prototype].includes(prototype) && Object.getOwnPropertyNames(value).length === 0 && ![Symbol.iterator, Symbol.toPrimitive].some((key) => Object.hasOwn(value, key));
+}
 function installRuntimeFetchTelemetry() {
   const globals = globalThis;
   let state = globals[fetchStateKey];
@@ -128435,11 +128469,16 @@ function outboundFetchTelemetry(tracer, parent, origins, active) {
     let signal;
     let redirect;
     try {
+      if (utilTypes.isProxy(input) || !stableDictionary(init)) return original(input, init);
+      if (init?.dispatcher !== void 0) return original(input, init);
+      if (init && (!stringFields.every((key) => init[key] === void 0 || init[key] === null || typeof init[key] === "string") || !stableHeaders(init.headers) || !stableBody(init.body))) return original(input, init);
       request = input instanceof Request ? input : void 0;
+      if (request && (Object.getPrototypeOf(request) !== Request.prototype || Object.getOwnPropertyNames(request).length > 0)) return original(input, init);
+      if (input instanceof URL && (Object.getPrototypeOf(input) !== URL.prototype || Object.getOwnPropertyNames(input).length > 0 || Object.hasOwn(input, Symbol.toPrimitive))) return original(input, init);
       if (!request && typeof input !== "string" && !(input instanceof URL)) return original(input, init);
       url = new URL(request ? request.url : String(input));
       if (!["http:", "https:"].includes(url.protocol)) return original(input, init);
-      const rawMethod = init?.method ?? request?.method ?? "GET";
+      const rawMethod = init?.method === void 0 ? request?.method ?? "GET" : String(init.method);
       method = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"].includes(rawMethod.toUpperCase()) ? rawMethod.toUpperCase() : "_OTHER";
       signal = init?.signal === void 0 ? request?.signal : init.signal;
       redirect = init?.redirect ?? request?.redirect ?? "follow";

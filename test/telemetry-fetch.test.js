@@ -169,7 +169,9 @@ test('propagation preserves frozen/inherited options and getter receivers withou
         get redirect() { assert.equal(this, accessorOptions); return 'manual'; },
         get headers() { assert.equal(this, accessorOptions); return options.headers; },
       }));
-      for (const init of [Object.freeze(options), inherited, accessorOptions]) {
+      const customArrayOptions = { ...options, headers: [['authorization', 'private-facade-credential']] };
+      customArrayOptions.headers.every = () => { customArrayOptions.redirect = 'follow'; return true; };
+      for (const init of [Object.freeze(options), inherited, accessorOptions, customArrayOptions]) {
         const expected = await original(`${origin}/redirect`, init);
         const actual = await fetch(`${origin}/redirect`, init);
         assert.equal(actual.status, expected.status); assert.equal(actual.status, 307);
@@ -181,11 +183,50 @@ test('propagation preserves frozen/inherited options and getter receivers withou
   try {
     await original(`http://127.0.0.1:${app.address().port}`);
     if (failure) throw failure;
-    assert.equal(calls.length, 6); assert(calls.every(call => call.path === '/redirect'));
+    assert.equal(calls.length, 8); assert(calls.every(call => call.path === '/redirect'));
     assert(calls.every(call => call.method === 'POST' && call.body === 'private-facade-body'));
     for (let index = 0; index < calls.length; index++) {
       if (index % 2 === 0) assert.equal(calls[index].traceparent, undefined);
+      else if (index === 5) assert.equal(calls[index].traceparent, undefined, 'accessor options are delegated unchanged');
       else assert.match(calls[index].traceparent, /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
     }
+  } finally { await telemetry.shutdown(); await Promise.all([close(app), close(dependency)]); }
+});
+
+test('stateful redirect/body/header accessors retain native evaluation and never receive a carrier', async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  const dependency = createServer(async (req, res) => {
+    for await (const _chunk of req) { /* Drain POST bodies before responding. */ }
+    calls.push({ path: req.url, traceparent: req.headers.traceparent });
+    if (req.url === '/redirect') res.writeHead(307, { location: `http://localhost:${dependency.address().port}/unapproved` }).end('manual');
+    else res.end('followed');
+  }).listen(0, '127.0.0.1'); await once(dependency, 'listening');
+  const origin = `http://127.0.0.1:${dependency.address().port}`;
+  const telemetry = createHttpRequestTelemetry({ endpoint: 'http://127.0.0.1:19999', tls: { mode: 'loopback' }, serviceName: 'fetch-accessors', tracePropagationOrigins: [origin] });
+  let failure;
+  const app = createServer((req, res) => telemetry.run(req, res, [], async () => {
+    try {
+      const factories = [
+        () => { let reads = 0; return Object.freeze({ get redirect() { return ++reads === 1 ? 'manual' : 'follow'; } }); },
+        () => { const value = { method: 'POST', redirect: 'manual', get body() { value.redirect = 'follow'; return 'private-body'; } }; return value; },
+        () => { const value = { redirect: 'manual', get headers() { value.redirect = 'follow'; return { authorization: 'private-credential' }; } }; return value; },
+        () => new Proxy({ redirect: 'manual' }, {}),
+        () => { const value = { method: 'POST', redirect: 'manual', body: { toString() { value.redirect = 'follow'; return 'private-body'; } } }; return value; },
+      ];
+      for (const make of factories) {
+        const expected = await original(`${origin}/redirect`, make());
+        const actual = await fetch(`${origin}/redirect`, make());
+        assert.equal(actual.status, expected.status); assert.equal(actual.redirected, expected.redirected);
+        assert.equal(await actual.text(), await expected.text());
+      }
+    } catch (error) { failure = error; }
+    res.end('checked');
+  })).listen(0, '127.0.0.1'); await once(app, 'listening');
+  try {
+    await original(`http://127.0.0.1:${app.address().port}`);
+    if (failure) throw failure;
+    assert(calls.some(call => call.path === '/unapproved'));
+    assert(calls.every(call => call.traceparent === undefined));
   } finally { await telemetry.shutdown(); await Promise.all([close(app), close(dependency)]); }
 });
