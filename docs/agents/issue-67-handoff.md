@@ -38,6 +38,12 @@ The draft containing this handoff must remain draft until runtime enforcement
 and its acceptance tests are implemented. Validation of this documentation
 does not establish that issue #67's acceptance criteria pass.
 
+The handoff PR references #67 without issue-closing metadata. Keep it draft
+until #66 is merged, all enforcement criteria above are implemented, and a
+complete validation run passes. Round-one QA reported macOS archive-fixture
+metadata failures and a gateway cancellation-observation race; passing isolated
+retries do not replace the required clean complete suite.
+
 Run every Sporades command with `SPORADES_CONFIG_DIR` pointing inside the
 worktree. Validation must use isolated local state and avoid real Host servers
 and live Stripe, OAuth, or SMTP calls.
