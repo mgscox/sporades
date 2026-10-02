@@ -18,6 +18,18 @@ services:
     mem_limit: 64m
     pids_limit: 32
 
+  inventory-init:
+    image: busybox:1.37.0
+    command: ["sh", "-c", "chown $$TRACE_RUN_UID:$$TRACE_RUN_GID /inventory && chmod 700 /inventory"]
+    environment:
+      TRACE_RUN_UID: ${TRACE_RUN_UID:?run setup.mjs}
+      TRACE_RUN_GID: ${TRACE_RUN_GID:?run setup.mjs}
+    volumes:
+      - inventory:/inventory
+    restart: "no"
+    mem_limit: 64m
+    pids_limit: 32
+
   gateway:
     build:
       context: .
@@ -35,11 +47,18 @@ services:
     volumes:
       - ./certs:/certs:ro
       - ./.private/credentials.json:/run/secrets/trace-credentials.json:ro
+      - inventory:/inventory
     depends_on:
-      - collector
-      - jaeger
-      - prometheus
-      - grafana
+      inventory-init:
+        condition: service_completed_successfully
+      collector:
+        condition: service_started
+      jaeger:
+        condition: service_started
+      prometheus:
+        condition: service_started
+      grafana:
+        condition: service_started
     mem_limit: 192m
     cpus: 1.0
     pids_limit: 128
@@ -124,6 +143,7 @@ services:
     logging: { options: { max-size: "10m", max-file: "3" } }
 
 volumes:
+  inventory:
   traces:
   metrics:
   grafana:

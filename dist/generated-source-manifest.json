@@ -34,11 +34,13 @@
       "src/cli/host-helper-release-files.ts",
       "src/cli/host-helper-requests.ts",
       "src/cli/host-helper-validation.ts",
+      "src/cli/host-lifecycle-inventory.ts",
       "src/cli/host-metrics.ts",
       "src/cli/host-request-builders.ts",
       "src/cli/host-telemetry-relay.ts",
       "src/cli/hosted-capsule-contract.ts",
       "src/cli/hosted-telemetry-coverage.ts",
+      "src/cli/lifecycle-inventory.ts",
       "src/cli/monitoring-stack.ts",
       "src/cli/project-config.ts",
       "src/cli/schedule-inspection-envelope.ts",
@@ -108,12 +110,13 @@
       "src/types/server.d.ts",
       "src/types/stripe.d.ts",
       "src/types/team-billing-import.d.ts",
+      "src/types/telemetry-inventory.d.ts",
       "src/user-preferences-runtime.ts",
       "src/vendor-decoders.d.ts",
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "fbdf9ef88a750f516c0297e6a8309d1edcc4a0fdf6b2e7afa5525cf09ac84da2"
+    "digest": "cbdec169307a4941c271e816439f8bdee2fb4e4cfec2f9a93184a5ece39e128a"
   },
   "outputs": {
     "files": [
@@ -219,6 +222,10 @@
       "dist/cli/host-helper-validation.d.ts.map",
       "dist/cli/host-helper-validation.js",
       "dist/cli/host-helper-validation.js.map",
+      "dist/cli/host-lifecycle-inventory.d.ts",
+      "dist/cli/host-lifecycle-inventory.d.ts.map",
+      "dist/cli/host-lifecycle-inventory.js",
+      "dist/cli/host-lifecycle-inventory.js.map",
       "dist/cli/host-metrics.d.ts",
       "dist/cli/host-metrics.d.ts.map",
       "dist/cli/host-metrics.js",
@@ -239,6 +246,10 @@
       "dist/cli/hosted-telemetry-coverage.d.ts.map",
       "dist/cli/hosted-telemetry-coverage.js",
       "dist/cli/hosted-telemetry-coverage.js.map",
+      "dist/cli/lifecycle-inventory.d.ts",
+      "dist/cli/lifecycle-inventory.d.ts.map",
+      "dist/cli/lifecycle-inventory.js",
+      "dist/cli/lifecycle-inventory.js.map",
       "dist/cli/monitoring-stack.d.ts",
       "dist/cli/monitoring-stack.d.ts.map",
       "dist/cli/monitoring-stack.js",
@@ -504,6 +515,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "4bdec54e4a1dfabd8fbf7fcc4158f17e872cf2017823622f17a43d222bae67d7"
+    "digest": "403c5a7966c213eb820f3ea1bb79d8e9e7762803ccb25f37a5552083e4dd8465"
   }
 }

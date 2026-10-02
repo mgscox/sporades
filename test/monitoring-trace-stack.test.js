@@ -99,7 +99,7 @@ test('setup preserves literal credential characters for the gateway', async () =
   assert.equal((await stat(credentialsPath)).mode & 0o777, 0o600);
   const credentials = JSON.parse(await readFile(credentialsPath, 'utf8'));
   assert.deepEqual(credentials, {
-    ingestToken: 't#1:$TOKEN', uiUser: 'viewer', uiPassword: 'before$MISSING_after:# space',
+    inventoryHosts: {}, ingestToken: 't#1:$TOKEN', uiUser: 'viewer', uiPassword: 'before$MISSING_after:# space',
   });
   assert.match(await readFile(path, 'utf8'), /TRACE_UI_PASSWORD=before\$MISSING_after:# space/);
   const composeEnvironment = await readFile(join(directory, '.compose.env'), 'utf8');

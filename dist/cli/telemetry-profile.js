@@ -22,7 +22,7 @@ export function validateTelemetryProfile(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
         invalid("Provide an endpoint, TLS mode and optional references.");
     const profile = value;
-    if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key)))
+    if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs", "eventLoopDelayResolutionMs", "inventoryHost", "inventoryCredentialEnv"].includes(key)))
         invalid("Remove unsupported Telemetry profile fields.");
     if (typeof profile.endpoint !== "string" || profile.endpoint.length > 2048)
         invalid("Use an OTLP/HTTP base URL without credentials or query strings.");
@@ -51,6 +51,10 @@ export function validateTelemetryProfile(value) {
         invalid("Use an absolute private CA file path with verified TLS.");
     if (profile.credentialEnv !== undefined && (typeof profile.credentialEnv !== "string" || !envPattern.test(profile.credentialEnv)))
         invalid("Use an uppercase credential environment reference such as TRACE_INGEST_TOKEN.");
+    if (profile.inventoryHost !== undefined && (typeof profile.inventoryHost !== "string" || !/^[a-z0-9][a-z0-9.-]{0,127}$/.test(profile.inventoryHost)))
+        invalid("Use a stable Host inventory identity.");
+    if (profile.inventoryCredentialEnv !== undefined && (typeof profile.inventoryCredentialEnv !== "string" || !envPattern.test(profile.inventoryCredentialEnv)))
+        invalid("Use an uppercase inventory credential environment reference.");
     if (profile.metricsIntervalMs !== undefined && (!Number.isSafeInteger(profile.metricsIntervalMs) || profile.metricsIntervalMs < 5_000 || profile.metricsIntervalMs > 300_000))
         invalid("Use a metrics export interval from 5000 to 300000 milliseconds.");
     if (profile.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(profile.eventLoopDelayResolutionMs) || profile.eventLoopDelayResolutionMs < 10 || profile.eventLoopDelayResolutionMs > 1000))

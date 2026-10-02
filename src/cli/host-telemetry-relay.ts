@@ -19,6 +19,8 @@ export type HostRelayConnection = {
   endpoint: string;
   credential: string;
   caPem?: string;
+  inventoryHost?: string;
+  inventoryCredential?: string;
   metricsIntervalMs?: number;
   eventLoopDelayResolutionMs?: number;
 };
@@ -30,7 +32,7 @@ function invalid(): never {
 export function validateHostRelayConnection(value: unknown): HostRelayConnection {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid();
+  if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs", "inventoryHost", "inventoryCredential"].includes(key))) invalid();
   if (typeof input.endpoint !== "string" || input.endpoint.length > 2048) invalid();
   let url: URL;
   try { url = new URL(input.endpoint); } catch { return invalid(); }
@@ -39,6 +41,8 @@ export function validateHostRelayConnection(value: unknown): HostRelayConnection
   if (input.caPem !== undefined && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----"))) invalid();
   if (input.metricsIntervalMs !== undefined && (!Number.isSafeInteger(input.metricsIntervalMs) || (input.metricsIntervalMs as number) < 5_000 || (input.metricsIntervalMs as number) > 300_000)) invalid();
   if (input.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || (input.eventLoopDelayResolutionMs as number) < 10 || (input.eventLoopDelayResolutionMs as number) > 1000)) invalid();
+  if ((input.inventoryHost === undefined) !== (input.inventoryCredential === undefined)) invalid();
+  if (input.inventoryHost !== undefined && (typeof input.inventoryHost !== "string" || !/^[a-z0-9][a-z0-9.-]{0,127}$/.test(input.inventoryHost) || typeof input.inventoryCredential !== "string" || input.inventoryCredential.length < 16 || input.inventoryCredential.length > 4096 || /[\x00-\x1f\x7f]/.test(input.inventoryCredential))) invalid();
   return input as HostRelayConnection;
 }
 
@@ -107,10 +111,10 @@ export async function readHostTelemetryConnection(remoteRoot: string) {
   if (!raw) return null;
   let value: Record<string, unknown>;
   try { value = JSON.parse(raw); } catch { throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state."); }
-  if (value.schemaVersion !== 1 || typeof value.endpoint !== "string" || typeof value.network !== "string" || value.internalEndpoint !== `http://${RELAY_ALIAS}:4318/`) {
+  if (value.schemaVersion !== 1 || typeof value.endpoint !== "string" || typeof value.network !== "string" || value.internalEndpoint !== `http://${RELAY_ALIAS}:4318/` || (value.inventoryHost !== undefined && (typeof value.inventoryHost !== "string" || !/^[a-z0-9][a-z0-9.-]{0,127}$/.test(value.inventoryHost)))) {
     throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
   }
-  return value as { schemaVersion: 1; endpoint: string; network: string; internalEndpoint: string; caConfigured: boolean; connectedAt: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
+  return value as { schemaVersion: 1; endpoint: string; network: string; internalEndpoint: string; caConfigured: boolean; connectedAt: string; inventoryHost?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
 }
 
 export async function statusHostTelemetryRelay(remoteRoot: string) {
@@ -135,10 +139,11 @@ export async function connectHostTelemetryRelay(remoteRoot: string, network: str
   await assertOwnedDirectory(files.directory);
   const resources = host ? await configureHostMetrics(remoteRoot, host) : await readHostMetrics(remoteRoot);
   const previous = await readHostTelemetryConnection(remoteRoot);
+  if (previous?.inventoryHost && connection.inventoryHost !== previous.inventoryHost) throw helperError("Host inventory identity is immutable.", "Preserve the inventory Host identity when rotating credentials or changing endpoints.");
   const previousConfig = previous ? await readProtected(files.config) : null;
   const previousCredential = previous ? await readProtected(files.credential) : null;
   const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-  const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
+  const descriptor = { schemaVersion: 1, ...(connection.inventoryHost ? { inventoryHost: connection.inventoryHost } : {}), endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
   await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 0o644);
   await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
   if (connection.caPem) await atomicWrite(files.ca, connection.caPem, 0o644);
@@ -157,6 +162,7 @@ export async function connectHostTelemetryRelay(remoteRoot: string, network: str
     }
     throw error;
   }
+  if (connection.inventoryCredential) await atomicWrite(path.join(files.directory, "inventory-credential.json"), JSON.stringify({ credential: connection.inventoryCredential }), 0o600);
   await atomicWrite(files.descriptor, `${JSON.stringify(descriptor, null, 2)}\n`, 0o600);
   return await statusHostTelemetryRelay(remoteRoot);
 }

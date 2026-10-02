@@ -1283,7 +1283,7 @@ async function writePublicRuntimeFiles(runtimeDir) {
 
 async function createTarGz(archivePath, sourceDir, entries) {
   const result = await new Promise((resolve) => {
-    const child = spawn("tar", ["-czf", archivePath, "-C", sourceDir, ...entries], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("tar", ["-czf", archivePath, "-C", sourceDir, ...entries], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, COPYFILE_DISABLE: "1" } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -1302,7 +1302,7 @@ async function createTarGz(archivePath, sourceDir, entries) {
 async function createTarGzWithTransforms(archivePath, sourceDir, transforms, entries) {
   const args = ["-czf", archivePath, "-C", sourceDir, ...transforms.flatMap((rule) => ["-s", rule]), ...entries];
   const result = await new Promise((resolve) => {
-    const child = spawn("tar", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("tar", args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, COPYFILE_DISABLE: "1" } });
     let stderr = "";
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("close", (code) => resolve({ code, stderr }));
@@ -15557,5 +15557,77 @@ test("Host shutdown evidence cannot authorize OOM, stale containers, or stale re
       assert.equal(JSON.parse(result.stdout).data.resumed, false, result.stdout);
       assert(!(await docker.calls()).some((call) => ["run", "start"].includes(call.args[0])));
     });
+  });
+});
+
+
+test("Hosted lifecycle operations automatically queue versioned inventory without contacting monitoring", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, { status: "stopped" });
+    const docker = await installFakeDocker(dir);
+    const telemetry = path.join(fixture.remoteRoot, "telemetry");
+    await mkdir(telemetry, { mode: 0o700 });
+    await writeFile(path.join(telemetry, "connection.json"), JSON.stringify({ schemaVersion: 1, endpoint: "https://unreachable.invalid/", network: "sporades-hosted", internalEndpoint: "http://sporades-telemetry:4318/", inventoryHost: "fixture-host", caConfigured: false }), { mode: 0o600 });
+    const host = { alias: "test", domain: fixture.domain, remoteRoot: fixture.remoteRoot, scheme: "https" };
+    let revision = 0;
+    const run = async (action, state, extra = {}) => {
+      const result = await runHostHelper({ action, host, capsule: { subname: fixture.subname }, ...extra }, { cwd: dir, env: docker.env });
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+      const pending = JSON.parse(await readFile(path.join(telemetry, "inventory", "desired.json"), "utf8"));
+      assert.equal(pending.desired.capsules[0].state, state);
+      assert.ok(pending.desired.revision >= revision);
+      if (state !== "deleted") assert.ok(pending.desired.revision > revision);
+      revision = pending.desired.revision;
+      assert.equal(pending.acknowledgedRevision, 0);
+    };
+    await run("capsule.start", "started");
+    await run("capsule.restart", "started");
+    await run("capsule.release.rollback", "started", { rollback: { releaseId: fixture.rollbackReleaseId } });
+    const pending = JSON.parse(await readFile(path.join(telemetry, "inventory", "desired.json"), "utf8"));
+    assert.equal(pending.desired.capsules[0].releaseId, fixture.rollbackReleaseId);
+    await run("host.telemetry.disable", "opted-out");
+    await run("host.telemetry.enable", "started");
+    await run("capsule.stop", "stopped");
+    await run("capsule.unregister", "deleted");
+    await run("capsule.delete", "deleted");
+  });
+});
+
+
+test("Hosted registration and alias address changes automatically queue inventory", async () => {
+  await withTempDir(async (dir) => {
+    const { remoteRoot, request, invoke } = await customDomainFixture(dir);
+    const telemetry = path.join(remoteRoot, "telemetry");
+    await mkdir(telemetry, { mode: 0o700 });
+    await writeFile(path.join(telemetry, "connection.json"), JSON.stringify({ schemaVersion: 1, endpoint: "https://unreachable.invalid/", network: "sporades-hosted", internalEndpoint: "http://sporades-telemetry:4318/", inventoryHost: "fixture-host", caConfigured: false }), { mode: 0o600 });
+    assert.equal(JSON.parse((await invoke()).stdout).ok, true);
+    const pendingFile = path.join(telemetry, "inventory", "desired.json");
+    const first = JSON.parse(await readFile(pendingFile, "utf8"));
+    assert.equal(first.desired.capsules[0].state, "registered");
+    assert.deepEqual(first.desired.capsules[0].targets, ["https://app.fourteen.example/", "https://fourteen.example/", "https://team-notes.capsules.example.dev/"]);
+    assert.equal(JSON.parse((await invoke({ ...request, action: "capsule.unregister", registration: undefined })).stdout).ok, true);
+    const updated = await invoke({ ...request, registration: { aliasDomains: ["new.example"] } }, { FAKE_DOCKER_INSPECT_STATUS: "1", FAKE_DOCKER_RUNNING: "false" });
+    assert.equal(JSON.parse(updated.stdout).ok, true, updated.stdout + updated.stderr);
+    const changed = JSON.parse(await readFile(pendingFile, "utf8"));
+    assert.ok(changed.desired.revision > first.desired.revision);
+    assert.deepEqual(changed.desired.capsules[0].targets, ["https://new.example/", "https://team-notes.capsules.example.dev/"]);
+  });
+});
+
+
+test("Hosted deployment queues its authoritative release identity automatically", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir);
+    const docker = await installFakeDocker(dir);
+    const telemetry = path.join(fixture.remoteRoot, "telemetry");
+    await mkdir(telemetry, { mode: 0o700 });
+    await writeFile(path.join(telemetry, "connection.json"), JSON.stringify({ schemaVersion: 1, endpoint: "https://unreachable.invalid/", network: "sporades-hosted", internalEndpoint: "http://sporades-telemetry:4318/", inventoryHost: "fixture-host", caConfigured: false }), { mode: 0o600 });
+    const result = await runHostHelper({ action: "capsule.release.install", host: { alias: "test", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname }, release: fixture.release, lifecycle: fixture.lifecycle }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout + result.stderr);
+    const pending = JSON.parse(await readFile(path.join(telemetry, "inventory", "desired.json"), "utf8"));
+    assert.equal(pending.desired.capsules[0].releaseId, fixture.releaseId);
+    assert.equal(pending.desired.capsules[0].state, "started");
+    assert.equal(pending.acknowledgedRevision, 0);
   });
 });

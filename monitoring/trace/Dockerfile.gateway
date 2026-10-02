@@ -1,5 +1,6 @@
 FROM node:24.13.0-alpine3.23
+RUN apk add --no-cache util-linux
 WORKDIR /app
-COPY gateway.mjs /app/gateway.mjs
+COPY gateway.mjs inventory.mjs /app/
 USER node
 CMD ["node", "/app/gateway.mjs"]

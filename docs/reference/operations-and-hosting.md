@@ -613,3 +613,18 @@ full SSH public-key material.
   <subname> --json`, then restart or push a fixed release. Automatic fallback
   only applies to `host push --verify --fallback-to-previous-release`, not to
   later runtime crashes.
+
+
+## Automatic monitoring lifecycle inventory
+
+A connected Host queues authoritative lifecycle inventory and reconciles it through
+a Host-owned timer. Provision a separate exact Host inventory token in the Monitoring
+server's protected `TRACE_INVENTORY_HOSTS` map; register its environment reference
+with `telemetry profile add --inventory-credential-env <KEY>` and a stable
+`--inventory-host <ID>`, then connect. Upgraded ingestion-only connections require
+this migration. `host telemetry status --json` includes desired/acknowledged revisions,
+acknowledgement time, pending/stale state and delivery status. Capsule operations
+continue through monitoring outages. `host telemetry inventory-sync` retries delivery;
+`inventory-export` and `inventory-import <snapshot.json>` are recovery tools. See the
+[monitoring stack operator contract](https://github.com/mgscox/sporades/blob/main/monitoring/trace/README.md#automatic-lifecycle-inventory)
+for protected configuration, upgrade, durable volume, readiness and backup procedures.

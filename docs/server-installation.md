@@ -303,12 +303,30 @@ credential does not need dashboard, query, or administration access.
 sporades telemetry profile add remote \
   --endpoint https://monitor.example:4318 \
   --credential-env TRACE_INGEST_TOKEN \
+  --inventory-host host-one \
+  --inventory-credential-env HOST_ONE_INVENTORY_TOKEN \
   --ca-file /absolute/path/to/private-ca.pem
 export TRACE_INGEST_TOKEN='scoped-ingestion-token'
+export HOST_ONE_INVENTORY_TOKEN='<independent-random-Host-token>'
 sporades host telemetry connect --host personal --profile remote --json
 sporades host telemetry status --host personal --json
 sporades host telemetry check --host personal --json
 ```
+
+Before connection, provision that independent inventory token under the stable
+Host ID in VM B's protected `TRACE_INVENTORY_HOSTS` environment map, run stack setup
+and recreate the gateway. The inventory credential has exact Host-scoped GET/PUT
+authority; the ingestion credential remains limited to OTLP. Bootstrap/connect
+install a 30-second systemd inventory timer. Capsule lifecycle commands queue the
+latest authoritative state without a network request, and the timer automatically
+recovers after outages or restarts. Status includes desired/acknowledged revisions,
+acknowledgement and confirmation times, and pending/stale state. Existing
+connections must add this profile reference and reconnect after helper upgrade.
+Check `inventoryScheduler.installed` in the connection response; non-systemd
+installations need an explicitly scheduled helper entry point. The monitoring
+[distribution README](https://github.com/mgscox/sporades/blob/main/monitoring/trace/README.md#automatic-lifecycle-inventory)
+documents the protected journal, central inventory volume, readiness dependencies
+and validated recovery exports/imports. Ordinary lifecycle work needs no imports.
 
 Omit `--ca-file` when VM B uses a public trusted CA. The CLI transfers the
 resolved destination, optional CA, and credential over SSH. The Host stores

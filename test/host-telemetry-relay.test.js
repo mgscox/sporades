@@ -40,11 +40,11 @@ test('installed CLI resolves a verified Host profile and redacts the scoped cred
   const ssh = path.join(bin, 'ssh');
   await writeFile(ssh, `#!/usr/bin/env node\nconst fs=require('node:fs');let data='';process.stdin.on('data',x=>data+=x);process.stdin.on('end',()=>{fs.writeFileSync(process.env.SPORADES_TEST_CAPTURE,data);const request=JSON.parse(data);process.stdout.write(JSON.stringify({ok:true,data:{action:request.action,endpoint:request.telemetry?.endpoint??null,relayReady:true,capsuleCoverage:'not-configured'},error:null})+'\\n')});\n`);
   await chmod(ssh, 0o755);
-  const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, 'config'), SPORADES_TEST_CAPTURE: capture, TRACE_INGEST_TOKEN: 'private-test-ingest-token', PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, 'config'), SPORADES_TEST_CAPTURE: capture, TRACE_INGEST_TOKEN: 'private-test-ingest-token', INVENTORY_TOKEN: 'private-test-inventory-token', PATH: `${bin}${path.delimiter}${process.env.PATH}` };
   const cli = (...args) => spawnSync(process.execPath, ['bin/sporades.js', ...args], { cwd: process.cwd(), encoding: 'utf8', env });
   try {
     assert.equal(cli('host', 'add', 'remote', '--server', 'host.example', '--domain', 'capsules.example', '--json').status, 0);
-    assert.equal(cli('telemetry', 'profile', 'add', 'remote', '--endpoint', 'https://monitor.example:4318', '--credential-env', 'TRACE_INGEST_TOKEN', '--json').status, 0);
+    assert.equal(cli('telemetry', 'profile', 'add', 'remote', '--endpoint', 'https://monitor.example:4318', '--credential-env', 'TRACE_INGEST_TOKEN', '--inventory-host', 'host-one', '--inventory-credential-env', 'INVENTORY_TOKEN', '--json').status, 0);
     const connected = cli('host', 'telemetry', 'connect', '--host', 'remote', '--profile', 'remote', '--json');
     assert.equal(connected.status, 0, connected.stderr);
     assert.equal(JSON.parse(connected.stdout).data.action, 'host.telemetry.connect');
@@ -52,6 +52,9 @@ test('installed CLI resolves a verified Host profile and redacts the scoped cred
     const request = JSON.parse(await readFile(capture, 'utf8'));
     assert.equal(request.telemetry.endpoint, 'https://monitor.example:4318');
     assert.equal(request.telemetry.credential, 'private-test-ingest-token');
+    assert.equal(request.telemetry.inventoryHost, 'host-one');
+    assert.equal(request.telemetry.inventoryCredential, 'private-test-inventory-token');
+    assert.doesNotMatch(connected.stdout + connected.stderr, /private-test-inventory-token/);
     assert.equal(request.capsule, null);
     const status = cli('host', 'telemetry', 'status', '--host', 'remote', '--json');
     assert.equal(status.status, 0, status.stderr);

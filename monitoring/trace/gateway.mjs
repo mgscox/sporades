@@ -3,6 +3,9 @@ import { createServer as createHttpsServer } from 'node:https';
 import { readFileSync } from 'node:fs';
 import { timingSafeEqual, randomBytes } from 'node:crypto';
 
+import { acknowledgeInventory, readInventoryFile, withInventoryLock, writeInventoryFile, inventoryHostPattern } from './inventory.mjs';
+import { join } from 'node:path';
+
 const same = (given, expected) => {
   const a = Buffer.from(given ?? '');
   const b = Buffer.from(expected ?? '');
@@ -119,10 +122,42 @@ export function createGateway(config, tls) {
           recentHealth = pathReady(config).catch(() => false);
           healthUntil = Date.now() + 3000;
         }
-        const ready = await recentHealth;
+        const ready = await recentHealth && (!config.inventoryDirectory || await withInventoryLock(config.inventoryDirectory, async () => { await writeInventoryFile(join(config.inventoryDirectory, ".readiness.json"), { checkedAt: new Date().toISOString() }); return true; }));
         json(res, ready ? 200 : 503, ready);
       }
       catch { json(res, 503, false); }
+      return;
+    }
+    if (req.url.startsWith('/v1/inventory/')) {
+      const host = req.url.slice('/v1/inventory/'.length);
+      const token = Object.hasOwn(config.inventoryHosts ?? {}, host) ? config.inventoryHosts[host] : null;
+      if (!inventoryHostPattern.test(host) || !token || !same(req.headers.authorization, `Bearer ${token}`)) { json(res, 403, false); return; }
+      if (!['PUT', 'GET'].includes(req.method)) { json(res, 405, false); return; }
+      if (!config.inventoryDirectory) { json(res, 503, false); return; }
+      try {
+        if (req.method === 'GET') {
+          const stored = await readInventoryFile(join(config.inventoryDirectory, `${host}.json`));
+          res.writeHead(stored ? 200 : 404, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.end(JSON.stringify(stored ?? { ok: false }));
+          return;
+        }
+        if (req.headers['content-type'] !== 'application/json' || req.headers['content-encoding']) { json(res, 415, false); return; }
+        let size = 0;
+        const chunks = [];
+        const deadline = setTimeout(() => req.destroy(), 3000);
+        try {
+          for await (const chunk of req) {
+            size += chunk.length;
+            if (size > 2 * 1024 * 1024) { json(res, 413, false); return; }
+            chunks.push(chunk);
+          }
+        } finally { clearTimeout(deadline); }
+        let input;
+        try { input = JSON.parse(Buffer.concat(chunks).toString()); } catch { json(res, 400, false); return; }
+        const ack = await acknowledgeInventory(config.inventoryDirectory, host, input);
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ revision: ack.inventory.revision, acknowledgedAt: ack.acknowledgedAt }));
+      } catch (error) { if (!res.headersSent && !res.destroyed) json(res, error.status ?? (error.message === 'Invalid lifecycle inventory.' ? 400 : 503), false); }
       return;
     }
     if (req.url === '/v1/traces' || req.url === '/v1/metrics') {
@@ -175,7 +210,7 @@ if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   } : undefined;
   if (!tls && process.env.TRACE_TLS_MODE !== 'proxy') throw new Error('Invalid TRACE_TLS_MODE');
   const gateway = createGateway({
-    ...credentials, collectorUrl: 'http://collector:4318',
+    ...credentials, inventoryDirectory: '/inventory', collectorUrl: 'http://collector:4318',
     jaegerUrl: 'http://jaeger:16686',
     prometheusUrl: 'http://prometheus:9090',
     grafanaUrl: 'http://grafana:3000',

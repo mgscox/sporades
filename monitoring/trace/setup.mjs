@@ -5,6 +5,20 @@ import { chmod, chown, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { inventoryHostPattern } from './inventory.mjs';
+
+export function inventoryAuthorities(value, ingestToken, uiPassword) {
+  let hosts;
+  try { hosts = JSON.parse(value ?? '{}'); } catch { throw new Error('Invalid TRACE_INVENTORY_HOSTS'); }
+  if (!hosts || typeof hosts !== 'object' || Array.isArray(hosts) || Object.keys(hosts).length > 1000) throw new Error('Invalid TRACE_INVENTORY_HOSTS');
+  const seen = new Set();
+  for (const [host, token] of Object.entries(hosts)) {
+    if (!inventoryHostPattern.test(host) || typeof token !== 'string' || token.length < 16 || token.length > 4096 || token === 'REPLACE_WITH_GENERATED_SECRET' || token.startsWith('<') || /[\x00-\x1f\x7f]/.test(token) || seen.has(token) || token === ingestToken || token === uiPassword) throw new Error('Invalid TRACE_INVENTORY_HOSTS');
+    seen.add(token);
+  }
+  return hosts;
+}
+
 const owned = ['TRACE_INGEST_TOKEN', 'TRACE_UI_PASSWORD', 'GRAFANA_ADMIN_PASSWORD'];
 const defaults = { TRACE_TLS_MODE: 'tls', TRACE_BIND: '127.0.0.1', TRACE_PORT: '8443', TRACE_UI_USER: 'operator', TRACE_RETENTION: '72h', METRIC_RETENTION: '14d', METRIC_DISK_CAP: '8GB' };
 
@@ -45,6 +59,7 @@ export function parseEnvironment(source) {
 export function inspectEnvironment(source) {
   const entries = parseEnvironment(source);
   rejectPlaceholderCredentials(entries);
+  inventoryAuthorities(entries.get('TRACE_INVENTORY_HOSTS'), entries.get('TRACE_INGEST_TOKEN'), entries.get('TRACE_UI_PASSWORD'));
   const mode = entries.get('TRACE_TLS_MODE') ?? defaults.TRACE_TLS_MODE;
   const bind = entries.get('TRACE_BIND') ?? defaults.TRACE_BIND;
   if (!['tls', 'proxy'].includes(mode)) throw new Error('TRACE_TLS_MODE must be tls or proxy');
@@ -59,6 +74,7 @@ export async function setupEnvironment(path) {
   catch (error) { if (error.code !== 'ENOENT') throw error; source = ''; }
   const entries = parseEnvironment(source);
   rejectPlaceholderCredentials(entries);
+  inventoryAuthorities(entries.get('TRACE_INVENTORY_HOSTS'), entries.get('TRACE_INGEST_TOKEN'), entries.get('TRACE_UI_PASSWORD'));
   for (const key of owned) {
     if (entries.has(key) && !entries.get(key)) throw new Error(`${key} must not be empty`);
   }
@@ -82,6 +98,7 @@ export async function setupEnvironment(path) {
   if (identity.transferOwnership) await chown(privateDir, 0, 0);
   const credentialsPath = join(privateDir, 'credentials.json');
   await writeFile(credentialsPath, `${JSON.stringify({
+    inventoryHosts: inventoryAuthorities(entries.get('TRACE_INVENTORY_HOSTS'), entries.get('TRACE_INGEST_TOKEN'), entries.get('TRACE_UI_PASSWORD')),
     ingestToken: entries.get('TRACE_INGEST_TOKEN'), uiUser: entries.get('TRACE_UI_USER'),
     uiPassword: entries.get('TRACE_UI_PASSWORD'),
   })}\n`, { mode: 0o600 });

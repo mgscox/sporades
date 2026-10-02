@@ -57,6 +57,7 @@ import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
 import { checkHostTelemetryDelivery, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
+import { queueHostInventory, hostInventoryStatus, reconcileHostInventory, exportHostInventory, importHostInventory } from "./host-lifecycle-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import {
@@ -165,7 +166,7 @@ runHostHelperEntry().catch((error: HelperError) => {
     },
     false,
   );
-  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host"].includes(process.argv[2])) process.exitCode = 1;
+  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host", "--sync-inventory"].includes(process.argv[2])) process.exitCode = 1;
 });
 
 async function runHostHelperEntry() {
@@ -175,6 +176,13 @@ async function runHostHelperEntry() {
   }
   if (["--resume-host", "--checkpoint-host"].includes(process.argv[2])) {
     await resumeHostAtBoot();
+    return;
+  }
+  if (process.argv[2] === "--sync-inventory") {
+    const host = JSON.parse(Buffer.from(process.argv[3] ?? "", "base64url").toString());
+    const request = { action: "host.telemetry.inventory-sync", host } as HostHelperRequest;
+    validateCanonicalHostRouteRoot(request);
+    writeEnvelope({ ok: true, data: await reconcileHostInventory(host.remoteRoot), error: null });
     return;
   }
   await runHostHelperProcess();
@@ -888,6 +896,16 @@ async function hostTelemetryStatusWithCoverage(request: HostHelperRequest, relay
 }
 
 async function main(request: HostHelperRequest) {
+  try { await performMain(request); }
+  finally {
+    if (/^(capsule\.(register|unregister|delete|release\.(install|rollback|reconcile)|start|stop|restart|resume)|host\.(bootstrap|telemetry\.(connect|reconcile|enable|disable)))$/.test(request.action)) {
+      try { await queueHostInventory(request.host.remoteRoot); }
+      catch { process.stderr.write("Host lifecycle inventory is pending recovery; the Host timer will retry.\n"); }
+    }
+  }
+}
+
+async function performMain(request: HostHelperRequest) {
   if (request.action === "schedules.inspect") validateScheduleInspectionRequest(request);
   hostHelperConfig = await loadHostHelperConfig(request);
   if (request.action.startsWith("host.telemetry.")) {
@@ -896,6 +914,15 @@ async function main(request: HostHelperRequest) {
       throw helperError("Invalid Host Telemetry request.", "Upgrade the local CLI and Host helper together.");
     }
     validateCanonicalHostRouteRoot(request);
+    if (request.action === "host.telemetry.inventory-import") {
+      writeEnvelope({ ok: true, data: await importHostInventory(request.host.remoteRoot, request.inventory), error: null });
+      return;
+    }
+    if (request.action === "host.telemetry.inventory-export" || request.action === "host.telemetry.inventory-sync") {
+      const data = request.action === "host.telemetry.inventory-export" ? await exportHostInventory(request.host.remoteRoot) : await reconcileHostInventory(request.host.remoteRoot);
+      writeEnvelope({ ok: true, data, error: null });
+      return;
+    }
     const data = capsuleOperation
       ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable")
       : request.action === "host.telemetry.connect"
@@ -908,7 +935,9 @@ async function main(request: HostHelperRequest) {
           ? await checkHostTelemetryDelivery(request.host.remoteRoot)
           : null;
     if (!data) throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, check, enable, or disable.");
-    writeEnvelope({ ok: true, data, error: null });
+    const inventoryScheduler = request.action === "host.telemetry.connect" ? await installHostAutostart(request.host) : undefined;
+    await queueHostInventory(request.host.remoteRoot);
+    writeEnvelope({ ok: true, data: { ...data, ...(inventoryScheduler ? { inventoryScheduler } : {}), inventory: await hostInventoryStatus(request.host.remoteRoot) }, error: null });
     return;
   }
   if (request.action === "capsule.register") {

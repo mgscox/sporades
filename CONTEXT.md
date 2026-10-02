@@ -619,3 +619,15 @@ is installed by the common manual/automatic Host installation contract. A separa
 inert shutdown observer records healthy container-instance and release evidence
 before Docker stops. Recovery uses matching evidence for forced shutdown signals,
 never lifetime restart counts alone; OOM and stale evidence cannot authorize it.
+
+
+Lifecycle inventory is a Host-owned monitoring responsibility. Lifecycle commands
+queue versioned desired state from authoritative registries; a protected Host
+journal and systemd timer reconcile it over verified outbound HTTPS independently
+of the workstation. The Monitoring gateway authenticates a separate exact Host
+inventory token and durably acknowledges snapshots in its inventory volume.
+Explicit stopped/deleted/opted-out states suppress active Capsule expectations;
+lost contact or revoked credentials retain the expected Host. This interface
+contains no remote Capsule administration, probe scheduling or absence-alert
+delivery. See the monitoring distribution README for configuration, status,
+upgrade, readiness and recovery contracts.

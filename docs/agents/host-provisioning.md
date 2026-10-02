@@ -715,3 +715,22 @@ and absent evidence remain fail-closed. Verify
 reboot behavior on disposable infrastructure with one running and one explicitly
 stopped Capsule. See [Capsule autostart](../server-installation.md#capsule-autostart-after-host-reboot)
 for eligibility, current-release behavior, diagnostics and rollback.
+
+
+### Automatic lifecycle inventory
+
+Before connecting a monitored Host, provision its separate exact Host inventory
+credential in the Monitoring stack's `TRACE_INVENTORY_HOSTS` map, run setup and
+recreate the gateway. The Telemetry profile must reference that credential with
+`--inventory-credential-env` and should name a stable `--inventory-host`. Existing
+ingestion-only connections need a reconnect after updating the CLI/helper/profile.
+Bootstrap/connect install the protected Host journal's systemd reconciliation timer;
+check `autostart.installed` and `inventory.configured`. Host lifecycle operations
+queue desired state without network delivery. The timer recovers registry changes,
+outages and restarts every 30 seconds. Inspect `host telemetry status` for revision,
+acknowledgement time, pending/stale state and sanitized delivery failure. No manual
+import/export is needed for ordinary lifecycle operations. Non-systemd installations
+must explicitly schedule the helper reconciliation entry point described in
+`monitoring/trace/README.md`. Back up both the Host journal and central inventory
+volume. Real separate-VM lifecycle/reconnect/reboot verification remains required
+before operational rollout; disposable local fakes do not establish that evidence.

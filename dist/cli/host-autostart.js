@@ -10,6 +10,10 @@ export async function installHostAutostart(host) {
         return { installed: false, reason: "systemd-docker-unavailable" };
     const unit = `sporades-capsules-${createHash("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}.service`;
     const shutdownUnit = unit.replace(/\.service$/, "-shutdown.service");
+    const inventoryUnit = unit.replace(/\.service$/, "-inventory.service");
+    const inventoryTimer = inventoryUnit.replace(/\.service$/, ".timer");
+    const inventoryFile = path.join("/etc/systemd/system", inventoryUnit);
+    const timerFile = path.join("/etc/systemd/system", inventoryTimer);
     const file = path.join("/etc/systemd/system", unit);
     const shutdownFile = path.join("/etc/systemd/system", shutdownUnit);
     const marker = "# Managed by Sporades Host bootstrap: Capsule boot recovery\n";
@@ -18,20 +22,22 @@ export async function installHostAutostart(host) {
     const quotedHelper = JSON.stringify(helper).replace(/%/g, "%%").replace(/\$/g, () => "$$");
     const content = `${marker}[Unit]\nDescription=Sporades Capsule boot recovery (${host.domain})\nWants=network-online.target\nAfter=network-online.target docker.service caddy.service\nRequires=docker.service caddy.service\nPartOf=docker.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=${quotedHelper} --resume-host ${encoded}\nTimeoutStartSec=0\nRestart=no\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n`;
     const shutdownContent = `${marker}[Unit]\nDescription=Sporades Capsule shutdown evidence (${host.domain})\nAfter=docker.service caddy.service\nRequires=docker.service caddy.service\nPartOf=docker.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\nExecStop=${quotedHelper} --checkpoint-host ${encoded}\nTimeoutStopSec=120\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target docker.service\n`;
-    for (const target of ["/etc/systemd/system", helper, file, shutdownFile]) {
+    const inventoryContent = `${marker}[Unit]\nDescription=Sporades lifecycle inventory reconciliation\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=oneshot\nExecStart=${quotedHelper} --sync-inventory ${encoded}\nTimeoutStartSec=20\nUMask=0077\n`;
+    const timerContent = `${marker}[Unit]\nDescription=Sporades lifecycle inventory timer\n\n[Timer]\nOnBootSec=30s\nOnUnitInactiveSec=30s\nAccuracySec=1s\nUnit=${inventoryUnit}\n\n[Install]\nWantedBy=timers.target\n`;
+    for (const target of ["/etc/systemd/system", helper, file, shutdownFile, inventoryFile, timerFile]) {
         try {
             const s = await lstat(target);
             if (s.isSymbolicLink() || (s.mode & 0o022) || s.uid !== 0)
                 throw new Error("unsafe");
         }
         catch (e) {
-            if ((target === file || target === shutdownFile) && e.code === "ENOENT")
+            if (([file, shutdownFile, inventoryFile, timerFile].includes(target)) && e.code === "ENOENT")
                 continue;
             throw helperError("Unsafe Host autostart installation path.", "Repair root ownership and permissions before bootstrapping the Host.");
         }
     }
     let changed = false;
-    for (const [target, contents] of [[file, content], [shutdownFile, shutdownContent]]) {
+    for (const [target, contents] of [[file, content], [shutdownFile, shutdownContent], [inventoryFile, inventoryContent], [timerFile, timerContent]]) {
         const before = await readFile(target, "utf8").catch(e => { if (e.code === "ENOENT")
             return null; throw e; });
         if (before && !before.startsWith(marker))
@@ -50,12 +56,14 @@ export async function installHostAutostart(host) {
     }
     if (changed && spawnSync("systemctl", ["daemon-reload"], { timeout: 30_000 }).status !== 0)
         throw helperError("Cannot reload Host autostart service.", "Inspect systemd and retry bootstrap.");
-    if (spawnSync("systemctl", ["enable", unit, shutdownUnit], { timeout: 30_000 }).status !== 0)
+    if (spawnSync("systemctl", ["enable", unit, shutdownUnit, inventoryTimer], { timeout: 30_000 }).status !== 0)
         throw helperError("Cannot enable Host autostart service.", "Inspect systemd and retry bootstrap.");
     // Activate only the inert shutdown observer. Starting the recovery service during bootstrap
     // would resume existing Capsules; this service's ExecStart deliberately changes no runtime.
     if (spawnSync("systemctl", ["start", shutdownUnit], { timeout: 30_000 }).status !== 0)
         throw helperError("Cannot activate Host shutdown evidence.", "Inspect systemd and retry bootstrap.");
-    return { installed: true, unit, shutdownUnit, startsExistingCapsules: false };
+    if (spawnSync("systemctl", ["start", inventoryTimer], { timeout: 30_000 }).status !== 0)
+        throw helperError("Cannot start Host inventory timer.", "Inspect systemd and retry bootstrap.");
+    return { installed: true, inventoryUnit, inventoryTimer, unit, shutdownUnit, startsExistingCapsules: false };
 }
 //# sourceMappingURL=host-autostart.js.map

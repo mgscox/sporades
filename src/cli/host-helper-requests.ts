@@ -38,6 +38,9 @@ export type HostHelperAction =
   | "host.logs"
   | "host.version"
   | "host.bootstrap"
+  | "host.telemetry.inventory-import"
+  | "host.telemetry.inventory-export"
+  | "host.telemetry.inventory-sync"
   | "host.telemetry.connect"
   | "host.telemetry.reconcile"
   | "host.telemetry.status"
@@ -95,7 +98,8 @@ export type HostHelperRequestBase = JsonObject & {
   lines?: number;
   verification?: HostHelperVerification;
   accessKeys?: JsonObject;
-  telemetry?: { endpoint: string; credential: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
+  inventory?: JsonObject;
+  telemetry?: { endpoint: string; credential: string; inventoryHost?: string; inventoryCredential?: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
 };
 
 export type HostRegistrationOptions = JsonObject & {
@@ -191,7 +195,7 @@ export type HostLogsRequest = HostHelperRequestBase & {
 };
 export type HostCapsuleListRequest = HostHelperRequestBase & { action: "capsule.list" };
 export type HostVersionRequest = HostHelperRequestBase & { action: "host.version" };
-export type HostTelemetryRequest = HostHelperRequestBase & { action: "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable" };
+export type HostTelemetryRequest = HostHelperRequestBase & { action: "host.telemetry.inventory-import" | "host.telemetry.inventory-export" | "host.telemetry.inventory-sync" | "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable" };
 export type HostJobsInspectRequest = HostHelperRequestBase & { action: "jobs.inspect"; capsule: HostHelperCapsuleTarget };
 export type HostSchedulesInspectRequest = HostHelperRequestBase & { action: "schedules.inspect"; capsule: HostHelperCapsuleTarget };
 export type HostAccessKeyRequest = HostHelperRequestBase & {

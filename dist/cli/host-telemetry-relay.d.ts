@@ -3,6 +3,8 @@ export type HostRelayConnection = {
     endpoint: string;
     credential: string;
     caPem?: string;
+    inventoryHost?: string;
+    inventoryCredential?: string;
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
 };
@@ -19,6 +21,7 @@ export declare function readHostTelemetryConnection(remoteRoot: string): Promise
     internalEndpoint: string;
     caConfigured: boolean;
     connectedAt: string;
+    inventoryHost?: string;
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
 } | null>;

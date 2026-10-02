@@ -33,7 +33,7 @@ After startup, choose the origin the smoke command will contact. Direct TLS requ
 
 ## Backup, restore, and upgrades
 
-Stop the stack for a consistent backup of Jaeger, Prometheus, and Grafana. Back up all three named volumes plus private `.env`, `.private/`, `certs/`, configuration, and any proxy config. Protect backups like credentials. To restore, stop the stack, restore those volumes/files, run `node setup.mjs`, then `docker compose --env-file .compose.env up -d --build`; the one-shot initializers restore non-root volume ownership. Verify with smoke and stored metric queries. For upgrades, save a backup and pinned files, review image/config changes, then run `docker compose --env-file .compose.env pull` and `docker compose --env-file .compose.env up -d --build`. Roll back with saved files and volumes if a new version changes storage format. Setup never rotates a present credential.
+Stop the stack for a consistent backup of Jaeger, Prometheus, and Grafana. Back up all four named volumes (traces, metrics, grafana and inventory) plus private `.env`, `.private/`, `certs/`, configuration, and any proxy config. Protect backups like credentials. To restore, stop the stack, restore those volumes/files, run `node setup.mjs`, then `docker compose --env-file .compose.env up -d --build`; the one-shot initializers restore non-root volume ownership. Verify with smoke and stored metric queries. For upgrades, save a backup and pinned files, review image/config changes, then run `docker compose --env-file .compose.env pull` and `docker compose --env-file .compose.env up -d --build`. Roll back with saved files and volumes if a new version changes storage format. Setup never rotates a present credential.
 
 ## Host pressure and Caddy dashboards
 
@@ -51,3 +51,117 @@ Caddy graphs use the top-level subroute handler only; do not add these edge coun
 to Capsule request counts. Host data does not attribute resource use to a
 container. See the Sporades server-installation guide for resource lifecycle,
 private networking, real filesystem coverage and rollback.
+
+## Automatic lifecycle inventory
+
+The gateway also owns a narrow lifecycle inventory service. Its separate `inventory`
+volume retains expected Hosts, Capsule identities, states, release IDs, lifecycle
+change times and sanitized public origins independently of Host availability. This
+service does not schedule probes, send absence alerts, or administer Capsules.
+Every accepted Host record remains expected until explicit operator recovery;
+revoking a sender or losing contact never deletes its record. `started` and `failed`
+Capsules are expected active targets; `registered`, `released`, `stopped`, `deleted`
+and `opted-out` states suppress active-target expectations. Public origins alone
+are exported; protected runtime readiness credentials stay on the Host.
+
+Provision one independent random token per Host (at least 16 characters; 32 random
+bytes recommended) in the operator-owned `.env`, using a single-quoted JSON map:
+
+```dotenv
+TRACE_INVENTORY_HOSTS='{"host-one":"<independent-random-Host-token>"}'
+```
+
+Use a stable inventory Host ID matching `[a-z0-9][a-z0-9.-]{0,127}`. Identity is the
+whole Host installation/remote root, including all its Hosted domains. Never share
+this token between Hosts or reuse the ingestion/UI token. `node setup.mjs` validates
+unique authorities and writes them only to protected `.private/credentials.json`;
+then recreate the gateway to apply additions, rotation or revocation. An absent map
+means no Host can write inventory. There is no enrollment or remote-admin API.
+Keep existing entries when adding another Host. Setup preserves `.env` and never
+implicitly generates, changes or removes these Host authorities.
+
+Register the matching verified HTTPS profile on the workstation:
+
+```sh
+sporades telemetry profile add monitored --endpoint https://monitor.example \
+  --credential-env TRACE_INGEST_TOKEN --inventory-host host-one \
+  --inventory-credential-env HOST_ONE_INVENTORY_TOKEN
+sporades host telemetry connect --host work --profile monitored --json
+```
+
+Set both referenced tokens in the configuring process environment. The helper
+stores the inventory token separately in its protected `telemetry` directory.
+Upgrading an older connected Host requires adding the inventory reference and
+reconnecting with the current CLI/helper; old connections expose
+`inventory.configured: false` until this migration. The ingestion-only profile
+continues to work for Dev/Container sessions. The default inventory identity when
+`--inventory-host` is omitted is the selected Host profile's Hosted domain; once
+connected, keep that ID when changing endpoint, credentials or Hosted addresses.
+
+Bootstrap/connect install a per-domain systemd inventory timer, after network
+startup, at 30-second intervals. It scans **all** authoritative registries under
+the Host root, persists the latest desired snapshot with an increasing revision,
+and sends it outbound over verified HTTPS. Lifecycle actions queue desired state
+locally without a network request; timer reconciliation also recovers a crash
+between registry commit and queueing. No workstation is needed after connection.
+Non-systemd installations must schedule the installed helper's `--sync-inventory`
+entry point at the same interval; the argument is base64url JSON containing the
+Host's `alias`, `domain`, `scheme` and absolute `remoteRoot`. Capsule operation
+remains available if inventory is temporarily unavailable. Check bootstrap's
+`autostart.installed` or connect's `inventoryScheduler.installed` result; unsupported systemd is not automatic reconciliation.
+
+`sporades host telemetry status --host work --json` exposes desired/acknowledged
+revision, original acknowledgement time, last attempt/confirmation time, pending
+revision, stale contact (no successful confirmation for two minutes), and sanitized
+delivery status. Changing the Monitoring endpoint queues a new revision and resets acknowledgement
+status until that destination confirms it; an in-flight acknowledgement from the
+old destination cannot mark the new inventory synchronized. Lost acknowledgements
+retry the same revision. Identical retries
+return the original acknowledgement; reordered older revisions or conflicting
+same-revision payloads return HTTP 409. Snapshots retain deleted identities as
+empty-target tombstones; omitting previously acknowledged identities is rejected.
+An unavailable sender leaves central expectations intact. Address/alias changes,
+registration, deploy, start/restart/rollback, stop, delete and opt-out are inferred
+from Host state; a restart of the same release changes its lifecycle timestamp.
+
+The only HTTP inventory paths are `GET` and `PUT /v1/inventory/<host-id>` with that
+exact Host's Bearer token. Ingestion and UI credentials grant no inventory access.
+The body is the version 1 `TelemetryInventory` JSON contract shipped in
+`src/types/telemetry-inventory.d.ts`, capped at 2 MiB. GET returns the stored snapshot
+and acknowledgement; PUT returns revision and acknowledgement time. Wrong Host
+identity/authority returns 403; invalid input returns 400. The service namespaces
+all Capsule identities under its authenticated Host. It does not grant authority
+over any other Host, even when two records contain the same domain/subname.
+
+### Recovery and durable storage
+
+Use manual transfer only for disaster recovery, never ordinary deployment:
+
+```sh
+sporades host telemetry inventory-export --host work --json
+sporades host telemetry inventory-sync --host work --json
+INVENTORY_ORIGIN=https://monitor.example INVENTORY_TOKEN="$HOST_ONE_INVENTORY_TOKEN" \
+  node inventory-recovery.mjs export host-one > central-export.json
+```
+
+For a lost Host inventory journal, extract `.inventory` from that central export
+into a snapshot JSON file and run `sporades host telemetry inventory-import
+snapshot.json --host work --json`. It checks the exact connected Host and version,
+then reconciles authoritative local registry state above the recovered revision.
+For lost central inventory, extract `.data` from Host `inventory-export --json`
+into a snapshot and pipe it to `inventory-recovery.mjs import host-one` with the
+same environment. Private CAs use `NODE_EXTRA_CA_CERTS`. Both recovery paths use
+the live validation, authority and revision rules; they cannot bypass a conflict.
+If both journals are lost, restore a backup before reconnecting. Do not delete a
+central record to clear stale contact or reuse a Host identity for another server.
+
+Include the `inventory` volume in consistent stack backups and preserve the Host's
+`telemetry/inventory/desired.json` alongside its protected connection, inventory
+credential and CA. Restore the four storage volumes and private configuration
+before readiness verification. `inventory-init` restores volume ownership before
+starting the gateway. `/health` also requires writable, protected inventory state;
+telemetry ingestion and the inventory write path remain independent of backend
+trace/metric availability. Existing stacks must review and install the new gateway,
+Dockerfile, inventory assets, Compose service/volume and setup changes; regeneration
+preserves operator overrides and does not silently overwrite old assets. The gateway
+image includes Linux `flock`; Linux Hosts already require `flock` for lifecycle locks.
