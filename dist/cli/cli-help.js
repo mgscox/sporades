@@ -151,6 +151,7 @@ Options for profile add:
   --dashboard <url>       Optional dashboard HTTPS URL
   --credential-env <KEY>  Environment variable containing the ingestion bearer token
   --metrics-interval-ms <N>  Metrics export period, 5000-300000 ms (default 15000)
+  --trace-propagation-origin <origin>  Approve exact fetch origin (repeatable, max 32)
   --event-loop-delay-resolution-ms <N>  Delay timer precision, 10-1000 ms (default 20)
   --ca-file <path>        Absolute private CA certificate path for verified TLS
   --loopback              Permit a local HTTP collector for development

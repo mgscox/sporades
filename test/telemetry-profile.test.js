@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { resolveLocalTelemetryConfig } from '../dist/cli/telemetry-profile.js';
+import { resolveLocalTelemetryConfig, resolveContainerTelemetryConfig } from '../dist/cli/telemetry-profile.js';
 
 test('installed CLI stores reference-only profiles and Dev selection honors explicit precedence', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'sporades-telemetry-profile-'));
@@ -45,6 +45,17 @@ test('installed CLI stores reference-only profiles and Dev selection honors expl
     assert.equal((await resolveLocalTelemetryConfig({ telemetry: { profile: 'precise' } })).eventLoopDelayResolutionMs, 40);
     for (const invalid of ['0', '9', '1001', '20.5', 'NaN']) {
       assert.equal(cli('add', 'invalid-precision', '--endpoint', 'http://localhost:4318', '--loopback', '--event-loop-delay-resolution-ms', invalid, '--json').status, 1, invalid);
+    }
+    const propagation = cli('add', 'outbound', '--endpoint', 'http://localhost:4318', '--loopback', '--trace-propagation-origin', 'https://DEPENDENCY.example:443/', '--trace-propagation-origin', 'http://127.0.0.1:5218', '--json');
+    assert.equal(propagation.status, 0, propagation.stderr);
+    const origins = ['https://dependency.example', 'http://127.0.0.1:5218'];
+    assert.deepEqual(JSON.parse(cli('show', 'outbound', '--json').stdout).data.profile.tracePropagationOrigins, origins);
+    assert.deepEqual((await resolveLocalTelemetryConfig({}, 'outbound')).tracePropagationOrigins, origins);
+    assert.deepEqual((await resolveContainerTelemetryConfig({}, 'outbound')).tracePropagationOrigins, origins);
+    for (const value of ['*', 'https://user:private-secret@example.com', 'https://example.com/private-secret', 'https://example.com?private-secret']) {
+      const rejectedOrigin = cli('add', 'invalid-outbound', '--endpoint', 'http://localhost:4318', '--loopback', '--trace-propagation-origin', value, '--json');
+      assert.equal(rejectedOrigin.status, 1);
+      assert.doesNotMatch(rejectedOrigin.stdout + rejectedOrigin.stderr, /private-secret/);
     }
 
     const second = cli('add', 'other', '--endpoint', 'http://localhost:4320', '--loopback', '--json');

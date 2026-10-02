@@ -4,6 +4,7 @@ import { lstat, mkdir, readFile, rename, writeFile, chmod, rm } from "node:fs/pr
 import { request as httpsRequest } from "node:https";
 import path from "node:path";
 
+import { validateTracePropagationOrigins } from "../telemetry-propagation-policy.js";
 import { SPORADES_BASE_IMAGE } from "../base-image.js";
 import { helperError } from "./cli-support.js";
 
@@ -16,6 +17,7 @@ const RELAY_LABEL = "com.sporades.host-telemetry-relay=true";
 const MAX_CA_BYTES = 1024 * 1024;
 
 export type HostRelayConnection = {
+  tracePropagationOrigins?: string[];
   endpoint: string;
   credential: string;
   caPem?: string;
@@ -30,7 +32,7 @@ function invalid(): never {
 export function validateHostRelayConnection(value: unknown): HostRelayConnection {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid();
+  if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs", "tracePropagationOrigins"].includes(key))) invalid();
   if (typeof input.endpoint !== "string" || input.endpoint.length > 2048) invalid();
   let url: URL;
   try { url = new URL(input.endpoint); } catch { return invalid(); }
@@ -39,6 +41,9 @@ export function validateHostRelayConnection(value: unknown): HostRelayConnection
   if (input.caPem !== undefined && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----"))) invalid();
   if (input.metricsIntervalMs !== undefined && (!Number.isSafeInteger(input.metricsIntervalMs) || (input.metricsIntervalMs as number) < 5_000 || (input.metricsIntervalMs as number) > 300_000)) invalid();
   if (input.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || (input.eventLoopDelayResolutionMs as number) < 10 || (input.eventLoopDelayResolutionMs as number) > 1000)) invalid();
+  if (input.tracePropagationOrigins !== undefined) {
+    try { input.tracePropagationOrigins = validateTracePropagationOrigins(input.tracePropagationOrigins); } catch { invalid(); }
+  }
   return input as HostRelayConnection;
 }
 
@@ -110,7 +115,10 @@ export async function readHostTelemetryConnection(remoteRoot: string) {
   if (value.schemaVersion !== 1 || typeof value.endpoint !== "string" || typeof value.network !== "string" || value.internalEndpoint !== `http://${RELAY_ALIAS}:4318/`) {
     throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
   }
-  return value as { schemaVersion: 1; endpoint: string; network: string; internalEndpoint: string; caConfigured: boolean; connectedAt: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
+  if (value.tracePropagationOrigins !== undefined) {
+    try { value.tracePropagationOrigins = validateTracePropagationOrigins(value.tracePropagationOrigins); } catch { invalid(); }
+  }
+  return value as { tracePropagationOrigins?: string[]; schemaVersion: 1; endpoint: string; network: string; internalEndpoint: string; caConfigured: boolean; connectedAt: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
 }
 
 export async function statusHostTelemetryRelay(remoteRoot: string) {
@@ -122,7 +130,7 @@ export async function statusHostTelemetryRelay(remoteRoot: string) {
     relayReady: Boolean(connection && relay?.State?.Running === true),
     capsuleCoverage: "not-configured",
     backendVerification: "unavailable",
-    ...(connection ? { endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) } : {}),
+    ...(connection ? { ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) } : {}),
   };
 }
 
@@ -138,7 +146,7 @@ export async function connectHostTelemetryRelay(remoteRoot: string, network: str
   const previousConfig = previous ? await readProtected(files.config) : null;
   const previousCredential = previous ? await readProtected(files.credential) : null;
   const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-  const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
+  const descriptor = { schemaVersion: 1, ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
   await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 0o644);
   await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
   if (connection.caPem) await atomicWrite(files.ca, connection.caPem, 0o644);

@@ -119,6 +119,60 @@ unreachable collector does not block Capsule requests. Check the Container's
 platform log and monitoring stack readiness/storage separately when tracing is
 missing.
 
+### Outbound HTTP time
+
+An enabled Telemetry profile also creates one `CLIENT` span for each native
+global `fetch` call made while an HTTP request is active. No application
+instrumentation import is required. Overlapping calls remain children of their
+own `SERVER` span. The span measures time until response headers arrive,
+including connection setup and the dependency's wait. Reading or streaming the
+response body remains the caller's responsibility and is outside this span.
+HTTP status 400 and above records `failure`; rejected calls record
+`network_error`, `timeout` (an aborted `AbortSignal.timeout`) or `cancelled`.
+Rejections retain the original error object. Telemetry does not add retries,
+deadlines or redirects, and a blocked exporter does not delay dependency calls.
+
+Span names are `HTTP <method>`. Attributes contain only a bounded method,
+response status when available, and `sporades.http.outcome`. No destination,
+path, raw query, headers, body, exception text or private identifier is exported.
+Exporter calls, work outside an active HTTP request, and runtime-owned background
+tasks are excluded. This slice does not instrument `node:http`/`node:https`,
+imported fetch implementations, a fetch reference captured before telemetry
+startup, WebSocket operations or Jobs. It supplies no public instrumentation API.
+Do not layer another fetch instrumentation package over this owned wrapper.
+The original global fetch is restored when the last telemetry owner shuts down.
+
+Propagation defaults to off. An operator may repeat
+`--trace-propagation-origin <origin>` when adding a profile:
+
+```sh
+sporades telemetry profile add dependencies --endpoint https://monitor.example --credential-env TRACE_INGEST_TOKEN --trace-propagation-origin https://dependency.example
+```
+
+The profile's optional `tracePropagationOrigins` array holds at most 32 exact
+HTTP/HTTPS origins. Scheme, normalized hostname and port must match; wildcards,
+credentials, paths, queries and fragments are rejected. This approval is separate
+from the OTLP export destination and is never inferred from incoming headers or
+Capsule project configuration. Local Container launch descriptors retain it;
+`host telemetry connect` persists it in the Host-owned connection and subsequent
+Hosted launch descriptors. Reconnect and restart existing Capsules to change it;
+runtime coverage reports the usual pending restart until the descriptor matches.
+
+Sporades adds a validated `traceparent` identifying the client span only when the
+destination is approved **and the caller selected `redirect: 'manual'` or
+`redirect: 'error'`** (including on a `Request` input). Default/follow redirects
+are traced but receive no injected context, preventing cross-origin redirect
+leaks without changing fetch semantics. No incoming baggage or trace state is
+copied. Caller-authored headers remain the caller's responsibility. Each new
+manual redirect fetch is checked independently against the approval list.
+
+Focused packaged ESM tests run without runtime package resolution on Node 22.13,
+Node 24, and the exact `ghcr.io/sporades/sporades-base:0.2.0-node22-alpine`
+image. Run `SPORADES_FETCH_DOCKER=1 node --test
+test/telemetry-fetch-bundle.test.js` to include the Docker matrix; it uses only
+disposable containers and prints the tested image digests. Runtime behavior and
+outage/redirect/privacy tests are in `test/telemetry-fetch.test.js`.
+
 ## Create a Capsule
 
 ```sh

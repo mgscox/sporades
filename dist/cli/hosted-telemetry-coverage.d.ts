@@ -1,5 +1,6 @@
 import type { RuntimeTelemetryConfig } from "../runtime-telemetry.js";
 type Connection = {
+    tracePropagationOrigins?: string[];
     internalEndpoint: string;
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;

@@ -15,6 +15,8 @@ test('Host relay accepts only a scoped verified HTTPS destination', () => {
   assert.throws(() => validateHostRelayConnection({ endpoint: connection.endpoint, credential: 'bad\nTOKEN=leak' }));
   assert.equal(validateHostRelayConnection({ endpoint: connection.endpoint, credential: 'scope-test-token', metricsIntervalMs: 5000, eventLoopDelayResolutionMs: 20 }).metricsIntervalMs, 5000);
   assert.throws(() => validateHostRelayConnection({ endpoint: connection.endpoint, credential: 'scope-test-token', metricsIntervalMs: 100 }));
+  assert.deepEqual(validateHostRelayConnection({ ...connection, tracePropagationOrigins: ['https://DEPENDENCY.example/'] }).tracePropagationOrigins, ['https://dependency.example']);
+  assert.throws(() => validateHostRelayConnection({ ...connection, tracePropagationOrigins: ['https://dependency.example/private'] }));
 });
 
 test('collector config has private receiver and bounded delivery without embedding credentials', () => {
@@ -44,7 +46,7 @@ test('installed CLI resolves a verified Host profile and redacts the scoped cred
   const cli = (...args) => spawnSync(process.execPath, ['bin/sporades.js', ...args], { cwd: process.cwd(), encoding: 'utf8', env });
   try {
     assert.equal(cli('host', 'add', 'remote', '--server', 'host.example', '--domain', 'capsules.example', '--json').status, 0);
-    assert.equal(cli('telemetry', 'profile', 'add', 'remote', '--endpoint', 'https://monitor.example:4318', '--credential-env', 'TRACE_INGEST_TOKEN', '--json').status, 0);
+    assert.equal(cli('telemetry', 'profile', 'add', 'remote', '--endpoint', 'https://monitor.example:4318', '--credential-env', 'TRACE_INGEST_TOKEN', '--trace-propagation-origin', 'https://dependency.example', '--json').status, 0);
     const connected = cli('host', 'telemetry', 'connect', '--host', 'remote', '--profile', 'remote', '--json');
     assert.equal(connected.status, 0, connected.stderr);
     assert.equal(JSON.parse(connected.stdout).data.action, 'host.telemetry.connect');
@@ -52,6 +54,7 @@ test('installed CLI resolves a verified Host profile and redacts the scoped cred
     const request = JSON.parse(await readFile(capture, 'utf8'));
     assert.equal(request.telemetry.endpoint, 'https://monitor.example:4318');
     assert.equal(request.telemetry.credential, 'private-test-ingest-token');
+    assert.deepEqual(request.telemetry.tracePropagationOrigins, ['https://dependency.example']);
     assert.equal(request.capsule, null);
     const status = cli('host', 'telemetry', 'status', '--host', 'remote', '--json');
     assert.equal(status.status, 0, status.stderr);

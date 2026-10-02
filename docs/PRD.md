@@ -276,7 +276,11 @@ The following work is intentionally deferred:
   transport and Host-owned Hosted Capsule activation are available; each Host
   connection enables its Capsules by default with per-Capsule opt-out, and
   running Capsules need a controlled restart before coverage is confirmed.
-  Host OS pressure and Caddy Prometheus collection are available through the Host relay; external container-resource collection is out of scope, and operation spans remain deferred under
+  Native global fetch calls within active HTTP requests have CLIENT spans through
+  response headers, with exact operator-approved origin propagation restricted to
+  caller-selected manual/error redirects. Host OS pressure and Caddy Prometheus
+  collection are available through the Host relay; external container-resource
+  collection is out of scope, and other operation spans remain deferred under
   [automatic monitoring issue #107](https://github.com/mgscox/sporades/issues/107).
   Centralized JSON logging remains deferred in
   `.scratch/post-v2-platform-hardening-and-ops/issues/05-centralize-json-server-logging.md`.

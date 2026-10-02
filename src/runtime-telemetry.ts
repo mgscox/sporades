@@ -15,8 +15,11 @@ import { BasicTracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } fro
 import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { interpretHttpRequestTarget } from "./http-runtime.js";
 import { runtimeRequestScope, withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
+import { installRuntimeFetchTelemetry, outboundFetchTelemetry } from "./runtime-fetch-telemetry.js";
+import { validateTracePropagationOrigins } from "./telemetry-propagation-policy.js";
 
 export type RuntimeTelemetryConfig = {
+  tracePropagationOrigins?: string[];
   endpoint: string;
   tls: { mode: "verified" | "loopback"; caFile?: string };
   credentialEnv?: string;
@@ -125,6 +128,7 @@ function createProfileExporters(traceOptions: ConstructorParameters<typeof OTLPT
 
 export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>) {
   if (!config) return { run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => runtimeRequestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => {} };
+  const propagationOrigins = new Set(validateTracePropagationOrigins(config.tracePropagationOrigins));
   if (config.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1000)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
   const endpoint = new URL("/v1/traces", url).toString();
@@ -311,6 +315,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   });
   const tracer = provider.getTracer("sporades-runtime-http", "1");
   let closing = false;
+  const releaseFetch = installRuntimeFetchTelemetry();
   return {
     run(request: IncomingMessage, response: ServerResponse, endpoints: readonly EndpointLike[], handle: () => unknown) {
       if (closing) return handle();
@@ -345,7 +350,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = runtimeRequestScope.run({ requestId: randomUUID(), span }, handle);
+        const result = runtimeRequestScope.run({ requestId: randomUUID(), span, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, () => !closing && !ended) }, handle);
         if (result && typeof (result as Promise<unknown>).then === "function") {
           return Promise.resolve(result).catch((error) => { end("error"); throw error; });
         }
@@ -358,6 +363,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     async shutdown() {
       if (closing) return;
       closing = true;
+      releaseFetch();
       gcObserver.disconnect();
       delayMonitorStoppedAt = performance.now();
       loopDelay.disable();

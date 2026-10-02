@@ -507,6 +507,7 @@ async function runTelemetryProfileCommand(args: string[]) {
     if (operation === "add") {
       if (arg === "--endpoint") { input.endpoint = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--dashboard") { input.dashboard = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--trace-propagation-origin") { (input.tracePropagationOrigins ??= []).push(readFlagValue(rest, ++index, arg)); continue; }
       if (arg === "--credential-env") { input.credentialEnv = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--metrics-interval-ms") { input.metricsIntervalMs = Number(readFlagValue(rest, ++index, arg)); continue; }
       if (arg === "--event-loop-delay-resolution-ms") { input.eventLoopDelayResolutionMs = Number(readFlagValue(rest, ++index, arg)); continue; }
@@ -517,6 +518,7 @@ async function runTelemetryProfileCommand(args: string[]) {
   }
   if (operation === "add") {
     const profile: TelemetryProfile = {
+      ...(input.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: input.tracePropagationOrigins } : {}),
       endpoint: input.endpoint,
       ...(input.dashboard ? { dashboard: input.dashboard } : {}),
       tls: { mode: input.loopback ? "loopback" : "verified", ...(input.caFile ? { caFile: input.caFile } : {}) },
@@ -3874,7 +3876,7 @@ async function manageHost(options: LooseRecord) {
             caPem = readFileSync(profile.tls.caFile, "utf8");
           } catch { throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB."); }
         }
-        telemetry = { endpoint: profile.endpoint, credential, ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
+        telemetry = { ...(profile.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}), endpoint: profile.endpoint, credential, ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
       }
       const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);

@@ -4,6 +4,7 @@ import type { Span } from "@opentelemetry/api";
 export declare const runtimeRequestScope: AsyncLocalStorage<{
     requestId: string;
     span?: Span;
+    outboundFetch?: (original: typeof fetch, input: Parameters<typeof fetch>[0], init?: RequestInit) => ReturnType<typeof fetch>;
 }>;
 /** Runtime-owned work must not retain the HTTP request which happened to schedule it. */
 export declare function withoutRuntimeRequestIdentity<T>(callback: () => T): T;

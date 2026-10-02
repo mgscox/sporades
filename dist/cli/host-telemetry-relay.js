@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, rename, writeFile, chmod, rm } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import path from "node:path";
+import { validateTracePropagationOrigins } from "../telemetry-propagation-policy.js";
 import { SPORADES_BASE_IMAGE } from "../base-image.js";
 import { helperError } from "./cli-support.js";
 import { configureHostMetrics, hostMetricsStatus, hostScrapeConfig, readHostMetrics, HOST_METRICS_NETWORK } from "./host-metrics.js";
@@ -18,7 +19,7 @@ export function validateHostRelayConnection(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
         invalid();
     const input = value;
-    if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key)))
+    if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs", "tracePropagationOrigins"].includes(key)))
         invalid();
     if (typeof input.endpoint !== "string" || input.endpoint.length > 2048)
         invalid();
@@ -39,6 +40,14 @@ export function validateHostRelayConnection(value) {
         invalid();
     if (input.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || input.eventLoopDelayResolutionMs < 10 || input.eventLoopDelayResolutionMs > 1000))
         invalid();
+    if (input.tracePropagationOrigins !== undefined) {
+        try {
+            input.tracePropagationOrigins = validateTracePropagationOrigins(input.tracePropagationOrigins);
+        }
+        catch {
+            invalid();
+        }
+    }
     return input;
 }
 export function renderHostRelayCollectorConfig(options) {
@@ -124,6 +133,14 @@ export async function readHostTelemetryConnection(remoteRoot) {
     if (value.schemaVersion !== 1 || typeof value.endpoint !== "string" || typeof value.network !== "string" || value.internalEndpoint !== `http://${RELAY_ALIAS}:4318/`) {
         throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
     }
+    if (value.tracePropagationOrigins !== undefined) {
+        try {
+            value.tracePropagationOrigins = validateTracePropagationOrigins(value.tracePropagationOrigins);
+        }
+        catch {
+            invalid();
+        }
+    }
     return value;
 }
 export async function statusHostTelemetryRelay(remoteRoot) {
@@ -135,7 +152,7 @@ export async function statusHostTelemetryRelay(remoteRoot) {
         relayReady: Boolean(connection && relay?.State?.Running === true),
         capsuleCoverage: "not-configured",
         backendVerification: "unavailable",
-        ...(connection ? { endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) } : {}),
+        ...(connection ? { ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) } : {}),
     };
 }
 export async function connectHostTelemetryRelay(remoteRoot, network, input, host) {
@@ -152,7 +169,7 @@ export async function connectHostTelemetryRelay(remoteRoot, network, input, host
     const previousConfig = previous ? await readProtected(files.config) : null;
     const previousCredential = previous ? await readProtected(files.credential) : null;
     const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-    const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
+    const descriptor = { schemaVersion: 1, ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
     await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 0o644);
     await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
     if (connection.caPem)

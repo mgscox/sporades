@@ -100307,6 +100307,25 @@ ${options.epilogue}
 // src/cli/telemetry-profile.ts
 import { chmod, mkdir as mkdir3, readFile as readFile6, rename as rename4, writeFile as writeFile2 } from "node:fs/promises";
 import path9 from "node:path";
+
+// src/telemetry-propagation-policy.ts
+function validateTracePropagationOrigins(value) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value) || value.length > 32) throw new Error("Invalid trace propagation origins.");
+  return [...new Set(value.map((entry) => {
+    if (typeof entry !== "string" || entry.length > 2048 || /[\s\\]/.test(entry)) throw new Error("Invalid trace propagation origins.");
+    let url;
+    try {
+      url = new URL(entry);
+    } catch {
+      throw new Error("Invalid trace propagation origins.");
+    }
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password || url.pathname !== "/" || url.search || url.hash || entry.includes("?") || entry.includes("#")) throw new Error("Invalid trace propagation origins.");
+    return url.origin;
+  }))];
+}
+
+// src/cli/telemetry-profile.ts
 var aliasPattern = /^[a-z][a-z0-9-]{0,39}$/;
 var envPattern = /^[A-Z][A-Z0-9_]{0,79}$/;
 function profilePath() {
@@ -100327,7 +100346,7 @@ function validateTelemetryProjectConfig(value) {
 function validateTelemetryProfile(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid2("Provide an endpoint, TLS mode and optional references.");
   const profile = value;
-  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid2("Remove unsupported Telemetry profile fields.");
+  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs", "eventLoopDelayResolutionMs", "tracePropagationOrigins"].includes(key))) invalid2("Remove unsupported Telemetry profile fields.");
   if (typeof profile.endpoint !== "string" || profile.endpoint.length > 2048) invalid2("Use an OTLP/HTTP base URL without credentials or query strings.");
   let url;
   try {
@@ -100356,6 +100375,13 @@ function validateTelemetryProfile(value) {
       return invalid2("Use a valid dashboard URL.");
     }
     if (dashboard.protocol !== "https:" || dashboard.username || dashboard.password || dashboard.search || dashboard.hash) invalid2("Use a dashboard HTTPS URL without credentials, query or fragment.");
+  }
+  if (profile.tracePropagationOrigins !== void 0) {
+    try {
+      profile.tracePropagationOrigins = validateTracePropagationOrigins(profile.tracePropagationOrigins);
+    } catch {
+      invalid2("Use at most 32 exact HTTP/HTTPS origins without credentials, paths, queries or fragments.");
+    }
   }
   return profile;
 }
@@ -100411,7 +100437,7 @@ async function resolveLocalTelemetryConfig(config, sessionProfile) {
   const profile = Object.hasOwn(profiles, name2) ? profiles[name2] : void 0;
   if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
   if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name2}.`);
-  return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs, eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs };
+  return { ...profile.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}, endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs, eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs };
 }
 function toContainerTelemetryConfig(resolved) {
   const endpoint = new URL(resolved.endpoint);
@@ -128365,6 +128391,102 @@ import { randomUUID as randomUUID9 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
 import { constants as performanceConstants, monitorEventLoopDelay, performance as performance2, PerformanceObserver } from "node:perf_hooks";
+
+// src/runtime-fetch-telemetry.ts
+init_esm();
+var fetchStateKey = Symbol.for("sporades.runtime.fetch-telemetry.v1");
+function installRuntimeFetchTelemetry() {
+  const globals = globalThis;
+  let state = globals[fetchStateKey];
+  if (!state) {
+    const original = globalThis.fetch;
+    state = { original, wrapper: original, owners: /* @__PURE__ */ new Set() };
+    const current2 = state;
+    const invoke = (input, init) => current2.original.call(globalThis, input, init);
+    state.wrapper = function(input, init) {
+      for (const owner2 of current2.owners) {
+        const call = owner2();
+        if (call) return call(invoke, input, init);
+      }
+      return invoke(input, init);
+    };
+    globals[fetchStateKey] = state;
+    globalThis.fetch = state.wrapper;
+  }
+  const owner = () => runtimeRequestScope.getStore()?.outboundFetch;
+  state.owners.add(owner);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    state.owners.delete(owner);
+    if (state.owners.size === 0) {
+      if (globalThis.fetch === state.wrapper) globalThis.fetch = state.original;
+      delete globals[fetchStateKey];
+    }
+  };
+}
+function outboundFetchTelemetry(tracer, parent, origins, active) {
+  return async (original, input, init) => {
+    if (!active()) return original(input, init);
+    let url;
+    let request;
+    let method;
+    let signal;
+    let redirect;
+    try {
+      request = input instanceof Request ? input : void 0;
+      if (!request && typeof input !== "string" && !(input instanceof URL)) return original(input, init);
+      url = new URL(request ? request.url : String(input));
+      if (!["http:", "https:"].includes(url.protocol)) return original(input, init);
+      const rawMethod = init?.method ?? request?.method ?? "GET";
+      method = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"].includes(rawMethod.toUpperCase()) ? rawMethod.toUpperCase() : "_OTHER";
+      signal = init?.signal === void 0 ? request?.signal : init.signal;
+      redirect = init?.redirect ?? request?.redirect ?? "follow";
+    } catch {
+      return original(input, init);
+    }
+    const span = tracer.startSpan(`HTTP ${method}`, {
+      kind: SpanKind.CLIENT,
+      attributes: { "http.request.method": method }
+    }, trace.setSpan(ROOT_CONTEXT, parent));
+    let forwarded = init;
+    if (origins.has(url.origin) && (redirect === "manual" || redirect === "error")) {
+      const context2 = span.spanContext();
+      if (/^[0-9a-f]{32}$/.test(context2.traceId) && !/^0+$/.test(context2.traceId) && /^[0-9a-f]{16}$/.test(context2.spanId) && !/^0+$/.test(context2.spanId)) {
+        try {
+          const headers = new Headers(init?.headers ?? request?.headers);
+          headers.set("traceparent", `00-${context2.traceId}-${context2.spanId}-${context2.traceFlags & TraceFlags.SAMPLED ? "01" : "00"}`);
+          forwarded = { ...init, headers };
+        } catch {
+        }
+      }
+    }
+    try {
+      const response = await original(input, forwarded);
+      span.setAttribute("http.response.status_code", response.status);
+      span.setAttribute("sporades.http.outcome", response.status >= 400 ? "failure" : "success");
+      if (response.status >= 400) span.setStatus({ code: SpanStatusCode.ERROR });
+      return response;
+    } catch (error) {
+      let outcome = "network_error";
+      if (signal?.aborted) {
+        outcome = "cancelled";
+        try {
+          if (signal.reason?.name === "TimeoutError") outcome = "timeout";
+        } catch {
+        }
+      }
+      span.setAttribute("sporades.http.outcome", outcome);
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      throw error;
+    } finally {
+      span.end();
+    }
+  };
+}
+
+// src/runtime-telemetry.ts
 var builtinRoutes = [
   ["GET", "/__sporades/connection-token"],
   ["GET", "/__sporades/health/runtime"],
@@ -128445,6 +128567,7 @@ function createProfileExporters(traceOptions, metricOptions) {
 function createHttpRequestTelemetry(config, onDiagnostic) {
   if (!config) return { run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID9() }, handle), shutdown: async () => {
   } };
+  const propagationOrigins = new Set(validateTracePropagationOrigins(config.tracePropagationOrigins));
   if (config.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1e3)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
   const endpoint = new URL("/v1/traces", url).toString();
@@ -128638,6 +128761,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   });
   const tracer = provider.getTracer("sporades-runtime-http", "1");
   let closing = false;
+  const releaseFetch = installRuntimeFetchTelemetry();
   return {
     run(request, response, endpoints, handle) {
       if (closing) return handle();
@@ -128672,7 +128796,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span }, handle);
+        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, () => !closing && !ended) }, handle);
         if (result && typeof result.then === "function") {
           return Promise.resolve(result).catch((error) => {
             end("error");
@@ -128688,6 +128812,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     async shutdown() {
       if (closing) return;
       closing = true;
+      releaseFetch();
       gcObserver.disconnect();
       delayMonitorStoppedAt = performance2.now();
       loopDelay.disable();
@@ -145539,6 +145664,7 @@ Options for profile add:
   --dashboard <url>       Optional dashboard HTTPS URL
   --credential-env <KEY>  Environment variable containing the ingestion bearer token
   --metrics-interval-ms <N>  Metrics export period, 5000-300000 ms (default 15000)
+  --trace-propagation-origin <origin>  Approve exact fetch origin (repeatable, max 32)
   --event-loop-delay-resolution-ms <N>  Delay timer precision, 10-1000 ms (default 20)
   --ca-file <path>        Absolute private CA certificate path for verified TLS
   --loopback              Permit a local HTTP collector for development
@@ -148162,6 +148288,10 @@ async function runTelemetryProfileCommand(args) {
         input.dashboard = readFlagValue(rest, ++index, arg);
         continue;
       }
+      if (arg === "--trace-propagation-origin") {
+        (input.tracePropagationOrigins ??= []).push(readFlagValue(rest, ++index, arg));
+        continue;
+      }
       if (arg === "--credential-env") {
         input.credentialEnv = readFlagValue(rest, ++index, arg);
         continue;
@@ -148187,6 +148317,7 @@ async function runTelemetryProfileCommand(args) {
   }
   if (operation === "add") {
     const profile = {
+      ...input.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: input.tracePropagationOrigins } : {},
       endpoint: input.endpoint,
       ...input.dashboard ? { dashboard: input.dashboard } : {},
       tls: { mode: input.loopback ? "loopback" : "verified", ...input.caFile ? { caFile: input.caFile } : {} },
@@ -151315,7 +151446,7 @@ async function manageHost(options) {
             throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB.");
           }
         }
-        telemetry = { endpoint: profile.endpoint, credential, ...caPem ? { caPem } : {}, ...profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}, ...profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {} };
+        telemetry = { ...profile.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}, endpoint: profile.endpoint, credential, ...caPem ? { caPem } : {}, ...profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}, ...profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {} };
       }
       const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);
