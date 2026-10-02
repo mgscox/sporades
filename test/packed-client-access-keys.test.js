@@ -36,7 +36,7 @@ test("the packed package exposes the complete server and client Access-key contr
       ["EndpointMultipartAdmissionRequest", "Shared immutable request head supplied to endpoint multipart admission."],
       ["EndpointMultipartAdmissionContext", "An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body."],
       ["EndpointMultipartAdmissionDecision", "The endpoint policy may prohibit file parts before staging; it cannot widen limits or provide file claim authority."],
-      ["EndpointMultipartIngressLimits", "Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request."],
+      ["EndpointMultipartIngressLimits", 'Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. File bytes use the smaller of maxFileBytes and files.maxSizeBytes. A malformed filename can be classified as a field; file allowances never raise maxFieldBytes. MULTIPART_LIMIT_EXCEEDED errors may include safe details: { partType: "file" | "field", limitKind, limit }. Byte limits report bytes; maxFiles and maxFieldCount report counts.'],
       ["EndpointActorMultipartIngressOptions", "Actor-owned ingress may apply a request-specific admission policy."],
       ["EndpointCapsulePrincipalMultipartIngressOptions", "Capsule-principal ingress has its separate Capsule-level admission policy and cannot add actor admission."],
       ["EndpointMultipartIngressOptions", "One of the supported endpoint multipart ingress authority modes."],
@@ -56,7 +56,7 @@ test("the packed package exposes the complete server and client Access-key contr
     ];
     for (const declaration of [packedServerTypes, packedGeneratedServerTypes, generatedServerTypes]) {
       for (const [name, description] of admissionTypeMetadata) {
-        const escapedDescription = description.replaceAll(".", "\\.");
+        const escapedDescription = description.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         assert.match(declaration, new RegExp(`/\\*\\* ${escapedDescription} \\*/\\s*export type ${name}`));
       }
       assert.match(declaration, /EndpointMultipartAdmissionDecision = Readonly<\{\s*allow: true;\s*allowFiles\?: boolean/);

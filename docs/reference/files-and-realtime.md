@@ -571,6 +571,15 @@ was applied. Sporades omits malformed or non-allowlisted detail rather than
 passing it through, and never includes filenames, field contents, credentials,
 raw headers, or other request data in this object.
 
+`partType` describes the classification used to enforce the bound, not the
+sender's intent. For example, a missing closing quote in `filename="evidence.txt`
+can leave a `text/plain` part classified as a field: a 92,000-byte body exceeds
+a 64 KiB `maxFieldBytes` even when `maxFileBytes` allows 10 MiB. The endpoint
+handler does not run for that refusal. These diagnostics do not relax multipart
+syntax validation. Byte limit kinds report bytes; `maxFiles` and `maxFieldCount`
+report counts. Check the [token-gated runtime health bounds](./operations-and-hosting.md#runtime-health-bounds)
+to verify the running process's resolved `fileMaxSizeBytes` and `httpMaxBodyBytes`.
+
 `requestKeyHeader` identifies the whole retry and `partKeyHeader` identifies a
 part independently of multipart ordering. Use sender-provided, stable,
 non-secret values. With `requireStablePartKeys`, missing or repeated part keys

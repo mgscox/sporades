@@ -1417,8 +1417,10 @@ test("File reference docs define the trusted multipart ingress contract and oper
   const refusalContract = contents.match(/When a Custom endpoint rejects one of these limits,[\s\S]*?(?=\n\n`requestKeyHeader`)/)?.[0];
   assert.ok(refusalContract, "multipart refusal contract must remain documented at the ingress limits");
   assert.match(refusalContract, /\{ partType: "file" \| "field", limitKind, limit: integer \}/);
+  const supportedKinds = refusalContract.match(/Supported\s+`limitKind` values are ([\s\S]*?)\./)?.[1];
+  assert.ok(supportedKinds, "multipart refusal contract must enumerate supported limit kinds");
   assert.deepEqual(
-    [...refusalContract.matchAll(/`((?:max|fileMax)[A-Za-z]+)`/g)].map((match) => match[1]),
+    [...supportedKinds.matchAll(/`((?:max|fileMax)[A-Za-z]+)`/g)].map((match) => match[1]),
     ["maxPartHeaderBytes", "maxFieldCount", "maxFieldBytes", "maxTotalFieldBytes", "maxFiles", "maxFileBytes", "fileMaxSizeBytes", "maxTotalFileBytes"],
   );
   assert.match(refusalContract, /never includes filenames, field contents, credentials,\s+raw headers, or other request data/i);

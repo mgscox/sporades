@@ -19,6 +19,7 @@ import { capsule, endpoint, requireAuth, String as StringField, table } from "..
 import { createControllableRuntimeClock, openDevDatabase, routeEndpoint, runEndpoint } from "../dist/server-runtime-source.js";
 import { bash52CommandVocabulary, checkClamavRuntime, collectBoundedToolOutput, createEndpointIngressApi, hasExecutableJavaScriptSemantics, hasExecutablePythonSemantics, hasExecutableShellSemantics, initializeClamavRuntime, isCurrentClamavSignature, isJavaScriptParserInputWithinBounds, isJavaScriptRawInputWithinBounds, isSupportedInspectionNodeVersion, multipartParts, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validatePdfIngress, waitForClamavReadiness } from "../dist/file-ingress-runtime.js";
 import { capsuleIngressAuthUserId } from "../dist/auth-runtime.js";
+import { routeRuntimeHealth } from "../dist/http-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 
@@ -852,6 +853,79 @@ test("a malformed filename parameter over maxFieldBytes returns safe field detai
     assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_file_ingress").get()).count), 0);
     assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS count FROM sporades_files").get()).count), 0);
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("real HTTP multipart replay exposes safe limits and preserves the corrected 92,000-byte file", { timeout: 30_000 }, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-http-limits-"));
+  let database; let server;
+  try {
+    let handlers = 0; let file;
+    const definition = capsule({ name: "http-limits", schema: { effects: table({ source: StringField() }) }, endpoints: {
+      upload: endpoint({ method: "POST", path: "/upload", body: { multipart: {
+        ...ingressPolicy(), maxFileBytes: 10 * 1024 * 1024, maxTotalFileBytes: 10 * 1024 * 1024,
+        maxFieldBytes: 64 * 1024, maxTotalFieldBytes: 64 * 1024,
+      } } }, requireAuth(async (ctx) => {
+        handlers += 1;
+        file = await ctx.files.claim(ctx.request.multipart.files[0], { path: "/attachments/evidence.txt" });
+        await ctx.db.effects.insert({ source: "handler-ran" });
+        return { body: file };
+      })),
+      download: endpoint({ method: "GET", path: "/download", response: { fileAttachment: true } },
+        requireAuth((ctx) => ctx.files.attachment(file, { filename: "evidence.txt" }))),
+    } });
+    // Keep runtime size defaults; the endpoint independently declares its multipart bounds.
+    database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "http-limits", files: { storagePath: path.join(dir, "files") } }, definition);
+    await seedIngressUser(database);
+    database.runtimeProbeToken = "c".repeat(64);
+    server = createServer((request, response) => {
+      void (async () => {
+        if (await routeRuntimeHealth(database, request, response)) return;
+        if (!await routeEndpoint(database, request, response)) response.writeHead(404).end();
+      })().catch((error) => response.destroy(error));
+    });
+    await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    for (const token of [undefined, "d".repeat(64)]) {
+      const denied = await fetch(`${origin}/__sporades/health/runtime`, { headers: token ? { "x-sporades-host-probe": token } : {} });
+      assert.equal(denied.status, 404);
+      assert.doesNotMatch(await denied.text(), /fileMaxSizeBytes|httpMaxBodyBytes/);
+    }
+    const health = await fetch(`${origin}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": database.runtimeProbeToken } });
+    assert.equal(health.status, 200);
+    assert.deepEqual((await health.json()).data.runtime, { ready: true, fileMaxSizeBytes: 10 * 1024 * 1024, httpMaxBodyBytes: 1024 * 1024 });
+
+    const payload = Buffer.alloc(92_000, "private-field-content ");
+    const send = (filename) => fetch(`${origin}/upload`, {
+      method: "POST",
+      headers: { "content-type": "multipart/form-data; boundary=http-limits", "idempotency-key": randomUUID(), "x-sporades-session-token": "claim-session" },
+      body: multipart("http-limits", `Content-Disposition: form-data; name="private-field"; filename=${filename}\r\nContent-Type: text/plain\r\nContent-ID: private-part-key`, payload),
+    });
+    for (const filename of ['"private-evidence.txt', 'private-evidence.txt']) {
+      const rejected = await send(filename);
+      assert.equal(rejected.status, 500);
+      assert.deepEqual(await rejected.json(), {
+        ok: false, data: null,
+        error: { code: "MULTIPART_LIMIT_EXCEEDED", details: { partType: "field", limitKind: "maxFieldBytes", limit: 65_536 },
+          message: "Endpoint handler failed.", hint: "Check the endpoint handler and retry the request." },
+      });
+      assert.equal(handlers, 0);
+      for (const tableName of ["effects", "sporades_file_ingress", "sporades_files"]) {
+        assert.equal(Number((await database.adapter.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get()).count), 0, tableName);
+      }
+    }
+    const accepted = await send('"private-evidence.txt"');
+    assert.equal(accepted.status, 200);
+    assert.equal((await accepted.json()).size, payload.length);
+    assert.equal(handlers, 1);
+    assert.equal(Number((await database.adapter.prepare("SELECT COUNT(*) AS count FROM effects").get()).count), 1);
+    const download = await fetch(`${origin}/download`, { headers: { "x-sporades-session-token": "claim-session" } });
+    assert.equal(download.status, 200);
+    assert.deepEqual(Buffer.from(await download.arrayBuffer()), payload);
+  } finally {
+    if (server) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
+    await database?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("public endpoint errors allowlist handler-thrown multipart limit details", async () => {

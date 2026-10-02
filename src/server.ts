@@ -70,7 +70,7 @@ export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
 export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** The endpoint policy may prohibit file parts before staging; it cannot widen limits or provide file claim authority. */
 export type EndpointMultipartAdmissionDecision = Readonly<{ allow: true; allowFiles?: boolean } | { allow: false }>;
-/** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. */
+/** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. File bytes use the smaller of maxFileBytes and files.maxSizeBytes. A malformed filename can be classified as a field; file allowances never raise maxFieldBytes. MULTIPART_LIMIT_EXCEEDED errors may include safe details: { partType: "file" | "field", limitKind, limit }. Byte limits report bytes; maxFiles and maxFieldCount report counts. */
 export type EndpointMultipartIngressLimits = Readonly<{
   maxFiles: number; maxFileBytes: number; maxTotalFileBytes: number; maxFieldCount: number; maxFieldBytes: number; maxTotalFieldBytes: number;
   allowedMimeTypes?: readonly string[]; allowedPathPrefixes: readonly string[]; requestKeyHeader: string; partKeyHeader: string;
