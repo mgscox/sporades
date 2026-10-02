@@ -129,10 +129,20 @@ async function devClamavContainerIsRunning(dockerCommand: string, containerName:
   return result.code === 0 && result.stdout.trim() === "true" && now() <= deadline;
 }
 
+async function createDevClamavSocketDirectory() {
+  const socketDir = await mkdtemp(path.join(tmpdir(), "sporades-dev-clamav-"));
+  // Leave room for the terminating NUL in sockaddr_un.sun_path. Count UTF-8
+  // bytes, not JS characters, and keep the short /tmp spelling on macOS.
+  const maxSocketBytes = process.platform === "linux" ? 107 : 103;
+  if (process.platform === "win32" || Buffer.byteLength(path.join(socketDir, "clamd.sock")) <= maxSocketBytes) return socketDir;
+  await rm(socketDir, { recursive: true, force: true });
+  return await mkdtemp("/tmp/sporades-dev-clamav-");
+}
+
 export async function startDevClamavSidecar(options: RecordLike) {
   const dataRoot = path.join(options.projectDir, ".sporades", "clamav");
   await mkdir(path.join(dataRoot, "clamav"), { recursive: true });
-  const socketDir = await mkdtemp(path.join(tmpdir(), "sporades-dev-clamav-"));
+  const socketDir = await createDevClamavSocketDirectory();
   const identity = createHash("sha256").update(`${path.resolve(options.projectDir)}\0${process.pid}\0${randomBytes(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`; const socketPath = path.join(socketDir, "clamd.sock");
   let child: any; let proxy: any; const bridges = new Set<any>(); const proxySockets = new Set<any>(); let stopped = false; let output = ""; let readinessLine = ""; let readinessLineOverflow = false; let readinessProven = false; let childUnavailable = false; let signalChildUnavailable: () => void = () => {};
