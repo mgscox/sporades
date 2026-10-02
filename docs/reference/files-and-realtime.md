@@ -812,7 +812,12 @@ socket mode. Hosted Capsules retain the image's non-root `10001:10001` default.
 For a normal Dev session that declares `clamav`, Sporades automatically starts
 one task-scoped sidecar from the exact current Base image. The sidecar runs as
 the invoking host UID/GID, persists official signatures beneath
-`.sporades/clamav`, and exposes only a unique host-owned Unix socket. On Docker
+`.sporades/clamav`, and exposes only a unique host-owned Unix socket. The socket
+uses the configured temporary directory unless its full UTF-8 path exceeds the
+platform's Unix-socket limit (107 bytes on Linux, 103 on macOS). In that case,
+Sporades creates a private, unique directory under `/tmp` for this socket only;
+other runtime temporary files keep their configured location. Both shutdown and
+failed startup remove the task-owned socket directory. On Docker
 Desktop, a task-owned local proxy bridges that socket to the exact named
 container's private clamd Unix socket; this avoids bind-mounted socket mode
 changes that the virtual filesystem cannot safely preserve. It publishes no
