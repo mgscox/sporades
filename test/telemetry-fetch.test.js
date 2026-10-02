@@ -213,6 +213,12 @@ test('stateful redirect/body/header accessors retain native evaluation and never
         () => { const value = { redirect: 'manual', get headers() { value.redirect = 'follow'; return { authorization: 'private-credential' }; } }; return value; },
         () => new Proxy({ redirect: 'manual' }, {}),
         () => { const value = { method: 'POST', redirect: 'manual', body: { toString() { value.redirect = 'follow'; return 'private-body'; } } }; return value; },
+        ...[Object.prototype, null].map(prototype => () => {
+          const headers = Object.assign(Object.create(prototype), { authorization: 'private-credential' });
+          const value = { redirect: 'manual', headers };
+          headers[Symbol.iterator] = function* () { value.redirect = 'follow'; yield ['authorization', 'private-credential']; };
+          return value;
+        }),
       ];
       for (const make of factories) {
         const expected = await original(`${origin}/redirect`, make());

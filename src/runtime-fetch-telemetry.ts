@@ -36,7 +36,7 @@ function stableHeaders(value: unknown): boolean {
         && !Object.hasOwn(pair, Symbol.iterator) && Object.values(Object.getOwnPropertyDescriptors(pair)).every(descriptor => "value" in descriptor)
         && pair.length === 2 && Array.prototype.every.call(pair, (entry: unknown) => typeof entry === "string"));
   }
-  if (prototype !== Object.prototype && prototype !== null) return false;
+  if ((prototype !== Object.prototype && prototype !== null) || Object.hasOwn(value, Symbol.iterator)) return false;
   return Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => "value" in descriptor && typeof descriptor.value === "string");
 }
 

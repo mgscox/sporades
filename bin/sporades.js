@@ -128419,7 +128419,7 @@ function stableHeaders(value) {
     if (prototype !== Array.prototype || Object.hasOwn(value, Symbol.iterator)) return false;
     return Object.values(Object.getOwnPropertyDescriptors(value)).every((descriptor) => "value" in descriptor) && Array.prototype.every.call(value, (pair2) => Array.isArray(pair2) && !utilTypes.isProxy(pair2) && Object.getPrototypeOf(pair2) === Array.prototype && !Object.hasOwn(pair2, Symbol.iterator) && Object.values(Object.getOwnPropertyDescriptors(pair2)).every((descriptor) => "value" in descriptor) && pair2.length === 2 && Array.prototype.every.call(pair2, (entry) => typeof entry === "string"));
   }
-  if (prototype !== Object.prototype && prototype !== null) return false;
+  if (prototype !== Object.prototype && prototype !== null || Object.hasOwn(value, Symbol.iterator)) return false;
   return Object.values(Object.getOwnPropertyDescriptors(value)).every((descriptor) => "value" in descriptor && typeof descriptor.value === "string");
 }
 function stableBody(value) {
