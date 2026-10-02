@@ -155,7 +155,7 @@ test("connection-token refresh route returns a fresh no-store browser gate", asy
     response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     response.end("Not found");
   }, async (port) => {
-    const baseUrl = `http://[::1]:${port}`;
+    const baseUrl = `http://127.0.0.1:${port}`;
     const refreshHeaders = { "x-sporades-connection-token-request": "1" };
     const first = await fetch(new URL("/__sporades/connection-token", baseUrl), { headers: refreshHeaders });
     assert.equal(first.status, 200);
@@ -199,7 +199,7 @@ test("conditional token checks preserve live gates and TTL while enforcing refre
       if (routeConnectionToken(request, response, (current) => { calls += 1; return hub.createConnectionToken(current); })) return;
       response.writeHead(404); response.end();
     }, async (port) => {
-      const url = `http://[::1]:${port}/__sporades/connection-token`;
+      const url = `http://127.0.0.1:${port}/__sporades/connection-token`;
       const headers = { "x-sporades-connection-token-request": "1", "x-sporades-connection-token": token };
       now += 3 * 60 * 60 * 1000;
       const valid = await fetch(url, { headers });
