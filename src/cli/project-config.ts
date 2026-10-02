@@ -1,3 +1,4 @@
+import { resolveAdmissionPolicy } from "../admission-policy.js";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -30,6 +31,7 @@ const DEFAULT_CSP_DIRECTIVES = {
 };
 
 const SUPPORTED_PROJECT_KEYS = new Set([
+  "admissionPolicy",
   "auth",
   "baseImage",
   "capsule",
@@ -66,6 +68,7 @@ export async function readProjectConfig(projectDir: string) {
   } catch {
     throw commandError("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
   }
+  resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   validateLogConfig(config);
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);

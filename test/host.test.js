@@ -1408,7 +1408,7 @@ async function writeHostedCapsuleInstallFixture(dir, options = {}) {
   await mkdir(path.join(runtimeDir, "public", "assets", "images"), { recursive: true });
   await mkdir(path.dirname(registryRecordPath), { recursive: true });
   await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-  await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+  await writeFile(path.join(runtimeDir, "sporades.json"), JSON.stringify({name:"team-notes", ...(options.admissionPolicy ? {admissionPolicy:options.admissionPolicy} : {})})+"\n");
   await writeFile(path.join(runtimeDir, "public", "index.html"), '<link rel="stylesheet" href="/assets/app-a1b2.css"><script type="module" src="/assets/app-a1b2.js"></script>\n');
   await writeFile(path.join(runtimeDir, "public", "assets", "app-a1b2.js"), "console.log('client bundle');\n//# sourceMappingURL=app-a1b2.js.map\n");
   await writeFile(path.join(runtimeDir, "public", "assets", "app-a1b2.js.map"), '{"version":3,"sources":[]}\n');
@@ -15557,5 +15557,32 @@ test("Host shutdown evidence cannot authorize OOM, stale containers, or stale re
       assert.equal(JSON.parse(result.stdout).data.resumed, false, result.stdout);
       assert(!(await docker.calls()).some((call) => ["run", "start"].includes(call.args[0])));
     });
+  });
+});
+
+
+test("Hosted admission policy uses Host-owned read-only storage and authorized publication", async () => {
+  await withTempDir(async dir => {
+    const json = id => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact:"/blocked"}],action:{kind:"deny"}}]});
+    const docker = await installFakeDocker(path.join(dir,"admission-docker"));
+    const fixture = await writeHostedCapsuleInstallFixture(dir, {rootName:"admission-host", previousReleaseId:null, deployFiles:[{path:"policy.json",update:"admission"}], admissionPolicy:{path:"policy.json"}, fileContents:json("seed")});
+    const target = {host:{alias:"personal",domain:fixture.domain,remoteRoot:fixture.remoteRoot},capsule:{subname:fixture.subname}};
+    const installed = await runHostHelper({...target,action:"capsule.release.install",release:fixture.release},{cwd:dir,env:docker.env});
+    assert.equal(installed.code,0,installed.stdout+installed.stderr);
+    assert.equal(JSON.parse(installed.stdout).ok,true,installed.stdout+installed.stderr);
+    const storage = path.join(fixture.capsuleDir,"preserved-files","admission");
+    const file = preservedDeployFilePath(storage,"policy.json");
+    assert.equal((await stat(file)).mode & 0o777,0o444);
+    const run = (await docker.calls()).filter(call=>call.args[0]==="run").at(-1);
+    assert(run.args.includes(`${storage}:/run/sporades-admission:ro`));
+    assert.equal(run.args[run.args.indexOf("SPORADES_ADMISSION_POLICY_PATH=policy.json")-1],"--env");
+    const publish = contents => runHostHelper({...target,action:"capsule.admission.publish",admission:{contents}},{cwd:dir,env:docker.env});
+    const changed = await publish(Buffer.from(json("updated")).toString("base64")); assert.equal(changed.code,0,changed.stdout+changed.stderr); assert.equal(JSON.parse(changed.stdout).ok,true,changed.stdout);
+    assert.equal(JSON.parse(await readFile(file,"utf8")).rules[0].id,"updated");
+    const invalid = await publish(Buffer.from("{}").toString("base64")); assert.equal(JSON.parse(invalid.stdout).ok,false,invalid.stdout); assert.equal(JSON.parse(await readFile(file,"utf8")).rules[0].id,"updated");
+    const removed = await publish(null); assert.equal(removed.code,0,removed.stdout+removed.stderr); assert.equal(JSON.parse(removed.stdout).ok,true,removed.stdout);
+    assert.equal(JSON.parse(await readFile(file,"utf8")).removed,true);
+    const restart = await runHostHelper({...target,action:"capsule.restart"},{cwd:dir,env:docker.env}); assert.equal(restart.code,0,restart.stdout+restart.stderr);
+    assert.equal(JSON.parse(await readFile(file,"utf8")).removed,true);
   });
 });

@@ -619,3 +619,14 @@ is installed by the common manual/automatic Host installation contract. A separa
 inert shutdown observer records healthy container-instance and release evidence
 before Docker stops. Recovery uses matching evidence for forced shutdown signals,
 never lifetime restart counts alone; OOM and stale evidence cannot authorize it.
+
+**Request-admission policy generation**:
+A deployer-owned v1 JSON policy declared by one `admissionPolicy.path`, seeded and
+retained through the deployment journal in isolated `preserved-files/admission/`
+storage, mounted read-only at `/run/sporades-admission`. Authorized CLI/Host
+publication replaces it atomically; explicit removal uses a durable marker.
+The runtime loads a bounded deeply frozen generation before app startup, polls
+every two seconds, and keeps the last-known-good generation on hot failure.
+Reload health and digest expose no match values. This publication slice does not
+yet enforce HTTP or WebSocket requests. Generic writable `deploy.files` authority
+never applies. See ADR-0054.

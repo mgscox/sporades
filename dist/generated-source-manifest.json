@@ -12,6 +12,7 @@
       "src/access-key-contract.ts",
       "src/access-keys-runtime.ts",
       "src/acl-runtime.ts",
+      "src/admission-policy.ts",
       "src/auth-admission.ts",
       "src/auth-runtime.ts",
       "src/base-image.ts",
@@ -104,6 +105,7 @@
       "src/templates/server-bundle-entry.ts",
       "src/templates/server-bundle-inputs.d.ts",
       "src/templates/server-bundle-module-graph.ts",
+      "src/types/admission-policy.d.ts",
       "src/types/client.d.ts",
       "src/types/server.d.ts",
       "src/types/stripe.d.ts",
@@ -113,7 +115,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "fbdf9ef88a750f516c0297e6a8309d1edcc4a0fdf6b2e7afa5525cf09ac84da2"
+    "digest": "c1ede7a2d40831760fcca83a15c4e1fd7c4ba11cb39b70a1411f056424f5b196"
   },
   "outputs": {
     "files": [
@@ -131,6 +133,10 @@
       "dist/acl-runtime.d.ts.map",
       "dist/acl-runtime.js",
       "dist/acl-runtime.js.map",
+      "dist/admission-policy.d.ts",
+      "dist/admission-policy.d.ts.map",
+      "dist/admission-policy.js",
+      "dist/admission-policy.js.map",
       "dist/auth-admission.d.ts",
       "dist/auth-admission.d.ts.map",
       "dist/auth-admission.js",
@@ -504,6 +510,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "4bdec54e4a1dfabd8fbf7fcc4158f17e872cf2017823622f17a43d222bae67d7"
+    "digest": "cea94fa7d2d1bbfcd48ab720718799007956d9f5716f9646894ddfbd557729fb"
   }
 }

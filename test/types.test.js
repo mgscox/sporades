@@ -69,6 +69,15 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
 import * as publicServerApi from "sporades/server";
+const admissionConfig: publicServerApi.AdmissionPolicyConfig = { path: "config/admission.json" };
+const admissionPolicy: publicServerApi.AdmissionPolicy = { version: 1, rules: [{ id: "blocked-path", enabled: true, conditions: [{ kind: "pathname", exact: "/blocked" }, { kind: "method", value: "GET" }], action: { kind: "deny" } }] };
+const quotaPolicy: publicServerApi.AdmissionAction = { kind: "rate-limit", limit: 5, windowMs: 60000 };
+// @ts-expect-error future schema versions are not the v1 policy contract.
+const futureAdmission: publicServerApi.AdmissionPolicy = { version: 2, rules: [] };
+// @ts-expect-error bypass is outside the agreed action vocabulary.
+const bypassAdmission: publicServerApi.AdmissionAction = { kind: "allow" };
+void admissionConfig; void admissionPolicy; void quotaPolicy; void futureAdmission; void bypassAdmission;
+
 async function resourceContract(ctx: publicServerApi.CapsuleContext) {
   const support: publicServerApi.ResourceAdapterSupport = { sqlite: "supported", postgres: "supported", libsql: "unsupported" };
   // @ts-expect-error libSQL resource scopes are explicitly unsupported in v1.

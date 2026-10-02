@@ -2562,3 +2562,33 @@ export default capsule({ name: 'resource-bundle',
     assert.equal(adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get().n, 1);
   } finally { await adapter?.close(); await booted?.stop(); await rm(dir, { recursive: true, force: true }); }
 });
+
+test("a generated Bundle refuses invalid configured policy before Capsule evaluation or listening", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-admission-cold-"));
+  try {
+    await writeFile(path.join(root,"policy.json"),"{");
+    const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:"",serverModuleSource:"throw new Error('CAPSULE_EVALUATED'); export default {};"});
+    await writeFile(path.join(root,"server.mjs"),source);
+    const result = spawnSync(process.execPath,[path.join(root,"server.mjs")],{cwd:root,encoding:"utf8",timeout:5000,env:{...process.env,PORT:"5688"}});
+    assert.equal(result.status,1,result.stderr); assert.match(result.stderr,/Configured admission policy could not be loaded/); assert.doesNotMatch(result.stderr,/CAPSULE_EVALUATED/);
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("a generated Bundle reports bounded policy reload health without enforcing application traffic", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-admission-hot-")); let booted;
+  try {
+    const json = id => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact:"/probe/status"}],action:{kind:"deny"}}]});
+    await writeFile(path.join(root,"policy.json"),json("seed"));
+    const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:CAPSULE_SOURCE});
+    await writePublicTree(root,"plain bytes"); booted = await bootBundle({source,dir:root});
+    const health = async () => (await (await fetch(`${booted.baseUrl}/__sporades/health/runtime`,{headers:{"x-sporades-host-probe":"a".repeat(64)}})).json()).data.runtime.admissionPolicy;
+    const initial = await health(); assert.equal(initial.state,"healthy"); assert.deepEqual(Object.keys(initial),["state","digest"]);
+    assert.equal((await fetch(`${booted.baseUrl}/probe/status`)).status,202);
+    await writeFile(path.join(root,"policy.json"),"{");
+    const wait = async predicate => { const deadline=Date.now()+9000; while(Date.now()<deadline) { if(await predicate()) return; await new Promise(resolve=>setTimeout(resolve,100)); } assert.fail("policy reload exceeded ten seconds"); };
+    await wait(async()=> (await health()).state==="degraded"); assert.equal((await health()).digest,initial.digest);
+    await writeFile(path.join(root,"policy.json"),json("replacement"));
+    await wait(async()=> (await health()).state==="healthy" && (await health()).digest!==initial.digest);
+    assert.equal((await fetch(`${booted.baseUrl}/probe/status`)).status,202);
+  } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
+});
