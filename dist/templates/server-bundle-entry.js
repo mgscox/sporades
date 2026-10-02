@@ -149,7 +149,6 @@ database.log.emit({
     data: { diagnostics: database.runtimeDiagnostics },
     release: process.env.SPORADES_RELEASE_ID ? { id: process.env.SPORADES_RELEASE_ID } : null,
 });
-const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
 const telemetry = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry, (diagnostic) => database.log.emit({
     category: "platform",
@@ -158,6 +157,7 @@ const telemetry = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry, 
     message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
     data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
 }));
+const websocketHub = createWebSocketHub(() => database, null, { telemetry: runtimeConfig.__sporadesTelemetry ? telemetry.websocket : undefined });
 database.runtimeTelemetry = {
     supported: true,
     enabled: runtimeConfig.__sporadesTelemetry !== null && runtimeConfig.__sporadesTelemetry !== undefined,

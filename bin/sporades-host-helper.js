@@ -27025,6 +27025,10 @@ var unsupportedResources = Object.freeze({
   }
 });
 
+// src/runtime-request-context.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage();
+
 // src/log-envelope.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
 
@@ -27074,10 +27078,6 @@ var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 
 // src/team-billing-erasure.ts
 var CLAIM_TTL_MS2 = 5 * 6e4;
-
-// src/runtime-request-context.ts
-import { AsyncLocalStorage } from "node:async_hooks";
-var runtimeRequestScope = new AsyncLocalStorage();
 
 // src/jobs-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
