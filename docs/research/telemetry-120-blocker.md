@@ -43,3 +43,20 @@ implementation dependency or approve production failure drills. No runtime,
 monitoring configuration, credentials, infrastructure or production endpoints
 are changed by this handoff. CPU, memory and API performance rules remain owned
 by ticket 14.
+
+## QA round 1 follow-up
+
+The draft also repairs two existing test-fixture problems identified by QA:
+
+- Host archive builders disable implicit macOS AppleDouble metadata. Explicitly
+  inserted metadata and other unsafe archive entries remain subject to the
+  existing rejection tests; production archive validation is unchanged.
+- The gateway cancellation test waits for each backend response's close event
+  within one second. Receiving a gateway 504 and observing the backend close
+  occur asynchronously across processes, so an immediate boolean assertion was
+  a race. Client-abort cancellation is checked separately with the same bound.
+
+These test changes do not implement any of #120's alert acceptance criteria.
+Native dependencies were rechecked after QA: #118 remains open and #112 closed.
+The PR must remain draft until the availability implementation and its required
+isolated acceptance work are complete.

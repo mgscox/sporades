@@ -7,6 +7,7 @@ import { createServer } from 'node:http';
 import { request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { gatewayRunIdentity, inspectEnvironment, setupEnvironment } from '../monitoring/trace/setup.mjs';
 
@@ -291,13 +292,24 @@ test('readiness rejects stale readable metrics while writes fail and recovers af
 
 
 test('UI gateway child handles slow, stalled, broken, and cancelled responses', async () => {
-  let cancelled = false;
+  let stalledClosed;
+  let streamedClosed;
+  async function requireCancellation(closed) {
+    assert.ok(closed, 'backend did not receive the request');
+    let deadline;
+    try {
+      await Promise.race([
+        closed,
+        new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('backend exchange was not cancelled')), 1000); }),
+      ]);
+    } finally { clearTimeout(deadline); }
+  }
   const backend = createServer((req, res) => {
     if (req.url === '/slow') { setTimeout(() => res.end('slow success'), 3300); return; }
-    if (req.url === '/stall') { req.on('close', () => { cancelled = true; }); return; }
+    if (req.url === '/stall') { stalledClosed = once(res, 'close'); return; }
     if (req.url === '/fail-before') { req.socket.destroy(); return; }
     if (req.url === '/broken') { res.writeHead(200).write('partial'); setTimeout(() => res.destroy(), 40); return; }
-    if (req.url === '/stream') { res.writeHead(200).write('part'); res.on('close', () => { cancelled = true; }); return; }
+    if (req.url === '/stream') { streamedClosed = once(res, 'close'); res.writeHead(200).write('part'); return; }
     res.end('still alive');
   });
   await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve));
@@ -328,8 +340,9 @@ test('UI gateway child handles slow, stalled, broken, and cancelled responses', 
     const stalled = await fetch(`${base}/stall`, { headers: auth });
     assert.equal(stalled.status, 504);
     assert.ok(Date.now() - started < 6000);
-    assert.equal(cancelled, true);
-    cancelled = false;
+    // The child can flush its 504 before this process observes the backend
+    // socket closing. Require that event within a bound rather than racing it.
+    await requireCancellation(stalledClosed);
     await new Promise((resolve, reject) => {
       const request = httpRequest(`${base}/stream`, { headers: auth }, response => {
         response.once('data', () => { request.destroy(); resolve(); });
@@ -337,8 +350,7 @@ test('UI gateway child handles slow, stalled, broken, and cancelled responses', 
       request.once('error', reject);
       request.end();
     });
-    await new Promise(resolve => setTimeout(resolve, 100));
-    assert.equal(cancelled, true);
+    await requireCancellation(streamedClosed);
     const alive = await fetch(`${base}/api/services`, { headers: auth });
     assert.equal(alive.status, 200);
     assert.equal(await alive.text(), 'still alive');
