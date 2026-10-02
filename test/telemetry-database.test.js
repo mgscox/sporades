@@ -69,6 +69,7 @@ for (const [engine, withAdapter] of [['sqlite', withSqliteAdapter], ['libsql', w
       assert.equal(transactions.length, 2);
       assert.equal(transactions.filter(span => span.status?.code === 2).length, 1);
       assert(databaseSpans.some(span => attribute(span, 'db.operation.name') === 'INSERT' && span.status?.code === 2));
+      assert.equal(databaseSpans.filter(span => attribute(span, 'db.operation.name') === 'INSERT').length, 3, 'each statement is timed once, including copied transaction operations');
       assert(databaseSpans.some(span => attribute(span, 'db.collection.name') === 'trace_notes'));
       assert.doesNotMatch(JSON.stringify(received), /private-row-122|private-row-id-122|private-parameter-122|INSERT INTO|SELECT \*|local-only|exception.message|exception.stacktrace/);
     } finally {

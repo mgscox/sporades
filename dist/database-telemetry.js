@@ -5,7 +5,7 @@ import { runtimeRequestScope } from "./runtime-request-context.js";
 // parameters, results, connection options or exception details to this boundary.
 export const databaseTelemetry = Symbol("sporades.database.telemetry");
 const operationScope = new AsyncLocalStorage();
-const instrumentedOperations = new WeakSet();
+const instrumentedPrimitives = new WeakSet();
 export function withDatabaseSpan(engine, operation, table, run) {
     const request = runtimeRequestScope.getStore();
     if (!request?.tracer || !request.span || !request.isOpen?.() || !request.span.isRecording())
@@ -66,7 +66,9 @@ export function createDatabaseTelemetry(engine) {
             }
         },
         operations(operations) {
-            if (instrumentedOperations.has(operations))
+            // Transaction sessions may copy their operation object. Function identity
+            // survives that copy, so an executed statement still gets exactly one span.
+            if (instrumentedPrimitives.has(operations.exec) && instrumentedPrimitives.has(operations.prepare))
                 return operations;
             const exec = operations.exec;
             const prepare = operations.prepare;
@@ -96,7 +98,8 @@ export function createDatabaseTelemetry(engine) {
                     return wrappedStatement;
                 },
             };
-            instrumentedOperations.add(wrapped);
+            instrumentedPrimitives.add(wrapped.exec);
+            instrumentedPrimitives.add(wrapped.prepare);
             return wrapped;
         },
     };

@@ -8,7 +8,7 @@ import { runtimeRequestScope } from "./runtime-request-context.js";
 export const databaseTelemetry = Symbol("sporades.database.telemetry");
 type Engine = "sqlite" | "postgres" | "libsql";
 const operationScope = new AsyncLocalStorage<{ requestId: string; span: Span }>();
-const instrumentedOperations = new WeakSet<object>();
+const instrumentedPrimitives = new WeakSet<Function>();
 
 export function withDatabaseSpan<T>(engine: Engine, operation: string, table: string | undefined, run: () => T): T {
   const request = runtimeRequestScope.getStore();
@@ -58,7 +58,9 @@ export function createDatabaseTelemetry(engine: Engine) {
       }
     },
     operations(operations: Record<string, any>) {
-      if (instrumentedOperations.has(operations)) return operations;
+      // Transaction sessions may copy their operation object. Function identity
+      // survives that copy, so an executed statement still gets exactly one span.
+      if (instrumentedPrimitives.has(operations.exec) && instrumentedPrimitives.has(operations.prepare)) return operations;
       const exec = operations.exec;
       const prepare = operations.prepare;
       const wrapped = {
@@ -84,7 +86,8 @@ export function createDatabaseTelemetry(engine: Engine) {
           return wrappedStatement;
         },
       };
-      instrumentedOperations.add(wrapped);
+      instrumentedPrimitives.add(wrapped.exec);
+      instrumentedPrimitives.add(wrapped.prepare);
       return wrapped;
     },
   };

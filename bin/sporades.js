@@ -131476,7 +131476,7 @@ init_esm();
 import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
 var databaseTelemetry = Symbol("sporades.database.telemetry");
 var operationScope = new AsyncLocalStorage3();
-var instrumentedOperations = /* @__PURE__ */ new WeakSet();
+var instrumentedPrimitives = /* @__PURE__ */ new WeakSet();
 function withDatabaseSpan(engine, operation, table, run2) {
   const request = runtimeRequestScope.getStore();
   if (!request?.tracer || !request.span || !request.isOpen?.() || !request.span.isRecording()) return run2();
@@ -131534,7 +131534,7 @@ function createDatabaseTelemetry(engine) {
       }
     },
     operations(operations) {
-      if (instrumentedOperations.has(operations)) return operations;
+      if (instrumentedPrimitives.has(operations.exec) && instrumentedPrimitives.has(operations.prepare)) return operations;
       const exec = operations.exec;
       const prepare = operations.prepare;
       const wrapped = {
@@ -131563,7 +131563,8 @@ function createDatabaseTelemetry(engine) {
           return wrappedStatement;
         }
       };
-      instrumentedOperations.add(wrapped);
+      instrumentedPrimitives.add(wrapped.exec);
+      instrumentedPrimitives.add(wrapped.prepare);
       return wrapped;
     }
   };
