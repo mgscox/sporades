@@ -81,7 +81,7 @@ export type EndpointMultipartAdmissionDecision = Readonly<{
 } | {
     allow: false;
 }>;
-/** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. */
+/** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. File bytes use the smaller of maxFileBytes and files.maxSizeBytes. A malformed filename can be classified as a field; file allowances never raise maxFieldBytes. MULTIPART_LIMIT_EXCEEDED errors may include safe details: { partType: "file" | "field", limitKind, limit }. Byte limits report bytes; maxFiles and maxFieldCount report counts. */
 export type EndpointMultipartIngressLimits = Readonly<{
     maxFiles: number;
     maxFileBytes: number;
