@@ -128457,7 +128457,11 @@ function outboundFetchTelemetry(tracer, parent, origins, active) {
         try {
           const headers = new Headers(init?.headers === void 0 ? request?.headers : init.headers);
           headers.set("traceparent", `00-${context2.traceId}-${context2.spanId}-${context2.traceFlags & TraceFlags.SAMPLED ? "01" : "00"}`);
-          forwarded = { ...init, headers };
+          const options = init ?? {};
+          forwarded = new Proxy({}, {
+            get: (_target, key) => key === "headers" ? headers : Reflect.get(options, key, options),
+            has: (_target, key) => key === "headers" || Reflect.has(options, key)
+          });
         } catch {
         }
       }

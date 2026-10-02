@@ -70,7 +70,14 @@ export function outboundFetchTelemetry(tracer: Tracer, parent: Span, origins: Re
         try {
           const headers = new Headers(init?.headers === undefined ? request?.headers : init.headers);
           headers.set("traceparent", `00-${context.traceId}-${context.spanId}-${context.traceFlags & TraceFlags.SAMPLED ? "01" : "00"}`);
-          forwarded = { ...init, headers };
+          // RequestInit is a WebIDL dictionary: inherited fields and accessor receivers
+          // matter. A spread can drop manual/error redirect mode and leak the carrier.
+          // Use a fresh target so frozen caller properties impose no Proxy invariants.
+          const options = init ?? {};
+          forwarded = new Proxy({}, {
+            get: (_target, key) => key === "headers" ? headers : Reflect.get(options, key, options),
+            has: (_target, key) => key === "headers" || Reflect.has(options, key),
+          });
         } catch { /* Invalid caller input must retain native fetch's rejection. */ }
       }
     }

@@ -145,3 +145,47 @@ test('approved propagation preserves native invalid-input rejections without sen
     assert.equal(calls, 0);
   } finally { await telemetry.shutdown(); await Promise.all([close(app), close(dependency)]); }
 });
+
+test('propagation preserves frozen/inherited options and getter receivers without following redirects', async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  const dependency = createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    calls.push({ path: req.url, method: req.method, body: Buffer.concat(chunks).toString(), traceparent: req.headers.traceparent });
+    if (req.url === '/redirect') res.writeHead(307, { location: `http://localhost:${dependency.address().port}/unapproved` }).end('manual');
+    else res.end('followed');
+  }).listen(0, '127.0.0.1'); await once(dependency, 'listening');
+  const origin = `http://127.0.0.1:${dependency.address().port}`;
+  const telemetry = createHttpRequestTelemetry({ endpoint: 'http://127.0.0.1:19999', tls: { mode: 'loopback' }, serviceName: 'fetch-facade', tracePropagationOrigins: [origin] });
+  let failure;
+  const app = createServer((req, res) => telemetry.run(req, res, [], async () => {
+    try {
+      const options = { method: 'POST', body: 'private-facade-body', redirect: 'manual', headers: { authorization: 'private-facade-credential' } };
+      const inherited = Object.freeze(Object.create(options));
+      let accessorOptions;
+      accessorOptions = Object.freeze(Object.create({
+        get method() { assert.equal(this, accessorOptions); return 'POST'; },
+        get body() { assert.equal(this, accessorOptions); return 'private-facade-body'; },
+        get redirect() { assert.equal(this, accessorOptions); return 'manual'; },
+        get headers() { assert.equal(this, accessorOptions); return options.headers; },
+      }));
+      for (const init of [Object.freeze(options), inherited, accessorOptions]) {
+        const expected = await original(`${origin}/redirect`, init);
+        const actual = await fetch(`${origin}/redirect`, init);
+        assert.equal(actual.status, expected.status); assert.equal(actual.status, 307);
+        assert.equal(actual.redirected, false); assert.equal(await actual.text(), await expected.text());
+      }
+    } catch (error) { failure = error; }
+    res.end('checked');
+  })).listen(0, '127.0.0.1'); await once(app, 'listening');
+  try {
+    await original(`http://127.0.0.1:${app.address().port}`);
+    if (failure) throw failure;
+    assert.equal(calls.length, 6); assert(calls.every(call => call.path === '/redirect'));
+    assert(calls.every(call => call.method === 'POST' && call.body === 'private-facade-body'));
+    for (let index = 0; index < calls.length; index++) {
+      if (index % 2 === 0) assert.equal(calls[index].traceparent, undefined);
+      else assert.match(calls[index].traceparent, /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    }
+  } finally { await telemetry.shutdown(); await Promise.all([close(app), close(dependency)]); }
+});
