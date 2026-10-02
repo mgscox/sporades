@@ -44064,7 +44064,12 @@ async function readState(root) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
-  const state = JSON.parse(await readFile6(file, "utf8"));
+  let state;
+  try {
+    state = JSON.parse(await readFile6(file, "utf8"));
+  } catch {
+    throw new Error("Invalid inventory outbox.");
+  }
   state.desired = validateInventory(state.desired);
   if (typeof state.endpoint !== "string" || state.acknowledgement && (!Number.isSafeInteger(state.acknowledgement.revision) || !Number.isFinite(Date.parse(state.acknowledgement.acknowledgedAt)))) throw new Error("Invalid inventory outbox.");
   return state;
@@ -44132,7 +44137,12 @@ async function registrySnapshot(root, previous) {
       const recordPath = path6.join(records, file.name);
       const stat2 = await lstat4(recordPath);
       if (stat2.mode & 18 || process.geteuid && stat2.uid !== process.geteuid() || stat2.size > 8 * 1024 * 1024) throw new Error("Unsafe registry record.");
-      const record = JSON.parse(await readFile6(recordPath, "utf8"));
+      let record;
+      try {
+        record = JSON.parse(await readFile6(recordPath, "utf8"));
+      } catch {
+        throw new Error("Invalid Host registry record.");
+      }
       if (record.domain !== domain.name || `${record.subname}.json` !== file.name || record.remoteCapsuleId && record.remoteCapsuleId !== `${domain.name}/${record.subname}`) throw new Error("Invalid registry identity.");
       const state = record.status === "unregistered" ? "deleted" : record.telemetry?.disabled === true ? "opted-out" : record.status;
       const disabled = ["deleted", "stopped", "opted-out"].includes(state);
@@ -44189,6 +44199,8 @@ async function reconcileHostInventory(root) {
   const result = await new Promise((resolve) => {
     const req = httpsRequest2(new URL(`/v1/inventory/${state.desired.host}`, state.endpoint), { method: "PUT", ...ca ? { ca } : {}, headers: { authorization: `Bearer ${credential}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (res) => {
       let text = "";
+      res.once("error", () => resolve({ failure: "network-or-tls" }));
+      res.once("aborted", () => resolve({ failure: "network-or-tls" }));
       res.on("data", (chunk) => {
         text += chunk;
         if (text.length > 8192) req.destroy();

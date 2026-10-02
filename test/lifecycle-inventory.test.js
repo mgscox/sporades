@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { createServer as createTlsServer } from 'node:https';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, rm, rename, stat, copyFile, chmod } from 'node:fs/promises';
@@ -102,13 +103,13 @@ test('reconnect cannot replace saved exact Host identity or mutate connection au
   } finally { process.env.PATH = oldPath; }
 });
 
-async function runHelper(args, env, input) {
+async function runHelper(args, env, input, expectedCode = 0) {
   const child = spawn(process.execPath, ['bin/sporades-host-helper.js', ...args], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   child.stdout.on('data', x => stdout += x); child.stderr.on('data', x => stderr += x);
   child.stdin.end(input ? JSON.stringify(input) : undefined);
   const [code] = await once(child, 'exit');
-  assert.equal(code, 0, stdout + stderr);
+  assert.equal(code, expectedCode, stdout + stderr);
   return JSON.parse(stdout);
 }
 function sendTls(port, cert, method, credential, value) {
@@ -211,6 +212,26 @@ test('Host outbox catches up after TLS outage, helper restarts, lifecycle change
     // Concurrent snapshots allocate one revision; incomplete/corrupt registry cannot erase expectations.
     const states = await Promise.all([queueHostInventory(hostRoot), queueHostInventory(hostRoot)]);
     assert.equal(states[0].desired.revision, states[1].desired.revision);
+    await writeFile(recordPath, '{"credential":"private-validation-secret", BAD}');
+    const malformed = await runHelper(['--reconcile-inventory', Buffer.from(hostRoot).toString('base64url')], env, undefined, 1);
+    assert.equal(malformed.ok, false);
+    assert.equal(malformed.error.message, 'Invalid Host registry record.');
+    assert.doesNotMatch(JSON.stringify(malformed), /private-validation-secret/);
+    await rm(recordPath);
+    const broken = createTlsServer({ cert, key }, (req, res) => {
+      req.resume();
+      req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.write('{"ok":true,'); setImmediate(() => res.destroy()); });
+    });
+    const brokenPort = await listen(broken);
+    const connectionFile = path.join(telemetry, 'connection.json');
+    const originalConnection = JSON.parse(await readFile(connectionFile, 'utf8'));
+    try {
+      await writeFile(connectionFile, JSON.stringify({ ...originalConnection, endpoint: `https://127.0.0.1:${brokenPort}/` }));
+      const interrupted = await worker();
+      assert.equal(interrupted.data.pending, true);
+      assert.equal(interrupted.data.failure, 'network-or-tls', 'a partial HTTPS acknowledgement is a bounded retryable failure');
+    } finally { await close(broken); await writeFile(connectionFile, JSON.stringify(originalConnection)); }
+    assert.equal((await worker()).data.pending, false);
     await rename(path.join(hostRoot, 'hosts', scope), path.join(hostRoot, 'missing-domain'));
     await assert.rejects(queueHostInventory(hostRoot), /registry disappeared/);
   } finally { delete process.env.SPORADES_TEST_FLOCK_PATH; }
