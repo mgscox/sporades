@@ -94,6 +94,46 @@ exporter permits one request at a time, and its final collection waits for an
 in-progress periodic export. A completed ordinary 4xx SERVER span keeps its
 response status and `failure` outcome with unset span status. Completed 5xx,
 handler errors, and aborts mark the span as an error.
+
+Sampled HTTP requests also include runtime-owned authentication and File child
+spans. No additional project setting or application import is required:
+
+| Child operation | Timed boundary |
+| --- | --- |
+| `sporades.auth.session.resolve` | Resolve or establish the existing Session |
+| `sporades.auth.access_key.resolve` | Validate the existing Access-key credential |
+| `sporades.auth.admit` | Declarative or inline runtime auth check, or private File scope check |
+| `sporades.file.authorize` | Resolve a private File and evaluate owner/ACL access |
+| `sporades.file.upload.prepare` / `sporades.file.upload` | Prepare or complete the existing upload |
+| `sporades.file.private_url` | Resolve the current actor's private File URL |
+| `sporades.file.public_url.create` / `sporades.file.public_url.revoke` | Create or revoke a public File URL |
+| `sporades.file.delete` | Current-actor File metadata deletion |
+| `sporades.file.read` | Read File bytes through the selected storage adapter |
+| `sporades.file.bytes.write` / `sporades.file.bytes.delete` | Write or remove version bytes, including compensation |
+| `sporades.file.stream` | Open an exact-version attachment storage stream |
+| `sporades.file.ingress.stage` | Stage and inspect admitted endpoint multipart ingress |
+
+Each request creates at most **32 child spans**, all parented to its SERVER span.
+Further operations still execute normally. Children follow local trace sampling;
+disabled telemetry, unsampled requests, background work and operations started
+after request completion create no children. The HTTP span covers streaming
+transfer time; `file.stream` measures opening the storage stream.
+The sole child attribute, `sporades.operation.outcome`, is one of `success`,
+`denied`, `error` or `cancelled`. Returned File rejections and recognized auth
+denials use `denied`; unexpected thrown failures use `error`. Active children
+end once when their callback settles or the HTTP request terminates; an abort or
+an operation outliving its response uses `cancelled`. Non-success children have
+error span status without a message or exception event. Operation success means
+that boundary completed, and does not promise that an enclosing transaction
+later committed. Authorization, rollback, opaque errors and response headers
+retain their existing behavior.
+No tokens, cookies, bodies, credential or actor identifiers, grants, File IDs,
+versions, names, paths, URLs, contents or exception details are child metadata.
+Inspect the request's stored trace in Jaeger to compare authentication, File ACL
+and storage duration; a denied request can have successful credential resolution
+followed by a denied admission or File authorization child. Missing storage bytes
+keep the existing opaque 404 while the storage child reports `error`.
+
 An abort before response headers has status class `none` in request metrics and
 no response status attribute on its trace; an abort after headers keeps the
 status that was sent. Both retain the `abort` outcome and count once.
