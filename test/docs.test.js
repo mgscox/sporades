@@ -6,8 +6,31 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createMarkdownRenderer } from "vitepress";
+import { inflateSync } from "node:zlib";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+test("Admission public types have committed API pages, module links, navigation and search entries", async () => {
+  const names = ["AdmissionPolicy", "AdmissionCondition", "AdmissionAction", "AdmissionGeneration", "AdmissionHealth", "AdmissionPolicyConfig"];
+  const source = await readProjectFile("src/types/server.d.ts");
+  const module = await readProjectFile("docs/api/modules/server.html");
+  const decodeIndex = async name => {
+    const script = await readProjectFile(`docs/api/assets/${name}.js`);
+    const encoded = JSON.parse(script.match(/= ("[^"]+")/)[1]);
+    return JSON.parse(inflateSync(Buffer.from(encoded, "base64")).toString("utf8"));
+  };
+  const navigation = (await decodeIndex("navigation")).find(entry => entry.text === "server");
+  const search = await decodeIndex("search");
+  for (const name of names) {
+    const url = `types/server.${name}.html`;
+    const page = await readProjectFile(`docs/api/${url}`);
+    assert.match(source, new RegExp(`\\b${name}\\b`));
+    assert(page.includes(`Type Alias ${name}`), `${name} page documents its public type`);
+    assert(module.includes(`../${url}`), `${name} is linked from the server module`);
+    assert(navigation.children.some(entry => entry.text === name && entry.path === url), `${name} is navigable`);
+    assert(search.rows.some(entry => entry.name === name && entry.url === url && entry.parent === "server"), `${name} is searchable`);
+  }
+});
 
 test("prerender configuration and module semantics are discoverable in canonical docs", async () => {
   const reference = await readProjectFile("docs/reference/projects-and-configuration.md");
