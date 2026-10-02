@@ -15,6 +15,26 @@ not change the server contract. See
 [Choose a client framework](./projects.md#choose-a-client-framework) for all
 eight supported choices and their scaffolded reactivity model.
 
+## Project public files
+
+Place explicitly public files in the optional project `public/` directory.
+`public/favicon.ico`, `public/sitemap.xml`, and `public/robots.txt` are served at
+`/favicon.ico`, `/sitemap.xml`, and `/robots.txt`; nested files retain their paths
+and exact bytes. Sporades merges them into the normalized release tree with both
+esbuild and Vite. XML is served as `application/xml; charset=utf-8`, ICO as
+`image/x-icon`, and TXT as `text/plain; charset=utf-8`, for GET and HEAD.
+
+These assets are unauthenticated. Keep secrets, Server env, and private resources
+out of `public/`. Files outside that directory are not included. Symlinks, unsafe
+paths, the reserved `__sporades` namespace, collisions (including case aliases)
+with generated output (including `index.html`), and combined output-limit
+violations reject the build.
+The limits are 512 files, 16 MiB per file, 64 MiB total, and 240 UTF-8 bytes per
+relative path. Dev observes additions, edits, and deletions, keeping the last
+successful tree after a failed candidate. Container and Hosted releases include
+the same files; restart and rollback use the release tree without a source mount.
+Sporades does not generate sitemap content or crawler rules.
+
 ## Public asset caching
 
 The generated Capsule server serves Vite-style content-hashed assets beneath

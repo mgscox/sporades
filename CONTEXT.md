@@ -33,7 +33,7 @@ The esbuild output — a self-contained JavaScript file with all dependencies in
 _Avoid_: build (that's the act), artifact (too abstract)
 
 **Bundle pipeline**:
-The build-time path that turns a Capsule's server entry, client entry, `sporades.json`, `index.html`, and Server env into the server Bundle and client Bundle in the Runtime directory. Used by both Dev session and Container session so they run the same bundled code.
+The build-time path that turns a Capsule's server entry, client entry, `sporades.json`, `index.html`, and Server env into the server Bundle and normalized public tree in the Runtime directory. The optional project `public/` directory contributes explicitly unauthenticated regular files at their original paths and bytes through the same pipeline for esbuild and Vite. Dev, Container, and Hosted consumers use this release-owned tree; failed candidates retain the last successful tree.
 _Avoid_: build system (too broad), compiler (only part of the work), bundler (esbuild is just one adapter inside it)
 
 **Base image**:

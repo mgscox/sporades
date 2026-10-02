@@ -5664,8 +5664,13 @@ test("Hosted releases package, install, inspect and switch the same prerender pu
     const docker = await installFakeDocker(path.join(dir, 'fake-prerender-docker'));
     const request = { host: {alias:'personal', domain:fixture.domain, scheme:'https', remoteRoot:fixture.remoteRoot}, capsule:{subname:fixture.subname} };
     const retained = [];
+    await mkdir(path.join(projectDir, "public"));
     for (const [index, label] of ['Useful before JavaScript', 'New static release'].entries()) {
       await writeFile(path.join(projectDir, 'render/copy.ts'), `export const copy = ${JSON.stringify(label)};`);
+      const sitemap = `<urlset><url><loc>https://example.test/release-${index}</loc></url></urlset>`;
+      await writeFile(path.join(projectDir, 'public/sitemap.xml'), sitemap);
+      await writeFile(path.join(projectDir, 'public/robots.txt'), `Sitemap: /sitemap.xml\n# release ${index}`);
+      await writeFile(path.join(projectDir, 'public/favicon.ico'), Buffer.from([0, 0, 1, index]));
       const bundle = await createBundle(projectDir, config);
       const staging = path.join(dir, `prerender-release-${index}`);
       await mkdir(staging);
@@ -5690,13 +5695,21 @@ test("Hosted releases package, install, inspect and switch the same prerender pu
         assert.deepEqual(await readFile(path.join(releaseDir, 'public', file)), expected);
         assert.doesNotMatch(expected.toString(), /(?:server|project)-env-prerender-must-not-ship/);
       }
-      retained.push({releaseDir, html});
+      assert.equal(await readFile(path.join(releaseDir, "public/sitemap.xml"), "utf8"), sitemap);
+      retained.push({releaseDir, html, releaseId, sitemap});
       for (const prior of retained) assert.equal(await readFile(path.join(prior.releaseDir, 'public/index.html'), 'utf8'), prior.html);
       const inspected = await runHostHelper({...request, action:'capsule.release.list'}, {cwd:dir, env:docker.env});
       assert.equal(inspected.code, 0, inspected.stderr);
       assert.equal(JSON.parse(inspected.stdout).ok, true, inspected.stdout);
       assert.ok(inspected.stdout.includes(releaseId));
     }
+    const rollback = await runHostHelper({...request, action: "capsule.release.rollback", rollback: {releaseId: retained[0].releaseId}}, {cwd:dir, env:docker.env});
+    assert.equal(rollback.code, 0, rollback.stderr);
+    assert.equal(JSON.parse(rollback.stdout).ok, true, rollback.stdout);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), retained[0].releaseDir);
+    assert.equal(await readFile(path.join(fixture.capsuleDir, "current/public/sitemap.xml"), "utf8"), retained[0].sitemap);
+    assert.equal(await readFile(path.join(fixture.capsuleDir, "current/public/robots.txt"), "utf8"), "Sitemap: /sitemap.xml\n# release 0");
+    assert.deepEqual(await readFile(path.join(fixture.capsuleDir, "current/public/favicon.ico")), Buffer.from([0, 0, 1, 0]));
   });
 });
 

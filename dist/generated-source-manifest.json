@@ -71,6 +71,7 @@
       "src/maybe-promise.ts",
       "src/notification-intent-runtime.ts",
       "src/package-root.ts",
+      "src/project-public.ts",
       "src/promise-coordinator.ts",
       "src/public-tree-contract.ts",
       "src/public-tree.ts",
@@ -112,7 +113,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "90f20fe8ec261546cf2bdbf98cc7295f8875cff52e91be712831541f470e9114"
+    "digest": "447e23313f5b86c62ac1e7378d4aea84776b4ca50999ace3ca90aa64721b4fc5"
   },
   "outputs": {
     "files": [
@@ -366,6 +367,10 @@
       "dist/package-root.d.ts.map",
       "dist/package-root.js",
       "dist/package-root.js.map",
+      "dist/project-public.d.ts",
+      "dist/project-public.d.ts.map",
+      "dist/project-public.js",
+      "dist/project-public.js.map",
       "dist/promise-coordinator.d.ts",
       "dist/promise-coordinator.d.ts.map",
       "dist/promise-coordinator.js",
@@ -499,6 +504,6 @@
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map"
     ],
-    "digest": "1c34beaa15fb3685005d583a8a76c1dfe4bfd2c55b6d69d92e86c21489bd514b"
+    "digest": "63e2d01c3262d91e589e0b9156829bec9bb92bbd64ceb51280084a84e85aae24"
   }
 }

@@ -2490,7 +2490,7 @@ async function startDevSession(options: LooseRecord) {
       if (publicAsset) {
         response.writeHead(200, {
           "content-type": publicAsset.contentType,
-          ...(publicAsset.html ? { "cache-control": "no-store", pragma: "no-cache" } : {}),
+          ...(publicAsset.html ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }),
         });
         response.end(publicAsset.html && isDocumentNavigationRequest(request)
           ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken())
@@ -3140,6 +3140,7 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
   const baseWatchedPaths = [
     { path: path.join(projectDir, "server"), affectsServerRuntime: true },
     { path: path.join(projectDir, "client"), affectsServerRuntime: false },
+    { path: path.join(projectDir, "public"), affectsServerRuntime: false, publicFiles: true },
     { path: path.join(projectDir, "shared"), affectsServerRuntime: true },
     { path: path.join(projectDir, "index.html"), affectsServerRuntime: false },
     { path: path.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true },
@@ -3257,21 +3258,22 @@ function readDevInputSignature(watchedPaths: LooseRecord[]) {
   const entries: any[] = [];
 
   for (const watchedPath of watchedPaths) {
-    collectPathSignature(watchedPath.path, entries, watchedPath.dependency ? new Set<string>() : undefined);
+    collectPathSignature(watchedPath.path, entries, watchedPath.dependency ? new Set<string>() : undefined, watchedPath.publicFiles === true);
   }
 
   return entries.sort().join("\n");
 }
 
-function collectPathSignature(filePath: string, entries: any[], dependencyDirectories?: Set<string>) {
+function collectPathSignature(filePath: string, entries: any[], dependencyDirectories?: Set<string>, publicFiles = false) {
   let stats;
   try {
-    stats = statSync(filePath, { bigint: true });
+    stats = (publicFiles ? lstatSync : statSync)(filePath, { bigint: true });
   } catch (error) {
     if (errorDetails(error).code === "ENOENT" || errorDetails(error).code === "ENOTDIR") {
       entries.push(`${filePath}:missing`);
       return;
     }
+    if (publicFiles) { entries.push(`${filePath}:unreadable:${errorDetails(error).code}`); return; }
     throw error;
   }
 
@@ -3288,7 +3290,12 @@ function collectPathSignature(filePath: string, entries: any[], dependencyDirect
     }
     // Nested dependency trees are not resolution alternatives for this package.
     // Modules actually imported from them have their own explicit watch paths.
-    const children = readdirSync(filePath).filter(child => !dependencyDirectories || (child !== "node_modules" && child !== ".git")).sort();
+    let children: string[];
+    try { children = readdirSync(filePath).filter(child => !dependencyDirectories || (child !== "node_modules" && child !== ".git")).sort(); }
+    catch (error) {
+      if (!publicFiles) throw error;
+      entries.push(`${filePath}:unreadable:${errorDetails(error).code}`); return;
+    }
     if (children.length === 0) {
       entries.push(`${filePath}:dir:empty`);
       return;
@@ -3308,7 +3315,7 @@ function collectPathSignature(filePath: string, entries: any[], dependencyDirect
           continue;
         }
       }
-      collectPathSignature(childPath, entries, dependencyDirectories);
+      collectPathSignature(childPath, entries, dependencyDirectories, publicFiles);
     }
     return;
   }

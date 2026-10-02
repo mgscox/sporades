@@ -1255,6 +1255,11 @@ export type ScheduleDefinition = {
  *
  * The Capsule is the deployable unit: schema, server handlers, middleware, and
  * hooks bundled with the client, config, and runtime data boundary.
+ * Optional project `public/` regular files join the normalized release tree for
+ * esbuild and Vite, preserving paths and bytes as unauthenticated assets. XML
+ * uses application/xml; charset=utf-8. Dev observes public changes; failed
+ * candidates retain the last successful tree and rollback restores release bytes.
+ * Public paths cannot collide with generated output or reserved __sporades routes.
  * The generated server serves Vite-style content-hashed `/assets/` files with
  * one-year public immutable caching; HTML is no-store and other public assets
  * require revalidation. See the Building the Client guide for the naming contract.
