@@ -292,6 +292,7 @@ export type TableApi<Row extends Record<string, unknown> = Record<string, unknow
   all(): Row[];
 };
 
+/** With operator telemetry enabled, internal statement/transaction spans explain HTTP request database time. No SQL, parameters or rows are exported; authoring and transaction semantics are unchanged. */
 export type DatabaseFromSchema<Schema extends SchemaDefinition> = {
   [TableName in keyof Schema]: Schema[TableName] extends TableDefinition<infer Fields> ? TableApi<RowFromFields<Fields>> : TableApi;
 };
