@@ -127,9 +127,16 @@ for (const engine of ['sqlite', 'postgres']) {
       if (process.env.SPORADES_TELEMETRY_TRACE_QUERY_URL) {
         for (const id of [...traceIds, failed.traceId, failureTraceId]) {
           let stored;
+          const expectedIds = spans.filter(span => span.traceId === id).map(span => span.spanId);
           for (let attempt = 0; attempt < 100; attempt++) {
             const response = await fetch(process.env.SPORADES_TELEMETRY_TRACE_QUERY_URL + '/api/v3/traces/' + id);
-            if (response.ok) { stored = await response.json(); break; }
+            if (response.ok) {
+              const candidate = await response.json();
+              const ids = new Set(flatten([candidate.result ?? candidate]).map(span => span.spanId));
+              // Storage may expose the first export batch before the SERVER span's
+              // later batch. An HTTP 200 alone is not complete stored-trace evidence.
+              if (expectedIds.every(spanId => ids.has(spanId))) { stored = candidate; break; }
+            }
             await pause();
           }
           assert(stored, 'trace was persisted in Jaeger');
@@ -139,6 +146,7 @@ for (const engine of ['sqlite', 'postgres']) {
           assert(parent && children.length > 0, 'stored request includes database spans');
           const ids = new Set([parent.spanId, ...children.map(span => span.spanId)]);
           assert(children.every(span => ids.has(span.parentSpanId)), 'stored parentage stays within its request');
+          if (id === failed.traceId || id === failureTraceId) assert(children.some(span => span.status?.code === 2));
           assert.doesNotMatch(JSON.stringify(stored), /private-122|local-only|INSERT INTO/);
         }
       }

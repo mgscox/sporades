@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { createHttpRequestTelemetry } from '../dist/runtime-telemetry.js';
 import { createPostgresDatabaseAdapter } from '../dist/database-runtime.js';
 import { withSqliteAdapter, withLibsqlAdapter } from './support/database-adapter-engines.js';
@@ -17,6 +18,7 @@ for (const [engine, withAdapter] of [['sqlite', withSqliteAdapter], ['libsql', w
   test(`${engine} database time, failures and rollback are isolated children of overlapping requests`, {
     skip: engine === 'postgres' && !process.env.SPORADES_TELEMETRY_POSTGRES_TEST_URL ? 'Set SPORADES_TELEMETRY_POSTGRES_TEST_URL to a disposable database.' : false,
   }, async () => withAdapter(async adapter => {
+    const rowId = `private-row-id-122-${randomUUID()}`;
     await adapter.ensureSystemTable();
     await adapter.migrateAppSchema({ tables: [{ name: 'trace_notes', fields: [{ name: 'text', kind: 'String', sqliteType: 'TEXT' }] }] });
     const received = [];
@@ -32,14 +34,14 @@ for (const [engine, withAdapter] of [['sqlite', withSqliteAdapter], ['libsql', w
     const app = createServer((request, response) => telemetry.run(request, response, [{ method: 'GET', path: '/commit' }, { method: 'GET', path: '/rollback' }, { method: 'GET', path: '/read' }], async () => {
       try {
         if (request.url === '/read') {
-          const rows = await adapter.prepare('SELECT * FROM "trace_notes"').all();
+          const rows = await adapter.prepare('SELECT * FROM "trace_notes" WHERE "id" = ?').all(rowId + '/commit');
           response.end(JSON.stringify(rows.map(row => row.text)));
         } else {
           await adapter.withTransaction(async transaction => {
             captured = transaction.prepare('SELECT 1');
-            await transaction.prepare('INSERT INTO "trace_notes" ("id", "text", "createdAt", "updatedAt") VALUES (?, ?, ?, ?)').run(request.url, 'private-row-122', '2026-01-01', '2026-01-01');
+            await transaction.prepare('INSERT INTO "trace_notes" ("id", "text", "createdAt", "updatedAt") VALUES (?, ?, ?, ?)').run(rowId + request.url, 'private-row-122', '2026-01-01', '2026-01-01');
             await new Promise(resolve => setTimeout(resolve, 30));
-            if (request.url === '/rollback') await transaction.prepare('INSERT INTO "trace_notes" ("id", "text", "createdAt", "updatedAt") VALUES (?, ?, ?, ?)').run('/rollback', 'private-parameter-122', '2026-01-01', '2026-01-01');
+            if (request.url === '/rollback') await transaction.prepare('INSERT INTO "trace_notes" ("id", "text", "createdAt", "updatedAt") VALUES (?, ?, ?, ?)').run(rowId + '/rollback', 'private-parameter-122', '2026-01-01', '2026-01-01');
           });
           response.end('committed');
         }
@@ -68,7 +70,7 @@ for (const [engine, withAdapter] of [['sqlite', withSqliteAdapter], ['libsql', w
       assert.equal(transactions.filter(span => span.status?.code === 2).length, 1);
       assert(databaseSpans.some(span => attribute(span, 'db.operation.name') === 'INSERT' && span.status?.code === 2));
       assert(databaseSpans.some(span => attribute(span, 'db.collection.name') === 'trace_notes'));
-      assert.doesNotMatch(JSON.stringify(received), /private-row-122|private-parameter-122|INSERT INTO|SELECT \*|local-only|exception.message|exception.stacktrace/);
+      assert.doesNotMatch(JSON.stringify(received), /private-row-122|private-row-id-122|private-parameter-122|INSERT INTO|SELECT \*|local-only|exception.message|exception.stacktrace/);
     } finally {
       await telemetry.shutdown();
       await new Promise(resolve => app.close(resolve));
