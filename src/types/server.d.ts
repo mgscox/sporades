@@ -1255,6 +1255,9 @@ export type ScheduleDefinition = {
  *
  * The Capsule is the deployable unit: schema, server handlers, middleware, and
  * hooks bundled with the client, config, and runtime data boundary.
+ * The generated server serves Vite-style content-hashed `/assets/` files with
+ * one-year public immutable caching; HTML is no-store and other public assets
+ * require revalidation. See the Building the Client guide for the naming contract.
  */
 export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   name: string;

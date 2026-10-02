@@ -269,9 +269,16 @@ async function routePublicAsset(request, response, publicRoot, hub) {
         return false;
     const body = await readFile(filePath);
     const html = relativePath === "index.html";
+    const htmlAsset = path.extname(relativePath).toLowerCase() === ".html";
+    // The Vite pipeline emits assets/[name]-[hash][extname] with an eight-character
+    // URL-safe hash. Directory membership alone does not make a file immutable.
+    const immutable = relativePath.startsWith("assets/")
+        && /-[A-Za-z0-9_-]{8}\.[^.\/]+(?:\.map)?$/.test(path.basename(relativePath))
+        && !htmlAsset;
     response.writeHead(200, {
         "content-type": publicContentType(relativePath),
-        ...(html ? { "cache-control": "no-store", pragma: "no-cache" } : {}),
+        ...(htmlAsset ? { "cache-control": "no-store", pragma: "no-cache" }
+            : { "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache" }),
     });
     response.end(html && isDocumentNavigationRequest(request)
         ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken())

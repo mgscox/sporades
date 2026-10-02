@@ -354,6 +354,7 @@ async function writePublicTree(dir, html) {
   await writeFile(path.join(treesDir, treeName, "index.html"), html);
   await writeFile(path.join(treesDir, treeName, "assets", "app.js"), "export const probe = 1;\n");
   await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: treeName })}\n`);
+  return path.join(treesDir, treeName);
 }
 
 async function bootBundle({ source, dir, env = {} }) {
@@ -944,6 +945,92 @@ test("a generated server bundle serves no-store HTML and fresh connection tokens
     const refreshedToken = (await refreshed.json()).token;
     assert.match(refreshedToken, /^[A-Za-z0-9_-]{40,}$/);
     assert.notEqual(refreshedToken, pageToken);
+  } finally {
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated server bundle serves immutable hashed public assets", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-asset-cache-"));
+  let booted;
+  try {
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource: CAPSULE_SOURCE });
+    const publicRoot = await writePublicTree(root, "<!doctype html><html><body></body></html>");
+    const assets = [
+      ["assets/index-HnDh2Ctj.js", "text/javascript; charset=utf-8"],
+      ["assets/index-XRSz8sKo.css", "text/css; charset=utf-8"],
+      ["assets/index-HnDh2Ctj.js.map", "application/json; charset=utf-8"],
+      ["assets/nested/font-aB_2-cD3.woff2", "font/woff2"],
+      ["assets/logo-0123abcd.svg", "image/svg+xml"],
+    ];
+    for (const [name] of assets) {
+      await mkdir(path.dirname(path.join(publicRoot, name)), { recursive: true });
+      await writeFile(path.join(publicRoot, name), `asset:${name}`);
+    }
+    booted = await bootBundle({ source, dir: root });
+    for (const [name, contentType] of assets) {
+      for (const method of ["GET", "HEAD"]) {
+        const response = await fetch(`${booted.baseUrl}/${name}?probe=1`, { method });
+        assert.equal(response.status, 200, name);
+        assert.equal(response.headers.get("cache-control"), "public, max-age=31536000, immutable", name);
+        assert.equal(response.headers.get("content-type"), contentType, name);
+        assert.equal(response.headers.get("pragma"), null, name);
+        assert.equal(await response.text(), method === "HEAD" ? "" : `asset:${name}`, name);
+      }
+    }
+  } finally {
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated server bundle keeps unversioned assets and HTML conservatively cached", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-conservative-cache-"));
+  let booted;
+  try {
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource: CAPSULE_SOURCE });
+    const publicRoot = await writePublicTree(root, "<!doctype html><html><head></head><body></body></html>");
+    const assets = [
+      "assets/app.js", "assets/app.js.map", "assets/styles.css", "assets/logo.svg",
+      "assets/app-current.js", "assets/app-HnDh2Ct.js", "assets/app-production.js",
+      "assets/nested-HnDh2Ctj/app.js", "index-HnDh2Ctj.js", "client.js", "robots.txt",
+    ];
+    const pages = ["index.html", "assets/page-HnDh2Ctj.html", "assets/page-HnDh2Ctj.HTML"];
+    for (const name of [...assets, ...pages.slice(1)]) {
+      await mkdir(path.dirname(path.join(publicRoot, name)), { recursive: true });
+      await writeFile(path.join(publicRoot, name), `asset:${name}`);
+    }
+    booted = await bootBundle({ source, dir: root });
+    for (const name of assets) {
+      const response = await fetch(`${booted.baseUrl}/${name}?v=HnDh2Ctj`);
+      assert.equal(response.status, 200, name);
+      assert.equal(response.headers.get("cache-control"), "no-cache", name);
+      assert.equal(await response.text(), `asset:${name}`, name);
+    }
+    const tokens = [];
+    for (const name of ["", ...pages]) {
+      const response = await fetch(`${booted.baseUrl}/${name}`, { headers: { "sec-fetch-dest": "document" } });
+      assert.equal(response.status, 200, name);
+      assert.equal(response.headers.get("cache-control"), "no-store", name);
+      assert.equal(response.headers.get("pragma"), "no-cache", name);
+      const body = await response.text();
+      if (name === "" || name === "index.html") {
+        const token = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(body)?.[1];
+        assert.ok(token);
+        tokens.push(token);
+      }
+    }
+    assert.notEqual(tokens[0], tokens[1]);
+    for (const target of ["/assets/missing-HnDh2Ctj.js", "/assets/%ZZ-HnDh2Ctj.js", "/assets/nested%2fapp-HnDh2Ctj.js"]) {
+      const response = await fetch(`${booted.baseUrl}${target}`);
+      assert.ok(response.status >= 400, target);
+      assert.doesNotMatch(response.headers.get("cache-control") ?? "", /immutable/, target);
+      await response.text();
+    }
+    const stillRunning = await fetch(`${booted.baseUrl}/assets/app.js`);
+    assert.equal(stillRunning.status, 200);
+    await stillRunning.text();
   } finally {
     await booted?.stop();
     await rm(root, { recursive: true, force: true });
