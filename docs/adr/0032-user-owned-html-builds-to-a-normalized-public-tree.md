@@ -25,8 +25,12 @@ are preserved without hashing: `public/favicon.ico`, `public/sitemap.xml`, and
 These files are explicitly unauthenticated assets. Missing `public/` is valid.
 They cannot replace generated output (including `index.html`), use the reserved
 `__sporades` namespace, follow symlinks, escape the directory, or exceed the
-combined public-tree limits. Case aliases are rejected on every platform to avoid
-overwriting generated files on case-insensitive filesystems. Conflicts reject
+combined public-tree limits. Case and Unicode aliases are rejected on every
+platform using a conservative comparison (compatibility normalization, case
+expansion, and removal of default-ignorable code points). This includes
+`client.jſ` versus `client.js`; original paths and bytes remain unchanged.
+Staging creates files exclusively, so native filesystem aliases cannot silently
+overwrite an existing entry even if the portable comparison misses one. Conflicts reject
 the candidate with a deterministic path diagnostic. Dev observes additions,
 edits, and removals with its sole watcher;
 failed candidates retain the last successful tree. Container and Hosted releases

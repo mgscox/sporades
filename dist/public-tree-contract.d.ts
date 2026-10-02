@@ -22,5 +22,7 @@ export type PublicTreeFileSetResult = {
 };
 export declare function normalizePublicTreePath(value: string): string | null;
 export declare function publicTreePathFromRequest(rawPathname: string): string | null;
+/** Conservative, platform-independent comparison only; never rewrite asset URLs. */
+export declare function publicTreeCollisionKey(value: string): string;
 export declare function validatePublicTreeFileSet(files: ReadonlyArray<PublicTreeFileClaim>): PublicTreeFileSetResult;
 //# sourceMappingURL=public-tree-contract.d.ts.map

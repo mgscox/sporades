@@ -1259,7 +1259,8 @@ export type ScheduleDefinition = {
  * esbuild and Vite, preserving paths and bytes as unauthenticated assets. XML
  * uses application/xml; charset=utf-8. Dev observes public changes; failed
  * candidates retain the last successful tree and rollback restores release bytes.
- * Public paths cannot collide with generated output or reserved __sporades routes.
+ * Public paths cannot collide with generated output or reserved __sporades routes,
+ * including conservative case and Unicode aliases such as client.jſ/client.js.
  * The generated server serves Vite-style content-hashed `/assets/` files with
  * one-year public immutable caching; HTML is no-store and other public assets
  * require revalidation. See the Building the Client guide for the naming contract.

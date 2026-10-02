@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   PUBLIC_TREE_LIMITS,
   normalizePublicTreePath,
+  publicTreeCollisionKey,
   publicTreePathFromRequest,
   validatePublicTreeFileSet,
 } from "./public-tree-contract.js";
@@ -69,7 +70,12 @@ export async function createPublicTree(
     for (const file of normalizedFiles) {
       const destination = path.join(stagingDir, ...file.path.split("/"));
       await mkdir(path.dirname(destination), { recursive: true });
-      await writeFile(destination, file.contents);
+      // Native exclusive creation is the final authority: never let a filesystem
+      // alias missed by the portable validator overwrite an earlier output file.
+      await writeFile(destination, file.contents, { flag: "wx" }).catch((error) => {
+        if (error.code === "EEXIST") throw publicTreeError("Invalid public tree.", `Conflicting public path: ${file.path} already exists in the candidate.`);
+        throw error;
+      });
     }
     await validatePublicTree(stagingDir);
     lease = await createPublicTreeLease(treesDir, nonce);
@@ -246,7 +252,7 @@ export async function validatePublicTree(root: string) {
     for (const entry of entries) {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
       validateRelativePublicPath(relativePath);
-      const canonicalPath = relativePath.normalize("NFC");
+      const canonicalPath = relativePath.split("/").map(publicTreeCollisionKey).join("/");
       const collision = canonicalPaths.get(canonicalPath);
       if (collision && collision !== relativePath) {
         throw publicTreeError(
@@ -415,7 +421,7 @@ function normalizePublicFiles(files: ReadonlyArray<PublicFile>) {
   if (!validation.ok) {
     const hints = {
       path: "Public paths must be bounded safe relative POSIX paths.",
-      collision: "Remove Unicode normalization collisions from public output.",
+      collision: "Remove case or Unicode normalization collisions from public output.",
       files: `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`,
       "file-bytes": validation.reason === "file-bytes" ? `${validation.path} exceeds the per-file public output limit.` : "A public output file exceeds the per-file limit.",
       "total-bytes": "Public output exceeds the aggregate size limit.",

@@ -232,7 +232,7 @@ Nested paths are supported, and a missing directory preserves existing behavior.
 These assets are unauthenticated; other project directories are not published.
 
 Generated output, including the required HTML entry, cannot be overwritten.
-Symlinks, unsafe paths, `__sporades` paths, normalization collisions, and combined
+Symlinks, unsafe paths, `__sporades` paths, case and Unicode alias collisions, and combined
 public-tree limit violations fail before publication. Dev watches additions,
 edits, and removals and retains the last successful tree after a failed build.
 Container and Hosted packaging, restart, and rollback use the same release-owned

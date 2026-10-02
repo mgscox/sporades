@@ -26,9 +26,11 @@ esbuild and Vite. XML is served as `application/xml; charset=utf-8`, ICO as
 
 These assets are unauthenticated. Keep secrets, Server env, and private resources
 out of `public/`. Files outside that directory are not included. Symlinks, unsafe
-paths, the reserved `__sporades` namespace, collisions (including case aliases)
+paths, the reserved `__sporades` namespace, collisions (including case and Unicode aliases)
 with generated output (including `index.html`), and combined output-limit
 violations reject the build.
+Alias comparisons conservatively include Unicode compatibility and case forms
+(for example `client.jſ` conflicts with `client.js`) without changing asset URLs.
 The limits are 512 files, 16 MiB per file, 64 MiB total, and 240 UTF-8 bytes per
 relative path. Dev observes additions, edits, and deletions, keeping the last
 successful tree after a failed candidate. Container and Hosted releases include

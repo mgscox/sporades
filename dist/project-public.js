@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
-import { normalizePublicTreePath, PUBLIC_TREE_LIMITS, validatePublicTreeFileSet } from "./public-tree-contract.js";
+import { normalizePublicTreePath, publicTreeCollisionKey, PUBLIC_TREE_LIMITS, validatePublicTreeFileSet } from "./public-tree-contract.js";
 /** Merge explicitly public source files into the candidate, never the active tree. */
 export async function mergeProjectPublicFiles(projectDir, generated) {
     const root = path.join(await realpath(projectDir), "public");
@@ -29,7 +29,7 @@ export async function mergeProjectPublicFiles(projectDir, generated) {
                 const filePath = relative ? `${relative}/${name}` : name;
                 if (normalizePublicTreePath(filePath) === null)
                     throw invalid("Public paths must be bounded safe relative POSIX paths.");
-                if (filePath.split("/")[0].toLowerCase() === "__sporades")
+                if (publicTreeCollisionKey(filePath.split("/")[0]) === "__sporades")
                     throw invalid("public/__sporades is reserved for Sporades HTTP routes.");
                 const source = process.platform === "linux" ? `/proc/self/fd/${handle.fd}/${name}` : path.join(directory, name);
                 const stats = await lstat(source);
@@ -48,11 +48,7 @@ export async function mergeProjectPublicFiles(projectDir, generated) {
                         throw invalid("Public source changed during the build; retry.");
                     const claim = { path: filePath, size: opened.size };
                     const candidate = [...claims, claim];
-                    let validation = validatePublicTreeFileSet(candidate);
-                    // Reject case aliases on every platform: a macOS candidate must not
-                    // overwrite client.js with CLIENT.js while Linux treats them separately.
-                    if (validation.ok)
-                        validation = validatePublicTreeFileSet(candidate.map(file => ({ ...file, path: file.path.toLowerCase() })));
+                    const validation = validatePublicTreeFileSet(candidate);
                     if (!validation.ok) {
                         const hints = {
                             path: "Public paths must be bounded safe relative POSIX paths.",

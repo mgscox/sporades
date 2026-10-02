@@ -77,6 +77,42 @@ async function assertAssets(url) {
   }
 }
 
+async function withGeneratedServer(project, bundle, fn) {
+  const probe = createServer(); probe.listen(0, '127.0.0.1'); await once(probe, 'listening');
+  const port = probe.address().port; probe.close(); await once(probe, 'close');
+  const url = `http://127.0.0.1:${port}`;
+  const runtime = spawn(process.execPath, [bundle.paths.serverBundle], { cwd: project, env: { ...env, PORT: String(port), SPORADES_DATABASE_PATH: path.join(project, '.sporades', 'generated.db') }, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try { await fetch(url); break; } catch (error) { if (attempt === 100) throw error; }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    await fn(url);
+  } finally { runtime.kill('SIGTERM'); await once(runtime, 'exit'); }
+}
+
+for (const toolchain of ['esbuild', 'vite']) test(`Unicode public collisions preserve on-disk and generated-server ${toolchain} release bytes`, async () => {
+  await fixture(toolchain, async (project, config) => {
+    const active = await createBundle(project, config);
+    const jsPath = [...active.staticFiles.publicTree.assets.keys()].find(name => name.endsWith('.js'));
+    assert.ok(jsPath, 'release includes a generated JavaScript entry');
+    const original = await readFile(path.join(active.staticFiles.publicDir, jsPath));
+    const reference = path.join(project, '.sporades/build/.public-trees/active.json');
+    const before = await readFile(reference);
+    const alias = path.join(project, 'public', jsPath.replace(/s$/, '\u017f'));
+    await mkdir(path.dirname(alias), { recursive: true });
+    await writeFile(alias, 'document.body.dataset.publicAssets = "replacement";');
+    await assert.rejects(createBundle(project, config), error => error.phase === 'public' && /Conflicting public path/.test(error.hint));
+    assert.deepEqual(await readFile(reference), before);
+    assert.deepEqual(await readFile(path.join(active.staticFiles.publicDir, jsPath)), original);
+    await withGeneratedServer(project, active, async url => {
+      const response = await fetch(`${url}/${jsPath}`);
+      assert.equal(response.status, 200);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), original);
+    });
+  });
+});
+
 for (const toolchain of ['esbuild', 'vite']) test(`project public assets serve exact bytes in Dev and generated ${toolchain} releases`, async () => {
   await fixture(toolchain, async (project, config) => {
     await writeAssets(project);
@@ -93,18 +129,10 @@ for (const toolchain of ['esbuild', 'vite']) test(`project public assets serve e
     } finally { child.kill('SIGTERM'); await once(child, 'exit'); }
 
     const bundle = await createBundle(project, config);
-    const probe = createServer(); probe.listen(0, '127.0.0.1'); await once(probe, 'listening');
-    const port = probe.address().port; probe.close(); await once(probe, 'close');
-    const url = `http://127.0.0.1:${port}`;
-    const runtime = spawn(process.execPath, [bundle.paths.serverBundle], { cwd: project, env: { ...env, PORT: String(port), SPORADES_DATABASE_PATH: path.join(project, '.sporades', 'generated.db') }, stdio: ['ignore', 'pipe', 'pipe'] });
-    try {
-      for (let attempt = 0; ; attempt++) {
-        try { await fetch(url); break; } catch (error) { if (attempt === 100) throw error; }
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
+    await withGeneratedServer(project, bundle, async url => {
       await assertAssets(url);
       assert.equal((await fetch(`${url}/private.txt`)).status, 404);
-    } finally { runtime.kill('SIGTERM'); await once(runtime, 'exit'); }
+    });
   });
 });
 
@@ -172,6 +200,7 @@ test('unsafe public candidates and combined output limits never replace the acti
       ['CLIENT.js', () => writeFile(path.join(publicDir, 'CLIENT.js'), 'case alias collision'), /Conflicting public path/],
       ['client.js', () => mkdir(path.join(publicDir, 'client.js/nested'), { recursive: true }).then(() => writeFile(path.join(publicDir, 'client.js/nested/file.txt'), 'collision')), /Conflicting public path/],
       ['__sporades', () => mkdir(path.join(publicDir, '__sporades')).then(() => writeFile(path.join(publicDir, '__sporades/proof.txt'), 'reserved')), /reserved/],
+      ['__sporade\u017f', () => mkdir(path.join(publicDir, '__sporade\u017f')).then(() => writeFile(path.join(publicDir, '__sporade\u017f/proof.txt'), 'reserved alias')), /reserved/],
       ['escape\\file.txt', () => writeFile(path.join(publicDir, 'escape\\file.txt'), 'unsafe'), /safe relative/],
       ['link', () => symlink(path.join(project, 'sporades.json'), path.join(publicDir, 'link')), /symbolic link/],
       ['large.bin', async () => { await writeFile(path.join(publicDir, 'large.bin'), ''); await truncate(path.join(publicDir, 'large.bin'), 16 * 1024 * 1024 + 1); }, /per-file/],

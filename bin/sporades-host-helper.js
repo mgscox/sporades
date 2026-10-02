@@ -26796,6 +26796,9 @@ function normalizePublicTreePath(value) {
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) return null;
   return segments.join("/");
 }
+function publicTreeCollisionKey(value) {
+  return value.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC").replace(new RegExp("\\p{Default_Ignorable_Code_Point}", "gu"), "").normalize("NFKC");
+}
 function validatePublicTreeFileSet(files) {
   if (files.length > PUBLIC_TREE_LIMITS.files) return { ok: false, reason: "files" };
   const canonicalPrefixes = /* @__PURE__ */ new Map();
@@ -26810,7 +26813,7 @@ function validatePublicTreeFileSet(files) {
     let raw = "";
     for (let index = 0; index < segments.length; index += 1) {
       raw = raw ? `${raw}/${segments[index]}` : segments[index];
-      const canonicalSegment = segments[index].normalize("NFC");
+      const canonicalSegment = publicTreeCollisionKey(segments[index]);
       canonical = canonical ? `${canonical}/${canonicalSegment}` : canonicalSegment;
       const existingRaw = canonicalPrefixes.get(canonical);
       if (existingRaw !== void 0 && existingRaw !== raw) return { ok: false, reason: "collision" };

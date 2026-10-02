@@ -100236,6 +100236,9 @@ function publicTreePathFromRequest(rawPathname) {
   if (!decoded.startsWith("/") || /%[0-9a-f]{2}/i.test(decoded)) return null;
   return normalizePublicTreePath(decoded.slice(1));
 }
+function publicTreeCollisionKey(value) {
+  return value.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC").replace(new RegExp("\\p{Default_Ignorable_Code_Point}", "gu"), "").normalize("NFKC");
+}
 function validatePublicTreeFileSet(files) {
   if (files.length > PUBLIC_TREE_LIMITS.files) return { ok: false, reason: "files" };
   const canonicalPrefixes = /* @__PURE__ */ new Map();
@@ -100250,7 +100253,7 @@ function validatePublicTreeFileSet(files) {
     let raw = "";
     for (let index = 0; index < segments.length; index += 1) {
       raw = raw ? `${raw}/${segments[index]}` : segments[index];
-      const canonicalSegment = segments[index].normalize("NFC");
+      const canonicalSegment = publicTreeCollisionKey(segments[index]);
       canonical = canonical ? `${canonical}/${canonicalSegment}` : canonicalSegment;
       const existingRaw = canonicalPrefixes.get(canonical);
       if (existingRaw !== void 0 && existingRaw !== raw) return { ok: false, reason: "collision" };
@@ -100292,7 +100295,10 @@ async function createPublicTree(buildDir, files, options = {}) {
     for (const file of normalizedFiles) {
       const destination = path9.join(stagingDir, ...file.path.split("/"));
       await mkdir4(path9.dirname(destination), { recursive: true });
-      await writeFile3(destination, file.contents);
+      await writeFile3(destination, file.contents, { flag: "wx" }).catch((error) => {
+        if (error.code === "EEXIST") throw publicTreeError("Invalid public tree.", `Conflicting public path: ${file.path} already exists in the candidate.`);
+        throw error;
+      });
     }
     await validatePublicTree(stagingDir);
     lease = await createPublicTreeLease(treesDir, nonce);
@@ -100447,7 +100453,7 @@ async function validatePublicTree(root) {
     for (const entry of entries) {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
       validateRelativePublicPath(relativePath);
-      const canonicalPath = relativePath.normalize("NFC");
+      const canonicalPath = relativePath.split("/").map(publicTreeCollisionKey).join("/");
       const collision = canonicalPaths.get(canonicalPath);
       if (collision && collision !== relativePath) {
         throw publicTreeError(
@@ -100583,7 +100589,7 @@ function normalizePublicFiles(files) {
   if (!validation.ok) {
     const hints = {
       path: "Public paths must be bounded safe relative POSIX paths.",
-      collision: "Remove Unicode normalization collisions from public output.",
+      collision: "Remove case or Unicode normalization collisions from public output.",
       files: `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`,
       "file-bytes": validation.reason === "file-bytes" ? `${validation.path} exceeds the per-file public output limit.` : "A public output file exceeds the per-file limit.",
       "total-bytes": "Public output exceeds the aggregate size limit.",
@@ -100992,7 +100998,7 @@ async function mergeProjectPublicFiles(projectDir, generated) {
       for (const name2 of entries.sort()) {
         const filePath = relative ? `${relative}/${name2}` : name2;
         if (normalizePublicTreePath(filePath) === null) throw invalid2("Public paths must be bounded safe relative POSIX paths.");
-        if (filePath.split("/")[0].toLowerCase() === "__sporades") throw invalid2("public/__sporades is reserved for Sporades HTTP routes.");
+        if (publicTreeCollisionKey(filePath.split("/")[0]) === "__sporades") throw invalid2("public/__sporades is reserved for Sporades HTTP routes.");
         const source = process.platform === "linux" ? `/proc/self/fd/${handle.fd}/${name2}` : path10.join(directory, name2);
         const stats = await lstat6(source);
         if (stats.isSymbolicLink()) throw invalid2(`Replace the symbolic link at public/${filePath} with a regular file.`);
@@ -101007,8 +101013,7 @@ async function mergeProjectPublicFiles(projectDir, generated) {
           if (!opened.isFile() || opened.dev !== stats.dev || opened.ino !== stats.ino) throw invalid2("Public source changed during the build; retry.");
           const claim = { path: filePath, size: opened.size };
           const candidate = [...claims, claim];
-          let validation = validatePublicTreeFileSet(candidate);
-          if (validation.ok) validation = validatePublicTreeFileSet(candidate.map((file2) => ({ ...file2, path: file2.path.toLowerCase() })));
+          const validation = validatePublicTreeFileSet(candidate);
           if (!validation.ok) {
             const hints = {
               path: "Public paths must be bounded safe relative POSIX paths.",
