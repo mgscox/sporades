@@ -896,3 +896,92 @@ the original project files directly: `sporades dev` never snapshots, validates,
 or mounts `deploy.files`, so a missing or symlinked declaration only fails
 `sporades deploy` and `sporades host push`. Application code owns reading and reloading them;
 Sporades does not watch or reload configuration for the application.
+
+## Request-admission policy publication
+
+Declare one deployer-owned JSON seed separately from writable `deploy.files`:
+
+```json
+{
+  "admissionPolicy": { "path": "config/admission.json" }
+}
+```
+
+Example v1 policy:
+
+```json
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "blocked-path",
+      "enabled": true,
+      "conditions": [{ "kind": "pathname", "exact": "/blocked" }],
+      "action": { "kind": "deny" }
+    }
+  ]
+}
+```
+
+This slice publishes and loads generations only. It does not enforce requests.
+Rules retain array order, stable unique IDs (1–64 ASCII letters, digits, `.`, `_`,
+`-`, starting with a letter or digit), explicit Boolean `enabled`, and one or more
+AND conditions. The closed v1 vocabulary is:
+
+| Condition/action | JSON fields |
+| --- | --- |
+| Method | `kind: "method"`, uppercase `value` (1–32 letters) |
+| Pathname | `kind: "pathname"`, exactly one of `exact` or `prefix` |
+| Address/CIDR | `kind: "address"`, IPv4/IPv6 `value` with optional valid prefix length |
+| Header | `kind: "header"`, lowercase token `name`, optional exact `value`; omitted value means presence |
+| Query key | `kind: "query-key"`, `name` (presence only) |
+| Denial | `kind: "deny"` |
+| Fixed-window quota | `kind: "rate-limit"`, integer `limit` (1–1,000,000), integer `windowMs` (1,000–86,400,000) |
+
+Unknown fields, versions, match kinds and actions fail validation. Paths must be
+absolute canonical pathnames, without percent escapes, backslashes, query or
+fragment components or dot-segment normalization. Prefixes are segment-aware
+when enforcement is introduced. Rules cannot name the runtime-health or
+connection-token controls, or a prefix covering them. Header matching excludes
+credentials, cookies and internal/proxy address headers. Address provenance,
+request canonicalization, matching and quota enforcement are subsequent slices.
+
+Bounds are 65,536 UTF-8 bytes, nesting depth 8 (root depth 0), 128 rules,
+16 conditions per rule, and 1,024 UTF-8 bytes per match string. An empty rule array
+is valid. The seed and active stored policy must be contained regular files with
+no symlinks or hard links. The seed cannot overlap any `deploy.files` path or a
+Sporades-managed path. The internal `"admission"` storage class is not a valid
+project `deploy.files.update` value.
+
+Container and Hosted deployment seeds once into persistent, isolated storage.
+The policy directory mounts read-only at `/run/sporades-admission`, rather than
+at its project-relative source path. Capsule code cannot modify it. Existing
+stored edits and explicit removal survive redeploy, restart and rollback.
+Changing/removing the declaration keeps the inactive copy. In Dev the loader
+reads the project seed; no deployment ownership isolation is promised there.
+
+After the first deployment, publish through the operator boundary:
+
+```sh
+sporades deploy policy publish ./next-policy.json --json
+sporades deploy policy remove --json
+sporades host policy publish ./next-policy.json --host work --subname notes --json
+sporades host policy remove --host work --subname notes --json
+```
+
+These commands require a recorded deployed policy and reuse lifecycle locking;
+interrupted deployment journals require reconciliation first. Publication accepts
+only bounded validated policy JSON, commits by atomic rename and does not require
+a rebuild or restart. Removal writes an explicit internal marker; a transient
+missing/unreadable file retains policy and reports degradation. Publish a valid
+policy again to re-enable it.
+
+Startup loads before Capsule code and app traffic. Invalid configured startup
+fails; hot failures retain the complete immutable last-known-good generation.
+The runtime polls every two seconds and swaps complete generations atomically,
+meeting the ten-second update target under normal scheduling. The Host-authenticated
+runtime-health response adds `data.runtime.admissionPolicy` with only `state`
+(`healthy`, `degraded`, `disabled`) and active SHA-256 `digest` or `null`.
+Platform reload events report the same fields on load, degradation and recovery.
+They contain no rule or match values. No declaration adds no loader, policy
+fields or policy logs. See [the authority ADR](../adr/0054-request-admission-policy-is-deployer-owned.md).

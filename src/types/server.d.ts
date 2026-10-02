@@ -1423,3 +1423,6 @@ export function Reference(targetTable: string): ReferenceFieldBuilder;
 
 /** Explicit private-File Bearer admission; omitted read scopes leave policy to ownership and File ACL rules. */
 export type CapsuleFileAccessKeyPolicy = { read: { scopes?: readonly string[] } };
+
+/** Deployer-owned v1 request-admission JSON; publication does not yet enforce traffic. */
+export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionPolicyConfig } from "./admission-policy.js";

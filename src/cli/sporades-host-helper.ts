@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
+import { admissionStorageRoot, publishAdmissionPolicy, parseAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS } from "../admission-policy.js";
+import { readDeployFile, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
@@ -555,6 +556,7 @@ function managedRouteMutationLockIdentity(request: HostHelperRequest) {
     case "capsule.delete": validateDeleteRequest(request); break;
     case "capsule.release.install": validateInstallRequest(request); break;
     case "capsule.release.rollback": validateRollbackRequest(request); break;
+    case "capsule.admission.publish":
     case "capsule.release.reconcile":
     case "capsule.resume":
     case "capsule.shutdown.checkpoint":
@@ -930,6 +932,23 @@ async function dispatchMain(request: HostHelperRequest) {
           : null;
     if (!data) throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, check, enable, or disable.");
     writeEnvelope({ ok: true, data, error: null });
+    return;
+  }
+  if (request.action === "capsule.admission.publish") {
+    validateLifecycleRequest(request);
+    const contents = request.admission?.contents;
+    if (contents !== null && (typeof contents !== "string" || contents.length > Math.ceil(ADMISSION_LIMITS.bytes / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(contents))) throw helperError("Invalid admission publication.", "Publish a bounded v1 policy.");
+    const bytes = contents === null ? null : Buffer.from(contents, "base64");
+    if (bytes) parseAdmissionPolicy(bytes);
+    const record = await readRegistryRecordForCapsule(request, "lifecycle");
+    assertRegistryRecordMatchesRequest(request, record);
+    const release = normaliseReleaseHistory(record).find((entry: any) => entry.id === record.currentRelease?.id);
+    const policy = resolveDeployFiles(release?.source?.deployFiles, true).find(file => file.update === "admission");
+    if (!policy) throw helperError("The deployed Capsule has no admission policy.", "Declare admissionPolicy.path and push it first.");
+    const paths = canonicalReleasePaths(request);
+    if (await readPreservedFileAttempt(attemptJournalPath(hostedPreservedFilesRoot(paths)))) throw helperError("Interrupted deployment requires recovery.", "Run sporades host reconcile first.");
+    await publishAdmissionPolicy(admissionStorageRoot(hostedPreservedFilesRoot(paths)), policy.path, bytes);
+    writeEnvelope({ ok: true, data: { published: true, removed: bytes === null, digest: bytes ? parseAdmissionPolicy(bytes).digest : null }, error: null });
     return;
   }
   if (request.action === "capsule.register") {
@@ -1496,9 +1515,17 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   let installedInventory: ReleaseFileIdentity[];
   try {
     installedInventory = await validateExtractedReleaseTree(tempReleaseDirectory, validatedArchive.files);
+    const admission = resolveDeployFiles(release.deployFiles, true).find(file => file.update === "admission");
+    if (admission) {
+      let config;
+      try { config = JSON.parse((await readDeployFile(tempReleaseDirectory, "sporades.json", 1024 * 1024)).toString("utf8")); }
+      catch { throw helperError("Invalid admission release configuration.", "Publish valid sporades.json of at most 1 MiB."); }
+      if (resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files) !== admission.path) throw helperError("Invalid admission manifest.", "Rebuild the declared policy.");
+      parseAdmissionPolicy(await readDeployFile(tempReleaseDirectory, admission.path, ADMISSION_LIMITS.bytes));
+    }
     // Local staging stays private; grant only the Hosted runtime read access
     // to the validated additional files after extraction.
-    for (const file of resolveDeployFiles(release.deployFiles)) {
+    for (const file of resolveDeployFiles(release.deployFiles, true)) {
       await prepareHostedRuntimeFileAccess(path.join(tempReleaseDirectory, file.path), 0o400, {
         message: "Unsafe additional release file.", hint: "Upload regular deployment files.",
       });
@@ -1537,7 +1564,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   const createdSeeds: PreservedSeed[] = [];
   let seedJournal: string | undefined;
   try {
-    seedJournal = await beginPreservedFileAttempt(hostedPreservedFilesRoot(paths), release.id, resolveDeployFiles(release.deployFiles).length > 0);
+    seedJournal = await beginPreservedFileAttempt(hostedPreservedFilesRoot(paths), release.id, resolveDeployFiles(release.deployFiles, true).length > 0);
     if (seedJournal) activePreservedAttempts.add(seedJournal);
   } catch (error) {
     await removeInstalledReleasePrivateKey(release, paths);
@@ -1545,7 +1572,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
     throw error;
   }
   try {
-    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, hostedPreservedFilesRoot(paths), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
+    await preparePreservedFiles(resolveDeployFiles(release.deployFiles, true), paths.release, hostedPreservedFilesRoot(paths), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
     await symlink(paths.release, tempCurrentLink);
     await rename(tempCurrentLink, paths.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
@@ -3291,7 +3318,8 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
     data: { host: paths.data, container: "/app/data", mode: "rw" },
   };
   const deployRelease = normaliseReleaseHistory(registryRecord).find((entry: any) => entry.id === (options.releaseId ?? registryRecord?.currentRelease?.id));
-  const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles), currentLink, path.join(paths.capsule, "preserved-files"));
+  const admissionPolicyPath = resolveDeployFiles(deployRelease?.source?.deployFiles, true).find(file => file.update === "admission")?.path ?? null;
+  const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles, true), currentLink, path.join(paths.capsule, "preserved-files"));
   const fileMounts = authoritativeSshAuthorizedKeysMount(
     authoritativeSealedServerEnvPrivateKeyMount(
       provided.mounts?.files ?? defaultMounts.files,
@@ -3364,6 +3392,7 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
     routes: canonicalRoutes,
   });
   return {
+    admissionPolicyPath,
     subname,
     domain,
     hostedUrl,
@@ -5051,6 +5080,8 @@ async function dockerRunArgs(lifecycle: HostedCapsuleLifecycle, releaseId: strin
     "--env",
     "SPORADES_SECURITY_SESSION=hosted",
     "--env",
+    `SPORADES_ADMISSION_POLICY_PATH=${lifecycle.admissionPolicyPath ?? ""}`,
+    "--env",
     "SPORADES_CLAMAV_MANAGED=1",
     "--env",
     `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbe.token}`,
@@ -5907,7 +5938,7 @@ async function recordReleaseUploaded(request: HostHelperRequest, release: HostHe
         hostedUrl: release.hostedUrl ?? entry.source?.hostedUrl ?? null,
         remoteCapsuleId: release.remoteCapsuleId ?? entry.source?.remoteCapsuleId ?? null,
         files: Array.isArray(release.files) ? [...release.files] : [],
-        deployFiles: resolveDeployFiles(release.deployFiles),
+        deployFiles: resolveDeployFiles(release.deployFiles, true),
         fileInventory: fileInventory.map((file) => ({ ...file })),
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
         inspection: Array.isArray(release.inspection?.requiredInspectors)
@@ -6655,7 +6686,8 @@ async function preparePreservedReleaseFiles(request: HostHelperRequest, recorded
   if (interrupted) {
     throw helperError("Interrupted deploy.files attempt requires recovery.", "Run `sporades host reconcile <subname>` to settle the interrupted release install before starting, restarting or selecting a release.");
   }
-  for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
+  for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles, true)) {
+    if (file.update === "admission") { await assertPreservedDeployFile(admissionStorageRoot(hostedPreservedFilesRoot(paths)), file.path); continue; }
     if (file.update !== "preserve") continue;
     const target = await assertPreservedDeployFile(hostedPreservedFilesRoot(paths), file.path);
     await prepareHostedRuntimeFileAccess(target, 0o600, { message: "Unsafe preserved release file.", hint: "Restore a regular preserved file before restarting." });
