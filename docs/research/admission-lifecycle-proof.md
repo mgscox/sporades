@@ -4,13 +4,17 @@ Status: pending. This is the remaining verification plan for
 [issue #73](https://github.com/mgscox/sporades/issues/73), not an execution report
 or evidence that request admission is complete.
 
+Regression fixture fixes and regression-suite results on the draft PR do not
+prove the lifecycle scenarios below. The PR does not close #73 and must remain
+an unmerged draft while the dependency and acceptance work are outstanding.
+
 ## Dependency gate
 
 On 2026-10-02, GitHub's native dependency graph still marked
 [issue #72](https://github.com/mgscox/sporades/issues/72) open. It supplies the
 bounded, redacted counters, policy digest, reload health and existing inspection
 surfaces needed to prove this lifecycle. Recheck that dependency before starting
-the acceptance run. A documentation-only draft must not be merged as completion
+the acceptance run. A planning-only draft must not be merged as completion
 of #73.
 
 ## Local harness
