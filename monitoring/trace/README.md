@@ -1,6 +1,6 @@
 # Standalone monitoring stack
 
-This directory runs authenticated OTLP/HTTP traces, independent API metrics, and periodic process resource and pressure metrics for enabled Capsules. Jaeger remains at the protected gateway root; Grafana provisions **Sporades Capsule API** at `/grafana/d/sporades-api` and **Sporades Capsule Resources** at `/grafana/d/sporades-resources`. The stack is independent of a Sporades Host and can run on a separate VM. Container/Host collectors, alert routing, and Host relay are separate increments.
+This directory runs authenticated OTLP/HTTP traces, independent HTTP/WebSocket operation metrics, and periodic process resource and pressure metrics for enabled Capsules. Jaeger remains at the protected gateway root; Grafana provisions **Sporades Capsule API** at `/grafana/d/sporades-api` and **Sporades Capsule Resources** at `/grafana/d/sporades-resources`. The stack is independent of a Sporades Host and can run on a separate VM. Container/Host collectors, alert routing, and Host relay are separate increments.
 
 ## Requirements and images
 
@@ -51,3 +51,15 @@ Caddy graphs use the top-level subroute handler only; do not add these edge coun
 to Capsule request counts. Host data does not attribute resource use to a
 container. See the Sporades server-installation guide for resource lifecycle,
 private networking, real filesystem coverage and rollback.
+
+## WebSocket operation signals
+
+The Capsule API dashboard includes WebSocket query/mutation throughput, p95
+execution duration, errors/denials/cancellations and accepted active connections.
+These panels use Service, Environment and Metric window; HTTP Route does not
+filter them. Counters and duration histograms are independent of trace sampling.
+In Jaeger, inspect `websocket.query` or `websocket.mutation` and their database
+children. Refreshes are separate root traces; connections and subscriptions have
+no lifetime span. Cancellation settles telemetry without aborting app work.
+See the [operator signal reference](https://mgscox.github.io/sporades/reference/projects-and-configuration#websocket-operation-signals)
+for exact names, units, outcome labels, correlation validation and privacy limits.

@@ -6,6 +6,7 @@ Changes since v0.9.30.
 
 ### 🚀 Features
 
+- Trace individual WebSocket query and mutation executions with isolated context, cancellation outcomes, independent operation metrics and active connections (#125).
 - Include optional project `public/` files in Dev, Container, and Hosted releases, with stable paths, Dev rebuilding, collision checks, and XML MIME handling (#187).
 - Open telemetry docs (a1ef804f).
 - Enable Host-owned telemetry coverage for Hosted Capsules (7b1af535).
@@ -165,7 +166,6 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
 
 
 
