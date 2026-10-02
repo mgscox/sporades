@@ -15588,3 +15588,64 @@ test("Hosted admission policy uses Host-owned read-only storage and authorized p
     assert.equal(JSON.parse(await readFile(file,"utf8")).removed,true);
   });
 });
+
+test("Hosted admission publication denies untrusted authority without mutation or Docker operations", async (t) => {
+  const messages = {
+    "registry identity mismatch": "Hosted Capsule registry record does not match the release request.",
+    "interrupted deployment journal": "Interrupted deployment requires recovery.",
+    "undeclared policy": "The deployed Capsule has no admission policy.",
+    "symlink storage": "Unsafe admission storage.",
+  };
+  const policy = id => Buffer.from(JSON.stringify({ version: 1, rules: [{
+    id, enabled: true, conditions: [{ kind: "header", name: "x-policy-test", value: "private-policy-value" }], action: { kind: "deny" },
+  }] }));
+  for (const scenario of ["registry identity mismatch", "interrupted deployment journal", "undeclared policy", "symlink storage"]) {
+    await t.test(scenario, async () => withTempDir(async dir => {
+      const docker = await installFakeDocker(path.join(dir, "denied-admission-docker"));
+      await writeFile(path.join(dir, "denied-admission-docker", "docker-calls.jsonl"), "");
+      const fixture = await writeHostedCapsuleInstallFixture(dir, {
+        rootName: "denied-admission-host", previousReleaseId: null,
+        deployFiles: [{ path: "policy.json", update: "admission" }],
+        admissionPolicy: { path: "policy.json" }, fileContents: policy("retained-policy").toString(),
+      });
+      const target = { host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+      const installed = await runHostHelper({ ...target, action: "capsule.release.install", release: { ...fixture.release, restart: false } }, { cwd: dir, env: docker.env });
+      assert.equal(JSON.parse(installed.stdout).ok, true, installed.stdout + installed.stderr);
+      const storage = path.join(fixture.capsuleDir, "preserved-files", "admission");
+      const file = preservedDeployFilePath(storage, "policy.json");
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      if (scenario === "registry identity mismatch") {
+        record.remoteCapsuleId = `${fixture.domain}/another-capsule`;
+        await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      } else if (scenario === "interrupted deployment journal") {
+        await writeFile(path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl"), JSON.stringify({
+          release: "interrupted-attempt", preservedRoot: path.join(fixture.capsuleDir, "preserved-files"),
+        }) + "\n");
+      } else if (scenario === "undeclared policy") {
+        record.releases.find(release => release.id === record.currentRelease.id).source.deployFiles = [];
+        await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      } else {
+        await rename(storage, `${storage}-retained`);
+        await symlink(`${storage}-retained`, storage);
+      }
+      const bytesBefore = await readFile(file);
+      const registryBefore = await readFile(fixture.registryRecordPath);
+      const dockerBefore = await docker.calls();
+      // The same authority boundary applies to replacement and explicit removal.
+      for (const contents of [policy("replacement-policy").toString("base64"), null]) {
+        const result = await runHostHelper({ ...target, action: "capsule.admission.publish", admission: { contents } }, { cwd: dir, env: docker.env });
+        const output = JSON.parse(result.stdout);
+        assert.equal(output.ok, false, result.stdout);
+        assert.equal(result.stderr, "");
+        assert.equal(output.data, null);
+        assert.equal(output.error.message, messages[scenario]);
+        for (const sensitive of ["private-policy-value", "retained-policy", "replacement-policy", contents, storage, "Error:", " at "]) {
+          if (sensitive) assert(!result.stdout.includes(sensitive), `denial exposes ${sensitive}`);
+        }
+        assert.deepEqual(await readFile(file), bytesBefore);
+        assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
+        assert.deepEqual(await docker.calls(), dockerBefore);
+      }
+    }));
+  }
+});
