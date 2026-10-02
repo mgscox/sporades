@@ -68,7 +68,7 @@ export function outboundFetchTelemetry(tracer: Tracer, parent: Span, origins: Re
       const context = span.spanContext();
       if (/^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) && /^[0-9a-f]{16}$/.test(context.spanId) && !/^0+$/.test(context.spanId)) {
         try {
-          const headers = new Headers(init?.headers ?? request?.headers);
+          const headers = new Headers(init?.headers === undefined ? request?.headers : init.headers);
           headers.set("traceparent", `00-${context.traceId}-${context.spanId}-${context.traceFlags & TraceFlags.SAMPLED ? "01" : "00"}`);
           forwarded = { ...init, headers };
         } catch { /* Invalid caller input must retain native fetch's rejection. */ }
@@ -82,10 +82,12 @@ export function outboundFetchTelemetry(tracer: Tracer, parent: Span, origins: Re
       return response;
     } catch (error) {
       let outcome = "network_error";
-      if (signal?.aborted) {
-        outcome = "cancelled";
-        try { if (signal.reason?.name === "TimeoutError") outcome = "timeout"; } catch { /* Caller-owned abort reasons are opaque. */ }
-      }
+      try {
+        if (signal?.aborted) {
+          outcome = "cancelled";
+          if (signal.reason?.name === "TimeoutError") outcome = "timeout";
+        }
+      } catch { /* Invalid signals and caller-owned abort reasons are opaque. */ }
       span.setAttribute("sporades.http.outcome", outcome);
       span.setStatus({ code: SpanStatusCode.ERROR });
       throw error;

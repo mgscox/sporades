@@ -128455,7 +128455,7 @@ function outboundFetchTelemetry(tracer, parent, origins, active) {
       const context2 = span.spanContext();
       if (/^[0-9a-f]{32}$/.test(context2.traceId) && !/^0+$/.test(context2.traceId) && /^[0-9a-f]{16}$/.test(context2.spanId) && !/^0+$/.test(context2.spanId)) {
         try {
-          const headers = new Headers(init?.headers ?? request?.headers);
+          const headers = new Headers(init?.headers === void 0 ? request?.headers : init.headers);
           headers.set("traceparent", `00-${context2.traceId}-${context2.spanId}-${context2.traceFlags & TraceFlags.SAMPLED ? "01" : "00"}`);
           forwarded = { ...init, headers };
         } catch {
@@ -128470,12 +128470,12 @@ function outboundFetchTelemetry(tracer, parent, origins, active) {
       return response;
     } catch (error) {
       let outcome = "network_error";
-      if (signal?.aborted) {
-        outcome = "cancelled";
-        try {
+      try {
+        if (signal?.aborted) {
+          outcome = "cancelled";
           if (signal.reason?.name === "TimeoutError") outcome = "timeout";
-        } catch {
         }
+      } catch {
       }
       span.setAttribute("sporades.http.outcome", outcome);
       span.setStatus({ code: SpanStatusCode.ERROR });

@@ -45,10 +45,11 @@ test('installed CLI resolves a verified Host profile and redacts the scoped cred
   const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, 'config'), SPORADES_TEST_CAPTURE: capture, TRACE_INGEST_TOKEN: 'private-test-ingest-token', PATH: `${bin}${path.delimiter}${process.env.PATH}` };
   const cli = (...args) => spawnSync(process.execPath, ['bin/sporades.js', ...args], { cwd: process.cwd(), encoding: 'utf8', env });
   try {
-    assert.equal(cli('host', 'add', 'remote', '--server', 'host.example', '--domain', 'capsules.example', '--json').status, 0);
+    const addedHost = cli('host', 'add', 'remote', '--server', 'host.example', '--domain', 'capsules.example', '--json');
+    assert.equal(addedHost.status, 0, addedHost.stdout + addedHost.stderr);
     assert.equal(cli('telemetry', 'profile', 'add', 'remote', '--endpoint', 'https://monitor.example:4318', '--credential-env', 'TRACE_INGEST_TOKEN', '--trace-propagation-origin', 'https://dependency.example', '--json').status, 0);
     const connected = cli('host', 'telemetry', 'connect', '--host', 'remote', '--profile', 'remote', '--json');
-    assert.equal(connected.status, 0, connected.stderr);
+    assert.equal(connected.status, 0, connected.stdout + connected.stderr);
     assert.equal(JSON.parse(connected.stdout).data.action, 'host.telemetry.connect');
     assert.doesNotMatch(connected.stdout + connected.stderr, /private-test-ingest-token/);
     const request = JSON.parse(await readFile(capture, 'utf8'));

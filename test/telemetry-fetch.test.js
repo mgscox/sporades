@@ -116,3 +116,32 @@ test('propagation policy is bounded, exact and rejects secret-bearing input', ()
     assert.throws(() => validateTracePropagationOrigins(value), /Invalid trace propagation origins/);
   }
 });
+
+test('approved propagation preserves native invalid-input rejections without sending a request', async () => {
+  const original = globalThis.fetch;
+  let calls = 0;
+  const dependency = createServer((_req, res) => { calls++; res.end('unexpected'); }).listen(0, '127.0.0.1');
+  await once(dependency, 'listening');
+  const origin = `http://127.0.0.1:${dependency.address().port}`;
+  const telemetry = createHttpRequestTelemetry({ endpoint: 'http://127.0.0.1:19999', tls: { mode: 'loopback' }, serviceName: 'invalid-fetch', tracePropagationOrigins: [origin] });
+  let failure;
+  const app = createServer((req, res) => telemetry.run(req, res, [], async () => {
+    try {
+      for (const input of [origin, new Request(origin, { headers: { authorization: 'private-input-credential' } })]) {
+        for (const init of [{ redirect: 'manual', headers: null }, { redirect: 'error', headers: null },
+          { redirect: 'manual', signal: { get aborted() { throw new Error('private-signal-getter'); } } }]) {
+          const expected = await original(input, init).then(() => null, error => error);
+          const actual = await fetch(input, init).then(() => null, error => error);
+          assert(expected instanceof TypeError); assert(actual instanceof TypeError);
+          assert.equal(actual.message, expected.message);
+        }
+      }
+    } catch (error) { failure = error; }
+    res.end('checked');
+  })).listen(0, '127.0.0.1'); await once(app, 'listening');
+  try {
+    assert.equal(await (await original(`http://127.0.0.1:${app.address().port}`)).text(), 'checked');
+    if (failure) throw failure;
+    assert.equal(calls, 0);
+  } finally { await telemetry.shutdown(); await Promise.all([close(app), close(dependency)]); }
+});
