@@ -326,7 +326,9 @@ function compiledCapsuleModule() {
 // which does not care about the Capsule's own source cannot accidentally build from nothing.
 async function buildBundle(inputs, options = {}) {
   const serverModuleSource = inputs.serverModuleSource ?? (await compiledCapsuleModule());
-  return createServerBundleModuleSource({ ...inputs, serverModuleSource, ...options });
+  return createServerBundleModuleSource({ ...inputs, serverModuleSource, ...options,
+    epilogue: `${options.epilogue ?? ""}\nprocess.stdout.write(JSON.stringify({ __sporadesTestListeningPort: server.address().port }) + "\\n");`,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -360,10 +362,11 @@ async function writePublicTree(dir, html) {
 async function bootBundle({ source, dir, env = {} }) {
   const bundlePath = path.join(dir, "server.mjs");
   await writeFile(bundlePath, source);
-  const port = await reserveFreePort();
+  // Let the kernel allocate the listening port; reserving then closing a socket
+  // races with other desks running the same generated-Bundle acceptance.
   const child = spawn(process.execPath, [bundlePath], {
     cwd: dir,
-    env: { ...process.env, PORT: String(port), SPORADES_RUNTIME_PROBE_TOKEN: "a".repeat(64), ...env },
+    env: { ...process.env, PORT: "0", SPORADES_RUNTIME_PROBE_TOKEN: "a".repeat(64), ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
@@ -373,13 +376,15 @@ async function bootBundle({ source, dir, env = {} }) {
   child.stdout.on("data", (chunk) => { stdout += chunk; });
   child.on("exit", (code, signal) => { exited = { code, signal }; });
 
-  const baseUrl = `http://127.0.0.1:${port}`;
+  let baseUrl;
   const deadline = Date.now() + BOOT_TIMEOUT_MS;
   for (;;) {
     if (exited) {
       throw new Error(`Bundle exited before it listened (code ${exited.code}, signal ${exited.signal}).\n${stderr}\n${stdout}`);
     }
-    const reached = await fetch(`${baseUrl}/__sporades/health/runtime`, {
+    const signal = stdout.split("\n").map(line => { try { return JSON.parse(line); } catch { return null; } }).find(value => Number.isInteger(value?.__sporadesTestListeningPort));
+    if (signal) baseUrl = `http://127.0.0.1:${signal.__sporadesTestListeningPort}`;
+    const reached = baseUrl && await fetch(`${baseUrl}/__sporades/health/runtime`, {
       headers: { "x-sporades-host-probe": "a".repeat(64) },
     }).then(() => true, () => false);
     if (reached) break;
