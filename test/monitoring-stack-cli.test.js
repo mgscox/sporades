@@ -7,12 +7,18 @@ import { join } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
 
-function command(bin, args, cwd, env = process.env) {
+function runCommand(bin, args, cwd, env = process.env) {
   return spawnSync(process.execPath, [bin, ...args], { cwd, env, encoding: 'utf8' });
 }
 
 test('packed CLI generates a stack outside checkout and preserves operator state', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'sporades package '));
+  // Initialization and validation need version discovery, not a live Docker daemon.
+  const supportedDocker = join(temp, 'supported docker');
+  await mkdir(supportedDocker);
+  await writeFile(join(supportedDocker, 'docker'), '#!/bin/sh\nif [ "$1" = "compose" ] && [ "$2" = "version" ]; then echo 2.40.3; elif [ "$1" = "version" ]; then echo 29.0.0; else exit 1; fi\n', { mode: 0o755 });
+  const supportedEnv = { ...process.env, PATH: `${supportedDocker}:${process.env.PATH}` };
+  const command = (bin, args, cwd, env = supportedEnv) => runCommand(bin, args, cwd, env);
   const packed = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp], { cwd: root, encoding: 'utf8' });
   assert.equal(packed.status, 0, packed.stderr);
   const filename = JSON.parse(packed.stdout)[0].filename;

@@ -91,7 +91,7 @@ async function withTempDir(fn) {
 async function withHttpServer(handler, fn) {
   const server = createServer(handler);
   await new Promise((resolve) => {
-    server.listen(0, "::1", resolve);
+    server.listen(0, "127.0.0.1", resolve);
   });
   try {
     return await fn(server.address().port);
@@ -1291,7 +1291,7 @@ async function createTarGz(archivePath, sourceDir, entries) {
   const result = await new Promise((resolve) => {
     // Preserve explicitly supplied hostile entries, but omit incidental macOS xattrs.
     // GNU tar otherwise encodes a duplicate file argument as a hard link.
-    const regularFileArgs = process.platform === "linux" ? ["--hard-dereference"] : [];
+    const regularFileArgs = process.platform === "linux" ? ["--hard-dereference", "--absolute-names"] : [];
     const child = spawn("tar", ["-czf", archivePath, ...regularFileArgs, "-C", sourceDir, ...entries], {
       env: { ...process.env, COPYFILE_DISABLE: "1" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -1315,7 +1315,7 @@ async function createTarGzWithTransforms(archivePath, sourceDir, transforms, ent
   const transformArgs = transforms.flatMap((rule) => process.platform === "darwin"
     ? ["-s", rule]
     : ["--transform", `s${rule}`]);
-  const args = ["-czf", archivePath, "-C", sourceDir, ...transformArgs, ...entries];
+  const args = ["-czf", archivePath, ...(process.platform === "linux" ? ["--absolute-names"] : []), "-C", sourceDir, ...transformArgs, ...entries];
   const result = await new Promise((resolve) => {
     const child = spawn("tar", args, {
       env: { ...process.env, COPYFILE_DISABLE: "1" },
