@@ -5,7 +5,7 @@ export function validateTracePropagationOrigins(value) {
     if (!Array.isArray(value) || value.length > 32)
         throw new Error("Invalid trace propagation origins.");
     return [...new Set(value.map((entry) => {
-            if (typeof entry !== "string" || entry.length > 2048 || /[\s\\]/.test(entry))
+            if (typeof entry !== "string" || entry.length > 2048 || !/^https?:\/\/[^/?#]+\/?$/i.test(entry) || /[\s\\*]/.test(entry))
                 throw new Error("Invalid trace propagation origins.");
             let url;
             try {

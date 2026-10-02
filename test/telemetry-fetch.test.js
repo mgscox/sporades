@@ -112,7 +112,7 @@ test('disabled telemetry leaves fetch untouched; blocked exports preserve depend
 
 test('propagation policy is bounded, exact and rejects secret-bearing input', () => {
   assert.deepEqual(validateTracePropagationOrigins(['https://EXAMPLE.com:443/', 'https://example.com']), ['https://example.com']);
-  for (const value of ['https://example.com', Array(33).fill('https://example.com'), ['*'], ['https://user:private@example.com'], ['https://example.com/private'], ['https://example.com?'], ['https://example.com#'], ['ftp://example.com'], [' https://example.com']]) {
+  for (const value of ['https://example.com', Array(33).fill('https://example.com'), ['*'], ['https://*.example.com'], ['https:example.com'], ['https://example.com/.'], ['https://user:private@example.com'], ['https://example.com/private'], ['https://example.com?'], ['https://example.com#'], ['ftp://example.com'], [' https://example.com']]) {
     assert.throws(() => validateTracePropagationOrigins(value), /Invalid trace propagation origins/);
   }
 });
