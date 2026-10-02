@@ -5,6 +5,7 @@ import { request as httpsRequest } from "node:https";
 import path from "node:path";
 import { SPORADES_BASE_IMAGE } from "../base-image.js";
 import { helperError } from "./cli-support.js";
+import { inventoryHost } from "./inventory-contract.js";
 import { configureHostMetrics, hostMetricsStatus, hostScrapeConfig, readHostMetrics, HOST_METRICS_NETWORK } from "./host-metrics.js";
 const RELAY_IMAGE = "otel/opentelemetry-collector-contrib:0.138.0";
 const RELAY_NAME = "sporades-telemetry-relay";
@@ -18,7 +19,7 @@ export function validateHostRelayConnection(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
         invalid();
     const input = value;
-    if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key)))
+    if (Object.keys(input).some((key) => !["endpoint", "credential", "inventoryCredential", "inventoryHost", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key)))
         invalid();
     if (typeof input.endpoint !== "string" || input.endpoint.length > 2048)
         invalid();
@@ -32,6 +33,10 @@ export function validateHostRelayConnection(value) {
     if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash || url.pathname !== "/")
         invalid();
     if (typeof input.credential !== "string" || !input.credential || input.credential.length > 4096 || /[\x00-\x1f\x7f]/.test(input.credential))
+        invalid();
+    if (input.inventoryCredential !== undefined && (typeof input.inventoryCredential !== "string" || input.inventoryCredential.length < 16 || input.inventoryCredential.length > 4096 || /[\x00-\x20\x7f]/.test(input.inventoryCredential)))
+        invalid();
+    if (input.inventoryHost !== undefined && !inventoryHost(input.inventoryHost))
         invalid();
     if (input.caPem !== undefined && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----")))
         invalid();
@@ -147,12 +152,14 @@ export async function connectHostTelemetryRelay(remoteRoot, network, input, host
     const files = paths(remoteRoot);
     await mkdir(files.directory, { recursive: true, mode: 0o700 });
     await assertOwnedDirectory(files.directory);
-    const resources = host ? await configureHostMetrics(remoteRoot, host) : await readHostMetrics(remoteRoot);
     const previous = await readHostTelemetryConnection(remoteRoot);
+    if (previous?.inventoryHost && connection.inventoryHost && previous.inventoryHost !== connection.inventoryHost)
+        throw helperError("Host inventory identity cannot change.", "Use the persisted exact Host identity when reconnecting; restore retained state rather than resetting authority.");
+    const resources = host ? await configureHostMetrics(remoteRoot, host) : await readHostMetrics(remoteRoot);
     const previousConfig = previous ? await readProtected(files.config) : null;
     const previousCredential = previous ? await readProtected(files.credential) : null;
     const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-    const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
+    const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
     await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 0o644);
     await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
     if (connection.caPem)
@@ -180,6 +187,7 @@ export async function connectHostTelemetryRelay(remoteRoot, network, input, host
         throw error;
     }
     await atomicWrite(files.descriptor, `${JSON.stringify(descriptor, null, 2)}\n`, 0o600);
+    await atomicWrite(path.join(files.directory, "inventory-credential"), `${connection.inventoryCredential ?? connection.credential}\n`, 0o600);
     return await statusHostTelemetryRelay(remoteRoot);
 }
 async function startRelay(files, network, caConfigured) {

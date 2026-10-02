@@ -2,6 +2,8 @@ import { createServer as createHttpServer, request as httpRequest } from 'node:h
 import { createServer as createHttpsServer } from 'node:https';
 import { readFileSync } from 'node:fs';
 import { timingSafeEqual, randomBytes } from 'node:crypto';
+import { createInventoryStore } from './inventory-store.mjs';
+import { inventoryHost, INVENTORY_MAX_BYTES, validateInventory, validateInventoryCredentials } from './inventory-contract.mjs';
 
 const same = (given, expected) => {
   const a = Buffer.from(given ?? '');
@@ -110,6 +112,8 @@ function proxyUi(req, res, target, deadlineMs = UI_REQUEST_DEADLINE_MS) {
 }
 
 export function createGateway(config, tls) {
+  const inventoryCredentials = validateInventoryCredentials(config.inventoryHosts ?? {});
+  const inventoryStore = config.inventoryDirectory ? createInventoryStore(config.inventoryDirectory) : null;
   let recentHealth;
   let healthUntil = 0;
   const handler = async (req, res) => {
@@ -119,10 +123,42 @@ export function createGateway(config, tls) {
           recentHealth = pathReady(config).catch(() => false);
           healthUntil = Date.now() + 3000;
         }
-        const ready = await recentHealth;
+        const ready = await recentHealth && (!inventoryStore || await inventoryStore.ready());
         json(res, ready ? 200 : 503, ready);
       }
       catch { json(res, 503, false); }
+      return;
+    }
+    if (req.url.startsWith('/v1/inventory/')) {
+      const host = req.url.slice('/v1/inventory/'.length);
+      const token = Object.hasOwn(inventoryCredentials, host) ? inventoryCredentials[host] : null;
+      if (!inventoryHost(host) || !token || !same(req.headers.authorization, `Bearer ${token}`)) { json(res, 403, false); return; }
+      if (!inventoryStore) { json(res, 503, false); return; }
+      const respond = (status, data) => {
+        res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ ok: status === 200, data }));
+      };
+      try {
+        if (req.method === 'GET') { respond(200, await inventoryStore.read(host)); return; }
+        if (req.method !== 'PUT') { json(res, 405, false); return; }
+        if (req.headers['content-type'] !== 'application/json' || req.headers['content-encoding']) { json(res, 415, false); return; }
+        let size = 0;
+        const chunks = [];
+        const deadline = setTimeout(() => req.destroy(), 3000);
+        try {
+          for await (const chunk of req) {
+            size += chunk.length;
+            if (size > INVENTORY_MAX_BYTES) { json(res, 413, false); return; }
+            chunks.push(chunk);
+          }
+        } finally { clearTimeout(deadline); }
+        let inventory;
+        try { inventory = validateInventory(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+        catch { json(res, 400, false); return; }
+        if (inventory.host !== host) { json(res, 403, false); return; }
+        const result = await inventoryStore.update(inventory);
+        respond(result.status, result.data);
+      } catch { if (!res.headersSent && !res.destroyed) json(res, 503, false); }
       return;
     }
     if (req.url === '/v1/traces' || req.url === '/v1/metrics') {
@@ -179,6 +215,7 @@ if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
     jaegerUrl: 'http://jaeger:16686',
     prometheusUrl: 'http://prometheus:9090',
     grafanaUrl: 'http://grafana:3000',
+    inventoryDirectory: '/inventory',
   }, tls);
   gateway.listen(8443, '0.0.0.0');
 }

@@ -2,6 +2,8 @@ import { type HostMetrics } from "./host-metrics.js";
 export type HostRelayConnection = {
     endpoint: string;
     credential: string;
+    inventoryCredential?: string;
+    inventoryHost?: string;
     caPem?: string;
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
@@ -19,6 +21,7 @@ export declare function readHostTelemetryConnection(remoteRoot: string): Promise
     internalEndpoint: string;
     caConfigured: boolean;
     connectedAt: string;
+    inventoryHost?: string;
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
 } | null>;

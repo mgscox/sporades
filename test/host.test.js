@@ -6717,7 +6717,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     const telemetryDir = path.join(remoteRoot, "telemetry");
     await mkdir(telemetryDir, { recursive: true, mode: 0o700 });
     await chmod(telemetryDir, 0o700);
-    await writeFile(path.join(telemetryDir, "connection.json"), JSON.stringify({ schemaVersion: 1, endpoint: "https://monitor.example:4318/", network: "sporades-hosted-capsules", internalEndpoint: "http://sporades-telemetry:4318/", caConfigured: false, connectedAt: "2026-09-28T00:00:00.000Z" }), { mode: 0o600 });
+    await writeFile(path.join(telemetryDir, "connection.json"), JSON.stringify({ schemaVersion: 1, endpoint: "https://monitor.example:4318/", network: "sporades-hosted-capsules", internalEndpoint: "http://sporades-telemetry:4318/", caConfigured: false, inventoryHost: "capsules.example.dev", connectedAt: "2026-09-28T00:00:00.000Z" }), { mode: 0o600 });
     const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
     const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
@@ -6891,13 +6891,21 @@ test("sporades host helper starts the current release in Docker and routes throu
       assert.equal(preparedDatabase.uid, 10001);
       assert.equal(preparedDatabase.gid, 10001);
     }
+    const inventoryOutbox = async () => JSON.parse(await readFile(path.join(telemetryDir, "inventory.json"), "utf8"));
+    assert.equal((await inventoryOutbox()).desired.capsules[0].state, "running");
+    const inventoryRevision = (await inventoryOutbox()).desired.revision;
+    assert.doesNotMatch(JSON.stringify(await inventoryOutbox()), /swordfish|runtimeProbe|SECRET_TOKEN/);
     const disabled = await runHostHelper({ action: "host.telemetry.disable", host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot }, capsule: { subname: "team-notes" } }, { cwd: dir, env: docker.env });
     assert.equal(JSON.parse(disabled.stdout).ok, true, disabled.stdout);
     assert.equal(JSON.parse(disabled.stdout).data.coverage.state, "unverified", "the fixture does not prove the running runtime's Telemetry capability");
     assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).telemetry.disabled, true);
+    assert.equal((await inventoryOutbox()).desired.capsules[0].state, "opted-out");
+    assert.equal((await inventoryOutbox()).desired.revision, inventoryRevision + 1);
     const enabled = await runHostHelper({ action: "host.telemetry.enable", host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot }, capsule: { subname: "team-notes" } }, { cwd: dir, env: docker.env });
     assert.equal(JSON.parse(enabled.stdout).ok, true, enabled.stdout);
     assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).telemetry.disabled, false);
+    assert.equal((await inventoryOutbox()).desired.capsules[0].state, "running");
+    assert.equal((await inventoryOutbox()).desired.revision, inventoryRevision + 2);
   });
 });
 

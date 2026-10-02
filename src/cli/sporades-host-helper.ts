@@ -57,6 +57,7 @@ import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
 import { checkHostTelemetryDelivery, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
+import { queueHostInventory, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import {
@@ -165,7 +166,7 @@ runHostHelperEntry().catch((error: HelperError) => {
     },
     false,
   );
-  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host"].includes(process.argv[2])) process.exitCode = 1;
+  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host", "--reconcile-inventory"].includes(process.argv[2])) process.exitCode = 1;
 });
 
 async function runHostHelperEntry() {
@@ -175,6 +176,11 @@ async function runHostHelperEntry() {
   }
   if (["--resume-host", "--checkpoint-host"].includes(process.argv[2])) {
     await resumeHostAtBoot();
+    return;
+  }
+  if (process.argv[2] === "--reconcile-inventory") {
+    const root = Buffer.from(process.argv[3] ?? "", "base64url").toString();
+    writeEnvelope({ ok: true, data: await reconcileHostInventory(root), error: null });
     return;
   }
   await runHostHelperProcess();
@@ -879,7 +885,8 @@ async function hostTelemetryStatusWithCoverage(request: HostHelperRequest, relay
   for (const record of records) {
     if (record.status !== "unregistered") capsules.push(await inspectHostedTelemetryCoverage(request, record, connection));
   }
-  return { ...relay, capsuleCoverage: {
+  const snapshot = await queueHostInventory(request.host.remoteRoot).catch(() => false);
+  return { ...relay, inventory: await hostInventoryStatus(request.host.remoteRoot, snapshot === false), capsuleCoverage: {
     capsules,
     pendingRestart: capsules.filter((capsule) => capsule.restartRequired === true).length,
     pendingCoverage: capsules.filter((capsule) => capsule.state !== "instrumented" && capsule.state !== "disabled").length,
@@ -888,6 +895,17 @@ async function hostTelemetryStatusWithCoverage(request: HostHelperRequest, relay
 }
 
 async function main(request: HostHelperRequest) {
+  try { await dispatchMain(request); }
+  finally {
+    const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.reconcile", "host.telemetry.enable", "host.telemetry.disable"];
+    if (mutations.includes(request.action)) {
+      try { if (await queueHostInventory(request.host.remoteRoot)) kickHostInventory(request.host.remoteRoot); }
+      catch { process.stderr.write("Host inventory is pending; periodic reconciliation will retry.\n"); }
+    }
+  }
+}
+
+async function dispatchMain(request: HostHelperRequest) {
   if (request.action === "schedules.inspect") validateScheduleInspectionRequest(request);
   hostHelperConfig = await loadHostHelperConfig(request);
   if (request.action.startsWith("host.telemetry.")) {
@@ -896,7 +914,10 @@ async function main(request: HostHelperRequest) {
       throw helperError("Invalid Host Telemetry request.", "Upgrade the local CLI and Host helper together.");
     }
     validateCanonicalHostRouteRoot(request);
-    const data = capsuleOperation
+    if (request.action === "host.telemetry.connect" || request.action === "host.telemetry.reconcile") await installHostInventoryWorker(request.host.remoteRoot);
+    const data = request.action === "host.telemetry.inventory-export" ? { inventory: await exportHostInventory(request.host.remoteRoot) }
+      : request.action === "host.telemetry.inventory-reconcile" ? await reconcileHostInventory(request.host.remoteRoot)
+      : capsuleOperation
       ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable")
       : request.action === "host.telemetry.connect"
       ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain))
@@ -1090,6 +1111,7 @@ async function bootstrapHost(request: HostHelperRequest) {
   const accessLog = await provisionCaddyAccessLog(request, bootstrap);
   const caddy = await installCaddyBootstrapConfig(request, bootstrap);
   const autostart = await installHostAutostart(request.host);
+  const inventoryWorker = await installHostInventoryWorker(request.host.remoteRoot);
   const telemetry = await readHostTelemetryConnection(request.host.remoteRoot)
     ? await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain) : null;
 
@@ -1098,6 +1120,7 @@ async function bootstrapHost(request: HostHelperRequest) {
     data: {
       bootstrapped: true,
       autostart,
+      inventoryWorker,
       telemetry,
       domain: request.host.domain,
       remoteRoot: request.host.remoteRoot,

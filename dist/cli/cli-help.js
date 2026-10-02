@@ -150,6 +150,8 @@ Options for profile add:
   --endpoint <url>        OTLP/HTTP base origin (HTTPS, or HTTP loopback with --loopback)
   --dashboard <url>       Optional dashboard HTTPS URL
   --credential-env <KEY>  Environment variable containing the ingestion bearer token
+  --inventory-credential-env <KEY>  Exact Host-scoped lifecycle inventory token
+  --inventory-host <id>   Stable inventory identity (default: first connected domain)
   --metrics-interval-ms <N>  Metrics export period, 5000-300000 ms (default 15000)
   --event-loop-delay-resolution-ms <N>  Delay timer precision, 10-1000 ms (default 20)
   --ca-file <path>        Absolute private CA certificate path for verified TLS
@@ -191,6 +193,7 @@ Profile commands:
   upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
   telemetry connect|reconcile|status|check
+  telemetry inventory-export|inventory-reconcile
                       Manage the shared Host Telemetry relay
   telemetry resources-enable|resources-disable|resources-remove
                      Manage Host OS and Caddy collection independently of Capsules

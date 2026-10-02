@@ -507,6 +507,8 @@ async function runTelemetryProfileCommand(args: string[]) {
       if (arg === "--endpoint") { input.endpoint = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--dashboard") { input.dashboard = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--credential-env") { input.credentialEnv = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--inventory-credential-env") { input.inventoryCredentialEnv = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--inventory-host") { input.inventoryHost = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--metrics-interval-ms") { input.metricsIntervalMs = Number(readFlagValue(rest, ++index, arg)); continue; }
       if (arg === "--event-loop-delay-resolution-ms") { input.eventLoopDelayResolutionMs = Number(readFlagValue(rest, ++index, arg)); continue; }
       if (arg === "--ca-file") { input.caFile = readFlagValue(rest, ++index, arg); continue; }
@@ -520,6 +522,8 @@ async function runTelemetryProfileCommand(args: string[]) {
       ...(input.dashboard ? { dashboard: input.dashboard } : {}),
       tls: { mode: input.loopback ? "loopback" : "verified", ...(input.caFile ? { caFile: input.caFile } : {}) },
       ...(input.credentialEnv ? { credentialEnv: input.credentialEnv } : {}),
+      ...(input.inventoryCredentialEnv ? { inventoryCredentialEnv: input.inventoryCredentialEnv } : {}),
+      ...(input.inventoryHost ? { inventoryHost: input.inventoryHost } : {}),
       ...(input.metricsIntervalMs !== undefined ? { metricsIntervalMs: input.metricsIntervalMs } : {}),
       ...(input.eventLoopDelayResolutionMs !== undefined ? { eventLoopDelayResolutionMs: input.eventLoopDelayResolutionMs } : {}),
     };
@@ -1292,7 +1296,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   switch (subcommand) {
     case "telemetry": {
       const [operation, ...extra] = positional;
-      if (!operation || !["connect", "reconcile", "status", "check", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
+      if (!operation || !["connect", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
         throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
       }
       if ((operation === "enable" || operation === "disable") && extra.length !== 1) throw commandError("Missing Capsule subname.", `Use \`sporades host telemetry ${operation} <subname> --host <alias>\`.`);
@@ -3808,7 +3812,9 @@ async function manageHost(options: LooseRecord) {
             caPem = readFileSync(profile.tls.caFile, "utf8");
           } catch { throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB."); }
         }
-        telemetry = { endpoint: profile.endpoint, credential, ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
+        const inventoryCredential = profile.inventoryCredentialEnv ? process.env[profile.inventoryCredentialEnv] : undefined;
+        if (profile.inventoryCredentialEnv && !inventoryCredential) throw commandError("Telemetry inventory credential is unavailable.", "Set the inventory credential environment reference before connecting.");
+        telemetry = { endpoint: profile.endpoint, credential, ...(inventoryCredential ? { inventoryCredential } : {}), ...(profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}), ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
       }
       const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);
