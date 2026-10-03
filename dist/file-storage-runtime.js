@@ -112,6 +112,7 @@
 // two analyzable dynamic imports and emits all of them verbatim, so the carrier's metafile check
 // sees only builtins behind `kind: "dynamic-import"` — which is the one external ADR-0041 allows,
 // and the route the SMTP transport has always taken.
+import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { chainMaybePromise, thenIfPromise } from "./maybe-promise.js";
 import { applyFileAcl, bindPostgresAclDependencyLocking } from "./acl-runtime.js";
 import { enclosingPromiseCombinatorRoot, promiseCompositionRootCandidate, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
@@ -532,6 +533,9 @@ export function contentTypeForFile(type) {
     return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
 }
 export async function createPendingFileUpload(database, auth, message) {
+    return traceRuntimeOperation("sporades.file.upload.prepare", () => createPendingFileUploadOperation(database, auth, message), result => result.ok ? "success" : "denied");
+}
+async function createPendingFileUploadOperation(database, auth, message) {
     const input = message.file ?? {};
     const size = Number(input.size ?? 0);
     if (!Number.isFinite(size) || size < 0) {
@@ -650,6 +654,9 @@ export async function createPendingFileUpload(database, auth, message) {
     });
 }
 export async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
+    return traceRuntimeOperation("sporades.file.upload", () => completePendingFileUploadOperation(database, uploadId, request, websocketHub), result => result.ok ? "success" : "denied");
+}
+async function completePendingFileUploadOperation(database, uploadId, request, websocketHub = null) {
     const upload = await database.adapter.selectFileUpload(uploadId);
     if (!upload) {
         return {
@@ -677,7 +684,7 @@ export async function completePendingFileUpload(database, uploadId, request, web
             // Losing PUTs never write this version. Keep compensation inside the transaction so a
             // retried upload cannot acquire ownership before a failed writer finishes cleanup.
             try {
-                await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
+                await traceRuntimeOperation("sporades.file.bytes.write", () => database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes }));
                 await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
                 return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
             }
@@ -723,6 +730,9 @@ export async function completePendingFileUpload(database, uploadId, request, web
     }
 }
 export async function getPrivateFileUrl(database, auth, fileReference) {
+    return traceRuntimeOperation("sporades.file.private_url", () => getPrivateFileUrlOperation(database, auth, fileReference), result => result.ok ? "success" : "denied");
+}
+async function getPrivateFileUrlOperation(database, auth, fileReference) {
     const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
     if (!resolved.ok) {
         return resolved;
@@ -744,6 +754,9 @@ export async function getPrivateFileUrl(database, auth, fileReference) {
     };
 }
 export async function createPublicFileUrl(database, auth, fileReference, options = {}) {
+    return traceRuntimeOperation("sporades.file.public_url.create", () => createPublicFileUrlOperation(database, auth, fileReference, options), result => result.ok ? "success" : "denied");
+}
+async function createPublicFileUrlOperation(database, auth, fileReference, options = {}) {
     const expiry = validatePublicUrlExpiry(options);
     if (!expiry.ok) {
         return expiry;
@@ -792,6 +805,9 @@ export async function createPublicFileUrl(database, auth, fileReference, options
     });
 }
 export async function revokePublicFileUrl(database, auth, publicUrlId) {
+    return traceRuntimeOperation("sporades.file.public_url.revoke", () => revokePublicFileUrlOperation(database, auth, publicUrlId), result => result.ok ? "success" : "denied");
+}
+async function revokePublicFileUrlOperation(database, auth, publicUrlId) {
     const now = new Date().toISOString();
     const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now);
     if (result.changes === 0) {
@@ -1377,6 +1393,9 @@ export function revokeCurrentUserFileApi(context) {
         state.active = false;
 }
 export async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
+    return traceRuntimeOperation("sporades.file.delete", () => deletePrivateFileOperation(database, auth, fileReference, credential, deferByteRemoval, requireLiveActor), result => result.ok ? "success" : "denied");
+}
+async function deletePrivateFileOperation(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
     const now = new Date().toISOString();
     const result = await runFileMetadataTransaction(database, async (sqlite) => {
         const transactionDatabase = { ...database, sqlite, adapter: sqlite };
@@ -1474,6 +1493,9 @@ export async function fileRowForOwner(database, fileId, ownerId) {
     return await database.adapter.fileRowForOwner(reference, ownerId);
 }
 export async function fileRowForActor(database, auth, fileReference, credential = { kind: "session" }) {
+    return traceRuntimeOperation("sporades.file.authorize", () => fileRowForActorOperation(database, auth, fileReference, credential), result => result ? "success" : "denied");
+}
+async function fileRowForActorOperation(database, auth, fileReference, credential = { kind: "session" }) {
     const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read", credential);
     return resolved.ok ? resolved.row : null;
 }
@@ -1758,6 +1780,6 @@ export function createStructuredFileError(message, hint) {
     return { message, hint };
 }
 async function removeFileVersionBestEffort(database, fileId, version) {
-    await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => { });
+    await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId, version })).catch(() => { });
 }
 //# sourceMappingURL=file-storage-runtime.js.map

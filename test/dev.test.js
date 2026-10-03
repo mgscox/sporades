@@ -1684,7 +1684,7 @@ test("sporades dev bundles and serves a Capsule built from the runtime module gr
   });
 });
 
-test("sporades dev keeps serving after a repeated-slash origin-form request", async () => {
+test("sporades dev keeps serving after unusual raw HTTP request targets", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "http-liveness", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
@@ -1699,12 +1699,14 @@ test("sporades dev keeps serving after a repeated-slash origin-form request", as
     const events = captureJsonEvents(child);
     try {
       const started = await events.next((event) => event.ok && event.data?.event === "started");
-      const failed = await rawHttpResponse(started.data.url, "//");
-      assert.match(failed, /^HTTP\/1\.1 404\b/);
-      assert.equal((await fetch(started.data.url)).status, 200);
-      assert.equal(child.exitCode, null);
+      for (const [target, status] of [["//", 404], ["///x", 404], ["/%", 400], ["http://evil.example/x", 404]]) {
+        const response = await rawHttpResponse(started.data.url, target);
+        assert.match(response, new RegExp(`^HTTP/1\\.1 ${status}\\b`), `${target}: ${response}`);
+        assert.equal((await fetch(started.data.url)).status, 200, `runtime stopped after ${target}`);
+        assert.equal(child.exitCode, null, `runtime exited after ${target}`);
+      }
       assert.equal(events.events.some((event) => /unhandledRejection|uncaughtException|fatal-runtime|restart/i.test(JSON.stringify(event))), false);
-      assert.doesNotMatch(events.stderr, /unhandledRejection|uncaughtException|fatal-runtime/i);
+      assert.doesNotMatch(events.stderr, /unhandledRejection|uncaughtException|fatal-runtime|Invalid URL/i);
     } finally {
       events.dispose();
       if (child.exitCode === null) {
@@ -11524,6 +11526,7 @@ test("sporades db dump returns structured table data from the running dev sessio
                 "credentialJson",
                 "payloadRetentionUntil",
                 "payloadRedactedAt",
+                "enqueueTraceContext",
               ],
               rows: [],
             },

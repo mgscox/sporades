@@ -156,13 +156,32 @@ if (sporadesAction) {
   }
   process.exit();
 }
-const database: any = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
-  serviceEnv: runtimeServiceEnv,
-  createStripeCallbackEndpoint,
-  createStripeTeamBillingProvider,
-});
-database.runtimeProbeToken = process.env.SPORADES_RUNTIME_PROBE_TOKEN ?? null;
-await database.init();
+let jobTelemetryLifecycle: ReturnType<typeof createHttpRequestTelemetry> | undefined;
+let database: any;
+try {
+  database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
+    serviceEnv: runtimeServiceEnv,
+    createStripeCallbackEndpoint,
+    createStripeTeamBillingProvider,
+    // Bind after storage/definitions are ready, before the existing recovery scan.
+    onJobQueueReady(queueDatabase: any) {
+      jobTelemetryLifecycle = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry, (diagnostic) => queueDatabase.log.emit({
+        category: "platform",
+        event: diagnostic.event,
+        level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
+        message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
+        data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
+      }));
+      jobTelemetryLifecycle.bindJobQueue(queueDatabase);
+    },
+  });
+  database.runtimeProbeToken = process.env.SPORADES_RUNTIME_PROBE_TOKEN ?? null;
+  await database.init();
+} catch (error) {
+  await jobTelemetryLifecycle?.shutdown();
+  throw error;
+}
+const telemetry = jobTelemetryLifecycle!;
 if (admissionPolicyRuntime) {
   database.admissionPolicy = admissionPolicyRuntime;
   admissionLog = health => database.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
@@ -176,15 +195,8 @@ database.log.emit({
   data: { diagnostics: database.runtimeDiagnostics },
   release: process.env.SPORADES_RELEASE_ID ? { id: process.env.SPORADES_RELEASE_ID } : null,
 });
-const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
-const telemetry = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry, (diagnostic) => database.log.emit({
-  category: "platform",
-  event: diagnostic.event,
-  level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
-  message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
-  data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
-}));
+const websocketHub = createWebSocketHub(() => database, null, { telemetry: runtimeConfig.__sporadesTelemetry ? telemetry.websocket : undefined });
 database.runtimeTelemetry = {
   supported: true,
   enabled: runtimeConfig.__sporadesTelemetry !== null && runtimeConfig.__sporadesTelemetry !== undefined,

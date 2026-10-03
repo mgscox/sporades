@@ -13,7 +13,7 @@ const setup = new URL('../monitoring/trace/setup.mjs', import.meta.url);
 async function fixture(t, tls = false) {
   const directory = await mkdtemp(join(tmpdir(), 'sporades-smoke-origin-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  await Promise.all([copyFile(smoke, join(directory, 'smoke.mjs')), copyFile(setup, join(directory, 'setup.mjs'))]);
+  await Promise.all([copyFile(smoke, join(directory, 'smoke.mjs')), copyFile(setup, join(directory, 'setup.mjs')), copyFile(new URL('../monitoring/trace/inventory-contract.mjs', import.meta.url), join(directory, 'inventory-contract.mjs'))]);
   const cert = join(directory, 'cert.pem');
   const key = join(directory, 'key.pem');
   if (tls) {

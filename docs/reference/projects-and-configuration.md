@@ -4,7 +4,7 @@ Capsule creation, project layout, configuration, security policy, database servi
 
 [Back to the feature reference index](../guide/reference.md).
 
-## Local HTTP telemetry
+## Runtime telemetry
 
 The operator registers a named Telemetry profile separately from a Host profile:
 
@@ -94,6 +94,47 @@ exporter permits one request at a time, and its final collection waits for an
 in-progress periodic export. A completed ordinary 4xx SERVER span keeps its
 response status and `failure` outcome with unset span status. Completed 5xx,
 handler errors, and aborts mark the span as an error.
+
+Sampled HTTP requests also include runtime-owned authentication and File child
+spans. No additional project setting or application import is required:
+
+| Child operation | Timed boundary |
+| --- | --- |
+| `sporades.auth.session.resolve` | Resolve or establish the existing Session |
+| `sporades.auth.access_key.resolve` | Validate the existing Access-key credential |
+| `sporades.auth.admit` | Declarative or inline runtime auth check, or private File scope check |
+| `sporades.file.authorize` | Resolve a private File and evaluate owner/ACL access |
+| `sporades.file.upload.prepare` / `sporades.file.upload` | Prepare or complete the existing upload |
+| `sporades.file.private_url` | Resolve the current actor's private File URL |
+| `sporades.file.public_url.create` / `sporades.file.public_url.revoke` | Create or revoke a public File URL |
+| `sporades.file.delete` | Current-actor File metadata deletion |
+| `sporades.file.read` | Read File bytes through the selected storage adapter |
+| `sporades.file.bytes.write` / `sporades.file.bytes.delete` | Write or remove version bytes, including compensation |
+| `sporades.file.stream` | Open an exact-version attachment storage stream |
+| `sporades.file.ingress.stage` | Stage and inspect admitted endpoint multipart ingress |
+
+Each request creates at most **32 authentication and File child spans**, all
+parented to its SERVER span. This budget is separate from database spans.
+Further operations still execute normally. These children follow local trace sampling;
+disabled telemetry, unsampled requests, background work and operations started
+after request completion create no children. The HTTP span covers streaming
+transfer time; `file.stream` measures opening the storage stream.
+The sole authentication/File child attribute, `sporades.operation.outcome`, is one of `success`,
+`denied`, `error` or `cancelled`. Returned File rejections and recognized auth
+denials use `denied`; unexpected thrown failures use `error`. Active children
+end once when their callback settles or the HTTP request terminates; an abort or
+an operation outliving its response uses `cancelled`. Non-success children have
+error span status without a message or exception event. Operation success means
+that boundary completed, and does not promise that an enclosing transaction
+later committed. Authorization, rollback, opaque errors and response headers
+retain their existing behavior.
+No tokens, cookies, bodies, credential or actor identifiers, grants, File IDs,
+versions, names, paths, URLs, contents or exception details are child metadata.
+Inspect the request's stored trace in Jaeger to compare authentication, File ACL
+and storage duration; a denied request can have successful credential resolution
+followed by a denied admission or File authorization child. Missing storage bytes
+keep the existing opaque 404 while the storage child reports `error`.
+
 An abort before response headers has status class `none` in request metrics and
 no response status attribute on its trace; an abort after headers keeps the
 status that was sent. Both retain the `abort` outcome and count once.
@@ -108,9 +149,64 @@ Capsules use the Host's shared relay connection by default with a Host-owned
 per-Capsule opt-out; project settings cannot replace that decision. Independent
 blocked-loop detection remains separate work.
 
+### Background Job traces and queue metrics
+
+The same selected Telemetry profile automatically monitors ordinary, Privileged,
+Schedule-enqueued and runtime-owned Jobs in Dev, Container and Hosted Capsules.
+No Capsule instrumentation import, public tracing API or additional configuration
+is required. Each durable claimed attempt gets a new CONSUMER span named
+`job <handler>`, with `sporades.job.handler`, numeric `sporades.job.attempt` and
+`sporades.job.outcome`. Successful settlement uses `succeeded`; retrying failures
+use `retry` and exhausted failures use `failed`, both with error span status.
+Other outcomes are `cancelled`, `deferred` (runtime fence contention), and
+`claim_lost` (including an unstarted claim relinquished at shutdown). Duration
+covers the owned execution and settlement, excluding time waiting in the queue.
+
+Enqueue atomically stores at most a validated 55-character W3C v00 trace context
+(trace ID, span ID and sampling bit) alongside the Job. Each attempt is a new root
+trace with one causal **link** to that enqueue operation, rather than an HTTP
+child span held open during delay. Retries retain the same enqueue link; a child
+Job links to the attempt that enqueued it. Local sampling applies independently
+to every attempt, regardless of the stored sampling bit. An idempotent enqueue
+keeps the original Job's context. Legacy Jobs without context and malformed
+context execute normally without a link. Baggage, tracestate, payloads, results,
+exception text, Job IDs, actor IDs, credentials and claim tokens are excluded.
+
+| OTLP metric | Meaning |
+| --- | --- |
+| `sporades.job.queue.depth` | Current pending Jobs (`queued` plus `delayed`, including future availability); running and terminal Jobs are excluded. |
+| `sporades.job.queue.oldest_pending_age` | Seconds since the oldest pending Job's original enqueue time, including deliberate delays and retry backoff; zero for an empty queue. |
+| `sporades.job.execution.duration` | Execution/settlement duration in seconds, histogram by bounded handler and outcome. |
+| `sporades.job.retry.count` | Committed transitions into failure retry, including expired-lease recovery; excludes deliberate runtime fence deferral. |
+| `sporades.job.failure.count` | Failed attempts and committed failure classifications, including retrying failures, exhausted leases and invalid retained state; excludes cancellation and claim loss. |
+
+Metrics ignore trace sampling. Queue observations use one aggregate Database
+adapter read per export interval and reflect durable state after normal transaction
+serialization. Reads are single-flight across Dev reloads; failed or stopped reads
+produce no observation, not a healthy zero. Handler names come only from declarations,
+with at most 128 names per provider lifetime; unknown, oversized and surplus names
+collapse to `__other`. Attempt numbers and trace links are never metric labels.
+Existing service, environment and process instance attributes identify the Capsule.
+Counters and histograms reset with their provider; use rates across resets, and use
+Job inspection for retained history. A killed process may lose its final span;
+recovery counts its durable retry/failure transition but does not manufacture a span
+for an interrupted attempt. The next attempt receives a fresh span. Claims, leases,
+at-least-once execution, authority, rollback and restart recovery are unchanged.
+Telemetry outages do not fail Job work; spans share the bounded trace queue and
+metrics share the existing reader/export deadline.
+
+For stored-trace acceptance, run `node --test test/telemetry-jobs-bundle.test.js`
+with `SPORADES_CONFIG_DIR` inside a disposable worktree. Optional
+`SPORADES_TELEMETRY_TRACE_INGEST_URL` and `SPORADES_TELEMETRY_TRACE_QUERY_URL`
+select disposable **loopback** Collector OTLP/HTTP and Jaeger query origins. The
+suite verifies persisted attempt spans and links, delayed/retried/failed work,
+restart and lease recovery, legacy context, rollback, child links, disabled export,
+collector outages, and Dev reload. Its OTLP metric capture works independently of
+Prometheus setup.
+
 ### Database time in request traces
 
-An enabled, sampled HTTP request automatically contains CLIENT spans from the
+An enabled, sampled HTTP request or WebSocket operation automatically contains CLIENT spans from the
 internal Database adapter, across SQLite, PostgreSQL and libSQL. No Capsule import,
 new configuration, or adapter/plugin API is needed. Existing profile selection,
 sampling, export limits and shutdown deadlines also govern these spans.
@@ -118,7 +214,7 @@ sampling, export limits and shutdown deadlines also govern these spans.
 | Span / attribute | Meaning |
 | --- | --- |
 | `db.TRANSACTION` | The runtime transaction interval, including connection acquisition wait, callback work, commit or rollback. |
-| `db.SELECT`, `db.INSERT`, etc. | One adapter statement call, including any connection wait. Children of the owning transaction, or directly of the HTTP SERVER span. |
+| `db.SELECT`, `db.INSERT`, etc. | One adapter statement call, including any connection wait. Children of the owning transaction, or directly of the HTTP or WebSocket SERVER span. |
 | `db.system.name` | `sqlite`, `postgres`, or `libsql`. |
 | `db.operation.name` | `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `CREATE`, `ALTER`, `DROP`, `BEGIN`, `COMMIT`, `ROLLBACK`, `PRAGMA`, `TRANSACTION`, or `OTHER`. |
 | `db.collection.name` | A declared app-table name (up to 128 names per adapter, at most 64 ASCII identifier characters), `__runtime` for the reserved runtime namespace, or `__other`. Absent on transaction spans. |
@@ -132,10 +228,53 @@ plan or an application-wide SQL profiler. Complex statements and statements over
 8,192 characters use conservative labels. SQL text, parameters, rows, connection URLs,
 credentials, private row IDs and exception details are never attached.
 
-Initialization, detached Jobs and work after HTTP completion create no database
+Initialization, detached Jobs and work after operation completion create no database
 spans in this slice. Disabled or sampled-out requests keep the same database
 behavior without operation spans. A collector outage does not change database
 results, ACL checks, retries, transaction ownership, rollback or handle revocation.
+
+### WebSocket operation signals
+
+The same selected Telemetry profile automatically instruments `query.subscribe`
+dispatch, each subsequent live-query execution, and `mutation.run`. No additional
+configuration, Capsule import, browser SDK or public API is required. Connection
+tokens, Origin checks, credential revalidation, per-connection message ordering,
+subscription generations and reconnection behavior retain their existing meaning.
+Dev uses the current session profile after a successful configuration reload;
+outgoing connections settle against their original adapter before it exports.
+Graceful shutdown settles accepted connections before final metric collection,
+so its last active-connection sample is zero even with operations in flight.
+
+| Signal | Meaning |
+| --- | --- |
+| `websocket.query`, `websocket.mutation` | One SERVER span per logical execution, including translated handler failures and authorization denials. |
+| `sporades.websocket.operation.count` | Completed executions, unit `1`, independent of trace sampling. |
+| `sporades.websocket.operation.duration` | Execution duration histogram in seconds, independent of trace sampling; includes cancellation intervals. |
+| `sporades.websocket.active_connections` | Gauge of accepted connections, unit `1`; exports zero after the last connection closes. Rejected upgrades do not increment it. |
+| `sporades.websocket.operation.type` | `query` or `mutation`. |
+| `sporades.websocket.operation.name` | Runtime-declared handler/table operation name, at most 80 ASCII identifier characters and 64 distinct names per process. Unrecognized names use `__unknown`; surplus names use `__other`. |
+| `sporades.websocket.outcome` | `success`, `denied`, `error` or `cancelled`. Denials, errors and cancellations set ERROR span status without exception details. Counts partitioned by outcome provide error/denial rates. |
+
+Each operation has an isolated async context; database children belong to that
+execution. Spans end on result settlement, unsubscribe, replacement, connection
+close or shutdown. A superseded live-query execution is `cancelled`; this only
+ends its telemetry and does not abort its handler or change transaction behavior.
+There is no connection-lifetime or subscription-lifetime span. Refresh executions
+start new root traces and retain neither subscription nor triggering mutation
+context. Duration starts at dispatch, excluding time in the existing message queue.
+
+A raw runtime message may supply an optional top-level `traceparent`, accepted
+only as a nonzero, lowercase W3C version `00` trace/span identity with flags `00`
+or `01`. Invalid correlation starts a new root trace; local sampling policy still
+applies. Upgrade context is not inherited. `tracestate` and baggage are discarded,
+and correlation is never retained in subscriptions. Arguments, payloads, message
+IDs, connection/session tokens, user IDs, email addresses and exception text are
+excluded from spans and metric labels. Existing browser transport messages need
+no change. Prometheus stores the dimensionless connection gauge as
+`sporades_websocket_active_connections_ratio`; its value is a connection count.
+The Capsule API dashboard includes operation rates, p95 duration,
+errors/denials/cancellations and active connections; its HTTP Route selector does
+not filter WebSocket panels.
 
 The generated-Bundle tests exercise SQLite by default. To also verify PostgreSQL,
 set `SPORADES_TELEMETRY_POSTGRES_BUNDLE_URL` to a dedicated disposable database.

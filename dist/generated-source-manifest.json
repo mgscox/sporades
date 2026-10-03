@@ -35,11 +35,14 @@
       "src/cli/host-helper-release-files.ts",
       "src/cli/host-helper-requests.ts",
       "src/cli/host-helper-validation.ts",
+      "src/cli/host-inventory.ts",
       "src/cli/host-metrics.ts",
       "src/cli/host-request-builders.ts",
       "src/cli/host-telemetry-relay.ts",
+      "src/cli/host-telemetry-state.ts",
       "src/cli/hosted-capsule-contract.ts",
       "src/cli/hosted-telemetry-coverage.ts",
+      "src/cli/inventory-contract.ts",
       "src/cli/monitoring-stack.ts",
       "src/cli/project-config.ts",
       "src/cli/schedule-inspection-envelope.ts",
@@ -110,6 +113,7 @@
       "src/templates/server-bundle-module-graph.ts",
       "src/types/admission-policy.d.ts",
       "src/types/client.d.ts",
+      "src/types/monitoring.d.ts",
       "src/types/server.d.ts",
       "src/types/stripe.d.ts",
       "src/types/team-billing-import.d.ts",
@@ -118,7 +122,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "0d7cf20a3feef487fb33892742647f3e03a7bc9f8faab3fc937d52d885edf2ba"
+    "digest": "75bf03e2aa42429d23fb33b08ae50f6bbaa8a602f0feb3a6188f2b9b139d94d8"
   },
   "outputs": {
     "files": [
@@ -228,6 +232,10 @@
       "dist/cli/host-helper-validation.d.ts.map",
       "dist/cli/host-helper-validation.js",
       "dist/cli/host-helper-validation.js.map",
+      "dist/cli/host-inventory.d.ts",
+      "dist/cli/host-inventory.d.ts.map",
+      "dist/cli/host-inventory.js",
+      "dist/cli/host-inventory.js.map",
       "dist/cli/host-metrics.d.ts",
       "dist/cli/host-metrics.d.ts.map",
       "dist/cli/host-metrics.js",
@@ -240,6 +248,10 @@
       "dist/cli/host-telemetry-relay.d.ts.map",
       "dist/cli/host-telemetry-relay.js",
       "dist/cli/host-telemetry-relay.js.map",
+      "dist/cli/host-telemetry-state.d.ts",
+      "dist/cli/host-telemetry-state.d.ts.map",
+      "dist/cli/host-telemetry-state.js",
+      "dist/cli/host-telemetry-state.js.map",
       "dist/cli/hosted-capsule-contract.d.ts",
       "dist/cli/hosted-capsule-contract.d.ts.map",
       "dist/cli/hosted-capsule-contract.js",
@@ -248,6 +260,10 @@
       "dist/cli/hosted-telemetry-coverage.d.ts.map",
       "dist/cli/hosted-telemetry-coverage.js",
       "dist/cli/hosted-telemetry-coverage.js.map",
+      "dist/cli/inventory-contract.d.ts",
+      "dist/cli/inventory-contract.d.ts.map",
+      "dist/cli/inventory-contract.js",
+      "dist/cli/inventory-contract.js.map",
       "dist/cli/monitoring-stack.d.ts",
       "dist/cli/monitoring-stack.d.ts.map",
       "dist/cli/monitoring-stack.js",
@@ -523,8 +539,9 @@
       "dist/user-preferences-runtime.d.ts",
       "dist/user-preferences-runtime.d.ts.map",
       "dist/user-preferences-runtime.js",
-      "dist/user-preferences-runtime.js.map"
+      "dist/user-preferences-runtime.js.map",
+      "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "a354a6180350ff6ddaf83ab3caae3f7a737a571b3778ce89a60acfa6940b3950"
+    "digest": "2c704abcba2d57a528c6a6033b0f537005e4c0bdc65f686cb9aeb2e6ddae3576"
   }
 }

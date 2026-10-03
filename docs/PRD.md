@@ -267,7 +267,8 @@ The following work is intentionally deferred:
 
 - Additional automatic OpenTelemetry signals and centralized JSON logging:
   Dev and local Container HTTP SERVER tracing, API request metrics, and periodic
-  process CPU/memory and GC/event-loop metrics are available through explicit operator Telemetry
+  process CPU/memory and GC/event-loop metrics, and linked background Job attempts
+  with independent queue/duration/retry/failure metrics are available through explicit operator Telemetry
   profiles. A local Container's resolved telemetry selection persists in its launch
   environment across restart when a Dev build publishes a new Bundle.
   Legacy Containers without a launch descriptor retain their mounted server Bundle
@@ -279,10 +280,17 @@ The following work is intentionally deferred:
   Native global fetch calls within active HTTP requests have CLIENT spans through
   response headers, with exact operator-approved origin propagation restricted to
   caller-selected manual/error redirects.
+  Connected Hosts automatically synchronize versioned lifecycle inventory through
+  an exact Host-scoped interface, durable outbox and independent periodic worker.
+  Central acknowledgements survive sender outages; manual import/export is recovery
+  only. Probe scheduling and absence-alert delivery remain separate work.
   Host OS pressure and Caddy Prometheus collection are available through the Host relay.
   Internal Database adapter statement and transaction spans explain database time
-  within sampled HTTP requests for SQLite, PostgreSQL and libSQL, with bounded
-  metadata and no SQL, parameters, rows or exception details. External
+  within sampled HTTP requests and WebSocket operations for SQLite, PostgreSQL and libSQL, with bounded
+  metadata and no SQL, parameters, rows or exception details. WebSocket query and
+  mutation executions have isolated SERVER spans, independent counts/durations/outcomes
+  and active-connection metrics, including live-query refresh and cancellation,
+  without socket-lifetime tracing or a browser SDK. External
   container-resource collection is out of scope; other operation spans remain deferred under
   [automatic monitoring issue #107](https://github.com/mgscox/sporades/issues/107).
   Centralized JSON logging remains deferred in

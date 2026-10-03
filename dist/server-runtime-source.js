@@ -1,4 +1,6 @@
+import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
+import { withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
 // `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
 // consumer, and it reaches the builtin through `process.getBuiltinModule` in `file-storage-runtime.ts`
 // now (ADR-0042). The rest of this list has been wider than what this file binds since batch 3 —
@@ -1288,6 +1290,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     // own deadline so a delivered row can sleep until its 24-hour expiry.
     await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
     await sqlite.ensureLogStorage();
+    options?.onJobQueueReady?.(database);
     if (!options?.runtimeActionOnly) {
         await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
     }
@@ -2048,8 +2051,10 @@ export async function recoverExpiredJobLeases(database) {
                 ? "[leaseExpiresAt] IS NULL"
                 : "[leaseExpiresAt] = ?";
             const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
-            await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+            const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
                 "WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership.predicate)).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership.params);
+            if (Number(changed?.changes ?? 0) === 1)
+                database.__jobTelemetry?.transition(row.handler, "failed");
             continue;
         }
         if (!isCanonicalJobTimestamp(row.leaseExpiresAt)) {
@@ -2059,15 +2064,19 @@ export async function recoverExpiredJobLeases(database) {
                 ? "[leaseExpiresAt] IS NULL"
                 : "[leaseExpiresAt] = ?";
             const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
-            await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+            const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
                 "WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership.predicate)).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership.params);
+            if (Number(changed?.changes ?? 0) === 1)
+                database.__jobTelemetry?.transition(row.handler, "failed");
             continue;
         }
         const provenanceFailure = invalidStoredJobFailure(row, recoveredAt);
         if (["JOB_ACTOR_SNAPSHOT_INVALID", "JOB_CREDENTIAL_INVALID"].includes(provenanceFailure?.code)) {
             const ownership = jobClaimOwnership(row.claimToken);
-            await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+            const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
                 "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate)).run(JSON.stringify(provenanceFailure), recoveredIso, row.id, row.leaseExpiresAt, ...ownership.params);
+            if (Number(changed?.changes ?? 0) === 1)
+                database.__jobTelemetry?.transition(row.handler, "failed");
             continue;
         }
         const leaseExpiresAt = Date.parse(row.leaseExpiresAt);
@@ -2088,8 +2097,10 @@ export async function recoverExpiredJobLeases(database) {
             ? null
             : jobTimestampAfter(new Date(retryAvailableAt), RUNTIME_CLAIM_LEASE_MS);
         if (retryAvailableAt !== null && retryLeaseExpiresAt !== null) {
-            await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+            const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
                 "WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate)).run(retryAvailableAt, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
+            if (Number(changed?.changes ?? 0) === 1)
+                database.__jobTelemetry?.transition(row.handler, "retry");
         }
         else {
             const failure = storedFailure ?? (retry === null || retryEligible
@@ -2120,9 +2131,11 @@ export async function recoverExpiredJobLeases(database) {
                         replacementScheduled = erasureSettlement?.replacementScheduled === true;
                     }
                 }
-                return replacementScheduled;
+                return { replacementScheduled, changed: Number(settled?.changes ?? 0) === 1 };
             });
-            if (teamBillingReplacementScheduled && !database.__jobStopped)
+            if (teamBillingReplacementScheduled.changed)
+                database.__jobTelemetry?.transition(row.handler, "failed");
+            if (teamBillingReplacementScheduled.replacementScheduled && !database.__jobStopped)
                 scheduleCurrentUserJobWorker(database);
         }
     }
@@ -2314,8 +2327,11 @@ function jobRetryHorizonFits(firstAttempt, retry, attemptCount, allowShortFinalS
 }
 async function failInvalidQueuedJob(database, row, failure) {
     const sql = database.adapter.dialect.sql;
-    return await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+    const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
         "WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')")).run(JSON.stringify(failure), database.clock.now().toISOString(), row.id, row.status, row.availableAt, row.retryJson);
+    if (Number(changed?.changes ?? 0) === 1)
+        database.__jobTelemetry?.transition(row.handler, "failed");
+    return changed;
 }
 async function recoverInvalidRetainedJobState(database) {
     const recoveredAt = database.clock.now();
@@ -2327,8 +2343,10 @@ async function recoverInvalidRetainedJobState(database) {
         const failure = invalidStoredJobFailure(row, recoveredAt);
         if (!failure)
             continue;
-        await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
+        const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL " +
             "WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')")).run(JSON.stringify(failure), failedAt, row.id, row.status, row.availableAt, row.retryJson);
+        if (Number(changed?.changes ?? 0) === 1)
+            database.__jobTelemetry?.transition(row.handler, "failed");
     }
 }
 function jobClaimOwnership(claimToken) {
@@ -4351,6 +4369,9 @@ async function applyContextMiddleware(database, baseContext, kind) {
     return context;
 }
 function admitCredentialHandler(handler, context, kind) {
+    return traceRuntimeOperation("sporades.auth.admit", () => admitCredentialHandlerOperation(handler, context, kind));
+}
+function admitCredentialHandlerOperation(handler, context, kind) {
     const requirements = readAuthRequirements(handler);
     if (!requirements) {
         return;
@@ -4874,6 +4895,7 @@ export async function runClientAccessKeyOperation(database, auth, message, sessi
 // seconds. Ping well inside that window so idle pages keep their socket; a
 // ping still unanswered at the next heartbeat marks the peer gone.
 const WEBSOCKET_HEARTBEAT_MS = 30_000;
+const untracedWebSocketOperation = { run: withoutRuntimeRequestIdentity, end: () => { } };
 export function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     const heartbeatMs = options.heartbeatMs ?? WEBSOCKET_HEARTBEAT_MS;
     const clients = new Set();
@@ -4884,6 +4906,35 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
     const maxConnectionTokens = 4_096;
     let journeyExpiryTimer = null;
     let journeyDisableRequests = 0;
+    const queryOperations = new WeakMap();
+    function operationOutcome(error) {
+        if (!error)
+            return "success";
+        return ["UNAUTHENTICATED", "FORBIDDEN", "DENIED", "REAUTHENTICATION_REQUIRED"].includes(error.code) ? "denied" : "error";
+    }
+    function startOperation(client, type, name, traceparent) {
+        if (!options.telemetry || client.socket.destroyed || client.closing)
+            return untracedWebSocketOperation;
+        const database = getDatabase();
+        const declared = (type === "query" ? database.queries : database.mutations)?.some((handler) => handler.name === name)
+            || (type === "query" && (name === "ctx.env" || database.schema?.tables?.some((table) => table.name === name)))
+            || (type === "mutation" && typeof name === "string" && (resolveTableForAddMutation(database.schema, name) || resolveTableForUpdateMutation(database.schema, name)));
+        let operation;
+        try {
+            operation = options.telemetry.startOperation(type, name, Boolean(declared), traceparent);
+        }
+        catch {
+            return untracedWebSocketOperation;
+        }
+        client.telemetryOperations.add(operation);
+        return { run: operation.run, end(outcome) {
+                client.telemetryOperations.delete(operation);
+                try {
+                    operation.end(outcome);
+                }
+                catch { /* Instrumentation cannot change dispatch. */ }
+            } };
+    }
     return {
         createConnectionToken(currentToken) {
             // Checking a healthy gate neither rotates it nor extends its original TTL.
@@ -4950,8 +5001,14 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 lastFrameAt: Date.now(),
                 pingSentAt: null,
                 heartbeat: null,
+                telemetryOperations: options.telemetry ? new Set() : null,
             };
             clients.add(client);
+            let connectionClosed;
+            try {
+                connectionClosed = options.telemetry?.connectionOpened();
+            }
+            catch { }
             const unanswered = () => client.pingSentAt !== null && client.lastFrameAt < client.pingSentAt;
             client.heartbeat = setInterval(() => {
                 if (client.closing || socket.destroyed)
@@ -4973,7 +5030,24 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 client.buffer = Buffer.concat([client.buffer, chunk]);
                 drainWebSocketFrames(client, (message) => enqueueClientMessage(client, message));
             });
+            let removed = false;
             const removeClient = () => {
+                if (removed)
+                    return;
+                removed = true;
+                try {
+                    connectionClosed?.();
+                }
+                catch { }
+                if (client.telemetryOperations) {
+                    for (const operation of client.telemetryOperations) {
+                        try {
+                            operation.end("cancelled");
+                        }
+                        catch { }
+                    }
+                    client.telemetryOperations.clear();
+                }
                 clearInterval(client.heartbeat);
                 clients.delete(client);
                 trustedRefresh?.disconnected(client.id);
@@ -4981,6 +5055,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 client.journeySubscriptions.clear();
                 client.journey = null;
             };
+            client.remove = removeClient;
             socket.on("close", removeClient);
             socket.on("error", removeClient);
         },
@@ -4989,8 +5064,10 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 getDatabase().clock.clearTimer(journeyExpiryTimer);
             journeyExpiryTimer = null;
             for (const client of clients) {
-                trustedRefresh?.disconnected(client.id);
                 closeWebSocketClient(client);
+                // Settle accounting before final export; socket close/error callbacks
+                // can arrive after shutdown has already collected its metrics.
+                client.remove();
             }
             clients.clear();
             journeys.clear();
@@ -5414,6 +5491,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         }
         if (message.type === "query.subscribe") {
             const queryName = message.query ?? message.name;
+            const operation = startOperation(client, "query", queryName, message.traceparent);
             const validId = (typeof message.id === "string" && message.id.length > 0) || (typeof message.id === "number" && Number.isFinite(message.id));
             if (!validId || typeof queryName !== "string" || queryName.length === 0) {
                 sendJson(client, {
@@ -5425,6 +5503,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                         hint: "Use a string or numeric subscription ID and a non-empty query name.",
                     },
                 });
+                operation.end("error");
                 return;
             }
             let args;
@@ -5439,6 +5518,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                     data: null,
                     error: invalidQueryArgumentsError(),
                 });
+                operation.end("error");
                 return;
             }
             if (!message.query && args.length > 0) {
@@ -5449,12 +5529,16 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                     data: null,
                     error: invalidQueryArgumentsError(),
                 });
+                operation.end("error");
                 return;
             }
             const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
+            const previous = client.subscriptions.get(message.id);
+            if (previous)
+                queryOperations.get(previous)?.end("cancelled");
             client.subscriptions.set(message.id, subscription);
             database.__notifyJobStateQueries = refreshQueries;
-            void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error));
+            void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
             return;
         }
         if (message.type === "query.unsubscribe") {
@@ -5473,6 +5557,9 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 });
                 return;
             }
+            const subscription = client.subscriptions.get(subscriptionId);
+            if (subscription)
+                queryOperations.get(subscription)?.end("cancelled");
             const removed = client.subscriptions.delete(subscriptionId);
             sendJson(client, {
                 id: message.id ?? null,
@@ -5908,14 +5995,23 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         }
         if (message.type === "mutation.run") {
             const mutationName = message.mutation ?? message.name;
-            const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
-                sessionToken: client.session.token,
+            const operation = startOperation(client, "mutation", mutationName, message.traceparent);
+            return operation.run(async () => {
+                try {
+                    const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
+                        sessionToken: client.session.token,
+                    });
+                    sendJson(client, formatMutationResult(message, mutationName, result));
+                    if (result.ok && mutationResultsWithWrites.has(result)) {
+                        setTimeout(refreshQueries, 0);
+                    }
+                    operation.end(operationOutcome(result.error));
+                }
+                catch (error) {
+                    operation.end(operationOutcome(error));
+                    throw error;
+                }
             });
-            sendJson(client, formatMutationResult(message, mutationName, result));
-            if (result.ok && mutationResultsWithWrites.has(result)) {
-                setTimeout(refreshQueries, 0);
-            }
-            return;
         }
         if (message.type === "app.send") {
             const messageName = message.message ?? message.name;
@@ -5991,40 +6087,52 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             },
         });
     }
-    async function sendQueryResult(client, subscription, onError) {
-        const generation = (subscription.generation ?? 0) + 1;
-        subscription.generation = generation;
-        try {
-            const database = getDatabase();
-            const readTables = new Set();
-            const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
-                sessionToken: client.session.token,
-            }));
-            // A failed run may not have read what a successful one would, so it re-runs on every refresh.
-            if (subscription.generation === generation)
-                subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
-            const data = subscription.style === "direct"
-                ? (result.data ?? result.rows)
-                : { rows: result.data ?? result.rows };
-            if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation)
-                return;
-            sendJson(client, {
-                id: subscription.id,
-                type: "query.result",
-                query: subscription.name,
-                data,
-                error: result.error,
-            });
-        }
-        catch (error) {
-            if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation)
-                return;
-            subscription.readTables = null;
+    async function sendQueryResult(client, subscription, onError, operation = startOperation(client, "query", subscription.name)) {
+        queryOperations.get(subscription)?.end("cancelled");
+        queryOperations.set(subscription, operation);
+        return operation.run(async () => {
+            const generation = (subscription.generation ?? 0) + 1;
+            subscription.generation = generation;
             try {
-                onError(error);
+                const database = getDatabase();
+                const readTables = new Set();
+                const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
+                    sessionToken: client.session.token,
+                }));
+                // A failed run may not have read what a successful one would, so it re-runs on every refresh.
+                if (subscription.generation === generation)
+                    subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
+                const data = subscription.style === "direct"
+                    ? (result.data ?? result.rows)
+                    : { rows: result.data ?? result.rows };
+                if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) {
+                    operation.end("cancelled");
+                    return;
+                }
+                sendJson(client, {
+                    id: subscription.id,
+                    type: "query.result",
+                    query: subscription.name,
+                    data,
+                    error: result.error,
+                });
+                operation.end(operationOutcome(result.error));
             }
-            catch { /* A closed transport already owns cleanup. */ }
-        }
+            catch (error) {
+                operation.end(operationOutcome(error));
+                if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation)
+                    return;
+                subscription.readTables = null;
+                try {
+                    onError(error);
+                }
+                catch { /* A closed transport already owns cleanup. */ }
+            }
+            finally {
+                if (queryOperations.get(subscription) === operation)
+                    queryOperations.delete(subscription);
+            }
+        });
     }
     function refreshQueries() {
         // Scope the refresh to subscriptions that read a table written since the last refresh. An
@@ -6122,8 +6230,8 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
     const status = persistDelayed && jobAvailableAt > now ? "delayed" : "queued";
     const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
     await jobAdapter.prepare(jobAdapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], " +
-        "[availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL)")).run(randomUUID(), handlerName, PRIVILEGED_AUTH_USER_ID, PRIVILEGED_AUTH_USER_ID, "privileged", payloadJson, status, jobAvailableAt, idempotencyKey, now, JSON.stringify(normalizeJobRetry(retry)));
+        "[availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor], [enqueueTraceContext]) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL, ?)")).run(randomUUID(), handlerName, PRIVILEGED_AUTH_USER_ID, PRIVILEGED_AUTH_USER_ID, "privileged", payloadJson, status, jobAvailableAt, idempotencyKey, now, JSON.stringify(normalizeJobRetry(retry)), captureJobTraceContext());
     if (!deferDispatch)
         deferOrScheduleJobDispatch(database, queueDatabase);
 }
@@ -7064,13 +7172,14 @@ function createCurrentUserJobApi(database, contextGetter) {
             const credentialJson = scheduleProvenance || !provenanceContext?.credential
                 ? null
                 : JSON.stringify(canonicalJobCredentialProvenance(provenanceContext.credential));
-            const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
+            const enqueueTraceContext = captureJobTraceContext();
+            const row = { enqueueTraceContext, id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
             // Persistence belongs to the handler transaction. Only worker dispatch waits until commit, so
             // a rollback cannot leave a Job behind and a post-commit timer failure cannot undo or
             // misreport handler work that is already durable.
             try {
-                const result = await jobAdapter.prepare(jobAdapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" +
-                    (idempotencyKey ? " ON CONFLICT DO NOTHING" : ""))).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+                const result = await jobAdapter.prepare(jobAdapter.dialect.sql("INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor], [enqueueTraceContext]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)" +
+                    (idempotencyKey ? " ON CONFLICT DO NOTHING" : ""))).run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor, enqueueTraceContext);
                 if (idempotencyKey && Number(result?.changes ?? 0) === 0) {
                     const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context.auth.userId, idempotencyKey);
                     if (existing) {
@@ -7393,6 +7502,8 @@ export async function runCurrentUserJobWorker(database) {
             const abortController = new AbortController();
             database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
             let handlerStarted = false;
+            const attemptTelemetry = database.__jobTelemetry?.start(row);
+            let telemetryOutcome = "claim_lost";
             try {
                 const jobPayload = JSON.parse(row.payload);
                 // Cancellation may commit after the durable claim but before its
@@ -7418,7 +7529,7 @@ export async function runCurrentUserJobWorker(database) {
                         database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
                         const releaseResources = bindOrdinaryJobResourceContext(database, privilegedCtx, { id: row.id, claimToken, leaseExpiresAt }, true);
                         try {
-                            return await handler.handler(privilegedCtx, jobPayload);
+                            return await (attemptTelemetry ? attemptTelemetry.run(() => handler.handler(privilegedCtx, jobPayload)) : handler.handler(privilegedCtx, jobPayload));
                         }
                         finally {
                             releaseResources();
@@ -7443,7 +7554,7 @@ export async function runCurrentUserJobWorker(database) {
                     let handlerFailed = false;
                     const releaseResources = bindOrdinaryJobResourceContext(database, context, { id: row.id, claimToken, leaseExpiresAt });
                     try {
-                        result = await handler.handler(context, jobPayload);
+                        result = await (attemptTelemetry ? attemptTelemetry.run(() => handler.handler(context, jobPayload)) : handler.handler(context, jobPayload));
                     }
                     catch (error) {
                         handlerFailed = true;
@@ -7476,14 +7587,18 @@ export async function runCurrentUserJobWorker(database) {
                         "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?")).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken)
                     : await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? " +
                         "WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?")).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
+                if (Number(settled?.changes ?? 0) === 1)
+                    telemetryOutcome = "succeeded";
                 if (Number(settled?.changes ?? 0) === 0) {
                     const cancellation = await database.adapter.prepare(sql("SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?")).get(row.id, claimToken);
                     if (cancellation?.cancelRequestedAt) {
                         const cancelledAt = database.clock.now().toISOString();
                         const cancellationHistory = JSON.parse(row.attemptHistory || "[]");
                         cancellationHistory.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "cancelled", code: "ABORTED", completedAt: cancelledAt });
-                        await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+                        const cancelled = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
                             "WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NOT NULL")).run(JSON.stringify({ code: "ABORTED", message: "Job aborted." }), cancelledAt, JSON.stringify(cancellationHistory), row.id, claimToken);
+                        if (Number(cancelled?.changes ?? 0) === 1)
+                            telemetryOutcome = "cancelled";
                     }
                 }
                 if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && typeof payloadRetentionUntil === "string" && isCanonicalJobTimestamp(payloadRetentionUntil)) {
@@ -7498,8 +7613,10 @@ export async function runCurrentUserJobWorker(database) {
                 const runtimeError = error?.cause ?? error;
                 if (row.handler === STRIPE_EVENT_JOB && runtimeError?.[atomicStripeFenceContention] === true) {
                     const contention = await deferAtomicStripeFenceContention(database, row.id, claimToken);
-                    if (contention === "deferred")
+                    if (contention === "deferred") {
+                        telemetryOutcome = "deferred";
                         continue;
+                    }
                     if (contention === "cancelled") {
                         abortController.abort();
                         error = atomicStripeAbortError();
@@ -7532,21 +7649,28 @@ export async function runCurrentUserJobWorker(database) {
                     : handlerFailure;
                 history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
                 if (cancelled) {
-                    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+                    const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
                         "WHERE [id]=? AND [status]='running' AND [claimToken]=?")).run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id, claimToken);
+                    if (Number(changed?.changes ?? 0) === 1)
+                        telemetryOutcome = "cancelled";
                 }
                 else if (retryAvailableAt !== null) {
                     const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
                         "WHERE [id]=? AND [status]='running' AND [claimToken]=?")).run(retryAvailableAt, JSON.stringify(history), row.id, claimToken);
-                    if (Number(changed?.changes ?? 0) === 1)
+                    if (Number(changed?.changes ?? 0) === 1) {
+                        telemetryOutcome = "retry";
                         scheduleJobWorkerWake(database, retry.delayMs + 1);
+                    }
                 }
                 else {
-                    await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
+                    const changed = await database.adapter.prepare(sql("UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? " +
                         "WHERE [id] = ? AND [status]='running' AND [claimToken]=?")).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id, claimToken);
+                    if (Number(changed?.changes ?? 0) === 1)
+                        telemetryOutcome = "failed";
                 }
             }
             finally {
+                attemptTelemetry?.end(telemetryOutcome);
                 const activeClaim = database.__jobAbortControllers?.get(row.id);
                 if (activeClaim?.claimToken === claimToken)
                     database.__jobAbortControllers.delete(row.id);

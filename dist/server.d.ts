@@ -306,7 +306,11 @@ export declare function stripeEvent<const HandlerType extends Handler>(options: 
 export declare function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType>;
 export declare function mutation<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"mutation", HandlerType>;
 export declare function message<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"message", HandlerType>;
-/** Declare a named, server-only durable Job handler in `capsule({ jobs })`. */
+/**
+ * Declare a named, server-only durable Job handler in `capsule({ jobs })`.
+ * Enabled operator telemetry automatically traces each attempt with a causal
+ * enqueue link and independent queue metrics; no tracing API is required.
+ */
 export declare function job<const HandlerType extends Handler>(handler: HandlerType): JobDefinition<HandlerType>;
 /**
  * Declare a named, server-only recurring Privileged Job in

@@ -3,6 +3,8 @@ export type HostRelayConnection = {
     tracePropagationOrigins?: string[];
     endpoint: string;
     credential: string;
+    inventoryCredential?: string;
+    inventoryHost?: string;
     caPem?: string;
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
@@ -14,16 +16,26 @@ export declare function renderHostRelayCollectorConfig(options: {
     resources?: HostMetrics | null;
 }): string;
 export declare function readHostTelemetryConnection(remoteRoot: string): Promise<{
-    tracePropagationOrigins?: string[];
     schemaVersion: 1;
     endpoint: string;
     network: string;
     internalEndpoint: string;
     caConfigured: boolean;
     connectedAt: string;
+    inventoryHost?: string;
+    tracePropagationOrigins?: string[];
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
 } | null>;
+export type HostInventoryConnection = {
+    generation: string;
+    endpoint: string;
+    host: string;
+    credential: string;
+    caPem?: string;
+};
+/** Call only while holding withHostTelemetryLock; legacy split state needs it too. */
+export declare function readHostInventoryConnection(remoteRoot: string): Promise<HostInventoryConnection | null>;
 export declare function statusHostTelemetryRelay(remoteRoot: string): Promise<{
     eventLoopDelayResolutionMs?: number | undefined;
     metricsIntervalMs?: number | undefined;

@@ -35,7 +35,18 @@ export declare function activeRuntimeLogIdentity(): {
     traceId: string | null;
     spanId: string | null;
 } | undefined;
+export type WebSocketOperationOutcome = "success" | "denied" | "error" | "cancelled";
+export type RuntimeWebSocketOperation = {
+    run<T>(handle: () => T): T;
+    end(outcome: WebSocketOperationOutcome): void;
+};
+export type RuntimeWebSocketTelemetry = {
+    connectionOpened(): () => void;
+    startOperation(type: "query" | "mutation", name: unknown, declared: boolean, traceparent?: unknown): RuntimeWebSocketOperation;
+};
 export declare function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>): {
+    websocket: RuntimeWebSocketTelemetry;
+    bindJobQueue: (_database: any) => void;
     run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => unknown;
     shutdown: () => Promise<void>;
 };

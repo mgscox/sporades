@@ -57,6 +57,23 @@ test('dashboard regex variables use PromQL raw strings in panels and variable qu
   }
 });
 
+test('Capsule API dashboard exposes bounded WebSocket signals independently of the HTTP Route selector', async () => {
+  const dashboard = JSON.parse(await readFile(new URL('../monitoring/trace/api-dashboard.json', import.meta.url), 'utf8'));
+  for (const [title, metric] of [
+    ['WebSocket operations per second', 'sporades_websocket_operation_count_total'],
+    ['WebSocket p95 operation duration', 'sporades_websocket_operation_duration_seconds_bucket'],
+    ['WebSocket errors, denials and cancellations', 'sporades_websocket_operation_count_total'],
+    ['WebSocket active connections', 'sporades_websocket_active_connections_ratio'],
+  ]) {
+    const panel = dashboard.panels.find(panel => panel.title === title);
+    assert(panel, title);
+    assert(panel.targets[0].expr.includes(metric + '{'));
+    assert(panel.targets[0].expr.includes('service_name=~`${service:regex}`'));
+    assert(panel.targets[0].expr.includes('deployment_environment_name=~`${environment:regex}`'));
+    assert(!panel.targets[0].expr.includes('http_route'));
+  }
+});
+
 test('root Linux setup keeps the gateway non-root; unprivileged setup keeps its owner', () => {
   assert.deepEqual(gatewayRunIdentity('linux', 0, 0), { uid: 1000, gid: 1000, transferOwnership: true });
   assert.deepEqual(gatewayRunIdentity('linux', 1234, 4321), { uid: 1234, gid: 4321, transferOwnership: false });
@@ -99,7 +116,7 @@ test('setup preserves literal credential characters for the gateway', async () =
   assert.equal((await stat(credentialsPath)).mode & 0o777, 0o600);
   const credentials = JSON.parse(await readFile(credentialsPath, 'utf8'));
   assert.deepEqual(credentials, {
-    ingestToken: 't#1:$TOKEN', uiUser: 'viewer', uiPassword: 'before$MISSING_after:# space',
+    ingestToken: 't#1:$TOKEN', uiUser: 'viewer', uiPassword: 'before$MISSING_after:# space', inventoryHosts: {},
   });
   assert.match(await readFile(path, 'utf8'), /TRACE_UI_PASSWORD=before\$MISSING_after:# space/);
   const composeEnvironment = await readFile(join(directory, '.compose.env'), 'utf8');
@@ -291,13 +308,20 @@ test('readiness rejects stale readable metrics while writes fail and recovers af
 
 
 test('UI gateway child handles slow, stalled, broken, and cancelled responses', async () => {
-  let cancelled = false;
+  let stalledClosed, streamClosed;
+  const stalledCancellation = new Promise(resolve => { stalledClosed = resolve; });
+  const streamCancellation = new Promise(resolve => { streamClosed = resolve; });
+  const observeCancellation = async event => {
+    let deadline;
+    try { await Promise.race([event, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('backend did not observe cancellation')), 3000); })]); }
+    finally { clearTimeout(deadline); }
+  };
   const backend = createServer((req, res) => {
     if (req.url === '/slow') { setTimeout(() => res.end('slow success'), 3300); return; }
-    if (req.url === '/stall') { req.on('close', () => { cancelled = true; }); return; }
+    if (req.url === '/stall') { res.once('close', stalledClosed); return; }
     if (req.url === '/fail-before') { req.socket.destroy(); return; }
     if (req.url === '/broken') { res.writeHead(200).write('partial'); setTimeout(() => res.destroy(), 40); return; }
-    if (req.url === '/stream') { res.writeHead(200).write('part'); res.on('close', () => { cancelled = true; }); return; }
+    if (req.url === '/stream') { res.writeHead(200).write('part'); res.once('close', streamClosed); return; }
     res.end('still alive');
   });
   await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve));
@@ -328,8 +352,7 @@ test('UI gateway child handles slow, stalled, broken, and cancelled responses', 
     const stalled = await fetch(`${base}/stall`, { headers: auth });
     assert.equal(stalled.status, 504);
     assert.ok(Date.now() - started < 6000);
-    assert.equal(cancelled, true);
-    cancelled = false;
+    await observeCancellation(stalledCancellation);
     await new Promise((resolve, reject) => {
       const request = httpRequest(`${base}/stream`, { headers: auth }, response => {
         response.once('data', () => { request.destroy(); resolve(); });
@@ -337,8 +360,7 @@ test('UI gateway child handles slow, stalled, broken, and cancelled responses', 
       request.once('error', reject);
       request.end();
     });
-    await new Promise(resolve => setTimeout(resolve, 100));
-    assert.equal(cancelled, true);
+    await observeCancellation(streamCancellation);
     const alive = await fetch(`${base}/api/services`, { headers: auth });
     assert.equal(alive.status, 200);
     assert.equal(await alive.text(), 'still alive');
