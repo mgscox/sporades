@@ -20,7 +20,11 @@ test('Host relay accepts only a scoped verified HTTPS destination', () => {
 test('collector config has private receiver and bounded delivery without embedding credentials', () => {
   const config = renderHostRelayCollectorConfig({ endpoint: 'https://monitor.example:4318/', caFile: false });
   assert.match(config, /endpoint: 0\.0\.0\.0:4318/);
-  assert.match(config, /queue_size: 1000/);
+  assert.match(config, /sizer: bytes\n      queue_size: 16777216/);
+  assert.match(config, /block_on_overflow: false/);
+  assert.match(config, /send_batch_max_size: 256/);
+  assert.match(config, /timeout: 2s/);
+  assert.match(config, /prometheus\/pipeline/);
   assert.match(config, /memory_limiter:/);
   assert.match(config, /\$\{env:SPORADES_INGEST_AUTH\}/);
   assert.doesNotMatch(config, /scope-test-token/);

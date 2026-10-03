@@ -42,7 +42,7 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   const gatewaySource = await readFile(join(root, 'monitoring', 'trace', 'gateway.mjs'), 'utf8');
   assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', 'gateway.mjs'), 'utf8'), gatewaySource);
   assert.equal(await readFile(join(target, 'gateway.mjs'), 'utf8'), gatewaySource);
-  for (const name of ['smoke.mjs', 'README.md', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs']) {
+  for (const name of ['smoke.mjs', 'README.md', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'pipeline-dashboard.json', 'pipeline-rules.yaml', 'collector-persistent.yaml', 'compose.queue.yaml', 'OUTAGES.md']) {
     const source = await readFile(join(root, 'monitoring', 'trace', name), 'utf8');
     assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', name), 'utf8'), source);
     assert.equal(await readFile(join(target, name), 'utf8'), source);

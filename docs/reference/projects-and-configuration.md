@@ -54,6 +54,23 @@ trust. Sporades sends uncompressed OTLP/HTTP with cumulative metrics for its
 monitoring stack; ambient `OTEL_EXPORTER_OTLP_*` settings from other tooling do
 not alter these exports. For a private CA, select the profile's `--ca-file`.
 
+Telemetry exports are best effort and bounded independently of business work.
+The SDK exports `otel.sdk.processor.span.queue.size` and `.capacity` (128
+waiting spans) and `.processed` with bounded `error.type` values `queue_full`
+and `Error` for saturation and failed export loss. `sporades.telemetry.export.failure.count`
+counts failed attempts by `signal=traces|metrics`; `.in_flight` measures active
+exports, and `.last_success` records Unix seconds of the last downstream
+acceptance, with no sample until the first success. `sporades.telemetry.collection.time`
+records source collection time in Unix seconds for detecting stale buffered
+samples. These metrics share the existing resource identity and export path;
+diagnostic samples can themselves be lost. Missing data is unknown, and export
+acceptance does not prove storage delivery. The provisioned **Sporades Telemetry
+Pipeline** dashboard and [outage runbook](https://github.com/mgscox/sporades/blob/main/monitoring/trace/OUTAGES.md)
+describe finite retry/flush budgets, loss and optional quota-limited persistent
+Collector queues. No Capsule instrumentation API or additional profile setting
+is required. SIGTERM flush stays within 1500 ms and repeated shutdown joins the
+same bounded operation.
+
 Dev selection order is `sporades dev --telemetry <name>`, then the explicit project
 binding below, then no export. A Container session uses `sporades deploy
 --telemetry <name>`, its previously selected Container profile on redeploy, or

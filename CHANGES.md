@@ -6,6 +6,8 @@ Changes since v0.9.30.
 
 ### 🚀 Features
 
+- Expose bounded telemetry pipeline queues, losses and freshness, provision recovery diagnostics and optional quota-limited persistent Collector queues, and add isolated monitoring outage drills (#129).
+
 - Trace individual WebSocket query and mutation executions with isolated context, cancellation outcomes, independent operation metrics and active connections (#125).
 
 - Trace durable background Job attempts with causal enqueue links and independent queue pressure, execution duration, retry and failure metrics (#126).

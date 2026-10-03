@@ -44014,6 +44014,15 @@ function renderHostRelayCollectorConfig(options) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") invalid3();
   return `receivers:
+  prometheus/pipeline:
+    config:
+      scrape_configs:
+        - job_name: sporades-pipeline-relay
+          scrape_interval: 15s
+          scrape_timeout: 3s
+          sample_limit: 2000
+          static_configs:
+            - targets: [127.0.0.1:8888]
 ${options.resources ? hostScrapeConfig(options.resources) : ""}  otlp:
     protocols:
       http:
@@ -44026,27 +44035,43 @@ processors:
     spike_limit_mib: 24
   batch:
     send_batch_size: 256
+    send_batch_max_size: 256
     timeout: 1s
 exporters:
   otlphttp/remote:
     endpoint: ${JSON.stringify(options.endpoint)}
     headers:
       Authorization: "\${env:SPORADES_INGEST_AUTH}"
-${options.caFile ? "    tls:\n      ca_file: /etc/otelcol/ca.pem\n" : ""}    sending_queue:
+${options.caFile ? "    tls:\n      ca_file: /etc/otelcol/ca.pem\n" : ""}    timeout: 2s
+    sending_queue:
       enabled: true
-      queue_size: 1000
+      sizer: bytes
+      queue_size: 16777216
       num_consumers: 2
+      block_on_overflow: false
+      wait_for_result: false
     retry_on_failure:
       enabled: true
+      initial_interval: 1s
+      max_interval: 5s
       max_elapsed_time: 300s
 service:
+  telemetry:
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8888
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [otlphttp/remote]
     metrics:
-      receivers: [otlp${options.resources?.enabled ? ", prometheus/host" : ""}]
+      receivers: [otlp, prometheus/pipeline${options.resources?.enabled ? ", prometheus/host" : ""}]
       processors: [memory_limiter, batch]
       exporters: [otlphttp/remote]
 `;
@@ -44222,7 +44247,7 @@ async function startRelay(files, network, caConfigured) {
   }
   const hash2 = createHash4("sha256").update(await readFile5(files.config)).digest("hex");
   const resources = await readHostMetrics(path7.dirname(files.directory));
-  const args = ["run", "--detach", "--name", RELAY_NAME, "--label", RELAY_LABEL, "--label", `com.sporades.relay-config=${hash2}`, "--network", network, "--network-alias", RELAY_ALIAS, "--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--memory", "192m", "--cpus", "0.5", "--pids-limit", "128", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", files.credential, "--mount", `type=bind,source=${files.config},target=/etc/otelcol/config.yaml,readonly`, ...caConfigured ? ["--mount", `type=bind,source=${files.ca},target=/etc/otelcol/ca.pem,readonly`] : [], RELAY_IMAGE, "--config=/etc/otelcol/config.yaml"];
+  const args = ["run", "--detach", "--name", RELAY_NAME, "--label", RELAY_LABEL, "--label", `com.sporades.relay-config=${hash2}`, "--network", network, "--network-alias", RELAY_ALIAS, "--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--memory", "192m", "--cpus", "0.5", "--pids-limit", "128", "--stop-timeout", "5", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", files.credential, "--mount", `type=bind,source=${files.config},target=/etc/otelcol/config.yaml,readonly`, ...caConfigured ? ["--mount", `type=bind,source=${files.ca},target=/etc/otelcol/ca.pem,readonly`] : [], RELAY_IMAGE, "--config=/etc/otelcol/config.yaml"];
   if (!docker(args).ok) throw helperError("Host Telemetry relay failed to start.", "Inspect protected relay configuration and Docker logs, then retry `sporades host telemetry connect`.");
   if (resources?.enabled && !docker(["network", "connect", HOST_METRICS_NETWORK, RELAY_NAME]).ok) throw helperError("Could not attach relay to the private metrics network.", "Retry telemetry reconcile.");
   await new Promise((resolve) => setTimeout(resolve, 1200));
