@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { validateQueryCredential } from "./telemetry-diagnostics.js";
 import { admissionStorageRoot, publishAdmissionPolicy, parseAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS } from "../admission-policy.js";
 import { readDeployFile, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
@@ -58,7 +59,7 @@ import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { CLIENT_ADDRESS_TOKEN_HEADER, clientAddressBoundaryToken } from "../client-address.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
-import { checkHostTelemetryDelivery, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
+import { checkHostTelemetryDelivery, recoverHostTelemetryActivation, migrateHostTelemetryRelay, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
 import { queueHostInventory, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
@@ -182,6 +183,7 @@ async function runHostHelperEntry() {
   }
   if (process.argv[2] === "--reconcile-inventory") {
     const root = Buffer.from(process.argv[3] ?? "", "base64url").toString();
+    await recoverHostTelemetryActivation(root);
     writeEnvelope({ ok: true, data: await reconcileHostInventory(root), error: null });
     return;
   }
@@ -581,6 +583,7 @@ function managedRouteMutationLockIdentity(request: HostHelperRequest) {
         bootstrapTrust,
       };
       }
+    case "host.telemetry.migrate":
     case "host.telemetry.connect":
     case "host.telemetry.resources-enable":
     case "host.telemetry.resources-disable":
@@ -897,10 +900,20 @@ async function hostTelemetryStatusWithCoverage(request: HostHelperRequest, relay
   } };
 }
 
+async function migrateTelemetry(request: HostHelperRequest, queryCredential?: string) {
+  const result = await migrateHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain, queryCredential);
+  if (result.activation !== "applied") return result;
+  const worker = await installHostInventoryWorker(request.host.remoteRoot).catch(() => ({ installed: false, reason: "worker-installation-unavailable" }));
+  const inventory = await reconcileHostInventory(request.host.remoteRoot).catch(() => ({ pending: true, failure: "inventory-unavailable" }));
+  const verification = await checkHostTelemetryDelivery(request.host.remoteRoot, queryCredential).catch(() => ({ backendStorage: "verification-unavailable", reason: "diagnostics-unavailable" }));
+  const coverage = await hostTelemetryStatusWithCoverage(request).catch(() => ({ state: "unavailable" }));
+  return { ...result, worker, inventory, verification, coverage };
+}
+
 async function main(request: HostHelperRequest) {
   try { await dispatchMain(request); }
   finally {
-    const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.reconcile", "host.telemetry.enable", "host.telemetry.disable"];
+    const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.migrate", "host.telemetry.reconcile", "host.telemetry.enable", "host.telemetry.disable"];
     if (mutations.includes(request.action)) {
       try { if (await queueHostInventory(request.host.remoteRoot)) kickHostInventory(request.host.remoteRoot); }
       catch { process.stderr.write("Host inventory is pending; periodic reconciliation will retry.\n"); }
@@ -913,15 +926,19 @@ async function dispatchMain(request: HostHelperRequest) {
   hostHelperConfig = await loadHostHelperConfig(request);
   if (request.action.startsWith("host.telemetry.")) {
     const capsuleOperation = request.action === "host.telemetry.enable" || request.action === "host.telemetry.disable";
-    if (!request.host || typeof request.host.remoteRoot !== "string" || typeof request.host.domain !== "string" || typeof request.host.alias !== "string" || Boolean(request.capsule) !== capsuleOperation || (request.action !== "host.telemetry.connect" && request.telemetry)) {
+    if (!request.host || typeof request.host.remoteRoot !== "string" || typeof request.host.domain !== "string" || typeof request.host.alias !== "string" || Boolean(request.capsule) !== capsuleOperation || (!["host.telemetry.connect", "host.telemetry.migrate"].includes(request.action) && request.telemetry)) {
       throw helperError("Invalid Host Telemetry request.", "Upgrade the local CLI and Host helper together.");
     }
+    if (request.diagnostics !== undefined && (!["host.telemetry.check", "host.telemetry.migrate"].includes(request.action) || !request.diagnostics || Object.keys(request.diagnostics).some(key => key !== "queryCredential"))) throw helperError("Invalid diagnostic request.", "Use an operator query credential only for check or migrate.");
+    const queryCredential = validateQueryCredential(request.diagnostics?.queryCredential);
     validateCanonicalHostRouteRoot(request);
     if (request.action === "host.telemetry.connect" || request.action === "host.telemetry.reconcile") await installHostInventoryWorker(request.host.remoteRoot);
     const data = request.action === "host.telemetry.inventory-export" ? { inventory: await exportHostInventory(request.host.remoteRoot) }
       : request.action === "host.telemetry.inventory-reconcile" ? await reconcileHostInventory(request.host.remoteRoot)
       : capsuleOperation
       ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable")
+      : request.action === "host.telemetry.migrate"
+      ? await migrateTelemetry(request, queryCredential)
       : request.action === "host.telemetry.connect"
       ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain))
       : ["host.telemetry.reconcile", "host.telemetry.resources-enable", "host.telemetry.resources-disable", "host.telemetry.resources-remove"].includes(request.action)
@@ -929,9 +946,14 @@ async function dispatchMain(request: HostHelperRequest) {
       : request.action === "host.telemetry.status"
         ? await hostTelemetryStatusWithCoverage(request)
         : request.action === "host.telemetry.check"
-          ? await checkHostTelemetryDelivery(request.host.remoteRoot)
+          ? await checkHostTelemetryDelivery(request.host.remoteRoot, queryCredential)
           : null;
     if (!data) throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, check, enable, or disable.");
+    if (request.action === "host.telemetry.migrate" && "activation" in data && data.activation !== "applied") {
+      writeEnvelope({ ok: false, data, error: { message: "Monitoring destination verification failed; migration was not applied.", hint: "Inspect the reported destination, storage and inventory stages. The working binding is preserved." } });
+      process.exitCode = 1;
+      return;
+    }
     writeEnvelope({ ok: true, data, error: null });
     return;
   }

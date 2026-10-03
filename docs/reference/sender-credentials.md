@@ -197,3 +197,7 @@ The operator owns stack startup/cleanup; the script restarts only the supplied
 project's gateway. `SPORADES_ACCEPTANCE_CLI` can select an extracted npm package's
 CLI for installed-package validation. Separate-VM verified-HTTPS Host relay and
 workstation-disconnect validation remain the operator's deployment acceptance.
+
+For Host-origin storage checks and controlled destination changes, see
+[Telemetry diagnostics and migration](./telemetry-diagnostics.md). Query authority
+is supplied separately from ingestion and inventory capabilities.

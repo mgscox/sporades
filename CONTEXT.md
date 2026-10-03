@@ -670,3 +670,13 @@ commit, cancellation and revocation without changing Capsule Sealed Server env.
 They grant no dashboard/query or remote administration authority. The gateway
 reloads atomic registry snapshots; operator `.env` and legacy connections remain
 intact until explicitly migrated. See `docs/reference/sender-credentials.md`.
+
+Host-origin diagnostics separate saved configuration, relay process readiness,
+DNS/TLS/authentication, direct OTLP acceptance, relay receiver acceptance and exact
+recent relay trace visibility. Operator query authority is ephemeral and independent
+of ingestion/inventory; fixed diagnostic lookup returns booleans only. Verified
+migration reuses profile resolution and inventory generations, fences stale
+preflight, journals activation with rollback/recovery, and reports fresh inventory
+and pending Capsule coverage. Old history and old-server expectations remain
+operator-owned; no VM or historical database migration is automatic. See
+[diagnostics and migration](docs/reference/telemetry-diagnostics.md).

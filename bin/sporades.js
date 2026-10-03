@@ -80346,6 +80346,57 @@ var require_index_shim = __commonJS({
   }
 });
 
+// src/cli/cli-support.ts
+function errorDetails(error) {
+  if (error === null || error === void 0) {
+    return {};
+  }
+  return typeof error === "object" ? error : { message: String(error) };
+}
+function commandError(message, hint, diagnostics = null) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (diagnostics) {
+    error.diagnostics = diagnostics;
+  }
+  return error;
+}
+function helperError(message, hint, diagnostics = null) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (diagnostics) {
+    error.diagnostics = diagnostics;
+  }
+  return error;
+}
+function readStdin() {
+  return new Promise((resolve2, reject) => {
+    let stdin = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      stdin += chunk;
+    });
+    process.stdin.on("end", () => resolve2(stdin));
+    process.stdin.on("error", reject);
+  });
+}
+function writeResult(result, failed = false) {
+  process.stdout.write(`${JSON.stringify(result)}
+`);
+  if (failed) {
+    process.exitCode = 1;
+  }
+}
+
+// src/cli/telemetry-diagnostics.ts
+function validateQueryCredential(value) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "string" || value.length > 4096 || !/^[^:\x00-\x20\x7f]+:[^\x00-\x1f\x7f]+$/.test(value)) {
+    throw helperError("Invalid operator query credential.", "Supply a protected environment reference containing the Monitoring operator user:password; ingestion tokens cannot query.");
+  }
+  return value;
+}
+
 // src/admission-policy.ts
 import path2 from "node:path";
 import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
@@ -81003,48 +81054,6 @@ async function openAdmissionPolicy(root, relative, onHealth) {
     clearInterval(timer);
     await pending;
   } });
-}
-
-// src/cli/cli-support.ts
-function errorDetails(error) {
-  if (error === null || error === void 0) {
-    return {};
-  }
-  return typeof error === "object" ? error : { message: String(error) };
-}
-function commandError(message, hint, diagnostics = null) {
-  const error = new Error(message);
-  error.hint = hint;
-  if (diagnostics) {
-    error.diagnostics = diagnostics;
-  }
-  return error;
-}
-function helperError(message, hint, diagnostics = null) {
-  const error = new Error(message);
-  error.hint = hint;
-  if (diagnostics) {
-    error.diagnostics = diagnostics;
-  }
-  return error;
-}
-function readStdin() {
-  return new Promise((resolve2, reject) => {
-    let stdin = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => {
-      stdin += chunk;
-    });
-    process.stdin.on("end", () => resolve2(stdin));
-    process.stdin.on("error", reject);
-  });
-}
-function writeResult(result, failed = false) {
-  process.stdout.write(`${JSON.stringify(result)}
-`);
-  if (failed) {
-    process.exitCode = 1;
-  }
 }
 
 // src/cli/host-domain-aliases.ts
@@ -146437,7 +146446,7 @@ Profile commands:
   bootstrap           Provision the remote Host server
   upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
-  telemetry connect|reconcile|status|check
+  telemetry connect|migrate|reconcile|status|check
   telemetry inventory-export|inventory-reconcile
                       Manage the shared Host Telemetry relay
   telemetry resources-enable|resources-disable|resources-remove
@@ -146475,7 +146484,9 @@ Other commands:
 
 Options:
   --host <alias>      Host profile alias
-  --profile <name>    Verified HTTPS Telemetry profile for host telemetry connect
+  --profile <name>    Verified HTTPS Telemetry profile for connect or migrate
+  --query-credential-env <name>
+                      Ephemeral operator user:password for check or migrate
   --server <target>   SSH target for host add
   --domain <domain>   Hosted domain for host add
   --alias-domain <hostname>
@@ -149766,6 +149777,7 @@ function parseHostArgs(args) {
   let dryRun = false;
   let force = false;
   let telemetryProfileName = null;
+  let queryCredentialEnv = null;
   const positional = [];
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -149775,6 +149787,9 @@ function parseHostArgs(args) {
         break;
       case "--host":
         hostAlias = readFlagValue(rest, ++index, "--host");
+        break;
+      case "--query-credential-env":
+        queryCredentialEnv = readFlagValue(rest, ++index, "--query-credential-env");
         break;
       case "--profile":
         if (subcommand !== "telemetry") throw commandError("--profile is only supported by host telemetry.", "Use `sporades host telemetry connect --profile <name>`.");
@@ -149835,18 +149850,21 @@ function parseHostArgs(args) {
         positional.push(arg);
     }
   }
+  if (queryCredentialEnv && subcommand !== "telemetry") throw commandError("Unexpected operator query credential.", "Use host telemetry check or migrate.");
   switch (subcommand) {
     case "telemetry": {
       const [operation, ...extra] = positional;
-      if (!operation || !["connect", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
+      if (!operation || !["connect", "migrate", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
         throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
       }
       if ((operation === "enable" || operation === "disable") && extra.length !== 1) throw commandError("Missing Capsule subname.", `Use \`sporades host telemetry ${operation} <subname> --host <alias>\`.`);
       if (extra.length) validateCapsuleSubname(extra[0]);
-      if (operation === "connect" && !telemetryProfileName) throw commandError("Missing Telemetry profile.", "Pass `--profile <name>` with a verified HTTPS destination.");
-      if (operation !== "connect" && telemetryProfileName) throw commandError("Unexpected Telemetry profile.", "Use `--profile` only with `sporades host telemetry connect`.");
+      if (["connect", "migrate"].includes(operation) && !telemetryProfileName) throw commandError("Missing Telemetry profile.", "Pass `--profile <name>` with a verified HTTPS destination.");
+      if (!["connect", "migrate"].includes(operation) && telemetryProfileName) throw commandError("Unexpected Telemetry profile.", "Use `--profile` only with `sporades host telemetry connect`.");
       if (hostAlias) validateHostAlias(hostAlias);
-      return { subcommand, operation, subname: extra[0], telemetryProfileName, hostAlias, json, projectDir: process.cwd() };
+      if (queryCredentialEnv && !["check", "migrate"].includes(operation)) throw commandError("Unexpected operator query credential.", "Use --query-credential-env only with host telemetry check or migrate.");
+      if (queryCredentialEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(queryCredentialEnv)) throw commandError("Invalid query credential environment reference.", "Use an environment variable name.");
+      return { subcommand, operation, subname: extra[0], telemetryProfileName, queryCredentialEnv, hostAlias, json, projectDir: process.cwd() };
     }
     case "add": {
       const [alias, ...extra] = positional;
@@ -152236,7 +152254,7 @@ async function manageHost(options) {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
       let telemetry;
-      if (options.operation === "connect") {
+      if (["connect", "migrate"].includes(options.operation)) {
         const profiles = await readTelemetryProfiles();
         const profile = Object.hasOwn(profiles, options.telemetryProfileName) ? profiles[options.telemetryProfileName] : void 0;
         if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before connecting the Host.");
@@ -152257,7 +152275,10 @@ async function manageHost(options) {
         if (profile.inventoryCredentialEnv && !inventoryCredential) throw commandError("Telemetry inventory credential is unavailable.", "Set the inventory credential environment reference before connecting.");
         telemetry = { ...profile.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}, endpoint: profile.endpoint, credential, ...inventoryCredential ? { inventoryCredential } : {}, ...profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}, ...caPem ? { caPem } : {}, ...profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}, ...profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {} };
       }
-      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
+      const queryCredential = options.queryCredentialEnv ? process.env[options.queryCredentialEnv] : void 0;
+      if (options.queryCredentialEnv && !queryCredential) throw commandError("Operator query credential is unavailable.", "Set the referenced environment variable to the Monitoring operator user:password.");
+      validateQueryCredential(queryCredential);
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, diagnostics: queryCredential ? { queryCredential } : void 0, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);
       else if (!result.ok) throw commandError(result.error.message, result.error.hint);
       else process.stdout.write(`${JSON.stringify(result.data, null, 2)}
@@ -154224,6 +154245,7 @@ function invokeRemoteHostHelper(options) {
   if (options.telemetry) {
     request.telemetry = options.telemetry;
   }
+  if (options.diagnostics) request.diagnostics = options.diagnostics;
   if (options.registration) {
     request.registration = options.registration;
   }

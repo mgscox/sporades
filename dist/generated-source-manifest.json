@@ -48,6 +48,7 @@
       "src/cli/schedule-inspection-envelope.ts",
       "src/cli/sporades-host-helper.ts",
       "src/cli/sporades.ts",
+      "src/cli/telemetry-diagnostics.ts",
       "src/cli/telemetry-profile.ts",
       "src/client-address.ts",
       "src/client-capabilities.ts",
@@ -123,7 +124,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "00fdd72145ff48d847269026af4f61159dd25bd1daa9e71ccb5bda1bf33ea604"
+    "digest": "aaa64af96a91af58703af8946df2a7c9aeb6e4e0a2daaeb6043e5e41471d76a8"
   },
   "outputs": {
     "files": [
@@ -285,6 +286,10 @@
       "dist/cli/sporades.d.ts.map",
       "dist/cli/sporades.js",
       "dist/cli/sporades.js.map",
+      "dist/cli/telemetry-diagnostics.d.ts",
+      "dist/cli/telemetry-diagnostics.d.ts.map",
+      "dist/cli/telemetry-diagnostics.js",
+      "dist/cli/telemetry-diagnostics.js.map",
       "dist/cli/telemetry-profile.d.ts",
       "dist/cli/telemetry-profile.d.ts.map",
       "dist/cli/telemetry-profile.js",
@@ -547,6 +552,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "fa2826b7fea67a0b513b6f1af29e60676c74ca24899f2ec1a0a6f5af0353dcd2"
+    "digest": "e6f4b7e716ff8be304b02ae4f84afc106bf84f51f912b19ebbca7a050a1ee888"
   }
 }

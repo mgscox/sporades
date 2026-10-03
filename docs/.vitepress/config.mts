@@ -63,6 +63,7 @@ export default defineConfig({
           { text: "Files and realtime", link: "/reference/files-and-realtime" },
           { text: "Operations and hosting", link: "/reference/operations-and-hosting" },
           { text: "Sender credentials", link: "/reference/sender-credentials" },
+          { text: "Telemetry diagnostics", link: "/reference/telemetry-diagnostics" },
           { text: "Architecture", link: "/architecture" },
           { text: "Runtime layout", link: "/runtime-layout" },
           { text: "Host server installation", link: "/server-installation" },

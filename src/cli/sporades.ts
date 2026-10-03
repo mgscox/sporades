@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { validateQueryCredential } from "./telemetry-diagnostics.js";
 import { openAdmissionPolicy, type AdmissionHealth, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
 import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
@@ -1267,6 +1268,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   let dryRun = false;
   let force = false;
   let telemetryProfileName: string | null = null;
+  let queryCredentialEnv: string | null = null;
   const positional = [];
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -1279,6 +1281,10 @@ function parseHostArgs(args: string[]): LooseRecord {
 
       case "--host":
         hostAlias = readFlagValue(rest, ++index, "--host");
+        break;
+
+      case "--query-credential-env":
+        queryCredentialEnv = readFlagValue(rest, ++index, "--query-credential-env");
         break;
 
       case "--profile":
@@ -1356,18 +1362,21 @@ function parseHostArgs(args: string[]): LooseRecord {
     }
   }
 
+  if (queryCredentialEnv && subcommand !== "telemetry") throw commandError("Unexpected operator query credential.", "Use host telemetry check or migrate.");
   switch (subcommand) {
     case "telemetry": {
       const [operation, ...extra] = positional;
-      if (!operation || !["connect", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
+      if (!operation || !["connect", "migrate", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
         throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
       }
       if ((operation === "enable" || operation === "disable") && extra.length !== 1) throw commandError("Missing Capsule subname.", `Use \`sporades host telemetry ${operation} <subname> --host <alias>\`.`);
       if (extra.length) validateCapsuleSubname(extra[0]);
-      if (operation === "connect" && !telemetryProfileName) throw commandError("Missing Telemetry profile.", "Pass `--profile <name>` with a verified HTTPS destination.");
-      if (operation !== "connect" && telemetryProfileName) throw commandError("Unexpected Telemetry profile.", "Use `--profile` only with `sporades host telemetry connect`.");
+      if (["connect", "migrate"].includes(operation) && !telemetryProfileName) throw commandError("Missing Telemetry profile.", "Pass `--profile <name>` with a verified HTTPS destination.");
+      if (!["connect", "migrate"].includes(operation) && telemetryProfileName) throw commandError("Unexpected Telemetry profile.", "Use `--profile` only with `sporades host telemetry connect`.");
       if (hostAlias) validateHostAlias(hostAlias);
-      return { subcommand, operation, subname: extra[0], telemetryProfileName, hostAlias, json, projectDir: process.cwd() };
+      if (queryCredentialEnv && !["check", "migrate"].includes(operation)) throw commandError("Unexpected operator query credential.", "Use --query-credential-env only with host telemetry check or migrate.");
+      if (queryCredentialEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(queryCredentialEnv)) throw commandError("Invalid query credential environment reference.", "Use an environment variable name.");
+      return { subcommand, operation, subname: extra[0], telemetryProfileName, queryCredentialEnv, hostAlias, json, projectDir: process.cwd() };
     }
     case "add": {
       const [alias, ...extra] = positional;
@@ -3933,7 +3942,7 @@ async function manageHost(options: LooseRecord) {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
       let telemetry: LooseRecord | undefined;
-      if (options.operation === "connect") {
+      if (["connect", "migrate"].includes(options.operation)) {
         const profiles = await readTelemetryProfiles();
         const profile = Object.hasOwn(profiles, options.telemetryProfileName) ? profiles[options.telemetryProfileName] : undefined;
         if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before connecting the Host.");
@@ -3952,7 +3961,10 @@ async function manageHost(options: LooseRecord) {
         if (profile.inventoryCredentialEnv && !inventoryCredential) throw commandError("Telemetry inventory credential is unavailable.", "Set the inventory credential environment reference before connecting.");
         telemetry = { ...(profile.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}), endpoint: profile.endpoint, credential, ...(inventoryCredential ? { inventoryCredential } : {}), ...(profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}), ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
       }
-      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
+      const queryCredential = options.queryCredentialEnv ? process.env[options.queryCredentialEnv] : undefined;
+      if (options.queryCredentialEnv && !queryCredential) throw commandError("Operator query credential is unavailable.", "Set the referenced environment variable to the Monitoring operator user:password.");
+      validateQueryCredential(queryCredential);
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, diagnostics: queryCredential ? { queryCredential } : undefined, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);
       else if (!result.ok) throw commandError(result.error.message, result.error.hint);
       else process.stdout.write(`${JSON.stringify(result.data, null, 2)}\n`);
@@ -6054,6 +6066,7 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
   if (options.telemetry) {
     request.telemetry = options.telemetry;
   }
+  if (options.diagnostics) request.diagnostics = options.diagnostics;
   if (options.registration) {
     request.registration = options.registration;
   }

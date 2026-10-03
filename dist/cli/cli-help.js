@@ -203,7 +203,7 @@ Profile commands:
   bootstrap           Provision the remote Host server
   upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
-  telemetry connect|reconcile|status|check
+  telemetry connect|migrate|reconcile|status|check
   telemetry inventory-export|inventory-reconcile
                       Manage the shared Host Telemetry relay
   telemetry resources-enable|resources-disable|resources-remove
@@ -241,7 +241,9 @@ Other commands:
 
 Options:
   --host <alias>      Host profile alias
-  --profile <name>    Verified HTTPS Telemetry profile for host telemetry connect
+  --profile <name>    Verified HTTPS Telemetry profile for connect or migrate
+  --query-credential-env <name>
+                      Ephemeral operator user:password for check or migrate
   --server <target>   SSH target for host add
   --domain <domain>   Hosted domain for host add
   --alias-domain <hostname>

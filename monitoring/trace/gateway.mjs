@@ -158,6 +158,36 @@ export function createGateway(config, tls) {
       catch { json(res, 503, false); }
       return;
     }
+    // Operator read authority is independent of ingestion and inventory tokens.
+    // This endpoint exposes two booleans for one diagnostic trace, never a raw
+    // backend response or arbitrary query. Legacy gateways report unsupported.
+    if (req.url.startsWith('/v1/diagnostics/')) {
+      const auth = req.headers.authorization?.startsWith('Basic ') ? Buffer.from(req.headers.authorization.slice(6), 'base64').toString() : '';
+      if (!config.uiUser || !config.uiPassword || !same(auth, `${config.uiUser}:${config.uiPassword}`)) { json(res, 401, false); return; }
+      const match = /^\/v1\/diagnostics\/traces\/([a-f0-9]{32})$/.exec(req.url);
+      if (!match) { json(res, 400, false); return; }
+      if (req.method !== 'GET') { json(res, 405, false); return; }
+      try {
+        const response = await deadlineFetch(`${config.jaegerUrl}/api/traces/${match[1]}`);
+        if (!response.ok && response.status !== 404) { json(res, 503, false); return; }
+        let text = '';
+        if (response.ok) {
+          for await (const chunk of response.body) {
+            text += Buffer.from(chunk).toString();
+            if (text.length > 1024 * 1024) throw new Error('Response too large');
+          }
+        }
+        const traces = response.ok ? JSON.parse(text).data : [];
+        if (!Array.isArray(traces)) throw new Error('Invalid backend response');
+        const spans = traces.filter(trace => trace.traceID === match[1]).flatMap(trace => Array.isArray(trace.spans) ? trace.spans : []);
+        const probes = spans.filter(span => span.traceID === match[1] && span.operationName === 'sporades.host.relay.check');
+        const now = Date.now() * 1000;
+        const recent = probes.some(span => Number.isSafeInteger(span.startTime) && span.startTime <= now + 5_000_000 && span.startTime >= now - 120_000_000);
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, data: { queryVisible: probes.length > 0, recent } }));
+      } catch { if (!res.headersSent && !res.destroyed) json(res, 503, false); }
+      return;
+    }
     if (req.url.startsWith('/v1/inventory/')) {
       const host = req.url.slice('/v1/inventory/'.length);
       if (!inventoryAllowed(req, host, senders)) { json(res, 403, false); return; }
