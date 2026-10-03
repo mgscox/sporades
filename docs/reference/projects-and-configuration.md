@@ -68,9 +68,16 @@ acceptance does not prove storage delivery. The provisioned **Sporades Telemetry
 Pipeline** dashboard and [outage runbook](https://github.com/mgscox/sporades/blob/main/monitoring/trace/OUTAGES.md)
 describe finite retry/flush budgets, loss and optional quota-limited persistent
 Collector queues. The source-stale warning uses the newest collection time in a
-bounded 24-hour history, so a disconnected source can warn after 15 minutes even
-after its instant series disappears. Fresh collection clears the warning;
-never-observed sources and sources outside that history remain unknown.
+bounded 24-hour history per logical target, so a disconnected target can warn
+after 15 minutes even after its instant series disappears. It drops only the
+process-lifetime `instance` and `service_instance_id` labels: fresh collection
+from a replacement clears the retired process warning, including after repeated
+restarts or older batch replay. All remaining labels, including service,
+environment and any stable replica labels, remain independent. Hosted service
+names use `domain/subname`; processes sharing all remaining labels are one
+target, so independently monitored replicas need distinct stable target labels
+or service names. Never-observed targets and targets outside that history
+remain unknown.
 No Capsule instrumentation API or additional profile setting
 is required. SIGTERM flush stays within 1500 ms and repeated shutdown joins the
 same bounded operation.

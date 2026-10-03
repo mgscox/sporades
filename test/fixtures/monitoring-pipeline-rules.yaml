@@ -5,9 +5,9 @@ tests:
   - name: Stopped collection remains observable beyond the instant-selector lookback
     interval: 1m
     input_series:
-      - series: 'sporades_telemetry_collection_time_seconds{service_name="stopped", instance="capsule-1"}'
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="stopped", replica="capsule-1", instance="process-1"}'
         values: '0+60x5 stale _x20'
-      - series: 'sporades_telemetry_collection_time_seconds{service_name="stopped", instance="capsule-2"}'
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="stopped", replica="capsule-2", instance="process-2"}'
         values: '0+60x5 _x21'
     alert_rule_test:
       - eval_time: 5m
@@ -19,19 +19,19 @@ tests:
       - eval_time: 21m
         alertname: SporadesPipelineSourceStale
         exp_alerts:
-          - exp_labels: { severity: warning, service_name: stopped, instance: capsule-1 }
+          - exp_labels: { severity: warning, service_name: stopped, replica: capsule-1 }
             exp_annotations:
               summary: The latest observed Capsule source collection is over 15 minutes old
-          - exp_labels: { severity: warning, service_name: stopped, instance: capsule-2 }
+          - exp_labels: { severity: warning, service_name: stopped, replica: capsule-2 }
             exp_annotations:
               summary: The latest observed Capsule source collection is over 15 minutes old
       - eval_time: 24h4m
         alertname: SporadesPipelineSourceStale
         exp_alerts:
-          - exp_labels: { severity: warning, service_name: stopped, instance: capsule-1 }
+          - exp_labels: { severity: warning, service_name: stopped, replica: capsule-1 }
             exp_annotations:
               summary: The latest observed Capsule source collection is over 15 minutes old
-          - exp_labels: { severity: warning, service_name: stopped, instance: capsule-2 }
+          - exp_labels: { severity: warning, service_name: stopped, replica: capsule-2 }
             exp_annotations:
               summary: The latest observed Capsule source collection is over 15 minutes old
       - eval_time: 24h5m
@@ -73,6 +73,67 @@ tests:
         alertname: SporadesPipelineSourceStale
         exp_alerts: []
     promql_expr_test:
-      - expr: time() - max_over_time(sporades_telemetry_collection_time_seconds[24h])
+      - expr: time() - max without (instance, service_instance_id) (max_over_time(sporades_telemetry_collection_time_seconds[24h]))
         eval_time: 21m
         exp_samples: []
+  - name: A healthy replacement clears the retired process freshness warning
+    interval: 1m
+    input_series:
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="restarted", job="restarted", deployment_environment_name="hosted", instance="old-process"}'
+        values: '0+60x5 stale _x20'
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="restarted", job="restarted", deployment_environment_name="hosted", instance="replacement"}'
+        values: '_x6 360+60x20'
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts: []
+  - name: Repeated restarts and old replay do not hide a disconnected replica
+    interval: 1m
+    input_series:
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="replicated", deployment_environment_name="hosted", replica="a", instance="a-old", service_instance_id="a-old"}'
+        values: '0+60x5 stale _x40'
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="replicated", deployment_environment_name="hosted", replica="a", instance="a-middle", service_instance_id="a-middle"}'
+        values: '_x6 360+60x5 stale _x34'
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="replicated", deployment_environment_name="hosted", replica="a", instance="a-current", service_instance_id="a-current"}'
+        # Replacement at 12; old batch at 23; fresh through 30, then disconnect.
+        values: '_x12 720+60x10 300 1440+60x6 stale _x15'
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="replicated", deployment_environment_name="hosted", replica="b", instance="b-old", service_instance_id="b-old"}'
+        values: '0+60x5 stale _x40'
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts:
+          - exp_labels: { severity: warning, service_name: replicated, deployment_environment_name: hosted, replica: b }
+            exp_annotations:
+              summary: The latest observed Capsule source collection is over 15 minutes old
+      - eval_time: 30m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts:
+          - exp_labels: { severity: warning, service_name: replicated, deployment_environment_name: hosted, replica: b }
+            exp_annotations:
+              summary: The latest observed Capsule source collection is over 15 minutes old
+      - eval_time: 46m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts:
+          - exp_labels: { severity: warning, service_name: replicated, deployment_environment_name: hosted, replica: a }
+            exp_annotations:
+              summary: The latest observed Capsule source collection is over 15 minutes old
+          - exp_labels: { severity: warning, service_name: replicated, deployment_environment_name: hosted, replica: b }
+            exp_annotations:
+              summary: The latest observed Capsule source collection is over 15 minutes old
+  - name: Another environment or Capsule cannot refresh a disconnected target
+    interval: 1m
+    input_series:
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="one", deployment_environment_name="hosted", instance="stopped"}'
+        values: '0+60x5 stale _x20'
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="one", deployment_environment_name="dev", instance="fresh-dev"}'
+        values: '0+60x25'
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="two", deployment_environment_name="hosted", instance="fresh-hosted"}'
+        values: '0+60x25'
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts:
+          - exp_labels: { severity: warning, service_name: one, deployment_environment_name: hosted }
+            exp_annotations:
+              summary: The latest observed Capsule source collection is over 15 minutes old

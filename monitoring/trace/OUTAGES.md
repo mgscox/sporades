@@ -50,11 +50,16 @@ useful when central metrics are unreachable.
 `pipeline-rules.yaml` provisions warning rules for missing private scrapes,
 queue pressure, admission loss, failed sends and stale source collection. The
 source warning compares the newest collection time observed within a bounded
-24-hour history against the 15-minute threshold. It survives disconnected
-sources disappearing from Prometheus's five-minute instant-selector lookback;
-fresh collection clears it even if older batches are replayed. Never-observed
-sources and sources with no samples left in that 24-hour window remain unknown,
-not healthy zero. Use lifecycle inventory to investigate longer absences.
+24-hour history against the 15-minute threshold per logical target. Only the
+process-lifetime `instance` and `service_instance_id` labels are removed;
+service, environment and any stable replica labels stay independent. A healthy
+replacement clears the retired process warning across repeated restarts and
+older batch replay. Processes with identical remaining labels share a target;
+use distinct stable labels or service names for independently monitored replicas.
+Hosted service names use `domain/subname`. The rule survives disconnected targets
+disappearing from Prometheus's five-minute instant-selector lookback.
+Never-observed targets and targets with no samples left in that 24-hour window
+remain unknown, not healthy zero. Use lifecycle inventory to investigate longer absences.
 Notification routing belongs
 to the existing alerting setup; these rules do not add a new receiver. Neither
 rules nor dashboards can notify while the entire Monitoring server is down.
@@ -123,7 +128,13 @@ SPORADES_CONFIG_DIR="$PWD/.sporades/outage-config" node scripts/verify-host-inve
 The Docker drill records a resource report under `.sporades/outage-drills/`:
 image versions, phase durations, serialized queue occupancy/capacity, RSS,
 memory limit, disk usage and recovery. The finite drill accelerates retry and
-queue sizes in disposable copies to make overflow/expiry deterministic. Its
+queue sizes in disposable copies to make overflow/expiry deterministic. The
+relay drill caps batches at 16 spans to fit its 64 KiB queue and polls for a new
+failed send for up to 45 seconds instead of assuming a fixed retry completion
+time. It retains RSS diagnostics and verifies the unchanged 192 MiB Docker
+budget using the relay's cgroup v2 current/peak charge, limit and zero OOM events;
+shared/mapped executable pages can make RSS differ from the container charge.
+Diagnostics probes have finite deadlines and fixture-only names/cleanup. Its
 quota simulation uses a 128 MiB tmpfs volume held by a separate fixture container
 so it survives Collector restarts. It proves process/container restart recovery,
 **not machine reboot durability**; production requires a durable quota filesystem.

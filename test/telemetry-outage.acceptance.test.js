@@ -41,7 +41,7 @@ test('isolated shipped stack recovers bounded persistent queues, rejects saturat
   const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, 'config'), COMPOSE_PROJECT_NAME: prefix };
   const run = async (program, args, options = {}) => (await execute(program, args, { cwd: root, env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024, ...options })).stdout.trim();
   const compose = (...args) => run('docker', ['compose', '--env-file', '.compose.env', '-f', 'compose.yaml', '-f', 'acceptance.yaml', ...args]);
-  const report = { project: prefix, versions: {}, budgets: { quotaBytes: 134217728, queueBytes: 65536, retrySeconds: 10, collectorMemoryBytes: 268435456, relayMemoryBytes: 201326592 }, phases: [] };
+  const report = { project: prefix, versions: {}, budgets: { quotaBytes: 134217728, queueBytes: 65536, retrySeconds: 10, relayBatchSpans: 16, collectorMemoryBytes: 268435456, relayMemoryBytes: 201326592 }, phases: [] };
   let child;
   t.after(async () => {
     if (child?.exitCode === null && child?.signalCode === null) { child.kill('SIGKILL'); await once(child, 'exit'); }
@@ -66,7 +66,24 @@ test('isolated shipped stack recovers bounded persistent queues, rejects saturat
   const collectorMetrics = () => probe('http://collector:8888/metrics');
   const relayMetrics = async () => {
     const id = await compose('ps', '-q', 'relay');
-    return run('docker', ['run', '--rm', '--network', `container:${id}`, 'node:24-bookworm-slim', 'node', '-e', "fetch('http://127.0.0.1:8888/metrics').then(r=>r.text()).then(t=>process.stdout.write(t))"]);
+    const probeName = `${prefix}-relay-probe-${randomBytes(3).toString('hex')}`;
+    try {
+      return await run('docker', ['run', '--rm', '--name', probeName, '--network', `container:${id}`, 'node:24-bookworm-slim', 'node', '-e', "fetch('http://127.0.0.1:8888/metrics',{signal:AbortSignal.timeout(3000)}).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))"], { timeout: 10_000 });
+    } finally {
+      await run('docker', ['rm', '-f', probeName], { timeout: 5000 }).catch(() => {});
+    }
+  };
+  const relayMemory = async () => {
+    const id = await compose('ps', '-q', 'relay');
+    const probeName = `${prefix}-memory-probe-${randomBytes(3).toString('hex')}`;
+    try {
+      // Read only this fixture relay's cgroup through its process root.
+      // SYS_PTRACE permits the cross-UID read inside its private PID namespace.
+      const values = (await run('docker', ['run', '--rm', '--name', probeName, '--pid', `container:${id}`, '--cap-add', 'SYS_PTRACE', 'busybox:1.37.0', 'cat', '/proc/1/root/sys/fs/cgroup/memory.current', '/proc/1/root/sys/fs/cgroup/memory.peak', '/proc/1/root/sys/fs/cgroup/memory.max', '/proc/1/root/sys/fs/cgroup/memory.events'], { timeout: 10_000 })).split('\n');
+      return { currentBytes: Number(values[0]), peakBytes: Number(values[1]), limitBytes: Number(values[2]), events: Object.fromEntries(values.slice(3).map(line => { const [name, value] = line.split(' '); return [name, Number(value)]; })) };
+    } finally {
+      await run('docker', ['rm', '-f', probeName], { timeout: 5000 }).catch(() => {});
+    }
   };
   const metricValue = (text, name) => [...text.matchAll(new RegExp(`^${name}(?:\\{[^\\n]*\\})? ([0-9.e+]+)$`, 'gm'))].reduce((sum, match) => sum + Number(match[1]), 0);
   const phase = async name => {
@@ -88,7 +105,9 @@ test('isolated shipped stack recovers bounded persistent queues, rejects saturat
   await writeFile(path.join(root, 'drill-collector.yaml'), persistent);
   // Production connect validates HTTPS. This disposable private-network copy
   // uses HTTP solely to avoid contacting an operator TLS endpoint.
-  const relay = renderHostRelayCollectorConfig({ endpoint: 'https://gateway:8443/', caFile: false }).replace('https://gateway:8443/', 'http://gateway:8443/').replace('queue_size: 16777216', 'queue_size: 65536').replace('max_elapsed_time: 300s', 'max_elapsed_time: 10s');
+  // Keep trace batches below this drill's accelerated 64 KiB byte queue.
+  // A 256-span batch can be rejected as oversized before any export attempt.
+  const relay = renderHostRelayCollectorConfig({ endpoint: 'https://gateway:8443/', caFile: false }).replace('https://gateway:8443/', 'http://gateway:8443/').replace('queue_size: 16777216', 'queue_size: 65536').replace('send_batch_size: 256', 'send_batch_size: 16').replace('send_batch_max_size: 256', 'send_batch_max_size: 16').replace('max_elapsed_time: 300s', 'max_elapsed_time: 10s');
   await writeFile(path.join(root, 'drill-relay.yaml'), relay);
   await writeFile(path.join(root, 'acceptance.yaml'), `services:
   collector:
@@ -177,14 +196,31 @@ volumes:
   await until(async () => (await query('sporades_telemetry_collection_time_seconds{service_name="outage-business"}')).some(item => Number(item.value[1]) > Date.now() / 1000 - 5), 'source metrics did not become fresh after reconnect');
   await until(async () => metricValue(await collectorMetrics(), 'otelcol_exporter_queue_size') === 0, 'queue did not drain after reconnect');
   await phase('fully-recovered');
+  const relayFailuresBeforeSlowExport = metricValue(await relayMetrics(), 'otelcol_exporter_send_failed_spans_total');
   await compose('pause', 'gateway');
-  for (let i = 0; i < 8; i++) await post(relayOrigin, payload(randomBytes(16).toString('hex')), false);
+  for (let i = 0; i < 8; i++) assert.equal((await post(relayOrigin, payload(randomBytes(16).toString('hex')), false)).status, 200);
   await work();
-  await pause(12_000);
-  const slowRelay = await relayMetrics();
-  report.relaySlowExport = { rss: metricValue(slowRelay, 'otelcol_process_memory_rss_bytes'), queueSize: metricValue(slowRelay, 'otelcol_exporter_queue_size'), queueCapacity: metricValue(slowRelay, 'otelcol_exporter_queue_capacity'), sendFailures: metricValue(slowRelay, 'otelcol_exporter_send_failed_spans_total') };
-  assert(report.relaySlowExport.rss > 0 && report.relaySlowExport.rss < report.budgets.relayMemoryBytes);
-  assert(report.relaySlowExport.sendFailures > 0, 'slow relay exports eventually expire');
+  // Observe a new failure, allowing batching, export deadlines and retry jitter.
+  // Each diagnostics probe is bounded too; a stalled probe cannot hang cleanup.
+  const slowExportAt = Date.now();
+  let slowRelay;
+  await until(async () => {
+    slowRelay = await relayMetrics();
+    await writeFile(path.join(root, 'metrics-relay-slow.txt'), slowRelay);
+    return metricValue(slowRelay, 'otelcol_exporter_send_failed_spans_total') > relayFailuresBeforeSlowExport;
+  }, 'slow relay exports did not fail within the observation budget', 45_000);
+  report.relaySlowExport = { observationMs: Date.now() - slowExportAt, failuresBefore: relayFailuresBeforeSlowExport, rss: metricValue(slowRelay, 'otelcol_process_memory_rss_bytes'), queueSize: metricValue(slowRelay, 'otelcol_exporter_queue_size'), queueCapacity: metricValue(slowRelay, 'otelcol_exporter_queue_capacity'), sendFailures: metricValue(slowRelay, 'otelcol_exporter_send_failed_spans_total') };
+  // RSS includes shared executable pages; enforce the Docker budget against
+  // charged cgroup memory, including its peak over this whole container run.
+  report.relaySlowExport.memory = await relayMemory();
+  const relayMemoryEvidence = report.relaySlowExport.memory;
+  assert(report.relaySlowExport.rss > 0, 'relay RSS metric must exist');
+  assert.equal(relayMemoryEvidence.limitBytes, report.budgets.relayMemoryBytes);
+  assert(relayMemoryEvidence.currentBytes > 0 && relayMemoryEvidence.currentBytes <= report.budgets.relayMemoryBytes);
+  assert(relayMemoryEvidence.peakBytes > 0 && relayMemoryEvidence.peakBytes <= report.budgets.relayMemoryBytes);
+  assert.equal(relayMemoryEvidence.events.oom, 0);
+  assert.equal(relayMemoryEvidence.events.oom_kill, 0);
+  assert(report.relaySlowExport.sendFailures > relayFailuresBeforeSlowExport, 'slow relay exports produce a new failure');
   await compose('unpause', 'gateway');
   await until(() => fetch(origin + '/health', { signal: AbortSignal.timeout(9000) }).then(r => r.ok, () => false), 'slow relay/gateway did not recover');
   // Reserve almost all quota, then prove a write failure is bounded and service
