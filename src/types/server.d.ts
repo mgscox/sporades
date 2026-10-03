@@ -1382,6 +1382,8 @@ export function stripeEvent<Handler extends AtomicStripeEventHandler>(options: {
  * Define a named query for subscribed client reads. SQLite, Postgres and libsql refresh
  * subscriptions when a table read by their last run changes. Unknown tables retain a
  * full refresh; values derived from clocks or external state do not refresh on unrelated writes.
+ * Dedicated Postgres resource writes publish invalidation after
+ * transaction settlement, even if another refresh ran before commit.
  */
 export function query<const Args extends readonly JsonValue[] = readonly JsonValue[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,

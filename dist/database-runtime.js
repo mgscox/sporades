@@ -1,6 +1,6 @@
 import { acquirePostgresResourceBootstrapLock, resourceError } from "./resource-runtime.js";
 import { notificationIntentSchemas } from "./notification-intent-runtime.js";
-import { liveQueryTablesTracked, recordLiveQueryStatementRead, recordLiveQueryStatementWrite } from "./live-query-invalidation.js";
+import { liveQueryTablesTracked, publishLiveQueryDirtyTables, recordLiveQueryStatementRead, recordLiveQueryStatementWrite } from "./live-query-invalidation.js";
 // The Capsule runtime's Database adapters and dialect: the three engines, the seam they answer, the
 // one shared method set every behavioural call goes through, and the app-schema DDL that method set
 // emits. Batch 9 of the migration ADR-0041 records, and the last domain to leave
@@ -1844,6 +1844,10 @@ export async function createPostgresDatabaseAdapter(options) {
             let dedicated;
             let begun = false;
             let commitIssued = false;
+            // Other connections can refresh readers before this transaction commits.
+            // Keep its writes owned here until settlement so they cannot consume the
+            // only notification while those writes are still invisible.
+            const transactionDirtyTables = new Set();
             try {
                 try {
                     if (!this[resourceSchemaPublished])
@@ -1876,7 +1880,7 @@ export async function createPostgresDatabaseAdapter(options) {
                 };
                 const operations = {
                     exec: async (statement) => {
-                        recordLiveQueryStatementWrite(statement);
+                        recordLiveQueryStatementWrite(statement, undefined, transactionDirtyTables);
                         await query(statement);
                     },
                     prepare: (statement) => ({
@@ -1891,7 +1895,7 @@ export async function createPostgresDatabaseAdapter(options) {
                         run: async (...params) => {
                             const result = await query(statement, params);
                             const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined };
-                            recordLiveQueryStatementWrite(statement, written);
+                            recordLiveQueryStatementWrite(statement, written, transactionDirtyTables);
                             return written;
                         },
                         columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field) => ({ name: normalization.columnName(field.name) })),
@@ -1947,6 +1951,8 @@ export async function createPostgresDatabaseAdapter(options) {
             finally {
                 if (dedicated)
                     await dedicated.close().catch(() => { });
+                // Rollback and lost COMMIT replies retain conservative invalidation too.
+                publishLiveQueryDirtyTables(transactionDirtyTables);
             }
         },
         // Postgres has no way to ask a statement for its result shape without running something,

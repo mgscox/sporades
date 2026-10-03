@@ -51,7 +51,7 @@ export function recordLiveQueryTableRead(table: string) {
  * Records the table a statement wrote. Statements that changed no rows are ignored, and a
  * statement whose table cannot be identified (DDL, multi-statement exec) marks every table.
  */
-export function recordLiveQueryStatementWrite(sql: string, result?: unknown) {
+export function recordLiveQueryStatementWrite(sql: string, result?: unknown, tables = dirtyTables) {
   if (result && typeof result === "object" && "changes" in result && Number((result as { changes: unknown }).changes) === 0) return;
   const text = String(sql);
   // exec can execute several statements but has no per-statement change counts. A semicolon
@@ -59,12 +59,17 @@ export function recordLiveQueryStatementWrite(sql: string, result?: unknown) {
   // table would under-refresh. A single trailing terminator is harmless.
   const terminator = text.indexOf(";");
   if (terminator !== -1 && /\S/.test(text.slice(terminator + 1))) {
-    dirtyTables.add(LIVE_QUERY_ANY_TABLE);
+    tables.add(LIVE_QUERY_ANY_TABLE);
     return;
   }
   if (nonWritingStatementPattern.test(text)) return;
   const match = writeTablePattern.exec(text);
-  dirtyTables.add(match ? (match[1] ?? match[2]) : LIVE_QUERY_ANY_TABLE);
+  tables.add(match ? (match[1] ?? match[2]) : LIVE_QUERY_ANY_TABLE);
+}
+
+/** Publishes a settled transaction's writes into the current refresh window. */
+export function publishLiveQueryDirtyTables(tables: Set<string>) {
+  for (const table of tables) dirtyTables.add(table);
 }
 
 /** Returns the tables written since the previous call, and starts a new window. */

@@ -11,7 +11,9 @@ export declare function recordLiveQueryTableRead(table: string): void;
  * Records the table a statement wrote. Statements that changed no rows are ignored, and a
  * statement whose table cannot be identified (DDL, multi-statement exec) marks every table.
  */
-export declare function recordLiveQueryStatementWrite(sql: string, result?: unknown): void;
+export declare function recordLiveQueryStatementWrite(sql: string, result?: unknown, tables?: Set<string>): void;
+/** Publishes a settled transaction's writes into the current refresh window. */
+export declare function publishLiveQueryDirtyTables(tables: Set<string>): void;
 /** Returns the tables written since the previous call, and starts a new window. */
 export declare function takeLiveQueryDirtyTables(): Set<string>;
 /**

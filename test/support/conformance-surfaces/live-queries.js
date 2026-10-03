@@ -100,14 +100,16 @@ export const CONFORMANCE_SURFACE = {
       await trackLiveQueryReads(tables, () => adapter.withResourceTransaction(async (transaction) => {
         await transaction.selectAppRowById({ name: "refresh_todos" }, "refresh_todos");
         await transaction.updateAppRow({ name: "refresh_notes" }, "refresh_notes", { text: "resource" });
-      }, undefined, resource));
+      }, adapter.engine === "postgres" ? () => { takeLiveQueryDirtyTables(); } : undefined, resource));
       assert(tables.has("refresh_todos"), "application reads on the dedicated connection are tracked");
       assert.deepEqual(refreshed(reads), [false, true]);
       await assert.rejects(async () => adapter.withResourceTransaction(async (transaction) => {
         await transaction.exec('UPDATE "refresh_todos" SET "text" = \'resource rollback\'');
+        if (adapter.engine === "postgres") takeLiveQueryDirtyTables();
         throw new Error("resource-rollback-test");
       }, undefined, resource), /resource-rollback-test/);
       assert.deepEqual(refreshed(reads), [true, false]);
+      assert.notEqual((await adapter.selectAppRowById({ name: "refresh_todos" }, "refresh_todos")).text, "resource rollback");
     },
   }, {
     name: "unparseable reads and writes retain the full refresh fallback",

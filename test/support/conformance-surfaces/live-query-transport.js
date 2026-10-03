@@ -16,7 +16,7 @@ export const CONFORMANCE_SURFACE = {
   appTableNames: names,
   adapterOptions: { isolateProcess: true },
   cases: [{
-    name: "writing mutations and Jobs re-run only matching subscriptions over a real WebSocket",
+    name: "mutations, Jobs and concurrent Postgres resource commits preserve table-scoped WebSocket refreshes",
     async run(adapter, engineContext) {
       const dir = await mkdtemp(path.join(tmpdir(), "query-transport-"));
       const runs = [0, 0];
@@ -42,7 +42,11 @@ export const CONFORMANCE_SURFACE = {
       let server;
       let socket;
       try {
-        database = await openDevDatabase(path.join(dir, "database.db"), "", serviceEnv, { name: "query-transport" }, definition);
+        database = await openDevDatabase(path.join(dir, "database.db"), "", serviceEnv, {
+          name: "query-transport",
+          services: { database: { engine: adapter.engine } },
+        }, definition);
+        assert.equal(database.adapter.engine, adapter.engine, "transport must use the requested database engine");
         await database.init();
         hub = createWebSocketHub(() => database);
         server = createServer();
@@ -88,6 +92,56 @@ export const CONFORMANCE_SURFACE = {
         await pause();
         assert.deepEqual(runs, [2, 3]);
         assert.deepEqual(events.filter((event) => event.type === "query.result").map((event) => event.id), ["transport_notes"]);
+
+        // Postgres resource scopes use an independent connection, so an ordinary
+        // mutation can refresh subscriptions while their writes are still hidden.
+        if (adapter.engine === "postgres") {
+          const resource = { table: "transport_todos", id: "refresh-race" };
+          await database.adapter.withResourceTransaction(() => undefined, undefined, resource);
+          takeLiveQueryDirtyTables();
+          const entered = Promise.withResolvers();
+          const release = Promise.withResolvers();
+          let committedResult;
+          const committed = Promise.withResolvers();
+          const onResult = (event) => {
+            const value = JSON.parse(String(event.data));
+            if (value.id === "transport_todos" && value.data?.some((row) => row.text === "resource-committed")) {
+              committedResult = value;
+              committed.resolve();
+            }
+          };
+          socket.addEventListener("message", onResult);
+          const transaction = database.adapter.withResourceTransaction(
+            (tx) => tx.prepare('UPDATE "transport_todos" SET "text" = ?').run("resource-committed"),
+            async () => { entered.resolve(); await release.promise; },
+            resource,
+          );
+          try {
+            await entered.promise;
+            assert.equal((await database.adapter.prepare('SELECT "text" FROM "transport_todos"').get()).text, "mutation");
+            // This real mutation triggers and consumes a refresh before COMMIT.
+            assert.equal((await send({ id: "race-write", type: "mutation.run", mutation: "write", args: ["transport_audits"] })).error, null);
+            await pause();
+            assert.equal(committedResult, undefined, "uncommitted resource writes stay hidden");
+            release.resolve();
+            await transaction;
+            assert.equal((await database.adapter.prepare('SELECT "text" FROM "transport_todos"').get()).text, "resource-committed");
+            // The same completion notification used by the Job worker must still
+            // refresh the reader after another refresh consumed the earlier window.
+            database.__notifyJobStateQueries();
+            let timeout;
+            try {
+              await Promise.race([committed.promise, new Promise((_, reject) => {
+                timeout = setTimeout(() => reject(new Error("Committed resource result was never delivered")), 1000);
+              })]);
+            } finally { clearTimeout(timeout); }
+            assert.equal(committedResult.error, null);
+          } finally {
+            release.resolve();
+            await transaction;
+            socket.removeEventListener("message", onResult);
+          }
+        }
       } finally {
         socket?.close();
         hub?.disconnectAll();

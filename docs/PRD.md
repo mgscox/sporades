@@ -463,7 +463,9 @@ after reconnect, and may be unsubscribed more than once safely.
 SQLite, Postgres and libsql refresh subscribed queries only when a writing
 mutation or completed Job changed a table their last run read. Unknown statement
 tables and failed query runs retain the full-refresh fallback. Transaction writes
-are tracked conservatively, including writes that later roll back.
+are tracked conservatively, including writes that later roll back. Dedicated
+Postgres resource transactions publish their changed tables after settlement,
+so a concurrent refresh cannot consume the eventual commit's notification.
 
 React and Preact clients can adapt those same primitives with `createHooks`:
 

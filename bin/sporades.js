@@ -130692,17 +130692,20 @@ function recordLiveQueryStatementRead(sql2) {
 function recordLiveQueryTableRead(table) {
   liveQueryReads.getStore()?.add(table);
 }
-function recordLiveQueryStatementWrite(sql2, result) {
+function recordLiveQueryStatementWrite(sql2, result, tables = dirtyTables) {
   if (result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
   const text3 = String(sql2);
   const terminator = text3.indexOf(";");
   if (terminator !== -1 && /\S/.test(text3.slice(terminator + 1))) {
-    dirtyTables.add(LIVE_QUERY_ANY_TABLE);
+    tables.add(LIVE_QUERY_ANY_TABLE);
     return;
   }
   if (nonWritingStatementPattern.test(text3)) return;
   const match = writeTablePattern.exec(text3);
-  dirtyTables.add(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE);
+  tables.add(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE);
+}
+function publishLiveQueryDirtyTables(tables) {
+  for (const table of tables) dirtyTables.add(table);
 }
 function takeLiveQueryDirtyTables() {
   const taken = dirtyTables;
@@ -133555,6 +133558,7 @@ async function createPostgresDatabaseAdapter(options) {
       let dedicated;
       let begun = false;
       let commitIssued = false;
+      const transactionDirtyTables = /* @__PURE__ */ new Set();
       try {
         try {
           if (!this[resourceSchemaPublished]) await ensureResourceSchemaPublished(signal);
@@ -133579,7 +133583,7 @@ async function createPostgresDatabaseAdapter(options) {
         };
         const operations = {
           exec: async (statement) => {
-            recordLiveQueryStatementWrite(statement);
+            recordLiveQueryStatementWrite(statement, void 0, transactionDirtyTables);
             await query(statement);
           },
           prepare: (statement) => ({
@@ -133594,7 +133598,7 @@ async function createPostgresDatabaseAdapter(options) {
             run: async (...params) => {
               const result = await query(statement, params);
               const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
-              recordLiveQueryStatementWrite(statement, written);
+              recordLiveQueryStatementWrite(statement, written, transactionDirtyTables);
               return written;
             },
             columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field) => ({ name: normalization.columnName(field.name) }))
@@ -133642,6 +133646,7 @@ async function createPostgresDatabaseAdapter(options) {
       } finally {
         if (dedicated) await dedicated.close().catch(() => {
         });
+        publishLiveQueryDirtyTables(transactionDirtyTables);
       }
     },
     // Postgres has no way to ask a statement for its result shape without running something,

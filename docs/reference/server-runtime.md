@@ -218,7 +218,10 @@ cannot identify re-runs every subscription, and a subscription whose last run
 failed re-runs on every refresh. A query result that depends on the
 clock or other state outside the database therefore does not update on
 unrelated writes. Transaction statements are tracked too; rolled-back writes
-may cause an extra refresh. Multi-statement and unparseable writes conservatively
+may cause an extra refresh. Dedicated Postgres resource transactions retain their
+changed tables until settlement and then publish them, including on rollback or
+an unknown commit outcome. A concurrent refresh before commit cannot consume
+the notification for the committed writes. Multi-statement and unparseable writes conservatively
 refresh every subscription. libsql resource transactions remain unsupported.
 
 ### Change Data With Mutations
