@@ -1,27 +1,36 @@
 # Lifecycle inventory verification — #118
 
-Local verification on 2026-10-02 used the regenerated Sporades 0.9.31 CLI/helper,
-Node 24.19.0 and Docker Desktop. No real Host, SSH, cloud account, production
-canary, npm publication or release was used. All workstation CLI invocations
+Round-two verification on 2026-10-03 used the regenerated Sporades 0.9.31
+CLI/helper, Node 24.19.0, Docker Desktop and two disposable Ubuntu VMs. No
+production Host, cloud account, production canary, npm publication or release
+was used. SSH targeted only the task-owned VMs; Tower provided their hypervisor. All workstation CLI invocations
 used a worktree-local `SPORADES_CONFIG_DIR`.
 
 ## Automated checks
 
 ```sh
-npm run build
-npm run typecheck
+SPORADES_CONFIG_DIR="$PWD/.sporades/task-config" npm run build
+SPORADES_CONFIG_DIR="$PWD/.sporades/task-config" npm run typecheck
 COPYFILE_DISABLE=1 SPORADES_CONFIG_DIR="$PWD/.sporades/test-config" npm test
-npm run docs:check
+SPORADES_CONFIG_DIR="$PWD/.sporades/task-config" npm run docs:check
 COPYFILE_DISABLE=1 SPORADES_CONFIG_DIR="$PWD/.sporades/test-config" \
-  node --test test/lifecycle-inventory.test.js test/monitoring-smoke-origin.test.js
+  node --test test/lifecycle-inventory.test.js test/host-inventory-reconnect.test.js \
+  test/host-telemetry-relay.test.js test/monitoring-trace-stack.test.js \
+  test/monitoring-smoke-origin.test.js
 SPORADES_CONFIG_DIR="$PWD/.sporades/test-config" \
   node scripts/verify-host-inventory.mjs
 node scripts/monitoring-stack-release.mjs .sporades/monitoring.tar.gz
 ```
 
-Build, typecheck and docs checks passed. The focused inventory/recovery and
-origin tests passed all eight checks. The integrated full suite completed with
-2,898 tests: 2,693 passed, 205 optional skips, zero failures or cancellations.
+Build, typecheck and docs checks passed. The focused checks passed 32 tests.
+The complete round-two `npm test` exited zero with 2,901 tests: 2,696 passed,
+205 optional skips, zero failures or cancellations. The gateway cancellation
+regression now awaits separate backend response-close events with bounded
+deadlines, instead of asserting an asynchronously updated flag immediately.
+Reconnect tests deterministically interleave a sender with endpoint/CA/token
+rotation and reject late acknowledgements, including same-endpoint rotation.
+Both shared validators and a real central acknowledgement cover the canonical
+origin plus all 20 aliases; 22 targets remain invalid.
 `COPYFILE_DISABLE=1` prevents macOS
 AppleDouble entries from contaminating existing archive fixtures.
 
@@ -63,37 +72,73 @@ gateway ran Node 24.13.0. The stack and its task-owned resources were removed.
 The standalone schema-2 archive includes the inventory validator, durable store
 and recovery utility; their bytes matched source. Generated CLI/helper/source
 parity was checked by the build/test pipeline. The documentation server ran
-on reserved port 5218; a real browser navigated from the Operations reference
-to the new lifecycle inventory page and captured a full-page screenshot. The
+on reserved port 5203; a real browser navigated from the Operations reference
+to the lifecycle inventory page and captured desktop and 390-pixel mobile screenshots. The
 server was stopped afterward.
 
-## Remaining separate-VM acceptance
+## Disposable separate-VM acceptance
 
-The manager must run these steps on two disposable VMs, with a third scoped
-sender or local request fixture for authorization denial. Do not substitute a
-production Host for the disposable sender.
+Completed on 2026-10-03 against code commit `fb3e9dc4`. Sanitized observations,
+boot IDs, acknowledgement timestamps and worker evidence are recorded in
+[the VM acceptance evidence](./telemetry-118-vm-acceptance.json).
 
-1. Generate/install the Monitoring stack with a unique `INVENTORY_HOSTS` mapping
-   and verified TLS. Install the upgraded CLI/helper on the Host and connect a
-   profile with its exact inventory token/identity. Verify the inventory timer
-   is enabled and that initial connection acknowledges the Host snapshot.
-2. Register/deploy a real Capsule, then start, restart, roll back, stop,
-   unregister/delete, opt out/in and change registered aliases. After each
-   operation inspect stored central state and the Host acknowledgement. Repeat
-   operations to prove unchanged snapshots do not create conflicting revisions.
-3. Disconnect the workstation and change authoritative lifecycle state on the
-   Host. Verify the timer reconciles without workstation imports and without
-   making Capsule operations depend on Monitoring availability.
-4. Stop Monitoring, change Host state and restart/reboot the Host. Confirm
-   persisted pending state and retained central expectations; restore Monitoring
-   and verify automatic catch-up and a fresh acknowledgement after both reboots.
-5. Deliver reordered snapshots, a conflicting duplicate and a higher revision
-   omitting an existing identity. Expect 409 with unchanged stored state. Use a
-   different Host's token/path/body and UI/ingestion-only credentials; expect
-   denial without changing either Host's inventory.
-6. Reconnect/rotate the scoped credential while retaining the immutable Host
-   identity. Back up and restore Host registry/outbox and central inventory,
-   then verify idempotent retry, durable expectations and pending/stale status.
+Two task-owned KVM guests on Tower's existing private NAT network had independent
+Ubuntu 24.04.5 disks and boot IDs: `dennis195-5cfb-host` and
+`dennis195-5cfb-monitor`. Neither existing guests nor Tower services were changed.
+The Host ran real Docker, Caddy, the shipped helper, bootstrap recovery units
+and inventory timer. Monitoring ran the shipped inventory gateway and durable
+store as a real systemd service on verified private-CA HTTPS. This exercises the
+inventory subsystem on separate VMs; the complete generated Compose stack was
+checked separately as described above. No probes or absence alerts are claimed.
 
-Probe scheduling and absence-alert delivery remain #120. No probe or alert
-acceptance is claimed by this verification.
+The real todo Capsule was built locally and pushed with the actual CLI. The
+unmodified repository base-image Dockerfile was built into a local archive and
+loaded into the disposable Host because the default registry pull was denied.
+Normal readiness deadlines, Docker lifecycle operations and Caddy route updates
+were retained. The origin key used the documented Caddy group permissions.
+
+1. Register `notes` with 20 `--alias-domain` options, connect the exact
+   `apps.example` inventory profile, then `host push`, `start` and `restart`.
+   Central HTTPS GET acknowledged 21 targets, including the canonical origin.
+2. Push a distinct release with `--restart`, wait for that exact release in
+   central state, then `host rollback notes <initial-release-id>`. Opt out/in,
+   stop, unregister and register with `changed.example`, then start again.
+   Every expected state/address transition reached central storage. A subsequent
+   deployment and rollback explicitly verified distinct release IDs centrally.
+3. PUT the acknowledged snapshot again (200); send stale, conflicting duplicate
+   and higher-revision omission updates (409). Other-Host, ingestion-only and
+   UI credentials were denied (403). The stored inventory remained unchanged.
+4. Stop the Monitoring service. Schedule a **Host-local** systemd timer to invoke
+   the actual helper's `host.telemetry.disable` operation and reboot the Host;
+   close all workstation SSH/tunnel sessions before it fires. The operation
+   completed independently, queued revision 15 against acknowledgement 14,
+   and rebooted. Real boot recovery resumed the Capsule at the rolled-back
+   release and queued revision 16. The timer remained enabled, retries reported
+   opaque `network-or-tls`, and Monitoring retained revision 14 with two targets.
+5. Schedule the Monitoring VM's reboot and close management connections. Its
+   changed boot ID and retained disk established an actual reboot. Its enabled
+   systemd gateway recovered; the Host timer automatically acknowledged revision
+   16 at `00:22:21.935Z`, with no inventory import or manual reconciliation.
+6. Repeat a healthy Host-local opt-in while every workstation management
+   connection is closed (`00:24:08Z`–`00:24:59Z`). The mutation completed at
+   `00:24:22.167Z`; the independent worker acknowledged revision 17 at
+   `00:24:22.270Z`, inside that disconnected interval. Central state gained both
+   expected targets.
+7. Rotate the inventory token in the disposable Monitoring service and reconnect
+   the Host at the same endpoint, CA and immutable scope. Its connection
+   generation changed; revision 18 was acknowledged with `pending=false`.
+   The revoked token and UI credentials returned 403. Stop, unregister and
+   delete the task Capsule, retaining its explicit central tombstone.
+
+The local orchestration used the normal `host` commands with `--host qa195
+--json` and an isolated config; SSH reached only the disposable guests through
+Tower. Delayed actions used `systemd-run --on-active=15s` and guest-local Node,
+not a workstation process. Reboots used the guests' `systemctl reboot`.
+No readiness limits or framework behavior were changed to make acceptance pass.
+Earlier software-emulated and native macOS VM provisioning attempts were not
+counted as acceptance; the successful observations above came from the KVM pair.
+
+All task-owned VMs, disks, credentials, containers and tunnels were removed or
+stopped after evidence collection. Existing LAN guests, services and unrelated
+Docker containers remained untouched. Probe scheduling and absence-alert
+acceptance remain #120.

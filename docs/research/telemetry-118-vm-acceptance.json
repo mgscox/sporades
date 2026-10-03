@@ -1,0 +1,325 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-03",
+  "codeCommit": "fb3e9dc4",
+  "environment": {
+    "hypervisor": "Tower KVM",
+    "guestOS": "Ubuntu 24.04.5 LTS x86_64",
+    "hostVM": "dennis195-5cfb-host",
+    "monitoringVM": "dennis195-5cfb-monitor",
+    "network": "existing private NAT",
+    "scope": "apps.example",
+    "monitoringRuntime": "shipped gateway and durable inventory store under real systemd",
+    "hostRuntime": "real Docker, Caddy, shipped helper, real recovery service and inventory timer",
+    "productionServicesChanged": false
+  },
+  "lifecycle": [
+    {
+      "label": "registered with twenty aliases",
+      "revision": 1,
+      "state": "registered",
+      "targets": 21,
+      "release": null
+    },
+    {
+      "label": "deployed",
+      "revision": 2,
+      "state": "released",
+      "targets": 21,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "started",
+      "revision": 3,
+      "state": "running",
+      "targets": 21,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "restarted",
+      "revision": 3,
+      "state": "running",
+      "targets": 21,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "rolled back",
+      "revision": 6,
+      "state": "running",
+      "targets": 21,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "opted out",
+      "revision": 7,
+      "state": "opted-out",
+      "targets": 0,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "opted in",
+      "revision": 8,
+      "state": "running",
+      "targets": 21,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "stopped",
+      "revision": 9,
+      "state": "stopped",
+      "targets": 0,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "unregistered",
+      "revision": 10,
+      "state": "deleted",
+      "targets": 0,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "address changed",
+      "revision": 11,
+      "state": "registered",
+      "targets": 2,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "restarted at changed address",
+      "revision": 12,
+      "state": "running",
+      "targets": 2,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "second deployment acknowledged",
+      "revision": 13,
+      "state": "running",
+      "targets": 2,
+      "release": "20261003T001809Z-ce767638"
+    },
+    {
+      "label": "rollback acknowledged",
+      "revision": 14,
+      "state": "running",
+      "targets": 2,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "final stopped",
+      "revision": 19,
+      "state": "stopped",
+      "targets": 0,
+      "release": "20261003T001457Z-7f8450dd"
+    },
+    {
+      "label": "final tombstone",
+      "revision": 20,
+      "state": "deleted",
+      "targets": 0,
+      "release": "20261003T001457Z-7f8450dd"
+    }
+  ],
+  "transport": {
+    "verifiedPrivateCaHttps": true,
+    "canonicalPlusTwentyAliases": 21
+  },
+  "authorization": {
+    "idempotentRetry": 200,
+    "staleRevision": 409,
+    "conflictingDuplicate": 409,
+    "higherRevisionOmission": 409,
+    "otherHostToken": 403,
+    "otherHostPathAndBody": 403,
+    "ingestionOnlyToken": 403,
+    "uiCredentials": 403,
+    "centralStateUnchangedAfterDenials": true
+  },
+  "outageAndHostReboot": {
+    "workstationDisconnectedAt": "2026-10-03T00:19:48Z",
+    "hostBootIdBefore": "171afbf6-0573-48f6-bfe8-625b5035f2cc",
+    "hostBootIdAfter": "21437d8b-5bae-4f01-87d8-b98c4d14d140",
+    "offlineMutation": {
+      "completedAt": "2026-10-03T00:19:29.648Z",
+      "bootId": "171afbf6-0573-48f6-bfe8-625b5035f2cc",
+      "desiredRevision": 15,
+      "acknowledgedRevision": 14,
+      "capsules": [
+        {
+          "id": "apps.example/notes",
+          "state": "opted-out",
+          "changedAt": "2026-10-03T00:19:29.465Z",
+          "release": "20261003T001457Z-7f8450dd",
+          "targets": []
+        }
+      ]
+    },
+    "outboxAfterReboot": {
+      "desired": {
+        "schemaVersion": 1,
+        "host": "apps.example",
+        "revision": 16,
+        "capsules": [
+          {
+            "id": "apps.example/notes",
+            "state": "opted-out",
+            "changedAt": "2026-10-03T00:19:42.226Z",
+            "release": "20261003T001457Z-7f8450dd",
+            "targets": []
+          }
+        ]
+      },
+      "acknowledgement": {
+        "revision": 14,
+        "acknowledgedAt": "2026-10-03T00:18:18.106Z"
+      },
+      "failure": "network-or-tls"
+    },
+    "centralRevisionRetained": 14,
+    "centralTargetsRetained": 2,
+    "capsuleResumedInitialRelease": true,
+    "timerStillEnabled": true
+  },
+  "monitoringReboot": {
+    "bootIdBefore": "c13b84ff-21fd-446a-8d4c-06c271b969e6",
+    "bootIdAfter": "478c5546-da2c-491d-a864-00bc112bdfc6",
+    "serviceRecovered": true,
+    "centralRevisionAfterCatchup": 16,
+    "workerObservations": [
+      {
+        "host": "apps.example",
+        "desiredRevision": 14,
+        "acknowledgedRevision": 14,
+        "acknowledgedAt": "2026-10-03T00:18:18.106Z",
+        "pending": false,
+        "stale": false,
+        "lastAttemptAt": "2026-10-03T00:19:29.409Z",
+        "failure": "network-or-tls",
+        "reconcilerInstalled": true
+      },
+      {
+        "host": "apps.example",
+        "desiredRevision": 16,
+        "acknowledgedRevision": 14,
+        "acknowledgedAt": "2026-10-03T00:18:18.106Z",
+        "pending": true,
+        "stale": false,
+        "lastAttemptAt": "2026-10-03T00:19:42.426Z",
+        "failure": "network-or-tls",
+        "reconcilerInstalled": true
+      },
+      {
+        "host": "apps.example",
+        "desiredRevision": 16,
+        "acknowledgedRevision": 14,
+        "acknowledgedAt": "2026-10-03T00:18:18.106Z",
+        "pending": true,
+        "stale": false,
+        "lastAttemptAt": "2026-10-03T00:20:07.109Z",
+        "failure": "network-or-tls",
+        "reconcilerInstalled": true
+      },
+      {
+        "host": "apps.example",
+        "desiredRevision": 16,
+        "acknowledgedRevision": 14,
+        "acknowledgedAt": "2026-10-03T00:18:18.106Z",
+        "pending": true,
+        "stale": false,
+        "lastAttemptAt": "2026-10-03T00:21:10.270Z",
+        "failure": "network-or-tls",
+        "reconcilerInstalled": true
+      },
+      {
+        "host": "apps.example",
+        "desiredRevision": 16,
+        "acknowledgedRevision": 16,
+        "acknowledgedAt": "2026-10-03T00:22:21.935Z",
+        "pending": false,
+        "stale": false,
+        "lastAttemptAt": "2026-10-03T00:22:21.972Z",
+        "failure": null,
+        "reconcilerInstalled": true
+      }
+    ],
+    "manualReconcileOrImportUsed": false
+  },
+  "healthyDisconnectedMutation": {
+    "allSshAndTunnelSessionsClosedAt": "2026-10-03T00:24:08Z",
+    "reconnectedAt": "2026-10-03T00:24:59Z",
+    "hostLocalMutation": {
+      "completedAt": "2026-10-03T00:24:22.167Z",
+      "bootId": "21437d8b-5bae-4f01-87d8-b98c4d14d140",
+      "desiredRevision": 17,
+      "acknowledgedRevision": 16,
+      "capsules": [
+        {
+          "id": "apps.example/notes",
+          "state": "running",
+          "changedAt": "2026-10-03T00:24:21.993Z",
+          "release": "20261003T001457Z-7f8450dd",
+          "targets": [
+            "https://changed.example/",
+            "https://notes.apps.example/"
+          ]
+        }
+      ]
+    },
+    "outboxAfterIndependentDelivery": {
+      "desired": {
+        "schemaVersion": 1,
+        "host": "apps.example",
+        "revision": 17,
+        "capsules": [
+          {
+            "id": "apps.example/notes",
+            "state": "running",
+            "changedAt": "2026-10-03T00:24:21.993Z",
+            "release": "20261003T001457Z-7f8450dd",
+            "targets": [
+              "https://changed.example/",
+              "https://notes.apps.example/"
+            ]
+          }
+        ]
+      },
+      "acknowledgement": {
+        "revision": 17,
+        "acknowledgedAt": "2026-10-03T00:24:22.270Z"
+      },
+      "failure": null
+    }
+  },
+  "credentialRotation": {
+    "oldGeneration": "7d57442ed562f8b8e35295864fb8a8f7",
+    "newGeneration": "3eeed9688ca9751a080ea2924b375c94",
+    "beforeRevision": 17,
+    "acknowledgedRevision": 18,
+    "pending": false,
+    "oldCredentialStatus": 403,
+    "uiCredentialStatus": 403
+  },
+  "finalStorageDeletion": {
+    "deleted": true,
+    "retainedCentralTombstone": "apps.example/notes",
+    "centralRevision": 20,
+    "targets": []
+  },
+  "fullTestRun": {
+    "tests": 2901,
+    "passed": 2696,
+    "failed": 0,
+    "skipped": 205,
+    "cancelled": 0,
+    "exitCode": 0
+  },
+  "cleanup": {
+    "taskOwnedResourcesOnly": true,
+    "disposableVMsRemoved": true,
+    "otherVMsUnchanged": true
+  },
+  "limitations": [
+    "Monitoring inventory gateway ran under systemd; full generated Compose stack validation was separate.",
+    "No probe or absence-alert acceptance is claimed."
+  ]
+}
