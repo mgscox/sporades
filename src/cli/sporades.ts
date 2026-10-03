@@ -67,6 +67,7 @@ import {
   readJsonRequest,
   routeConnectionToken,
   routeEndpoint,
+  routeHttpAdmission,
   routeRuntimeHealth,
   writeInvalidHttpRequestTarget,
   routeSporadesAuth,
@@ -2438,7 +2439,7 @@ async function startDevSession(options: LooseRecord) {
 
   const server = createServer(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
     try {
-      if (prepareHttpSecurity(runtime.database, request, response)) {
+      if (prepareHttpSecurity(runtime.database, request, response, () => routeHttpAdmission(runtime.database, request, response))) {
         return;
       }
       const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
@@ -2449,6 +2450,14 @@ async function startDevSession(options: LooseRecord) {
       const requestPath = target.pathname;
 
       if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
+        return;
+      }
+
+      if (request.method === "GET" && requestPath === "/__sporades/health/runtime") {
+        await routeRuntimeHealth(runtime.database, request as any, response);
+        return;
+      }
+      if (routeHttpAdmission(runtime.database, request, response, target)) {
         return;
       }
 
@@ -2572,8 +2581,7 @@ async function startDevSession(options: LooseRecord) {
       }
 
       if (
-        (await routeRuntimeHealth(runtime.database, request as any, response))
-        || (await routeSporadesAuth(runtime.database, request, response))
+        (await routeSporadesAuth(runtime.database, request, response))
         || (await handleFileHttpRoute(runtime.database, request, response, websocketHub as any))
         || (await routeEndpoint(runtime.database, request, response))
       ) {

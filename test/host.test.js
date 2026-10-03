@@ -1385,7 +1385,8 @@ async function writePublicRuntimeFiles(runtimeDir) {
 
 async function createTarGz(archivePath, sourceDir, entries) {
   const result = await new Promise((resolve) => {
-    const child = spawn("tar", ["-czf", archivePath, "-C", sourceDir, ...entries], { stdio: ["ignore", "pipe", "pipe"] });
+    // Fixtures model production archives, which exclude automatic macOS metadata.
+    const child = spawn("tar", ["-czf", archivePath, "-C", sourceDir, ...entries], { env: { ...process.env, COPYFILE_DISABLE: "1" }, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -1404,7 +1405,8 @@ async function createTarGz(archivePath, sourceDir, entries) {
 async function createTarGzWithTransforms(archivePath, sourceDir, transforms, entries) {
   const args = ["-czf", archivePath, "-C", sourceDir, ...transforms.flatMap((rule) => ["-s", rule]), ...entries];
   const result = await new Promise((resolve) => {
-    const child = spawn("tar", args, { stdio: ["ignore", "pipe", "pipe"] });
+    // Explicit transformed metadata entries remain available to rejection tests.
+    const child = spawn("tar", args, { env: { ...process.env, COPYFILE_DISABLE: "1" }, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("close", (code) => resolve({ code, stderr }));
@@ -7594,6 +7596,7 @@ test("sporades host helper serializes stale health repair against route removal"
         host: { alias: "personal", domain, scheme: "http", remoteRoot },
         capsule: { subname: "team-notes" },
       };
+      // A startup sleep cannot establish which helper owns the route lock.
       const healthMarker = path.join(dir, "health-lock.marker");
       const healthAction = startHostHelper(healthRequest, { cwd: dir, detached: true, env: {
         ...docker.env,

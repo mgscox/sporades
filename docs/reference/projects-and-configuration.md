@@ -1105,7 +1105,44 @@ Example v1 policy:
 }
 ```
 
-This slice publishes and loads generations only. It does not enforce requests.
+Dev, Container and Hosted HTTP runtimes enforce enabled exact-path `deny` rules
+before Capsule auth, File routes, endpoint middleware/handlers and public assets.
+Each request snapshots one immutable generation. Disabled rules are skipped;
+conditions are ANDed, and the first matching rule decides. A nonmatching request
+keeps its original method, target, headers and body for the existing router.
+
+A denial returns status `403`, `Cache-Control: no-store`, and exactly ten UTF-8
+bytes: `Forbidden\n` (a final newline). The body and headers contain no rule ID,
+reason, matched value or policy digest. The connection closes without reading the
+application body. HTTP HEAD responses omit body bytes as required by HTTP while
+retaining the same status and content length. CORS preflights are also admitted
+before their automatic response. No Capsule request code runs on denial.
+
+For admission, the pathname excludes the query, normalizes URL dot segments and
+decodes percent escapes once. Case, trailing slashes and repeated slashes remain
+distinct. Encoded separators, backslashes, invalid UTF-8, decoded controls and
+remaining percent escapes fail closed while a nonempty policy is active. This
+canonical value is used only for matching; the original request is not rewritten.
+
+Genuine GET runtime-health and connection-token controls dispatch before
+admission, with their existing Host probe and same-origin token-request checks.
+They never read the admission generation. Reserved exact paths and prefixes
+covering them are rejected during policy validation, even in disabled rules or
+rules with additional conditions. Aliases and other methods enter admission.
+
+This enforcement slice supports exact pathname conditions and `deny` only.
+The schema below reserves later matchers and quotas: if an enabled rule cannot
+be ruled out by a nonmatching exact pathname but has an unsupported condition,
+the request receives the same opaque denial. A matching quota action also fails
+closed until quota enforcement ships. WebSocket upgrades are a subsequent slice.
+
+Without a policy declaration, the admission gate returns synchronously before
+parsing or touching request/response objects, reading bodies, or emitting logs.
+Removed and empty policies also pass through. The explicit no-policy gate budget
+is a warmed median below **1 microsecond per call**, measured by seven batches of
+200,000 calls in `test/http-admission.test.js` (loop/assertion overhead included).
+This is an incremental gate budget, not a network round-trip or event-loop latency
+guarantee. Existing no-policy HTTP/streaming/WebSocket tests retain their behavior.
 Rules retain array order, stable unique IDs (1–64 ASCII letters, digits, `.`, `_`,
 `-`, starting with a letter or digit), explicit Boolean `enabled`, and one or more
 AND conditions. The closed v1 vocabulary is:
@@ -1122,11 +1159,9 @@ AND conditions. The closed v1 vocabulary is:
 
 Unknown fields, versions, match kinds and actions fail validation. Paths must be
 absolute canonical pathnames, without percent escapes, backslashes, query or
-fragment components or dot-segment normalization. Prefixes are segment-aware
-when enforcement is introduced. Rules cannot name the runtime-health or
+fragment components or dot-segment normalization. Prefix matching is reserved for a subsequent slice. Rules cannot name the runtime-health or
 connection-token controls, or a prefix covering them. Header matching excludes
-credentials, cookies and internal/proxy address headers. Address provenance,
-request canonicalization, matching and quota enforcement are subsequent slices.
+credentials, cookies and internal/proxy address headers. Address provenance, the remaining matchers and quota enforcement are subsequent slices.
 
 Bounds are 65,536 UTF-8 bytes, nesting depth 8 (root depth 0), 128 rules,
 16 conditions per rule, and 1,024 UTF-8 bytes per match string. An empty rule array
