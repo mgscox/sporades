@@ -14,11 +14,11 @@ const basename = `sporades-monitoring-trace-${version}`;
 try {
   const directory = join(temporary, basename);
   await mkdir(directory);
-  for (const name of ['.dockerignore', '.env.example', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'setup.mjs', 'smoke.mjs']) {
+  for (const name of ['.dockerignore', '.env.example', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'setup.mjs', 'smoke.mjs']) {
     await cp(join(source, name), join(directory, name));
   }
   await cp(join(source, 'gitignore.template'), join(directory, '.gitignore'));
-  await writeFile(join(directory, 'stack-manifest.json'), `${JSON.stringify({ schemaVersion: 1, packageVersion: version }, null, 2)}\n`);
+  await writeFile(join(directory, 'stack-manifest.json'), `${JSON.stringify({ schemaVersion: 2, packageVersion: version }, null, 2)}\n`);
   const packed = spawnSync('tar', ['-czf', output, '-C', temporary, basename], { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } });
   if (packed.status !== 0) throw new Error(packed.stderr.trim() || 'tar failed');
   process.stdout.write(`${output}\n`);

@@ -299,6 +299,13 @@ ingestion service. VM A needs outbound DNS and verified HTTPS access to VM B's
 OTLP origin. Give the relay a credential scoped to ingestion only. The
 credential does not need dashboard, query, or administration access.
 
+Configure a separate exact Host-scoped inventory credential on VM B and reference
+it with `--inventory-credential-env HOST_INVENTORY_TOKEN` when registering the
+profile below. [Lifecycle inventory](./reference/lifecycle-inventory.md) documents
+the protected scope map, automatic worker, pending/stale status and recovery.
+Bootstrap and telemetry connect/reconcile install the periodic worker; deploys
+and lifecycle operations require no manual inventory imports.
+
 ```sh
 sporades telemetry profile add remote \
   --endpoint https://monitor.example:4318 \

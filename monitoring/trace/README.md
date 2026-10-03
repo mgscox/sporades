@@ -6,7 +6,7 @@ This directory runs authenticated OTLP/HTTP traces, independent API metrics, and
 
 Use Linux `amd64` or `arm64`, Docker Engine 29.x and Docker Compose 2.40.3 or later (Compose 5.5.1 is also tested), Node.js 22.13+ for setup and smoke scripts, and local disk for retention. Image tags are fixed: OpenTelemetry Collector contrib `0.138.0`, Jaeger `2.21.0`, Prometheus `3.13.3` LTS, Grafana `13.2.2`, BusyBox `1.37.0`, and gateway base Node `24.13.0-alpine3.23`. The Prometheus LTS and Grafana release were checked against their [official download](https://prometheus.io/download/) and [official release](https://grafana.com/grafana/download/) pages on 2026-09-27; Grafana `12.2.0` was avoided because it predates the [CVE-2026-33382 fix](https://grafana.com/security/security-advisories/cve-2026-33382/). Check newer patches during upgrades.
 
-Named `traces`, `metrics`, and `grafana` volumes persist Jaeger Badger, Prometheus TSDB, and Grafana state. Jaeger retains spans three days by default (`TRACE_RETENTION=72h`). Prometheus starts at 14 days (`METRIC_RETENTION=14d`) and 8 GB of retained blocks (`METRIC_DISK_CAP=8GB`), whichever limit comes first. Reserve **at least 10 GB of local disk for metrics**: the 8 GB setting leaves 20% nominal room, but WAL/head and compaction can briefly exceed the retention target. Monitor free space and size the Host from measured series and sample rates. Prometheus initially scrapes its own health metrics every 15 seconds; Capsule metrics export every 15 seconds by default. Edit `prometheus.yaml` for the scrape interval and use the Telemetry profile's `--metrics-interval-ms` for Capsule export. Prometheus, Grafana, Collector, and Jaeger have no published ports; only the gateway publishes one. Services have bounded memory, CPU, process, queue, request, and log settings.
+Named `traces`, `metrics`, `grafana`, and `inventory` volumes persist Jaeger Badger, Prometheus TSDB, and Grafana state. Jaeger retains spans three days by default (`TRACE_RETENTION=72h`). Prometheus starts at 14 days (`METRIC_RETENTION=14d`) and 8 GB of retained blocks (`METRIC_DISK_CAP=8GB`), whichever limit comes first. Reserve **at least 10 GB of local disk for metrics**: the 8 GB setting leaves 20% nominal room, but WAL/head and compaction can briefly exceed the retention target. Monitor free space and size the Host from measured series and sample rates. Prometheus initially scrapes its own health metrics every 15 seconds; Capsule metrics export every 15 seconds by default. Edit `prometheus.yaml` for the scrape interval and use the Telemetry profile's `--metrics-interval-ms` for Capsule export. Prometheus, Grafana, Collector, and Jaeger have no published ports; only the gateway publishes one. Services have bounded memory, CPU, process, queue, request, and log settings.
 
 For sizing, record real peak request rate, active series (`prometheus_tsdb_head_series`), ingested samples/s (`rate(prometheus_tsdb_head_samples_appended_total[5m])`), volume usage, and memory with `docker stats --no-stream` over a representative day, then project 14 days with the [Prometheus storage guidance](https://prometheus.io/docs/prometheus/latest/storage/). A tiny installed-CLI canary on 2026-09-27 used 264 KiB of metrics volume and one snapshot showed gateway 22 MiB, Collector 174 MiB, Jaeger 22 MiB, Prometheus 35 MiB, and Grafana 314 MiB; that traffic is too small to establish production capacity. The Compose memory limits total about 3 GiB, and the Host needs room beyond container limits for Docker and the OS.
 
@@ -33,7 +33,7 @@ After startup, choose the origin the smoke command will contact. Direct TLS requ
 
 ## Backup, restore, and upgrades
 
-Stop the stack for a consistent backup of Jaeger, Prometheus, and Grafana. Back up all three named volumes plus private `.env`, `.private/`, `certs/`, configuration, and any proxy config. Protect backups like credentials. To restore, stop the stack, restore those volumes/files, run `node setup.mjs`, then `docker compose --env-file .compose.env up -d --build`; the one-shot initializers restore non-root volume ownership. Verify with smoke and stored metric queries. For upgrades, save a backup and pinned files, review image/config changes, then run `docker compose --env-file .compose.env pull` and `docker compose --env-file .compose.env up -d --build`. Roll back with saved files and volumes if a new version changes storage format. Setup never rotates a present credential.
+Stop the stack for a consistent backup of Jaeger, Prometheus, and Grafana. Back up all four named volumes plus private `.env`, `.private/`, `certs/`, configuration, and any proxy config. Protect backups like credentials. To restore, stop the stack, restore those volumes/files, run `node setup.mjs`, then `docker compose --env-file .compose.env up -d --build`; the one-shot initializers restore non-root volume ownership. Verify with smoke and stored metric queries. For upgrades, save a backup and pinned files, review image/config changes, then run `docker compose --env-file .compose.env pull` and `docker compose --env-file .compose.env up -d --build`. Roll back with saved files and volumes if a new version changes storage format. Setup never rotates a present credential.
 
 ## Host pressure and Caddy dashboards
 
@@ -51,6 +51,48 @@ Caddy graphs use the top-level subroute handler only; do not add these edge coun
 to Capsule request counts. Host data does not attribute resource use to a
 container. See the Sporades server-installation guide for resource lifecycle,
 private networking, real filesystem coverage and rollback.
+
+## Automatic lifecycle inventory
+
+The gateway also owns persistent lifecycle inventory in its protected `inventory`
+volume. Add `INVENTORY_HOSTS` to `.env` as a JSON object mapping exact Host
+identities to distinct random bearer tokens (at least 16 characters, no whitespace).
+For example, `INVENTORY_HOSTS='{"capsules.example":"REPLACE_WITH_UNIQUE_HOST_TOKEN"}'`.
+Replace the placeholder, run setup and recreate the gateway. These credentials
+are independent of ingestion/UI authority and live only in `.private/credentials.json`.
+Removing a mapping revokes access without deleting expected targets.
+
+The identity is the profile's optional `--inventory-host <id>`, defaulting to the
+first connected Hosted domain persisted on a Host remote root;
+all domains on that root share the scope. Upgrade CLI/helper and reconnect existing
+Hosts with `--inventory-credential-env HOST_INVENTORY_TOKEN` on their Telemetry
+profile. Registration, deploy, start/restart/rollback, stop, unregister/delete,
+opt-out and address changes queue registry-owned snapshots automatically. The
+Host timer retries every 60 seconds without a workstation. Status includes pending,
+stale, acknowledged revision/time and whether the reconciler is installed.
+Stopped/deleted/opted-out states remove active probe expectations; missing senders
+never remove central expectations. This service does not schedule probes or alerts.
+
+`PUT /v1/inventory/<host>` accepts only that scope's credential and validated
+schemaVersion-1 snapshots; `GET` exports only that scope. Stale or conflicting
+revisions return 409, cross-Host access 403. Bare application origins contain no
+secrets/readiness paths, headers or payloads. Deleted identities remain tombstones.
+Host identities, Hosted domains and origin hostnames use the existing lowercase
+DNS-label rules, including consecutive internal hyphens and ASCII punycode such
+as `a--b.apps.example` and `xn--bcher-kva.example`.
+A single gateway writer serializes updates and acknowledges only after atomic
+replacement/fsync. Writable inventory storage is a `/health` dependency.
+
+Recovery only: export desired state using `sporades host telemetry inventory-export
+--host <alias> --json`, or central state with `node inventory.mjs export
+https://monitor.example <host> acknowledged.json [ca.pem]`. Restore central state
+with `node inventory.mjs import https://monitor.example <host> desired.json [ca.pem]`.
+The script reads `.env` and uses identical authority, validation and version checks.
+Back up the inventory volume and the Host registry/outbox together; metric/trace
+retention never expires inventory. Stop the gateway/timer for consistent backup.
+An older Host outbox against newer central state requires restoring the newer
+outbox; do not reset revisions. See the Sporades lifecycle-inventory reference
+for the wire schema and full operator recovery steps.
 
 ## Background Jobs
 
