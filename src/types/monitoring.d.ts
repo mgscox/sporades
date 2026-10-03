@@ -2,6 +2,8 @@
  * Each Capsule permits its canonical origin plus 20 aliases (21 targets total).
  * Domains and subnames use lowercase DNS labels of 1–63 characters, including
  * consecutive hyphens and ASCII punycode; targets remain bare HTTP(S) origins.
+ * Full Hosted domain/subname identities (up to 317 characters) are preserved in
+ * inventory, runtime service.name and Host readiness, without prefix truncation.
  * Running/failed targets drive availability expectations. Acknowledged stops,
  * deletions and opt-outs cease expectations; sender loss never does. Public
  * GET /__sporades/probe accepts a fresh X-Sporades-Probe-Nonce header

@@ -38,7 +38,7 @@ groups:
           summary: 'Expected Host relay telemetry absent for {{ $labels.host }}'
           target: '{{ $labels.host }}'
           window: 'No Host contact sample in the last two minutes. Central expectations remain active.'
-          dashboard: '__MONITORING_PUBLIC_URL__/grafana/d/sporades-host?var-host={{ $labels.host }}&from=now-15m&to=now'
+          dashboard: '__MONITORING_PUBLIC_URL__/grafana/d/sporades-hosts?var-host={{ $labels.host }}&from=now-15m&to=now'
       - alert: SporadesLocalReadinessFailure
         expr: (sporades_capsule_local_ready == 0) and on (host, service_name) (sporades_expected_capsule == 1)
         for: 60s

@@ -145,6 +145,9 @@ HTTP 200, the runtime probe marker, no-store and no redirect. Fresh nonce header
 and nonces are excluded from labels. Host-local protected readiness emits booleans only
 through the relay. Probe failures start at 60 seconds; missing runtime/Host data
 starts at two minutes; inventory staleness is a separate three-minute warning.
+Runtime `service.name` and Host readiness preserve the inventory's full
+`domain/subname` identity, up to 317 characters. Rebuild and restart Capsules
+using older runtimes that truncated it to 80 characters before relying on long-ID alerts.
 The Monitoring health endpoint stays minimal and has no outbound watchdog.
 
 See `docs/reference/availability-alerts.md` in the matching package source for

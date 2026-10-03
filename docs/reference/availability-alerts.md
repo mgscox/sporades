@@ -99,6 +99,12 @@ sustained failure should notify within two minutes; measure this in your own
 acceptance environment. A missing Alertmanager cannot deliver its own alert;
 the minimal Monitoring health endpoint alone cannot page on Monitoring VM loss.
 
+Runtime metrics and traces retain the full configured `service.name`. For Hosted
+Capsules this is the inventory's exact `domain/subname` identity (up to 317
+characters), also used by Host readiness. IDs sharing a prefix remain distinct.
+Rebuild and restart Capsules built with an older runtime that truncated this
+identity to 80 characters before relying on long-ID absence alerts.
+
 Rules are shipped in `availability-rules.yaml` and rendered into `.private` by
 setup. Review and tune these starting thresholds for your installation; do not
 add duplicate Grafana evaluators. Separate probe, scrape, readiness, absence and
@@ -111,7 +117,9 @@ production event loop or stop a production Capsule for validation. Run
 `scripts/verify-availability.mjs` from the repository with a worktree-local
 `SPORADES_CONFIG_DIR` for a real generated Capsule, pinned Docker stack, finite
 100-second blocked-loop drill, webhook alert and recovery, out-of-band stop,
-telemetry absence and acknowledged-stop removal. The script uses a unique Compose
+telemetry absence and acknowledged-stop removal. Two 317-character IDs sharing
+the first 80 characters remain healthy past the grace window; stopping one must
+alert while its sibling keeps exporting. The script uses a unique Compose
 project and cleans up only its own resources. Its local Docker topology does not
 substitute for separate-VM acceptance. Place the Capsule Host and Monitoring stack
 on different disposable VMs, retain verified TLS on the relay, repeat the drill,
