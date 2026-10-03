@@ -10,8 +10,8 @@ export declare const ADMISSION_LIMITS: Readonly<{
 export type { AdmissionCondition, AdmissionAction, AdmissionPolicy, AdmissionGeneration, AdmissionHealth } from "../src/types/admission-policy.js";
 import type { AdmissionGeneration, AdmissionHealth } from "../src/types/admission-policy.js";
 export declare function parseAdmissionPolicy(bytes: Buffer): AdmissionGeneration;
-/** First-match exact-path slice. An indeterminate condition must never grant admission. */
-export declare function matchExactAdmissionRule(generation: AdmissionGeneration, pathname: string): {
+/** First-match exact-path/address slice. An indeterminate condition never grants admission. */
+export declare function matchExactAdmissionRule(generation: AdmissionGeneration, pathname: string, address?: string | null): {
     id: string;
     enabled: boolean;
     conditions: readonly import("../src/types/admission-policy.js").AdmissionCondition[];

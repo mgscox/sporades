@@ -2,11 +2,102 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer, request as httpRequest } from 'node:http';
 import { performance } from 'node:perf_hooks';
+import { createHash } from 'node:crypto';
 import { parseAdmissionPolicy, matchExactAdmissionRule } from '../dist/admission-policy.js';
 import { routeHttpAdmission, routeConnectionToken, routeRuntimeHealth } from '../dist/http-runtime.js';
 
 const rule = (id, exact, enabled = true) => ({ id, enabled, conditions: [{ kind: 'pathname', exact }], action: { kind: 'deny' } });
 const generation = rules => parseAdmissionPolicy(Buffer.from(JSON.stringify({ version: 1, rules })));
+const probeToken = 'a'.repeat(64);
+const addressToken = createHash('sha256').update('sporades-client-address\0').update(probeToken).digest('hex');
+const hostedHeaders = address => ({ 'x-sporades-client-address': address, 'x-sporades-client-address-token': addressToken });
+const addressRule = value => ({ id: 'address', enabled: true, conditions: [{ kind: 'pathname', exact: '/blocked' }, { kind: 'address', value }], action: { kind: 'deny' } });
+
+test('Hosted address denial matches exact IPv4, canonical IPv6 and CIDRs at the authenticated Host boundary', async () => {
+  for (const [value, matched, unmatched] of [
+    ['192.0.2.10', '192.0.2.10', '192.0.2.11'],
+    ['192.0.2.0/24', '::ffff:192.0.2.10', '192.0.3.10'],
+    ['2001:db8::a', '2001:0DB8:0:0:0:0:0:A', '2001:db8::b'],
+    ['2001:db8::/32', '2001:db8:1234::1', '2001:db9::1'],
+  ]) {
+    await serve({ securitySession: 'hosted', runtimeProbeToken: probeToken, admissionPolicy: { current: () => generation([addressRule(value)]) } }, async (base, calls) => {
+      assert.equal((await fetch(base + '/blocked', { headers: hostedHeaders(matched) })).status, 403, value);
+      assert.equal((await fetch(base + '/blocked', { headers: hostedHeaders(unmatched) })).status, 201, value);
+      assert.equal(calls(), 1);
+    });
+  }
+});
+
+test('missing, forged, invalid and duplicate Hosted identity fails closed without calling Capsule code', async () => {
+  await serve({ securitySession: 'hosted', runtimeProbeToken: probeToken, admissionPolicy: { current: () => generation([addressRule('192.0.2.0/24')]) } }, async (base, calls) => {
+    for (const headers of [
+      {}, { forwarded: 'for=198.51.100.1', 'x-forwarded-for': '198.51.100.1', 'cf-connecting-ip': '198.51.100.1' },
+      { 'x-sporades-client-address': '198.51.100.1' },
+      { ...hostedHeaders('198.51.100.1'), 'x-sporades-client-address-token': probeToken },
+      { ...hostedHeaders('198.51.100.1'), 'x-sporades-client-address-token': 'b'.repeat(64) },
+      ...['', 'invalid', '999.1.1.1', '192.000.2.1', '198.51.100.1:80', '[2001:db8::1]', 'fe80::1%eth0', '198.51.100.1, 192.0.2.1'].map(hostedHeaders),
+      { ...hostedHeaders('198.51.100.1'), 'x-sporades-client-address': ['198.51.100.1', '198.51.100.1'] },
+      { ...hostedHeaders('198.51.100.1'), 'x-sporades-client-address-token': [addressToken, addressToken] },
+    ]) {
+      const response = await rawHeadersResponse(base, '/blocked', headers);
+      assert.deepEqual(response, { status: 403, body: 'Forbidden\n', cache: 'no-store' });
+    }
+    assert.equal(calls(), 0);
+    // An unrelated exact path does not require identity.
+    assert.equal((await fetch(base + '/unmatched')).status, 201);
+  });
+});
+
+test('Dev and local Container ignore all identity headers while non-address rules continue to operate', async () => {
+  for (const securitySession of ['dev', 'public-dev', 'container']) {
+    const active = generation([rule('disabled', '/unmatched', false), addressRule('192.0.2.0/24'), rule('path', '/path')]);
+    await serve({ securitySession, runtimeProbeToken: probeToken, admissionPolicy: { current: () => active } }, async base => {
+      const headers = { ...hostedHeaders('198.51.100.1'), forwarded: 'for=198.51.100.1', 'x-forwarded-for': '198.51.100.1', 'cf-connecting-ip': '198.51.100.1' };
+      assert.equal((await fetch(base + '/blocked', { headers })).status, 403);
+      assert.equal((await fetch(base + '/path', { headers })).status, 403);
+      assert.equal((await fetch(base + '/unmatched', { headers })).status, 201);
+    });
+  }
+});
+
+test('address matching handles family boundaries, mapped CIDRs, prefix endpoints and rejects malformed networks', () => {
+  for (const [network, address, match] of [
+    ['192.0.2.10/32', '192.0.2.10', true], ['192.0.2.10/32', '192.0.2.11', false],
+    ['192.0.2.129/25', '192.0.2.128', true], ['192.0.2.129/25', '192.0.2.127', false],
+    ['0.0.0.0/0', '255.255.255.255', true], ['0.0.0.0/0', '2001:db8::1', false],
+    ['::/0', '2001:db8::1', true], ['::/0', '::ffff:192.0.2.1', false],
+    ['2001:db8::/127', '2001:db8::1', true], ['2001:db8::/127', '2001:db8::2', false],
+    ['::1/128', '0:0:0:0:0:0:0:1', true], ['::1/128', '::2', false],
+    ['::ffff:192.0.2.0/120', '192.0.2.255', true], ['::ffff:192.0.2.0/120', '192.0.3.1', false],
+    ['::ffff:c000:0201', '192.0.2.1', true], ['::ffff:0:0/96', '192.0.2.1', true],
+    ['::192.0.2.1', '192.0.2.1', false],
+  ]) assert.equal(!!matchExactAdmissionRule(generation([addressRule(network)]), '/blocked', address), match, network + ' ' + address);
+  for (const value of ['192.0.2.1/', '192.0.2.1/01', '192.0.2.1/-1', '192.0.2.1/33', '::1/129', '::1/64/1', '::ffff:192.0.2.1/95', '::ffff:192.0.2.1/24', 'fe80::1%eth0', '[::1]', ' 192.0.2.1', '192.0.2.1,192.0.2.2']) {
+    assert.throws(() => generation([addressRule(value)]), /^Error: Invalid admission policy\.$/, value);
+  }
+});
+
+test('Host capability rotation revokes prior identity and disabled address rules require no identity', async () => {
+  const database = { securitySession: 'hosted', runtimeProbeToken: probeToken, admissionPolicy: { current: () => generation([addressRule('192.0.2.0/24')]) } };
+  await serve(database, async base => {
+    assert.equal((await fetch(base + '/blocked',{headers:hostedHeaders('198.51.100.1')})).status,201);
+    database.runtimeProbeToken = 'c'.repeat(64);
+    assert.equal((await fetch(base + '/blocked',{headers:hostedHeaders('198.51.100.1')})).status,403);
+    const token = createHash('sha256').update('sporades-client-address\0').update(database.runtimeProbeToken).digest('hex');
+    assert.equal((await fetch(base + '/blocked',{headers:{...hostedHeaders('198.51.100.1'),'x-sporades-client-address-token':token}})).status,201);
+    database.admissionPolicy.current = () => generation([{...addressRule('192.0.2.0/24'),enabled:false}]);
+    assert.equal((await fetch(base + '/blocked')).status,201);
+  });
+});
+
+const rawHeadersResponse = (base, path, headers) => new Promise((resolve, reject) => {
+  const url = new URL(base);
+  const request = httpRequest({ hostname: url.hostname, port: url.port, path, headers }, response => {
+    const chunks = []; response.on('data', chunk => chunks.push(chunk));
+    response.on('end', () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString(), cache: response.headers['cache-control'] }));
+  });
+  request.on('error', reject); request.end();
+});
 async function serve(database, fn, application) {
   let calls = 0;
   const server = createServer((request, response) => {
