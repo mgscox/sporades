@@ -6,6 +6,38 @@ production Host, cloud account, production canary, npm publication or release
 was used. SSH targeted only the task-owned VMs; Tower provided their hypervisor. All workstation CLI invocations
 used a worktree-local `SPORADES_CONFIG_DIR`.
 
+## DNS compatibility follow-up — 2026-10-03
+
+The round-three regression first reproduced silent omission of both
+`xn--bcher-kva.example` and `a--b.example` under the independent `host-one`
+scope. Inventory validation now follows the existing Host DNS-label rules:
+1–63 lowercase letters/digits/internal hyphens per label, 253 characters total,
+including consecutive hyphens and ASCII punycode. Source, both shipped validators,
+bundled CLI/helper, public type documentation and the generated manifest were
+regenerated together. Tests cover canonical subnames, aliases, continued
+neighboring Capsule updates, exact scope denial, malformed labels and sanitized
+origin restrictions. The branch incorporates `main` at `d37a224f`.
+
+On the merged branch, build, typecheck, generated-source checks and 33 focused
+inventory/reconnect/relay/gateway/origin tests passed. `npm run docs:check`
+passed 53 tests and the documentation build. The updated
+`node scripts/verify-host-inventory.mjs` passed verified private-CA Docker
+delivery, acknowledgement of supported names and 21 targets, neighboring updates,
+authorization/revision denial and outage/restart recovery. Packed-CLI Container
+CA acceptance passed one test; the legacy-CLI test was skipped because no legacy
+CLI was supplied. Its disposable copy used ports 5689/5690 and a worktree-local
+temporary directory; only port/root substitutions differed from the existing test.
+
+A generated Monitoring Compose stack (`COMPOSE_PROJECT_NAME=barbara195-8528-1003`,
+port 5691) passed trace and metric storage/query, readiness, supported-name
+acknowledgements, neighboring updates, exact scope denial, sanitized-origin
+rejection and inventory persistence after gateway restart. Playwright checked
+the lifecycle reference on port 5688 at desktop and 390px width with no horizontal
+overflow or application console errors; one favicon 404 was observed. All
+task-owned servers and Docker resources were stopped/removed, including the
+disposable stack credentials. Separate-VM acceptance was not rerun; the original
+timestamps are preserved and the first disconnection claim is qualified below.
+
 ## Automated checks
 
 ```sh
