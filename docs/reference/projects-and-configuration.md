@@ -6,6 +6,11 @@ Capsule creation, project layout, configuration, security policy, database servi
 
 ## Local HTTP telemetry
 
+[Sender credential lifecycle](./sender-credentials.md) documents operator-local
+issue, protected export, staged rotation/commit, revocation and legacy migration.
+These credentials belong to the Monitoring connection, outside Capsule Sealed
+Server env; profiles retain only environment references.
+
 The operator registers a named Telemetry profile separately from a Host profile:
 
 ```sh

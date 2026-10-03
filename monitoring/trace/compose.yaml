@@ -47,6 +47,7 @@ services:
     volumes:
       - ./certs:/certs:ro
       - ./.private/credentials.json:/run/secrets/trace-credentials.json:ro
+      - ./.private/senders:/run/senders:ro
       - inventory:/inventory
     depends_on:
       inventory-init:

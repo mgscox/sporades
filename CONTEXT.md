@@ -645,3 +645,13 @@ every two seconds, and keeps the last-known-good generation on hot failure.
 Reload health and digest expose no match values. This publication slice does not
 yet enforce HTTP or WebSocket requests. Generic writable `deploy.files` authority
 never applies. See ADR-0054.
+
+### Sender credentials
+
+Operator-local Monitoring stack credentials give a named Host or workstation
+unique ingestion authority and, for a Host, a separate exact lifecycle inventory
+capability. Protected generations support staged rotation, explicit verified
+commit, cancellation and revocation without changing Capsule Sealed Server env.
+They grant no dashboard/query or remote administration authority. The gateway
+reloads atomic registry snapshots; operator `.env` and legacy connections remain
+intact until explicitly migrated. See `docs/reference/sender-credentials.md`.
