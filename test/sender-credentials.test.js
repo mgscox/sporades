@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
+import { promises as filesystem } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdtemp, mkdir, readFile, writeFile, rm, stat, chmod, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
@@ -188,6 +190,53 @@ test('gateway reload/restart enforces real sender exports and exact inventory sc
   assert.equal((await ingest(b.ingest)).status, 200);
   await chmod(registry, 0o644);
   assert.equal((await ingest(b.ingest)).status, 503);
+});
+
+test('gateway retries a registry replaced between open and stat without retaining retired authority', async t => {
+  const dir = await fixture(t);
+  good(dir, 'issue', '--sender', 'host-a', '--host', 'a.example');
+  good(dir, 'issue', '--sender', 'host-b', '--host', 'b.example');
+  const a = await credentials(dir, 'host-a', 'a.env'), b = await credentials(dir, 'host-b', 'b.env');
+  const collector = createServer((_req, res) => res.writeHead(200).end('{}'));
+  const collectorUrl = await listen(collector);
+  t.after(() => close(collector));
+  const gateway = createGateway({ ...JSON.parse(await readFile(path.join(dir, '.private/credentials.json'), 'utf8')),
+    collectorUrl, senderDirectory: path.join(dir, '.private/senders'), inventoryDirectory: path.join(dir, 'inventory') });
+  const origin = await listen(gateway);
+  t.after(() => close(gateway));
+  const registry = path.join(dir, '.private/senders/registry.json');
+  const ingest = token => fetch(origin + '/v1/traces', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' });
+  const update = token => fetch(origin + '/v1/inventory/a.example', { method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(inventory('a.example')) });
+  async function replaceDuringRead(action, sender, request, { phase = 'open', readNumber = 1 } = {}, ...args) {
+    const original = filesystem.open;
+    let replacements = 0, reads = 0;
+    // Schedule a real CLI atomic replacement after the gateway opens its old
+    // inode, before it can stat/read it. Other filesystem operations stay real.
+    filesystem.open = async (...openArgs) => {
+      const file = await original(...openArgs);
+      if (openArgs[0] === registry && ++reads === readNumber) {
+        const replace = () => { replacements++; good(dir, action, '--sender', sender, ...args); };
+        if (phase === 'read') {
+          const originalRead = file.readFile;
+          file.readFile = async (...readArgs) => { const data = await originalRead.call(file, ...readArgs); replace(); return data; };
+        } else {
+          try { replace(); }
+          catch (error) { await file.close(); throw error; }
+        }
+      }
+      return file;
+    };
+    syncBuiltinESMExports();
+    try { const response = await request(); assert.equal(replacements, 1); return response.status; }
+    finally { filesystem.open = original; syncBuiltinESMExports(); }
+  }
+  good(dir, 'rotate', '--sender', 'host-a');
+  const next = await credentials(dir, 'host-a', 'next.env');
+  assert.equal(await replaceDuringRead('commit', 'host-a', () => ingest(a.ingest), {}, '--generation', '2'), 401);
+  assert.equal((await ingest(next.ingest)).status, 200);
+  assert.equal(await replaceDuringRead('rotate', 'host-b', () => ingest(next.ingest)), 200, 'unrelated sender remains available during publication');
+  assert.equal(await replaceDuringRead('revoke', 'host-a', () => update(next.inventory), { phase: 'read', readNumber: 2 }), 403, 'the final authorization reread must observe replacement during its read');
+  assert.equal((await ingest(b.ingest)).status, 200);
 });
 
 test('concurrent writers lock and atomically preserve both senders; protected export never overwrites operator files', async t => {

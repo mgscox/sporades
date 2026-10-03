@@ -145,7 +145,10 @@ exclusive maintenance conditions; they never affect authorization.
 
 The gateway mounts the **directory** read-only, so atomic replacement is visible
 without recreating the container. It reads a validated protected snapshot for
-requests and rechecks credentials after receiving uploads. Malformed, missing,
+requests and rechecks credentials after receiving uploads. If publication replaces
+an opened snapshot while it is being read, the gateway reopens the current registry
+instead of authorizing retired state; repeated concurrent replacement fails closed
+after three attempts. Malformed, missing,
 symlinked or publicly readable registries fail closed with an opaque 503 for
 ingestion, inventory and health; fixing the file restores service. Already
 forwarded requests cannot be withdrawn. UI authentication remains independent.

@@ -50,14 +50,24 @@ async function protectedDirectory(directory, create = false, owner) {
 
 export async function readSenderRegistry(directory) {
   await protectedDirectory(directory);
-  const file = await open(join(directory, 'registry.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = await file.stat();
-    if (!stat.isFile() || stat.nlink !== 1 || stat.mode & 0o077 || stat.size > MAX_REGISTRY_BYTES) invalid();
-    let value;
-    try { value = JSON.parse(await file.readFile('utf8')); } catch { invalid(); }
-    return validateSenderRegistry(value);
-  } finally { await file.close(); }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const file = await open(join(directory, 'registry.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await file.stat();
+      // Atomic publication can unlink the inode after open. Reopen the current
+      // path rather than denying unrelated senders or authorizing stale state.
+      if (stat.nlink === 0) continue;
+      if (!stat.isFile() || stat.nlink !== 1 || stat.mode & 0o077 || stat.size > MAX_REGISTRY_BYTES) invalid();
+      const serialized = await file.readFile('utf8');
+      const afterRead = await file.stat();
+      if (afterRead.nlink === 0) continue;
+      if (!afterRead.isFile() || afterRead.nlink !== 1 || afterRead.mode & 0o077 || afterRead.size > MAX_REGISTRY_BYTES) invalid();
+      let value;
+      try { value = JSON.parse(serialized); } catch { invalid(); }
+      return validateSenderRegistry(value);
+    } finally { await file.close(); }
+  }
+  invalid();
 }
 
 async function publish(directory, value, owner) {
