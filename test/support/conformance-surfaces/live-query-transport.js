@@ -142,6 +142,38 @@ export const CONFORMANCE_SURFACE = {
             socket.removeEventListener("message", onResult);
           }
         }
+        if (adapter.engine === "postgres") {
+          const statements = [
+            `UPDATE "transport_todos" SET "text" = 'batch-committed'; UPDATE "transport_notes" SET "text" = 'absent' WHERE "id" = 'missing'`,
+            `WITH changed AS (UPDATE "transport_todos" SET "text" = 'cte-committed' RETURNING "id") UPDATE "transport_notes" SET "text" = 'absent' WHERE "id" = 'missing'`,
+          ];
+          for (const [index, sql] of statements.entries()) {
+            const expected = index === 0 ? "batch-committed" : "cte-committed";
+            takeLiveQueryDirtyTables();
+            const result = await database.adapter.prepare(sql).run();
+            assert.equal(result.changes, 0);
+            assert.equal((await database.adapter.prepare('SELECT "text" FROM "transport_todos"').get()).text, expected);
+            const delivered = Promise.withResolvers();
+            const onResult = (event) => {
+              const value = JSON.parse(String(event.data));
+              if (value.id === "transport_todos" && value.data?.some((row) => row.text === expected)) delivered.resolve(value);
+            };
+            socket.addEventListener("message", onResult);
+            let timeout;
+            try {
+              // Job completion must deliver committed writes even when the final
+              // command reports zero rows for a batch or data-modifying CTE.
+              database.__notifyJobStateQueries();
+              const value = await Promise.race([delivered.promise, new Promise((_, reject) => {
+                timeout = setTimeout(() => reject(new Error(`Zero-result statement left subscription stale: ${expected}`)), 1000);
+              })]);
+              assert.equal(value.error, null);
+            } finally {
+              clearTimeout(timeout);
+              socket.removeEventListener("message", onResult);
+            }
+          }
+        }
       } finally {
         socket?.close();
         hub?.disconnectAll();

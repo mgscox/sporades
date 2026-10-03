@@ -1382,6 +1382,8 @@ export function stripeEvent<Handler extends AtomicStripeEventHandler>(options: {
  * Define a named query for subscribed client reads. SQLite, Postgres and libsql refresh
  * subscriptions when a table read by their last run changes. Unknown tables retain a
  * full refresh; values derived from clocks or external state do not refresh on unrelated writes.
+ * Only recognized single-table writes may skip refresh when they report zero changed rows;
+ * batches and unknown statements retain full refresh even with a zero-row final result.
  * Dedicated Postgres resource writes publish invalidation after
  * transaction settlement, even if another refresh ran before commit.
  */

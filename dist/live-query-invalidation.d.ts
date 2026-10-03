@@ -8,8 +8,9 @@ export declare function recordLiveQueryStatementRead(sql: string): void;
 /** Records a read served without a statement, such as a runtime row cache hit. */
 export declare function recordLiveQueryTableRead(table: string): void;
 /**
- * Records the table a statement wrote. Statements that changed no rows are ignored, and a
- * statement whose table cannot be identified (DDL, multi-statement exec) marks every table.
+ * Records the table a statement wrote. Recognized single-table writes with a trustworthy
+ * zero-row count are ignored. Unknown statements and batches always mark every table, because
+ * their reported count may describe only the final operation (including data-modifying CTEs).
  */
 export declare function recordLiveQueryStatementWrite(sql: string, result?: unknown, tables?: Set<string>): void;
 /** Publishes a settled transaction's writes into the current refresh window. */

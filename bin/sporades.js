@@ -130770,7 +130770,6 @@ function recordLiveQueryTableRead(table) {
   liveQueryReads.getStore()?.add(table);
 }
 function recordLiveQueryStatementWrite(sql2, result, tables = dirtyTables) {
-  if (result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
   const text3 = String(sql2);
   const terminator = text3.indexOf(";");
   if (terminator !== -1 && /\S/.test(text3.slice(terminator + 1))) {
@@ -130779,6 +130778,7 @@ function recordLiveQueryStatementWrite(sql2, result, tables = dirtyTables) {
   }
   if (nonWritingStatementPattern.test(text3)) return;
   const match = writeTablePattern.exec(text3);
+  if (match && result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
   tables.add(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE);
 }
 function publishLiveQueryDirtyTables(tables) {

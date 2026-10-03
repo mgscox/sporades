@@ -221,8 +221,11 @@ unrelated writes. Transaction statements are tracked too; rolled-back writes
 may cause an extra refresh. Dedicated Postgres resource transactions retain their
 changed tables until settlement and then publish them, including on rollback or
 an unknown commit outcome. A concurrent refresh before commit cannot consume
-the notification for the committed writes. Multi-statement and unparseable writes conservatively
-refresh every subscription. libsql resource transactions remain unsupported.
+the notification for the committed writes. Recognized single-table statements that
+report zero changed rows do not refresh subscriptions. Multi-statement and
+unparseable writes conservatively refresh every subscription even if their final
+result reports zero rows: earlier statements or a data-modifying CTE may have
+committed writes. libsql resource transactions remain unsupported.
 
 ### Change Data With Mutations
 

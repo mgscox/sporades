@@ -48,11 +48,11 @@ export function recordLiveQueryTableRead(table: string) {
 }
 
 /**
- * Records the table a statement wrote. Statements that changed no rows are ignored, and a
- * statement whose table cannot be identified (DDL, multi-statement exec) marks every table.
+ * Records the table a statement wrote. Recognized single-table writes with a trustworthy
+ * zero-row count are ignored. Unknown statements and batches always mark every table, because
+ * their reported count may describe only the final operation (including data-modifying CTEs).
  */
 export function recordLiveQueryStatementWrite(sql: string, result?: unknown, tables = dirtyTables) {
-  if (result && typeof result === "object" && "changes" in result && Number((result as { changes: unknown }).changes) === 0) return;
   const text = String(sql);
   // exec can execute several statements but has no per-statement change counts. A semicolon
   // inside a literal or comment can over-refresh; treating a second statement as just the first
@@ -64,6 +64,7 @@ export function recordLiveQueryStatementWrite(sql: string, result?: unknown, tab
   }
   if (nonWritingStatementPattern.test(text)) return;
   const match = writeTablePattern.exec(text);
+  if (match && result && typeof result === "object" && "changes" in result && Number((result as { changes: unknown }).changes) === 0) return;
   tables.add(match ? (match[1] ?? match[2]) : LIVE_QUERY_ANY_TABLE);
 }
 

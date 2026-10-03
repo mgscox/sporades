@@ -62,6 +62,27 @@ export const CONFORMANCE_SURFACE = {
       assert.deepEqual(refreshed(reads), [true, true], "a failed exec may already have executed an earlier write");
     },
   }, {
+    name: "zero-result prepared batches and data-modifying CTEs retain committed invalidation",
+    async run(adapter) {
+      const reads = await subscriptions(adapter);
+      takeLiveQueryDirtyTables();
+      const zero = await adapter.prepare("UPDATE refresh_audits SET text = ? WHERE id = ?").run("absent", "missing");
+      assert.equal(zero.changes, 0);
+      assert.deepEqual(refreshed(reads), [true, true], "unclassified statements retain full invalidation even with zero rows");
+      if (adapter.engine !== "postgres") return; // These statement forms are Postgres-specific.
+      const statements = [
+        `UPDATE "refresh_todos" SET "text" = 'batch-changed'; UPDATE "refresh_notes" SET "text" = 'absent' WHERE "id" = 'missing'`,
+        `WITH changed AS (UPDATE "refresh_todos" SET "text" = 'cte-changed' RETURNING "id") UPDATE "refresh_notes" SET "text" = 'absent' WHERE "id" = 'missing'`,
+      ];
+      for (const [index, sql] of statements.entries()) {
+        takeLiveQueryDirtyTables();
+        const result = await adapter.prepare(sql).run();
+        assert.equal(result.changes, 0, "the final result does not count the earlier committed write");
+        assert.equal((await adapter.selectAppRowById({ name: "refresh_todos" }, "refresh_todos")).text, index === 0 ? "batch-changed" : "cte-changed");
+        assert.deepEqual(refreshed(reads), [true, true], "uncertain write counts must keep the full refresh fallback");
+      }
+    },
+  }, {
     name: "transaction and snapshot reads retain their subscription context; rollback never loses writes",
     async run(adapter) {
       const reads = await subscriptions(adapter);
