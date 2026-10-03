@@ -9,7 +9,7 @@ import type { Span } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { AggregationTemporalityPreference, OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { AggregationType, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import { AggregationType, MeterProvider, PeriodicExportingMetricReader, createAllowListAttributesProcessor } from "@opentelemetry/sdk-metrics";
 import type { PushMetricExporter } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
 import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
@@ -169,6 +169,11 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     timeoutMillis: 600, concurrencyLimit: 1, httpAgentOptions: { ...httpAgentOptions, maxSockets: 1 },
   });
   const failedExports: Record<"traces" | "metrics", boolean> = { traces: false, metrics: false };
+  const pipeline = {
+    traces: { failures: 0, lastSuccess: 0, inFlight: 0 },
+    metrics: { failures: 0, lastSuccess: 0, inFlight: 0 },
+  };
+  const pipelineLabels = { traces: { signal: "traces" }, metrics: { signal: "metrics" } };
   const lastFailureLoggedAt = new Map<Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"], number>();
   let reportedOutage = false;
   const emitDiagnostic = (diagnostic: TelemetryExportDiagnostic) => {
@@ -180,6 +185,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   const observeExport = (signal: "traces" | "metrics", result: { code: number; error?: unknown }) => {
     try {
       if (result.code === 0) {
+        pipeline[signal].lastSuccess = Date.now() / 1000;
         const wasFailed = failedExports.traces || failedExports.metrics;
         failedExports[signal] = false;
         if (wasFailed && !failedExports.traces && !failedExports.metrics && reportedOutage) {
@@ -187,6 +193,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
           reportedOutage = false;
         }
       } else {
+        pipeline[signal].failures++;
         failedExports[signal] = true;
         const reason = exportFailureReason(result.error);
         const now = Date.now();
@@ -200,7 +207,9 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   };
   const observedMetricExporter: PushMetricExporter = {
     export(metrics, callback) {
+      pipeline.metrics.inFlight++;
       metricExporter.export(metrics, (result) => {
+        pipeline.metrics.inFlight--;
         observeExport("metrics", result);
         callback(result);
       });
@@ -224,6 +233,9 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     resource,
     readers: [metricReader],
     views: [
+      // One processor per runtime. Drop SDK-generated component sequence names
+      // and retain only the bounded success/queue_full/Error classification.
+      { instrumentName: "otel.sdk.processor.span.*", attributesProcessors: [createAllowListAttributesProcessor(["error.type"])] },
       { instrumentName: "sporades.job.execution.duration", aggregationCardinalityLimit: 1024, aggregation: { type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300] } } },
       { instrumentName: "sporades.job.retry.count", aggregationCardinalityLimit: 129 },
       { instrumentName: "sporades.job.failure.count", aggregationCardinalityLimit: 129 },
@@ -235,6 +247,21 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     ],
   });
   const meter = meterProvider.getMeter("sporades-runtime-http", "1");
+  const pipelineMeter = meterProvider.getMeter("sporades-runtime-pipeline", "1");
+  const exportFailures = pipelineMeter.createObservableCounter("sporades.telemetry.export.failure.count", { unit: "1" });
+  const exportSuccess = pipelineMeter.createObservableGauge("sporades.telemetry.export.last_success", { unit: "s" });
+  const exportInFlight = pipelineMeter.createObservableGauge("sporades.telemetry.export.in_flight", { unit: "1" });
+  const collectionTime = pipelineMeter.createObservableGauge("sporades.telemetry.collection.time", { unit: "s" });
+  pipelineMeter.addBatchObservableCallback(result => {
+    result.observe(collectionTime, Date.now() / 1000);
+    for (const signal of ["traces", "metrics"] as const) {
+      result.observe(exportFailures, pipeline[signal].failures, pipelineLabels[signal]);
+      result.observe(exportInFlight, pipeline[signal].inFlight, pipelineLabels[signal]);
+      // No sample before the first successful export: absence is unknown,
+      // rather than a timestamp of zero suggesting a measured healthy state.
+      if (pipeline[signal].lastSuccess) result.observe(exportSuccess, pipeline[signal].lastSuccess, pipelineLabels[signal]);
+    }
+  }, [exportFailures, exportSuccess, exportInFlight, collectionTime]);
   const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
   const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
   const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
@@ -328,20 +355,26 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   const seenRoutes = new Set<string>();
   const observedExporter: SpanExporter = {
     export(spans, callback) {
+      pipeline.traces.inFlight++;
       exporter.export(spans, (result) => {
+        pipeline.traces.inFlight--;
         observeExport("traces", result);
-        callback(result);
+        // The SDK self-observation uses error.name as a label. Never forward
+        // arbitrary exporter details to that label or the SDK diagnostic log.
+        callback(result.code === 0 ? result : { code: result.code, error: new Error("Telemetry export failed") });
       });
     },
     forceFlush: () => exporter.forceFlush(),
     shutdown: () => exporter.shutdown(),
   };
-  const processor = new BatchSpanProcessor(observedExporter, {
+  const processorConfig = {
+    selfObsMeterProvider: meterProvider,
     maxQueueSize: 128,
     maxExportBatchSize: 32,
     scheduledDelayMillis: 500,
     exportTimeoutMillis: 800,
-  });
+  };
+  const processor = new BatchSpanProcessor(observedExporter, processorConfig);
   const provider = new BasicTracerProvider({
     resource,
     sampler: new TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
@@ -352,6 +385,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   const websocketNames = new Set<string>();
   const websocketEnds = new Set<(outcome: WebSocketOperationOutcome) => void>();
   let closing = false;
+  let shutdownPromise: Promise<void> | undefined;
   const releaseFetch = installRuntimeFetchTelemetry();
   const websocket: RuntimeWebSocketTelemetry = {
     connectionOpened() {
@@ -566,15 +600,20 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
         throw error;
       }
     },
-    async shutdown() {
-      if (closing) return;
+    shutdown(): Promise<void> {
+      if (shutdownPromise) return shutdownPromise;
       for (const end of websocketEnds) end("cancelled");
       closing = true;
       releaseFetch();
       gcObserver.disconnect();
       delayMonitorStoppedAt = performance.now();
       loopDelay.disable();
-      await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise<void>((resolve) => { const timer = setTimeout(resolve, 1_500); timer.unref(); })]);
+      let timer: NodeJS.Timeout;
+      shutdownPromise = Promise.race([
+        Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]).then(() => {}),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, 1_500); timer.unref(); }),
+      ]).finally(() => clearTimeout(timer));
+      return shutdownPromise;
     },
   };
 }

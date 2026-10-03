@@ -1405,6 +1405,8 @@ export function message<Handler extends (...args: any[]) => any>(handler: AuthGu
  * Declare a named server-only Job handler in `capsule({ jobs })` for durable work.
  * Enabled operator telemetry automatically traces each attempt with a causal
  * enqueue link and independent queue metrics; no tracing API is required.
+ * Monitoring failures do not block Job work. Telemetry queues/exports are
+ * bounded and best effort; durable Jobs retain their existing retry semantics.
  */
 export function job<Payload extends JsonValue, Result extends JsonValue>(
   handler: (ctx: JobHandlerContext, payload: Payload) => MaybePromise<Result>,

@@ -75970,10 +75970,10 @@ var require_AttributesProcessor = __commonJS({
       return new MultiAttributesProcessor(processors);
     }
     exports.createMultiAttributesProcessor = createMultiAttributesProcessor;
-    function createAllowListAttributesProcessor(attributeAllowList) {
+    function createAllowListAttributesProcessor2(attributeAllowList) {
       return new AllowListProcessor(attributeAllowList);
     }
-    exports.createAllowListAttributesProcessor = createAllowListAttributesProcessor;
+    exports.createAllowListAttributesProcessor = createAllowListAttributesProcessor2;
     function createDenyListAttributesProcessor(attributeDenyList) {
       return new DenyListProcessor(attributeDenyList);
     }
@@ -128862,6 +128862,11 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     httpAgentOptions: { ...httpAgentOptions, maxSockets: 1 }
   });
   const failedExports = { traces: false, metrics: false };
+  const pipeline = {
+    traces: { failures: 0, lastSuccess: 0, inFlight: 0 },
+    metrics: { failures: 0, lastSuccess: 0, inFlight: 0 }
+  };
+  const pipelineLabels = { traces: { signal: "traces" }, metrics: { signal: "metrics" } };
   const lastFailureLoggedAt = /* @__PURE__ */ new Map();
   let reportedOutage = false;
   const emitDiagnostic = (diagnostic) => {
@@ -128875,6 +128880,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const observeExport = (signal, result) => {
     try {
       if (result.code === 0) {
+        pipeline[signal].lastSuccess = Date.now() / 1e3;
         const wasFailed = failedExports.traces || failedExports.metrics;
         failedExports[signal] = false;
         if (wasFailed && !failedExports.traces && !failedExports.metrics && reportedOutage) {
@@ -128882,6 +128888,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
           reportedOutage = false;
         }
       } else {
+        pipeline[signal].failures++;
         failedExports[signal] = true;
         const reason = exportFailureReason(result.error);
         const now2 = Date.now();
@@ -128896,7 +128903,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   };
   const observedMetricExporter = {
     export(metrics2, callback) {
+      pipeline.metrics.inFlight++;
       metricExporter.export(metrics2, (result) => {
+        pipeline.metrics.inFlight--;
         observeExport("metrics", result);
         callback(result);
       });
@@ -128920,6 +128929,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     resource,
     readers: [metricReader],
     views: [
+      // One processor per runtime. Drop SDK-generated component sequence names
+      // and retain only the bounded success/queue_full/Error classification.
+      { instrumentName: "otel.sdk.processor.span.*", attributesProcessors: [(0, import_sdk_metrics.createAllowListAttributesProcessor)(["error.type"])] },
       { instrumentName: "sporades.job.execution.duration", aggregationCardinalityLimit: 1024, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300] } } },
       { instrumentName: "sporades.job.retry.count", aggregationCardinalityLimit: 129 },
       { instrumentName: "sporades.job.failure.count", aggregationCardinalityLimit: 129 },
@@ -128931,6 +128943,19 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     ]
   });
   const meter = meterProvider.getMeter("sporades-runtime-http", "1");
+  const pipelineMeter = meterProvider.getMeter("sporades-runtime-pipeline", "1");
+  const exportFailures = pipelineMeter.createObservableCounter("sporades.telemetry.export.failure.count", { unit: "1" });
+  const exportSuccess = pipelineMeter.createObservableGauge("sporades.telemetry.export.last_success", { unit: "s" });
+  const exportInFlight = pipelineMeter.createObservableGauge("sporades.telemetry.export.in_flight", { unit: "1" });
+  const collectionTime = pipelineMeter.createObservableGauge("sporades.telemetry.collection.time", { unit: "s" });
+  pipelineMeter.addBatchObservableCallback((result) => {
+    result.observe(collectionTime, Date.now() / 1e3);
+    for (const signal of ["traces", "metrics"]) {
+      result.observe(exportFailures, pipeline[signal].failures, pipelineLabels[signal]);
+      result.observe(exportInFlight, pipeline[signal].inFlight, pipelineLabels[signal]);
+      if (pipeline[signal].lastSuccess) result.observe(exportSuccess, pipeline[signal].lastSuccess, pipelineLabels[signal]);
+    }
+  }, [exportFailures, exportSuccess, exportInFlight, collectionTime]);
   const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
   const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
   const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
@@ -129017,20 +129042,24 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const seenRoutes = /* @__PURE__ */ new Set();
   const observedExporter = {
     export(spans, callback) {
+      pipeline.traces.inFlight++;
       exporter.export(spans, (result) => {
+        pipeline.traces.inFlight--;
         observeExport("traces", result);
-        callback(result);
+        callback(result.code === 0 ? result : { code: result.code, error: new Error("Telemetry export failed") });
       });
     },
     forceFlush: () => exporter.forceFlush(),
     shutdown: () => exporter.shutdown()
   };
-  const processor = new import_sdk_trace_base.BatchSpanProcessor(observedExporter, {
+  const processorConfig = {
+    selfObsMeterProvider: meterProvider,
     maxQueueSize: 128,
     maxExportBatchSize: 32,
     scheduledDelayMillis: 500,
     exportTimeoutMillis: 800
-  });
+  };
+  const processor = new import_sdk_trace_base.BatchSpanProcessor(observedExporter, processorConfig);
   const provider = new import_sdk_trace_base.BasicTracerProvider({
     resource,
     sampler: new import_sdk_trace_base.TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
@@ -129041,6 +129070,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const websocketNames = /* @__PURE__ */ new Set();
   const websocketEnds = /* @__PURE__ */ new Set();
   let closing = false;
+  let shutdownPromise;
   const releaseFetch = installRuntimeFetchTelemetry();
   const websocket = {
     connectionOpened() {
@@ -129278,18 +129308,24 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
         throw error;
       }
     },
-    async shutdown() {
-      if (closing) return;
+    shutdown() {
+      if (shutdownPromise) return shutdownPromise;
       for (const end of websocketEnds) end("cancelled");
       closing = true;
       releaseFetch();
       gcObserver.disconnect();
       delayMonitorStoppedAt = performance2.now();
       loopDelay.disable();
-      await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise((resolve2) => {
-        const timer = setTimeout(resolve2, 1500);
-        timer.unref();
-      })]);
+      let timer;
+      shutdownPromise = Promise.race([
+        Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]).then(() => {
+        }),
+        new Promise((resolve2) => {
+          timer = setTimeout(resolve2, 1500);
+          timer.unref();
+        })
+      ]).finally(() => clearTimeout(timer));
+      return shutdownPromise;
     }
   };
 }
@@ -146597,7 +146633,7 @@ import { cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir 
 import path17 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
 var STACK_SCHEMA = 3;
-var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "sender-credentials.mjs", "inventory-contract.mjs", "inventory-store.mjs", "inventory.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "setup.mjs", "smoke.mjs"];
+var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "sender-credentials.mjs", "inventory-contract.mjs", "inventory-store.mjs", "inventory.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "pipeline-dashboard.json", "pipeline-rules.yaml", "collector-persistent.yaml", "compose.queue.yaml", "OUTAGES.md", "setup.mjs", "smoke.mjs"];
 function prerequisite() {
   if (!["arm64", "x64"].includes(process.arch) || !["linux", "darwin"].includes(process.platform)) {
     throw commandError("Unsupported monitoring stack architecture.", "Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.");
