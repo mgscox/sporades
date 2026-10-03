@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Span } from "@opentelemetry/api";
+import type { Span, Tracer } from "@opentelemetry/api";
 
 /** Internal HTTP identity scope shared by instrumentation and runtime scheduling. */
 export type RuntimeOperation =
@@ -11,7 +11,7 @@ export type RuntimeOperation =
 export type RuntimeOperationOutcome = "success" | "denied" | "error" | "cancelled";
 export type RuntimeOperationRunner = <T>(operation: RuntimeOperation, callback: () => T, outcome?: (result: Awaited<T>) => RuntimeOperationOutcome) => T;
 
-export const runtimeRequestScope = new AsyncLocalStorage<{ requestId: string; span?: Span; operation?: RuntimeOperationRunner }>();
+export const runtimeRequestScope = new AsyncLocalStorage<{ requestId: string; span?: Span; operation?: RuntimeOperationRunner; tracer?: Tracer; isOpen?: () => boolean }>();
 
 /** Internal runtime boundary: no request/exporter means the original callback alone runs. */
 export function traceRuntimeOperation<T>(operation: RuntimeOperation, callback: () => T, outcome?: (result: Awaited<T>) => RuntimeOperationOutcome): T {

@@ -508,6 +508,10 @@ Local Container sessions resolve their selection at deploy and carry the non-sec
 Private Dev action Bundles are created only after the session starts listening. Each records process identity before containing Server env bytes; a later Dev start removes only Bundles whose recorded owner is known to have exited. Ownership-ambiguous directories from older CLI runs are retained and require manual inspection after confirming no Dev session still owns them.
 _Avoid_: Host profile, Capsule secret, app telemetry endpoint
 
+**Database request span**:
+An internal Database adapter statement or transaction timing interval within a sampled HTTP request. SQLite, PostgreSQL and libSQL share the instrumentation boundary. Bounded engine, operation and declared table labels explain database time without SQL text, parameters, rows, connection credentials or exception details. Transaction spans include acquisition wait and callback work; their child statement intervals overlap rather than add to that duration. Telemetry changes no Database adapter authoring, ACL, retry, rollback or transaction ownership contract.
+_Avoid_: public adapter hook, SQL profiler, application instrumentation API
+
 **Hosted Telemetry coverage**:
 Connecting a Host to the shared relay selects telemetry for all current and future Hosted Capsules by default. The Host registry stores each Capsule's explicit opt-out. Every start, restart, push and rollback resolves the Host connection and opt-out into a Host-owned launch descriptor. The protected runtime health probe confirms the running configuration; a saved setting alone does not prove instrumentation. Dev and local Container sessions keep their separate opt-in selection.
 _Avoid_: project-owned Hosted telemetry policy, per-Capsule relay

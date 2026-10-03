@@ -43084,6 +43084,11 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid3) {
   return { ok: false, data: null, error: canonicalError(value.error, invalid3) };
 }
 
+// src/database-telemetry.ts
+import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
+var databaseTelemetry = Symbol("sporades.database.telemetry");
+var operationScope = new AsyncLocalStorage3();
+
 // src/database-runtime.ts
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
 var nodeFsModule = process.getBuiltinModule("node:fs");

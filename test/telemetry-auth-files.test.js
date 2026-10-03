@@ -114,6 +114,13 @@ test('real auth and File requests export child durations while preserving denial
     assert(children(denied).some(span => span.name === 'sporades.file.authorize' && outcome(span) === 'denied'));
     assert(children(missing).some(span => span.name === 'sporades.auth.admit' && outcome(span) === 'denied'));
     assert(children(admitted).some(span => span.name === 'sporades.auth.admit' && outcome(span) === 'success'));
+    for (const request of [allowed, denied, admitted]) {
+      const databaseChildren = spans.filter(span => span.traceId === request.traceId && attribute(span, 'db.system.name') === 'sqlite');
+      assert(databaseChildren.length > 0, 'auth and File traces retain database operation time');
+      const root = spans.find(span => span.traceId === request.traceId && span.kind === 2);
+      const parents = new Set([root.spanId, ...databaseChildren.map(span => span.spanId)]);
+      assert(databaseChildren.every(span => parents.has(span.parentSpanId)), 'database children stay in the auth/File request');
+    }
     assert(children(scopeDenied).some(span => span.name === 'sporades.auth.admit' && outcome(span) === 'denied'));
     assert(children(revoked).some(span => span.name === 'sporades.auth.access_key.resolve' && outcome(span) === 'denied'));
     assert(children(upload).some(span => span.name === 'sporades.file.upload' && outcome(span) === 'success'));
