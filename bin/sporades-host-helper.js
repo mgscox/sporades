@@ -27003,6 +27003,11 @@ function validatePublicTreeFileSet(files) {
   return { ok: true, fileCount: files.length, totalBytes };
 }
 
+// src/runtime-request-context.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage();
+var runtimeJobScope = new AsyncLocalStorage();
+
 // src/resource-runtime.ts
 var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
   sqlite: "supported",
@@ -27074,10 +27079,6 @@ var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 
 // src/team-billing-erasure.ts
 var CLAIM_TTL_MS2 = 5 * 6e4;
-
-// src/runtime-request-context.ts
-import { AsyncLocalStorage } from "node:async_hooks";
-var runtimeRequestScope = new AsyncLocalStorage();
 
 // src/jobs-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");

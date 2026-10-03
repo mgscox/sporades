@@ -1391,7 +1391,11 @@ export function mutation<Handler extends (...args: any[]) => any>(handler: AuthG
 /** Define a server-mediated App message handler. */
 export function message(handler: MessageHandler): MessageDefinition<MessageHandler>;
 export function message<Handler extends (...args: any[]) => any>(handler: AuthGuardedHandler<Handler>): MessageDefinition<AuthGuardedHandler<Handler>>;
-/** Declare a named server-only Job handler in `capsule({ jobs })`. */
+/**
+ * Declare a named server-only Job handler in `capsule({ jobs })` for durable work.
+ * Enabled operator telemetry automatically traces each attempt with a causal
+ * enqueue link and independent queue metrics; no tracing API is required.
+ */
 export function job<Payload extends JsonValue, Result extends JsonValue>(
   handler: (ctx: JobHandlerContext, payload: Payload) => MaybePromise<Result>,
 ): JobDefinition<(ctx: JobHandlerContext, payload: Payload) => MaybePromise<Result>>;
