@@ -15,6 +15,7 @@ import { BasicTracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } fro
 import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { interpretHttpRequestTarget } from "./http-runtime.js";
 import { runtimeJobScope, runtimeRequestScope, withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
+import type { RuntimeOperationOutcome, RuntimeOperationRunner } from "./runtime-request-context.js";
 
 export type RuntimeTelemetryConfig = {
   endpoint: string;
@@ -417,9 +418,49 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       activeRequests.add(1, activeLabels);
       const span = tracer.startSpan(`${method} ${route}`, { kind: SpanKind.SERVER, attributes: { "http.request.method": method, "http.route": route } }, validatedRemoteParent(request));
       let ended = false;
+      let operationBudget = 32;
+      const activeOperations = new Set<(outcome: RuntimeOperationOutcome) => void>();
+      const operation: RuntimeOperationRunner = (name, callback, resultOutcome) => {
+        if (ended || !span.isRecording() || operationBudget === 0) return callback();
+        operationBudget--;
+        const child = tracer.startSpan(name, { kind: SpanKind.INTERNAL }, trace.setSpan(ROOT_CONTEXT, span));
+        let completed = false;
+        const finish = (outcome: RuntimeOperationOutcome) => {
+          if (completed) return;
+          completed = true;
+          activeOperations.delete(finish);
+          child.setAttribute("sporades.operation.outcome", outcome);
+          if (outcome !== "success") child.setStatus({ code: SpanStatusCode.ERROR });
+          child.end();
+        };
+        activeOperations.add(finish);
+        const succeeded = (result: any) => {
+          let outcome: RuntimeOperationOutcome = "success";
+          try { outcome = resultOutcome?.(result) ?? "success"; } catch { /* Observability cannot change results. */ }
+          finish(["success", "denied", "error", "cancelled"].includes(outcome) ? outcome : "error");
+          return result;
+        };
+        const failed = (error: unknown): never => {
+          let outcome: RuntimeOperationOutcome = "error";
+          // Never record exception text, stack, cause, arbitrary codes or actor/resource data.
+          try {
+            const code = (error as { code?: unknown })?.code;
+            if (["UNAUTHENTICATED", "FORBIDDEN", "RATE_LIMITED"].includes(code as string)) outcome = "denied";
+            else if (code === "ABORT_ERR" || (error as { name?: unknown })?.name === "AbortError") outcome = "cancelled";
+          } catch { /* Even hostile exception getters stay opaque. */ }
+          finish(outcome);
+          throw error;
+        };
+        try {
+          const result = callback();
+          return (result && typeof (result as unknown as Promise<unknown>).then === "function"
+            ? Promise.resolve(result).then(succeeded, failed) : succeeded(result)) as ReturnType<typeof callback>;
+        } catch (error) { return failed(error); }
+      };
       const end = (outcome: "success" | "failure" | "abort" | "error") => {
         if (ended) return;
         ended = true;
+        for (const finish of activeOperations) finish(outcome === "error" ? "error" : "cancelled");
         const status = outcome === "abort" && !response.headersSent ? null
           : outcome === "error" && !response.headersSent ? 500
           : Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
@@ -437,8 +478,8 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = runtimeRequestScope.run({ requestId: randomUUID(), span, tracer, isOpen: () => !ended && !closing }, handle);
-        if (result && typeof (result as Promise<unknown>).then === "function") {
+        const result = runtimeRequestScope.run({ requestId: randomUUID(), span, operation, tracer, isOpen: () => !ended && !closing }, handle);
+        if (result && typeof (result as unknown as Promise<unknown>).then === "function") {
           return Promise.resolve(result).catch((error) => { end("error"); throw error; });
         }
         return result;

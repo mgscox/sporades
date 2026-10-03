@@ -102299,6 +102299,30 @@ function errorCode2(error) {
   return /^[A-Z][A-Z0-9_]{1,31}$/.test(code) ? code : "UNKNOWN";
 }
 
+// src/runtime-request-context.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage();
+function traceRuntimeOperation(operation, callback, outcome) {
+  const run2 = runtimeRequestScope.getStore()?.operation;
+  return run2 ? run2(operation, callback, outcome) : callback();
+}
+function withoutRuntimeRequestIdentity(callback) {
+  return runtimeRequestScope.exit(() => runtimeJobScope.exit(callback));
+}
+var runtimeJobScope = new AsyncLocalStorage();
+function captureJobTraceContext() {
+  try {
+    const job = runtimeJobScope.getStore();
+    const request = runtimeRequestScope.getStore();
+    const span = job?.isOpen() ? job.span : request?.isOpen?.() ? request.span : void 0;
+    const context2 = span?.spanContext();
+    if (!context2 || !/^[0-9a-f]{32}$/.test(context2.traceId) || /^0+$/.test(context2.traceId) || !/^[0-9a-f]{16}$/.test(context2.spanId) || /^0+$/.test(context2.spanId)) return null;
+    return `00-${context2.traceId}-${context2.spanId}-${context2.traceFlags & 1 ? "01" : "00"}`;
+  } catch {
+    return null;
+  }
+}
+
 // src/user-preferences-runtime.ts
 function createUserPreferencesTables(sqlite) {
   return sqlite.exec(
@@ -102805,6 +102829,9 @@ function readAccessKeyAuthorization(request) {
   return { token: matched[1], selector: matched[2], verifier: matched[3] };
 }
 async function resolveAccessKeyCredential(database, request, sessionToken) {
+  return traceRuntimeOperation("sporades.auth.access_key.resolve", () => resolveAccessKeyCredentialOperation(database, request, sessionToken), (result) => result ? "success" : "denied");
+}
+async function resolveAccessKeyCredentialOperation(database, request, sessionToken) {
   const source = accessKeySourceBucket(database, request);
   assertAccessKeyFailureLimit(database, "source", source, 30, 6e4);
   let parsed;
@@ -105432,26 +105459,6 @@ function unavailable() {
   const error = new Error("Team Billing erasure is unavailable.");
   error.code = "TEAM_BILLING_ERASURE_UNAVAILABLE";
   return error;
-}
-
-// src/runtime-request-context.ts
-import { AsyncLocalStorage } from "node:async_hooks";
-var runtimeRequestScope = new AsyncLocalStorage();
-function withoutRuntimeRequestIdentity(callback) {
-  return runtimeRequestScope.exit(() => runtimeJobScope.exit(callback));
-}
-var runtimeJobScope = new AsyncLocalStorage();
-function captureJobTraceContext() {
-  try {
-    const job = runtimeJobScope.getStore();
-    const request = runtimeRequestScope.getStore();
-    const span = job?.isOpen() ? job.span : request?.isOpen?.() ? request.span : void 0;
-    const context2 = span?.spanContext();
-    if (!context2 || !/^[0-9a-f]{32}$/.test(context2.traceId) || /^0+$/.test(context2.traceId) || !/^[0-9a-f]{16}$/.test(context2.spanId) || /^0+$/.test(context2.spanId)) return null;
-    return `00-${context2.traceId}-${context2.spanId}-${context2.traceFlags & 1 ? "01" : "00"}`;
-  } catch {
-    return null;
-  }
 }
 
 // src/jobs-runtime.ts
@@ -109205,6 +109212,9 @@ function contentTypeForFile(type) {
   return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
 }
 async function createPendingFileUpload(database, auth, message) {
+  return traceRuntimeOperation("sporades.file.upload.prepare", () => createPendingFileUploadOperation(database, auth, message), (result) => result.ok ? "success" : "denied");
+}
+async function createPendingFileUploadOperation(database, auth, message) {
   const input = message.file ?? {};
   const size = Number(input.size ?? 0);
   if (!Number.isFinite(size) || size < 0) {
@@ -109320,6 +109330,9 @@ async function createPendingFileUpload(database, auth, message) {
   });
 }
 async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
+  return traceRuntimeOperation("sporades.file.upload", () => completePendingFileUploadOperation(database, uploadId, request, websocketHub), (result) => result.ok ? "success" : "denied");
+}
+async function completePendingFileUploadOperation(database, uploadId, request, websocketHub = null) {
   const upload = await database.adapter.selectFileUpload(uploadId);
   if (!upload) {
     return {
@@ -109344,7 +109357,7 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
         return { ok: false, superseded: true };
       }
       try {
-        await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
+        await traceRuntimeOperation("sporades.file.bytes.write", () => database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes }));
         await sqlite.revokePublicFileUrlsForFile(upload.fileId, now2);
         return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
       } catch (error) {
@@ -109389,6 +109402,9 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
   }
 }
 async function getPrivateFileUrl(database, auth, fileReference) {
+  return traceRuntimeOperation("sporades.file.private_url", () => getPrivateFileUrlOperation(database, auth, fileReference), (result) => result.ok ? "success" : "denied");
+}
+async function getPrivateFileUrlOperation(database, auth, fileReference) {
   const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
   if (!resolved.ok) {
     return resolved;
@@ -109410,6 +109426,9 @@ async function getPrivateFileUrl(database, auth, fileReference) {
   };
 }
 async function createPublicFileUrl(database, auth, fileReference, options = {}) {
+  return traceRuntimeOperation("sporades.file.public_url.create", () => createPublicFileUrlOperation(database, auth, fileReference, options), (result) => result.ok ? "success" : "denied");
+}
+async function createPublicFileUrlOperation(database, auth, fileReference, options = {}) {
   const expiry = validatePublicUrlExpiry(options);
   if (!expiry.ok) {
     return expiry;
@@ -109458,6 +109477,9 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
   });
 }
 async function revokePublicFileUrl(database, auth, publicUrlId) {
+  return traceRuntimeOperation("sporades.file.public_url.revoke", () => revokePublicFileUrlOperation(database, auth, publicUrlId), (result) => result.ok ? "success" : "denied");
+}
+async function revokePublicFileUrlOperation(database, auth, publicUrlId) {
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now2);
   if (result.changes === 0) {
@@ -109961,6 +109983,9 @@ function revokeCurrentUserFileApi(context2) {
   if (state) state.active = false;
 }
 async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
+  return traceRuntimeOperation("sporades.file.delete", () => deletePrivateFileOperation(database, auth, fileReference, credential, deferByteRemoval, requireLiveActor), (result) => result.ok ? "success" : "denied");
+}
+async function deletePrivateFileOperation(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
@@ -110051,6 +110076,9 @@ function validatePublicUrlExpiry(options) {
   return { ok: true, expiresAt: expiresAt.toISOString() };
 }
 async function fileRowForActor(database, auth, fileReference, credential = { kind: "session" }) {
+  return traceRuntimeOperation("sporades.file.authorize", () => fileRowForActorOperation(database, auth, fileReference, credential), (result) => result ? "success" : "denied");
+}
+async function fileRowForActorOperation(database, auth, fileReference, credential = { kind: "session" }) {
   const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read", credential);
   return resolved.ok ? resolved.row : null;
 }
@@ -110295,7 +110323,7 @@ function createStructuredFileError(message, hint) {
   return { message, hint };
 }
 async function removeFileVersionBestEffort(database, fileId, version3) {
-  await database.fileStorage.deleteFileVersion({ fileId, version: version3 }).catch(() => {
+  await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId, version: version3 })).catch(() => {
   });
 }
 
@@ -122886,6 +122914,9 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
   throw Object.assign(new Error("Truncated multipart request."), { code: "INVALID_MULTIPART" });
 }
 async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles = true) {
+  return traceRuntimeOperation("sporades.file.ingress.stage", () => stageMultipartIngressOperation(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles));
+}
+async function stageMultipartIngressOperation(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles = true) {
   let policy;
   try {
     policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
@@ -122980,7 +123011,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
       if (row.state === "complete" && !inspectionEvidenceIsCurrent(database, row, policy.inspection)) throw inspectionRequiredError();
       if (acquired.winner) {
         wonReceipts.push(row);
-        await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
+        await traceRuntimeOperation("sporades.file.bytes.write", () => database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body }));
         const published = await publishStagedReceipt(database, row);
         if (published) row = published;
         else {
@@ -122989,7 +123020,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
           else {
             const primary = Object.assign(new Error("Multipart ingress staging lost its publication lease."), { code: "INGRESS_STAGING_INCOMPLETE" });
             try {
-              await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
+              await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version }));
             } catch (cleanup) {
               throw new AggregateError([primary, cleanup], "Multipart ingress staging lost publication and object cleanup failed.");
             }
@@ -123005,7 +123036,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
     for (const row of wonReceipts.reverse()) {
       try {
         const deleted = await database.adapter.prepare(database.adapter.dialect.sql("DELETE FROM [sporades_file_ingress] WHERE [key] = ? AND [leaseId] = ? AND [state] IN ('staging', 'leased')")).run(row.key, row.leaseId);
-        if (Number(deleted?.changes ?? 0) > 0) await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
+        if (Number(deleted?.changes ?? 0) > 0) await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version }));
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }
@@ -123255,7 +123286,7 @@ async function sweepExpiredFileIngress(database, options = {}) {
       const armed = await armIngressSweep(database, candidate, now2, sweepToken);
       if (!armed) continue;
       try {
-        await database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version });
+        await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version }));
       } catch {
         failures.push(Object.freeze({ leaseId, code: "INGRESS_ORPHAN_CLEANUP_FAILED" }));
         continue;
@@ -123758,16 +123789,18 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
         auth = admission.auth;
         credential = admission.credential;
         admittedWithAccessKey = true;
-        if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
-          const error = commandError2("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
-          error.sporadesAuthDenialLogData = {
-            requirement: "file-access-key-scopes",
-            handler: { kind: "file", path: target.pathname },
-            actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false }
-          };
-          error.sporadesAccessKeyFailure = "forbidden";
-          throw error;
-        }
+        traceRuntimeOperation("sporades.auth.admit", () => {
+          if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
+            const error = commandError2("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
+            error.sporadesAuthDenialLogData = {
+              requirement: "file-access-key-scopes",
+              handler: { kind: "file", path: target.pathname },
+              actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false }
+            };
+            error.sporadesAccessKeyFailure = "forbidden";
+            throw error;
+          }
+        });
         emitAccessKeyAdmittedAudit(database, { kind: "file", auth, credential }, admission.record);
         await recordAccessKeyUsage(database, admission);
       } else {
@@ -123880,7 +123913,7 @@ function writeNotFound(response) {
 }
 async function sendFileHttpResponse(database, response, row, options = {}) {
   try {
-    const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
+    const bytes = await traceRuntimeOperation("sporades.file.read", () => database.fileStorage.readFileVersion({ fileId: row.id, version: row.version }));
     response.writeHead(200, {
       "content-type": contentTypeForFile(row.type),
       "cache-control": options.accessKey ? "private, no-store" : "private, max-age=31536000, immutable",
@@ -123939,7 +123972,7 @@ async function sendEndpointFileAttachmentResponse(database, response, attachment
       writeOpaqueAttachmentDenial(response);
       return;
     }
-    const stream = await database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version });
+    const stream = await traceRuntimeOperation("sporades.file.stream", () => database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version }));
     response.removeHeader?.("access-control-allow-origin");
     response.removeHeader?.("access-control-allow-credentials");
     response.removeHeader?.("access-control-expose-headers");
@@ -125255,6 +125288,9 @@ function readEndpointSessionToken(headers, query) {
   return headers["x-sporades-session-token"] ?? null;
 }
 function requireUserAuth(context2, options = {}) {
+  return traceRuntimeOperation("sporades.auth.admit", () => requireUserAuthOperation(context2, options));
+}
+function requireUserAuthOperation(context2, options = {}) {
   const linked = normalizeRequireUserAuthOptions(options).linked;
   const auth = context2?.auth;
   if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
@@ -127244,6 +127280,9 @@ async function refreshSessionOnAdapter(sqlite, token) {
   return expiresAt;
 }
 async function resolveAnonymousSession(database, sessionToken) {
+  return traceRuntimeOperation("sporades.auth.session.resolve", () => resolveAnonymousSessionOperation(database, sessionToken));
+}
+async function resolveAnonymousSessionOperation(database, sessionToken) {
   if (sessionToken) {
     const existing = await database.adapter.readAuthSessionWithUser(sessionToken);
     if (existing) {
@@ -128759,9 +128798,53 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       activeRequests.add(1, activeLabels);
       const span = tracer.startSpan(`${method} ${route}`, { kind: SpanKind.SERVER, attributes: { "http.request.method": method, "http.route": route } }, validatedRemoteParent(request));
       let ended = false;
+      let operationBudget = 32;
+      const activeOperations = /* @__PURE__ */ new Set();
+      const operation = (name2, callback, resultOutcome) => {
+        if (ended || !span.isRecording() || operationBudget === 0) return callback();
+        operationBudget--;
+        const child = tracer.startSpan(name2, { kind: SpanKind.INTERNAL }, trace.setSpan(ROOT_CONTEXT, span));
+        let completed = false;
+        const finish = (outcome) => {
+          if (completed) return;
+          completed = true;
+          activeOperations.delete(finish);
+          child.setAttribute("sporades.operation.outcome", outcome);
+          if (outcome !== "success") child.setStatus({ code: SpanStatusCode.ERROR });
+          child.end();
+        };
+        activeOperations.add(finish);
+        const succeeded = (result) => {
+          let outcome = "success";
+          try {
+            outcome = resultOutcome?.(result) ?? "success";
+          } catch {
+          }
+          finish(["success", "denied", "error", "cancelled"].includes(outcome) ? outcome : "error");
+          return result;
+        };
+        const failed = (error) => {
+          let outcome = "error";
+          try {
+            const code = error?.code;
+            if (["UNAUTHENTICATED", "FORBIDDEN", "RATE_LIMITED"].includes(code)) outcome = "denied";
+            else if (code === "ABORT_ERR" || error?.name === "AbortError") outcome = "cancelled";
+          } catch {
+          }
+          finish(outcome);
+          throw error;
+        };
+        try {
+          const result = callback();
+          return result && typeof result.then === "function" ? Promise.resolve(result).then(succeeded, failed) : succeeded(result);
+        } catch (error) {
+          return failed(error);
+        }
+      };
       const end = (outcome) => {
         if (ended) return;
         ended = true;
+        for (const finish of activeOperations) finish(outcome === "error" ? "error" : "cancelled");
         const status = outcome === "abort" && !response.headersSent ? null : outcome === "error" && !response.headersSent ? 500 : Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
         const labels = { ...activeLabels, "http.response.status_code": status === null ? "none" : `${Math.floor(status / 100)}xx`, "sporades.http.outcome": outcome };
         requestCount.add(1, labels);
@@ -128779,7 +128862,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span, tracer, isOpen: () => !ended && !closing }, handle);
+        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span, operation, tracer, isOpen: () => !ended && !closing }, handle);
         if (result && typeof result.then === "function") {
           return Promise.resolve(result).catch((error) => {
             end("error");
@@ -138290,6 +138373,9 @@ async function applyContextMiddleware(database, baseContext, kind) {
   return context2;
 }
 function admitCredentialHandler(handler, context2, kind) {
+  return traceRuntimeOperation("sporades.auth.admit", () => admitCredentialHandlerOperation(handler, context2, kind));
+}
+function admitCredentialHandlerOperation(handler, context2, kind) {
   const requirements = readAuthRequirements(handler);
   if (!requirements) {
     return;

@@ -1,4 +1,4 @@
-import { captureJobTraceContext } from "./runtime-request-context.js";
+import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { WithImplicitCoercion } from "buffer";
@@ -4563,6 +4563,10 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
 }
 
 function admitCredentialHandler(handler: unknown, context: LooseRecord, kind: string) {
+  return traceRuntimeOperation("sporades.auth.admit", () => admitCredentialHandlerOperation(handler, context, kind));
+}
+
+function admitCredentialHandlerOperation(handler: unknown, context: LooseRecord, kind: string) {
   const requirements = readAuthRequirements(handler);
   if (!requirements) {
     return;

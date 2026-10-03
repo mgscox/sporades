@@ -1,4 +1,4 @@
-import { captureJobTraceContext } from "./runtime-request-context.js";
+import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 // `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
 // consumer, and it reaches the builtin through `process.getBuiltinModule` in `file-storage-runtime.ts`
@@ -4368,6 +4368,9 @@ async function applyContextMiddleware(database, baseContext, kind) {
     return context;
 }
 function admitCredentialHandler(handler, context, kind) {
+    return traceRuntimeOperation("sporades.auth.admit", () => admitCredentialHandlerOperation(handler, context, kind));
+}
+function admitCredentialHandlerOperation(handler, context, kind) {
     const requirements = readAuthRequirements(handler);
     if (!requirements) {
         return;

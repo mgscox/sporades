@@ -1,6 +1,7 @@
 // Runtime-owned endpoint multipart ingress. Leases deliberately have no File row, URL or ACL
 // visibility: only claim() creates an ordinary File in the handler transaction.
 /// <reference path="./vendor-decoders.d.ts" />
+import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFStream } from "pdf-lib";
 import { parse, tokenizer } from "acorn";
@@ -1572,6 +1573,10 @@ export async function* multipartParts(request: AsyncIterable<Uint8Array>, bounda
 
 /** Parse only after endpoint credential admission. The bounded body is never exposed as an ordinary endpoint body. */
 export async function stageMultipartIngress(database: RecordLike, endpoint: RecordLike, request: any, endpointRequest: RecordLike, actor: RecordLike, admittedAuthority?: RecordLike, allowFiles = true) {
+  return traceRuntimeOperation("sporades.file.ingress.stage", () => stageMultipartIngressOperation(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles));
+}
+
+async function stageMultipartIngressOperation(database: RecordLike, endpoint: RecordLike, request: any, endpointRequest: RecordLike, actor: RecordLike, admittedAuthority?: RecordLike, allowFiles = true) {
   let policy: RecordLike;
   try { policy = validateMultipartIngressPolicy(endpoint.options.body.multipart); }
   catch (error) { await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(error) }); throw error; }
@@ -1633,7 +1638,7 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
     if (row.state === "complete" && !inspectionEvidenceIsCurrent(database, row, policy.inspection)) throw inspectionRequiredError();
     if (acquired.winner) {
       wonReceipts.push(row);
-      await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
+      await traceRuntimeOperation("sporades.file.bytes.write", () => database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body }));
       const published = await publishStagedReceipt(database, row);
       if (published) row = published;
       else {
@@ -1641,7 +1646,7 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
         if (current?.state === "complete" && current.leaseId === row.leaseId) row = current;
         else {
           const primary = Object.assign(new Error("Multipart ingress staging lost its publication lease."), { code: "INGRESS_STAGING_INCOMPLETE" });
-          try { await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version }); }
+          try { await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version })); }
           catch (cleanup) { throw new AggregateError([primary, cleanup], "Multipart ingress staging lost publication and object cleanup failed."); }
           throw primary;
         }
@@ -1654,7 +1659,7 @@ export async function stageMultipartIngress(database: RecordLike, endpoint: Reco
     for (const row of wonReceipts.reverse()) {
       try {
         const deleted = await database.adapter.prepare(database.adapter.dialect.sql("DELETE FROM [sporades_file_ingress] WHERE [key] = ? AND [leaseId] = ? AND [state] IN ('staging', 'leased')")).run(row.key, row.leaseId);
-        if (Number(deleted?.changes ?? 0) > 0) await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
+        if (Number(deleted?.changes ?? 0) > 0) await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version }));
       } catch (cleanupError) { cleanupErrors.push(cleanupError); }
     }
     if (cleanupErrors.length) { await emitIngressAudit(database, "failed", { outcome: "failed", code: safeIngressAuditCode(primaryError) }); throw new AggregateError([primaryError, ...cleanupErrors], "Multipart ingress staging failed and cleanup was incomplete."); }
@@ -1886,7 +1891,7 @@ export async function sweepExpiredFileIngress(database: RecordLike, options: Rec
     try {
       const armed = await armIngressSweep(database, candidate, now, sweepToken);
       if (!armed) continue;
-      try { await database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version }); }
+      try { await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version })); }
       catch { failures.push(Object.freeze({ leaseId, code: "INGRESS_ORPHAN_CLEANUP_FAILED" })); continue; }
       const deleted = await database.adapter.deleteIngressSweepingReceipt(leaseId, sweepToken);
       if (Number(deleted?.changes ?? 0) > 0) cleaned.push(Object.freeze({ leaseId, requestKey: armed.requestKey, partKey: armed.partKey }));

@@ -65,6 +65,7 @@
 // with `randomUUID`, recorded in ADR-0041, and the guard in
 // `test/server-bundle-free-bindings.test.js` refuses it by name.
 
+import { traceRuntimeOperation } from "./runtime-request-context.js";
 import type { WithImplicitCoercion } from "buffer";
 import type { BinaryLike } from "node:crypto";
 // Batch 8's riders. Types only, so they are erased before either bundle is built — a *value* import
@@ -197,6 +198,10 @@ export function readEndpointSessionToken(headers: { [x: string]: any; }, query: 
 }
 
 export function requireUserAuth(context: LooseRecord, options: LooseRecord = {}) {
+  return traceRuntimeOperation("sporades.auth.admit", () => requireUserAuthOperation(context, options));
+}
+
+function requireUserAuthOperation(context: LooseRecord, options: LooseRecord = {}) {
   const linked = normalizeRequireUserAuthOptions(options).linked;
   const auth = context?.auth;
   if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
@@ -2585,6 +2590,10 @@ export async function refreshSessionOnAdapter(sqlite: LooseRecord, token: any) {
 }
 
 export async function resolveAnonymousSession(database: LooseRecord, sessionToken: string | null) {
+  return traceRuntimeOperation("sporades.auth.session.resolve", () => resolveAnonymousSessionOperation(database, sessionToken));
+}
+
+async function resolveAnonymousSessionOperation(database: LooseRecord, sessionToken: string | null) {
   if (sessionToken) {
     const existing = await database.adapter.readAuthSessionWithUser(sessionToken);
     if (existing) {

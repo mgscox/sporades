@@ -102,6 +102,7 @@
 //
 // This module reaches no Node builtin, so ADR-0042's `process.getBuiltinModule` accessor does not
 // appear in it. `Buffer` and `URL` are globals.
+import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
@@ -566,16 +567,18 @@ export async function handleFileHttpRoute(database, request, response, websocket
                 auth = admission.auth;
                 credential = admission.credential;
                 admittedWithAccessKey = true;
-                if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
-                    const error = commandError("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
-                    error.sporadesAuthDenialLogData = {
-                        requirement: "file-access-key-scopes",
-                        handler: { kind: "file", path: target.pathname },
-                        actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
-                    };
-                    error.sporadesAccessKeyFailure = "forbidden";
-                    throw error;
-                }
+                traceRuntimeOperation("sporades.auth.admit", () => {
+                    if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
+                        const error = commandError("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
+                        error.sporadesAuthDenialLogData = {
+                            requirement: "file-access-key-scopes",
+                            handler: { kind: "file", path: target.pathname },
+                            actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
+                        };
+                        error.sporadesAccessKeyFailure = "forbidden";
+                        throw error;
+                    }
+                });
                 emitAccessKeyAdmittedAudit(database, { kind: "file", auth, credential }, admission.record);
                 await recordAccessKeyUsage(database, admission);
             }
@@ -695,7 +698,7 @@ function writeNotFound(response) {
 }
 async function sendFileHttpResponse(database, response, row, options = {}) {
     try {
-        const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
+        const bytes = await traceRuntimeOperation("sporades.file.read", () => database.fileStorage.readFileVersion({ fileId: row.id, version: row.version }));
         response.writeHead(200, {
             "content-type": contentTypeForFile(row.type),
             "cache-control": options.accessKey ? "private, no-store" : "private, max-age=31536000, immutable",
@@ -757,7 +760,7 @@ async function sendEndpointFileAttachmentResponse(database, response, attachment
             writeOpaqueAttachmentDenial(response);
             return;
         }
-        const stream = await database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version });
+        const stream = await traceRuntimeOperation("sporades.file.stream", () => database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version }));
         response.removeHeader?.("access-control-allow-origin");
         response.removeHeader?.("access-control-allow-credentials");
         response.removeHeader?.("access-control-expose-headers");

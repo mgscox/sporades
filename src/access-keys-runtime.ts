@@ -1,3 +1,4 @@
+import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { accessKeyGrantsSatisfyScopes, scopeGrantMatches } from "./auth-admission.js";
 import {
   ACCESS_KEY_CLIENT_ADDRESS_HEADER,
@@ -439,6 +440,10 @@ export function readAccessKeyAuthorization(request: LooseRecord) {
 }
 
 export async function resolveAccessKeyCredential(database: LooseRecord, request: LooseRecord, sessionToken: unknown) {
+  return traceRuntimeOperation("sporades.auth.access_key.resolve", () => resolveAccessKeyCredentialOperation(database, request, sessionToken), result => result ? "success" : "denied");
+}
+
+async function resolveAccessKeyCredentialOperation(database: LooseRecord, request: LooseRecord, sessionToken: unknown) {
   const source = accessKeySourceBucket(database, request);
   assertAccessKeyFailureLimit(database, "source", source, 30, 60_000);
   let parsed;
