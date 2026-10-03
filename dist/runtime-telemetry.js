@@ -9,7 +9,7 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { AggregationType, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
 import { interpretHttpRequestTarget } from "./http-runtime.js";
-import { runtimeRequestScope, withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
+import { runtimeJobScope, runtimeRequestScope, withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
 const builtinRoutes = [
     ["GET", "/__sporades/connection-token"],
     ["GET", "/__sporades/health/runtime"],
@@ -107,7 +107,7 @@ function createProfileExporters(traceOptions, metricOptions) {
 }
 export function createHttpRequestTelemetry(config, onDiagnostic) {
     if (!config)
-        return { run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => { } };
+        return { bindJobQueue: (_database) => { }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => { } };
     if (config.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1000))
         throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
     const url = new URL(config.endpoint);
@@ -187,6 +187,9 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
         resource,
         readers: [metricReader],
         views: [
+            { instrumentName: "sporades.job.execution.duration", aggregationCardinalityLimit: 1024, aggregation: { type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300] } } },
+            { instrumentName: "sporades.job.retry.count", aggregationCardinalityLimit: 129 },
+            { instrumentName: "sporades.job.failure.count", aggregationCardinalityLimit: 129 },
             { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
             { instrumentName: "http.server.active_requests", aggregationCardinalityLimit: 128 },
             { instrumentName: "http.server.request.duration", aggregationCardinalityLimit: 512, aggregation: { type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } },
@@ -302,8 +305,111 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
         spanProcessors: [processor],
     });
     const tracer = provider.getTracer("sporades-runtime-http", "1");
+    const jobMeter = meterProvider.getMeter("sporades-runtime-jobs", "1");
+    const jobDuration = jobMeter.createHistogram("sporades.job.execution.duration", { unit: "s" });
+    const jobRetries = jobMeter.createCounter("sporades.job.retry.count", { unit: "1" });
+    const jobFailures = jobMeter.createCounter("sporades.job.failure.count", { unit: "1" });
+    const queueDepth = jobMeter.createObservableGauge("sporades.job.queue.depth", { unit: "1" });
+    const queueAge = jobMeter.createObservableGauge("sporades.job.queue.oldest_pending_age", { unit: "s" });
     let closing = false;
+    let jobQueueDatabase;
+    let reading = false;
+    const seenJobNames = new Set();
+    jobMeter.addBatchObservableCallback(async (result) => {
+        const database = jobQueueDatabase;
+        if (!database || reading || closing || database.__jobStopped)
+            return;
+        reading = true;
+        try {
+            // One aggregate query per export, never one query/allocation per request or Job.
+            // A failed read omits the observation rather than reporting a healthy zero.
+            const row = await withoutRuntimeRequestIdentity(() => database.adapter.prepare(database.adapter.dialect.sql("SELECT COUNT(*) AS [depth], MIN([createdAt]) AS [oldest] FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')")).get());
+            if (closing || database.__jobStopped || jobQueueDatabase !== database)
+                return;
+            const depth = Number(row?.depth);
+            const oldest = row?.oldest == null ? null : Date.parse(row.oldest);
+            if (!Number.isSafeInteger(depth) || depth < 0 || (depth > 0 && (oldest === null || !Number.isFinite(oldest))))
+                return;
+            result.observe(queueDepth, depth);
+            result.observe(queueAge, oldest === null ? 0 : Math.max(0, (database.clock.now().getTime() - oldest) / 1000));
+        }
+        catch { /* A monitoring read cannot stop the worker or its transactions. */ }
+        finally {
+            reading = false;
+        }
+    }, [queueDepth, queueAge]);
     return {
+        /** Internal generated-runtime seam. Only declared names can become labels. */
+        bindJobQueue(database) {
+            const names = new Set();
+            for (const job of database.jobs ?? []) {
+                if (names.size >= 128)
+                    break;
+                if (typeof job.name === "string" && /^[A-Za-z_][A-Za-z0-9_.-]{0,79}$/.test(job.name)
+                    && (seenJobNames.has(job.name) || seenJobNames.size < 128)) {
+                    names.add(job.name);
+                    seenJobNames.add(job.name);
+                }
+            }
+            jobQueueDatabase = database;
+            const transition = (name, outcome) => {
+                try {
+                    const labels = { "sporades.job.handler": typeof name === "string" && names.has(name) ? name : "__other" };
+                    if (outcome === "retry")
+                        jobRetries.add(1, labels);
+                    jobFailures.add(1, labels);
+                }
+                catch { /* Telemetry cannot affect a durable transition. */ }
+            };
+            database.__jobTelemetry = {
+                transition,
+                start(row) {
+                    if (closing)
+                        return undefined;
+                    const handler = names.has(row.handler) ? row.handler : "__other";
+                    const started = process.hrtime.bigint();
+                    const labels = { "sporades.job.handler": handler };
+                    let span;
+                    try {
+                        const value = row.enqueueTraceContext;
+                        const match = typeof value === "string" && value.length === 55
+                            ? /^00-([a-f0-9]{32})-([a-f0-9]{16})-(00|01)$/.exec(value) : null;
+                        const link = match && !/^0+$/.test(match[1]) && !/^0+$/.test(match[2])
+                            ? { traceId: match[1], spanId: match[2], traceFlags: match[3] === "01" ? TraceFlags.SAMPLED : TraceFlags.NONE, isRemote: true } : undefined;
+                        span = tracer.startSpan(`job ${handler}`, {
+                            kind: SpanKind.CONSUMER,
+                            attributes: { "sporades.job.handler": handler, "sporades.job.attempt": Number(row.attempts) + 1 },
+                            ...(link ? { links: [{ context: link }] } : {}),
+                        }, ROOT_CONTEXT);
+                    }
+                    catch { /* Metrics remain independent of trace creation. */ }
+                    let ended = false;
+                    return {
+                        run(handle) {
+                            return withoutRuntimeRequestIdentity(() => span ? runtimeJobScope.run({ span, isOpen: () => !ended && !closing }, handle) : handle());
+                        },
+                        end(outcome) {
+                            if (ended)
+                                return;
+                            ended = true;
+                            try {
+                                jobDuration.record(Number(process.hrtime.bigint() - started) / 1e9, { ...labels, "sporades.job.outcome": outcome });
+                                if (outcome === "failed" || outcome === "retry")
+                                    transition(handler, outcome);
+                            }
+                            catch { /* Metrics cannot affect claim settlement. */ }
+                            try {
+                                span?.setAttribute("sporades.job.outcome", outcome);
+                                if (outcome === "failed" || outcome === "retry")
+                                    span?.setStatus({ code: SpanStatusCode.ERROR });
+                                span?.end();
+                            }
+                            catch { /* Instrumentation cannot affect claim settlement. */ }
+                        },
+                    };
+                },
+            };
+        },
         run(request, response, endpoints, handle) {
             if (closing)
                 return handle();

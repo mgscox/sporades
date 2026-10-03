@@ -2091,29 +2091,33 @@ async function startDevSession(options) {
     const actionBundlePath = path.join(options.projectDir, ".sporades", "build", ".dev-actions", actionBundleId, "server.mjs");
     const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
     const databasePath = path.join(options.projectDir, ".sporades", "data.db");
-    const runtime = await createDevRuntime({
-        projectDir: options.projectDir,
-        databasePath,
-        serverSource: bundle.serverRuntime.source,
-        serverEnv: bundle.serverRuntime.env,
-        serviceEnv: capsuleServiceEnv,
-        capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-        config: withRuntimeSecuritySession(config, session),
-        runtimeProbeToken: inspectionToken,
-    });
-    let telemetry;
-    const emitTelemetryDiagnostic = (diagnostic) => runtime.database.log.emit({
+    let runtime;
+    const emitTelemetryDiagnostic = (diagnostic) => runtime?.database.log.emit({
         category: "platform",
         event: diagnostic.event,
         level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
         message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
         data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
     });
+    let telemetry;
     try {
-        telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
+        runtime = await createDevRuntime({
+            projectDir: options.projectDir,
+            databasePath,
+            serverSource: bundle.serverRuntime.source,
+            serverEnv: bundle.serverRuntime.env,
+            serviceEnv: capsuleServiceEnv,
+            capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
+            config: withRuntimeSecuritySession(config, session),
+            runtimeProbeToken: inspectionToken,
+            onJobQueueReady(queueDatabase) {
+                telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
+                telemetry.bindJobQueue(queueDatabase);
+            },
+        });
     }
     catch (error) {
-        await runtime.shutdown();
+        await telemetry?.shutdown();
         throw error;
     }
     await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
@@ -2368,7 +2372,7 @@ async function startDevSession(options) {
             }
             await new Promise((resolve) => setTimeout(resolve, restartPolicy.backoffMs * attempt));
             try {
-                await runtime.restart(bundle.serverRuntime.source, bundle.serverRuntime.env, runtimeServiceEnv, bundle.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(config, session));
+                await runtime.restart(bundle.serverRuntime.source, bundle.serverRuntime.env, runtimeServiceEnv, bundle.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(config, session), telemetry);
                 websocketHub.disconnectAll();
                 runtime.database.log.emit({
                     category: "platform",
@@ -2387,6 +2391,7 @@ async function startDevSession(options) {
                 });
             }
             catch (restartError) {
+                telemetry.bindJobQueue(runtime.database);
                 const details = errorDetails(restartError);
                 runtime.database.log.emit({
                     category: "platform",
@@ -2456,7 +2461,8 @@ async function startDevSession(options) {
                 if (affectsServerRuntime) {
                     const telemetryChanged = JSON.stringify(nextTelemetryConfig) !== JSON.stringify(telemetryConfig);
                     const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig, emitTelemetryDiagnostic) : null;
-                    await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session)).catch(async (error) => {
+                    await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session), nextTelemetry ?? telemetry).catch(async (error) => {
+                        telemetry.bindJobQueue(runtime.database);
                         await nextTelemetry?.shutdown();
                         throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
                     });
@@ -2781,6 +2787,7 @@ async function createDevRuntime(options) {
     try {
         database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), {
             serviceEnv: options.serviceEnv,
+            onJobQueueReady: options.onJobQueueReady,
             createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
             createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
         });
@@ -2803,7 +2810,7 @@ async function createDevRuntime(options) {
         get database() {
             return database;
         },
-        async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
+        async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config, jobTelemetry) {
             const nextPath = resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
             const changed = nextPath !== admissionPath;
             let nextAdmission = admissionPolicy;
@@ -2817,6 +2824,7 @@ async function createDevRuntime(options) {
             try {
                 const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), {
                     serviceEnv,
+                    onJobQueueReady: (queueDatabase) => jobTelemetry.bindJobQueue(queueDatabase),
                     createStripeCallbackEndpoint: await stripeCallbackFactory(config),
                     createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
                 });

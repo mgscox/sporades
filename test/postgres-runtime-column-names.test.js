@@ -386,6 +386,7 @@ for (const engine of ENGINES) {
           "completedAt",
           "createdAt",
           "credentialJson",
+          "enqueueTraceContext",
           "enqueuedByUserId",
           "failedAt",
           "failure",
