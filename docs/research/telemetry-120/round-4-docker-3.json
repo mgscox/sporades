@@ -1,0 +1,12 @@
+{
+  "verifiedAt": "2026-10-03T13:39:58.111Z",
+  "project": "barbara120-6671d5b3",
+  "topology": "single Docker Desktop Linux VM; not separate-VM acceptance",
+  "probeNotificationMs": 85503.114288,
+  "notificationTimeline": "round-4-docker-3-timeline.json",
+  "realWebhookFiringAndRecovery": true,
+  "maximumLengthIdentity": 317,
+  "healthySharedPrefixIdentities": true,
+  "runtimeTelemetryAbsence": true,
+  "acknowledgedStopRemovedExpectation": true
+}
