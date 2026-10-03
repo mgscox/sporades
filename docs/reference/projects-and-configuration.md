@@ -1199,7 +1199,7 @@ Example v1 policy:
 }
 ```
 
-Dev, Container and Hosted HTTP runtimes enforce enabled exact-path `deny` rules
+Dev, Container and Hosted HTTP runtimes enforce enabled non-address `deny` rules
 before Capsule auth, File routes, endpoint middleware/handlers and public assets.
 Each request snapshots one immutable generation. Disabled rules are skipped;
 conditions are ANDed, and the first matching rule decides. A nonmatching request
@@ -1212,11 +1212,42 @@ application body. HTTP HEAD responses omit body bytes as required by HTTP while
 retaining the same status and content length. CORS preflights are also admitted
 before their automatic response. No Capsule request code runs on denial.
 
-For admission, the pathname excludes the query, normalizes URL dot segments and
-decodes percent escapes once. Case, trailing slashes and repeated slashes remain
-distinct. Encoded separators, backslashes, invalid UTF-8, decoded controls and
-remaining percent escapes fail closed while a nonempty policy is active. This
-canonical value is used only for matching; the original request is not rewritten.
+Admission canonicalization is explicit and does not change the original request:
+
+- Methods compare after ASCII uppercase normalization; policy values are uppercase
+  letters. HTTP extension method tokens remain valid requests but do not match
+  an unrelated method condition. `OPTIONS *` has pathname `*` and no query keys.
+- Origin-form and HTTP(S) absolute-form targets use the raw pathname (absolute
+  authority is not a matching or identity input). An empty or whitespace-bearing
+  absolute authority is rejected, including forms the URL parser could repair
+  such as `http:///example.test/admin`. Path percent escapes decode
+  exactly once as strict UTF-8, then `.` and `..` segments normalize, including
+  encoded dots. A final dot segment preserves the resulting trailing slash;
+  parents above root stay at root. Case, Unicode, trailing and repeated slashes
+  remain distinct. `/admin` matches exact `/admin`, while prefix `/admin` matches
+  `/admin`, `/admin/` and `/admin/child`, never `/administrator`. Prefix `/admin/`
+  requires that trailing slash. Unicode is compared without Unicode normalization.
+- Raw backslashes, whitespace/control bytes, encoded slash/backslash, malformed
+  percent escapes, invalid UTF-8, decoded controls and remaining `%HH` path
+  escapes fail closed while a nonempty policy is active. Thus `%252e` never
+  receives a second decoding pass. Query and fragment bytes are never pathname
+  inputs; literal fragments are invalid HTTP request targets and fail closed.
+- Header names compare case-insensitively to lowercase policy names. Values trim
+  only leading/trailing ASCII space and tab (HTTP OWS); interior whitespace and
+  value casing stay exact. Policy exact values must already have no outer OWS.
+  Presence includes an empty value and repeated occurrences. Exact-value
+  matching requires **one raw header occurrence**; duplicates are indeterminate
+  and fail closed unless another condition rules out that rule. Values are
+  never split on commas or compared using Node's joined/discarded header map.
+- Query keys use form decoding once: percent-encoded UTF-8 and `+` as space.
+  Key casing is exact; repeated keys mean presence, regardless of their values,
+  and empty `&` components are ignored. Encoded `&` or `=` inside a key remains
+  part of the key. `%256bey` is the literal key `%6bey`, not `key`. Invalid escapes,
+  UTF-8 or decoded controls anywhere in the query, including values, fail closed;
+  the URL parser's replacement-character repair is never matching policy.
+
+Invalid targets and malformed canonicalization return the same opaque denial,
+even when a rule would otherwise not match. No policy retains existing behavior.
 
 Genuine GET runtime-health and connection-token controls dispatch before
 admission, with their existing Host probe and same-origin token-request checks.
@@ -1224,11 +1255,15 @@ They never read the admission generation. Reserved exact paths and prefixes
 covering them are rejected during policy validation, even in disabled rules or
 rules with additional conditions. Aliases and other methods enter admission.
 
-This enforcement slice supports exact pathname and trusted Hosted address/CIDR
-conditions with `deny` and `rate-limit` actions.
-The schema below reserves later matchers: if an enabled rule cannot
-be ruled out by a nonmatching exact pathname but has an unsupported condition,
-the request receives the same opaque denial. WebSocket upgrades are a subsequent slice.
+HTTP admission supports method, exact/prefix pathname, header, query-key and
+trusted Hosted address/CIDR conditions. Every supported condition must match;
+their order inside a rule does not affect the outcome. A missing trusted address
+or ambiguous exact-header duplicate is indeterminate:
+a nonmatching condition skips the rule, otherwise it fails closed. Evaluation
+stops at the first match; a matching deny returns the opaque denial, while a
+matching quota action applies its bounded fixed-window counter. Traffic denied
+earlier never reaches a later rule or action. WebSocket upgrades are a subsequent
+slice.
 
 Without a policy declaration, the admission gate returns synchronously before
 parsing or touching request/response objects, reading bodies, or emitting logs.
@@ -1253,9 +1288,14 @@ AND conditions. The closed v1 vocabulary is:
 
 Unknown fields, versions, match kinds and actions fail validation. Paths must be
 absolute canonical pathnames, without percent escapes, backslashes, query or
-fragment components or dot-segment normalization. Prefix matching is reserved for a subsequent slice. Rules cannot name the runtime-health or
+fragment components, raw whitespace or dot segments that require normalization. Rules cannot name the runtime-health or
 connection-token controls, or a prefix covering them. Header matching excludes
-credentials, cookies and internal/proxy address headers. The remaining matchers are subsequent slices.
+credentials, cookies, Host/routing and internal/proxy address fields: `host`,
+`connection`, `authorization`, `cookie`, `set-cookie`, `forwarded`, `via`,
+`true-client-ip`, `x-real-ip`, and names beginning `proxy-`, `x-forwarded-`,
+`x-sporades-` or `cf-`. These fields cannot supply public matching or authenticated
+identity shortcuts. Header/query matches grant no identity or application
+permissions.
 
 Address conditions match one canonical IPv4 or IPv6 literal, or a CIDR network.
 IPv6 is normalized to lowercase with the first longest zero run compressed.
@@ -1292,14 +1332,14 @@ public callers must not reach a Capsule origin around Caddy. The capability also
 prevents an unauthenticated caller reaching the origin from forging identity.
 Access-key source limiting uses this same canonical authenticated identity.
 
-An enabled address-dependent rule is evaluated after any exact-path mismatch has
+An enabled address-dependent rule is evaluated after any condition mismatch has
 been ruled out. If it might apply and trusted identity is absent, the request
 receives the same opaque `403`, `Forbidden\n` bytes and `Cache-Control: no-store`
 as a matched denial. It does not fall back to a public forwarding header or the
 runtime socket's proxy address. Dev (including Public Dev) and local Container
 sessions always have no trusted address, even if supplied with internal headers;
-potentially applicable address rules and quotas therefore fail closed there. Disabled rules
-are skipped and unrelated exact-path rules continue to operate normally.
+potentially applicable address rules and quotas fail closed there. Disabled rules
+are skipped and unrelated rules continue to operate normally.
 
 A matching `rate-limit` action counts each request in a fixed window keyed by
 `(stable rule ID, canonical trusted client address)`. Under quota, the first

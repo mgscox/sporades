@@ -11,8 +11,19 @@ export declare const ADMISSION_LIMITS: Readonly<{
 export type { AdmissionCondition, AdmissionAction, AdmissionPolicy, AdmissionGeneration, AdmissionHealth } from "../src/types/admission-policy.js";
 import type { AdmissionGeneration, AdmissionHealth } from "../src/types/admission-policy.js";
 export declare function parseAdmissionPolicy(bytes: Buffer): AdmissionGeneration;
-/** First-match exact-path/address slice. An indeterminate condition never grants admission. */
-export declare function matchExactAdmissionRule(generation: AdmissionGeneration, pathname: string, address?: string | null): {
+/** Admission uses the raw pathname, with explicit decode-once and dot-segment rules. */
+export declare function canonicalAdmissionPathname(raw: string): string;
+/** Trusted HTTP boundary input; rawHeaders preserves duplicates discarded by Node's headers map. */
+export type AdmissionHttpInput = {
+    method: string;
+    pathname: string;
+    query: string;
+    rawHeaders: readonly string[];
+    /** Canonical identity authenticated by the Host boundary, never a public header. */
+    trustedAddress?: string | null;
+};
+/** Ordered AND evaluation. Unsupported conditions are indeterminate, never permission to admit. */
+export declare function matchHttpAdmissionRule(generation: AdmissionGeneration, input: AdmissionHttpInput): {
     id: string;
     enabled: boolean;
     conditions: readonly import("../src/types/admission-policy.js").AdmissionCondition[];

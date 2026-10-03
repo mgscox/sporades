@@ -27,8 +27,8 @@ export type InterpretedHttpRequestTarget = {
     url: URL;
 };
 export declare function interpretHttpRequestTarget(target: unknown, method: unknown): InterpretedHttpRequestTarget | null;
-/** Exact-path and trusted-address HTTP admission; genuine controls dispatch first. */
-export declare function routeHttpAdmission(database: LooseRecord, request: Pick<IncomingMessage, "url" | "method"> & Partial<Pick<IncomingMessage, "headers" | "rawHeaders">>, response: Pick<ServerResponse, "writeHead" | "end">, target?: InterpretedHttpRequestTarget): boolean;
+/** Canonical HTTP admission and trusted-client quotas; genuine controls dispatch first. */
+export declare function routeHttpAdmission(database: LooseRecord, request: Pick<IncomingMessage, "url" | "method" | "rawHeaders" | "headers">, response: Pick<ServerResponse, "writeHead" | "end">, target?: InterpretedHttpRequestTarget): boolean;
 export declare function requestTarget(request: Pick<IncomingMessage, "url" | "method">): InterpretedHttpRequestTarget;
 export declare function writeInvalidHttpRequestTarget(database: LooseRecord, request: IncomingMessage, response: Pick<ServerResponse, "writeHead" | "end">): void;
 export declare function readJsonRequest(request: IncomingMessage, limitSource?: LooseRecord | number | null): Promise<LooseRecord>;

@@ -80900,6 +80900,13 @@ function depth(value, level = 0) {
   if (level > ADMISSION_LIMITS.depth) invalid();
   if (value && typeof value === "object") for (const child of Object.values(value)) depth(child, level + 1);
 }
+function isCanonicalPolicyPathname(target) {
+  try {
+    return canonicalAdmissionPathname(target) === target;
+  } catch {
+    return false;
+  }
+}
 var controls = ["/__sporades/health/runtime", "/__sporades/connection-token"];
 function condition(value) {
   object(value, ["kind", "value", "exact", "prefix", "name"]);
@@ -80911,7 +80918,7 @@ function condition(value) {
     case "pathname": {
       object(value, ["kind", "exact", "prefix"]);
       const target = value.exact ?? value.prefix;
-      if (value.exact !== void 0 === (value.prefix !== void 0) || !text(target) || !target.startsWith("/") || target.startsWith("//") || /[\\?#%]/.test(target) || new URL(target, "http://localhost").pathname !== target) invalid();
+      if (value.exact !== void 0 === (value.prefix !== void 0) || !text(target) || !target.startsWith("/") || target.startsWith("//") || /[\\?#%]/.test(target) || !isCanonicalPolicyPathname(target)) invalid();
       if (controls.some((control) => value.exact === control || value.prefix !== void 0 && (control === target || control.startsWith(target.endsWith("/") ? target : `${target}/`)))) invalid();
       break;
     }
@@ -80923,7 +80930,7 @@ function condition(value) {
     }
     case "header":
       object(value, ["kind", "name", "value"]);
-      if (!text(value.name) || !/^[a-z0-9!#$&'*+.^_`|~-]+$/.test(value.name) || /^(authorization|proxy-authorization|cookie|set-cookie|forwarded|x-forwarded-.*|x-sporades-.*|cf-.*)$/.test(value.name) || value.value !== void 0 && (typeof value.value !== "string" || Buffer.byteLength(value.value) > ADMISSION_LIMITS.textBytes || /[\x00-\x1f\x7f]/.test(value.value))) invalid();
+      if (!text(value.name) || !/^[a-z0-9!#$&'*+.^_`|~-]+$/.test(value.name) || /^(host|connection|proxy-.*|authorization|cookie|set-cookie|forwarded|via|true-client-ip|x-real-ip|x-forwarded-.*|x-sporades-.*|cf-.*)$/.test(value.name) || value.value !== void 0 && (typeof value.value !== "string" || Buffer.byteLength(value.value) > ADMISSION_LIMITS.textBytes || /[\x00-\x1f\x7f]/.test(value.value) || /^[ \t]|[ \t]$/.test(value.value))) invalid();
       break;
     case "query-key":
       object(value, ["kind", "name"]);
@@ -80959,15 +80966,74 @@ function parseAdmissionPolicy(bytes) {
   }
   return freeze({ digest: createHash3("sha256").update(bytes).digest("hex"), policy: value });
 }
-function matchExactAdmissionRule(generation, pathname, address = null) {
+function canonicalAdmissionPathname(raw) {
+  if (raw === "*") return raw;
+  if (!raw.startsWith("/") || /[\\?#\x00-\x20\x7f]|%2f|%5c/i.test(raw)) throw new Error("Invalid admission pathname.");
+  const decoded = decodeURIComponent(raw);
+  if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(decoded)) throw new Error("Invalid admission pathname.");
+  const segments = decoded.slice(1).split("/");
+  const output = [];
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    if (segment === "." || segment === "..") {
+      if (segment === "..") output.pop();
+      if (index === segments.length - 1) output.push("");
+    } else output.push(segment);
+  }
+  return `/${output.join("/")}`;
+}
+function pathnameMatches(pathname, prefix) {
+  return pathname === prefix || pathname.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`);
+}
+function matchHttpAdmissionRule(generation, input) {
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(input.method)) throw new Error("Invalid admission method.");
+  const method = input.method.toUpperCase();
+  const pathname = canonicalAdmissionPathname(input.pathname);
+  const query = decodeURIComponent(input.query.replace(/\+/g, " "));
+  if (/[\x00-\x1f\x7f]/.test(query)) throw new Error("Invalid admission query.");
+  const queryKeys = new Set(input.query.split("&").filter(Boolean).map((part) => decodeURIComponent(part.split("=", 1)[0].replace(/\+/g, " "))));
+  const headers = /* @__PURE__ */ new Map();
+  if (!Array.isArray(input.rawHeaders) || input.rawHeaders.length % 2) throw new Error("Invalid admission headers.");
+  for (let index = 0; index < input.rawHeaders.length; index += 2) {
+    const name2 = input.rawHeaders[index].toLowerCase();
+    const value = input.rawHeaders[index + 1].replace(/^[ \t]+|[ \t]+$/g, "");
+    if (!/^[a-z0-9!#$&'*+.^_`|~-]+$/.test(name2) || /[\x00-\x08\x0a-\x1f\x7f]/.test(value)) throw new Error("Invalid admission headers.");
+    const values = headers.get(name2);
+    if (values) values.push(value);
+    else headers.set(name2, [value]);
+  }
   for (const rule of generation.policy.rules) {
     if (!rule.enabled) continue;
-    if (rule.conditions.some((item) => item.kind === "pathname" && "exact" in item && item.exact !== pathname)) continue;
-    if (rule.conditions.some((item) => item.kind === "address") && !address) throw new Error("Missing trusted admission address.");
-    if (rule.conditions.some((item) => item.kind === "address" && !clientAddressMatches(address, item.value))) continue;
-    if (rule.conditions.some((item) => item.kind !== "address" && (item.kind !== "pathname" || !("exact" in item)))) {
-      throw new Error("Unsupported admission condition.");
+    let matches = true;
+    let indeterminate = false;
+    for (const item of rule.conditions) {
+      switch (item.kind) {
+        case "method":
+          if (method !== item.value) matches = false;
+          break;
+        case "pathname":
+          if (!("exact" in item ? pathname === item.exact : pathnameMatches(pathname, item.prefix))) matches = false;
+          break;
+        case "header": {
+          const values = headers.get(item.name);
+          if (!values) matches = false;
+          else if (item.value !== void 0) {
+            if (values.length !== 1) indeterminate = true;
+            else if (values[0] !== item.value) matches = false;
+          }
+          break;
+        }
+        case "query-key":
+          if (!queryKeys.has(item.name)) matches = false;
+          break;
+        case "address":
+          if (!input.trustedAddress) indeterminate = true;
+          else if (!clientAddressMatches(input.trustedAddress, item.value)) matches = false;
+          break;
+      }
     }
+    if (!matches) continue;
+    if (indeterminate) throw new Error("Indeterminate admission condition.");
     return rule;
   }
   return null;
@@ -123626,11 +123692,21 @@ function routeHttpAdmission(database, request, response, target) {
     limiter.reconcile(generation);
     if (!generation || generation.policy.rules.length === 0) return false;
     const parsed = target ?? requestTarget(request);
-    if (/[\\]|%2f|%5c/i.test(parsed.pathname)) throw new Error("Invalid admission pathname.");
-    const pathname = parsed.form === "asterisk" ? "*" : decodeURIComponent(parsed.url.pathname);
-    if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(pathname)) throw new Error("Invalid admission pathname.");
+    const raw = request.url ?? "/";
+    if (raw.includes("#")) throw new Error("Invalid admission target.");
+    if (parsed.form === "absolute") {
+      const authority = raw.slice(raw.indexOf("://") + 3).split(/[/?#]/, 1)[0];
+      if (!authority || /\s/.test(authority)) throw new Error("Invalid admission authority.");
+    }
+    const queryStart = raw.indexOf("?");
     const address = trustedClientAddress(database, request);
-    const rule = matchExactAdmissionRule(generation, pathname, address);
+    const rule = matchHttpAdmissionRule(generation, {
+      method: request.method ?? "",
+      pathname: parsed.pathname,
+      query: queryStart === -1 ? "" : raw.slice(queryStart + 1),
+      rawHeaders: request.rawHeaders,
+      trustedAddress: address
+    });
     if (!rule) return false;
     if (rule.action.kind === "rate-limit") {
       if (!address) throw new Error("Missing trusted admission address.");
@@ -150931,6 +151007,7 @@ async function startDevSession(options) {
       }
       const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
       if (!target) {
+        if (routeHttpAdmission(runtime.database, request, response)) return;
         writeInvalidHttpRequestTarget(runtime.database, request, response);
         return;
       }
