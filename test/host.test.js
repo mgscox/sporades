@@ -420,6 +420,7 @@ function runCli(args, options = {}) {
 function startHostHelper(input, options = {}) {
   const child = spawn(process.execPath, [hostHelperPath], {
     cwd: options.cwd,
+    detached: options.detached === true,
     env: {
       ...process.env,
       SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
@@ -555,6 +556,37 @@ test("Host helper marker wait remains bounded when a child never publishes its m
       assert.equal(action.child.signalCode, null);
     } finally {
       action.child.kill("SIGKILL");
+      await action.result;
+    }
+  });
+});
+
+async function stopHostHelper(action) {
+  // These fixtures own a detached group, including the spawnSync/flock action.
+  // Killing only the launcher would let its locked child mutate deleted fixtures.
+  try { process.kill(-action.child.pid, "SIGKILL"); }
+  catch (error) { if (error.code !== "ESRCH") throw error; }
+  await action.result;
+}
+
+test("Host helper cleanup releases the retained action lock before fixture removal", { timeout: 15_000 }, async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await prepareRouteLockFixture(dir);
+    const marker = path.join(dir, "cleanup-lock.marker");
+    const action = startHostHelper(fixture.request, { cwd: dir, detached: true, env: {
+      ...fixture.docker.env,
+      SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER: marker,
+      SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000",
+    } });
+    try {
+      await waitForHostHelperMarker(action, marker, (text) => text === "route-lock-proof-retained\n");
+      await stopHostHelper(action);
+      const next = await runHostHelper(fixture.request, { cwd: dir, env: {
+        ...fixture.docker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "500",
+      } });
+      assert.equal(JSON.parse(next.stdout).ok, true, next.stdout);
+    } finally {
+      try { process.kill(-action.child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
       await action.result;
     }
   });
@@ -7562,26 +7594,36 @@ test("sporades host helper serializes stale health repair against route removal"
         host: { alias: "personal", domain, scheme: "http", remoteRoot },
         capsule: { subname: "team-notes" },
       };
-      const healthPromise = runHostHelper(healthRequest, { cwd: dir, env: docker.env });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      const unregisterPromise = runHostHelper(
-        {
-          action: "capsule.unregister",
-          host: { alias: "personal", domain, scheme: "https", remoteRoot },
-          capsule: { subname: "team-notes" },
-        },
-        { cwd: dir, env: docker.env },
-      );
+      const healthMarker = path.join(dir, "health-lock.marker");
+      const healthAction = startHostHelper(healthRequest, { cwd: dir, detached: true, env: {
+        ...docker.env,
+        SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER: healthMarker,
+        SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "700",
+      } });
+      let unregisterAction;
+      try {
+        await waitForHostHelperMarker(healthAction, healthMarker, (text) => text === "route-lock-proof-retained\n");
+        unregisterAction = startHostHelper(
+          {
+            action: "capsule.unregister",
+            host: { alias: "personal", domain, scheme: "https", remoteRoot },
+            capsule: { subname: "team-notes" },
+          },
+          { cwd: dir, detached: true, env: docker.env },
+        );
 
-      const [health, unregister] = await Promise.all([healthPromise, unregisterPromise]);
-      assert.equal(health.code, 0, health.stderr);
-      assert.equal(unregister.code, 0, unregister.stderr);
-      assert.equal(JSON.parse(health.stdout).ok, true, health.stdout);
-      assert.equal(JSON.parse(unregister.stdout).ok, true, unregister.stdout);
-      await assert.rejects(readFile(routeFile, "utf8"), { code: "ENOENT" });
-      assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).status, "unregistered");
-      const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile) && entry !== `${path.basename(routeFile)}.lock`);
-      assert.deepEqual(debris, []);
+        const [health, unregister] = await Promise.all([healthAction.result, unregisterAction.result]);
+        assert.equal(health.code, 0, health.stderr);
+        assert.equal(unregister.code, 0, unregister.stderr);
+        assert.equal(JSON.parse(health.stdout).ok, true, health.stdout);
+        assert.equal(JSON.parse(unregister.stdout).ok, true, unregister.stdout);
+        await assert.rejects(readFile(routeFile, "utf8"), { code: "ENOENT" });
+        assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).status, "unregistered");
+        const debris = (await readdir(path.dirname(routeFile))).filter((entry) => entry !== path.basename(routeFile) && entry !== `${path.basename(routeFile)}.lock`);
+        assert.deepEqual(debris, []);
+      } finally {
+        await Promise.all([stopHostHelper(healthAction), unregisterAction && stopHostHelper(unregisterAction)]);
+      }
       const reloadsBeforeRepeat = (await docker.caddyCalls()).filter((call) => call.args[0] === "reload").length;
       const repeatedHealth = await runHostHelper(healthRequest, { cwd: dir, env: docker.env });
       assert.equal(JSON.parse(repeatedHealth.stdout).ok, false);
@@ -8113,6 +8155,7 @@ test("sporades host helper revalidates trust immediately before apply and rollba
       const before = createHash("sha256").update(await readFile(sentinel)).digest("hex");
       const action = startHostHelper(fixture.request, {
         cwd: caseRoot,
+        detached: true,
         env: {
           ...fixture.docker.env,
           SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: boundary,
@@ -8120,18 +8163,22 @@ test("sporades host helper revalidates trust immediately before apply and rollba
           SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS: "700",
         },
       });
-      await waitForPath(marker);
-      await rename(domainDirectory, preservedDirectory);
-      await symlink(outside, domainDirectory, "dir");
-      const result = await action.result;
-      assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", `${boundary}: ${result.stdout}`);
-      assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before, boundary);
-      assert.deepEqual(await readdir(outside), ["sentinel.bin"], boundary);
-      const preservedEntries = await readdir(preservedDirectory);
-      const originalEntry = preservedEntries.find((entry) => entry.startsWith("team-notes.caddy.previous-"))
-        ?? preservedEntries.find((entry) => entry === "team-notes.caddy");
-      assert.ok(originalEntry, `${boundary}: original route bytes must remain in the fenced directory`);
-      assert.match(await readFile(path.join(preservedDirectory, originalEntry), "utf8"), /127\.0\.0\.1:49153/, boundary);
+      try {
+        await waitForHostHelperMarker(action, marker, (text) => text === `${boundary}\n`);
+        await rename(domainDirectory, preservedDirectory);
+        await symlink(outside, domainDirectory, "dir");
+        const result = await action.result;
+        assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", `${boundary}: ${result.stdout}`);
+        assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before, boundary);
+        assert.deepEqual(await readdir(outside), ["sentinel.bin"], boundary);
+        const preservedEntries = await readdir(preservedDirectory);
+        const originalEntry = preservedEntries.find((entry) => entry.startsWith("team-notes.caddy.previous-"))
+          ?? preservedEntries.find((entry) => entry === "team-notes.caddy");
+        assert.ok(originalEntry, `${boundary}: original route bytes must remain in the fenced directory`);
+        assert.match(await readFile(path.join(preservedDirectory, originalEntry), "utf8"), /127\.0\.0\.1:49153/, boundary);
+      } finally {
+        await stopHostHelper(action);
+      }
     }
   });
 });
@@ -8160,6 +8207,7 @@ test("sporades host helper revalidates trust immediately before remove and resto
       const before = createHash("sha256").update(await readFile(sentinel)).digest("hex");
       const action = startHostHelper(fixture.request, {
         cwd: caseRoot,
+        detached: true,
         env: {
           ...fixture.docker.env,
           SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: scenario.boundary,
@@ -8167,18 +8215,22 @@ test("sporades host helper revalidates trust immediately before remove and resto
           SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS: "700",
         },
       });
-      await waitForPath(marker);
-      await rename(domainDirectory, preservedDirectory);
-      await symlink(outside, domainDirectory, "dir");
-      const result = await action.result;
-      assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", `${scenario.boundary}: ${result.stdout}`);
-      assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before, scenario.boundary);
-      assert.deepEqual(await readdir(outside), ["sentinel.bin"], scenario.boundary);
-      const preservedEntries = await readdir(preservedDirectory);
-      const originalEntry = preservedEntries.find((entry) => entry.startsWith("team-notes.caddy.previous-"))
-        ?? preservedEntries.find((entry) => entry === "team-notes.caddy");
-      assert.ok(originalEntry, `${scenario.boundary}: original route bytes must remain in the fenced directory`);
-      assert.match(await readFile(path.join(preservedDirectory, originalEntry), "utf8"), /127\.0\.0\.1:49153/, scenario.boundary);
+      try {
+        await waitForHostHelperMarker(action, marker, (text) => text === `${scenario.boundary}\n`);
+        await rename(domainDirectory, preservedDirectory);
+        await symlink(outside, domainDirectory, "dir");
+        const result = await action.result;
+        assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", `${scenario.boundary}: ${result.stdout}`);
+        assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before, scenario.boundary);
+        assert.deepEqual(await readdir(outside), ["sentinel.bin"], scenario.boundary);
+        const preservedEntries = await readdir(preservedDirectory);
+        const originalEntry = preservedEntries.find((entry) => entry.startsWith("team-notes.caddy.previous-"))
+          ?? preservedEntries.find((entry) => entry === "team-notes.caddy");
+        assert.ok(originalEntry, `${scenario.boundary}: original route bytes must remain in the fenced directory`);
+        assert.match(await readFile(path.join(preservedDirectory, originalEntry), "utf8"), /127\.0\.0\.1:49153/, scenario.boundary);
+      } finally {
+        await stopHostHelper(action);
+      }
     }
   });
 });
