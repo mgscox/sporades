@@ -137,6 +137,10 @@ locally on the Monitoring server. A named sender has unique ingestion authority;
 The protected `.private/senders/registry.json` survives setup and restart; the
 gateway reloads it through a read-only directory mount. Rotation stages an overlap,
 then `commit --generation <n>` retires the old tokens after actual sender verification.
+Transient missing paths during Docker directory-mount publication are reopened
+with at most eight attempts and 1.05 seconds of increasing backoff. Every attempt
+validates the current protected path; there is no cached-credential fallback.
+Persistent absence, malformed content, symlinks and insecure permissions fail closed.
 `export --out <new-file>` writes a mode-0600 handoff without printing secrets.
 No sender bearer credential authorizes dashboard/query access or remote administration.
 

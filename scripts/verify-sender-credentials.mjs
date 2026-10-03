@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Opt-in acceptance against an already running, disposable loopback Compose stack.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { readFile, rm } from 'node:fs/promises';
@@ -25,6 +25,24 @@ const names = [prefix + '-a', prefix + '-b'];
 const hosts = names.map(name => name + '.example');
 const handoffs = [];
 const checks = [];
+async function commandWhileIngesting(action, ...args) {
+  return new Promise((resolve, reject) => {
+    // Unlike the setup commands, publication must not block the traffic loop.
+    const child = spawn(process.execPath, [cli, 'monitoring', 'sender', action, '--dir', directory, ...args, '--json'], {
+      env: { ...process.env, SPORADES_CONFIG_DIR: path.join(directory, '.acceptance-config') },
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', chunk => stdout += chunk);
+    child.stderr.on('data', chunk => stderr += chunk);
+    const timeout = setTimeout(() => child.kill('SIGKILL'), 30_000);
+    child.on('error', error => { clearTimeout(timeout); reject(error); });
+    child.on('close', code => {
+      clearTimeout(timeout);
+      try { assert.equal(code, 0, stdout + stderr); resolve(JSON.parse(stdout).data); }
+      catch (error) { reject(error); }
+    });
+  });
+}
 const command = (action, ...args) => {
   const result = spawnSync(process.execPath, [cli, 'monitoring', 'sender', action, '--dir', directory, ...args, '--json'], {
     encoding: 'utf8', env: { ...process.env, SPORADES_CONFIG_DIR: path.join(directory, '.acceptance-config') },
@@ -42,6 +60,38 @@ async function handoff(name) {
 const request = (url, options) => fetch(new URL(url, origin), { ...options, signal: AbortSignal.timeout(5000) });
 const ingest = pair => request('/v1/traces', { method: 'POST', headers: { authorization: `Bearer ${pair.ingest}`, 'content-type': 'application/json' }, body: '{}' });
 const inventory = (pair, host, revision) => request(`/v1/inventory/${host}`, { method: 'PUT', headers: { authorization: `Bearer ${pair.inventory}`, 'content-type': 'application/json' }, body: JSON.stringify({ schemaVersion: 1, host, revision, capsules: [] }) });
+async function verifyContinuousIngestion(pair) {
+  const rotating = prefix + '-rotation';
+  names.push(rotating);
+  command('issue', '--sender', rotating);
+  const statusCounts = {};
+  let running = true, maxRequestMs = 0;
+  // Four live lanes stay active across every host-side atomic publication.
+  // Never retry HTTP failures: even one unrelated-sender 503 fails acceptance.
+  const workers = Array.from({ length: 4 }, async () => {
+    while (running) {
+      const started = performance.now();
+      let status;
+      try { const response = await ingest(pair); status = response.status; await response.arrayBuffer(); }
+      catch { status = 'transport-error'; }
+      statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+      maxRequestMs = Math.max(maxRequestMs, performance.now() - started);
+    }
+  });
+  try {
+    for (let cycle = 0; cycle < 30; cycle++) {
+      const pending = await commandWhileIngesting('rotate', '--sender', rotating);
+      await commandWhileIngesting('commit', '--sender', rotating, '--generation', String(pending.senders[0].pendingGeneration));
+    }
+    await commandWhileIngesting('revoke', '--sender', rotating);
+    await new Promise(resolve => setTimeout(resolve, 250));
+  } finally { running = false; await Promise.all(workers); }
+  const result = { cycles: 30, publications: 61, statusCounts, maxRequestMs: Math.round(maxRequestMs) };
+  assert((statusCounts[200] ?? 0) >= 100, 'continuous acceptance needs at least 100 unrelated requests');
+  assert.deepEqual(Object.keys(statusCounts), ['200'], JSON.stringify(result));
+  checks.push('continuous unrelated ingestion across 30 rotate/commit cycles and revocation, without HTTP retries');
+  return result;
+}
 async function eventually(check) {
   for (let attempt = 0; attempt < 40; attempt++) {
     if (await check()) return;
@@ -105,7 +155,8 @@ try {
   assert.equal((await inventory(b, hosts[1], 1)).status, 200);
   assert.equal(await readFile(envPath, 'utf8'), before);
   checks.push('exact Host scope, dashboard/query denial, old-generation denial, revoked denial, unrelated inventory and exports, env preservation');
-  process.stdout.write(JSON.stringify({ verdict: 'pass', topology: 'disposable local Docker Compose plus real Node sender', project, checks }, null, 2) + '\n');
+  const continuity = await verifyContinuousIngestion(b);
+  process.stdout.write(JSON.stringify({ verdict: 'pass', topology: 'disposable local Docker Compose plus real Node sender', project, checks, continuity }, null, 2) + '\n');
 } finally {
   for (const name of names) command('revoke', '--sender', name);
   for (const filename of handoffs) await rm(filename, { force: true });

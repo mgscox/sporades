@@ -48,6 +48,104 @@ async function listen(server) {
 async function close(server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 const inventory = (host, revision = 1) => ({ schemaVersion: 1, host, revision, capsules: [] });
 
+async function publicationFixture(t) {
+  const dir = await fixture(t);
+  good(dir, 'issue', '--sender', 'host-a', '--host', 'a.example');
+  good(dir, 'issue', '--sender', 'host-b', '--host', 'b.example');
+  const a = await credentials(dir, 'host-a', 'a.env'), b = await credentials(dir, 'host-b', 'b.env');
+  const collector = createServer((_req, res) => res.writeHead(200).end('{}'));
+  const collectorUrl = await listen(collector);
+  t.after(() => close(collector));
+  const gateway = createGateway({ ...JSON.parse(await readFile(path.join(dir, '.private/credentials.json'), 'utf8')),
+    collectorUrl, senderDirectory: path.join(dir, '.private/senders'), inventoryDirectory: path.join(dir, 'inventory') });
+  const origin = await listen(gateway);
+  t.after(() => close(gateway));
+  return { dir, a, b, registry: path.join(dir, '.private/senders/registry.json'),
+    ingest: token => fetch(origin + '/v1/traces', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' }),
+    update: token => fetch(origin + '/v1/inventory/a.example', { method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(inventory('a.example')) }) };
+}
+
+async function duringMissingRegistry(registry, request, { publish = () => {}, triggerRead = 1, durationMs = 250, persistent = false } = {}) {
+  const original = filesystem.open;
+  let reads = 0, started;
+  // Docker directory mounts can temporarily hide the replaced current path.
+  // Keep real CLI publication and all subsequent file/security reads intact.
+  filesystem.open = async (...args) => {
+    if (args[0] === registry) {
+      reads++;
+      if (reads === triggerRead) { publish(); started = performance.now(); }
+      if (started !== undefined && (reads === triggerRead || persistent || performance.now() - started < durationMs)) {
+        throw Object.assign(new Error('Simulated publication gap.'), { code: 'ENOENT' });
+      }
+    }
+    return original(...args);
+  };
+  syncBuiltinESMExports();
+  try { return { response: await request(), reads }; }
+  finally { filesystem.open = original; syncBuiltinESMExports(); }
+}
+
+test('gateway recovers unrelated sender during a Docker-length missing-registry publication gap', async t => {
+  const { dir, b, registry, ingest } = await publicationFixture(t);
+  for (const [action, args] of [['rotate', []], ['commit', ['--generation', '2']], ['revoke', []]]) {
+    const { response, reads } = await duringMissingRegistry(registry, () => ingest(b.ingest), {
+      publish: () => good(dir, action, '--sender', 'host-a', ...args),
+    });
+    assert.equal(response.status, 200, `unrelated ingestion must survive a 250ms ${action} publication gap`);
+    assert(reads > 2, 'recovery must reopen the current registry rather than reuse a snapshot');
+  }
+});
+
+test('gateway missing-registry retries deny credentials retired during the final authorization read', async t => {
+  const { dir, a, b, registry, ingest, update } = await publicationFixture(t);
+  good(dir, 'rotate', '--sender', 'host-a');
+  const next = await credentials(dir, 'host-a', 'next.env');
+  const committed = await duringMissingRegistry(registry, () => ingest(a.ingest), {
+    triggerRead: 2, durationMs: 0, publish: () => good(dir, 'commit', '--sender', 'host-a', '--generation', '2'),
+  });
+  assert.equal(committed.response.status, 401, 'a previously admitted retired token must not be forwarded');
+  assert.equal((await ingest(next.ingest)).status, 200);
+  const revoked = await duringMissingRegistry(registry, () => update(next.inventory), {
+    triggerRead: 2, publish: () => good(dir, 'revoke', '--sender', 'host-a'),
+  });
+  assert.equal(revoked.response.status, 403, 'inventory revocation must also survive a final-read gap');
+  assert.equal((await ingest(next.ingest)).status, 401);
+  assert.equal((await ingest(b.ingest)).status, 200);
+});
+
+test('gateway missing-registry retries remain bounded and never fall back to previously accepted authority', { timeout: 10_000 }, async t => {
+  const { b, registry, ingest } = await publicationFixture(t);
+  assert.equal((await ingest(b.ingest)).status, 200);
+  const started = performance.now();
+  const missing = await duringMissingRegistry(registry, () => ingest(b.ingest), { persistent: true });
+  assert.equal(missing.response.status, 503);
+  assert.equal(missing.reads, 8, 'a persistently missing current path exhausts the bounded attempts');
+  assert(performance.now() - started < 3000, 'missing registry must settle within a bounded request');
+  assert.deepEqual(await missing.response.json(), { ok: false });
+  assert.equal((await ingest(b.ingest)).status, 200, 'recovery reads the restored current path');
+  const saved = await readFile(registry, 'utf8');
+  await writeFile(registry, '{malformed private registry');
+  const malformed = await duringMissingRegistry(registry, () => ingest(b.ingest), { durationMs: 0 });
+  assert.equal(malformed.response.status, 503);
+  assert.equal(malformed.reads, 2, 'malformed data is not retried after the one missing-path recovery');
+  assert.deepEqual(await malformed.response.json(), { ok: false });
+  await writeFile(registry, saved);
+  await chmod(registry, 0o644);
+  const insecure = await duringMissingRegistry(registry, () => ingest(b.ingest), { durationMs: 0 });
+  assert.equal(insecure.response.status, 503);
+  assert.equal(insecure.reads, 2, 'unsafe permissions are not retried or replaced with cached authority');
+  assert.deepEqual(await insecure.response.json(), { ok: false });
+  await chmod(registry, 0o600);
+  const target = registry + '.target';
+  await writeFile(target, saved, { mode: 0o600 });
+  await rm(registry);
+  await symlink(target, registry);
+  const linked = await duringMissingRegistry(registry, () => ingest(b.ingest), { durationMs: 0 });
+  assert.equal(linked.response.status, 503);
+  assert.equal(linked.reads, 2, 'the recovered current path cannot follow a symlink');
+  assert.deepEqual(await linked.response.json(), { ok: false });
+});
+
 test('installed CLI sender lifecycle preserves env, retries safely, and never emits credentials', async t => {
   const dir = await fixture(t);
   const env = await readFile(path.join(dir, '.env'), 'utf8');

@@ -2,11 +2,16 @@ import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, lstat, open, rename, rm, chown } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { inventoryHost } from './inventory-contract.mjs';
 
 const invalid = () => { throw new Error('Invalid protected sender registry.'); };
 const nameValid = value => typeof value === 'string' && /^[a-z0-9][a-z0-9-]{0,62}$/.test(value);
 const MAX_REGISTRY_BYTES = 1024 * 1024;
+// Docker Desktop directory mounts can briefly hide the current path after rename.
+// Yield to mount propagation instead of exhausting immediate reopen attempts.
+// Eight attempts allow at most 1.05s of backoff; no previous snapshot is retained.
+const REGISTRY_RETRY_DELAYS_MS = [20, 40, 80, 160, 250, 250, 250];
 const empty = () => ({ schemaVersion: 1, revision: 0, legacyIngest: true, legacyInventoryDisabled: [], senders: [] });
 
 export function validateSenderRegistry(value) {
@@ -49,9 +54,15 @@ async function protectedDirectory(directory, create = false, owner) {
 }
 
 export async function readSenderRegistry(directory) {
-  await protectedDirectory(directory);
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const file = await open(join(directory, 'registry.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
+  for (let attempt = 0; attempt <= REGISTRY_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt) await delay(REGISTRY_RETRY_DELAYS_MS[attempt - 1]);
+    await protectedDirectory(directory);
+    let file;
+    try { file = await open(join(directory, 'registry.json'), constants.O_RDONLY | constants.O_NOFOLLOW); }
+    catch (error) {
+      if (error.code === 'ENOENT' && attempt < REGISTRY_RETRY_DELAYS_MS.length) continue;
+      throw error;
+    }
     try {
       const stat = await file.stat();
       // Atomic publication can unlink the inode after open. Reopen the current

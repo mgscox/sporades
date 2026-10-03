@@ -147,8 +147,12 @@ The gateway mounts the **directory** read-only, so atomic replacement is visible
 without recreating the container. It reads a validated protected snapshot for
 requests and rechecks credentials after receiving uploads. If publication replaces
 an opened snapshot while it is being read, the gateway reopens the current registry
-instead of authorizing retired state; repeated concurrent replacement fails closed
-after three attempts. Malformed, missing,
+instead of authorizing retired state. A temporarily missing path on a Docker
+directory mount receives the same current-path retries: at most eight attempts,
+with increasing delays totaling at most 1.05 seconds. Each attempt revalidates
+the protected directory and opens the current path; no previous snapshot is used
+as a fallback. Persistent absence or repeated concurrent replacement fails closed.
+Malformed,
 symlinked or publicly readable registries fail closed with an opaque 503 for
 ingestion, inventory and health; fixing the file restores service. Already
 forwarded requests cannot be withdrawn. UI authentication remains independent.
@@ -181,10 +185,13 @@ SPORADES_CONFIG_DIR="$PWD/.sporades/acceptance-config" \
   http://127.0.0.1:5280 sporades-acceptance-unique
 ```
 
-The opt-in script accepts only a clean loopback origin. It issues two unique
+The opt-in script accepts only a clean loopback origin. It issues unique
 acceptance senders, verifies real runtime traces in Jaeger and metrics in
 Prometheus before/during/after rotation, inventory acknowledgements, gateway
 restart, cross-scope/query denial, revocation and unrelated-sender continuity.
+Four continuous ingestion lanes then run through 30 rotations and commits of
+another sender plus its revocation. Every response must be HTTP 200; HTTP
+failures are counted directly, without retries, and fail acceptance.
 It revokes only its own senders and removes only its own handoff files on exit.
 The operator owns stack startup/cleanup; the script restarts only the supplied
 project's gateway. `SPORADES_ACCEPTANCE_CLI` can select an extracted npm package's
