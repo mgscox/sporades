@@ -24,6 +24,8 @@ export function diagnosticTrace() {
 
 // Bound DNS, handshake, headers and the entire body by one deadline. Never
 // expose destination text, response bodies, underlying errors or redirects.
+// Each bounded diagnostic verifies a fresh TLS exchange instead of retaining
+// listeners on pooled sockets whose handshake already completed.
 async function exchange(connection: Pick<HostRelayConnection, "endpoint" | "caPem">, pathname: string, authorization: string, body?: string) {
   let dns = isIP(new URL(connection.endpoint).hostname.replace(/^\[|\]$/g, "")) ? passed() : unavailable("not-reached");
   let tls = unavailable("not-reached");
@@ -32,7 +34,7 @@ async function exchange(connection: Pick<HostRelayConnection, "endpoint" | "caPe
     const finish = (value: { status?: number; body?: string; failure?: string }) => {
       if (done) return; done = true; clearTimeout(deadline); resolve({ dns, tls, ...value });
     };
-    const req = request(new URL(pathname, connection.endpoint), { method: body === undefined ? "GET" : "POST", ...(connection.caPem ? { ca: connection.caPem } : {}), headers: { authorization, ...(body !== undefined ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) } : {}) } }, res => {
+    const req = request(new URL(pathname, connection.endpoint), { agent: false, method: body === undefined ? "GET" : "POST", ...(connection.caPem ? { ca: connection.caPem } : {}), headers: { authorization, ...(body !== undefined ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) } : {}) } }, res => {
       let text = "";
       res.on("data", chunk => { text += chunk; if (Buffer.byteLength(text) > 8192) req.destroy(new Error("oversize")); });
       res.on("end", () => finish({ status: res.statusCode, body: text }));

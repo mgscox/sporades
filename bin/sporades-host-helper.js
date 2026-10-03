@@ -26333,7 +26333,7 @@ async function exchange(connection, pathname, authorization, body) {
       clearTimeout(deadline);
       resolve({ dns, tls, ...value });
     };
-    const req = request(new URL(pathname, connection.endpoint), { method: body === void 0 ? "GET" : "POST", ...connection.caPem ? { ca: connection.caPem } : {}, headers: { authorization, ...body !== void 0 ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) } : {} } }, (res) => {
+    const req = request(new URL(pathname, connection.endpoint), { agent: false, method: body === void 0 ? "GET" : "POST", ...connection.caPem ? { ca: connection.caPem } : {}, headers: { authorization, ...body !== void 0 ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) } : {} } }, (res) => {
       let text2 = "";
       res.on("data", (chunk) => {
         text2 += chunk;

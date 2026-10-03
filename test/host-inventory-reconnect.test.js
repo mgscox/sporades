@@ -395,3 +395,15 @@ test('configuration diagnostics reject drift from the saved destination and mark
   assert.equal(probe.checks.relayAcceptance.state, 'unavailable');
   assert.equal(probe.backendStorage, 'verification-unavailable');
 });
+
+test('repeated sender probes retain verified TLS evidence without keepalive listener accumulation', async t => {
+  const f = await fixture(t);
+  const tls = await f.tls('repeated-probes');
+  const endpoint = await f.listen(createServer(tls, async (req, res) => { for await (const part of req) {} res.end('{}'); }));
+  const { probeTelemetryDestination } = await import('../dist/cli/telemetry-diagnostics.js');
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const result = await probeTelemetryDestination({ endpoint, credential: 'scoped-test-token', caPem: tls.cert.toString() });
+    assert.equal(result.accepted, true);
+    assert.equal(result.checks.tls.state, 'passed');
+  }
+});
