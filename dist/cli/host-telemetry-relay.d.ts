@@ -228,4 +228,5 @@ export declare function migrateHostTelemetryRelay(remoteRoot: string, network: s
     oldInventory: string;
     history: string;
 }>;
+export type HostTelemetryMigration = Awaited<ReturnType<typeof migrateHostTelemetryRelay>>;
 //# sourceMappingURL=host-telemetry-relay.d.ts.map

@@ -29,7 +29,7 @@ The structured result has `origin: "host"` and a `checks` object. Each check use
 
 | Check | Evidence |
 | --- | --- |
-| `configuration` | Protected saved descriptor, ingestion credential, Collector configuration and required CA are present and valid. An interrupted activation needs reconciliation. |
+| `configuration` | Protected saved descriptor, ingestion credential, Collector configuration and required CA are present and valid; the Collector file must match the generated configuration for the saved binding and resource policy. Drift requires reconcile. An interrupted activation needs reconciliation. |
 | `agentReadiness` | The owned relay container is running and has no pending activation. This is process readiness; receiver acceptance is a separate check. |
 | `dns` | Sender-side name lookup, or a literal address without DNS. |
 | `tls` | Sender-side verified TLS handshake with the saved CA. Verification is never disabled. |

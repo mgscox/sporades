@@ -17,4 +17,4 @@ export type { SenderCredentialResult } from "../../dist/cli/monitoring-stack.js"
 
 /** Sender-origin stage evidence; HTTP acceptance alone never proves storage. */
 export type { DiagnosticCheck, TelemetryDeliveryChecks } from "../../dist/cli/telemetry-diagnostics.js";
-export type { HostTelemetryDiagnostic } from "../../dist/cli/host-telemetry-relay.js";
+export type { HostTelemetryDiagnostic, HostTelemetryMigration } from "../../dist/cli/host-telemetry-relay.js";

@@ -53,6 +53,15 @@ async function exchange(connection: Pick<HostRelayConnection, "endpoint" | "caPe
     req.end(body);
   });
 }
+/** Portable: also serialized into the Node diagnostic probe on the Host network. */
+export function otlpTraceAccepted(data: unknown): boolean {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  const partial = (data as { partialSuccess?: unknown }).partialSuccess;
+  if (partial === undefined) return true;
+  if (!partial || typeof partial !== "object" || Array.isArray(partial)) return false;
+  const result = partial as { rejectedSpans?: unknown; errorMessage?: unknown };
+  return (result.rejectedSpans === undefined || String(result.rejectedSpans) === "0") && !result.errorMessage;
+}
 export async function probeTelemetryDestination(connection: HostRelayConnection) {
   const probe = diagnosticTrace();
   const response = await exchange(connection, "/v1/traces", `Bearer ${connection.credential}`, probe.body);
@@ -62,9 +71,8 @@ export async function probeTelemetryDestination(connection: HostRelayConnection)
     try {
       const data = JSON.parse(response.body || "{}");
       if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error();
-      const partial = data.partialSuccess;
-      if (partial !== undefined && (!partial || typeof partial !== "object" || Array.isArray(partial) || (partial.rejectedSpans !== undefined && String(partial.rejectedSpans) !== "0") || partial.errorMessage)) reason = "partial-rejection";
-      else accepted = true;
+      accepted = otlpTraceAccepted(data);
+      if (!accepted) reason = "partial-rejection";
     } catch { reason = "invalid-acceptance"; }
   }
   const auth = response.status === 401 || response.status === 403 ? failed("auth") : accepted ? passed() : unavailable("not-proven");

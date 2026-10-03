@@ -12,6 +12,8 @@ export declare function diagnosticTrace(): {
     traceId: string;
     body: string;
 };
+/** Portable: also serialized into the Node diagnostic probe on the Host network. */
+export declare function otlpTraceAccepted(data: unknown): boolean;
 export declare function probeTelemetryDestination(connection: HostRelayConnection): Promise<{
     checks: {
         dns: DiagnosticCheck;

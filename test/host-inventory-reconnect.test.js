@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:https';
 import path from 'node:path';
-import { connectHostTelemetryRelay, readHostTelemetryConnection } from '../dist/cli/host-telemetry-relay.js';
+import { renderHostRelayCollectorConfig, connectHostTelemetryRelay, readHostTelemetryConnection } from '../dist/cli/host-telemetry-relay.js';
 import { reconcileHostInventory, hostInventoryStatus } from '../dist/cli/host-inventory.js';
 import { createGateway } from '../monitoring/trace/gateway.mjs';
 
@@ -51,7 +51,7 @@ async function fixture(t) {
     await writeFile(path.join(telemetry, 'connection.json'), JSON.stringify({ schemaVersion: 1, endpoint, network: 'fake-network', internalEndpoint: 'http://sporades-telemetry:4318/', caConfigured: true, inventoryHost: scope }), { mode: 0o600 });
     await writeFile(path.join(telemetry, 'inventory-credential'), oldToken + '\n', { mode: 0o600 });
     await writeFile(path.join(telemetry, 'ca.pem'), cert);
-    await writeFile(path.join(telemetry, 'collector.yaml'), 'old collector');
+    await writeFile(path.join(telemetry, 'collector.yaml'), renderHostRelayCollectorConfig({ endpoint, caFile: true }));
     await writeFile(path.join(telemetry, 'credential.env'), 'SPORADES_INGEST_AUTH=Bearer old-ingestion-token\n', { mode: 0o600 });
   };
   const reconnect = (endpoint, cert, credential = newToken) => connectHostTelemetryRelay(root, 'fake-network', { endpoint, credential: 'new-ingestion-token', inventoryCredential: credential, inventoryHost: scope, caPem: cert.toString() });
@@ -313,7 +313,7 @@ test('migration verifies fresh destination storage, registers inventory anew and
 const fs=require('node:fs'),https=require('node:https');const args=process.argv.slice(2);
 if(args[0]==='inspect')process.stdout.write('{"State":{"Running":true},"Config":{"Labels":{"com.sporades.host-telemetry-relay":"true"}}}');
 if(args[0]==='run'&&args.includes('--rm')){
- fs.writeFileSync(${JSON.stringify(path.join(f.root, 'relay-body.json'))},args.at(-1));process.stdout.write('true');
+ fs.writeFileSync(${JSON.stringify(path.join(f.root, 'relay-body.json'))},args.at(-1));process.stdout.write('accepted');
 }
 `);
   const { migrateHostTelemetryRelay, checkHostTelemetryDelivery } = await import('../dist/cli/host-telemetry-relay.js');
@@ -378,4 +378,20 @@ test('a binding changed during verification cannot be overwritten by a stale mig
   await f.reconnect('https://replacement.example/', tls.cert);
   finish(); await rejected;
   assert.equal((await readHostTelemetryConnection(f.root)).endpoint, 'https://replacement.example/');
+});
+
+test('configuration diagnostics reject drift from the saved destination and mark unavailable probe tools explicitly', async t => {
+  const f = await fixture(t);
+  const tls = await f.tls('configuration-drift');
+  const endpoint = await f.listen(createServer(tls, async (req, res) => { for await (const part of req) {} res.end('{}'); }));
+  await f.saveLegacy(endpoint, tls.cert);
+  const { checkHostTelemetryDelivery, renderHostRelayCollectorConfig } = await import('../dist/cli/host-telemetry-relay.js');
+  await writeFile(path.join(f.telemetry, 'collector.yaml'), renderHostRelayCollectorConfig({ endpoint: 'https://wrong.example/', caFile: true }));
+  const drift = await checkHostTelemetryDelivery(f.root);
+  assert.equal(drift.checks.configuration.state, 'failed');
+  await writeFile(path.join(f.telemetry, 'collector.yaml'), renderHostRelayCollectorConfig({ endpoint, caFile: true }));
+  const probe = await checkHostTelemetryDelivery(f.root);
+  assert.equal(probe.checks.configuration.state, 'passed');
+  assert.equal(probe.checks.relayAcceptance.state, 'unavailable');
+  assert.equal(probe.backendStorage, 'verification-unavailable');
 });

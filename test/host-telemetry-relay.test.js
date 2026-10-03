@@ -36,6 +36,8 @@ test('shipped Host help advertises Capsule Telemetry opt-out commands', () => {
   const help = spawnSync(process.execPath, ['bin/sporades.js', 'host', '--help'], { cwd: process.cwd(), encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /telemetry enable\|disable <subname>/);
+  assert.match(help.stdout, /telemetry connect\|migrate\|reconcile\|status\|check/);
+  assert.match(help.stdout, /--query-credential-env <name>/);
 });
 
 test('installed CLI resolves a verified Host profile and redacts the scoped credential', async () => {

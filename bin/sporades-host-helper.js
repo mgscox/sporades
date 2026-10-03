@@ -26365,6 +26365,14 @@ async function exchange(connection, pathname, authorization, body) {
     req.end(body);
   });
 }
+function otlpTraceAccepted(data2) {
+  if (!data2 || typeof data2 !== "object" || Array.isArray(data2)) return false;
+  const partial = data2.partialSuccess;
+  if (partial === void 0) return true;
+  if (!partial || typeof partial !== "object" || Array.isArray(partial)) return false;
+  const result = partial;
+  return (result.rejectedSpans === void 0 || String(result.rejectedSpans) === "0") && !result.errorMessage;
+}
 async function probeTelemetryDestination(connection) {
   const probe = diagnosticTrace();
   const response = await exchange(connection, "/v1/traces", `Bearer ${connection.credential}`, probe.body);
@@ -26374,9 +26382,8 @@ async function probeTelemetryDestination(connection) {
     try {
       const data2 = JSON.parse(response.body || "{}");
       if (!data2 || typeof data2 !== "object" || Array.isArray(data2)) throw new Error();
-      const partial = data2.partialSuccess;
-      if (partial !== void 0 && (!partial || typeof partial !== "object" || Array.isArray(partial) || partial.rejectedSpans !== void 0 && String(partial.rejectedSpans) !== "0" || partial.errorMessage)) reason = "partial-rejection";
-      else accepted = true;
+      accepted = otlpTraceAccepted(data2);
+      if (!accepted) reason = "partial-rejection";
     } catch {
       reason = "invalid-acceptance";
     }
@@ -44584,8 +44591,10 @@ async function checkHostTelemetryDelivery(remoteRoot, queryCredential) {
       if (await activationPending(files)) throw new Error();
       const credential = (await readProtected(files.credential))?.match(/^SPORADES_INGEST_AUTH=Bearer ([^\r\n]+)\n$/)?.[1];
       const caPem = descriptor.caConfigured ? await readProtected(files.ca) : void 0;
-      if (!credential || descriptor.caConfigured && !caPem || !await readProtected(files.config)) throw new Error();
-      const connection = validateHostRelayConnection({ endpoint: descriptor.endpoint, credential, ...caPem ? { caPem } : {} });
+      const config = await readProtected(files.config);
+      if (!credential || typeof descriptor.caConfigured !== "boolean" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(descriptor.network) || descriptor.caConfigured && !caPem) throw new Error();
+      const connection = validateHostRelayConnection({ endpoint: descriptor.endpoint, credential, ...caPem ? { caPem } : {}, ...descriptor.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: descriptor.tracePropagationOrigins } : {}, ...descriptor.metricsIntervalMs !== void 0 ? { metricsIntervalMs: descriptor.metricsIntervalMs } : {}, ...descriptor.eventLoopDelayResolutionMs !== void 0 ? { eventLoopDelayResolutionMs: descriptor.eventLoopDelayResolutionMs } : {} });
+      if (config !== renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(caPem), resources: await readHostMetrics(remoteRoot) })) throw new Error();
       return { descriptor, connection, relayReady: (await statusHostTelemetryRelay(remoteRoot)).relayReady };
     });
   } catch {
@@ -44599,11 +44608,12 @@ async function checkHostTelemetryDelivery(remoteRoot, queryCredential) {
   const relayProbe = diagnosticTrace();
   let relayAccepted = false;
   if (captured.relayReady) {
-    const script = `fetch('http://${RELAY_ALIAS}:4318/v1/traces',{method:'POST',headers:{'content-type':'application/json'},body:process.argv[1],signal:AbortSignal.timeout(5000)}).then(async r=>{let d=await r.json();process.stdout.write(String(r.ok && d && typeof d === "object" && !Array.isArray(d) && (d.partialSuccess === undefined || (d.partialSuccess && typeof d.partialSuccess === "object" && !Array.isArray(d.partialSuccess) && String(d.partialSuccess.rejectedSpans ?? 0) === "0" && !d.partialSuccess.errorMessage))));}).catch(()=>process.stdout.write('false'));`;
+    const script = `fetch('http://${RELAY_ALIAS}:4318/v1/traces',{method:'POST',headers:{'content-type':'application/json'},body:process.argv[1],signal:AbortSignal.timeout(5000)}).then(async r=>{if(!r.ok){process.stdout.write('rejected');return;}let d=await r.json();process.stdout.write((${otlpTraceAccepted.toString()})(d)?'accepted':'rejected');}).catch(()=>process.stdout.write('unavailable'));`;
     const relay = docker(["run", "--rm", "--network", captured.descriptor.network, "--user", "10001:10001", "--entrypoint", "node", SPORADES_BASE_IMAGE.image, "-e", script, relayProbe.body]);
-    relayAccepted = relay.ok && relay.stdout === "true";
+    relayAccepted = relay.ok && relay.stdout === "accepted";
+    checks.relayAcceptance = relayAccepted ? passed() : relay.ok && relay.stdout === "rejected" ? failed("receiver-rejected") : unavailable("probe-unavailable");
   }
-  checks.relayAcceptance = relayAccepted ? passed() : captured.relayReady ? failed("relay-probe-unavailable-or-rejected") : unavailable("relay-not-running");
+  if (!captured.relayReady) checks.relayAcceptance = unavailable("relay-not-running");
   const query = relayAccepted ? await queryDiagnosticTrace(captured.connection, relayProbe.traceId, queryCredential) : { backendQuery: unavailable("relay-probe-not-accepted"), recentIngestion: unavailable("relay-probe-not-accepted") };
   Object.assign(checks, query);
   return { ...base, ...result, traceId: result.traceId, relayTraceId: relayProbe.traceId, relayReady: captured.relayReady, relayAccepted, checks, backendStorage: query.backendQuery.state === "passed" && query.recentIngestion.state === "passed" ? "verified-relay-trace" : "verification-unavailable" };
