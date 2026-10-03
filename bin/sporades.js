@@ -38571,7 +38571,7 @@ var init_pdf = __esm({
         var DOM_EXCEPTION = "DOMException";
         var Error2 = getBuiltIn("Error");
         var NativeDOMException = getBuiltIn(DOM_EXCEPTION);
-        var $DOMException = function DOMException() {
+        var $DOMException = function DOMException2() {
           anInstance(this, DOMExceptionPrototype);
           var argumentsLength = arguments.length;
           var message = normalizeStringArgument(argumentsLength < 1 ? void 0 : arguments[0]);
@@ -128398,6 +128398,24 @@ import { types as utilTypes } from "node:util";
 var fetchStateKey = Symbol.for("sporades.runtime.fetch-telemetry.v1");
 var dictionaryFields = ["body", "cache", "credentials", "dispatcher", "duplex", "headers", "integrity", "keepalive", "method", "mode", "priority", "redirect", "referrer", "referrerPolicy", "signal", "window"];
 var stringFields = ["cache", "credentials", "duplex", "integrity", "method", "mode", "priority", "redirect", "referrer", "referrerPolicy"];
+var nativeAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get;
+var nativeReason = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "reason").get;
+var nativeExceptionName = Object.getOwnPropertyDescriptor(DOMException.prototype, "name").get;
+function stableSignal(value) {
+  if (value === void 0 || value === null) return true;
+  if (typeof value !== "object" || utilTypes.isProxy(value) || Object.getPrototypeOf(value) !== AbortSignal.prototype) return false;
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!("value" in descriptor)) return false;
+    if (typeof key === "symbol" && key.description === "kComposite" && descriptor.value) return false;
+  }
+  try {
+    nativeAborted.call(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function stableDictionary(value) {
   if (value === void 0 || value === null) return true;
   if (typeof value !== "object") return false;
@@ -128481,6 +128499,7 @@ function outboundFetchTelemetry(tracer, parent, origins, active) {
       const rawMethod = init?.method === void 0 ? request?.method ?? "GET" : String(init.method);
       method = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"].includes(rawMethod.toUpperCase()) ? rawMethod.toUpperCase() : "_OTHER";
       signal = init?.signal === void 0 ? request?.signal : init.signal;
+      if (!stableSignal(signal)) return original(input, init);
       redirect = init?.redirect ?? request?.redirect ?? "follow";
     } catch {
       return original(input, init);
@@ -128514,9 +128533,10 @@ function outboundFetchTelemetry(tracer, parent, origins, active) {
     } catch (error) {
       let outcome = "network_error";
       try {
-        if (signal?.aborted) {
+        if (signal && stableSignal(signal) && nativeAborted.call(signal)) {
           outcome = "cancelled";
-          if (signal.reason?.name === "TimeoutError") outcome = "timeout";
+          const reason = nativeReason.call(signal);
+          if (typeof reason === "object" && reason !== null && !utilTypes.isProxy(reason) && nativeExceptionName.call(reason) === "TimeoutError") outcome = "timeout";
         }
       } catch {
       }

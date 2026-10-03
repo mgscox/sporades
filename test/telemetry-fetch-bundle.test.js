@@ -44,15 +44,56 @@ test('packaged generated fetch Bundle on supported runtimes and the exact Base i
       const host = target.image ? 'host.docker.internal' : '127.0.0.1';
       const origin = `http://${host}:${dependency.address().port}`;
       const serverSource = `import { capsule, endpoint } from 'sporades/server';
+const nativeFetch = globalThis.fetch;
 export default capsule({ name: 'fetch-bundle', endpoints: { work: endpoint({ method: 'GET', path: '/work' }, async ctx => {
   const mode = ctx.request.query.mode ?? 'slow';
   const controller = new AbortController();
-  const signal = mode === 'timeout' ? AbortSignal.timeout(25) : controller.signal;
+  let signal = mode === 'timeout' ? AbortSignal.timeout(25) : controller.signal;
+  let getterReads = 0, nativeReads = 0, reason;
+  if (mode === 'reason-getter' || mode === 'exception-getter') {
+    reason = mode === 'exception-getter' ? new DOMException('private-cancellation', 'AbortError') : {};
+    Object.defineProperty(reason, 'name', { get() { getterReads++; return 'TimeoutError'; } });
+    controller.abort(reason);
+  }
+  if (mode === 'timeout-getter') {
+    signal = AbortSignal.timeout(1);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    reason = signal.reason;
+    Object.defineProperty(reason, 'name', { get() { getterReads++; return 'AbortError'; } });
+  }
+  if (mode === 'invalid-signal') {
+    try { await nativeFetch(${JSON.stringify(origin)}, { redirect: 'manual', signal: { get aborted() { nativeReads++; return true; } } }); } catch {}
+    signal = { get aborted() { getterReads++; return true; } };
+  }
+  if (mode === 'composite') {
+    reason = new Error('private-cancellation');
+    controller.abort(reason);
+    signal = AbortSignal.any([controller.signal]);
+  }
+  if (mode === 'pending-getter') {
+    reason = new Error('private-cancellation');
+    controller.abort(reason);
+    const nativeController = new AbortController(); nativeController.abort(reason);
+    const key = Object.getOwnPropertySymbols(signal).find(key => key.description === 'kReason');
+    if (!key) throw new Error('Missing supported native signal slot');
+    const pending = nativeFetch(${JSON.stringify(origin)}, { redirect: 'manual', signal: nativeController.signal });
+    queueMicrotask(() => Object.defineProperty(nativeController.signal, key, { get() { nativeReads++; return reason; } }));
+    try { await pending; } catch {}
+  }
   if (mode === 'cancel') setTimeout(() => controller.abort(new Error('private-cancellation')), 25);
   try {
-    const response = await fetch(${JSON.stringify(origin)} + '/' + (mode === 'timeout' || mode === 'cancel' ? 'slow' : mode) + '/private-person?secret=private-query', { redirect: 'manual', signal, headers: { authorization: 'private-token' } });
+    const pending = fetch(${JSON.stringify(origin)} + '/' + (mode === 'timeout' || mode === 'cancel' ? 'slow' : mode) + '/private-person?secret=private-query', { redirect: 'manual', signal, headers: { authorization: 'private-token' } });
+    if (mode === 'pending-getter') {
+      const key = Object.getOwnPropertySymbols(signal).find(key => key.description === 'kReason');
+      queueMicrotask(() => Object.defineProperty(signal, key, { get() { getterReads++; return reason; } }));
+    }
+    const response = await pending;
     return { status: 200, body: { result: await response.text() } };
-  } catch (error) { return { status: 200, body: { result: signal.aborted ? 'aborted' : 'network-error' } }; }
+  } catch (error) { return { status: 200, body: {
+    result: mode === 'invalid-signal' ? 'invalid' : signal.aborted ? 'aborted' : 'network-error',
+    getterReads, nativeReads, sameReason: reason !== undefined ? error === reason : undefined,
+    invalidType: mode === 'invalid-signal' ? error instanceof TypeError : undefined,
+  } }; }
 }) } });`;
       const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(root, 'server/index.ts') });
       const source = await createServerBundleModuleSource({ config: { name: 'fetch-bundle', __sporadesTelemetry: {
@@ -78,21 +119,28 @@ export default capsule({ name: 'fetch-bundle', endpoints: { work: endpoint({ met
         }
         assert(listening, stderr);
         const port = target.image ? Number((await run('docker', ['inspect', '--format', '{{(index (index .NetworkSettings.Ports "5218/tcp") 0).HostPort}}', containerName])).stdout.trim()) : listening;
-        const modes = ['slow', 'fast', 'reset', 'timeout', 'cancel'];
+        const modes = ['slow', 'fast', 'reset', 'timeout', 'cancel', 'reason-getter', 'exception-getter', 'timeout-getter', 'invalid-signal', 'composite', 'pending-getter'];
         const responses = await Promise.all(modes.map((mode, i) => fetch(`http://127.0.0.1:${port}/work?mode=${mode}`, {
           headers: { traceparent: `00-${String(i + 1).repeat(32)}-${'a'.repeat(16)}-01`, baggage: 'secret=private-baggage' },
         }).then(async response => { assert.equal(response.status, 200); return response.json(); })));
-        assert.deepEqual(responses.map(r => r.result), ['dependency-result', 'dependency-result', 'network-error', 'aborted', 'aborted']);
+        assert.deepEqual(responses.map(r => r.result), ['dependency-result', 'dependency-result', 'network-error', 'aborted', 'aborted', 'aborted', 'aborted', 'aborted', 'invalid', 'aborted', 'aborted']);
+        for (let index = 5; index < 8; index++) assert.equal(responses[index].getterReads, 0, modes[index]);
+        assert.equal(responses[8].getterReads, responses[8].nativeReads, 'invalid signals preserve this runtime\'s native getter count');
+        for (const response of responses.slice(5, 8)) assert.equal(response.sameReason, true);
+        assert.equal(responses[8].invalidType, true);
+        assert.equal(responses[9].sameReason, true);
+        assert.equal(responses[10].sameReason, true);
+        assert.equal(responses[10].getterReads, responses[10].nativeReads, 'pending mutation adds no getter reads');
         await pause(750);
         if (containerName) await run('docker', ['stop', '--time', '5', containerName]); else child.kill('SIGTERM');
         if (child.exitCode === null) await Promise.race([once(child, 'exit'), pause(5000)]);
         assert.equal(child.exitCode, 0, stderr);
         const spans = payloads.slice(offset).flatMap(p => (p.resourceSpans ?? []).flatMap(r => r.scopeSpans.flatMap(s => s.spans)));
         const children = spans.filter(s => s.kind === 3 && s.attributes.some(a => a.key === 'http.request.method')), parents = spans.filter(s => s.kind === 2 && s.name === 'GET /work');
-        assert.equal(children.length, modes.length, stderr); assert.equal(parents.length, modes.length);
+        assert.equal(children.length, modes.length - 2, stderr); assert.equal(parents.length, modes.length);
         const outcome = s => s.attributes.find(a => a.key === 'sporades.http.outcome').value.stringValue;
         for (const child of children) assert.equal(child.parentSpanId, parents.find(p => p.traceId === child.traceId)?.spanId);
-        assert.deepEqual(children.map(outcome).sort(), ['cancelled', 'network_error', 'success', 'success', 'timeout']);
+        assert.deepEqual(children.map(outcome).sort(), ['cancelled', 'cancelled', 'cancelled', 'network_error', 'network_error', 'success', 'success', 'timeout', 'timeout']);
         const slow = children.find(s => s.traceId === '1'.repeat(32));
         assert(Number(BigInt(slow.endTimeUnixNano) - BigInt(slow.startTimeUnixNano)) / 1e6 >= 120);
         for (const call of calls.slice(callOffset)) {

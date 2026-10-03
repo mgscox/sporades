@@ -166,7 +166,11 @@ own `SERVER` span. The span measures time until response headers arrive,
 including connection setup and the dependency's wait. Reading or streaming the
 response body remains the caller's responsibility and is outside this span.
 HTTP status 400 and above records `failure`; rejected calls record
-`network_error`, `timeout` (an aborted `AbortSignal.timeout`) or `cancelled`.
+`network_error`, `timeout` (a native `TimeoutError` DOMException, as produced by
+`AbortSignal.timeout`) or `cancelled`. Caller-owned reason properties are never
+evaluated to classify a rejection; a custom `name: 'TimeoutError'` remains cancellation.
+If a signal becomes unsupported while a call is pending, telemetry records
+`network_error` without inspecting its cancellation state.
 Rejections retain the original error object. Telemetry does not add retries,
 deadlines or redirects, and a blocked exporter does not delay dependency calls.
 
@@ -181,7 +185,8 @@ Do not layer another fetch instrumentation package over this owned wrapper.
 The original global fetch is restored when the last telemetry owner shuts down.
 Instrumentation supports native string/URL/Request inputs and ordinary data
 `RequestInit` dictionaries (including frozen or inherited data fields). Accessor
-or Proxy options, subclasses, custom coercion, custom dispatchers and custom header iterators are
+or Proxy options, subclasses, custom coercion, custom dispatchers, custom header iterators,
+unsupported or accessor-modified signals, and composite `AbortSignal.any` signals are
 delegated directly to native fetch without spans or injected context. Evaluating
 those options ahead of fetch could change redirect or rejection behavior.
 
@@ -214,7 +219,9 @@ Node 24, and the exact `ghcr.io/sporades/sporades-base:0.2.0-node22-alpine`
 image. Run `SPORADES_FETCH_DOCKER=1 node --test
 test/telemetry-fetch-bundle.test.js` to include the Docker matrix; it uses only
 disposable containers and prints the tested image digests. Runtime behavior and
-outage/redirect/privacy tests are in `test/telemetry-fetch.test.js`.
+outage/redirect/privacy tests are in `test/telemetry-fetch.test.js`; native rejection
+identity, getter-evaluation parity and classification regressions are in
+`test/telemetry-fetch-rejection.test.js`.
 
 ## Create a Capsule
 

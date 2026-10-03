@@ -8,6 +8,24 @@ type FetchState = { original: typeof fetch; wrapper: typeof fetch; owners: Set<(
 const fetchStateKey = Symbol.for("sporades.runtime.fetch-telemetry.v1");
 const dictionaryFields = ["body", "cache", "credentials", "dispatcher", "duplex", "headers", "integrity", "keepalive", "method", "mode", "priority", "redirect", "referrer", "referrerPolicy", "signal", "window"];
 const stringFields = ["cache", "credentials", "duplex", "integrity", "method", "mode", "priority", "redirect", "referrer", "referrerPolicy"];
+const nativeAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")!.get!;
+const nativeReason = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "reason")!.get!;
+const nativeExceptionName = Object.getOwnPropertyDescriptor(DOMException.prototype, "name")!.get!;
+
+function stableSignal(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== "object" || utilTypes.isProxy(value) || Object.getPrototypeOf(value) !== AbortSignal.prototype) return false;
+  // Node's native signal getters read internal symbol properties. Do not evaluate
+  // an accessor substituted for any of those properties, including during branding.
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    if (!("value" in descriptor)) return false;
+    // On supported Node versions, composite getters can refresh their state by
+    // reading caller-owned source signals. Delegate AbortSignal.any unchanged.
+    if (typeof key === "symbol" && key.description === "kComposite" && descriptor.value) return false;
+  }
+  try { nativeAborted.call(value); return true; } catch { return false; }
+}
 
 // Reading a WebIDL accessor ahead of fetch can change what fetch will do, including
 // turning manual redirects into follow. Select ordinary data dictionaries only.
@@ -106,6 +124,7 @@ export function outboundFetchTelemetry(tracer: Tracer, parent: Span, origins: Re
       const rawMethod = init?.method === undefined ? request?.method ?? "GET" : String(init.method);
       method = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"].includes(rawMethod.toUpperCase()) ? rawMethod.toUpperCase() : "_OTHER";
       signal = init?.signal === undefined ? request?.signal : init.signal;
+      if (!stableSignal(signal)) return original(input, init);
       redirect = init?.redirect ?? request?.redirect ?? "follow";
     } catch { return original(input, init); }
     const span = tracer.startSpan(`HTTP ${method}`, {
@@ -140,9 +159,15 @@ export function outboundFetchTelemetry(tracer: Tracer, parent: Span, origins: Re
     } catch (error) {
       let outcome = "network_error";
       try {
-        if (signal?.aborted) {
+        // Caller-owned signals can change while fetch is pending. Recheck their
+        // descriptors before invoking any native getter at the rejection boundary.
+        if (signal && stableSignal(signal) && nativeAborted.call(signal)) {
           outcome = "cancelled";
-          if (signal.reason?.name === "TimeoutError") outcome = "timeout";
+          const reason: unknown = nativeReason.call(signal);
+          // DOMException's intrinsic getter validates its native brand and bypasses
+          // a caller's own name getter. Other reasons remain opaque cancellation.
+          if (typeof reason === "object" && reason !== null && !utilTypes.isProxy(reason)
+            && nativeExceptionName.call(reason) === "TimeoutError") outcome = "timeout";
         }
       } catch { /* Invalid signals and caller-owned abort reasons are opaque. */ }
       span.setAttribute("sporades.http.outcome", outcome);

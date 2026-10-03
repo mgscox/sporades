@@ -42870,6 +42870,9 @@ var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 
 // src/runtime-fetch-telemetry.ts
 var fetchStateKey = Symbol.for("sporades.runtime.fetch-telemetry.v1");
+var nativeAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get;
+var nativeReason = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "reason").get;
+var nativeExceptionName = Object.getOwnPropertyDescriptor(DOMException.prototype, "name").get;
 
 // src/telemetry-propagation-policy.ts
 function validateTracePropagationOrigins(value) {
