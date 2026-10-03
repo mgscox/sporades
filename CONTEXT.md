@@ -509,8 +509,12 @@ Private Dev action Bundles are created only after the session starts listening. 
 _Avoid_: Host profile, Capsule secret, app telemetry endpoint
 
 **Database request span**:
-An internal Database adapter statement or transaction timing interval within a sampled HTTP request. SQLite, PostgreSQL and libSQL share the instrumentation boundary. Bounded engine, operation and declared table labels explain database time without SQL text, parameters, rows, connection credentials or exception details. Transaction spans include acquisition wait and callback work; their child statement intervals overlap rather than add to that duration. Telemetry changes no Database adapter authoring, ACL, retry, rollback or transaction ownership contract.
+An internal Database adapter statement or transaction timing interval within a sampled HTTP request or WebSocket operation. SQLite, PostgreSQL and libSQL share the instrumentation boundary. Bounded engine, operation and declared table labels explain database time without SQL text, parameters, rows, connection credentials or exception details. Transaction spans include acquisition wait and callback work; their child statement intervals overlap rather than add to that duration. Telemetry changes no Database adapter authoring, ACL, retry, rollback or transaction ownership contract.
 _Avoid_: public adapter hook, SQL profiler, application instrumentation API
+
+**WebSocket operation span**:
+An internal SERVER span for one query or mutation execution, including live-query refreshes, with independent operation counts, duration histograms and an accepted-connection gauge. Each execution owns isolated context and completes on success, denial, error or cancellation; refreshes use new roots. A socket and its subscription never own a lifetime trace. Names are runtime-declared and bounded; payloads, credentials, user identities and baggage are excluded. Telemetry changes no authorization, subscription, transaction or reconnection semantics.
+_Avoid_: socket-lifetime trace, browser tracing SDK, subscription span
 
 **Hosted Telemetry coverage**:
 Connecting a Host to the shared relay selects telemetry for all current and future Hosted Capsules by default. The Host registry stores each Capsule's explicit opt-out. Every start, restart, push and rollback resolves the Host connection and opt-out into a Host-owned launch descriptor. The protected runtime health probe confirms the running configuration; a saved setting alone does not prove instrumentation. Dev and local Container sessions keep their separate opt-in selection.

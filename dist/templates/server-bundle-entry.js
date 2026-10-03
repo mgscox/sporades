@@ -169,8 +169,8 @@ database.log.emit({
     data: { diagnostics: database.runtimeDiagnostics },
     release: process.env.SPORADES_RELEASE_ID ? { id: process.env.SPORADES_RELEASE_ID } : null,
 });
-const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
+const websocketHub = createWebSocketHub(() => database, null, { telemetry: runtimeConfig.__sporadesTelemetry ? telemetry.websocket : undefined });
 database.runtimeTelemetry = {
     supported: true,
     enabled: runtimeConfig.__sporadesTelemetry !== null && runtimeConfig.__sporadesTelemetry !== undefined,

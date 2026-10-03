@@ -82,7 +82,9 @@ test("packed CLI exports through a private CA from a disposable Container", {
   skip: enabled ? false : "Set SPORADES_REAL_TELEMETRY_CA_CONTAINER=1 for disposable Docker acceptance.",
   timeout: 300_000,
 }, async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "sporades-ca-container-"));
+  const scratch = path.join(repoRoot, ".scratch");
+  await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "sporades-ca-container-"));
   const packageDir = path.join(root, "package");
   const configDir = path.join(root, "config");
   const projectDir = path.join(root, "ca-acceptance");
@@ -121,6 +123,11 @@ test("packed CLI exports through a private CA from a disposable Container", {
     config.deploy = { ...config.deploy, port: await availablePort() };
     await writeFile(configPath, JSON.stringify(config));
     await run("npm", ["install", "--ignore-scripts", "--package-lock=false"], { cwd: projectDir, timeout: 120_000 });
+    const acceptanceConfigPath = path.join(projectDir, "sporades.json");
+    const acceptanceConfig = JSON.parse(await readFile(acceptanceConfigPath, "utf8"));
+    acceptanceConfig.dev = { ...acceptanceConfig.dev, port: 5689 };
+    acceptanceConfig.deploy = { ...acceptanceConfig.deploy, port: 5691 };
+    await writeFile(acceptanceConfigPath, JSON.stringify(acceptanceConfig));
     const deployed = await run(process.execPath, [cli, "deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env, timeout: 120_000 });
     const result = JSON.parse(deployed.stdout.trim().split("\n").at(-1));
     assert.equal(result.ok, true, deployed.stderr);

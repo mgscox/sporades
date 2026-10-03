@@ -4,7 +4,7 @@ Capsule creation, project layout, configuration, security policy, database servi
 
 [Back to the feature reference index](../guide/reference.md).
 
-## Local HTTP telemetry
+## Runtime telemetry
 
 The operator registers a named Telemetry profile separately from a Host profile:
 
@@ -206,7 +206,7 @@ Prometheus setup.
 
 ### Database time in request traces
 
-An enabled, sampled HTTP request automatically contains CLIENT spans from the
+An enabled, sampled HTTP request or WebSocket operation automatically contains CLIENT spans from the
 internal Database adapter, across SQLite, PostgreSQL and libSQL. No Capsule import,
 new configuration, or adapter/plugin API is needed. Existing profile selection,
 sampling, export limits and shutdown deadlines also govern these spans.
@@ -214,7 +214,7 @@ sampling, export limits and shutdown deadlines also govern these spans.
 | Span / attribute | Meaning |
 | --- | --- |
 | `db.TRANSACTION` | The runtime transaction interval, including connection acquisition wait, callback work, commit or rollback. |
-| `db.SELECT`, `db.INSERT`, etc. | One adapter statement call, including any connection wait. Children of the owning transaction, or directly of the HTTP SERVER span. |
+| `db.SELECT`, `db.INSERT`, etc. | One adapter statement call, including any connection wait. Children of the owning transaction, or directly of the HTTP or WebSocket SERVER span. |
 | `db.system.name` | `sqlite`, `postgres`, or `libsql`. |
 | `db.operation.name` | `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `CREATE`, `ALTER`, `DROP`, `BEGIN`, `COMMIT`, `ROLLBACK`, `PRAGMA`, `TRANSACTION`, or `OTHER`. |
 | `db.collection.name` | A declared app-table name (up to 128 names per adapter, at most 64 ASCII identifier characters), `__runtime` for the reserved runtime namespace, or `__other`. Absent on transaction spans. |
@@ -228,10 +228,53 @@ plan or an application-wide SQL profiler. Complex statements and statements over
 8,192 characters use conservative labels. SQL text, parameters, rows, connection URLs,
 credentials, private row IDs and exception details are never attached.
 
-Initialization, detached Jobs and work after HTTP completion create no database
+Initialization, detached Jobs and work after operation completion create no database
 spans in this slice. Disabled or sampled-out requests keep the same database
 behavior without operation spans. A collector outage does not change database
 results, ACL checks, retries, transaction ownership, rollback or handle revocation.
+
+### WebSocket operation signals
+
+The same selected Telemetry profile automatically instruments `query.subscribe`
+dispatch, each subsequent live-query execution, and `mutation.run`. No additional
+configuration, Capsule import, browser SDK or public API is required. Connection
+tokens, Origin checks, credential revalidation, per-connection message ordering,
+subscription generations and reconnection behavior retain their existing meaning.
+Dev uses the current session profile after a successful configuration reload;
+outgoing connections settle against their original adapter before it exports.
+Graceful shutdown settles accepted connections before final metric collection,
+so its last active-connection sample is zero even with operations in flight.
+
+| Signal | Meaning |
+| --- | --- |
+| `websocket.query`, `websocket.mutation` | One SERVER span per logical execution, including translated handler failures and authorization denials. |
+| `sporades.websocket.operation.count` | Completed executions, unit `1`, independent of trace sampling. |
+| `sporades.websocket.operation.duration` | Execution duration histogram in seconds, independent of trace sampling; includes cancellation intervals. |
+| `sporades.websocket.active_connections` | Gauge of accepted connections, unit `1`; exports zero after the last connection closes. Rejected upgrades do not increment it. |
+| `sporades.websocket.operation.type` | `query` or `mutation`. |
+| `sporades.websocket.operation.name` | Runtime-declared handler/table operation name, at most 80 ASCII identifier characters and 64 distinct names per process. Unrecognized names use `__unknown`; surplus names use `__other`. |
+| `sporades.websocket.outcome` | `success`, `denied`, `error` or `cancelled`. Denials, errors and cancellations set ERROR span status without exception details. Counts partitioned by outcome provide error/denial rates. |
+
+Each operation has an isolated async context; database children belong to that
+execution. Spans end on result settlement, unsubscribe, replacement, connection
+close or shutdown. A superseded live-query execution is `cancelled`; this only
+ends its telemetry and does not abort its handler or change transaction behavior.
+There is no connection-lifetime or subscription-lifetime span. Refresh executions
+start new root traces and retain neither subscription nor triggering mutation
+context. Duration starts at dispatch, excluding time in the existing message queue.
+
+A raw runtime message may supply an optional top-level `traceparent`, accepted
+only as a nonzero, lowercase W3C version `00` trace/span identity with flags `00`
+or `01`. Invalid correlation starts a new root trace; local sampling policy still
+applies. Upgrade context is not inherited. `tracestate` and baggage are discarded,
+and correlation is never retained in subscriptions. Arguments, payloads, message
+IDs, connection/session tokens, user IDs, email addresses and exception text are
+excluded from spans and metric labels. Existing browser transport messages need
+no change. Prometheus stores the dimensionless connection gauge as
+`sporades_websocket_active_connections_ratio`; its value is a connection count.
+The Capsule API dashboard includes operation rates, p95 duration,
+errors/denials/cancellations and active connections; its HTTP Route selector does
+not filter WebSocket panels.
 
 The generated-Bundle tests exercise SQLite by default. To also verify PostgreSQL,
 set `SPORADES_TELEMETRY_POSTGRES_BUNDLE_URL` to a dedicated disposable database.
