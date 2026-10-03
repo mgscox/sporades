@@ -143,8 +143,9 @@ node --test --test-concurrency=1 test/telemetry-outage.test.js \
 npm run monitoring:release-asset -- <worktree-local-output.tar.gz>
 ```
 
-The full suite, including its build/generated parity pretest and the real
-promtool runner, finished with **2,730 passed, 1 failed, 208 skipped, 0 cancelled**
+The first follow-up full suite, before integrating newer `main`, included its
+build/generated parity pretest and the real promtool runner. It finished with
+**2,730 passed, 1 failed, 208 skipped, 0 cancelled**
 (2,939 tests; 2,424,418 ms). This is **not a clean full-suite pass**.
 The focused monitoring/recovery groups passed **21 tests without skips**;
 typecheck, documentation checks (**53 passed**), packed provisioning/parity and
@@ -158,8 +159,26 @@ and the preview was stopped.
 | --- | --- |
 | Two deployment ownership assertions | Both passed in the full run and their focused group with the private gid-20 temporary directory. QA's previous baseline ownership failures remain separate evidence. |
 | Live route owner and read-only inspection timing | Both passed in this full run and the focused group. No timing/security assertion was relaxed. |
-| Both trust-revalidation marker waits | Both passed in the full run. A concurrent focused head group passed apply/rollback and failed remove/restore waiting for its marker; current `main` at `3e59f8862d2a8f39c9afd10523ea94ab0c81193c` failed both marker waits in its focused group under the same environment. These focused results are not substituted for the full run. |
-| ClamAV bounded PING/managed-child cleanup | The full run failed with `ClamAV child did not terminate after SIGKILL`; the focused head case passed, while the same focused case on that current `main` failed with the same cleanup error. Its test and runtime source match `main`. This is baseline-reproduced, not a confirmed freshness correction regression; the full run remains failed. |
+| Both trust-revalidation marker waits | Both passed in the first full run. A concurrent focused head group passed apply/rollback and failed remove/restore waiting for its marker; the `main` snapshot at `3e59f8862d2a8f39c9afd10523ea94ab0c81193c` failed both marker waits in its focused group under the same environment. These focused results are not substituted for a full run. |
+| ClamAV bounded PING/managed-child cleanup | The first full run failed with `ClamAV child did not terminate after SIGKILL`; the focused head case passed, while the same focused case on that `main` snapshot failed with the same cleanup error. Its test and runtime source match `main`. This is baseline-reproduced, not a confirmed freshness correction regression; the first full run remains failed. |
+
+### Integrated branch verification
+
+The final PR check found a generated-manifest conflict with newer `main`.
+Merged `main` at `d243884f2b2d345e052110ab868e482e3e8bfc8f` and regenerated
+the shipped artifacts with `npm run build`; source and type merges were automatic.
+The integrated branch (`056e6a94`) then completed a second full `npm test` in the
+same isolated environment: **2,741 passed, 0 failed, 209 skipped, 0 cancelled**
+(2,950 tests; 1,256,681 ms). All six QA-reported cases and the ClamAV cleanup case
+passed in this full run. This is a clean full-suite pass, distinct from the
+earlier failed run and its focused/baseline comparisons. The additional cases
+and optional acceptance skip come from the integrated `main` changes.
+
+The combined exact-path HTTP admission, promtool freshness and packed stack
+group also passed **12 tests without skips** after integration. Final typecheck,
+documentation checks and generated-source parity passed. The correction adds no
+new API/type contract; regenerated artifacts also preserve the newer runtime
+contracts from `main`.
 
 Earlier Docker recovery, persistent queue and browser/dashboard acceptance is
 retained as prior evidence; these unchanged drills were not repeated for
