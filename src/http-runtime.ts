@@ -108,6 +108,7 @@ import { traceRuntimeOperation } from "./runtime-request-context.js";
 import type { HelperError } from "./runtime-errors.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
+import { matchExactAdmissionRule } from "./admission-policy.js";
 import {
   accessKeyAuthenticationError, emitAccessKeyAdmittedAudit,
   recordAccessKeyUsage, resolveAccessKeyCredential,
@@ -194,6 +195,38 @@ export function interpretHttpRequestTarget(target: unknown, method: unknown): In
   } catch {
     return null;
   }
+}
+
+/** Exact-path HTTP admission, before Capsule routing; genuine controls dispatch first. */
+export function routeHttpAdmission(
+  database: LooseRecord,
+  request: Pick<IncomingMessage, "url" | "method">,
+  response: Pick<ServerResponse, "writeHead" | "end">,
+  target?: InterpretedHttpRequestTarget,
+) {
+  const runtime = database.admissionPolicy;
+  if (!runtime) return false;
+  try {
+    // Snapshot once: a request sees one complete validated immutable generation.
+    const generation = runtime.current();
+    if (!generation || generation.policy.rules.length === 0) return false;
+    const parsed = target ?? requestTarget(request);
+    // Decode once after URL dot-segment normalization. Encoded separators and
+    // double encodings are ambiguous across app/static routes and fail closed.
+    if (/[\\]|%2f|%5c/i.test(parsed.pathname)) throw new Error("Invalid admission pathname.");
+    const pathname = parsed.form === "asterisk" ? "*" : decodeURIComponent(parsed.url.pathname);
+    if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(pathname)) throw new Error("Invalid admission pathname.");
+    if (!matchExactAdmissionRule(generation, pathname)) return false;
+    // This slice implements deny. Future actions cannot silently admit traffic.
+  } catch { /* Malformed or unsupported admission input has the same opaque denial. */ }
+  response.writeHead(403, {
+    "cache-control": "no-store",
+    "content-type": "text/plain; charset=utf-8",
+    "content-length": "10",
+    connection: "close",
+  });
+  response.end("Forbidden\n");
+  return true;
 }
 
 export function requestTarget(request: Pick<IncomingMessage, "url" | "method">) {
@@ -305,7 +338,7 @@ export function emitHttpFailureLog(database: LooseRecord, request: IncomingMessa
   }
 }
 
-export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurityPolicy }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {
+export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurityPolicy }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }, admitPreflight?: () => boolean) {
   const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
   const originalWriteHead = response.writeHead.bind(response);
   response.writeHead = ((statusCode: number, statusMessageOrHeaders?: string | OutgoingHttpHeaders, maybeHeaders?: OutgoingHttpHeaders) => {
@@ -347,6 +380,8 @@ export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurity
   }) as typeof response.writeHead;
 
   if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
+    // CORS preflight is HTTP traffic too; policy denial precedes its automatic reply.
+    if (admitPreflight?.()) return true;
     const headers: OutgoingHttpHeaders = {
       "content-length": "0",
     };

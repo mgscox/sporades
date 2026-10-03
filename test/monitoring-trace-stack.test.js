@@ -308,20 +308,23 @@ test('readiness rejects stale readable metrics while writes fail and recovers af
 
 
 test('UI gateway child handles slow, stalled, broken, and cancelled responses', async () => {
-  let stalledClosed, streamClosed;
-  const stalledCancellation = new Promise(resolve => { stalledClosed = resolve; });
-  const streamCancellation = new Promise(resolve => { streamClosed = resolve; });
-  const observeCancellation = async event => {
-    let deadline;
-    try { await Promise.race([event, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('backend did not observe cancellation')), 3000); })]); }
-    finally { clearTimeout(deadline); }
+  const stalledClosed = Promise.withResolvers();
+  const streamClosed = Promise.withResolvers();
+  const waitForUpstreamClose = async closed => {
+    let timer;
+    try {
+      return await Promise.race([
+        closed,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('upstream was not cancelled')), 2000); }),
+      ]);
+    } finally { clearTimeout(timer); }
   };
   const backend = createServer((req, res) => {
     if (req.url === '/slow') { setTimeout(() => res.end('slow success'), 3300); return; }
-    if (req.url === '/stall') { res.once('close', stalledClosed); return; }
+    if (req.url === '/stall') { res.once('close', () => stalledClosed.resolve(res.writableFinished)); return; }
     if (req.url === '/fail-before') { req.socket.destroy(); return; }
     if (req.url === '/broken') { res.writeHead(200).write('partial'); setTimeout(() => res.destroy(), 40); return; }
-    if (req.url === '/stream') { res.writeHead(200).write('part'); res.once('close', streamClosed); return; }
+    if (req.url === '/stream') { res.writeHead(200).write('part'); res.once('close', () => streamClosed.resolve(res.writableFinished)); return; }
     res.end('still alive');
   });
   await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve));
@@ -352,7 +355,7 @@ test('UI gateway child handles slow, stalled, broken, and cancelled responses', 
     const stalled = await fetch(`${base}/stall`, { headers: auth });
     assert.equal(stalled.status, 504);
     assert.ok(Date.now() - started < 6000);
-    await observeCancellation(stalledCancellation);
+    assert.equal(await waitForUpstreamClose(stalledClosed.promise), false, 'stalled upstream response was aborted before completion');
     await new Promise((resolve, reject) => {
       const request = httpRequest(`${base}/stream`, { headers: auth }, response => {
         response.once('data', () => { request.destroy(); resolve(); });
@@ -360,7 +363,7 @@ test('UI gateway child handles slow, stalled, broken, and cancelled responses', 
       request.once('error', reject);
       request.end();
     });
-    await observeCancellation(streamCancellation);
+    assert.equal(await waitForUpstreamClose(streamClosed.promise), false, 'streamed upstream response was aborted before completion');
     const alive = await fetch(`${base}/api/services`, { headers: auth });
     assert.equal(alive.status, 200);
     assert.equal(await alive.text(), 'still alive');
