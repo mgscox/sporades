@@ -40,3 +40,7 @@ await Promise.all(
     await chmod(outfile, 0o755);
   }),
 );
+
+// Ship exactly the same inventory validation contract to the monitoring gateway.
+const inventoryContract = await readFile(path.join(repoRoot, "dist", "cli", "inventory-contract.js"), "utf8");
+await writeFile(path.join(repoRoot, "monitoring", "trace", "inventory-contract.mjs"), inventoryContract.replace(/\n\/\/# sourceMappingURL=.*$/, "\n"));

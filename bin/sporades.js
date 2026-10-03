@@ -100307,6 +100307,14 @@ ${options.epilogue}
 // src/cli/telemetry-profile.ts
 import { chmod, mkdir as mkdir3, readFile as readFile6, rename as rename4, writeFile as writeFile2 } from "node:fs/promises";
 import path9 from "node:path";
+
+// src/cli/inventory-contract.ts
+var INVENTORY_MAX_BYTES = 1024 * 1024;
+function inventoryHost(value) {
+  return typeof value === "string" && value.length <= 253 && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+}
+
+// src/cli/telemetry-profile.ts
 var aliasPattern = /^[a-z][a-z0-9-]{0,39}$/;
 var envPattern = /^[A-Z][A-Z0-9_]{0,79}$/;
 function profilePath() {
@@ -100327,7 +100335,7 @@ function validateTelemetryProjectConfig(value) {
 function validateTelemetryProfile(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid2("Provide an endpoint, TLS mode and optional references.");
   const profile = value;
-  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid2("Remove unsupported Telemetry profile fields.");
+  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "inventoryCredentialEnv", "inventoryHost", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid2("Remove unsupported Telemetry profile fields.");
   if (typeof profile.endpoint !== "string" || profile.endpoint.length > 2048) invalid2("Use an OTLP/HTTP base URL without credentials or query strings.");
   let url;
   try {
@@ -100345,6 +100353,8 @@ function validateTelemetryProfile(value) {
   if (trust.mode === "loopback" && (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) invalid2("Loopback Telemetry profiles require an HTTP loopback address.");
   if (trust.caFile !== void 0 && (trust.mode !== "verified" || typeof trust.caFile !== "string" || !path9.isAbsolute(trust.caFile) || trust.caFile.length > 1024)) invalid2("Use an absolute private CA file path with verified TLS.");
   if (profile.credentialEnv !== void 0 && (typeof profile.credentialEnv !== "string" || !envPattern.test(profile.credentialEnv))) invalid2("Use an uppercase credential environment reference such as TRACE_INGEST_TOKEN.");
+  if (profile.inventoryCredentialEnv !== void 0 && (typeof profile.inventoryCredentialEnv !== "string" || !envPattern.test(profile.inventoryCredentialEnv))) invalid2("Use an uppercase inventory credential environment reference.");
+  if (profile.inventoryHost !== void 0 && !inventoryHost(profile.inventoryHost)) invalid2("Use a canonical lowercase exact inventory Host identity.");
   if (profile.metricsIntervalMs !== void 0 && (!Number.isSafeInteger(profile.metricsIntervalMs) || profile.metricsIntervalMs < 5e3 || profile.metricsIntervalMs > 3e5)) invalid2("Use a metrics export interval from 5000 to 300000 milliseconds.");
   if (profile.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(profile.eventLoopDelayResolutionMs) || profile.eventLoopDelayResolutionMs < 10 || profile.eventLoopDelayResolutionMs > 1e3)) invalid2("Use an event-loop delay resolution from 10 to 1000 milliseconds.");
   if (profile.dashboard !== void 0) {
@@ -146020,6 +146030,8 @@ Options for profile add:
   --endpoint <url>        OTLP/HTTP base origin (HTTPS, or HTTP loopback with --loopback)
   --dashboard <url>       Optional dashboard HTTPS URL
   --credential-env <KEY>  Environment variable containing the ingestion bearer token
+  --inventory-credential-env <KEY>  Exact Host-scoped lifecycle inventory token
+  --inventory-host <id>   Stable inventory identity (default: first connected domain)
   --metrics-interval-ms <N>  Metrics export period, 5000-300000 ms (default 15000)
   --event-loop-delay-resolution-ms <N>  Delay timer precision, 10-1000 ms (default 20)
   --ca-file <path>        Absolute private CA certificate path for verified TLS
@@ -146063,6 +146075,7 @@ Profile commands:
   upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
   telemetry connect|reconcile|status|check
+  telemetry inventory-export|inventory-reconcile
                       Manage the shared Host Telemetry relay
   telemetry resources-enable|resources-disable|resources-remove
                      Manage Host OS and Caddy collection independently of Capsules
@@ -146181,8 +146194,8 @@ import { createHash as createHash14 } from "node:crypto";
 import { cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
 import path17 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
-var STACK_SCHEMA = 1;
-var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "setup.mjs", "smoke.mjs"];
+var STACK_SCHEMA = 2;
+var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "inventory-contract.mjs", "inventory-store.mjs", "inventory.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "setup.mjs", "smoke.mjs"];
 function prerequisite() {
   if (!["arm64", "x64"].includes(process.arch) || !["linux", "darwin"].includes(process.platform)) {
     throw commandError("Unsupported monitoring stack architecture.", "Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.");
@@ -148648,6 +148661,14 @@ async function runTelemetryProfileCommand(args) {
         input.credentialEnv = readFlagValue(rest, ++index, arg);
         continue;
       }
+      if (arg === "--inventory-credential-env") {
+        input.inventoryCredentialEnv = readFlagValue(rest, ++index, arg);
+        continue;
+      }
+      if (arg === "--inventory-host") {
+        input.inventoryHost = readFlagValue(rest, ++index, arg);
+        continue;
+      }
       if (arg === "--metrics-interval-ms") {
         input.metricsIntervalMs = Number(readFlagValue(rest, ++index, arg));
         continue;
@@ -148673,6 +148694,8 @@ async function runTelemetryProfileCommand(args) {
       ...input.dashboard ? { dashboard: input.dashboard } : {},
       tls: { mode: input.loopback ? "loopback" : "verified", ...input.caFile ? { caFile: input.caFile } : {} },
       ...input.credentialEnv ? { credentialEnv: input.credentialEnv } : {},
+      ...input.inventoryCredentialEnv ? { inventoryCredentialEnv: input.inventoryCredentialEnv } : {},
+      ...input.inventoryHost ? { inventoryHost: input.inventoryHost } : {},
       ...input.metricsIntervalMs !== void 0 ? { metricsIntervalMs: input.metricsIntervalMs } : {},
       ...input.eventLoopDelayResolutionMs !== void 0 ? { eventLoopDelayResolutionMs: input.eventLoopDelayResolutionMs } : {}
     };
@@ -149409,7 +149432,7 @@ function parseHostArgs(args) {
   switch (subcommand) {
     case "telemetry": {
       const [operation, ...extra] = positional;
-      if (!operation || !["connect", "reconcile", "status", "check", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
+      if (!operation || !["connect", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
         throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
       }
       if ((operation === "enable" || operation === "disable") && extra.length !== 1) throw commandError("Missing Capsule subname.", `Use \`sporades host telemetry ${operation} <subname> --host <alias>\`.`);
@@ -151817,7 +151840,9 @@ async function manageHost(options) {
             throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB.");
           }
         }
-        telemetry = { endpoint: profile.endpoint, credential, ...caPem ? { caPem } : {}, ...profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}, ...profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {} };
+        const inventoryCredential = profile.inventoryCredentialEnv ? process.env[profile.inventoryCredentialEnv] : void 0;
+        if (profile.inventoryCredentialEnv && !inventoryCredential) throw commandError("Telemetry inventory credential is unavailable.", "Set the inventory credential environment reference before connecting.");
+        telemetry = { endpoint: profile.endpoint, credential, ...inventoryCredential ? { inventoryCredential } : {}, ...profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}, ...caPem ? { caPem } : {}, ...profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}, ...profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {} };
       }
       const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);

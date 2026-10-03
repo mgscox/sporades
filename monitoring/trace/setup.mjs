@@ -4,6 +4,7 @@ import { realpathSync } from 'node:fs';
 import { chmod, chown, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateInventoryCredentials } from './inventory-contract.mjs';
 
 const owned = ['TRACE_INGEST_TOKEN', 'TRACE_UI_PASSWORD', 'GRAFANA_ADMIN_PASSWORD'];
 const defaults = { TRACE_TLS_MODE: 'tls', TRACE_BIND: '127.0.0.1', TRACE_PORT: '8443', TRACE_UI_USER: 'operator', TRACE_RETENTION: '72h', METRIC_RETENTION: '14d', METRIC_DISK_CAP: '8GB' };
@@ -45,6 +46,8 @@ export function parseEnvironment(source) {
 export function inspectEnvironment(source) {
   const entries = parseEnvironment(source);
   rejectPlaceholderCredentials(entries);
+  try { validateInventoryCredentials(JSON.parse(entries.get('INVENTORY_HOSTS') ?? '{}')); }
+  catch { throw new Error('Invalid INVENTORY_HOSTS: use unique scoped tokens keyed by exact Host identity.'); }
   const mode = entries.get('TRACE_TLS_MODE') ?? defaults.TRACE_TLS_MODE;
   const bind = entries.get('TRACE_BIND') ?? defaults.TRACE_BIND;
   if (!['tls', 'proxy'].includes(mode)) throw new Error('TRACE_TLS_MODE must be tls or proxy');
@@ -84,6 +87,7 @@ export async function setupEnvironment(path) {
   await writeFile(credentialsPath, `${JSON.stringify({
     ingestToken: entries.get('TRACE_INGEST_TOKEN'), uiUser: entries.get('TRACE_UI_USER'),
     uiPassword: entries.get('TRACE_UI_PASSWORD'),
+    inventoryHosts: validateInventoryCredentials(JSON.parse(entries.get('INVENTORY_HOSTS') ?? '{}')),
   })}\n`, { mode: 0o600 });
   await chmod(credentialsPath, 0o600);
   if (identity.transferOwnership) await chown(credentialsPath, identity.uid, identity.gid);

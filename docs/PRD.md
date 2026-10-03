@@ -277,6 +277,10 @@ The following work is intentionally deferred:
   transport and Host-owned Hosted Capsule activation are available; each Host
   connection enables its Capsules by default with per-Capsule opt-out, and
   running Capsules need a controlled restart before coverage is confirmed.
+  Connected Hosts automatically synchronize versioned lifecycle inventory through
+  an exact Host-scoped interface, durable outbox and independent periodic worker.
+  Central acknowledgements survive sender outages; manual import/export is recovery
+  only. Probe scheduling and absence-alert delivery remain separate work.
   Host OS pressure and Caddy Prometheus collection are available through the Host relay.
   Internal Database adapter statement and transaction spans explain database time
   within sampled HTTP requests and WebSocket operations for SQLite, PostgreSQL and libSQL, with bounded
