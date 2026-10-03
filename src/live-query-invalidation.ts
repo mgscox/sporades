@@ -16,6 +16,17 @@ export const LIVE_QUERY_ANY_TABLE = "*";
 
 const liveQueryReads = new AsyncLocalStorage<Set<string>>();
 let dirtyTables = new Set<string>();
+let writeGeneration = 0;
+
+function recordTableWrite(table: string, tables: Set<string>) {
+  tables.add(table);
+  // Query evaluation may write diagnostic logs. Keep those writes in the
+  // completion window, but do not let them recursively refresh failed queries.
+  if (tables === dirtyTables && !liveQueryReads.getStore()) writeGeneration++;
+}
+
+/** Generation of writes published outside live-query evaluation. */
+export function liveQueryWriteGeneration(): number { return writeGeneration; }
 
 // Dialects render `[name]` identifiers as `"name"` before execution; accept either form.
 const quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
@@ -59,18 +70,18 @@ export function recordLiveQueryStatementWrite(sql: string, result?: unknown, tab
   // table would under-refresh. A single trailing terminator is harmless.
   const terminator = text.indexOf(";");
   if (terminator !== -1 && /\S/.test(text.slice(terminator + 1))) {
-    tables.add(LIVE_QUERY_ANY_TABLE);
+    recordTableWrite(LIVE_QUERY_ANY_TABLE, tables);
     return;
   }
   if (nonWritingStatementPattern.test(text)) return;
   const match = writeTablePattern.exec(text);
   if (match && result && typeof result === "object" && "changes" in result && Number((result as { changes: unknown }).changes) === 0) return;
-  tables.add(match ? (match[1] ?? match[2]) : LIVE_QUERY_ANY_TABLE);
+  recordTableWrite(match ? (match[1] ?? match[2]) : LIVE_QUERY_ANY_TABLE, tables);
 }
 
 /** Publishes a settled transaction's writes into the current refresh window. */
 export function publishLiveQueryDirtyTables(tables: Set<string>) {
-  for (const table of tables) dirtyTables.add(table);
+  for (const table of tables) recordTableWrite(table, dirtyTables);
 }
 
 /** Returns the tables written since the previous call, and starts a new window. */

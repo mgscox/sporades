@@ -2,6 +2,8 @@
 export declare const liveQueryTablesTracked: unique symbol;
 /** Stands for a statement whose tables could not be identified; it matches every subscription. */
 export declare const LIVE_QUERY_ANY_TABLE = "*";
+/** Generation of writes published outside live-query evaluation. */
+export declare function liveQueryWriteGeneration(): number;
 /** Runs a live query, collecting every table it reads into `tables`. */
 export declare function trackLiveQueryReads<T>(tables: Set<string>, run: () => T): T;
 export declare function recordLiveQueryStatementRead(sql: string): void;

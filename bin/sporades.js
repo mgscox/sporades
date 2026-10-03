@@ -131055,6 +131055,14 @@ var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracke
 var LIVE_QUERY_ANY_TABLE = "*";
 var liveQueryReads = new AsyncLocalStorage2();
 var dirtyTables = /* @__PURE__ */ new Set();
+var writeGeneration = 0;
+function recordTableWrite(table, tables) {
+  tables.add(table);
+  if (tables === dirtyTables && !liveQueryReads.getStore()) writeGeneration++;
+}
+function liveQueryWriteGeneration() {
+  return writeGeneration;
+}
 var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
 var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
 var writeTablePattern = new RegExp(
@@ -131082,16 +131090,16 @@ function recordLiveQueryStatementWrite(sql2, result, tables = dirtyTables) {
   const text3 = String(sql2);
   const terminator = text3.indexOf(";");
   if (terminator !== -1 && /\S/.test(text3.slice(terminator + 1))) {
-    tables.add(LIVE_QUERY_ANY_TABLE);
+    recordTableWrite(LIVE_QUERY_ANY_TABLE, tables);
     return;
   }
   if (nonWritingStatementPattern.test(text3)) return;
   const match = writeTablePattern.exec(text3);
   if (match && result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
-  tables.add(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE);
+  recordTableWrite(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE, tables);
 }
 function publishLiveQueryDirtyTables(tables) {
-  for (const table of tables) dirtyTables.add(table);
+  for (const table of tables) recordTableWrite(table, dirtyTables);
 }
 function takeLiveQueryDirtyTables() {
   const taken = dirtyTables;
@@ -140497,6 +140505,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       let dirty = takeLiveQueryDirtyTables();
       do {
         refreshRequested = false;
+        const generation = liveQueryWriteGeneration();
         const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
         const pending = [];
         for (const subscribedClient of clients) {
@@ -140510,7 +140519,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
           }
         }
         await Promise.all(pending);
-        dirty = takeLiveQueryDirtyTables();
+        dirty = refreshRequested || liveQueryWriteGeneration() !== generation ? takeLiveQueryDirtyTables() : /* @__PURE__ */ new Set();
       } while (dirty.size > 0 || refreshRequested);
     } finally {
       refreshingQueries = false;

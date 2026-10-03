@@ -12,6 +12,16 @@ export const liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTab
 export const LIVE_QUERY_ANY_TABLE = "*";
 const liveQueryReads = new AsyncLocalStorage();
 let dirtyTables = new Set();
+let writeGeneration = 0;
+function recordTableWrite(table, tables) {
+    tables.add(table);
+    // Query evaluation may write diagnostic logs. Keep those writes in the
+    // completion window, but do not let them recursively refresh failed queries.
+    if (tables === dirtyTables && !liveQueryReads.getStore())
+        writeGeneration++;
+}
+/** Generation of writes published outside live-query evaluation. */
+export function liveQueryWriteGeneration() { return writeGeneration; }
 // Dialects render `[name]` identifiers as `"name"` before execution; accept either form.
 const quotedIdentifier = String.raw `(?:\[([^\]]+)\]|"([^"]+)")`;
 const readTablePattern = new RegExp(String.raw `\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
@@ -49,7 +59,7 @@ export function recordLiveQueryStatementWrite(sql, result, tables = dirtyTables)
     // table would under-refresh. A single trailing terminator is harmless.
     const terminator = text.indexOf(";");
     if (terminator !== -1 && /\S/.test(text.slice(terminator + 1))) {
-        tables.add(LIVE_QUERY_ANY_TABLE);
+        recordTableWrite(LIVE_QUERY_ANY_TABLE, tables);
         return;
     }
     if (nonWritingStatementPattern.test(text))
@@ -57,12 +67,12 @@ export function recordLiveQueryStatementWrite(sql, result, tables = dirtyTables)
     const match = writeTablePattern.exec(text);
     if (match && result && typeof result === "object" && "changes" in result && Number(result.changes) === 0)
         return;
-    tables.add(match ? (match[1] ?? match[2]) : LIVE_QUERY_ANY_TABLE);
+    recordTableWrite(match ? (match[1] ?? match[2]) : LIVE_QUERY_ANY_TABLE, tables);
 }
 /** Publishes a settled transaction's writes into the current refresh window. */
 export function publishLiveQueryDirtyTables(tables) {
     for (const table of tables)
-        dirtyTables.add(table);
+        recordTableWrite(table, dirtyTables);
 }
 /** Returns the tables written since the previous call, and starts a new window. */
 export function takeLiveQueryDirtyTables() {

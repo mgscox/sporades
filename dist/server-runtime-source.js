@@ -14,7 +14,7 @@ import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js"
 import { createMailRuntime } from "./mail-runtime.js";
 import { ensureNotificationIntentStorage, notificationIntentStorageExists, startNotificationIntentWorker, stopNotificationIntentWorker } from "./notification-intent-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
-import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
+import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, liveQueryWriteGeneration, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
 import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, EMAIL_SIGN_IN_FAILURE_LIMIT, EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES, EMAIL_SIGN_IN_THROTTLE_WINDOW_MS, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, isReservedAuthUserId, mailNotConfiguredError, normalizeEmailCredentials, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
 // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
@@ -6149,6 +6149,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             let dirty = takeLiveQueryDirtyTables();
             do {
                 refreshRequested = false;
+                const generation = liveQueryWriteGeneration();
                 const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
                 const pending = [];
                 for (const subscribedClient of clients) {
@@ -6162,7 +6163,11 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 // A query may have read its snapshot before a concurrent write settled.
                 // Keep that write's marker for a follow-up after this refresh completes.
                 // Also retain completion notifications for adapters without table tracking.
-                dirty = takeLiveQueryDirtyTables();
+                // Diagnostic writes made by the queries themselves stay available for
+                // future completion notifications, without causing a refresh feedback loop.
+                dirty = refreshRequested || liveQueryWriteGeneration() !== generation
+                    ? takeLiveQueryDirtyTables()
+                    : new Set();
             } while (dirty.size > 0 || refreshRequested);
         }
         finally {

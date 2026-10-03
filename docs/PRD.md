@@ -478,6 +478,8 @@ remote write may have committed before its HTTP acknowledgement is lost.
 Libsql `exec()` publishes conservative invalidation after HTTP settlement, including
 rejection. Writes arriving during an in-flight subscription refresh trigger a
 follow-up refresh of their readers after that refresh completes.
+Query diagnostic writes remain in the completion window without recursively
+triggering more refreshes of failed queries.
 
 React and Preact clients can adapt those same primitives with `createHooks`:
 

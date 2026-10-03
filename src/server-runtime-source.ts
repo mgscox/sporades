@@ -20,7 +20,7 @@ import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js"
 import { createMailRuntime } from "./mail-runtime.js";
 import { ensureNotificationIntentStorage, notificationIntentStorageExists, startNotificationIntentWorker, stopNotificationIntentWorker } from "./notification-intent-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
-import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
+import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, liveQueryWriteGeneration, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
 import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
 import { HelperError, assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
@@ -6359,6 +6359,7 @@ export function createWebSocketHub(
       let dirty = takeLiveQueryDirtyTables();
       do {
         refreshRequested = false;
+        const generation = liveQueryWriteGeneration();
         const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
         const pending: Promise<void>[] = [];
         for (const subscribedClient of clients) {
@@ -6375,7 +6376,11 @@ export function createWebSocketHub(
         // A query may have read its snapshot before a concurrent write settled.
         // Keep that write's marker for a follow-up after this refresh completes.
         // Also retain completion notifications for adapters without table tracking.
-        dirty = takeLiveQueryDirtyTables();
+        // Diagnostic writes made by the queries themselves stay available for
+        // future completion notifications, without causing a refresh feedback loop.
+        dirty = refreshRequested || liveQueryWriteGeneration() !== generation
+          ? takeLiveQueryDirtyTables()
+          : new Set<string>();
       } while (dirty.size > 0 || refreshRequested);
     } finally {
       refreshingQueries = false;

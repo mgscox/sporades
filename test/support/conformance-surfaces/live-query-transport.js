@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { job, mutation, query, String as Text, table } from "../../../dist/server.js";
+import { job, mutation, query, requireAuth, String as Text, table } from "../../../dist/server.js";
 import { createWebSocketHub, openDevDatabase, runCurrentUserJobWorker } from "../../../dist/server-runtime-source.js";
 import { takeLiveQueryDirtyTables } from "../../../dist/live-query-invalidation.js";
 import { createLibsqlLostAckProxy } from "../libsql-lost-ack-proxy.js";
@@ -30,9 +30,10 @@ export const CONFORMANCE_SURFACE = {
       const dir = await mkdtemp(path.join(tmpdir(), "query-transport-"));
       const runs = [0, 0];
       let heldTodoQuery;
+      let deniedRuns = 0;
       const definition = {
         schema: Object.fromEntries(names.map((name) => [name, table({ text: Text() }).acl({ read: () => true, write: () => true })])),
-        queries: Object.fromEntries(names.slice(0, 2).map((name, index) => [name, query(async (ctx) => {
+        queries: { ...Object.fromEntries(names.slice(0, 2).map((name, index) => [name, query(async (ctx) => {
           runs[index] += 1;
           await Promise.resolve();
           const rows = await ctx.db[name].all();
@@ -43,7 +44,13 @@ export const CONFORMANCE_SURFACE = {
             await held.release.promise;
           }
           return rows;
-        })])),
+        })])), denied: query((ctx) => {
+          deniedRuns++;
+          // Bound a broken diagnostic feedback loop so this regression fails
+          // an assertion instead of starving timers and hanging the test runner.
+          if (deniedRuns > 2) return [];
+          return requireAuth(ctx);
+        }) },
         mutations: {
           write: mutation((ctx, name) => ctx.db[name].insert({ text: "mutation" })),
           enqueue: mutation((ctx) => ctx.jobs.enqueue("writeNote", null)),
@@ -216,6 +223,14 @@ export const CONFORMANCE_SURFACE = {
           assert.equal(lostAckProxy.lostAcknowledgements, 2);
           assert.equal((await database.adapter.prepare('SELECT "text" FROM "transport_todos"').get()).text, "exec-lost-ack");
           await expectTodo("exec-lost-ack", () => database.__notifyJobStateQueries());
+
+          assert.equal((await send({ id: "denied", type: "query.subscribe", query: "denied" })).error.code, "UNAUTHENTICATED");
+          takeLiveQueryDirtyTables();
+          await database.adapter.prepare(sql).run("diagnostic-refresh");
+          await expectTodo("diagnostic-refresh", () => database.__notifyJobStateQueries());
+          await pause();
+          await send({ id: "diagnostic-sentinel", type: "auth.get" });
+          assert.equal(deniedRuns, 2, "a denied query's diagnostic write must not refresh itself repeatedly");
         }
 
         // Postgres resource scopes use an independent connection, so an ordinary
