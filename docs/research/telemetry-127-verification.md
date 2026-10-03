@@ -287,3 +287,37 @@ generated-bin precheck passed. The original health/unregister case passed in
 Journey reconnect case in 1,950.4ms. The second-reconnect successful-publication
 and zero-unintended-disable assertions are preserved. Only this completed run,
 not isolated retries or interrupted attempts, establishes the required green gate.
+
+## Round 4 follow-up: main integration and focused verification
+
+Fetched current `main` and the PR branch on 2026-10-03. `origin/main` was
+`4473caeac86d649231b614992b51e0a33ebbc161`, already an ancestor of candidate
+`f79b8a3bd898645185f174ab6c8fb6d3b95e0a5d`; `git merge --no-edit origin/main`
+returned `Already up to date.` No runtime or test changes were needed.
+
+Following the CEO's round-four instruction, the two full-suite failures are
+tracked separately in [#208](https://github.com/mgscox/sporades/issues/208):
+the public-tree candidate wait in `test/deploy.test.js:1813` and frozen-clock
+retry in `test/file-ingress.test.js:252`. Round-four QA's completed full suite
+remains red (2,738 passed, 207 skipped, two failed, zero cancelled); its isolated
+retries passed. This follow-up does not claim a new green full-suite run.
+
+Fresh validation: `npm run build`, `npm run typecheck`,
+`node scripts/check-generated-bin.mjs`, and unchanged `bin`/`dist` parity passed.
+The combined sender credentials, Host inventory reconnect and WebSocket Bundle
+files passed 19 tests; the seven focused Host fixture tests passed; the client
+runtime and Journey expiry files passed 92 tests; lifecycle inventory, monitoring
+smoke origin and monitoring stack CLI files passed 10 tests. All had zero
+failures, cancellations or skips. The commands are the focused commands above,
+plus `node --test --test-concurrency=1 test/lifecycle-inventory.test.js
+test/monitoring-smoke-origin.test.js test/monitoring-stack-cli.test.js`.
+
+Configuration and temporary files stayed inside the worktree through
+`SPORADES_CONFIG_DIR="$PWD/.sporades/ken-pr203-config"` and
+`TMPDIR="$PWD/.sporades/ken-pr203-tmp"`; archive checks used `COPYFILE_DISABLE=1`.
+An initial Host fixture run failed because the repository's ESM package scope
+reached its CommonJS fake Docker/Caddy scripts. Adding `{"type":"commonjs"}`
+to the ignored temporary directory's `package.json` restored the normal fixture
+environment, and all seven checks then passed. Logs, including that failed
+setup attempt, are retained in `.sporades/ken-pr203-checks/`. No real Host,
+cloud, publication or release operations were performed.
