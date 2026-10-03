@@ -1,5 +1,8 @@
-/** Deployer-owned JSON policy. HTTP exact-path and trusted Hosted address denial/quotas precede Capsule code.
- * Fixed-window quotas require trusted Hosted identity; other conditions fail closed when indeterminate. */
+/** Deployer-owned JSON policy. HTTP conditions use AND and ordered first-match denial/quotas.
+ * Methods are uppercase ASCII; paths decode once and normalize dot segments, prefixes follow segment boundaries.
+ * Header names are lowercase non-sensitive tokens; values have no outer whitespace. Presence accepts duplicates;
+ * exact values require one raw occurrence (ambiguous duplicates fail closed). Query keys decode once, case-sensitively.
+ * Missing trusted address identity is indeterminate; fixed-window quotas require trusted Hosted identity. */
 export type AdmissionCondition =
   | { kind: "method"; value: string }
   | { kind: "pathname"; exact: string } | { kind: "pathname"; prefix: string }

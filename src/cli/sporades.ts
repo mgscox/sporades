@@ -2446,6 +2446,7 @@ async function startDevSession(options: LooseRecord) {
       }
       const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
       if (!target) {
+        if (routeHttpAdmission(runtime.database, request, response)) return;
         writeInvalidHttpRequestTarget(runtime.database, request, response);
         return;
       }
