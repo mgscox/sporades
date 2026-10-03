@@ -134549,16 +134549,20 @@ async function createLibsqlDatabaseAdapter(options) {
           return this.all(...params).then((rows) => rows[0] ?? null);
         },
         run(...params) {
-          return run2(() => {
+          return run2(async () => {
             assertLibsqlOpen(closed);
-            return libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params, close: !transaction }).then((result) => {
+            try {
+              const result = await libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params, close: !transaction });
               const written = {
                 changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
                 lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === void 0 ? void 0 : BigInt(result.last_insert_rowid)
               };
               recordLiveQueryStatementWrite(sql2, written);
               return written;
-            });
+            } catch (error) {
+              recordLiveQueryStatementWrite(sql2);
+              throw error;
+            }
           });
         },
         columns() {

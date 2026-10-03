@@ -2605,9 +2605,10 @@ export async function createLibsqlDatabaseAdapter(options) {
                     return this.all(...params).then((rows) => rows[0] ?? null);
                 },
                 run(...params) {
-                    return run(() => {
+                    return run(async () => {
                         assertLibsqlOpen(closed);
-                        return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => {
+                        try {
+                            const result = await libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction });
                             const written = {
                                 changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
                                 lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === undefined
@@ -2616,7 +2617,14 @@ export async function createLibsqlDatabaseAdapter(options) {
                             };
                             recordLiveQueryStatementWrite(sql, written);
                             return written;
-                        });
+                        }
+                        catch (error) {
+                            // The remote write may have committed before its acknowledgement was
+                            // lost. Record after rejection so an intervening refresh cannot consume
+                            // its marker, and do not trust a zero-row count without a valid result.
+                            recordLiveQueryStatementWrite(sql);
+                            throw error;
+                        }
                     });
                 },
                 columns() {

@@ -7,6 +7,7 @@ import path from "node:path";
 import { job, mutation, query, String as Text, table } from "../../../dist/server.js";
 import { createWebSocketHub, openDevDatabase, runCurrentUserJobWorker } from "../../../dist/server-runtime-source.js";
 import { takeLiveQueryDirtyTables } from "../../../dist/live-query-invalidation.js";
+import { createLibsqlLostAckProxy } from "../libsql-lost-ack-proxy.js";
 
 const names = ["transport_todos", "transport_notes", "transport_audits"];
 const pause = () => new Promise((resolve) => setTimeout(resolve, 100));
@@ -41,7 +42,12 @@ export const CONFORMANCE_SURFACE = {
       let hub;
       let server;
       let socket;
+      let lostAckProxy;
       try {
+        if (adapter.engine === "libsql") {
+          lostAckProxy = await createLibsqlLostAckProxy(engineContext.url);
+          serviceEnv.SPORADES_SERVICE_DATABASE_URL = lostAckProxy.url;
+        }
         database = await openDevDatabase(path.join(dir, "database.db"), "", serviceEnv, {
           name: "query-transport",
           services: { database: { engine: adapter.engine } },
@@ -92,6 +98,42 @@ export const CONFORMANCE_SURFACE = {
         await pause();
         assert.deepEqual(runs, [2, 3]);
         assert.deepEqual(events.filter((event) => event.type === "query.result").map((event) => event.id), ["transport_notes"]);
+
+        if (adapter.engine === "libsql") {
+          takeLiveQueryDirtyTables();
+          const before = [...runs];
+          events.length = 0;
+          assert.equal((await database.adapter.prepare('UPDATE "transport_todos" SET "text" = ? WHERE "id" = ?').run("absent", "missing")).changes, 0);
+          database.__notifyJobStateQueries();
+          await pause();
+          await send({ id: "zero-row-sentinel", type: "auth.get" });
+          assert.deepEqual(runs, before, "successful recognized zero-row writes still refresh none");
+          assert.deepEqual(events.filter((event) => event.type === "query.result"), []);
+
+          const sql = 'UPDATE "transport_todos" SET "text" = ?';
+          lostAckProxy.loseNextAcknowledgement(sql);
+          await assert.rejects(database.adapter.prepare(sql).run("lost-ack-value"), /fetch failed/);
+          assert.equal(lostAckProxy.lostAcknowledgements, 1, "the response was lost after storage completed the write");
+          assert.equal((await database.adapter.prepare('SELECT "text" FROM "transport_todos"').get()).text, "lost-ack-value");
+          const delivered = Promise.withResolvers();
+          const onResult = (event) => {
+            const value = JSON.parse(String(event.data));
+            if (value.id === "transport_todos" && value.data?.some((row) => row.text === "lost-ack-value")) delivered.resolve(value);
+          };
+          socket.addEventListener("message", onResult);
+          let timeout;
+          try {
+            database.__notifyJobStateQueries();
+            const value = await Promise.race([delivered.promise, new Promise((_, reject) => {
+              timeout = setTimeout(() => reject(new Error("Lost libsql acknowledgement left subscription stale")), 1000);
+            })]);
+            assert.equal(value.error, null);
+            assert.deepEqual(runs, [before[0] + 1, before[1]], "the rejected write refreshes only its table's readers");
+          } finally {
+            clearTimeout(timeout);
+            socket.removeEventListener("message", onResult);
+          }
+        }
 
         // Postgres resource scopes use an independent connection, so an ordinary
         // mutation can refresh subscriptions while their writes are still hidden.
@@ -179,6 +221,7 @@ export const CONFORMANCE_SURFACE = {
         hub?.disconnectAll();
         if (server) await new Promise((resolve) => server.close(resolve));
         if (database) { await database.shutdown(); await database.close(); }
+        await lostAckProxy?.close();
         await rm(dir, { recursive: true, force: true });
       }
     },

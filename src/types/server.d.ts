@@ -1384,7 +1384,8 @@ export function stripeEvent<Handler extends AtomicStripeEventHandler>(options: {
  * full refresh; values derived from clocks or external state do not refresh on unrelated writes.
  * Only recognized single-table writes may skip refresh when they report zero changed rows;
  * batches and unknown statements retain full refresh even with a zero-row final result.
- * Rejected Postgres prepared writes retain conservative refresh because earlier writes may have committed.
+ * Rejected Postgres and libsql prepared writes retain conservative refresh when writes may have committed,
+ * including errors after a batch COMMIT or a lost remote acknowledgement.
  * Dedicated Postgres resource writes publish invalidation after
  * transaction settlement, even if another refresh ran before commit.
  */
