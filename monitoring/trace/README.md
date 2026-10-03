@@ -77,6 +77,9 @@ never remove central expectations. This service does not schedule probes or aler
 schemaVersion-1 snapshots; `GET` exports only that scope. Stale or conflicting
 revisions return 409, cross-Host access 403. Bare application origins contain no
 secrets/readiness paths, headers or payloads. Deleted identities remain tombstones.
+Host identities, Hosted domains and origin hostnames use the existing lowercase
+DNS-label rules, including consecutive internal hyphens and ASCII punycode such
+as `a--b.apps.example` and `xn--bcher-kva.example`.
 A single gateway writer serializes updates and acknowledges only after atomic
 replacement/fsync. Writable inventory storage is a `/health` dependency.
 

@@ -12,11 +12,11 @@ The round-three regression first reproduced silent omission of both
 `xn--bcher-kva.example` and `a--b.example` under the independent `host-one`
 scope. Inventory validation now follows the existing Host DNS-label rules:
 1–63 lowercase letters/digits/internal hyphens per label, 253 characters total,
-including consecutive hyphens and ASCII punycode. Source, both shipped validators,
-bundled CLI/helper, public type documentation and the generated manifest were
-regenerated together. Tests cover canonical subnames, aliases, continued
+including consecutive hyphens and ASCII punycode. Source and public documentation
+were updated; both shipped validators, bundled CLI/helper and the generated
+manifest were regenerated together. Tests cover canonical subnames, aliases, continued
 neighboring Capsule updates, exact scope denial, malformed labels and sanitized
-origin restrictions. The branch incorporates `main` at `d37a224f`.
+origin restrictions. The branch incorporates `main` at `b4042ce8`.
 
 On the merged branch, build, typecheck, generated-source checks and 33 focused
 inventory/reconnect/relay/gateway/origin tests passed. `npm run docs:check`
@@ -27,6 +27,11 @@ authorization/revision denial and outage/restart recovery. Packed-CLI Container
 CA acceptance passed one test; the legacy-CLI test was skipped because no legacy
 CLI was supplied. Its disposable copy used ports 5689/5690 and a worktree-local
 temporary directory; only port/root substitutions differed from the existing test.
+
+The final `COPYFILE_DISABLE=1 npm test` with worktree-local `SPORADES_CONFIG_DIR`
+completed after the Job telemetry merge: 2,921 tests, 2,714 passed, 207 optional
+skips, zero failures or cancellations, exit 0. The initial in-progress run was
+interrupted to resolve the earlier `main` conflict and is not counted as a pass.
 
 A generated Monitoring Compose stack (`COMPOSE_PROJECT_NAME=barbara195-8528-1003`,
 port 5691) passed trace and metric storage/query, readiness, supported-name
