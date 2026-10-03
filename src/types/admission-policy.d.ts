@@ -1,4 +1,5 @@
-/** Deployer-owned JSON policy for admission publication (no request enforcement yet). */
+/** Deployer-owned JSON policy. HTTP exact-path deny is enforced before Capsule code.
+ * Other conditions and quota actions are reserved for later slices and currently fail closed when indeterminate. */
 export type AdmissionCondition =
   | { kind: "method"; value: string }
   | { kind: "pathname"; exact: string } | { kind: "pathname"; prefix: string }

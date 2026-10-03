@@ -4,6 +4,19 @@ Tables, queries, mutations, authorization, Server env, mail, middleware, actors,
 
 [Back to the feature reference index](../guide/reference.md).
 
+## HTTP request admission
+
+A deployer-owned `admissionPolicy.path` can deny one canonical exact HTTP pathname
+before Capsule auth, File routes, endpoint middleware/handlers or public assets.
+The first matching enabled rule decides. A denial returns an opaque `403` with
+`Cache-Control: no-store` and constant `Forbidden\n` bytes; the request invokes no
+Capsule code. Genuine authenticated runtime-health and connection-token controls
+stay outside admission, and policy validation rejects their reserved targets.
+
+See the [policy contract](projects-and-configuration.md#request-admission-policy-publication)
+for canonicalization, hot generations, the current exact-path-only scope and the
+measured no-policy latency budget. No declaration preserves existing routing.
+
 ## Building the Server Side
 
 ### Define Tables

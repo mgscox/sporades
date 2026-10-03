@@ -10,6 +10,13 @@ export declare const ADMISSION_LIMITS: Readonly<{
 export type { AdmissionCondition, AdmissionAction, AdmissionPolicy, AdmissionGeneration, AdmissionHealth } from "../src/types/admission-policy.js";
 import type { AdmissionGeneration, AdmissionHealth } from "../src/types/admission-policy.js";
 export declare function parseAdmissionPolicy(bytes: Buffer): AdmissionGeneration;
+/** First-match exact-path slice. An indeterminate condition must never grant admission. */
+export declare function matchExactAdmissionRule(generation: AdmissionGeneration, pathname: string): {
+    id: string;
+    enabled: boolean;
+    conditions: readonly import("../src/types/admission-policy.js").AdmissionCondition[];
+    action: import("../src/types/admission-policy.js").AdmissionAction;
+} | null;
 export declare function resolveAdmissionPolicy(value: unknown, files?: unknown): string | null;
 export declare function admissionStorageRoot(preservedRoot: string): string;
 export declare function buildAdmissionPolicy(projectDir: string, value: unknown, files?: unknown): Promise<BuiltDeployFile[]>;
