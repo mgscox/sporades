@@ -67,7 +67,11 @@ diagnostic samples can themselves be lost. Missing data is unknown, and export
 acceptance does not prove storage delivery. The provisioned **Sporades Telemetry
 Pipeline** dashboard and [outage runbook](https://github.com/mgscox/sporades/blob/main/monitoring/trace/OUTAGES.md)
 describe finite retry/flush budgets, loss and optional quota-limited persistent
-Collector queues. No Capsule instrumentation API or additional profile setting
+Collector queues. The source-stale warning uses the newest collection time in a
+bounded 24-hour history, so a disconnected source can warn after 15 minutes even
+after its instant series disappears. Fresh collection clears the warning;
+never-observed sources and sources outside that history remain unknown.
+No Capsule instrumentation API or additional profile setting
 is required. SIGTERM flush stays within 1500 ms and repeated shutdown joins the
 same bounded operation.
 

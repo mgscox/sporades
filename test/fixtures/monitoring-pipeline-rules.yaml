@@ -1,0 +1,78 @@
+rule_files:
+  - ../../monitoring/trace/pipeline-rules.yaml
+evaluation_interval: 1m
+tests:
+  - name: Stopped collection remains observable beyond the instant-selector lookback
+    interval: 1m
+    input_series:
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="stopped", instance="capsule-1"}'
+        values: '0+60x5 stale _x20'
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="stopped", instance="capsule-2"}'
+        values: '0+60x5 _x21'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts:
+          - exp_labels: { severity: warning, service_name: stopped, instance: capsule-1 }
+            exp_annotations:
+              summary: The latest observed Capsule source collection is over 15 minutes old
+          - exp_labels: { severity: warning, service_name: stopped, instance: capsule-2 }
+            exp_annotations:
+              summary: The latest observed Capsule source collection is over 15 minutes old
+      - eval_time: 24h4m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts:
+          - exp_labels: { severity: warning, service_name: stopped, instance: capsule-1 }
+            exp_annotations:
+              summary: The latest observed Capsule source collection is over 15 minutes old
+          - exp_labels: { severity: warning, service_name: stopped, instance: capsule-2 }
+            exp_annotations:
+              summary: The latest observed Capsule source collection is over 15 minutes old
+      - eval_time: 24h5m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts: []
+  - name: Continued fresh collection does not warn
+    interval: 1m
+    input_series:
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="fresh"}'
+        values: '0+60x25'
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts: []
+  - name: Recovery clears the warning even if an older batch is replayed
+    interval: 1m
+    input_series:
+      - series: 'sporades_telemetry_collection_time_seconds{service_name="recovered"}'
+        # Samples through minute 5, stale at 6, reconnect at 22, replay at 23.
+        values: '0+60x5 stale _x15 1320 300 1440'
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts:
+          - exp_labels: { severity: warning, service_name: recovered }
+            exp_annotations:
+              summary: The latest observed Capsule source collection is over 15 minutes old
+      - eval_time: 22m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts: []
+      - eval_time: 23m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts: []
+  - name: Never-observed sources remain absent
+    interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: SporadesPipelineSourceStale
+        exp_alerts: []
+    promql_expr_test:
+      - expr: time() - max_over_time(sporades_telemetry_collection_time_seconds[24h])
+        eval_time: 21m
+        exp_samples: []

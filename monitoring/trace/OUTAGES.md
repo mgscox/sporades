@@ -48,7 +48,14 @@ samples can themselves be lost in the outage. Local logs and Host status remain
 useful when central metrics are unreachable.
 
 `pipeline-rules.yaml` provisions warning rules for missing private scrapes,
-queue pressure, admission loss and failed sends. Notification routing belongs
+queue pressure, admission loss, failed sends and stale source collection. The
+source warning compares the newest collection time observed within a bounded
+24-hour history against the 15-minute threshold. It survives disconnected
+sources disappearing from Prometheus's five-minute instant-selector lookback;
+fresh collection clears it even if older batches are replayed. Never-observed
+sources and sources with no samples left in that 24-hour window remain unknown,
+not healthy zero. Use lifecycle inventory to investigate longer absences.
+Notification routing belongs
 to the existing alerting setup; these rules do not add a new receiver. Neither
 rules nor dashboards can notify while the entire Monitoring server is down.
 The public `/health` keeps its exact `{ "ok": true|false }` contract and verifies
@@ -56,6 +63,16 @@ fresh readable traces and metrics. Private diagnostic ports are never published.
 Backend pressure includes Collector RSS, failed sends, queue pressure and
 Prometheus block storage; use Host filesystem free-space metrics for total disk
 headroom. The 8 GB Prometheus retained-block target does not cap WAL/head disk.
+
+From a source checkout, validate rule syntax and the
+fresh/disconnected/recovered/missing-source fixtures with the provisioned
+Prometheus version in an isolated Docker container:
+
+```sh
+SPORADES_REAL_PROMTOOL=1 node --test test/monitoring-pipeline-rules.test.js
+```
+
+For an installed local `promtool`, set `SPORADES_PROMTOOL_BIN` to its path instead.
 
 ## Optional persistent Collector queues
 

@@ -107,7 +107,65 @@ Build, typecheck, generated CLI parity, docs checks and local release-asset
 generation passed. Pinned Prometheus `promtool check rules` validated all five
 provisioned alert rules in a disposable container with networking disabled.
 
-## Full-suite limitations
+## QA freshness correction (2026-10-03)
+
+QA reproduced a disconnected source disappearing before the 15-minute warning:
+Prometheus's instant selector only retained it for five minutes. The warning now
+uses `max_over_time(sporades_telemetry_collection_time_seconds[24h])`. This bounded
+history keeps previously observed sources available for warning evaluation;
+new collection clears the warning even when an older batch is subsequently
+replayed. Never-observed sources and sources outside the history remain unknown.
+The 24-hour window is an explicit finite observation limit, not retained expected
+inventory or an indefinite absence alert.
+
+The committed promtool fixtures prove fresh collection, the exact 15-minute
+threshold, stopped collection at minute 21 both with and without a stale marker,
+recovery, replay, never-observed sources and expiration of the historical window.
+The original rule failed the minute-21 fixture before the correction. The pinned
+provisioned Prometheus version then passed syntax and all fixture evaluations.
+The packed CLI test also verifies the read-only rule mount and Prometheus's rule
+file configuration, alongside the existing byte-for-byte shipped asset checks.
+
+Validation used a worktree-local `SPORADES_CONFIG_DIR`, `COPYFILE_DISABLE=1`, and
+a short private `TMPDIR` owned by the invoking user with gid 20 and mode 0700:
+
+```sh
+SPORADES_REAL_PROMTOOL=1 npm test
+npm run typecheck
+npm run docs:check
+SPORADES_REAL_PROMTOOL=1 node --test --test-concurrency=1 \
+  test/monitoring-pipeline-rules.test.js test/monitoring-pipeline.test.js \
+  test/monitoring-stack-cli.test.js
+node --test --test-concurrency=1 test/telemetry-outage.test.js \
+  test/telemetry-flush.test.js test/telemetry-shutdown-failure.test.js \
+  test/host-telemetry-relay.test.js test/lifecycle-inventory.test.js \
+  test/host-inventory-reconnect.test.js
+npm run monitoring:release-asset -- <worktree-local-output.tar.gz>
+```
+
+The full suite, including its build/generated parity pretest and the real
+promtool runner, finished with **2,730 passed, 1 failed, 208 skipped, 0 cancelled**
+(2,939 tests; 2,424,418 ms). This is **not a clean full-suite pass**.
+The focused monitoring/recovery groups passed **21 tests without skips**;
+typecheck, documentation checks (**53 passed**), packed provisioning/parity and
+release-asset byte comparisons passed. Regenerated CLI/runtime artifacts are
+unchanged because this correction modifies independently shipped monitoring
+assets, not an API/type or embedded runtime. Playwright checked the rendered
+configuration reference on local port 5203, captured its freshness paragraph,
+and the preview was stopped.
+
+| Case | Full run and separate disposition |
+| --- | --- |
+| Two deployment ownership assertions | Both passed in the full run and their focused group with the private gid-20 temporary directory. QA's previous baseline ownership failures remain separate evidence. |
+| Live route owner and read-only inspection timing | Both passed in this full run and the focused group. No timing/security assertion was relaxed. |
+| Both trust-revalidation marker waits | Both passed in the full run. A concurrent focused head group passed apply/rollback and failed remove/restore waiting for its marker; current `main` at `3e59f8862d2a8f39c9afd10523ea94ab0c81193c` failed both marker waits in its focused group under the same environment. These focused results are not substituted for the full run. |
+| ClamAV bounded PING/managed-child cleanup | The full run failed with `ClamAV child did not terminate after SIGKILL`; the focused head case passed, while the same focused case on that current `main` failed with the same cleanup error. Its test and runtime source match `main`. This is baseline-reproduced, not a confirmed freshness correction regression; the full run remains failed. |
+
+Earlier Docker recovery, persistent queue and browser/dashboard acceptance is
+retained as prior evidence; these unchanged drills were not repeated for
+the alert-only correction. No separate-VM or real Host acceptance is inferred.
+
+## Earlier full-suite limitations
 
 The first complete `COPYFILE_DISABLE=1 npm test` run reported **2,727 passed,
 3 failed, 208 skipped** (2,938 tests; 1,462,267 ms). Its failures were the Google
