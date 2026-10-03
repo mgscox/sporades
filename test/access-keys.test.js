@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import { capsule, endpoint, mutation, query, requireAuth, String as StringField, table } from "../dist/server.js";
 import { createAccessKeySecret, readAccessKeyAuthorization } from "../dist/access-keys-runtime.js";
+import { clientAddressBoundaryToken } from "../dist/client-address.js";
 import { deleteCurrentAuthUser, unlinkCurrentAuthUser } from "../dist/auth-runtime.js";
 import {
   openDevDatabase, routeEndpoint, runClientAccessKeyOperation,
@@ -622,12 +623,14 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
 
     const previousSecuritySession = database.securitySession;
     database.securitySession = "hosted";
+    database.runtimeProbeToken = 'a'.repeat(64);
     for (let attempt = 0; attempt < 30; attempt += 1) {
       const hostileClient = await requestEndpoint(database, "/requests", {
         remoteAddress: "127.0.0.1",
         headers: {
           authorization: `Bearer malformed-${attempt}`,
           "x-sporades-client-address": "198.51.100.10",
+          "x-sporades-client-address-token": clientAddressBoundaryToken(database.runtimeProbeToken),
         },
       });
       assert.equal(hostileClient.status, 401);
@@ -637,6 +640,7 @@ test("a guarded endpoint admits, attributes, scopes, and revokes a Bearer Access
       headers: {
         authorization: `Bearer ${issued.data.token}`,
         "x-sporades-client-address": "198.51.100.11",
+        "x-sporades-client-address-token": clientAddressBoundaryToken(database.runtimeProbeToken),
       },
     });
     assert.equal(independentHostedClient.status, 200,

@@ -109,6 +109,7 @@ import type { HelperError } from "./runtime-errors.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import { matchExactAdmissionRule } from "./admission-policy.js";
+import { trustedClientAddress } from "./client-address.js";
 import {
   accessKeyAuthenticationError, emitAccessKeyAdmittedAudit,
   recordAccessKeyUsage, resolveAccessKeyCredential,
@@ -197,10 +198,10 @@ export function interpretHttpRequestTarget(target: unknown, method: unknown): In
   }
 }
 
-/** Exact-path HTTP admission, before Capsule routing; genuine controls dispatch first. */
+/** Exact-path and trusted-address HTTP admission; genuine controls dispatch first. */
 export function routeHttpAdmission(
   database: LooseRecord,
-  request: Pick<IncomingMessage, "url" | "method">,
+  request: Pick<IncomingMessage, "url" | "method"> & Partial<Pick<IncomingMessage, "headers" | "rawHeaders">>,
   response: Pick<ServerResponse, "writeHead" | "end">,
   target?: InterpretedHttpRequestTarget,
 ) {
@@ -216,7 +217,7 @@ export function routeHttpAdmission(
     if (/[\\]|%2f|%5c/i.test(parsed.pathname)) throw new Error("Invalid admission pathname.");
     const pathname = parsed.form === "asterisk" ? "*" : decodeURIComponent(parsed.url.pathname);
     if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(pathname)) throw new Error("Invalid admission pathname.");
-    if (!matchExactAdmissionRule(generation, pathname)) return false;
+    if (!matchExactAdmissionRule(generation, pathname, trustedClientAddress(database, request))) return false;
     // This slice implements deny. Future actions cannot silently admit traffic.
   } catch { /* Malformed or unsupported admission input has the same opaque denial. */ }
   response.writeHead(403, {

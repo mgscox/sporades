@@ -317,6 +317,72 @@ unreachable collector does not block Capsule requests. Check the Container's
 platform log and monitoring stack readiness/storage separately when tracing is
 missing.
 
+### Outbound HTTP time
+
+An enabled Telemetry profile also creates one `CLIENT` span for each native
+global `fetch` call made while an HTTP request is active. No application
+instrumentation import is required. Overlapping calls remain children of their
+own `SERVER` span. The span measures time until response headers arrive,
+including connection setup and the dependency's wait. Reading or streaming the
+response body remains the caller's responsibility and is outside this span.
+HTTP status 400 and above records `failure`; rejected calls record
+`network_error`, `timeout` (a native `TimeoutError` DOMException, as produced by
+`AbortSignal.timeout`) or `cancelled`. Caller-owned reason properties are never
+evaluated to classify a rejection; a custom `name: 'TimeoutError'` remains cancellation.
+If a signal becomes unsupported while a call is pending, telemetry records
+`network_error` without inspecting its cancellation state.
+Rejections retain the original error object. Telemetry does not add retries,
+deadlines or redirects, and a blocked exporter does not delay dependency calls.
+
+Span names are `HTTP <method>`. Attributes contain only a bounded method,
+response status when available, and `sporades.http.outcome`. No destination,
+path, raw query, headers, body, exception text or private identifier is exported.
+Exporter calls, work outside an active HTTP request, and runtime-owned background
+tasks are excluded. This slice does not instrument `node:http`/`node:https`,
+imported fetch implementations, a fetch reference captured before telemetry
+startup, WebSocket operations or Jobs. It supplies no public instrumentation API.
+Do not layer another fetch instrumentation package over this owned wrapper.
+The original global fetch is restored when the last telemetry owner shuts down.
+Instrumentation supports native string/URL/Request inputs and ordinary data
+`RequestInit` dictionaries (including frozen or inherited data fields). Accessor
+or Proxy options, subclasses, custom coercion, custom dispatchers, custom header iterators,
+unsupported or accessor-modified signals, and composite `AbortSignal.any` signals are
+delegated directly to native fetch without spans or injected context. Evaluating
+those options ahead of fetch could change redirect or rejection behavior.
+
+Propagation defaults to off. An operator may repeat
+`--trace-propagation-origin <origin>` when adding a profile:
+
+```sh
+sporades telemetry profile add dependencies --endpoint https://monitor.example --credential-env TRACE_INGEST_TOKEN --trace-propagation-origin https://dependency.example
+```
+
+The profile's optional `tracePropagationOrigins` array holds at most 32 exact
+HTTP/HTTPS origins. Scheme, normalized hostname and port must match; wildcards,
+credentials, paths, queries and fragments are rejected. This approval is separate
+from the OTLP export destination and is never inferred from incoming headers or
+Capsule project configuration. Local Container launch descriptors retain it;
+`host telemetry connect` persists it in the Host-owned connection and subsequent
+Hosted launch descriptors. Reconnect and restart existing Capsules to change it;
+runtime coverage reports the usual pending restart until the descriptor matches.
+
+Sporades adds a validated `traceparent` identifying the client span only when the
+destination is approved **and the caller selected `redirect: 'manual'` or
+`redirect: 'error'`** (including on a `Request` input). Default/follow redirects
+are traced but receive no injected context, preventing cross-origin redirect
+leaks without changing fetch semantics. No incoming baggage or trace state is
+copied. Caller-authored headers remain the caller's responsibility. Each new
+manual redirect fetch is checked independently against the approval list.
+
+Focused packaged ESM tests run without runtime package resolution on Node 22.13,
+Node 24, and the exact `ghcr.io/sporades/sporades-base:0.2.0-node22-alpine`
+image. Run `SPORADES_FETCH_DOCKER=1 node --test
+test/telemetry-fetch-bundle.test.js` to include the Docker matrix; it uses only
+disposable containers and prints the tested image digests. Runtime behavior and
+outage/redirect/privacy tests are in `test/telemetry-fetch.test.js`; native rejection
+identity, getter-evaluation parity and classification regressions are in
+`test/telemetry-fetch-rejection.test.js`.
+
 ## Create a Capsule
 
 ```sh
@@ -1146,7 +1212,8 @@ They never read the admission generation. Reserved exact paths and prefixes
 covering them are rejected during policy validation, even in disabled rules or
 rules with additional conditions. Aliases and other methods enter admission.
 
-This enforcement slice supports exact pathname conditions and `deny` only.
+This enforcement slice supports exact pathname and trusted Hosted address/CIDR
+conditions with `deny` actions.
 The schema below reserves later matchers and quotas: if an enabled rule cannot
 be ruled out by a nonmatching exact pathname but has an unsupported condition,
 the request receives the same opaque denial. A matching quota action also fails
@@ -1177,7 +1244,52 @@ Unknown fields, versions, match kinds and actions fail validation. Paths must be
 absolute canonical pathnames, without percent escapes, backslashes, query or
 fragment components or dot-segment normalization. Prefix matching is reserved for a subsequent slice. Rules cannot name the runtime-health or
 connection-token controls, or a prefix covering them. Header matching excludes
-credentials, cookies and internal/proxy address headers. Address provenance, the remaining matchers and quota enforcement are subsequent slices.
+credentials, cookies and internal/proxy address headers. The remaining matchers
+and quota enforcement are subsequent slices.
+
+Address conditions match one canonical IPv4 or IPv6 literal, or a CIDR network.
+IPv6 is normalized to lowercase with the first longest zero run compressed.
+IPv4-mapped IPv6 (`::ffff:192.0.2.1` or `::ffff:c000:201`) is the same identity as
+`192.0.2.1`, and matches IPv4 networks. Mapped CIDRs must use prefixes 96–128,
+which normalize to IPv4 prefixes 0–32; shorter mapped prefixes are rejected.
+Other IPv6 networks never match normalized IPv4 identities, including `::/0`.
+Network host bits are masked during matching. Prefix lengths must be decimal,
+without signs or leading zeros, in 0–32 for IPv4 or 0–128 for IPv6. Malformed
+addresses, multiple slashes, zones, ports, brackets, whitespace and lists fail
+generation validation, including in disabled rules.
+
+Only Hosted mode can supply trusted client identity. The Host's Caddy route
+replaces caller-supplied `x-sporades-client-address` and
+`x-sporades-client-address-token` values. Automatic TLS routes use the connection
+peer, never `Forwarded`, `X-Forwarded-For` or `CF-Connecting-IP`. In
+`cloudflare-origin` mode the existing Cloudflare IPv4/IPv6 source allowlist rejects
+other peers before forwarding `CF-Connecting-IP`. This uses the ordinary free
+Cloudflare proxy and requires no paid account feature. Duplicate Cloudflare
+headers become a list and cannot supply identity.
+
+The Host/runtime boundary validates and canonicalizes exactly one address before
+admission. It requires a per-runtime capability derived separately from the
+Host-owned readiness token; Hosted mode or a private header name alone grants no
+authority. Missing/invalid capability, duplicate headers, absent address, or an
+invalid address yields no trusted identity. The capability is omitted from
+Capsule endpoint request headers and never emitted by admission diagnostics.
+Changing the Host readiness credential revokes older address capabilities;
+ordinary restarts retain the existing Host credential. Upgrade the Host helper
+and regenerated Capsules together and recreate their managed routes; an older
+route without the capability cannot provide trusted identity. Existing
+loopback-only published ports and managed route ownership remain required;
+public callers must not reach a Capsule origin around Caddy. The capability also
+prevents an unauthenticated caller reaching the origin from forging identity.
+Access-key source limiting uses this same canonical authenticated identity.
+
+An enabled address-dependent rule is evaluated after any exact-path mismatch has
+been ruled out. If it might apply and trusted identity is absent, the request
+receives the same opaque `403`, `Forbidden\n` bytes and `Cache-Control: no-store`
+as a matched denial. It does not fall back to a public forwarding header or the
+runtime socket's proxy address. Dev (including Public Dev) and local Container
+sessions always have no trusted address, even if supplied with internal headers;
+potentially applicable address rules therefore fail closed there. Disabled rules
+are skipped and unrelated exact-path rules continue to operate normally.
 
 Bounds are 65,536 UTF-8 bytes, nesting depth 8 (root depth 0), 128 rules,
 16 conditions per rule, and 1,024 UTF-8 bytes per match string. An empty rule array

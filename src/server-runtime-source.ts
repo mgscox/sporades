@@ -1,4 +1,5 @@
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
+import { CLIENT_ADDRESS_TOKEN_HEADER } from "./client-address.js";
 import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import type { RuntimeWebSocketOperation, RuntimeWebSocketTelemetry, WebSocketOperationOutcome } from "./runtime-telemetry.js";
@@ -4219,7 +4220,7 @@ async function readEndpointRequest(database: LooseRecord, requestUrl: URL, reque
 
 function endpointRequestHead(requestUrl: URL, request: any, requestPath = requestUrl.pathname) {
   const headers = Object.fromEntries(
-    Object.entries(request.headers).map(([name, value]) => [
+    Object.entries(request.headers).filter(([name]) => name.toLowerCase() !== CLIENT_ADDRESS_TOKEN_HEADER).map(([name, value]) => [
       name.toLowerCase(),
       Array.isArray(value) ? value.join(", ") : value,
     ]),

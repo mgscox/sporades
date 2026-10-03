@@ -38571,7 +38571,7 @@ var init_pdf = __esm({
         var DOM_EXCEPTION = "DOMException";
         var Error2 = getBuiltIn("Error");
         var NativeDOMException = getBuiltIn(DOM_EXCEPTION);
-        var $DOMException = function DOMException() {
+        var $DOMException = function DOMException2() {
           anInstance(this, DOMExceptionPrototype);
           var argumentsLength = arguments.length;
           var message = normalizeStringArgument(argumentsLength < 1 ? void 0 : arguments[0]);
@@ -80348,14 +80348,110 @@ var require_index_shim = __commonJS({
 
 // src/admission-policy.ts
 import path2 from "node:path";
-import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
+
+// src/client-address.ts
 import { isIP } from "node:net";
+import { createHash, timingSafeEqual } from "node:crypto";
+
+// src/access-key-contract.ts
+var ACCESS_KEY_GRANT_LIMIT = 128;
+var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
+var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
+
+// src/client-address.ts
+var CLIENT_ADDRESS_TOKEN_HEADER = "x-sporades-client-address-token";
+function parseAddress(value) {
+  if (typeof value !== "string" || value.length > 45 || /[%\s]/.test(value)) return null;
+  const family = isIP(value);
+  if (family === 4) {
+    return { family: 4, bits: value.split(".").reduce((bits2, part) => bits2 << 8n | BigInt(part), 0n), canonical: value, mapped: false };
+  }
+  if (family !== 6) return null;
+  let expanded = value.toLowerCase();
+  if (expanded.includes(".")) {
+    const colon = expanded.lastIndexOf(":");
+    const octets = expanded.slice(colon + 1).split(".").map(Number);
+    expanded = `${expanded.slice(0, colon)}:${(octets[0] << 8 | octets[1]).toString(16)}:${(octets[2] << 8 | octets[3]).toString(16)}`;
+  }
+  const [left, right] = expanded.split("::");
+  const groups = left ? left.split(":") : [];
+  const tail = right ? right.split(":") : [];
+  if (right !== void 0) groups.push(...Array(8 - groups.length - tail.length).fill("0"), ...tail);
+  const words = groups.map((part) => parseInt(part, 16));
+  const bits = words.reduce((bits2, word) => bits2 << 16n | BigInt(word), 0n);
+  if (bits >> 32n === 0xffffn) {
+    const ipv4 = Number(bits & 0xffffffffn);
+    return { family: 4, bits: bits & 0xffffffffn, canonical: [ipv4 >>> 24, ipv4 >>> 16 & 255, ipv4 >>> 8 & 255, ipv4 & 255].join("."), mapped: true };
+  }
+  let start = -1, length = 1;
+  for (let i = 0; i < words.length; ) {
+    if (words[i] !== 0) {
+      i++;
+      continue;
+    }
+    const from = i;
+    while (i < words.length && words[i] === 0) i++;
+    if (i - from > length) {
+      start = from;
+      length = i - from;
+    }
+  }
+  const hex = words.map((word) => word.toString(16));
+  const canonical = start < 0 ? hex.join(":") : `${hex.slice(0, start).join(":")}::${hex.slice(start + length).join(":")}`;
+  return { family: 6, bits, canonical, mapped: false };
+}
+function canonicalClientAddress(value) {
+  return parseAddress(value)?.canonical ?? null;
+}
+function parseNetwork(value) {
+  const [literal3, prefix, extra] = value.split("/");
+  const address = parseAddress(literal3);
+  if (!address || extra !== void 0 || prefix !== void 0 && !/^(0|[1-9][0-9]{0,2})$/.test(prefix)) return null;
+  const width = address.family === 4 ? 32 : 128;
+  let length = prefix === void 0 ? width : Number(prefix);
+  if (address.mapped && prefix !== void 0) {
+    if (length < 96 || length > 128) return null;
+    length -= 96;
+  }
+  if (length > width) return null;
+  return { address, shift: BigInt(width - length) };
+}
+function validClientAddressNetwork(value) {
+  return parseNetwork(value) !== null;
+}
+function clientAddressMatches(address, network) {
+  const client = parseAddress(address), range = parseNetwork(network);
+  return !!client && !!range && client.family === range.address.family && client.bits >> range.shift === range.address.bits >> range.shift;
+}
+function clientAddressBoundaryToken(probeToken) {
+  return createHash("sha256").update("sporades-client-address\0").update(probeToken).digest("hex");
+}
+function singleHeader(request, name2) {
+  const value = request?.headers?.[name2];
+  if (typeof value !== "string") return null;
+  if (Array.isArray(request.rawHeaders)) {
+    let count = 0;
+    for (let i = 0; i < request.rawHeaders.length; i += 2) if (String(request.rawHeaders[i]).toLowerCase() === name2) count++;
+    if (count !== 1) return null;
+  }
+  return value;
+}
+function trustedClientAddress(database, request) {
+  if (database.securitySession !== "hosted" || typeof database.runtimeProbeToken !== "string" || !/^[a-f0-9]{64}$/.test(database.runtimeProbeToken)) return null;
+  const token = singleHeader(request, CLIENT_ADDRESS_TOKEN_HEADER);
+  if (!token || !/^[a-f0-9]{64}$/.test(token) || !timingSafeEqual(Buffer.from(token, "hex"), Buffer.from(clientAddressBoundaryToken(database.runtimeProbeToken), "hex"))) return null;
+  return canonicalClientAddress(singleHeader(request, ACCESS_KEY_CLIENT_ADDRESS_HEADER));
+}
+
+// src/admission-policy.ts
 import { constants as constants2 } from "node:fs";
 import { lstat as lstat2, open as open2, rename as rename2, rm as rm2 } from "node:fs/promises";
 
 // src/deploy-files.ts
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash as createHash2, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, link, rename, rm, realpath } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
@@ -80428,7 +80524,7 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
   return current2;
 }
 function preservedDeployFilePath(root, relative) {
-  const key = createHash("sha256").update(relative.normalize("NFC")).digest("hex");
+  const key = createHash2("sha256").update(relative.normalize("NFC")).digest("hex");
   return path.join(root, `${key}.file`);
 }
 async function assertPreservedDeployFile(root, relative) {
@@ -80643,7 +80739,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
       if (file.update === "admission") await handle.chmod(292);
       else if (owner) await owner(handle, destination, await handle.stat());
       const identity = await handle.stat();
-      const seed = { root: preservedRoot2, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
+      const seed = { root: preservedRoot2, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash2("sha256").update(contents).digest("hex") };
       await recordPreservedFileAttempt(journal, seed);
       await link(temporary, destination);
       created.push(seed);
@@ -80664,12 +80760,12 @@ async function rollbackPreservedFiles(created, hooks = {}) {
       handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
       const info2 = await handle.stat();
       if (info2.dev !== seed.dev || info2.ino !== seed.ino || info2.nlink !== 1) continue;
-      if (createHash("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
+      if (createHash2("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
       await hooks.beforeClaim?.(target);
       const claimed = path.join(seed.root, `.rollback-${randomUUID()}`);
       await rename(target, claimed);
       const captured = await lstat(claimed);
-      const sameSeed = captured.isFile() && captured.dev === info2.dev && captured.ino === info2.ino && createHash("sha256").update(await readFile(claimed)).digest("hex") === seed.sha256;
+      const sameSeed = captured.isFile() && captured.dev === info2.dev && captured.ino === info2.ino && createHash2("sha256").update(await readFile(claimed)).digest("hex") === seed.sha256;
       if (!sameSeed) {
         try {
           await link(claimed, target);
@@ -80755,9 +80851,7 @@ function condition(value) {
     case "address": {
       object(value, ["kind", "value"]);
       if (!text(value.value)) invalid();
-      const [address, prefix, extra] = value.value.split("/");
-      const family = isIP(address);
-      if (!family || extra !== void 0 || prefix !== void 0 && (!/^(0|[1-9][0-9]{0,2})$/.test(prefix) || Number(prefix) > (family === 4 ? 32 : 128))) invalid();
+      if (!validClientAddressNetwork(value.value)) invalid();
       break;
     }
     case "header":
@@ -80796,13 +80890,15 @@ function parseAdmissionPolicy(bytes) {
       if (!Number.isSafeInteger(rule.action.limit) || rule.action.limit < 1 || rule.action.limit > 1e6 || !Number.isSafeInteger(rule.action.windowMs) || rule.action.windowMs < 1e3 || rule.action.windowMs > 864e5) invalid();
     } else invalid();
   }
-  return freeze({ digest: createHash2("sha256").update(bytes).digest("hex"), policy: value });
+  return freeze({ digest: createHash3("sha256").update(bytes).digest("hex"), policy: value });
 }
-function matchExactAdmissionRule(generation, pathname) {
+function matchExactAdmissionRule(generation, pathname, address = null) {
   for (const rule of generation.policy.rules) {
     if (!rule.enabled) continue;
     if (rule.conditions.some((item) => item.kind === "pathname" && "exact" in item && item.exact !== pathname)) continue;
-    if (rule.conditions.some((item) => item.kind !== "pathname" || !("exact" in item))) {
+    if (rule.conditions.some((item) => item.kind === "address") && !address) throw new Error("Missing trusted admission address.");
+    if (rule.conditions.some((item) => item.kind === "address" && !clientAddressMatches(address, item.value))) continue;
+    if (rule.conditions.some((item) => item.kind !== "address" && (item.kind !== "pathname" || !("exact" in item)))) {
       throw new Error("Unsupported admission condition.");
     }
     return rule;
@@ -80968,7 +81064,7 @@ function validateAliasDomains(value) {
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
-import { createHash as createHash16, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual5, X509Certificate } from "node:crypto";
+import { createHash as createHash17, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync as readFileSync4, statSync as statSync2, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod3, cp as cp2, lstat as lstat12, mkdir as mkdir10, open as open4, readdir as readdir5, readFile as readFile13, rename as rename8, rm as rm9, writeFile as writeFile9 } from "node:fs/promises";
@@ -99419,7 +99515,7 @@ function hasHint(error) {
 }
 
 // src/sealed-server-env.ts
-import { createCipheriv, createDecipheriv, createHash as createHash3, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash as createHash4, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
 import { lstat as lstat5, mkdir as mkdir2, readFile as readFile4, rename as rename3, rm as rm3, writeFile } from "node:fs/promises";
 import path6 from "node:path";
 var ENVELOPE_VERSION = 1;
@@ -99618,7 +99714,7 @@ function exportedEnvelope(envelope) {
 }
 function fingerprintPublicKey(publicKey) {
   const fingerprintSource = isBinaryLike(publicKey) ? publicKey : createPublicKey(publicKey).export({ type: "spki", format: "pem" });
-  return createHash3("sha256").update(fingerprintSource).digest("hex").slice(0, 16);
+  return createHash4("sha256").update(fingerprintSource).digest("hex").slice(0, 16);
 }
 function validateEnvelope(envelope) {
   if (!isRecord(envelope)) {
@@ -100319,6 +100415,23 @@ ${options.epilogue}
 import { chmod, mkdir as mkdir3, readFile as readFile6, rename as rename4, writeFile as writeFile2 } from "node:fs/promises";
 import path9 from "node:path";
 
+// src/telemetry-propagation-policy.ts
+function validateTracePropagationOrigins(value) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value) || value.length > 32) throw new Error("Invalid trace propagation origins.");
+  return [...new Set(value.map((entry) => {
+    if (typeof entry !== "string" || entry.length > 2048 || !/^https?:\/\/[^/?#]+\/?$/i.test(entry) || /[\s\\*]/.test(entry)) throw new Error("Invalid trace propagation origins.");
+    let url;
+    try {
+      url = new URL(entry);
+    } catch {
+      throw new Error("Invalid trace propagation origins.");
+    }
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.hostname.includes("*") || url.username || url.password || url.pathname !== "/" || url.search || url.hash || entry.includes("?") || entry.includes("#")) throw new Error("Invalid trace propagation origins.");
+    return url.origin;
+  }))];
+}
+
 // src/cli/inventory-contract.ts
 var INVENTORY_MAX_BYTES = 1024 * 1024;
 function inventoryHost(value) {
@@ -100346,7 +100459,7 @@ function validateTelemetryProjectConfig(value) {
 function validateTelemetryProfile(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid2("Provide an endpoint, TLS mode and optional references.");
   const profile = value;
-  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "inventoryCredentialEnv", "inventoryHost", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid2("Remove unsupported Telemetry profile fields.");
+  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "inventoryCredentialEnv", "inventoryHost", "metricsIntervalMs", "eventLoopDelayResolutionMs", "tracePropagationOrigins"].includes(key))) invalid2("Remove unsupported Telemetry profile fields.");
   if (typeof profile.endpoint !== "string" || profile.endpoint.length > 2048) invalid2("Use an OTLP/HTTP base URL without credentials or query strings.");
   let url;
   try {
@@ -100377,6 +100490,13 @@ function validateTelemetryProfile(value) {
       return invalid2("Use a valid dashboard URL.");
     }
     if (dashboard.protocol !== "https:" || dashboard.username || dashboard.password || dashboard.search || dashboard.hash) invalid2("Use a dashboard HTTPS URL without credentials, query or fragment.");
+  }
+  if (profile.tracePropagationOrigins !== void 0) {
+    try {
+      profile.tracePropagationOrigins = validateTracePropagationOrigins(profile.tracePropagationOrigins);
+    } catch {
+      invalid2("Use at most 32 exact HTTP/HTTPS origins without credentials, paths, queries or fragments.");
+    }
   }
   return profile;
 }
@@ -100432,7 +100552,7 @@ async function resolveLocalTelemetryConfig(config, sessionProfile) {
   const profile = Object.hasOwn(profiles, name2) ? profiles[name2] : void 0;
   if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
   if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name2}.`);
-  return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs, eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs };
+  return { ...profile.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}, endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs, eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs };
 }
 function toContainerTelemetryConfig(resolved) {
   const endpoint = new URL(resolved.endpoint);
@@ -102440,7 +102560,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash10, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash11, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -102463,12 +102583,6 @@ function chainMaybePromise(steps) {
   }
   return pending ?? void 0;
 }
-
-// src/access-key-contract.ts
-var ACCESS_KEY_GRANT_LIMIT = 128;
-var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
-var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
-var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
 
 // src/access-keys-runtime.ts
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
@@ -103184,9 +103298,7 @@ function accessKeySelectorFingerprint(selector) {
   return accessKeyCrypto().createHash("sha256").update("sporades-access-key-selector-limit\0").update(selector).digest("hex");
 }
 function accessKeySourceBucket(database, request) {
-  const forwarded = database.securitySession === "hosted" ? request?.headers?.[ACCESS_KEY_CLIENT_ADDRESS_HEADER] : null;
-  const trustedClientAddress = typeof forwarded === "string" && forwarded.length > 0 && Buffer.byteLength(forwarded, "utf8") <= 128 && !/[,\s\u0000-\u001f\u007f]/.test(forwarded) ? forwarded : null;
-  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-source-limit\0").update(trustedClientAddress ?? String(request?.socket?.remoteAddress ?? "unknown")).digest("hex");
+  return accessKeyCrypto().createHash("sha256").update("sporades-access-key-source-limit\0").update(trustedClientAddress(database, request) ?? String(request?.socket?.remoteAddress ?? "unknown")).digest("hex");
 }
 function accessKeyLimiter(database, kind) {
   const root = database.__rootDatabase ?? database;
@@ -103256,7 +103368,7 @@ function isPlainObject2(value) {
 }
 
 // src/team-billing-runtime.ts
-import { createHash as createHash6, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
 
 // src/team-billing-subscription-semantics.ts
 function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
@@ -103283,10 +103395,10 @@ function teamBillingQuantityPolicyFingerprint(policy) {
 }
 
 // src/team-billing-convergence.ts
-import { createHash as createHash5, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID4 } from "node:crypto";
 
 // src/team-billing-management.ts
-import { createHash as createHash4, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash5, randomUUID as randomUUID3 } from "node:crypto";
 var TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 var TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 var CLAIM_TTL_MS = 5 * 60 * 1e3;
@@ -103819,10 +103931,10 @@ function sameQuantityPolicy(left, right) {
   return left?.kind === right?.kind && teamBillingQuantityPolicyFingerprint(left) === teamBillingQuantityPolicyFingerprint(right);
 }
 function intentIdempotency(database, teamId, intentId) {
-  return `sporades-team-billing-${createHash4("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
+  return `sporades-team-billing-${createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
 }
 function operationIdempotency(database, operationId) {
-  return `sporades-team-billing-operation-${createHash4("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
+  return `sporades-team-billing-operation-${createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
 }
 async function inTransaction(database, callback) {
   if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
@@ -104241,7 +104353,7 @@ function boundedObjectId(value) {
 }
 function safeDigest(raw) {
   try {
-    return createHash5("sha256").update(JSON.stringify(raw)).digest("hex");
+    return createHash6("sha256").update(JSON.stringify(raw)).digest("hex");
   } catch {
     return null;
   }
@@ -104797,10 +104909,10 @@ async function admitTeamBillingActor(database, transaction, auth, input) {
   return Object.freeze({ admitted: true });
 }
 function teamBillingErasureKey(database, teamId) {
-  return createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
+  return createHash7("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
 }
 function teamBillingErasureObjectKey(database, providerObjectId) {
-  return createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
+  return createHash7("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
 }
 async function assertTeamBillingErasureInactive(database, transaction, teamId) {
   const active = await transaction.prepare(transaction.dialect.sql(
@@ -105063,7 +105175,7 @@ function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
   return teamBillingOperationIdempotencyKey(capsuleIdentity, "checkout", teamId, requestId);
 }
 function teamBillingOperationIdempotencyKey(capsuleIdentity, kind, teamId, requestId) {
-  const digest = createHash6("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
+  const digest = createHash7("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
   return `sporades:team-${kind}:${digest}`;
 }
 function exactOperationId(payload) {
@@ -105159,7 +105271,7 @@ function teamBillingDenied() {
 }
 
 // src/team-billing-erasure.ts
-import { createHash as createHash7, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
 var TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
 var TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var CHECKOUT_ID2 = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
@@ -105287,7 +105399,7 @@ async function performTeamBillingErasure(database, context2, payload) {
         )).run(now(database), snapshot.teamId, claimToken);
         return false;
       }
-      const digest = createHash7("sha256").update(JSON.stringify(canonical)).digest("hex");
+      const digest = createHash8("sha256").update(JSON.stringify(canonical)).digest("hex");
       await transaction.prepare(transaction.dialect.sql(
         "INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)"
       )).run(current2.erasureKey, digest, canonical.providerObservedAt, now(database));
@@ -105448,7 +105560,7 @@ function validateEvidence(value, expected) {
   return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions };
 }
 function providerIdempotency(database, key) {
-  return `sporades-team-billing-erasure-${createHash7("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
+  return `sporades-team-billing-erasure-${createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
 }
 function exactPayload(value) {
   return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "generationId\0operationId" && TEAM_ID.test(value.operationId) && TEAM_ID.test(value.generationId);
@@ -106611,10 +106723,10 @@ function safeJobFailure(error) {
 }
 
 // src/resource-runtime.ts
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash10 } from "node:crypto";
 
 // src/notification-intent-runtime.ts
-import { createHash as createHash8, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID7, timingSafeEqual } from "node:crypto";
+import { createHash as createHash9, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID7, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 var NOTIFICATION_RESERVATION_MS = 3e4;
 var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
 var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
@@ -106710,7 +106822,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
   };
   const payloadJson = canonicalJson(payload);
   if (Buffer.byteLength(payloadJson, "utf8") > 65536) invalid4();
-  const payloadDigest = createHash8("sha256").update(payloadJson).digest("hex");
+  const payloadDigest = createHash9("sha256").update(payloadJson).digest("hex");
   const key = [identity.table, identity.id, identity.operationId, input.id];
   const existing = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
   if (existing) {
@@ -106772,7 +106884,7 @@ function notificationAttemptTokenIsValid(attemptKey, reservation, messageId) {
   const actual = token.slice(separator + 1);
   if (!/^[0-9a-f-]{36}$/.test(nonce) || !/^[0-9a-f]{64}$/.test(actual)) return false;
   const expected = notificationAttemptToken(attemptKey, reservation.key, reservation.sequence, messageId, nonce).slice(separator + 1);
-  return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
+  return timingSafeEqual2(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
 }
 async function notificationAttemptKey(adapter, key) {
   const select = () => adapter.prepare(sql(adapter, "SELECT [attemptKey] FROM [sporades_notification_attempt_keys] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
@@ -107012,7 +107124,7 @@ function optionsSnapshot(options, status) {
   const table = boundedIdentity(options.resource.table);
   const id2 = boundedIdentity(options.resource.id);
   const operationId = boundedIdentity(options.operationId);
-  return { table, id: id2, operationId, digest: status ? null : createHash9("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
+  return { table, id: id2, operationId, digest: status ? null : createHash10("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
 }
 function resourceReceiptRow(adapter, row) {
   if (!row || adapter.engine !== "postgres") return row;
@@ -107124,7 +107236,7 @@ function bindOuterResources(database, context2, hooks) {
     });
     return promise;
   };
-  const actorDigest = createHash9("sha256").update(resourceCanonicalJson({ auth: context2.auth, credential: context2.credential ?? null, privileged: false })).digest("hex");
+  const actorDigest = createHash10("sha256").update(resourceCanonicalJson({ auth: context2.auth, credential: context2.credential ?? null, privileged: false })).digest("hex");
   const guardCapability = (name2, value) => wrapCapability(value, (path21) => {
     if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
     if (!["where", "orderBy", "limit"].includes(path21.at(-1))) touched = true;
@@ -107359,7 +107471,7 @@ function bindJobResources(database, context2, claim, hooks) {
   let touched = false;
   const privileged = hooks.privileged === true;
   const actorBinding = resourceCanonicalJson({ auth: context2.auth, credential: context2.credential ?? null, privileged });
-  const actorDigest = createHash9("sha256").update(actorBinding).digest("hex");
+  const actorDigest = createHash10("sha256").update(actorBinding).digest("hex");
   for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context2[name2]) continue;
     context2[name2] = wrapCapability(context2[name2], (path21) => {
@@ -123434,7 +123546,7 @@ function routeHttpAdmission(database, request, response, target) {
     if (/[\\]|%2f|%5c/i.test(parsed.pathname)) throw new Error("Invalid admission pathname.");
     const pathname = parsed.form === "asterisk" ? "*" : decodeURIComponent(parsed.url.pathname);
     if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(pathname)) throw new Error("Invalid admission pathname.");
-    if (!matchExactAdmissionRule(generation, pathname)) return false;
+    if (!matchExactAdmissionRule(generation, pathname, trustedClientAddress(database, request))) return false;
   } catch {
   }
   response.writeHead(403, {
@@ -124366,8 +124478,8 @@ async function inspectTeamJoinLinkWithActivity(database, code, assertActive = vo
       const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
       const expectedSignature = Buffer.from(candidate && secretRow ? teamJoinSignature(String(secretRow.secret), String(candidate.id), parsed.selector, parsed.verifier, String(candidate.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
       const actualSignature = Buffer.from(parsed.signature, "base64url");
-      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
-      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual3(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual3(actualSignature, expectedSignature);
       return Boolean(candidate && verifierMatches && signatureMatches && !candidate.consumedAt && !candidate.revokedAt && Date.parse(candidate.expiresAt) > (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime());
     };
     if (!usable(row)) return { team: null, expiresAt: null, usable: false };
@@ -124464,8 +124576,8 @@ async function validateTeamJoinLink(database, auth, code) {
     "base64url"
   );
   const actualSignature = Buffer.from(parsed.signature, "base64url");
-  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
-  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
+  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual3(actualVerifier, expectedVerifier);
+  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual3(actualSignature, expectedSignature);
   const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime();
   const expiresAt = Date.parse(row?.expiresAt ?? "");
   if (!row || !verifierMatches || !signatureMatches || row.consumedAt || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= now2) return { valid: false };
@@ -124506,8 +124618,8 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         "base64url"
       );
       const actualSignature = Buffer.from(parsed.signature, "base64url");
-      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
-      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual3(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual3(actualSignature, expectedSignature);
       const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
       const expiresAt = Date.parse(row?.expiresAt ?? "");
       if (!row || !verifierMatches || !signatureMatches || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= Date.parse(now2)) throw invalidTeamJoinLink();
@@ -124635,7 +124747,7 @@ function parseTeamJoinCode(code) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash10("sha256").update(verifier).digest("base64url");
+  return createHash11("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
   return createHmac2("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
@@ -128444,7 +128556,7 @@ function restartPolicyStatus(mode, overrides2 = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash12, randomBytes as randomBytes6, randomUUID as randomUUID12 } from "node:crypto";
+import { createHash as createHash13, randomBytes as randomBytes6, randomUUID as randomUUID12 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync as readFileSync3 } from "node:fs";
 
 // src/log-envelope.ts
@@ -128461,6 +128573,165 @@ import { randomUUID as randomUUID9 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
 import { constants as performanceConstants, monitorEventLoopDelay, performance as performance2, PerformanceObserver } from "node:perf_hooks";
+
+// src/runtime-fetch-telemetry.ts
+init_esm();
+import { types as utilTypes } from "node:util";
+var fetchStateKey = Symbol.for("sporades.runtime.fetch-telemetry.v1");
+var dictionaryFields = ["body", "cache", "credentials", "dispatcher", "duplex", "headers", "integrity", "keepalive", "method", "mode", "priority", "redirect", "referrer", "referrerPolicy", "signal", "window"];
+var stringFields = ["cache", "credentials", "duplex", "integrity", "method", "mode", "priority", "redirect", "referrer", "referrerPolicy"];
+var nativeAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get;
+var nativeReason = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "reason").get;
+var nativeExceptionName = Object.getOwnPropertyDescriptor(DOMException.prototype, "name").get;
+function stableSignal(value) {
+  if (value === void 0 || value === null) return true;
+  if (typeof value !== "object" || utilTypes.isProxy(value) || Object.getPrototypeOf(value) !== AbortSignal.prototype) return false;
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!("value" in descriptor)) return false;
+    if (typeof key === "symbol" && key.description === "kComposite" && descriptor.value) return false;
+  }
+  try {
+    nativeAborted.call(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function stableDictionary(value) {
+  if (value === void 0 || value === null) return true;
+  if (typeof value !== "object") return false;
+  for (let current2 = value; current2; current2 = Object.getPrototypeOf(current2)) {
+    if (utilTypes.isProxy(current2)) return false;
+    for (const field of dictionaryFields) {
+      const descriptor = Object.getOwnPropertyDescriptor(current2, field);
+      if (descriptor && !("value" in descriptor)) return false;
+    }
+  }
+  return true;
+}
+function stableHeaders(value) {
+  if (value === void 0 || value === null) return true;
+  if (typeof value !== "object" || utilTypes.isProxy(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype === Headers.prototype) return !Object.hasOwn(value, Symbol.iterator);
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype || Object.hasOwn(value, Symbol.iterator)) return false;
+    return Object.values(Object.getOwnPropertyDescriptors(value)).every((descriptor) => "value" in descriptor) && Array.prototype.every.call(value, (pair2) => Array.isArray(pair2) && !utilTypes.isProxy(pair2) && Object.getPrototypeOf(pair2) === Array.prototype && !Object.hasOwn(pair2, Symbol.iterator) && Object.values(Object.getOwnPropertyDescriptors(pair2)).every((descriptor) => "value" in descriptor) && pair2.length === 2 && Array.prototype.every.call(pair2, (entry) => typeof entry === "string"));
+  }
+  if (prototype !== Object.prototype && prototype !== null || Object.hasOwn(value, Symbol.iterator)) return false;
+  return Object.values(Object.getOwnPropertyDescriptors(value)).every((descriptor) => "value" in descriptor && typeof descriptor.value === "string");
+}
+function stableBody(value) {
+  if (value === void 0 || value === null || typeof value === "string") return true;
+  if (typeof value !== "object" || utilTypes.isProxy(value)) return false;
+  if (utilTypes.isArrayBuffer(value) || ArrayBuffer.isView(value)) return true;
+  const prototype = Object.getPrototypeOf(value);
+  return [Blob.prototype, FormData.prototype, URLSearchParams.prototype, ReadableStream.prototype].includes(prototype) && Object.getOwnPropertyNames(value).length === 0 && ![Symbol.iterator, Symbol.toPrimitive].some((key) => Object.hasOwn(value, key));
+}
+function installRuntimeFetchTelemetry() {
+  const globals = globalThis;
+  let state = globals[fetchStateKey];
+  if (!state) {
+    const original = globalThis.fetch;
+    state = { original, wrapper: original, owners: /* @__PURE__ */ new Set() };
+    const current2 = state;
+    const invoke = (input, init) => current2.original.call(globalThis, input, init);
+    state.wrapper = function(input, init) {
+      for (const owner2 of current2.owners) {
+        const call = owner2();
+        if (call) return call(invoke, input, init);
+      }
+      return invoke(input, init);
+    };
+    globals[fetchStateKey] = state;
+    globalThis.fetch = state.wrapper;
+  }
+  const owner = () => runtimeRequestScope.getStore()?.outboundFetch;
+  state.owners.add(owner);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    state.owners.delete(owner);
+    if (state.owners.size === 0) {
+      if (globalThis.fetch === state.wrapper) globalThis.fetch = state.original;
+      delete globals[fetchStateKey];
+    }
+  };
+}
+function outboundFetchTelemetry(tracer, parent, origins, active) {
+  return async (original, input, init) => {
+    if (!active()) return original(input, init);
+    let url;
+    let request;
+    let method;
+    let signal;
+    let redirect;
+    try {
+      if (utilTypes.isProxy(input) || !stableDictionary(init)) return original(input, init);
+      if (init?.dispatcher !== void 0) return original(input, init);
+      if (init && (!stringFields.every((key) => init[key] === void 0 || init[key] === null || typeof init[key] === "string") || !stableHeaders(init.headers) || !stableBody(init.body))) return original(input, init);
+      request = input instanceof Request ? input : void 0;
+      if (request && (Object.getPrototypeOf(request) !== Request.prototype || Object.getOwnPropertyNames(request).length > 0)) return original(input, init);
+      if (input instanceof URL && (Object.getPrototypeOf(input) !== URL.prototype || Object.getOwnPropertyNames(input).length > 0 || Object.hasOwn(input, Symbol.toPrimitive))) return original(input, init);
+      if (!request && typeof input !== "string" && !(input instanceof URL)) return original(input, init);
+      url = new URL(request ? request.url : String(input));
+      if (!["http:", "https:"].includes(url.protocol)) return original(input, init);
+      const rawMethod = init?.method === void 0 ? request?.method ?? "GET" : String(init.method);
+      method = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"].includes(rawMethod.toUpperCase()) ? rawMethod.toUpperCase() : "_OTHER";
+      signal = init?.signal === void 0 ? request?.signal : init.signal;
+      if (!stableSignal(signal)) return original(input, init);
+      redirect = init?.redirect ?? request?.redirect ?? "follow";
+    } catch {
+      return original(input, init);
+    }
+    const span = tracer.startSpan(`HTTP ${method}`, {
+      kind: SpanKind.CLIENT,
+      attributes: { "http.request.method": method }
+    }, trace.setSpan(ROOT_CONTEXT, parent));
+    let forwarded = init;
+    if (origins.has(url.origin) && (redirect === "manual" || redirect === "error")) {
+      const context2 = span.spanContext();
+      if (/^[0-9a-f]{32}$/.test(context2.traceId) && !/^0+$/.test(context2.traceId) && /^[0-9a-f]{16}$/.test(context2.spanId) && !/^0+$/.test(context2.spanId)) {
+        try {
+          const headers = new Headers(init?.headers === void 0 ? request?.headers : init.headers);
+          headers.set("traceparent", `00-${context2.traceId}-${context2.spanId}-${context2.traceFlags & TraceFlags.SAMPLED ? "01" : "00"}`);
+          const options = init ?? {};
+          forwarded = new Proxy({}, {
+            get: (_target, key) => key === "headers" ? headers : Reflect.get(options, key, options),
+            has: (_target, key) => key === "headers" || Reflect.has(options, key)
+          });
+        } catch {
+        }
+      }
+    }
+    try {
+      const response = await original(input, forwarded);
+      span.setAttribute("http.response.status_code", response.status);
+      span.setAttribute("sporades.http.outcome", response.status >= 400 ? "failure" : "success");
+      if (response.status >= 400) span.setStatus({ code: SpanStatusCode.ERROR });
+      return response;
+    } catch (error) {
+      let outcome = "network_error";
+      try {
+        if (signal && stableSignal(signal) && nativeAborted.call(signal)) {
+          outcome = "cancelled";
+          const reason = nativeReason.call(signal);
+          if (typeof reason === "object" && reason !== null && !utilTypes.isProxy(reason) && nativeExceptionName.call(reason) === "TimeoutError") outcome = "timeout";
+        }
+      } catch {
+      }
+      span.setAttribute("sporades.http.outcome", outcome);
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      throw error;
+    } finally {
+      span.end();
+    }
+  };
+}
+
+// src/runtime-telemetry.ts
 var builtinRoutes = [
   ["GET", "/__sporades/connection-token"],
   ["GET", "/__sporades/health/runtime"],
@@ -128554,6 +128825,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   if (!config) return { websocket: disabledWebSocketTelemetry, bindJobQueue: (_database) => {
   }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID9() }, handle), shutdown: async () => {
   } };
+  const propagationOrigins = new Set(validateTracePropagationOrigins(config.tracePropagationOrigins));
   if (config.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1e3)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
   const endpoint = new URL("/v1/traces", url).toString();
@@ -128790,6 +129062,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const websocketEnds = /* @__PURE__ */ new Set();
   let closing = false;
   let shutdownPromise;
+  const releaseFetch = installRuntimeFetchTelemetry();
   const websocket = {
     connectionOpened() {
       if (closing) return () => {
@@ -129012,7 +129285,8 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span, operation, tracer, isOpen: () => !ended && !closing }, handle);
+        const isOpen = () => !ended && !closing;
+        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span, operation, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
         if (result && typeof result.then === "function") {
           return Promise.resolve(result).catch((error) => {
             end("error");
@@ -129029,6 +129303,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       if (shutdownPromise) return shutdownPromise;
       for (const end of websocketEnds) end("cancelled");
       closing = true;
+      releaseFetch();
       gcObserver.disconnect();
       delayMonitorStoppedAt = performance2.now();
       loopDelay.disable();
@@ -130468,7 +130743,7 @@ function encodeMimeBase64(value) {
 }
 
 // src/email-events-runtime.ts
-import { createHash as createHash11, createHmac as createHmac3, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { createHash as createHash12, createHmac as createHmac3, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 var MAILJET_EVENT_KINDS = {
   sent: "delivered",
   open: "opened",
@@ -130495,7 +130770,7 @@ function text2(value) {
 function secureEqual(left, right) {
   const leftBytes = Buffer.from(left);
   const rightBytes = Buffer.from(right);
-  return leftBytes.length === rightBytes.length && timingSafeEqual3(leftBytes, rightBytes);
+  return leftBytes.length === rightBytes.length && timingSafeEqual4(leftBytes, rightBytes);
 }
 function mailjetBasicPassword(authorization) {
   if (typeof authorization !== "string" || !authorization.startsWith("Basic ")) return "";
@@ -130687,7 +130962,7 @@ function normalizePostmarkEvent(raw) {
   const metadata = data2.Metadata && typeof data2.Metadata === "object" && !Array.isArray(data2.Metadata) ? data2.Metadata : {};
   const correlationKey = Object.keys(metadata).find((key) => key.toLowerCase() === "correlationid");
   const correlationId = correlationKey ? text2(metadata[correlationKey]).trim() : "";
-  const identity = createHash11("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
+  const identity = createHash12("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
   return {
     provider: "postmark",
     kind: descriptor.kind,
@@ -130721,7 +130996,7 @@ function normalizeMailgunWebhook(raw) {
   const accountId = text2(account.id).trim();
   const domainName = text2(domain.name).trim().toLowerCase();
   if (!accountId || !domainName) return false;
-  const providerScope = createHash11("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
+  const providerScope = createHash12("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
   return {
     provider: "mailgun",
     kind,
@@ -137669,7 +137944,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
   if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
     throw commandError2("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
-  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash12("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
+  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash13("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
 }
 var endpointMultipartAdmissionTimeoutMs = 5e3;
 function multipartAdmissionDenied() {
@@ -138212,7 +138487,7 @@ async function readEndpointRequest(database, requestUrl, request, parseJsonBody 
 }
 function endpointRequestHead(requestUrl, request, requestPath = requestUrl.pathname) {
   const headers = Object.fromEntries(
-    Object.entries(request.headers).map(([name2, value]) => [
+    Object.entries(request.headers).filter(([name2]) => name2.toLowerCase() !== CLIENT_ADDRESS_TOKEN_HEADER).map(([name2, value]) => [
       name2.toLowerCase(),
       Array.isArray(value) ? value.join(", ") : value
     ])
@@ -139517,8 +139792,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       const emailProviderEnabled = database.authConfig.providers.email?.enabled === true;
       if (authorized && message.provider === "email" && emailProviderEnabled && normalized.ok && typeof normalized.password === "string") {
         const reauthenticationThrottleKeys = [
-          `email:${createHash12("sha256").update(normalized.email).digest("base64url")}`,
-          `session:${createHash12("sha256").update(client.session.token).digest("base64url")}`
+          `email:${createHash13("sha256").update(normalized.email).digest("base64url")}`,
+          `session:${createHash13("sha256").update(client.session.token).digest("base64url")}`
         ];
         const throttleNow = database.clock.now();
         let reserved = false;
@@ -140329,7 +140604,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash12("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash13("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -144983,7 +145258,7 @@ function escapeHtml(value) {
 
 // src/dev-clamav-sidecar.ts
 import { spawn } from "node:child_process";
-import { createHash as createHash13, randomBytes as randomBytes7 } from "node:crypto";
+import { createHash as createHash14, randomBytes as randomBytes7 } from "node:crypto";
 import { mkdir as mkdir6, mkdtemp, rm as rm7 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -145175,7 +145450,7 @@ async function startDevClamavSidecar(options) {
   const dataRoot = path15.join(options.projectDir, ".sporades", "clamav");
   await mkdir6(path15.join(dataRoot, "clamav"), { recursive: true });
   const socketDir = await createDevClamavSocketDirectory();
-  const identity = createHash13("sha256").update(`${path15.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const identity = createHash14("sha256").update(`${path15.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
   const socketPath = path15.join(socketDir, "clamd.sock");
   let child;
@@ -146103,6 +146378,7 @@ Options for profile add:
   --inventory-credential-env <KEY>  Exact Host-scoped lifecycle inventory token
   --inventory-host <id>   Stable inventory identity (default: first connected domain)
   --metrics-interval-ms <N>  Metrics export period, 5000-300000 ms (default 15000)
+  --trace-propagation-origin <origin>  Approve exact fetch origin (repeatable, max 32)
   --event-loop-delay-resolution-ms <N>  Delay timer precision, 10-1000 ms (default 20)
   --ca-file <path>        Absolute private CA certificate path for verified TLS
   --loopback              Permit a local HTTP collector for development
@@ -146260,7 +146536,7 @@ function renderCliHelp(command) {
 
 // src/cli/monitoring-stack.ts
 import { spawnSync } from "node:child_process";
-import { createHash as createHash14 } from "node:crypto";
+import { createHash as createHash15 } from "node:crypto";
 import { cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
 import path17 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
@@ -146330,7 +146606,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
     else {
       if (!current2.isFile()) throw commandError(`Monitoring stack asset is not a regular file: ${name2}`, "Inspect the stack directory and remove unsafe links before continuing.");
       const destinationBytes = await readFile10(destination);
-      if (createHash14("sha256").update(sourceBytes).digest("hex") !== createHash14("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
+      if (createHash15("sha256").update(sourceBytes).digest("hex") !== createHash15("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
     }
   }
   if (action === "init" && !manifestStat && !preexistingContent) {
@@ -146441,7 +146717,7 @@ import { connect } from "node:net";
 import path19 from "node:path";
 
 // src/cli/project-config.ts
-import { createHash as createHash15 } from "node:crypto";
+import { createHash as createHash16 } from "node:crypto";
 import { chmod as chmod2, mkdir as mkdir9, readFile as readFile11, writeFile as writeFile8 } from "node:fs/promises";
 import path18 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -146736,7 +147012,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash15("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest = createHash16("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -148727,6 +149003,10 @@ async function runTelemetryProfileCommand(args) {
         input.dashboard = readFlagValue(rest, ++index, arg);
         continue;
       }
+      if (arg === "--trace-propagation-origin") {
+        (input.tracePropagationOrigins ??= []).push(readFlagValue(rest, ++index, arg));
+        continue;
+      }
       if (arg === "--credential-env") {
         input.credentialEnv = readFlagValue(rest, ++index, arg);
         continue;
@@ -148760,6 +149040,7 @@ async function runTelemetryProfileCommand(args) {
   }
   if (operation === "add") {
     const profile = {
+      ...input.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: input.tracePropagationOrigins } : {},
       endpoint: input.endpoint,
       ...input.dashboard ? { dashboard: input.dashboard } : {},
       tls: { mode: input.loopback ? "loopback" : "verified", ...input.caFile ? { caFile: input.caFile } : {} },
@@ -151281,7 +151562,7 @@ function devInspectionTokenMatches(header2, expectedToken) {
   }
   const actual = Buffer.from(actualToken);
   const expected = Buffer.from(expectedToken);
-  return actual.length === expected.length && timingSafeEqual5(actual, expected);
+  return actual.length === expected.length && timingSafeEqual6(actual, expected);
 }
 async function importCapsuleDefinition(moduleSource) {
   const encodedModule = Buffer.from(moduleSource, "utf8").toString("base64");
@@ -151889,7 +152170,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash16("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash17("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -151919,7 +152200,7 @@ async function manageHost(options) {
         }
         const inventoryCredential = profile.inventoryCredentialEnv ? process.env[profile.inventoryCredentialEnv] : void 0;
         if (profile.inventoryCredentialEnv && !inventoryCredential) throw commandError("Telemetry inventory credential is unavailable.", "Set the inventory credential environment reference before connecting.");
-        telemetry = { endpoint: profile.endpoint, credential, ...inventoryCredential ? { inventoryCredential } : {}, ...profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}, ...caPem ? { caPem } : {}, ...profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}, ...profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {} };
+        telemetry = { ...profile.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}, endpoint: profile.endpoint, credential, ...inventoryCredential ? { inventoryCredential } : {}, ...profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}, ...caPem ? { caPem } : {}, ...profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}, ...profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {} };
       }
       const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);
@@ -154434,7 +154715,7 @@ function upgradeHostHelper(options) {
     if (!statSync2(localHelper).isFile()) {
       throw new Error("not a file");
     }
-    helperChecksum = createHash16("sha256").update(readFileSync4(localHelper)).digest("hex");
+    helperChecksum = createHash17("sha256").update(readFileSync4(localHelper)).digest("hex");
   } catch {
     throw commandError(
       "Local Host helper file was not found.",

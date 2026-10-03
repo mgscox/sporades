@@ -49,6 +49,7 @@
       "src/cli/sporades-host-helper.ts",
       "src/cli/sporades.ts",
       "src/cli/telemetry-profile.ts",
+      "src/client-address.ts",
       "src/client-capabilities.ts",
       "src/client-prerender.ts",
       "src/client-toolchain.ts",
@@ -82,6 +83,7 @@
       "src/public-tree.ts",
       "src/resource-runtime.ts",
       "src/runtime-errors.ts",
+      "src/runtime-fetch-telemetry.ts",
       "src/runtime-log-policy.ts",
       "src/runtime-request-context.ts",
       "src/runtime-restart-policy.ts",
@@ -104,6 +106,7 @@
       "src/team-billing-runtime.ts",
       "src/team-billing-subscription-semantics.ts",
       "src/teams-runtime.ts",
+      "src/telemetry-propagation-policy.ts",
       "src/templates/client-runtime-template.ts",
       "src/templates/scaffold-template.ts",
       "src/templates/server-bundle-entry.ts",
@@ -120,7 +123,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "b6b2491661eeff269762ffe415fb47c6d2c10cb82cca09e2a68e9e031e8a03ea"
+    "digest": "41d28c9502fef4802a7890e58e1c5f1789e9a77d2b30b38f3813556fdd7a6471"
   },
   "outputs": {
     "files": [
@@ -286,6 +289,10 @@
       "dist/cli/telemetry-profile.d.ts.map",
       "dist/cli/telemetry-profile.js",
       "dist/cli/telemetry-profile.js.map",
+      "dist/client-address.d.ts",
+      "dist/client-address.d.ts.map",
+      "dist/client-address.js",
+      "dist/client-address.js.map",
       "dist/client-capabilities.d.ts",
       "dist/client-capabilities.d.ts.map",
       "dist/client-capabilities.js",
@@ -418,6 +425,10 @@
       "dist/runtime-errors.d.ts.map",
       "dist/runtime-errors.js",
       "dist/runtime-errors.js.map",
+      "dist/runtime-fetch-telemetry.d.ts",
+      "dist/runtime-fetch-telemetry.d.ts.map",
+      "dist/runtime-fetch-telemetry.js",
+      "dist/runtime-fetch-telemetry.js.map",
       "dist/runtime-log-policy.d.ts",
       "dist/runtime-log-policy.d.ts.map",
       "dist/runtime-log-policy.js",
@@ -510,6 +521,10 @@
       "dist/teams-runtime.d.ts.map",
       "dist/teams-runtime.js",
       "dist/teams-runtime.js.map",
+      "dist/telemetry-propagation-policy.d.ts",
+      "dist/telemetry-propagation-policy.d.ts.map",
+      "dist/telemetry-propagation-policy.js",
+      "dist/telemetry-propagation-policy.js.map",
       "dist/templates/client-runtime-template.d.ts",
       "dist/templates/client-runtime-template.d.ts.map",
       "dist/templates/client-runtime-template.js",
@@ -532,6 +547,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "1e5fa0a22ed233b9ac66a9188a687b6ee9a756e57eb809193decbd391478c709"
+    "digest": "c59a12f96778db981c5cdfd1c24ce1fcd9302125e9162c95b8d78aeae056b195"
   }
 }
