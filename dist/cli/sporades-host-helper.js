@@ -18,6 +18,7 @@ import { CLI_VERSION } from "./cli-version.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "./access-key-operator-envelope.js";
 import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
+import { CLIENT_ADDRESS_TOKEN_HEADER, clientAddressBoundaryToken } from "../client-address.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-config.js";
 import { checkHostTelemetryDelivery, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
@@ -4851,9 +4852,17 @@ function renderRunningRoute(route) {
         `    header_up ${ACCESS_KEY_CLIENT_ADDRESS_HEADER} ${cloudflareOrigin
             ? "{http.request.header.CF-Connecting-IP}"
             : "{http.request.remote.host}"}`,
+        ...(route.runtimeProbe?.token && /^[a-f0-9]{64}$/.test(route.runtimeProbe.token)
+            ? [`    header_up ${CLIENT_ADDRESS_TOKEN_HEADER} ${clientAddressBoundaryToken(route.runtimeProbe.token)}`] : []),
         "  }",
     ].join("\n");
-    const routeHandler = renderRunningRouteHandler(route, proxyLine);
+    // Separate request operations run before proxy operations. Deleting and setting
+    // the same field inside header_up would delete the newly set value in Caddy.
+    const routeHandler = [
+        `request_header -${ACCESS_KEY_CLIENT_ADDRESS_HEADER}`,
+        `request_header -${CLIENT_ADDRESS_TOKEN_HEADER}`,
+        renderRunningRouteHandler(route, proxyLine),
+    ].join("\n  ");
     const guardedHandler = cloudflareOrigin
         ? [
             `@sporadesUntrustedCloudflareSource not remote_ip ${CLOUDFLARE_ORIGIN_IP_RANGES.join(" ")}`,

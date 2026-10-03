@@ -106,6 +106,7 @@ import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import { matchHttpAdmissionRule } from "./admission-policy.js";
+import { trustedClientAddress } from "./client-address.js";
 import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
 import { checkClamavRuntime } from "./file-ingress-runtime.js";
@@ -156,7 +157,7 @@ export function interpretHttpRequestTarget(target, method) {
         return null;
     }
 }
-/** Non-address HTTP admission, before Capsule routing; genuine controls dispatch first. */
+/** Canonical HTTP admission, before Capsule routing; genuine controls dispatch first. */
 export function routeHttpAdmission(database, request, response, target) {
     const runtime = database.admissionPolicy;
     if (!runtime)
@@ -182,6 +183,7 @@ export function routeHttpAdmission(database, request, response, target) {
             pathname: parsed.pathname,
             query: queryStart === -1 ? "" : raw.slice(queryStart + 1),
             rawHeaders: request.rawHeaders,
+            trustedAddress: trustedClientAddress(database, request),
         }))
             return false;
         // This slice implements deny. Future actions cannot silently admit traffic.

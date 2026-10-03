@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { isIP } from "node:net";
+import { validClientAddressNetwork, clientAddressMatches } from "./client-address.js";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
 import { readDeployFile, resolveDeployFiles, preservedDeployFilePath } from "./deploy-files.js";
@@ -50,9 +50,7 @@ function condition(value) {
             object(value, ["kind", "value"]);
             if (!text(value.value))
                 invalid();
-            const [address, prefix, extra] = value.value.split("/");
-            const family = isIP(address);
-            if (!family || extra !== undefined || (prefix !== undefined && (!/^(0|[1-9][0-9]{0,2})$/.test(prefix) || Number(prefix) > (family === 4 ? 32 : 128))))
+            if (!validClientAddressNetwork(value.value))
                 invalid();
             break;
         }
@@ -190,7 +188,10 @@ export function matchHttpAdmissionRule(generation, input) {
                         matches = false;
                     break;
                 case "address":
-                    indeterminate = true;
+                    if (!input.trustedAddress)
+                        indeterminate = true;
+                    else if (!clientAddressMatches(input.trustedAddress, item.value))
+                        matches = false;
                     break;
             }
         }

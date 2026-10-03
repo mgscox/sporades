@@ -46,7 +46,16 @@ denials. Genuine authenticated controls bypass admission; reserved targets fail
 validation. Issue #68 completes non-address AND matching: methods, exact/segment-prefix
 paths, canonical public headers and query-key presence. Canonicalization is pinned
 in the [configuration reference](../reference/projects-and-configuration.md#request-admission-policy-publication).
-Address matching, quota enforcement and WebSocket upgrades are later slices.
+Issue #69 adds exact/CIDR address conditions using only canonical
+Host-authenticated identity in Hosted mode. Caddy replaces incoming internal
+identity and supplies a per-runtime capability derived from the existing
+Host-owned readiness token with a distinct domain. The runtime validates one
+address and rejects duplicate/list/invalid input; forwarding headers never
+independently grant identity. Cloudflare identity retains the existing peer
+allowlist boundary. Missing identity denies potentially applicable enabled
+address rules, including in Dev and local Container sessions. Mapped IPv6
+normalizes to IPv4; mapped network prefixes below 96 are rejected. The capability
+is filtered from Capsule endpoint headers. Quota enforcement and WebSocket upgrades are later slices.
 
 ## Consequences
 

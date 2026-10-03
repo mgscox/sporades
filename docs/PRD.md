@@ -1484,12 +1484,18 @@ Startup rejects invalid configured policy before app traffic. Bounded immutable
 generations reload within ten seconds under normal scheduling; hot failures
 retain the last-known-good generation and report redacted digest/health.
 HTTP admission enforces enabled method, exact/segment-prefix pathname, canonical
-header and query-key deny rules with AND semantics before Capsule request code,
+header, query-key and trusted Hosted address/CIDR deny rules with AND semantics before Capsule request code,
 with ordered first-match semantics, disabled-rule skipping, constant ten-byte opaque
 403 responses and no-store caching. Genuine authenticated control routes remain
 outside admission and reserved targeting fails generation validation. No declared
 policy leaves requests untouched; the incremental gate budget is a warmed median
-below one microsecond per call. Address matching, quotas and WebSocket upgrades
+below one microsecond per call. Address identity requires the Host's per-runtime
+capability and one validated canonical IPv4/IPv6 value; public forwarding headers
+never independently grant authority. Cloudflare-origin identity retains the
+existing Cloudflare-source gate. Missing identity fails closed for potentially
+applicable enabled address rules; Dev and local Container ignore internal identity
+headers while non-address rules continue to operate. IPv4-mapped IPv6 normalizes
+to IPv4, with mapped CIDRs restricted to prefixes 96–128. Quotas and WebSocket upgrades
 are subsequent slices. See the
 [configuration reference](reference/projects-and-configuration.md#request-admission-policy-publication)
 and [ADR-0054](adr/0054-request-admission-policy-is-deployer-owned.md).

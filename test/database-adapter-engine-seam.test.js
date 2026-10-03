@@ -160,6 +160,7 @@ const MIGRATED_RUNTIME_MODULES = [
   // Admission generations carry their bounded validator and the shared no-follow
   // deployment-file reader into the Bundle. Include their private helpers too.
   { file: "admission-policy.js", atLeast: 8, sentinel: "condition" },
+  { file: "client-address.js", atLeast: 4, sentinel: "parseAddress" },
   { file: "deploy-files.js", atLeast: 15, sentinel: "readBoundedDeployFile" },
   // The monolith. `sendJsonWithCompletion` is the sentinel: the WebSocket transport's one write path
   // that reports when the frame actually reached the socket, which every subscription rebroadcast

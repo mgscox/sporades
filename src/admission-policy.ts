@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { isIP } from "node:net";
+import { validClientAddressNetwork, clientAddressMatches } from "./client-address.js";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
 import { readDeployFile, resolveDeployFiles, preservedDeployFilePath, type BuiltDeployFile } from "./deploy-files.js";
@@ -32,8 +32,7 @@ function condition(value: any) {
     }
     case "address": {
       object(value, ["kind", "value"]); if (!text(value.value)) invalid();
-      const [address, prefix, extra] = value.value.split("/"); const family = isIP(address);
-      if (!family || extra !== undefined || (prefix !== undefined && (!/^(0|[1-9][0-9]{0,2})$/.test(prefix) || Number(prefix) > (family === 4 ? 32 : 128)))) invalid();
+      if (!validClientAddressNetwork(value.value)) invalid();
       break;
     }
     case "header":
@@ -89,6 +88,8 @@ export type AdmissionHttpInput = {
   pathname: string;
   query: string;
   rawHeaders: readonly string[];
+  /** Canonical identity authenticated by the Host boundary, never a public header. */
+  trustedAddress?: string | null;
 };
 /** Ordered AND evaluation. Unsupported conditions are indeterminate, never permission to admit. */
 export function matchHttpAdmissionRule(generation: AdmissionGeneration, input: AdmissionHttpInput) {
@@ -127,7 +128,10 @@ export function matchHttpAdmissionRule(generation: AdmissionGeneration, input: A
           break;
         }
         case "query-key": if (!queryKeys.has(item.name)) matches = false; break;
-        case "address": indeterminate = true; break;
+        case "address":
+          if (!input.trustedAddress) indeterminate = true;
+          else if (!clientAddressMatches(input.trustedAddress, item.value)) matches = false;
+          break;
       }
     }
     if (!matches) continue;

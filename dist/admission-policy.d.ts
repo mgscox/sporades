@@ -18,6 +18,8 @@ export type AdmissionHttpInput = {
     pathname: string;
     query: string;
     rawHeaders: readonly string[];
+    /** Canonical identity authenticated by the Host boundary, never a public header. */
+    trustedAddress?: string | null;
 };
 /** Ordered AND evaluation. Unsupported conditions are indeterminate, never permission to admit. */
 export declare function matchHttpAdmissionRule(generation: AdmissionGeneration, input: AdmissionHttpInput): {
