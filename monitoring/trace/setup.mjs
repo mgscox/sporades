@@ -4,6 +4,7 @@ import { realpathSync } from 'node:fs';
 import { chmod, chown, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { initializeSenderRegistry } from './sender-credentials.mjs';
 import { validateInventoryCredentials } from './inventory-contract.mjs';
 
 const owned = ['TRACE_INGEST_TOKEN', 'TRACE_UI_PASSWORD', 'GRAFANA_ADMIN_PASSWORD'];
@@ -83,6 +84,7 @@ export async function setupEnvironment(path) {
   await mkdir(privateDir, { recursive: true, mode: 0o700 });
   await chmod(privateDir, 0o700);
   if (identity.transferOwnership) await chown(privateDir, 0, 0);
+  await initializeSenderRegistry(join(privateDir, 'senders'), identity);
   const credentialsPath = join(privateDir, 'credentials.json');
   await writeFile(credentialsPath, `${JSON.stringify({
     ingestToken: entries.get('TRACE_INGEST_TOKEN'), uiUser: entries.get('TRACE_UI_USER'),

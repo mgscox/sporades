@@ -5,8 +5,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commandError } from './cli-support.js';
 
-const STACK_SCHEMA = 2;
-const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'setup.mjs', 'smoke.mjs'];
+const STACK_SCHEMA = 3;
+const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'sender-credentials.mjs', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'pipeline-dashboard.json', 'pipeline-rules.yaml', 'collector-persistent.yaml', 'compose.queue.yaml', 'OUTAGES.md', 'setup.mjs', 'smoke.mjs'];
 
 function prerequisite() {
   if (!['arm64', 'x64'].includes(process.arch) || !['linux', 'darwin'].includes(process.platform)) {
@@ -91,4 +91,20 @@ export async function runMonitoringStack(action: 'init' | 'validate', directory:
     path: target, schemaVersion: STACK_SCHEMA, packageVersion: version, created, overrides, missingAssets, versionDifference, missing,
     nextSteps: ['Review .env and fill missing settings', 'Run `node setup.mjs` after editing .env', 'Run `docker compose --env-file .compose.env up -d --build` from the stack directory', 'Run `node smoke.mjs send` to verify stored traces and metrics', 'Open /grafana/d/sporades-api or /grafana/d/sporades-resources through the protected gateway'],
   };
+}
+
+/** Redacted result of an operator-local sender credential command. */
+export interface SenderCredentialResult {
+  schemaVersion: 1;
+  revision: number;
+  changed: boolean;
+  legacyIngestEnabled: boolean;
+  legacyInventoryDisabled: string[];
+  senders: {
+    name: string;
+    host: string | null;
+    state: 'applied' | 'pending' | 'revoked';
+    generation: number;
+    pendingGeneration: number | null;
+  }[];
 }

@@ -6,6 +6,7 @@ Changes since v0.9.30.
 
 ### 🚀 Features
 
+- Expose bounded telemetry pipeline queues, losses and freshness, provision recovery diagnostics and optional quota-limited persistent Collector queues, and add isolated monitoring outage drills (#129).
 - Enforce trusted Hosted address/CIDR admission with authenticated proxy identity, mapped IPv6 normalization, and fail-closed missing identity in Dev and local Container sessions (#69).
 
 - Trace individual WebSocket query and mutation executions with isolated context, cancellation outcomes, independent operation metrics and active connections (#125).

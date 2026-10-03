@@ -75970,10 +75970,10 @@ var require_AttributesProcessor = __commonJS({
       return new MultiAttributesProcessor(processors);
     }
     exports.createMultiAttributesProcessor = createMultiAttributesProcessor;
-    function createAllowListAttributesProcessor(attributeAllowList) {
+    function createAllowListAttributesProcessor2(attributeAllowList) {
       return new AllowListProcessor(attributeAllowList);
     }
-    exports.createAllowListAttributesProcessor = createAllowListAttributesProcessor;
+    exports.createAllowListAttributesProcessor = createAllowListAttributesProcessor2;
     function createDenyListAttributesProcessor(attributeDenyList) {
       return new DenyListProcessor(attributeDenyList);
     }
@@ -81924,6 +81924,7 @@ function createConnection() {
   let latestAuthSocket = null;
   let journeyConsentOptions = null;
   let journeyEnabledUserId = null;
+  let journeyRestoration = null;
   let journeyCapture = null;
   let journeyCaptureTeardown = null;
   const journeySubscriptions = new Map();
@@ -82003,6 +82004,8 @@ function createConnection() {
     let openedAt = null;
     let receivedMessage = false;
     socket = openedSocket;
+    let finishJourneyRestoration;
+    journeyRestoration = { socket: openedSocket, promise: new Promise((resolve) => { finishJourneyRestoration = resolve; }) };
     openedSocket.addEventListener("open", () => {
       openedAt = Date.now();
       retryInFlight = false;
@@ -82011,12 +82014,12 @@ function createConnection() {
       const consentUserId = journeyEnabledUserId;
       const stillOwnsConsent = () => !pageRetired && socket === openedSocket && journeyConsentOptions === consent
         && journeyEnabledUserId === consentUserId && latestAuthUserId === consentUserId;
-      request("auth.get").then((confirmation) => {
-        if (!consent || confirmation.error || !stillOwnsConsent()) return;
-        request("journey.enable", { options: consent }).then((result) => {
-          if (!result.error && result.data?.capture && stillOwnsConsent()) startJourneyCapture(result.data.capture);
+      request("auth.get").then((result) => {
+        if (!consent || result.error || !stillOwnsConsent()) return;
+        return request("journey.enable", { options: consent }).then((enabled) => {
+          if (!enabled.error && enabled.data?.capture && stillOwnsConsent()) startJourneyCapture(enabled.data.capture);
         });
-      });
+      }).finally(finishJourneyRestoration);
       for (const subscription of journeySubscriptions.values()) send({ id: subscription.id, type: "journey.subscribe", resume: subscription.started });
       for (const subscription of subscriptions.values()) {
         send({
@@ -82082,6 +82085,7 @@ function createConnection() {
       }
     });
     openedSocket.addEventListener("close", async () => {
+      finishJourneyRestoration();
       for (const [id, entry] of pending) {
         if (entry.socket !== openedSocket) continue;
         entry.resolve({
@@ -82221,17 +82225,22 @@ function createConnection() {
     const outboundMessage = currentSessionToken
       ? { ...message, sessionToken: currentSessionToken }
       : message;
+    const transmit = () => {
+      const restoration = journeyRestoration;
+      if (message.type === "journey.set" && restoration?.socket === activeSocket) {
+        // Opening the transport precedes authentication and restored consent.
+        // Bind publication to this socket; a close must never replay it elsewhere.
+        restoration.promise.then(() => {
+          if (!pageRetired && socket === activeSocket && activeSocket.readyState === WebSocket.OPEN
+            && pending.has(message.id)) activeSocket.send(JSON.stringify(outboundMessage));
+        });
+      } else activeSocket.send(JSON.stringify(outboundMessage));
+    };
     if (activeSocket.readyState === WebSocket.OPEN) {
-      activeSocket.send(JSON.stringify(outboundMessage));
+      transmit();
       return;
     }
-    activeSocket.addEventListener(
-      "open",
-      () => {
-        activeSocket.send(JSON.stringify(outboundMessage));
-      },
-      { once: true },
-    );
+    activeSocket.addEventListener("open", transmit, { once: true });
   }
 
   function sendIfOpen(message) {
@@ -128929,6 +128938,11 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     httpAgentOptions: { ...httpAgentOptions, maxSockets: 1 }
   });
   const failedExports = { traces: false, metrics: false };
+  const pipeline = {
+    traces: { failures: 0, lastSuccess: 0, inFlight: 0 },
+    metrics: { failures: 0, lastSuccess: 0, inFlight: 0 }
+  };
+  const pipelineLabels = { traces: { signal: "traces" }, metrics: { signal: "metrics" } };
   const lastFailureLoggedAt = /* @__PURE__ */ new Map();
   let reportedOutage = false;
   const emitDiagnostic = (diagnostic) => {
@@ -128942,6 +128956,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const observeExport = (signal, result) => {
     try {
       if (result.code === 0) {
+        pipeline[signal].lastSuccess = Date.now() / 1e3;
         const wasFailed = failedExports.traces || failedExports.metrics;
         failedExports[signal] = false;
         if (wasFailed && !failedExports.traces && !failedExports.metrics && reportedOutage) {
@@ -128949,6 +128964,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
           reportedOutage = false;
         }
       } else {
+        pipeline[signal].failures++;
         failedExports[signal] = true;
         const reason = exportFailureReason(result.error);
         const now2 = Date.now();
@@ -128963,7 +128979,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   };
   const observedMetricExporter = {
     export(metrics2, callback) {
+      pipeline.metrics.inFlight++;
       metricExporter.export(metrics2, (result) => {
+        pipeline.metrics.inFlight--;
         observeExport("metrics", result);
         callback(result);
       });
@@ -128987,6 +129005,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     resource,
     readers: [metricReader],
     views: [
+      // One processor per runtime. Drop SDK-generated component sequence names
+      // and retain only the bounded success/queue_full/Error classification.
+      { instrumentName: "otel.sdk.processor.span.*", attributesProcessors: [(0, import_sdk_metrics.createAllowListAttributesProcessor)(["error.type"])] },
       { instrumentName: "sporades.job.execution.duration", aggregationCardinalityLimit: 1024, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300] } } },
       { instrumentName: "sporades.job.retry.count", aggregationCardinalityLimit: 129 },
       { instrumentName: "sporades.job.failure.count", aggregationCardinalityLimit: 129 },
@@ -128998,6 +129019,19 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     ]
   });
   const meter = meterProvider.getMeter("sporades-runtime-http", "1");
+  const pipelineMeter = meterProvider.getMeter("sporades-runtime-pipeline", "1");
+  const exportFailures = pipelineMeter.createObservableCounter("sporades.telemetry.export.failure.count", { unit: "1" });
+  const exportSuccess = pipelineMeter.createObservableGauge("sporades.telemetry.export.last_success", { unit: "s" });
+  const exportInFlight = pipelineMeter.createObservableGauge("sporades.telemetry.export.in_flight", { unit: "1" });
+  const collectionTime = pipelineMeter.createObservableGauge("sporades.telemetry.collection.time", { unit: "s" });
+  pipelineMeter.addBatchObservableCallback((result) => {
+    result.observe(collectionTime, Date.now() / 1e3);
+    for (const signal of ["traces", "metrics"]) {
+      result.observe(exportFailures, pipeline[signal].failures, pipelineLabels[signal]);
+      result.observe(exportInFlight, pipeline[signal].inFlight, pipelineLabels[signal]);
+      if (pipeline[signal].lastSuccess) result.observe(exportSuccess, pipeline[signal].lastSuccess, pipelineLabels[signal]);
+    }
+  }, [exportFailures, exportSuccess, exportInFlight, collectionTime]);
   const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
   const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
   const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
@@ -129084,20 +129118,24 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const seenRoutes = /* @__PURE__ */ new Set();
   const observedExporter = {
     export(spans, callback) {
+      pipeline.traces.inFlight++;
       exporter.export(spans, (result) => {
+        pipeline.traces.inFlight--;
         observeExport("traces", result);
-        callback(result);
+        callback(result.code === 0 ? result : { code: result.code, error: new Error("Telemetry export failed") });
       });
     },
     forceFlush: () => exporter.forceFlush(),
     shutdown: () => exporter.shutdown()
   };
-  const processor = new import_sdk_trace_base.BatchSpanProcessor(observedExporter, {
+  const processorConfig = {
+    selfObsMeterProvider: meterProvider,
     maxQueueSize: 128,
     maxExportBatchSize: 32,
     scheduledDelayMillis: 500,
     exportTimeoutMillis: 800
-  });
+  };
+  const processor = new import_sdk_trace_base.BatchSpanProcessor(observedExporter, processorConfig);
   const provider = new import_sdk_trace_base.BasicTracerProvider({
     resource,
     sampler: new import_sdk_trace_base.TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
@@ -129108,6 +129146,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const websocketNames = /* @__PURE__ */ new Set();
   const websocketEnds = /* @__PURE__ */ new Set();
   let closing = false;
+  let shutdownPromise;
   const releaseFetch = installRuntimeFetchTelemetry();
   const websocket = {
     connectionOpened() {
@@ -129345,18 +129384,24 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
         throw error;
       }
     },
-    async shutdown() {
-      if (closing) return;
+    shutdown() {
+      if (shutdownPromise) return shutdownPromise;
       for (const end of websocketEnds) end("cancelled");
       closing = true;
       releaseFetch();
       gcObserver.disconnect();
       delayMonitorStoppedAt = performance2.now();
       loopDelay.disable();
-      await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise((resolve2) => {
-        const timer = setTimeout(resolve2, 1500);
-        timer.unref();
-      })]);
+      let timer;
+      shutdownPromise = Promise.race([
+        Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]).then(() => {
+        }),
+        new Promise((resolve2) => {
+          timer = setTimeout(resolve2, 1500);
+          timer.unref();
+        })
+      ]).finally(() => clearTimeout(timer));
+      return shutdownPromise;
     }
   };
 }
@@ -146396,12 +146441,20 @@ Options:
   --help, -h          Show this help
 `,
   monitoring: `Usage: sporades monitoring stack <init|validate> [options]
+       sporades monitoring sender <issue|rotate|commit|cancel|revoke|export|status|legacy-revoke> [options]
 
 Generate or inspect the versioned trace stack from an installed Sporades package.
 Initialization creates a reviewable directory; it does not start services.
+Sender operations run locally on the Monitoring server; results contain no secrets.
+Rotation stages a second generation; commit retires the old one after sender verification.
 
 Options:
   --dir <path>        Target stack directory (default: current directory)
+  --sender <name>     Named sender for lifecycle operations (optional for status)
+  --host <identity>   Exact inventory Host scope (issue or legacy-revoke only)
+  --out <path>        New mode-0600 credential handoff file (export only)
+  --generation <n>    Verified pending generation to activate (commit only)
+  --ingest            Disable shared legacy ingestion (legacy-revoke only)
   --json              Write { ok, data, error } JSON output
   --help, -h          Show this help
 `,
@@ -146580,8 +146633,8 @@ import { createHash as createHash15 } from "node:crypto";
 import { cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
 import path17 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
-var STACK_SCHEMA = 2;
-var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "inventory-contract.mjs", "inventory-store.mjs", "inventory.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "setup.mjs", "smoke.mjs"];
+var STACK_SCHEMA = 3;
+var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "sender-credentials.mjs", "inventory-contract.mjs", "inventory-store.mjs", "inventory.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "pipeline-dashboard.json", "pipeline-rules.yaml", "collector-persistent.yaml", "compose.queue.yaml", "OUTAGES.md", "setup.mjs", "smoke.mjs"];
 function prerequisite() {
   if (!["arm64", "x64"].includes(process.arch) || !["linux", "darwin"].includes(process.platform)) {
     throw commandError("Unsupported monitoring stack architecture.", "Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.");
@@ -148824,6 +148877,10 @@ async function main() {
         printHelp("monitoring");
         return;
       }
+      if (args[0] === "sender") {
+        await runMonitoringSenderCommand(args);
+        return;
+      }
       if (args[0] !== "stack" || !["init", "validate"].includes(args[1] ?? "")) {
         throw commandError("Unknown monitoring operation.", "Use `sporades monitoring stack init|validate --dir <path>`.");
       }
@@ -149017,6 +149074,40 @@ function parseCreateArgs(args) {
 }
 function isLocalTemplateReference(value) {
   return path20.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
+}
+async function runMonitoringSenderCommand(args) {
+  const action = args[1];
+  if (!["issue", "rotate", "commit", "cancel", "revoke", "export", "status", "legacy-revoke"].includes(action ?? "")) {
+    throw commandError("Unknown sender operation.", "Run `sporades monitoring --help`.");
+  }
+  let directory = process.cwd();
+  let json = false;
+  const options = {};
+  for (let index = 2; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--dir") directory = readFlagValue(args, ++index, arg);
+    else if (arg === "--sender") options.sender = readFlagValue(args, ++index, arg);
+    else if (arg === "--host" && ["issue", "legacy-revoke"].includes(action)) options.host = readFlagValue(args, ++index, arg);
+    else if (arg === "--out" && action === "export") options.out = readFlagValue(args, ++index, arg);
+    else if (arg === "--generation" && action === "commit") options.generation = Number(readFlagValue(args, ++index, arg));
+    else if (arg === "--ingest" && action === "legacy-revoke") options.ingest = true;
+    else if (arg === "--json") json = true;
+    else throw commandError("Unknown sender option.", "Run `sporades monitoring --help`.");
+  }
+  if (action === "legacy-revoke" && (options.sender || !!options.host === !!options.ingest)) {
+    throw commandError("Choose one legacy capability.", "Use exactly one of --host or --ingest without --sender.");
+  }
+  const source = path20.join(resolveSporadesPackageRoot(), "monitoring", "trace");
+  const lifecycle = await import(pathToFileURL5(path20.join(source, "sender-credentials.mjs")).href);
+  const setup = await import(pathToFileURL5(path20.join(source, "setup.mjs")).href);
+  let data2;
+  try {
+    data2 = await lifecycle.manageSenderCredentials(path20.join(path20.resolve(directory), ".private", "senders"), action, options, setup.gatewayRunIdentity());
+  } catch (error) {
+    throw commandError("Sender credential operation failed.", error instanceof Error && !("code" in error) ? error.message : "Initialize the stack and inspect protected file permissions and output paths.");
+  }
+  if (json) writeResult({ ok: true, data: data2, error: null });
+  else process.stdout.write(JSON.stringify(data2, null, 2) + "\n");
 }
 async function runTelemetryProfileCommand(args) {
   if (args[0] !== "profile" || !["add", "list", "show", "remove"].includes(args[1] ?? "")) {

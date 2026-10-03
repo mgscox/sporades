@@ -6,6 +6,11 @@ Capsule creation, project layout, configuration, security policy, database servi
 
 ## Runtime telemetry
 
+[Sender credential lifecycle](./sender-credentials.md) documents operator-local
+issue, protected export, staged rotation/commit, revocation and legacy migration.
+These credentials belong to the Monitoring connection, outside Capsule Sealed
+Server env; profiles retain only environment references.
+
 The operator registers a named Telemetry profile separately from a Host profile:
 
 ```sh
@@ -53,6 +58,34 @@ The selected profile alone sets the OTLP destination, authorization and TLS
 trust. Sporades sends uncompressed OTLP/HTTP with cumulative metrics for its
 monitoring stack; ambient `OTEL_EXPORTER_OTLP_*` settings from other tooling do
 not alter these exports. For a private CA, select the profile's `--ca-file`.
+
+Telemetry exports are best effort and bounded independently of business work.
+The SDK exports `otel.sdk.processor.span.queue.size` and `.capacity` (128
+waiting spans) and `.processed` with bounded `error.type` values `queue_full`
+and `Error` for saturation and failed export loss. `sporades.telemetry.export.failure.count`
+counts failed attempts by `signal=traces|metrics`; `.in_flight` measures active
+exports, and `.last_success` records Unix seconds of the last downstream
+acceptance, with no sample until the first success. `sporades.telemetry.collection.time`
+records source collection time in Unix seconds for detecting stale buffered
+samples. These metrics share the existing resource identity and export path;
+diagnostic samples can themselves be lost. Missing data is unknown, and export
+acceptance does not prove storage delivery. The provisioned **Sporades Telemetry
+Pipeline** dashboard and [outage runbook](https://github.com/mgscox/sporades/blob/main/monitoring/trace/OUTAGES.md)
+describe finite retry/flush budgets, loss and optional quota-limited persistent
+Collector queues. The source-stale warning uses the newest collection time in a
+bounded 24-hour history per logical target, so a disconnected target can warn
+after 15 minutes even after its instant series disappears. It drops only the
+process-lifetime `instance` and `service_instance_id` labels: fresh collection
+from a replacement clears the retired process warning, including after repeated
+restarts or older batch replay. All remaining labels, including service,
+environment and any stable replica labels, remain independent. Hosted service
+names use `domain/subname`; processes sharing all remaining labels are one
+target, so independently monitored replicas need distinct stable target labels
+or service names. Never-observed targets and targets outside that history
+remain unknown.
+No Capsule instrumentation API or additional profile setting
+is required. SIGTERM flush stays within 1500 ms and repeated shutdown joins the
+same bounded operation.
 
 Dev selection order is `sporades dev --telemetry <name>`, then the explicit project
 binding below, then no export. A Container session uses `sporades deploy

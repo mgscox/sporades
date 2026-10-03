@@ -4,6 +4,12 @@ This directory runs authenticated OTLP/HTTP traces, independent HTTP/WebSocket o
 
 ## Requirements and images
 
+The **Sporades Telemetry Pipeline** dashboard is provisioned at
+`/grafana/d/sporades-pipeline`. See [OUTAGES.md](OUTAGES.md) for memory/queue/disk
+budgets, missing-data interpretation, finite retries, optional persistent queues
+and isolated recovery drills. Schema 3 adds private diagnostics and provisioning;
+existing operator files remain preserved on init/validate.
+
 Use Linux `amd64` or `arm64`, Docker Engine 29.x and Docker Compose 2.40.3 or later (Compose 5.5.1 is also tested), Node.js 22.13+ for setup and smoke scripts, and local disk for retention. Image tags are fixed: OpenTelemetry Collector contrib `0.138.0`, Jaeger `2.21.0`, Prometheus `3.13.3` LTS, Grafana `13.2.2`, BusyBox `1.37.0`, and gateway base Node `24.13.0-alpine3.23`. The Prometheus LTS and Grafana release were checked against their [official download](https://prometheus.io/download/) and [official release](https://grafana.com/grafana/download/) pages on 2026-09-27; Grafana `12.2.0` was avoided because it predates the [CVE-2026-33382 fix](https://grafana.com/security/security-advisories/cve-2026-33382/). Check newer patches during upgrades.
 
 Named `traces`, `metrics`, `grafana`, and `inventory` volumes persist Jaeger Badger, Prometheus TSDB, and Grafana state. Jaeger retains spans three days by default (`TRACE_RETENTION=72h`). Prometheus starts at 14 days (`METRIC_RETENTION=14d`) and 8 GB of retained blocks (`METRIC_DISK_CAP=8GB`), whichever limit comes first. Reserve **at least 10 GB of local disk for metrics**: the 8 GB setting leaves 20% nominal room, but WAL/head and compaction can briefly exceed the retention target. Monitor free space and size the Host from measured series and sample rates. Prometheus initially scrapes its own health metrics every 15 seconds; Capsule metrics export every 15 seconds by default. Edit `prometheus.yaml` for the scrape interval and use the Telemetry profile's `--metrics-interval-ms` for Capsule export. Prometheus, Grafana, Collector, and Jaeger have no published ports; only the gateway publishes one. Services have bounded memory, CPU, process, queue, request, and log settings.
@@ -128,3 +134,27 @@ queries). These examples assume the default 15-second export interval; increase
 the window to include at least two exports for slower profiles. Metrics remain available when trace sampling is zero. Missing export
 is not a zero backlog; inspect the existing telemetry failure diagnostics and
 use the CLI Job inspection surface for retained history.
+
+## Per-sender credentials and rotation
+
+Use `sporades monitoring sender issue|export|rotate|commit|cancel|revoke|status`
+locally on the Monitoring server. A named sender has unique ingestion authority;
+`issue --host <identity>` also grants a separate exact Host inventory capability.
+The protected `.private/senders/registry.json` survives setup and restart; the
+gateway reloads it through a read-only directory mount. Rotation stages an overlap,
+then `commit --generation <n>` retires the old tokens after actual sender verification.
+Transient missing paths during Docker directory-mount publication are reopened
+with at most eight attempts and 1.05 seconds of increasing backoff. Every attempt
+validates the current protected path; there is no cached-credential fallback.
+Persistent absence, malformed content, symlinks and insecure permissions fail closed.
+`export --out <new-file>` writes a mode-0600 handoff without printing secrets.
+No sender bearer credential authorizes dashboard/query access or remote administration.
+
+See the [sender lifecycle reference](https://github.com/mgscox/sporades/blob/main/docs/reference/sender-credentials.md)
+for complete issue/connect, interrupted rotation, cancellation, revocation, legacy
+migration, permissions, backup, upgrade and redacted result contracts. Existing
+`.env` ingestion and inventory values remain compatible until explicit
+`sender legacy-revoke --ingest` or `--host <identity>`; migrate all users of a
+shared ingestion token before disabling it. Routine credential commands never
+rewrite `.env` or Capsule Sealed Server env. Inventory recovery `inventory.mjs`
+also accepts `HOST_INVENTORY_TOKEN` in its process environment for named senders.
