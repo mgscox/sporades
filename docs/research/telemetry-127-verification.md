@@ -131,3 +131,61 @@ sender/Host reconnect and WebSocket Bundle checks passed all 19 tests. The full
 `COPYFILE_DISABLE=1 SPORADES_CONFIG_DIR="$PWD/.sporades/issue-127-config" npm test`
 run passed 2,940 tests: 2,733 passed, 207 skipped, zero failures/cancellations
 (1,287.7 seconds). Its local log is `.sporades/issue-127-merge-full-test.log`.
+
+## Round 2 QA marker-wait correction
+
+[QA round 2](https://github.com/mgscox/sporades/pull/203#issuecomment-5966690871)
+at `df00bae7` completed 2,940 tests: 2,732 passed, one failed, and 207 skipped.
+The sealed-key descriptor-fencing fixture exhausted its two-second marker wait
+after 2,022.8ms. Its isolated retry passed in 1,932.3ms. QA verified that both
+the Host test and generated Host helper were unchanged from main.
+
+Assumption: helper startup, Docker quiescing and key generation can exceed the
+old deadline under full-suite load. The original failure log did not capture
+child completion/output, so it cannot prove the exact cause or rule out an
+early helper failure. The fixture now allows a
+bounded 15-second marker wait and races it against child completion, reporting
+exit code, signal, stdout and stderr immediately on early exit. Polling stops
+when the race settles, and the helper is killed/reaped before temporary-fixture
+cleanup on failure. The existing 700ms mutation pause, Docker quiescing order,
+symlink attacks, stopped-registry assertion, retained private-key assertion,
+and outside-file hash/mode/ownership assertions remain unchanged. Runtime,
+credential, public API and generated helper code did not change.
+
+Test-first local logs are in `.sporades/pr203-evidence/`: delayed startup failed
+before the new waiter existed, then passed; early child exit failed with the old
+timeout-only behavior, then passed with captured output. The focused run passed
+all four tests, including the live-child missing-marker deadline and the original
+descriptor-fencing case (`marker-focused.log`). All commands used
+`SPORADES_CONFIG_DIR="$PWD/.sporades/pr203-config"`; archive checks also used
+`COPYFILE_DISABLE=1`.
+
+Original QA evidence was preserved without modifying `/tmp` originals:
+
+| Evidence | Original | Worktree copy | SHA-256 |
+| --- | --- | --- | --- |
+| Failed complete suite | `/tmp/poirot-203-test.log` | `.sporades/pr203-evidence/qa-round2-full-suite.log` | `583e9b0ff50dedcaca39bfb8c8fce85d0b1ca8c2f551b3bad23f04a1ec926bec` |
+| Isolated passing retry | `/tmp/poirot-203-host-fence.log` | `.sporades/pr203-evidence/qa-round2-isolated-pass.log` | `55a961b04d1b00ea7324aec5e52968647cfd0464bdd6491a27c354be2cac3caf` |
+
+Local validation also passed typecheck (`typecheck.log`) and packed-CLI private-CA
+Docker acceptance (`docker-ca.log`: one passed, one legacy-CLI prerequisite skip).
+Playwright checked the existing sender-credential reference and navigation at
+desktop and 390px widths on port 5688, with no console errors or document overflow
+after loading the correct `/sporades/` base path. Screenshots are preserved in
+`.sporades/pr203-evidence/desktop.png` and `mobile.png`. The task-owned docs server
+and browser were stopped, and the Docker acceptance fixture removed its containers.
+
+The required complete `COPYFILE_DISABLE=1 SPORADES_CONFIG_DIR="$PWD/.sporades/pr203-config" npm test`
+run exited zero: **2,943 tests, 2,736 passed, 207 skipped, zero failures or
+cancellations**, in 1,493.5 seconds (`full-suite.log`). Its build and generated-bin
+precheck also passed; tracked `bin/` and `dist/` remained unchanged. The original
+fencing case passed in this full run in 1,794.8ms, and all three waiter regression
+tests passed. A direct comparison with `df00bae7` confirmed all nine original
+fencing assertions and the mutation pause were preserved.
+
+The combined `node --test --test-concurrency=1 test/sender-credentials.test.js test/host-inventory-reconnect.test.js test/telemetry-websocket-bundle.test.js`
+run passed all 19 tests (`credential-websocket.log`). `npm run docs:check` passed
+53 tests and built VitePress (`docs-check.log`); `node scripts/check-generated-bin.mjs`
+and `git diff --check` passed. These checks cover the test-only correction and
+unchanged shipped behavior; the separate-VM operator drill remains as documented
+above.

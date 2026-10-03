@@ -438,8 +438,8 @@ function startHostHelper(input, options = {}) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("close", (code) => {
-      resolve({ code, stdout, stderr });
+    child.on("close", (code, signal) => {
+      resolve({ code, signal, stdout, stderr });
     });
   });
   child.stdin.end(`${JSON.stringify(input)}\n`);
@@ -476,9 +476,9 @@ async function writeFakeProcEntry(procRoot, pid, target, environment = []) {
   await writeFile(path.join(processDir, "environ"), Buffer.from(`${environment.join("\0")}\0`, "utf8"));
 }
 
-async function waitForFileText(filePath, predicate, timeoutMs = 2000) {
+async function waitForFileText(filePath, predicate, timeoutMs = 2000, signal) {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !signal?.aborted) {
     try {
       const contents = await readFile(filePath, "utf8");
       if (predicate(contents)) return contents;
@@ -487,8 +487,78 @@ async function waitForFileText(filePath, predicate, timeoutMs = 2000) {
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.fail(`Timed out waiting for expected contents in ${filePath}`);
+  if (!signal?.aborted) assert.fail(`Timed out waiting for expected contents in ${filePath}`);
 }
+
+async function waitForHostHelperMarker(action, filePath, predicate, timeoutMs = 15_000) {
+  // Key generation and Docker quiescing can exceed two seconds under suite load.
+  // Keep startup bounded, but fail immediately if the helper cannot reach the boundary.
+  const controller = new AbortController();
+  try {
+    return await Promise.race([
+      waitForFileText(filePath, predicate, timeoutMs, controller.signal),
+      action.result.then(({ code, signal, stdout, stderr }) => {
+        assert.fail(`Host helper exited before marker ${filePath} (code=${code}, signal=${signal ?? "none"})\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+      }),
+    ]);
+  } finally {
+    controller.abort();
+  }
+}
+
+test("Host helper marker wait tolerates startup beyond two seconds", { timeout: 10_000 }, async () => {
+  await withTempDir(async (dir) => {
+    const marker = path.join(dir, "delayed.marker");
+    const action = startExecutable(process.execPath, ["--input-type=module", "-e", `
+      import { writeFileSync } from "node:fs";
+      setTimeout(() => writeFileSync(process.argv[1], "ready\\n"), 2200);
+      setInterval(() => {}, 1000);
+    `, marker]);
+    try {
+      assert.equal(await waitForHostHelperMarker(action, marker, (text) => text === "ready\n"), "ready\n");
+    } finally {
+      action.child.kill("SIGKILL");
+      await action.result;
+    }
+  });
+});
+
+test("Host helper marker wait reports early child exit with captured output", { timeout: 5000 }, async () => {
+  await withTempDir(async (dir) => {
+    const action = startExecutable(process.execPath, ["-e", `
+      process.stdout.write("fixture stdout\\n");
+      process.stderr.write("fixture stderr\\n");
+      process.exitCode = 17;
+    `]);
+    await assert.rejects(
+      waitForHostHelperMarker(action, path.join(dir, "missing.marker"), () => true, 1000),
+      (error) => {
+        assert.match(error.message, /exited before.*missing\.marker/);
+        assert.match(error.message, /code=17/);
+        assert.match(error.message, /fixture stdout/);
+        assert.match(error.message, /fixture stderr/);
+        return true;
+      },
+    );
+  });
+});
+
+test("Host helper marker wait remains bounded when a child never publishes its marker", { timeout: 5000 }, async () => {
+  await withTempDir(async (dir) => {
+    const action = startExecutable(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+    try {
+      await assert.rejects(
+        waitForHostHelperMarker(action, path.join(dir, "missing.marker"), () => true, 100),
+        /Timed out waiting for expected contents.*missing\.marker/,
+      );
+      assert.equal(action.child.exitCode, null);
+      assert.equal(action.child.signalCode, null);
+    } finally {
+      action.child.kill("SIGKILL");
+      await action.result;
+    }
+  });
+});
 
 async function waitForPath(filePath, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
@@ -3937,18 +4007,23 @@ test("sporades host helper descriptor-fences sealed-env key creation after quies
         SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS: "700",
       },
     });
-    const keyPath = (await waitForFileText(marker, (contents) => contents.endsWith(".private.pem\n"))).trim();
-    assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["inspect", "stop", "rm"]);
-    const retained = `${keyPath}.retained`;
-    await rename(keyPath, retained);
-    await symlink(outside, keyPath);
-    const result = await action.result;
-    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule runtime restoration failed.", result.stdout);
-    assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "stopped");
-    const outsideAfter = await lstat(outside);
-    assert.equal(createHash("sha256").update(await readFile(outside)).digest("hex"), outsideHash);
-    assert.deepEqual([outsideAfter.mode & 0o777, outsideAfter.uid, outsideAfter.gid], [outsideBefore.mode & 0o777, outsideBefore.uid, outsideBefore.gid]);
-    assert.match(await readFile(retained, "utf8"), /PRIVATE KEY/);
+    try {
+      const keyPath = (await waitForHostHelperMarker(action, marker, (contents) => contents.endsWith(".private.pem\n"))).trim();
+      assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["inspect", "stop", "rm"]);
+      const retained = `${keyPath}.retained`;
+      await rename(keyPath, retained);
+      await symlink(outside, keyPath);
+      const result = await action.result;
+      assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule runtime restoration failed.", result.stdout);
+      assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "stopped");
+      const outsideAfter = await lstat(outside);
+      assert.equal(createHash("sha256").update(await readFile(outside)).digest("hex"), outsideHash);
+      assert.deepEqual([outsideAfter.mode & 0o777, outsideAfter.uid, outsideAfter.gid], [outsideBefore.mode & 0o777, outsideBefore.uid, outsideBefore.gid]);
+      assert.match(await readFile(retained, "utf8"), /PRIVATE KEY/);
+    } finally {
+      action.child.kill("SIGKILL");
+      await action.result;
+    }
 
     await rm(path.join(fixture.dataDir, "sealed-server-env"), { recursive: true, force: true });
     const outsideDirectory = path.join(dir, "outside-key-directory");
