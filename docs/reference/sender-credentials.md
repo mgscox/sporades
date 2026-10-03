@@ -128,7 +128,8 @@ They do not disable named senders or unrelated legacy Host inventory mappings.
 ## Persistence, reload and recovery
 
 The protected directory `.private/senders` contains `registry.json`, schema 1.
-It stores named scopes, monotonic generation numbers, active/pending secrets,
+It is bounded to 1 MiB and 1,000 sender records; writes that would exceed these
+limits fail before replacing working state. It stores named scopes, monotonic generation numbers, active/pending secrets,
 revocation tombstones and legacy disable decisions. Back it up securely with
 `.env`, `.private/credentials.json`, the inventory volume and Host connection/outbox.
 Restore the latest registry: restoring an older backup can resurrect retired

@@ -6,6 +6,7 @@ import { inventoryHost } from './inventory-contract.mjs';
 
 const invalid = () => { throw new Error('Invalid protected sender registry.'); };
 const nameValid = value => typeof value === 'string' && /^[a-z0-9][a-z0-9-]{0,62}$/.test(value);
+const MAX_REGISTRY_BYTES = 1024 * 1024;
 const empty = () => ({ schemaVersion: 1, revision: 0, legacyIngest: true, legacyInventoryDisabled: [], senders: [] });
 
 export function validateSenderRegistry(value) {
@@ -52,7 +53,7 @@ export async function readSenderRegistry(directory) {
   const file = await open(join(directory, 'registry.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.nlink !== 1 || stat.mode & 0o077 || stat.size > 1024 * 1024) invalid();
+    if (!stat.isFile() || stat.nlink !== 1 || stat.mode & 0o077 || stat.size > MAX_REGISTRY_BYTES) invalid();
     let value;
     try { value = JSON.parse(await file.readFile('utf8')); } catch { invalid(); }
     return validateSenderRegistry(value);
@@ -61,11 +62,13 @@ export async function readSenderRegistry(directory) {
 
 async function publish(directory, value, owner) {
   validateSenderRegistry(value);
+  const serialized = JSON.stringify(value) + '\n';
+  if (Buffer.byteLength(serialized) > MAX_REGISTRY_BYTES) throw new Error('Protected sender registry is full; preserve it and review retired sender history before issuing more credentials.');
   const temporary = join(directory, `.registry-${randomBytes(8).toString('hex')}.tmp`);
   try {
     const file = await open(temporary, 'wx', 0o600);
     try {
-      await file.writeFile(JSON.stringify(value) + '\n');
+      await file.writeFile(serialized);
       if (owner?.transferOwnership) await file.chown(owner.uid, owner.gid);
       await file.sync();
     } finally { await file.close(); }

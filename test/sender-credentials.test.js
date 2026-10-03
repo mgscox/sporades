@@ -220,3 +220,24 @@ test('concurrent writers lock and atomically preserve both senders; protected ex
   }
   assert.deepEqual(good(dir, 'status').senders.map(item => item.name).sort(), ['a', 'b', 'laptop']);
 });
+
+
+test('a full protected registry rejects issuance before replacing readable working credentials', async t => {
+  const dir = await fixture(t);
+  good(dir, 'issue', '--sender', 'working');
+  const working = await credentials(dir, 'working', 'working.env');
+  const filename = path.join(dir, '.private/senders/registry.json');
+  const value = JSON.parse(await readFile(filename, 'utf8'));
+  const host = ['a'.repeat(63), 'b'.repeat(63), 'c'.repeat(63), 'd'.repeat(61)].join('.');
+  // Simulate retained migration history near the public file-size ceiling.
+  const baseBytes = Buffer.byteLength(JSON.stringify(value) + '\n');
+  const itemBytes = Buffer.byteLength(JSON.stringify(host) + ',');
+  value.legacyInventoryDisabled = Array(Math.floor((1024 * 1024 - 400 - baseBytes) / itemBytes)).fill(host);
+  const before = JSON.stringify(value) + '\n';
+  await writeFile(filename, before);
+  const rejected = command(dir, 'issue', '--sender', 'z'.repeat(63), '--host', host);
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stdout, /registry is full/);
+  assert.equal(await readFile(filename, 'utf8'), before);
+  assert.equal((await credentials(dir, 'working', 'still-working.env')).ingest, working.ingest);
+});
