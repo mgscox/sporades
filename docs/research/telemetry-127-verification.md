@@ -382,3 +382,36 @@ stronger bounded waiting and complete child cleanup, and regenerate conflicting
 artifacts from the combined source. Isolate recovery work instead of changing a
 desk that has been reassigned. Earlier QA full-run failures remain historical
 failures; this new completed run provides the integrated green gate.
+
+## Second restart recovery and fetch-telemetry main integration
+
+After the office restarted again, the desk had been reassigned to another issue.
+The isolated recovery checkout remained clean on `6ed2a621`; the saved fixes
+and earlier completed green gate were intact. GitHub main advanced to
+`d243884f` (outbound fetch telemetry), making PR #203 conflict again.
+Merge commit `1b40a277` integrates that main. Only generated declarations,
+source maps and the generated-source manifest conflicted; `npm run build`
+regenerated them from the cleanly merged source. The Host fixture fixes,
+Journey restoration barrier and reconnect regression tests are unchanged.
+
+All validation used `SPORADES_CONFIG_DIR="$PWD/.sporades/recovery-config"`,
+with `COPYFILE_DISABLE=1` for tests. Build, typecheck and generated parity
+passed. Combined credential, client/Journey, inventory, WebSocket and outbound
+fetch tests completed with **134 passed, three skipped and zero failures**.
+All **eight** focused Host synchronization/fencing checks passed.
+`npm run docs:check` passed **53 tests** and the VitePress build.
+
+The complete `npm test` on `1b40a277` exited zero: **2,974 tests, 2,763 passed,
+211 skipped, zero failures and zero cancellations**, in 1,297.8 seconds.
+Its build/generated precheck passed. Confirmed health-lock synchronization,
+apply/rollback and remove/restore fencing, and the real-transport Journey
+reconnect publication/zero-disable assertions all passed under full-suite load.
+No exclusions or isolated retries establish this gate. Logs are retained as
+`.sporades/recovery-evidence/restart2-*.log`; `restart2-full-suite.log` has SHA-256
+`e8300e39125495cda740212174a63a72f38a89ca562934bebcd3748a1098e092`.
+
+The original round-three failed-full-run and isolated-pass evidence, and the
+previous recovery's green full-run log, remain unchanged with their recorded
+hashes. Assumptions: retain both branches' behavior, regenerate conflicting
+artifacts from combined source, and keep recovery isolated from the reassigned
+desk. Main remained `d243884f` at final verification.
