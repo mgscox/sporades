@@ -1,6 +1,14 @@
 # Telemetry diagnostics and migration verification — #128
 
-Implementation is pinned to `3ccb3f99` (Sporades 0.9.31). Verification used isolated
+The feature implementation is pinned to `3ccb3f99` (Sporades 0.9.31). Integration
+revision `262c98da` also includes main's admission-rate-limit change `b7bbd3f1`;
+the only merge conflict was the regenerated source manifest. The combined build
+and typecheck passed, and all **45 focused telemetry and admission tests passed**
+without failures or skips. The completed combined full suite passed **3,011 tests:
+2,797 passed, 214 skipped, zero failed or cancelled**, exit status 0, in 1,271.678
+seconds. Its local log SHA-256 is
+`9e42f7e0b225cf1f87259c11ce36477a979f4ea39639ecfe4f451645f853956f`.
+Verification used isolated
 configuration and temporary directories inside the Dennis worktree, with
 `COPYFILE_DISABLE=1` for macOS archive fixtures. No real Host, SSH target, cloud
 account, production provider call, package publication, tag or release was used.
@@ -36,7 +44,8 @@ repeated TLS diagnostics. The migration
 fixtures use real verified HTTPS, an in-memory backend and fake Docker execution;
 they do not establish a real Host relay or separate-VM deployment.
 
-The completed full suite with isolated fixtures passed: **3,001 tests, 2,787
+Before integration, the completed full suite with isolated fixtures passed:
+**3,001 tests, 2,787
 passed, 214 skipped, zero failed or cancelled**, exit status 0, in 1,273.832
 seconds. Skips include PostgreSQL, root-only ownership fixtures and optional real
 Docker drills. The local final log SHA-256 is
@@ -59,7 +68,7 @@ worker, gives the copied ESM fixture its own package scope and keeps temporary
 compiler settings neutral. It changes no product source or test assertions and
 suppresses no failures or warnings. Files stay inside the worktree. With this
 setup, all **220 affected tests passed**, with no failures or skips. The final full
-suite uses the same setup, which is explicit in the commands above.
+suite used the same setup, which is explicit in the commands above.
 
 Two-axis read-only Standards and Spec reviews covered `0e3277a7` and fixes through
 `697f74e8`. Spec findings about nonempty-but-invalid Collector configuration and
