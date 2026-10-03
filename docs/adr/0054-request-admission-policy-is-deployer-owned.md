@@ -43,8 +43,10 @@ emits a health transition. Only digest and health appear in the protected readin
 response and platform reload events. Issue #66 established this lifecycle independently of enforcement. Issue #67 now
 consumes one generation snapshot before HTTP Capsule routing to enforce exact-path
 denials. Genuine authenticated controls bypass admission; reserved targets fail
-validation. The remaining matchers, quota enforcement and WebSocket upgrades are
-later slices.
+validation. Issue #68 completes non-address AND matching: methods, exact/segment-prefix
+paths, canonical public headers and query-key presence. Canonicalization is pinned
+in the [configuration reference](../reference/projects-and-configuration.md#request-admission-policy-publication).
+Address matching, quota enforcement and WebSocket upgrades are later slices.
 
 ## Consequences
 

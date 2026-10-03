@@ -26624,6 +26624,13 @@ function depth(value, level = 0) {
   if (level > ADMISSION_LIMITS.depth) invalid();
   if (value && typeof value === "object") for (const child of Object.values(value)) depth(child, level + 1);
 }
+function isCanonicalPolicyPathname(target) {
+  try {
+    return canonicalAdmissionPathname(target) === target;
+  } catch {
+    return false;
+  }
+}
 var controls = ["/__sporades/health/runtime", "/__sporades/connection-token"];
 function condition(value) {
   object(value, ["kind", "value", "exact", "prefix", "name"]);
@@ -26635,7 +26642,7 @@ function condition(value) {
     case "pathname": {
       object(value, ["kind", "exact", "prefix"]);
       const target = value.exact ?? value.prefix;
-      if (value.exact !== void 0 === (value.prefix !== void 0) || !text(target) || !target.startsWith("/") || target.startsWith("//") || /[\\?#%]/.test(target) || new URL(target, "http://localhost").pathname !== target) invalid();
+      if (value.exact !== void 0 === (value.prefix !== void 0) || !text(target) || !target.startsWith("/") || target.startsWith("//") || /[\\?#%]/.test(target) || !isCanonicalPolicyPathname(target)) invalid();
       if (controls.some((control) => value.exact === control || value.prefix !== void 0 && (control === target || control.startsWith(target.endsWith("/") ? target : `${target}/`)))) invalid();
       break;
     }
@@ -26649,7 +26656,7 @@ function condition(value) {
     }
     case "header":
       object(value, ["kind", "name", "value"]);
-      if (!text(value.name) || !/^[a-z0-9!#$&'*+.^_`|~-]+$/.test(value.name) || /^(authorization|proxy-authorization|cookie|set-cookie|forwarded|x-forwarded-.*|x-sporades-.*|cf-.*)$/.test(value.name) || value.value !== void 0 && (typeof value.value !== "string" || Buffer.byteLength(value.value) > ADMISSION_LIMITS.textBytes || /[\x00-\x1f\x7f]/.test(value.value))) invalid();
+      if (!text(value.name) || !/^[a-z0-9!#$&'*+.^_`|~-]+$/.test(value.name) || /^(host|connection|proxy-.*|authorization|cookie|set-cookie|forwarded|via|true-client-ip|x-real-ip|x-forwarded-.*|x-sporades-.*|cf-.*)$/.test(value.name) || value.value !== void 0 && (typeof value.value !== "string" || Buffer.byteLength(value.value) > ADMISSION_LIMITS.textBytes || /[\x00-\x1f\x7f]/.test(value.value) || /^[ \t]|[ \t]$/.test(value.value))) invalid();
       break;
     case "query-key":
       object(value, ["kind", "name"]);
@@ -26684,6 +26691,22 @@ function parseAdmissionPolicy(bytes) {
     } else invalid();
   }
   return freeze({ digest: createHash2("sha256").update(bytes).digest("hex"), policy: value });
+}
+function canonicalAdmissionPathname(raw) {
+  if (raw === "*") return raw;
+  if (!raw.startsWith("/") || /[\\?#\x00-\x20\x7f]|%2f|%5c/i.test(raw)) throw new Error("Invalid admission pathname.");
+  const decoded = decodeURIComponent(raw);
+  if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(decoded)) throw new Error("Invalid admission pathname.");
+  const segments = decoded.slice(1).split("/");
+  const output = [];
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    if (segment === "." || segment === "..") {
+      if (segment === "..") output.pop();
+      if (index === segments.length - 1) output.push("");
+    } else output.push(segment);
+  }
+  return `/${output.join("/")}`;
 }
 function resolveAdmissionPolicy(value, files = void 0) {
   if (value === void 0) return null;

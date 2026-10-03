@@ -105,7 +105,7 @@
 import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
-import { matchExactAdmissionRule } from "./admission-policy.js";
+import { matchHttpAdmissionRule } from "./admission-policy.js";
 import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
 import { checkClamavRuntime } from "./file-ingress-runtime.js";
@@ -156,7 +156,7 @@ export function interpretHttpRequestTarget(target, method) {
         return null;
     }
 }
-/** Exact-path HTTP admission, before Capsule routing; genuine controls dispatch first. */
+/** Non-address HTTP admission, before Capsule routing; genuine controls dispatch first. */
 export function routeHttpAdmission(database, request, response, target) {
     const runtime = database.admissionPolicy;
     if (!runtime)
@@ -167,14 +167,17 @@ export function routeHttpAdmission(database, request, response, target) {
         if (!generation || generation.policy.rules.length === 0)
             return false;
         const parsed = target ?? requestTarget(request);
-        // Decode once after URL dot-segment normalization. Encoded separators and
-        // double encodings are ambiguous across app/static routes and fail closed.
-        if (/[\\]|%2f|%5c/i.test(parsed.pathname))
-            throw new Error("Invalid admission pathname.");
-        const pathname = parsed.form === "asterisk" ? "*" : decodeURIComponent(parsed.url.pathname);
-        if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(pathname))
-            throw new Error("Invalid admission pathname.");
-        if (!matchExactAdmissionRule(generation, pathname))
+        const raw = request.url ?? "/";
+        // HTTP request targets have no fragment. Do not let URL silently strip or repair input.
+        if (raw.includes("#"))
+            throw new Error("Invalid admission target.");
+        const queryStart = raw.indexOf("?");
+        if (!matchHttpAdmissionRule(generation, {
+            method: request.method ?? "",
+            pathname: parsed.pathname,
+            query: queryStart === -1 ? "" : raw.slice(queryStart + 1),
+            rawHeaders: request.rawHeaders,
+        }))
             return false;
         // This slice implements deny. Future actions cannot silently admit traffic.
     }

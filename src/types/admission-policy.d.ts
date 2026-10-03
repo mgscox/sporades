@@ -1,5 +1,8 @@
-/** Deployer-owned JSON policy. HTTP exact-path deny is enforced before Capsule code.
- * Other conditions and quota actions are reserved for later slices and currently fail closed when indeterminate. */
+/** Deployer-owned JSON policy. Non-address HTTP conditions use AND and ordered first-match denial.
+ * Methods are uppercase ASCII; paths decode once and normalize dot segments, prefixes follow segment boundaries.
+ * Header names are lowercase non-sensitive tokens; values have no outer whitespace. Presence accepts duplicates;
+ * exact values require one raw occurrence (ambiguous duplicates fail closed). Query keys decode once, case-sensitively.
+ * Address conditions and quota actions remain reserved and fail closed when indeterminate. */
 export type AdmissionCondition =
   | { kind: "method"; value: string }
   | { kind: "pathname"; exact: string } | { kind: "pathname"; prefix: string }
