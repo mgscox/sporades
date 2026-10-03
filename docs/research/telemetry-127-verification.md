@@ -415,3 +415,56 @@ previous recovery's green full-run log, remain unchanged with their recorded
 hashes. Assumptions: retain both branches' behavior, regenerate conflicting
 artifacts from combined source, and keep recovery isolated from the reassigned
 desk. Main remained `d243884f` at final verification.
+
+## Round-five takeover: fresh integrated-head validation
+
+On takeover, local and remote head were already `c7e8a131`. The requested
+round-five conflict resolution was present in `20de7141`, followed by the
+`d243884f` main integration in `1b40a277`. A fresh fetch confirmed current
+`origin/main` is an ancestor of this head; no additional merge was necessary.
+The Host fixture still has the 15-second child-aware marker waiter, confirmed
+retained-lock ownership, detached process-group cleanup, 700ms mutation pause
+and all fencing assertions. Regenerating the shipped artifacts produced no
+tracked differences.
+
+Dependencies were absent in the takeover checkout. Initial build/typecheck
+attempts reported missing Node types; `npm ci` installed the locked dependencies
+before the successful checks below. Validation used Node `v24.19.0`, npm
+`11.17.0`, `SPORADES_CONFIG_DIR="$PWD/.sporades/round5-takeover-config"` and
+`COPYFILE_DISABLE=1` for tests. Logs are retained in
+`.sporades/round5-takeover-evidence/`.
+
+```sh
+npm ci
+npm run build
+npm run typecheck
+node scripts/check-generated-bin.mjs
+node --test --test-concurrency=1 test/sender-credentials.test.js test/host-inventory-reconnect.test.js test/client-runtime.test.js test/user-journey-expiry.test.js test/telemetry-websocket-bundle.test.js test/lifecycle-inventory.test.js test/monitoring-smoke-origin.test.js test/monitoring-stack-cli.test.js test/telemetry-fetch-bundle.test.js
+node --test --test-name-pattern='Host helper (marker wait|cleanup releases)|descriptor-fences sealed-env key creation|serializes stale health repair against route removal|revalidates trust immediately before (apply and rollback|remove and restore)' test/host.test.js
+npm run docs:check
+npm test
+```
+
+Build, typecheck and generated parity passed. The combined focused run had
+**123 passed, three skipped and zero failures**; all **eight** focused Host
+checks passed. Documentation passed **53 tests** and its VitePress build.
+Playwright checked the sender-credential reference on port 5203 at 1440px and
+390px, including rotation-section navigation and keyboard focus. Neither width
+had horizontal overflow; the correctly based reference URL had no console
+errors. Screenshots are `.sporades/output/playwright/pr203-desktop.png` and
+`pr203-mobile.png`. The owned browser and docs server were stopped.
+
+The completed full suite exited zero: **2,974 tests, 2,763 passed, 211 skipped,
+zero failures and zero cancellations**, in **1,392.3 seconds**. Its generated
+precheck passed. The original Host synchronization/fencing and real-transport
+Journey reconnect assertions passed under full-suite load. `full-suite.log`
+has SHA-256 `f48c248d0a8ad588d4bce6456fb8cbe27cd8f56e99bd09cbc56cc28844f7e6ce`.
+The documented independent #190/#208 exclusion policy remains unchanged;
+those tests were enabled and passed, so no exclusion or isolated retry is
+needed for this gate. Earlier failed-run evidence remains historical evidence.
+
+Assumptions: retain the completed merge fixes already on the assigned branch,
+verify them against live main, and record fresh evidence without unnecessary
+source changes. GitHub reported `MERGEABLE` / `CLEAN` on `c7e8a131` after the
+full run. No real Host or external provider operation was performed;
+separate-VM acceptance remains the documented operator follow-up.
