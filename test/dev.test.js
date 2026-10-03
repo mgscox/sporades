@@ -15597,23 +15597,32 @@ test("Dev admission policy fails cold startup and retains last-known-good state 
     const created = await runCli(["create","admission-dev","--no-install","--no-git","--json"],{cwd:dir}); assert.equal(created.code,0,created.stderr);
     const projectDir = path.join(dir,"admission-dev"); await installFakeReact(projectDir);
     const configPath = path.join(projectDir,"sporades.json"); const config = JSON.parse(await readFile(configPath,"utf8")); config.dev.port=0; config.admissionPolicy={path:"policy.json"}; await writeFile(configPath,JSON.stringify(config));
+    await writeFile(path.join(projectDir,"server","index.ts"),`import { capsule, endpoint } from "sporades/server";
+export default capsule({ name: "admission-dev", endpoints: {
+  blocked: endpoint({method:"GET",path:"/blocked"}, () => { globalThis.process.getBuiltinModule("node:fs").appendFileSync("app-called","called\\n"); return {status:202,body:"application"}; }),
+  allowed: endpoint({method:"GET",path:"/allowed"}, ctx => ({status:201,body:ctx.request.path})),
+} });`);
     const policyPath = path.join(projectDir,"policy.json"); await writeFile(policyPath,"{");
     let child = startCli(["dev","--json"],{cwd:projectDir}); let exited = new Promise(resolve=>child.once("exit",resolve));
     try { const first = await waitForJsonLine(child); assert.equal(first.ok,false,JSON.stringify(first)); assert.match(first.error.message,/Configured admission policy/); }
     finally { if(child.exitCode===null) child.kill("SIGTERM"); await exited; }
-    const json = id => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact:"/blocked"}],action:{kind:"deny"}}]}); await writeFile(policyPath,json("seed"));
+    const json = (id, exact = "/blocked") => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact}],action:{kind:"deny"}}]}); await writeFile(policyPath,json("seed"));
     child = startCli(["dev","--json"],{cwd:projectDir}); exited = new Promise(resolve=>child.once("exit",resolve));
     try {
       const started = await waitForJsonLine(child); assert.equal(started.ok,true,JSON.stringify(started));
       const session = JSON.parse(await readFile(path.join(projectDir,".sporades","dev-session.json"),"utf8"));
       const health = async () => (await (await fetch(`${started.data.url}/__sporades/health/runtime`,{headers:{"x-sporades-host-probe":session.inspectionToken}})).json()).data.runtime.admissionPolicy;
       const initial = await health(); assert.equal(initial.state,"healthy");
+      const denied = await fetch(`${started.data.url}/blocked?private=opaque`); assert.equal(denied.status,403); assert.equal(denied.headers.get("cache-control"),"no-store"); assert.equal(await denied.text(),"Forbidden\n"); await assert.rejects(readFile(path.join(projectDir,"app-called")),{code:"ENOENT"});
+      assert.equal((await fetch(`${started.data.url}/allowed`)).status,201);
+      assert.equal((await fetch(`${started.data.url}/__sporades/connection-token`,{headers:{"x-sporades-connection-token-request":"1"}})).status,200);
       const wait = async predicate => {const deadline=Date.now()+9000;while(Date.now()<deadline){if(await predicate())return;await new Promise(resolve=>setTimeout(resolve,100));}assert.fail("policy failed to converge");};
       await writeFile(policyPath,"{"); await wait(async()=> (await health()).state==="degraded"); assert.equal((await health()).digest,initial.digest);
       const rebuilt = waitForJsonEvent(child,event=>event.ok&&event.data?.event==="rebuild"&&event.data?.status==="success");
       await writeFile(path.join(projectDir,"server","index.ts"),(await readFile(path.join(projectDir,"server","index.ts"),"utf8"))+"\n// rebuild while policy is degraded\n");
-      await rebuilt; assert.equal((await health()).digest,initial.digest);
-      await writeFile(policyPath,json("updated")); await wait(async()=> (await health()).state==="healthy" && (await health()).digest!==initial.digest);
+      await rebuilt; assert.equal((await health()).digest,initial.digest); assert.equal((await fetch(`${started.data.url}/blocked`)).status,403);
+      await writeFile(policyPath,json("updated", "/other")); await wait(async()=> (await health()).state==="healthy" && (await health()).digest!==initial.digest);
+      const admitted = await fetch(`${started.data.url}/blocked`); assert.equal(admitted.status,202); assert.equal(await admitted.text(),"application"); assert.equal(await readFile(path.join(projectDir,"app-called"),"utf8"),"called\n");
     } finally { if(child.exitCode===null) child.kill("SIGTERM"); await exited; }
   });
 });

@@ -27,6 +27,8 @@ export type InterpretedHttpRequestTarget = {
     url: URL;
 };
 export declare function interpretHttpRequestTarget(target: unknown, method: unknown): InterpretedHttpRequestTarget | null;
+/** Exact-path HTTP admission, before Capsule routing; genuine controls dispatch first. */
+export declare function routeHttpAdmission(database: LooseRecord, request: Pick<IncomingMessage, "url" | "method">, response: Pick<ServerResponse, "writeHead" | "end">, target?: InterpretedHttpRequestTarget): boolean;
 export declare function requestTarget(request: Pick<IncomingMessage, "url" | "method">): InterpretedHttpRequestTarget;
 export declare function writeInvalidHttpRequestTarget(database: LooseRecord, request: IncomingMessage, response: Pick<ServerResponse, "writeHead" | "end">): void;
 export declare function readJsonRequest(request: IncomingMessage, limitSource?: LooseRecord | number | null): Promise<LooseRecord>;
@@ -38,7 +40,7 @@ export declare function prepareHttpSecurity(database: {
     securityPolicy?: RuntimeSecurityPolicy;
 }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;
-}): boolean;
+}, admitPreflight?: () => boolean): boolean;
 export declare function resolveRuntimeSecurityPolicy(config?: RuntimeConfig): RuntimeSecurityPolicy;
 export declare function injectPageConnectionToken(html: string, token: string): string;
 export declare function isDocumentNavigationRequest(request: Pick<IncomingMessage, "headers">): boolean;

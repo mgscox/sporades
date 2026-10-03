@@ -60,6 +60,19 @@ export function parseAdmissionPolicy(bytes: Buffer): AdmissionGeneration {
   }
   return freeze({ digest: createHash("sha256").update(bytes).digest("hex"), policy: value });
 }
+/** First-match exact-path slice. An indeterminate condition must never grant admission. */
+export function matchExactAdmissionRule(generation: AdmissionGeneration, pathname: string) {
+  for (const rule of generation.policy.rules) {
+    if (!rule.enabled) continue;
+    if (rule.conditions.some(item => item.kind === "pathname" && "exact" in item && item.exact !== pathname)) continue;
+    if (rule.conditions.some(item => item.kind !== "pathname" || !("exact" in item))) {
+      throw new Error("Unsupported admission condition.");
+    }
+    return rule;
+  }
+  return null;
+}
+
 export function resolveAdmissionPolicy(value: unknown, files: unknown = undefined): string | null {
   if (value === undefined) return null;
   object(value, ["path"]);
