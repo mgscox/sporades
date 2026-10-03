@@ -475,6 +475,9 @@ so a concurrent refresh cannot consume the eventual commit's notification.
 Rejected Postgres and libsql prepared writes retain conservative invalidation:
 an earlier statement may have committed before a later statement rejects, or a
 remote write may have committed before its HTTP acknowledgement is lost.
+Libsql `exec()` publishes conservative invalidation after HTTP settlement, including
+rejection. Writes arriving during an in-flight subscription refresh trigger a
+follow-up refresh of their readers after that refresh completes.
 
 React and Preact clients can adapt those same primitives with `createHooks`:
 

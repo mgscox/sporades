@@ -11,22 +11,38 @@ import { createLibsqlLostAckProxy } from "../libsql-lost-ack-proxy.js";
 
 const names = ["transport_todos", "transport_notes", "transport_audits"];
 const pause = () => new Promise((resolve) => setTimeout(resolve, 100));
+async function waitForGate(promise, label) {
+  let timer;
+  try {
+    await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Gate timeout: ${label}`)), 5000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
 
 export const CONFORMANCE_SURFACE = {
   title: "Live query transport table scoping",
   appTableNames: names,
   adapterOptions: { isolateProcess: true },
   cases: [{
-    name: "mutations, Jobs and concurrent Postgres resource commits preserve table-scoped WebSocket refreshes",
+    name: "mutations, Jobs and overlapping adapter writes preserve table-scoped WebSocket refreshes",
     async run(adapter, engineContext) {
       const dir = await mkdtemp(path.join(tmpdir(), "query-transport-"));
       const runs = [0, 0];
+      let heldTodoQuery;
       const definition = {
         schema: Object.fromEntries(names.map((name) => [name, table({ text: Text() }).acl({ read: () => true, write: () => true })])),
         queries: Object.fromEntries(names.slice(0, 2).map((name, index) => [name, query(async (ctx) => {
           runs[index] += 1;
           await Promise.resolve();
-          return await ctx.db[name].all();
+          const rows = await ctx.db[name].all();
+          if (index === 0 && heldTodoQuery) {
+            const held = heldTodoQuery;
+            heldTodoQuery = undefined;
+            held.entered.resolve();
+            await held.release.promise;
+          }
+          return rows;
         })])),
         mutations: {
           write: mutation((ctx, name) => ctx.db[name].insert({ text: "mutation" })),
@@ -74,6 +90,22 @@ export const CONFORMANCE_SURFACE = {
           pending.set(message.id, (value) => { clearTimeout(timer); resolve(value); });
           socket.send(JSON.stringify(message));
         });
+        const expectTodo = async (text, trigger) => {
+          const delivered = Promise.withResolvers();
+          const onResult = (event) => {
+            const value = JSON.parse(String(event.data));
+            if (value.id === "transport_todos" && value.data?.some((row) => row.text === text)) delivered.resolve(value);
+          };
+          socket.addEventListener("message", onResult);
+          const timer = setTimeout(() => delivered.reject(new Error(`Subscription stayed stale: ${text}`)), 2000);
+          try {
+            trigger();
+            assert.equal((await delivered.promise).error, null);
+          } finally {
+            clearTimeout(timer);
+            socket.removeEventListener("message", onResult);
+          }
+        };
         for (const name of names.slice(0, 2)) {
           const result = await send({ id: name, type: "query.subscribe", query: name });
           assert.equal(result.error, null);
@@ -133,6 +165,57 @@ export const CONFORMANCE_SURFACE = {
             clearTimeout(timeout);
             socket.removeEventListener("message", onResult);
           }
+
+          // Storage is a separate process: the proxy delays forwarding exec's write,
+          // so a completion refresh can consume the old window before it commits.
+          const delayedSql = `UPDATE "transport_todos" SET "text" = 'committed-exec'`;
+          const delayed = lostAckProxy.delayNextStatement(delayedSql);
+          const execution = database.adapter.exec(delayedSql);
+          try {
+            await waitForGate(delayed.entered, "delayed exec");
+            await database.adapter.prepare(sql).run("lost-ack-value");
+            await expectTodo("lost-ack-value", () => database.__notifyJobStateQueries());
+            delayed.release();
+            await execution;
+            assert.equal((await database.adapter.prepare('SELECT "text" FROM "transport_todos"').get()).text, "committed-exec");
+            await expectTodo("committed-exec", () => database.__notifyJobStateQueries());
+          } finally {
+            delayed.release();
+            await execution;
+          }
+
+          // Hold a real refresh after it reads its snapshot. A write invalidation
+          // arriving mid-refresh must cause a follow-up without another notification.
+          const beforeOverlap = [...runs];
+          const held = { entered: Promise.withResolvers(), release: Promise.withResolvers() };
+          heldTodoQuery = held;
+          const overlappingSql = `UPDATE "transport_todos" SET "text" = 'committed-during-refresh'`;
+          const overlapping = lostAckProxy.delayNextStatement(overlappingSql);
+          let overlappingExecution;
+          try {
+            await database.adapter.prepare(sql).run("committed-exec");
+            database.__notifyJobStateQueries();
+            await waitForGate(held.entered.promise, "in-flight refresh snapshot");
+            overlappingExecution = database.adapter.exec(overlappingSql);
+            await waitForGate(overlapping.entered, "overlapping exec");
+            overlapping.release();
+            await overlappingExecution;
+            assert.equal((await database.adapter.prepare('SELECT "text" FROM "transport_todos"').get()).text, "committed-during-refresh");
+            await expectTodo("committed-during-refresh", () => held.release.resolve());
+            assert.deepEqual(runs, [beforeOverlap[0] + 2, beforeOverlap[1]], "follow-up refresh stays scoped to the invalidated table");
+          } finally {
+            held.release.resolve();
+            heldTodoQuery = undefined;
+            overlapping.release();
+            await overlappingExecution;
+          }
+
+          const lostExecSql = `UPDATE "transport_todos" SET "text" = 'exec-lost-ack'`;
+          lostAckProxy.loseNextAcknowledgement(lostExecSql);
+          await assert.rejects(database.adapter.exec(lostExecSql), /fetch failed/);
+          assert.equal(lostAckProxy.lostAcknowledgements, 2);
+          assert.equal((await database.adapter.prepare('SELECT "text" FROM "transport_todos"').get()).text, "exec-lost-ack");
+          await expectTodo("exec-lost-ack", () => database.__notifyJobStateQueries());
         }
 
         // Postgres resource scopes use an independent connection, so an ordinary

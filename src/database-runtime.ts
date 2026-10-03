@@ -2973,10 +2973,15 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       const request = libsqlHasMultipleStatements(sql)
         ? { type: "sequence", sql }
         : { type: "execute", stmt: { sql } };
-      return run(() => {
+      return run(async () => {
         assertLibsqlOpen(closed);
-        recordLiveQueryStatementWrite(sql);
-        return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then((): undefined => undefined);
+        try {
+          await libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction });
+        } finally {
+          // A refresh before HTTP settlement cannot cover the eventual write.
+          // Rejection can also follow a committed write or partial sequence.
+          recordLiveQueryStatementWrite(sql);
+        }
       });
     },
     prepare(sql: string) {

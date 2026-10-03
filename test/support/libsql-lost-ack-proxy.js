@@ -9,6 +9,7 @@ export async function createLibsqlLostAckProxy(storageUrl) {
   assert.equal(upstreamUrl.protocol, "http:");
   assert.equal(upstreamUrl.hostname, "127.0.0.1");
   let nextLostStatement;
+  let delayedStatement;
   let lostAcknowledgements = 0;
   const server = createServer(async (request, response) => {
     try {
@@ -16,6 +17,14 @@ export async function createLibsqlLostAckProxy(storageUrl) {
       for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
       const pipeline = body.length ? JSON.parse(body.toString("utf8")) : null;
+      if (delayedStatement && pipeline?.requests?.some((entry) =>
+        entry.type === "execute" && entry.stmt?.sql === delayedStatement.sql,
+      )) {
+        const delayed = delayedStatement;
+        delayedStatement = undefined;
+        delayed.entered.resolve();
+        await delayed.release.promise;
+      }
       const upstream = await fetch(new URL(request.url, upstreamUrl), {
         method: request.method,
         headers: { "content-type": "application/json" },
@@ -43,6 +52,13 @@ export async function createLibsqlLostAckProxy(storageUrl) {
       nextLostStatement = sql;
     },
     get lostAcknowledgements() { return lostAcknowledgements; },
+    delayNextStatement(sql) {
+      assert.equal(delayedStatement, undefined, "only one statement may be delayed");
+      const entered = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      delayedStatement = { sql, entered, release };
+      return { entered: entered.promise, release: release.resolve };
+    },
     async close() {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

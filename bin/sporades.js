@@ -134615,10 +134615,13 @@ async function createLibsqlDatabaseAdapter(options) {
     exec(sql2) {
       assertLibsqlOpen(closed);
       const request = libsqlHasMultipleStatements(sql2) ? { type: "sequence", sql: sql2 } : { type: "execute", stmt: { sql: sql2 } };
-      return run2(() => {
+      return run2(async () => {
         assertLibsqlOpen(closed);
-        recordLiveQueryStatementWrite(sql2);
-        return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then(() => void 0);
+        try {
+          await libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction });
+        } finally {
+          recordLiveQueryStatementWrite(sql2);
+        }
       });
     },
     prepare(sql2) {
@@ -139353,6 +139356,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
   let journeyExpiryTimer = null;
   let journeyDisableRequests = 0;
   const queryOperations = /* @__PURE__ */ new WeakMap();
+  let refreshingQueries = false;
+  let refreshRequested = false;
   function operationOutcome(error) {
     if (!error) return "success";
     return ["UNAUTHENTICATED", "FORBIDDEN", "DENIED", "REAUTHENTICATION_REQUIRED"].includes(error.code) ? "denied" : "error";
@@ -140482,17 +140487,33 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     });
   }
   function refreshQueries() {
-    const dirty = takeLiveQueryDirtyTables();
-    const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
-    for (const subscribedClient of clients) {
-      for (const subscription of subscribedClient.subscriptions.values()) {
-        if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty)) continue;
-        void sendQueryResult(
-          subscribedClient,
-          subscription,
-          (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error)
-        );
-      }
+    refreshRequested = true;
+    if (refreshingQueries) return;
+    refreshingQueries = true;
+    void drainQueryRefreshes();
+  }
+  async function drainQueryRefreshes() {
+    try {
+      let dirty = takeLiveQueryDirtyTables();
+      do {
+        refreshRequested = false;
+        const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
+        const pending = [];
+        for (const subscribedClient of clients) {
+          for (const subscription of subscribedClient.subscriptions.values()) {
+            if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty)) continue;
+            pending.push(sendQueryResult(
+              subscribedClient,
+              subscription,
+              (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error)
+            ));
+          }
+        }
+        await Promise.all(pending);
+        dirty = takeLiveQueryDirtyTables();
+      } while (dirty.size > 0 || refreshRequested);
+    } finally {
+      refreshingQueries = false;
     }
   }
   async function sendAuthResult(client, id2) {

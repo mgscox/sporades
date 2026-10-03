@@ -5164,6 +5164,8 @@ export function createWebSocketHub(
   let journeyExpiryTimer: any = null;
   let journeyDisableRequests = 0;
   const queryOperations = new WeakMap<object, RuntimeWebSocketOperation>();
+  let refreshingQueries = false;
+  let refreshRequested = false;
 
   function operationOutcome(error: any): WebSocketOperationOutcome {
     if (!error) return "success";
@@ -6346,20 +6348,37 @@ export function createWebSocketHub(
   }
 
   function refreshQueries() {
-    // Scope the refresh to subscriptions that read a table written since the last refresh. An
-    // empty window means an earlier refresh already covered those writes. Adapters that do not
-    // report their statements keep refreshing every subscription.
-    const dirty = takeLiveQueryDirtyTables();
-    const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
-    for (const subscribedClient of clients) {
-      for (const subscription of subscribedClient.subscriptions.values()) {
-        if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty)) continue;
-        void sendQueryResult(
-          subscribedClient,
-          subscription,
-          (error: any) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error),
-        );
-      }
+    refreshRequested = true;
+    if (refreshingQueries) return;
+    refreshingQueries = true;
+    void drainQueryRefreshes();
+  }
+
+  async function drainQueryRefreshes() {
+    try {
+      let dirty = takeLiveQueryDirtyTables();
+      do {
+        refreshRequested = false;
+        const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
+        const pending: Promise<void>[] = [];
+        for (const subscribedClient of clients) {
+          for (const subscription of subscribedClient.subscriptions.values()) {
+            if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty)) continue;
+            pending.push(sendQueryResult(
+              subscribedClient,
+              subscription,
+              (error: any) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error),
+            ));
+          }
+        }
+        await Promise.all(pending);
+        // A query may have read its snapshot before a concurrent write settled.
+        // Keep that write's marker for a follow-up after this refresh completes.
+        // Also retain completion notifications for adapters without table tracking.
+        dirty = takeLiveQueryDirtyTables();
+      } while (dirty.size > 0 || refreshRequested);
+    } finally {
+      refreshingQueries = false;
     }
   }
 
