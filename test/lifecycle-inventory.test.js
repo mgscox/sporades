@@ -252,7 +252,7 @@ test('Host outbox catches up after TLS outage, helper restarts, lifecycle change
   // Exercise the packaged recovery utility with the same TLS/scope/version rules.
   const recoveryDirectory = path.join(dir, 'recovery');
   await mkdir(recoveryDirectory);
-  for (const name of ['inventory.mjs', 'inventory-contract.mjs', 'setup.mjs']) await copyFile(path.join('monitoring/trace', name), path.join(recoveryDirectory, name));
+  for (const name of ['inventory.mjs', 'inventory-contract.mjs', 'sender-credentials.mjs', 'setup.mjs']) await copyFile(path.join('monitoring/trace', name), path.join(recoveryDirectory, name));
   await writeFile(path.join(recoveryDirectory, '.env'), `INVENTORY_HOSTS='${JSON.stringify({ [scope]: token })}'\n`, { mode: 0o600 });
   const recovery = async (operation, filename) => {
     const child = spawn(process.execPath, [path.join(recoveryDirectory, 'inventory.mjs'), operation, `https://127.0.0.1:${port}`, scope, filename, certPath], { stdio: ['ignore', 'pipe', 'pipe'] });

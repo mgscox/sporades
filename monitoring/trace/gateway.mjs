@@ -2,6 +2,7 @@ import { createServer as createHttpServer, request as httpRequest } from 'node:h
 import { createServer as createHttpsServer } from 'node:https';
 import { readFileSync } from 'node:fs';
 import { timingSafeEqual, randomBytes } from 'node:crypto';
+import { senderAuthorization } from './sender-credentials.mjs';
 import { createInventoryStore } from './inventory-store.mjs';
 import { inventoryHost, INVENTORY_MAX_BYTES, validateInventory, validateInventoryCredentials } from './inventory-contract.mjs';
 
@@ -114,9 +115,22 @@ function proxyUi(req, res, target, deadlineMs = UI_REQUEST_DEADLINE_MS) {
 export function createGateway(config, tls) {
   const inventoryCredentials = validateInventoryCredentials(config.inventoryHosts ?? {});
   const inventoryStore = config.inventoryDirectory ? createInventoryStore(config.inventoryDirectory) : null;
+  const loadSenders = () => config.senderDirectory ? senderAuthorization(config.senderDirectory) : null;
+  const inventoryAllowed = (req, host, senders) => {
+    const legacyToken = Object.hasOwn(inventoryCredentials, host) && !senders?.legacyInventoryDisabled.includes(host) ? inventoryCredentials[host] : null;
+    const tokens = [...(senders?.inventory.get(host) ?? []), ...(legacyToken ? [legacyToken] : [])];
+    return inventoryHost(host) && tokens.some(token => same(req.headers.authorization, `Bearer ${token}`));
+  };
+  const ingestAllowed = (req, senders) => [...(senders?.ingest ?? []), ...(senders?.legacyIngest !== false ? [config.ingestToken] : [])]
+    .some(token => same(req.headers.authorization, `Bearer ${token}`));
   let recentHealth;
   let healthUntil = 0;
   const handler = async (req, res) => {
+    let senders;
+    if (config.senderDirectory && (req.url === '/health' || req.url.startsWith('/v1/'))) {
+      try { senders = await loadSenders(); }
+      catch { json(res, 503, false); return; }
+    }
     if (req.method === 'GET' && req.url === '/health') {
       try {
         if (!recentHealth || Date.now() >= healthUntil) {
@@ -131,8 +145,7 @@ export function createGateway(config, tls) {
     }
     if (req.url.startsWith('/v1/inventory/')) {
       const host = req.url.slice('/v1/inventory/'.length);
-      const token = Object.hasOwn(inventoryCredentials, host) ? inventoryCredentials[host] : null;
-      if (!inventoryHost(host) || !token || !same(req.headers.authorization, `Bearer ${token}`)) { json(res, 403, false); return; }
+      if (!inventoryAllowed(req, host, senders)) { json(res, 403, false); return; }
       if (!inventoryStore) { json(res, 503, false); return; }
       const respond = (status, data) => {
         res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -156,6 +169,7 @@ export function createGateway(config, tls) {
         try { inventory = validateInventory(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
         catch { json(res, 400, false); return; }
         if (inventory.host !== host) { json(res, 403, false); return; }
+        if (!inventoryAllowed(req, host, await loadSenders())) { json(res, 403, false); return; }
         const result = await inventoryStore.update(inventory);
         respond(result.status, result.data);
       } catch { if (!res.headersSent && !res.destroyed) json(res, 503, false); }
@@ -163,7 +177,7 @@ export function createGateway(config, tls) {
     }
     if (req.url === '/v1/traces' || req.url === '/v1/metrics') {
       if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
-      if (!same(req.headers.authorization, `Bearer ${config.ingestToken}`)) { res.writeHead(401); res.end(); return; }
+      if (!ingestAllowed(req, senders)) { res.writeHead(401); res.end(); return; }
       const encoding = req.headers['content-encoding']?.toLowerCase();
       if (encoding && encoding !== 'identity' && encoding !== 'gzip') { res.writeHead(415); res.end(); return; }
       try {
@@ -177,6 +191,7 @@ export function createGateway(config, tls) {
             chunks.push(chunk);
           }
         } finally { clearTimeout(bodyDeadline); }
+        if (!ingestAllowed(req, await loadSenders())) { res.writeHead(401); res.end(); return; }
         const headers = { 'content-type': req.headers['content-type'] ?? 'application/x-protobuf' };
         if (encoding === 'gzip') headers['content-encoding'] = encoding;
         const response = await deadlineFetch(`${config.collectorUrl}${req.url}`, { method: 'POST', headers, body: Buffer.concat(chunks) });
@@ -216,6 +231,7 @@ if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
     prometheusUrl: 'http://prometheus:9090',
     grafanaUrl: 'http://grafana:3000',
     inventoryDirectory: '/inventory',
+    senderDirectory: '/run/senders',
   }, tls);
   gateway.listen(8443, '0.0.0.0');
 }

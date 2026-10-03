@@ -656,3 +656,13 @@ applicable address rules. Dev and local Container have no trusted identity, whil
 continue to operate. IPv4-mapped IPv6 normalizes to IPv4. Other matchers,
 quotas and WebSocket upgrades remain subsequent slices. Generic writable `deploy.files` authority
 never applies. See ADR-0054.
+
+### Sender credentials
+
+Operator-local Monitoring stack credentials give a named Host or workstation
+unique ingestion authority and, for a Host, a separate exact lifecycle inventory
+capability. Protected generations support staged rotation, explicit verified
+commit, cancellation and revocation without changing Capsule Sealed Server env.
+They grant no dashboard/query or remote administration authority. The gateway
+reloads atomic registry snapshots; operator `.env` and legacy connections remain
+intact until explicitly migrated. See `docs/reference/sender-credentials.md`.

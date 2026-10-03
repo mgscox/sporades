@@ -42,11 +42,20 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   const gatewaySource = await readFile(join(root, 'monitoring', 'trace', 'gateway.mjs'), 'utf8');
   assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', 'gateway.mjs'), 'utf8'), gatewaySource);
   assert.equal(await readFile(join(target, 'gateway.mjs'), 'utf8'), gatewaySource);
-  for (const name of ['smoke.mjs', 'README.md', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs']) {
+  for (const name of ['smoke.mjs', 'README.md', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'sender-credentials.mjs']) {
     const source = await readFile(join(root, 'monitoring', 'trace', name), 'utf8');
     assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', name), 'utf8'), source);
     assert.equal(await readFile(join(target, name), 'utf8'), source);
   }
+  const sender = command(bin, ['monitoring', 'sender', 'issue', '--dir', target, '--sender', 'packed-host', '--host', 'packed.example', '--json'], temp);
+  assert.equal(sender.status, 0, sender.stdout + sender.stderr);
+  assert.equal(JSON.parse(sender.stdout).data.senders[0].generation, 1);
+  const handoff = join(temp, 'packed-handoff.env');
+  const exported = command(bin, ['monitoring', 'sender', 'export', '--dir', target, '--sender', 'packed-host', '--out', handoff, '--json'], temp);
+  assert.equal(exported.status, 0, exported.stdout + exported.stderr);
+  const token = (await readFile(handoff, 'utf8')).match(/TRACE_INGEST_TOKEN=([^\n]+)/)[1];
+  assert(!(sender.stdout + exported.stdout).includes(token));
+  assert.equal((await stat(handoff)).mode & 0o777, 0o600);
   assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /prom\/prometheus:v3\.13\.3[\s\S]*grafana\/grafana:13\.2\.2/);
   const api = JSON.parse(await readFile(join(target, 'api-dashboard.json'), 'utf8'));
   assert.equal(api.title, 'Sporades Capsule API');

@@ -131,12 +131,20 @@ Options:
   --help, -h          Show this help
 `,
     monitoring: `Usage: sporades monitoring stack <init|validate> [options]
+       sporades monitoring sender <issue|rotate|commit|cancel|revoke|export|status|legacy-revoke> [options]
 
 Generate or inspect the versioned trace stack from an installed Sporades package.
 Initialization creates a reviewable directory; it does not start services.
+Sender operations run locally on the Monitoring server; results contain no secrets.
+Rotation stages a second generation; commit retires the old one after sender verification.
 
 Options:
   --dir <path>        Target stack directory (default: current directory)
+  --sender <name>     Named sender for lifecycle operations (optional for status)
+  --host <identity>   Exact inventory Host scope (issue or legacy-revoke only)
+  --out <path>        New mode-0600 credential handoff file (export only)
+  --generation <n>    Verified pending generation to activate (commit only)
+  --ingest            Disable shared legacy ingestion (legacy-revoke only)
   --json              Write { ok, data, error } JSON output
   --help, -h          Show this help
 `,

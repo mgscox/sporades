@@ -724,3 +724,15 @@ and absent evidence remain fail-closed. Verify
 reboot behavior on disposable infrastructure with one running and one explicitly
 stopped Capsule. See [Capsule autostart](../server-installation.md#capsule-autostart-after-host-reboot)
 for eligibility, current-release behavior, diagnostics and rollback.
+
+### Sender credential lifecycle
+
+Issue a named sender on the Monitoring server with `sporades monitoring sender
+issue --dir <stack> --sender <name> --host <exact-inventory-identity>`. Export to a
+new protected file with `sender export --out <file>`, securely transfer it, and
+supply ingestion and inventory environment references when connecting the Host.
+For rotation, stage and export, reconnect with the same identity, verify real
+stored exports plus inventory acknowledgements, then commit the reported pending
+generation. Revoke invalidates both capabilities for that named sender. Preserve
+the protected sender registry during upgrades/backups and explicitly migrate
+legacy shared credentials. See [the lifecycle contract](../reference/sender-credentials.md).
