@@ -189,3 +189,101 @@ run passed all 19 tests (`credential-websocket.log`). `npm run docs:check` passe
 and `git diff --check` passed. These checks cover the test-only correction and
 unchanged shipped behavior; the separate-VM operator drill remains as documented
 above.
+
+
+## Round 3 QA concurrency corrections
+
+[QA round 3](https://github.com/mgscox/sporades/pull/203#issuecomment-5967299909)
+at `c90d0e73` completed 2,943 tests: 2,733 passed, three failed, and 207 skipped.
+The failing health/unregister fixture assumed the health process acquired its
+lock within 25ms. It now waits for the helper's existing retained-OS-lock proof
+marker before starting unregister. Both owned process groups are killed and their launchers reaped in cleanup.
+Apply/rollback and the corresponding remove/restore route-trust cases now use
+the bounded 15-second child-aware marker waiter and process-group kill/launcher-reap cleanup. Their
+700ms mutation pauses, opaque trust errors, outside-file hashes, directory
+contents, and retained original-route assertions are preserved.
+
+Journey investigation reproduced a runtime ordering defect, rather than merely
+a test timing assumption: opening a WebSocket precedes fresh authentication and
+acknowledgement of restored consent. Manual publication could overtake either
+step. A delayed-consent regression failed before the fix; real Playwright then
+exposed publication from an earlier socket-open listener, and a second regression
+reproduced that order before its fix. The client now installs a per-socket
+publication barrier when creating the socket and releases it after authentication
+and same-identity consent restoration, or socket close. Closed pending publications
+settle with `TRANSPORT_CLOSED` and cannot replay on the replacement connection.
+The existing identity/consent-owner checks remain in force, and server-side
+Journey admission and revocation semantics are unchanged. Source, generated
+client/CLI artifacts, public type commentary, canonical reference and generated
+API docs ship together. The original real-transport second-reconnect success and
+zero-unintended-disable assertions remain unchanged.
+
+Assumptions: startup duration is not evidence of lock ownership; an open socket
+is not evidence of restored consent. Readiness must come from the corresponding
+confirmed runtime boundary. The marker budget remains bounded; the mutation
+pause is not increased to hide a slow start.
+
+Original QA files remain unchanged, with copies under
+`.sporades/pr203-r4-evidence/`:
+
+| Evidence | Original | Worktree copy | SHA-256 |
+| --- | --- | --- | --- |
+| Failed complete suite | `/tmp/pr203-dennis-r3/full-suite.log` | `qa-round3-full-suite.log` | `f937c92be59fe7f9fffb21e699a35c768627c0af26ede880233b08213a8a9ecc` |
+| Isolated passing Host retries | `/tmp/pr203-dennis-r3/host-failure-isolated.log` | `qa-round3-host-isolated.log` | `ad5f1de7e019a7caf330419d7f4d255bb0906e51c056c84210f0e6cf323ad6e5` |
+| Isolated passing Journey retries | `/tmp/pr203-dennis-r3/journey-isolated.log` | `qa-round3-journey-isolated.log` | `9b13ce5821b001e40f770fc5de238db301a6ebacbf98f66ee600ffaeea24f2cc` |
+
+All correction commands use `SPORADES_CONFIG_DIR="$PWD/.sporades/pr203-r4-config"`;
+archive fixtures also use `COPYFILE_DISABLE=1`. Evidence logs are in
+`.sporades/pr203-r4-evidence/`:
+
+```sh
+export SPORADES_CONFIG_DIR="$PWD/.sporades/pr203-r4-config"
+export COPYFILE_DISABLE=1
+npm run build
+npm run typecheck
+node --test --test-concurrency=1 test/client-runtime.test.js test/user-journey-expiry.test.js
+node --test --test-name-pattern='Host helper (marker wait|cleanup releases)|serializes stale health repair against route removal|revalidates trust immediately before (apply and rollback|remove and restore)' test/host.test.js
+node --test --test-concurrency=1 test/sender-credentials.test.js test/host-inventory-reconnect.test.js test/telemetry-websocket-bundle.test.js
+node scripts/check-generated-bin.mjs
+npm run docs:check
+npm test
+```
+
+Build, typecheck and generated parity passed. All 92 client/Journey tests and all seven focused Host checks passed, including
+retained-lock release on fixture cleanup. The combined sender/Host reconnect
+and generated WebSocket Bundle checks passed all 19 tests. Docs checks passed 53 tests and the VitePress build.
+Test-first failure logs are `journey-red.log`, `early-open-red.log`, and
+`cleanup-red.log`. The cleanup regression showed that killing only the launcher
+left the flock action alive: the next helper timed out acquiring the same lock.
+Killing the fixture-owned detached process group releases that lock before
+cleanup; the group is never selected by a shared name or global process scan.
+Three early complete-suite attempts were deliberately interrupted to repair a
+new fixture's remaining retry timer, the browser-discovered earlier-open race,
+and complete subprocess cleanup. They remain as
+`full-suite-interrupted-fixture-cleanup.log`,
+`full-suite-interrupted-browser-race.log`, and
+`full-suite-interrupted-child-cleanup.log` and do not count as completed gates.
+
+Playwright checked the canonical reference and a disposable browser/runtime
+fixture on port 5203 at desktop and 390px widths. With authentication responses
+delayed 300ms, publication from an earlier open listener succeeded on two
+reconnects with distinct server-owned sessions and zero disable requests.
+Explicit disable succeeded and subsequent publication returned
+`JOURNEY_NOT_ENABLED`. Saved results are `browser-reconnect-result.txt` and
+`browser-disable-result.txt`; screenshots are `docs-desktop.png`,
+`docs-mobile.png`, `journey-desktop.png` and `journey-mobile.png`. Neither page
+overflowed. The final runtime page had no console errors or warnings. The docs
+page had only the existing favicon 404 before server shutdown; navigating away
+from its stopped Vite dev server also produced expected disconnected-HMR errors.
+Both task-owned servers and the browser were stopped. No real Host or provider
+operation was performed; prior credential/Docker evidence and the separate-VM
+operator follow-up above remain distinct from this correction's browser proof.
+
+The final complete `npm test` run exited zero on runtime/test commits `dd77b034`
+and `bf951447`: **2,947 tests, 2,740 passed, 207 skipped, zero failures and zero
+cancellations**, in 1,609.6 seconds. The log is `full-suite.log`. Its build and
+generated-bin precheck passed. The original health/unregister case passed in
+2,014.8ms, apply/rollback fencing in 12,313.7ms, and the original real-transport
+Journey reconnect case in 1,950.4ms. The second-reconnect successful-publication
+and zero-unintended-disable assertions are preserved. Only this completed run,
+not isolated retries or interrupted attempts, establishes the required green gate.
