@@ -139409,8 +139409,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
   let journeyExpiryTimer = null;
   let journeyDisableRequests = 0;
   const queryOperations = /* @__PURE__ */ new WeakMap();
-  let refreshingQueries = false;
-  let refreshRequested = false;
+  const queryRefreshes = /* @__PURE__ */ new WeakMap();
+  let dispatchedWriteGeneration = liveQueryWriteGeneration();
   function operationOutcome(error) {
     if (!error) return "success";
     return ["UNAUTHENTICATED", "FORBIDDEN", "DENIED", "REAUTHENTICATION_REQUIRED"].includes(error.code) ? "denied" : "error";
@@ -139529,6 +139529,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       const removeClient = () => {
         if (removed) return;
         removed = true;
+        for (const subscription of client.subscriptions.values()) cancelQueryRefresh(subscription);
         try {
           connectionClosed?.();
         } catch {
@@ -140002,10 +140003,10 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       }
       const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
       const previous = client.subscriptions.get(message.id);
-      if (previous) queryOperations.get(previous)?.end("cancelled");
+      if (previous) cancelQueryRefresh(previous);
       client.subscriptions.set(message.id, subscription);
       database.__notifyJobStateQueries = refreshQueries;
-      void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
+      void runSubscriptionQueries(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
       return;
     }
     if (message.type === "query.unsubscribe") {
@@ -140024,7 +140025,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         return;
       }
       const subscription = client.subscriptions.get(subscriptionId);
-      if (subscription) queryOperations.get(subscription)?.end("cancelled");
+      if (subscription) cancelQueryRefresh(subscription);
       const removed = client.subscriptions.delete(subscriptionId);
       sendJson(client, {
         id: message.id ?? null,
@@ -140540,34 +140541,57 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     });
   }
   function refreshQueries() {
-    refreshRequested = true;
-    if (refreshingQueries) return;
-    refreshingQueries = true;
-    void drainQueryRefreshes();
-  }
-  async function drainQueryRefreshes() {
-    try {
-      let dirty = takeLiveQueryDirtyTables();
-      do {
-        refreshRequested = false;
-        const generation = liveQueryWriteGeneration();
-        const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
-        const pending = [];
-        for (const subscribedClient of clients) {
-          for (const subscription of subscribedClient.subscriptions.values()) {
-            if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty)) continue;
-            pending.push(sendQueryResult(
-              subscribedClient,
-              subscription,
-              (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error)
-            ));
-          }
+    dispatchedWriteGeneration = liveQueryWriteGeneration();
+    const dirty = takeLiveQueryDirtyTables();
+    const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
+    for (const client of clients) {
+      if (client.closing || client.socket.destroyed) continue;
+      for (const subscription of client.subscriptions.values()) {
+        const running = queryRefreshes.get(subscription);
+        if (running) {
+          running.pending = true;
+          running.unscoped ||= !scoped;
+          for (const table of dirty) running.dirty.add(table);
+        } else if (!scoped || liveQueryNeedsRefresh(subscription.readTables, dirty)) {
+          void runSubscriptionQueries(
+            client,
+            subscription,
+            (error) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error)
+          );
         }
-        await Promise.all(pending);
-        dirty = refreshRequested || liveQueryWriteGeneration() !== generation ? takeLiveQueryDirtyTables() : /* @__PURE__ */ new Set();
-      } while (dirty.size > 0 || refreshRequested);
+      }
+    }
+  }
+  function cancelQueryRefresh(subscription) {
+    const running = queryRefreshes.get(subscription);
+    if (running) {
+      running.cancelled = true;
+      running.dirty.clear();
+      running.pending = false;
+    }
+    queryRefreshes.delete(subscription);
+    queryOperations.get(subscription)?.end("cancelled");
+    queryOperations.delete(subscription);
+  }
+  async function runSubscriptionQueries(client, subscription, onError, operation) {
+    const running = { pending: false, unscoped: false, dirty: /* @__PURE__ */ new Set(), cancelled: false };
+    queryRefreshes.set(subscription, running);
+    try {
+      do {
+        running.pending = false;
+        running.unscoped = false;
+        running.dirty.clear();
+        const generation = liveQueryWriteGeneration();
+        const initialRun = operation !== void 0;
+        await sendQueryResult(client, subscription, onError, operation);
+        operation = void 0;
+        if (running.cancelled || client.closing || client.socket.destroyed || !clients.has(client) || client.subscriptions.get(subscription.id) !== subscription) break;
+        const latestGeneration = liveQueryWriteGeneration();
+        if (!initialRun && latestGeneration !== generation && latestGeneration !== dispatchedWriteGeneration) refreshQueries();
+        if (!running.pending || !running.unscoped && !liveQueryNeedsRefresh(subscription.readTables, running.dirty)) break;
+      } while (true);
     } finally {
-      refreshingQueries = false;
+      if (queryRefreshes.get(subscription) === running) queryRefreshes.delete(subscription);
     }
   }
   async function sendAuthResult(client, id2) {

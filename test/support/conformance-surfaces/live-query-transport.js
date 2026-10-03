@@ -37,11 +37,13 @@ export const CONFORMANCE_SURFACE = {
           runs[index] += 1;
           await Promise.resolve();
           const rows = await ctx.db[name].all();
-          if (index === 0 && heldTodoQuery) {
+          if (index === 0 && heldTodoQuery && (!heldTodoQuery.userId || heldTodoQuery.userId === ctx.auth.userId)) {
             const held = heldTodoQuery;
             heldTodoQuery = undefined;
+            held.started = true;
             held.entered.resolve();
             await held.release.promise;
+            held.finished?.resolve();
           }
           return rows;
         })])), denied: query((ctx) => {
@@ -52,7 +54,7 @@ export const CONFORMANCE_SURFACE = {
           return requireAuth(ctx);
         }) },
         mutations: {
-          write: mutation((ctx, name) => ctx.db[name].insert({ text: "mutation" })),
+          write: mutation((ctx, name, text = "mutation") => ctx.db[name].insert({ text })),
           enqueue: mutation((ctx) => ctx.jobs.enqueue("writeNote", null)),
         },
         jobs: { writeNote: job(async (ctx) => { await ctx.db.transport_notes.insert({ text: "job" }); }) },
@@ -97,22 +99,24 @@ export const CONFORMANCE_SURFACE = {
           pending.set(message.id, (value) => { clearTimeout(timer); resolve(value); });
           socket.send(JSON.stringify(message));
         });
-        const expectTodo = async (text, trigger) => {
+        const expectSocketResult = async (peer, id, text, trigger) => {
           const delivered = Promise.withResolvers();
           const onResult = (event) => {
             const value = JSON.parse(String(event.data));
-            if (value.id === "transport_todos" && value.data?.some((row) => row.text === text)) delivered.resolve(value);
+            if (value.id === id && value.data?.some((row) => row.text === text)) delivered.resolve(value);
           };
-          socket.addEventListener("message", onResult);
+          peer.addEventListener("message", onResult);
           const timer = setTimeout(() => delivered.reject(new Error(`Subscription stayed stale: ${text}`)), 2000);
           try {
-            trigger();
-            assert.equal((await delivered.promise).error, null);
+            const [value] = await Promise.all([delivered.promise, Promise.resolve().then(trigger)]);
+            assert.equal(value.error, null);
           } finally {
             clearTimeout(timer);
-            socket.removeEventListener("message", onResult);
+            peer.removeEventListener("message", onResult);
           }
         };
+        const expectResult = (id, text, trigger) => expectSocketResult(socket, id, text, trigger);
+        const expectTodo = (text, trigger) => expectResult("transport_todos", text, trigger);
         for (const name of names.slice(0, 2)) {
           const result = await send({ id: name, type: "query.subscribe", query: name });
           assert.equal(result.error, null);
@@ -312,6 +316,84 @@ export const CONFORMANCE_SURFACE = {
               clearTimeout(timeout);
               socket.removeEventListener("message", onResult);
             }
+          }
+        }
+        // A held reader must not become a scheduling dependency for another
+        // client's subscriptions, including while cancelled work still awaits release.
+        for (const lifecycle of ["completion", "unsubscribe", "disconnect", "replacement"]) {
+          const todoSocket = new WebSocket(`ws://127.0.0.1:${server.address().port}/?connectionToken=${hub.createConnectionToken()}`);
+          const todoEvents = [];
+          const todoPending = new Map();
+          todoSocket.addEventListener("message", (event) => {
+            const value = JSON.parse(String(event.data));
+            todoEvents.push(value);
+            todoPending.get(value.id)?.(value);
+            todoPending.delete(value.id);
+          });
+          const todoSend = (message) => new Promise((resolve, reject) => {
+            const timer = setTimeout(() => { todoPending.delete(message.id); reject(new Error(`Todo response timeout: ${message.id}`)); }, 5000);
+            todoPending.set(message.id, (value) => { clearTimeout(timer); resolve(value); });
+            todoSocket.send(JSON.stringify(message));
+          });
+          const held = { entered: Promise.withResolvers(), release: Promise.withResolvers(), finished: Promise.withResolvers() };
+          let released = false;
+          try {
+            await once(todoSocket, "open");
+            held.userId = (await todoSend({ id: "todo-auth", type: "auth.get" })).data.auth.userId;
+            assert.equal((await todoSend({ id: "held-todo", type: "query.subscribe", query: "transport_todos" })).error, null);
+            takeLiveQueryDirtyTables();
+            heldTodoQuery = held;
+            assert.equal((await send({ id: `hold-${lifecycle}`, type: "mutation.run", mutation: "write", args: ["transport_todos", `todo-before-${lifecycle}`] })).error, null);
+            await waitForGate(held.entered.promise, `held Todo ${lifecycle}`);
+            const writeNote = async (label) => {
+              await expectResult("transport_notes", label, async () => {
+                const result = await send({ id: label, type: "mutation.run", mutation: "write", args: ["transport_notes", label] });
+                assert.equal(result.error, null);
+              });
+              assert.equal(released, false, "Notes must arrive before the held Todo query is released");
+            };
+            await writeNote(`notes-before-${lifecycle}`);
+            // Queue another invalidation for the held subscription, then cancel
+            // it. Its abandoned follow-up must never become a live scheduling slot.
+            const pendingText = `todo-pending-${lifecycle}`;
+            assert.equal((await send({ id: `pending-${lifecycle}`, type: "mutation.run", mutation: "write", args: ["transport_todos", pendingText] })).error, null);
+            await pause();
+            if (lifecycle === "completion") {
+              await writeNote("notes-after-pending-completion");
+              await expectSocketResult(todoSocket, "held-todo", pendingText, () => {
+                released = true;
+                held.release.resolve();
+              });
+              assert.equal(todoEvents.filter((event) => event.type === "query.result").length, 3,
+                "the held snapshot and one coalesced follow-up must preserve the pending write");
+              continue;
+            } else if (lifecycle === "unsubscribe") {
+              assert.equal((await todoSend({ id: "unsubscribe", type: "query.unsubscribe", subscriptionId: "held-todo" })).data.removed, true);
+            } else if (lifecycle === "disconnect") {
+              const closed = once(todoSocket, "close");
+              todoSocket.close();
+              await closed;
+            } else {
+              assert.equal((await todoSend({ id: "held-todo", type: "query.subscribe", query: "transport_notes" })).error, null,
+                "the replacement must deliver before the old query is released");
+            }
+            const after = `notes-after-${lifecycle}`;
+            if (lifecycle === "replacement") {
+              await expectSocketResult(todoSocket, "held-todo", after, () => writeNote(after));
+            } else {
+              await writeNote(after);
+            }
+            const beforeRelease = todoEvents.filter((event) => event.type === "query.result").length;
+            released = true;
+            held.release.resolve();
+            await waitForGate(held.finished.promise, `cancelled Todo ${lifecycle} settlement`);
+            await pause();
+            assert.equal(todoEvents.filter((event) => event.type === "query.result").length, beforeRelease, "cancelled refreshes and their queued work must deliver nothing");
+          } finally {
+            held.release.resolve();
+            if (held.started) await waitForGate(held.finished.promise, `Todo ${lifecycle} cleanup`);
+            if (heldTodoQuery === held) heldTodoQuery = undefined;
+            todoSocket.close();
           }
         }
       } finally {

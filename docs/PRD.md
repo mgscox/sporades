@@ -478,6 +478,9 @@ remote write may have committed before its HTTP acknowledgement is lost.
 Libsql `exec()` publishes conservative invalidation after HTTP settlement, including
 rejection. Writes arriving during an in-flight subscription refresh trigger a
 follow-up refresh of their readers after that refresh completes.
+Refreshes coalesce per subscription and retain its pending table invalidations;
+a held reader cannot block other subscriptions. Unsubscribe, replacement and
+disconnect discard that reader's pending refresh work immediately.
 Query diagnostic writes remain in the completion window without recursively
 triggering more refreshes of failed queries.
 

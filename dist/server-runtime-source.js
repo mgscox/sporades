@@ -4908,8 +4908,8 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
     let journeyExpiryTimer = null;
     let journeyDisableRequests = 0;
     const queryOperations = new WeakMap();
-    let refreshingQueries = false;
-    let refreshRequested = false;
+    const queryRefreshes = new WeakMap();
+    let dispatchedWriteGeneration = liveQueryWriteGeneration();
     function operationOutcome(error) {
         if (!error)
             return "success";
@@ -5038,6 +5038,8 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 if (removed)
                     return;
                 removed = true;
+                for (const subscription of client.subscriptions.values())
+                    cancelQueryRefresh(subscription);
                 try {
                     connectionClosed?.();
                 }
@@ -5538,10 +5540,10 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
             const previous = client.subscriptions.get(message.id);
             if (previous)
-                queryOperations.get(previous)?.end("cancelled");
+                cancelQueryRefresh(previous);
             client.subscriptions.set(message.id, subscription);
             database.__notifyJobStateQueries = refreshQueries;
-            void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
+            void runSubscriptionQueries(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
             return;
         }
         if (message.type === "query.unsubscribe") {
@@ -5562,7 +5564,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             }
             const subscription = client.subscriptions.get(subscriptionId);
             if (subscription)
-                queryOperations.get(subscription)?.end("cancelled");
+                cancelQueryRefresh(subscription);
             const removed = client.subscriptions.delete(subscriptionId);
             sendJson(client, {
                 id: message.id ?? null,
@@ -6138,40 +6140,69 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         });
     }
     function refreshQueries() {
-        refreshRequested = true;
-        if (refreshingQueries)
-            return;
-        refreshingQueries = true;
-        void drainQueryRefreshes();
-    }
-    async function drainQueryRefreshes() {
-        try {
-            let dirty = takeLiveQueryDirtyTables();
-            do {
-                refreshRequested = false;
-                const generation = liveQueryWriteGeneration();
-                const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
-                const pending = [];
-                for (const subscribedClient of clients) {
-                    for (const subscription of subscribedClient.subscriptions.values()) {
-                        if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty))
-                            continue;
-                        pending.push(sendQueryResult(subscribedClient, subscription, (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error)));
-                    }
+        dispatchedWriteGeneration = liveQueryWriteGeneration();
+        const dirty = takeLiveQueryDirtyTables();
+        const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
+        for (const client of clients) {
+            if (client.closing || client.socket.destroyed)
+                continue;
+            for (const subscription of client.subscriptions.values()) {
+                const running = queryRefreshes.get(subscription);
+                if (running) {
+                    // The in-flight run can discover new dependencies. Keep the whole
+                    // window, then filter against its completed read set before rerunning.
+                    running.pending = true;
+                    running.unscoped ||= !scoped;
+                    for (const table of dirty)
+                        running.dirty.add(table);
                 }
-                await Promise.all(pending);
-                // A query may have read its snapshot before a concurrent write settled.
-                // Keep that write's marker for a follow-up after this refresh completes.
-                // Also retain completion notifications for adapters without table tracking.
-                // Diagnostic writes made by the queries themselves stay available for
-                // future completion notifications, without causing a refresh feedback loop.
-                dirty = refreshRequested || liveQueryWriteGeneration() !== generation
-                    ? takeLiveQueryDirtyTables()
-                    : new Set();
-            } while (dirty.size > 0 || refreshRequested);
+                else if (!scoped || liveQueryNeedsRefresh(subscription.readTables, dirty)) {
+                    void runSubscriptionQueries(client, subscription, (error) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error));
+                }
+            }
+        }
+    }
+    function cancelQueryRefresh(subscription) {
+        const running = queryRefreshes.get(subscription);
+        if (running) {
+            running.cancelled = true;
+            running.dirty.clear();
+            running.pending = false;
+        }
+        queryRefreshes.delete(subscription);
+        queryOperations.get(subscription)?.end("cancelled");
+        queryOperations.delete(subscription);
+    }
+    async function runSubscriptionQueries(client, subscription, onError, operation) {
+        const running = { pending: false, unscoped: false, dirty: new Set(), cancelled: false };
+        queryRefreshes.set(subscription, running);
+        try {
+            do {
+                running.pending = false;
+                running.unscoped = false;
+                running.dirty.clear();
+                const generation = liveQueryWriteGeneration();
+                const initialRun = operation !== undefined;
+                await sendQueryResult(client, subscription, onError, operation);
+                operation = undefined;
+                if (running.cancelled || client.closing || client.socket.destroyed || !clients.has(client)
+                    || client.subscriptions.get(subscription.id) !== subscription)
+                    break;
+                // Publish writes that landed mid-query to every subscription without
+                // awaiting other readers. Busy readers retain their own pending window.
+                // A window already dispatched by another reader must not be sent twice.
+                const latestGeneration = liveQueryWriteGeneration();
+                // Initial subscriptions are not completion refreshes. They still retain
+                // explicitly dispatched writes, without initiating new refresh windows.
+                if (!initialRun && latestGeneration !== generation && latestGeneration !== dispatchedWriteGeneration)
+                    refreshQueries();
+                if (!running.pending || (!running.unscoped && !liveQueryNeedsRefresh(subscription.readTables, running.dirty)))
+                    break;
+            } while (true);
         }
         finally {
-            refreshingQueries = false;
+            if (queryRefreshes.get(subscription) === running)
+                queryRefreshes.delete(subscription);
         }
     }
     async function sendAuthResult(client, id) {
