@@ -30,7 +30,7 @@ an operator-visible notification. HTTPS is required; loopback HTTP is permitted
 for a disposable local acceptance receiver. No channel is silently selected:
 without `ALERT_WEBHOOK_URL`, rules still evaluate but notification delivery is
 disabled. Structured stack init/validate reports `notificationDelivery` as
-`disabled` or `unverified`; it never claims that configuration proves delivery. Configuration validation does not prove delivery. Verify both a real
+`disabled` or `unverified`; it never claims that configuration proves delivery. Verify both a real
 firing payload and its resolved recovery in your selected channel before relying
 on paging. Each alert includes the target, evaluation window and dashboard link;
 payloads also include `startsAt`/`endsAt`. Keep webhook URLs and tokens private.
@@ -62,9 +62,9 @@ refreshes a nonce header for `GET /__sporades/probe` without changing the scrape
 requires the exact freshly issued nonce in that application marker, a no-store
 response, HTTP 200 and no redirects. One bounded module pairs the request nonce header and expected body during configuration reloads; a static replay with the correct marker still fails.
 Ordinary HTML, static pages and proxy health responses cannot satisfy the check.
-A `Vary` nonce header and no-cache request prevent cached responses and is never a metric label. Labels
+The `Vary` nonce header and no-cache request prevent cached responses. The nonce is never a metric label. Labels
 retain the bare origin only; no probe nonces, query strings, readiness tokens or payloads enter
-inventory or notifications. Probe traffic is excluded from application traces
+inventory or notifications. Failed or stale nonce refresh is visible as an availability-source failure, even when Blackbox itself still scrapes successfully. Probe traffic is excluded from application traces
 and request metrics. The public route reports responsiveness only, without
 SQLite, File, inspection, configuration or other protected readiness details.
 
@@ -88,7 +88,7 @@ this reporting. Monitoring failures cannot block Capsule lifecycle operations.
 | `SporadesHostTelemetryAbsent` | No Host contact sample for two minutes | Host worker/relay/transport unavailable; central expectations persist |
 | `SporadesLocalReadinessFailure` | Local readiness false for 60 seconds | Protected Host-local readiness failed |
 | `SporadesInventoryStale` | No acknowledgement for three minutes | Stored expectations may lag pending lifecycle intent |
-| `SporadesAvailabilitySourceFailure` | Component scrape failure for 60 seconds | Availability monitoring pipeline needs attention |
+| `SporadesAvailabilitySourceFailure` | Component scrape or nonce refresh failure for 60 seconds | Availability monitoring pipeline needs attention |
 
 New active expectations have a two-minute grace period for telemetry absence.
 The grace starts at central acknowledgement and does not reset on ordinary

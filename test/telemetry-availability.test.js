@@ -113,7 +113,9 @@ test('Blackbox refresh requires a fresh nonce while retaining stable Prometheus 
   const config = directory + '/blackbox'; await mkdir(config);
   t.after(() => rm(directory, { recursive: true, force: true }));
   let reloads = 0;
-  const blackbox = createServer((req, res) => { assert.equal(req.url, '/-/reload'); reloads++; res.writeHead(200).end(); }).listen(0, '127.0.0.1');
+  let reloadStatus = 200;
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const blackbox = createServer((req, res) => { assert.equal(req.url, '/-/reload'); reloads++; res.writeHead(reloadStatus).end(); }).listen(0, '127.0.0.1');
   await once(blackbox, 'listening');
   t.after(() => { blackbox.closeAllConnections(); blackbox.close(); });
   await createInventoryStore(directory).update({ schemaVersion: 1, host: 'host-one', revision: 1, capsules: [{ id: 'apps.example/demo', state: 'running', changedAt: '2026-10-03T00:00:00.000Z', release: null, targets: ['https://demo.apps.example/'] }] });
@@ -129,4 +131,17 @@ test('Blackbox refresh requires a fresh nonce while retaining stable Prometheus 
   const next = await (await fetch(`http://127.0.0.1:${app.address().port}/targets`)).json();
   assert.equal(next[0].targets[0], groups[0].targets[0]);
   assert.equal(reloads, 1);
+  const origin = `http://127.0.0.1:${app.address().port}`;
+  assert.match(await (await fetch(origin + '/metrics')).text(), /sporades_probe_configuration_fresh 1/);
+  t.mock.timers.tick(30_001);
+  reloadStatus = 503;
+  assert.equal((await fetch(origin + '/targets')).status, 503);
+  const failed = await (await fetch(origin + '/metrics')).text();
+  assert.match(failed, /sporades_probe_configuration_fresh 0/);
+  assert.match(failed, /sporades_expected_capsule.* 1/);
+  reloadStatus = 200;
+  assert.equal((await fetch(origin + '/targets')).status, 200);
+  assert.match(await (await fetch(origin + '/metrics')).text(), /sporades_probe_configuration_fresh 1/);
+  t.mock.timers.tick(60_001);
+  assert.match(await (await fetch(origin + '/metrics')).text(), /sporades_probe_configuration_fresh 0/);
 });

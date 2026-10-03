@@ -58,11 +58,11 @@ groups:
           window: 'No inventory acknowledgement for three minutes; pending intentional changes may not have arrived.'
           dashboard: '__MONITORING_PUBLIC_URL__/alertmanager/'
       - alert: SporadesAvailabilitySourceFailure
-        expr: up{job=~"availability-inventory|blackbox|alertmanager"} == 0
+        expr: (up{job=~"availability-inventory|blackbox|alertmanager"} == 0) or (sporades_probe_configuration_fresh == 0)
         for: 60s
         labels: { severity: critical, category: scrape }
         annotations:
-          summary: 'Availability monitoring component scrape failed'
+          summary: 'Availability monitoring component or probe refresh failed'
           target: '{{ $labels.job }}'
-          window: 'Scrape failure for 60 seconds; probe or inventory results may be stale.'
+          window: 'Failure for 60 seconds; probe or inventory results may be stale.'
           dashboard: '__MONITORING_PUBLIC_URL__/alertmanager/'

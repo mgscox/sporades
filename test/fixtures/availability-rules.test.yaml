@@ -98,3 +98,28 @@ tests:
               target: https://demo.apps.example/
               window: Scrape failure for 60 seconds.
               dashboard: __MONITORING_PUBLIC_URL__/alertmanager/
+  - name: failed nonce refresh alerts independently of healthy component scrapes
+    interval: 15s
+    input_series:
+      - series: 'sporades_probe_configuration_fresh{job="availability-inventory",instance="gateway:9091"}'
+        values: '0 0 0 0 0 1 1'
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: SporadesAvailabilitySourceFailure
+        exp_alerts: []
+      - eval_time: 60s
+        alertname: SporadesAvailabilitySourceFailure
+        exp_alerts:
+          - exp_labels:
+              job: availability-inventory
+              instance: gateway:9091
+              severity: critical
+              category: scrape
+            exp_annotations:
+              summary: Availability monitoring component or probe refresh failed
+              target: availability-inventory
+              window: Failure for 60 seconds; probe or inventory results may be stale.
+              dashboard: __MONITORING_PUBLIC_URL__/alertmanager/
+      - eval_time: 90s
+        alertname: SporadesAvailabilitySourceFailure
+        exp_alerts: []

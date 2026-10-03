@@ -19,5 +19,6 @@
     "summary": "Public application probe failed for apps.example/demo",
     "target": "http://demo.apps.example/",
     "window": "Sustained failure for 60 seconds; inspect the last 15 minutes."
-  }
+  },
+  "resourcesRemoved": true
 }
