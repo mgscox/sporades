@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
+import { admissionStorageRoot, publishAdmissionPolicy, parseAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS } from "../admission-policy.js";
+import { readDeployFile, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
@@ -57,6 +58,7 @@ import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
 import { checkHostTelemetryDelivery, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
+import { queueHostInventory, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import {
@@ -165,7 +167,7 @@ runHostHelperEntry().catch((error: HelperError) => {
     },
     false,
   );
-  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host"].includes(process.argv[2])) process.exitCode = 1;
+  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host", "--reconcile-inventory"].includes(process.argv[2])) process.exitCode = 1;
 });
 
 async function runHostHelperEntry() {
@@ -175,6 +177,11 @@ async function runHostHelperEntry() {
   }
   if (["--resume-host", "--checkpoint-host"].includes(process.argv[2])) {
     await resumeHostAtBoot();
+    return;
+  }
+  if (process.argv[2] === "--reconcile-inventory") {
+    const root = Buffer.from(process.argv[3] ?? "", "base64url").toString();
+    writeEnvelope({ ok: true, data: await reconcileHostInventory(root), error: null });
     return;
   }
   await runHostHelperProcess();
@@ -549,6 +556,7 @@ function managedRouteMutationLockIdentity(request: HostHelperRequest) {
     case "capsule.delete": validateDeleteRequest(request); break;
     case "capsule.release.install": validateInstallRequest(request); break;
     case "capsule.release.rollback": validateRollbackRequest(request); break;
+    case "capsule.admission.publish":
     case "capsule.release.reconcile":
     case "capsule.resume":
     case "capsule.shutdown.checkpoint":
@@ -879,7 +887,8 @@ async function hostTelemetryStatusWithCoverage(request: HostHelperRequest, relay
   for (const record of records) {
     if (record.status !== "unregistered") capsules.push(await inspectHostedTelemetryCoverage(request, record, connection));
   }
-  return { ...relay, capsuleCoverage: {
+  const snapshot = await queueHostInventory(request.host.remoteRoot).catch(() => false);
+  return { ...relay, inventory: await hostInventoryStatus(request.host.remoteRoot, snapshot === false), capsuleCoverage: {
     capsules,
     pendingRestart: capsules.filter((capsule) => capsule.restartRequired === true).length,
     pendingCoverage: capsules.filter((capsule) => capsule.state !== "instrumented" && capsule.state !== "disabled").length,
@@ -888,6 +897,17 @@ async function hostTelemetryStatusWithCoverage(request: HostHelperRequest, relay
 }
 
 async function main(request: HostHelperRequest) {
+  try { await dispatchMain(request); }
+  finally {
+    const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.reconcile", "host.telemetry.enable", "host.telemetry.disable"];
+    if (mutations.includes(request.action)) {
+      try { if (await queueHostInventory(request.host.remoteRoot)) kickHostInventory(request.host.remoteRoot); }
+      catch { process.stderr.write("Host inventory is pending; periodic reconciliation will retry.\n"); }
+    }
+  }
+}
+
+async function dispatchMain(request: HostHelperRequest) {
   if (request.action === "schedules.inspect") validateScheduleInspectionRequest(request);
   hostHelperConfig = await loadHostHelperConfig(request);
   if (request.action.startsWith("host.telemetry.")) {
@@ -896,7 +916,10 @@ async function main(request: HostHelperRequest) {
       throw helperError("Invalid Host Telemetry request.", "Upgrade the local CLI and Host helper together.");
     }
     validateCanonicalHostRouteRoot(request);
-    const data = capsuleOperation
+    if (request.action === "host.telemetry.connect" || request.action === "host.telemetry.reconcile") await installHostInventoryWorker(request.host.remoteRoot);
+    const data = request.action === "host.telemetry.inventory-export" ? { inventory: await exportHostInventory(request.host.remoteRoot) }
+      : request.action === "host.telemetry.inventory-reconcile" ? await reconcileHostInventory(request.host.remoteRoot)
+      : capsuleOperation
       ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable")
       : request.action === "host.telemetry.connect"
       ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain))
@@ -909,6 +932,23 @@ async function main(request: HostHelperRequest) {
           : null;
     if (!data) throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, check, enable, or disable.");
     writeEnvelope({ ok: true, data, error: null });
+    return;
+  }
+  if (request.action === "capsule.admission.publish") {
+    validateLifecycleRequest(request);
+    const contents = request.admission?.contents;
+    if (contents !== null && (typeof contents !== "string" || contents.length > Math.ceil(ADMISSION_LIMITS.bytes / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(contents))) throw helperError("Invalid admission publication.", "Publish a bounded v1 policy.");
+    const bytes = contents === null ? null : Buffer.from(contents, "base64");
+    if (bytes) parseAdmissionPolicy(bytes);
+    const record = await readRegistryRecordForCapsule(request, "lifecycle");
+    assertRegistryRecordMatchesRequest(request, record);
+    const release = normaliseReleaseHistory(record).find((entry: any) => entry.id === record.currentRelease?.id);
+    const policy = resolveDeployFiles(release?.source?.deployFiles, true).find(file => file.update === "admission");
+    if (!policy) throw helperError("The deployed Capsule has no admission policy.", "Declare admissionPolicy.path and push it first.");
+    const paths = canonicalReleasePaths(request);
+    if (await readPreservedFileAttempt(attemptJournalPath(hostedPreservedFilesRoot(paths)))) throw helperError("Interrupted deployment requires recovery.", "Run sporades host reconcile first.");
+    await publishAdmissionPolicy(admissionStorageRoot(hostedPreservedFilesRoot(paths)), policy.path, bytes);
+    writeEnvelope({ ok: true, data: { published: true, removed: bytes === null, digest: bytes ? parseAdmissionPolicy(bytes).digest : null }, error: null });
     return;
   }
   if (request.action === "capsule.register") {
@@ -1090,6 +1130,7 @@ async function bootstrapHost(request: HostHelperRequest) {
   const accessLog = await provisionCaddyAccessLog(request, bootstrap);
   const caddy = await installCaddyBootstrapConfig(request, bootstrap);
   const autostart = await installHostAutostart(request.host);
+  const inventoryWorker = await installHostInventoryWorker(request.host.remoteRoot);
   const telemetry = await readHostTelemetryConnection(request.host.remoteRoot)
     ? await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain) : null;
 
@@ -1098,6 +1139,7 @@ async function bootstrapHost(request: HostHelperRequest) {
     data: {
       bootstrapped: true,
       autostart,
+      inventoryWorker,
       telemetry,
       domain: request.host.domain,
       remoteRoot: request.host.remoteRoot,
@@ -1473,9 +1515,17 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   let installedInventory: ReleaseFileIdentity[];
   try {
     installedInventory = await validateExtractedReleaseTree(tempReleaseDirectory, validatedArchive.files);
+    const admission = resolveDeployFiles(release.deployFiles, true).find(file => file.update === "admission");
+    if (admission) {
+      let config;
+      try { config = JSON.parse((await readDeployFile(tempReleaseDirectory, "sporades.json", 1024 * 1024)).toString("utf8")); }
+      catch { throw helperError("Invalid admission release configuration.", "Publish valid sporades.json of at most 1 MiB."); }
+      if (resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files) !== admission.path) throw helperError("Invalid admission manifest.", "Rebuild the declared policy.");
+      parseAdmissionPolicy(await readDeployFile(tempReleaseDirectory, admission.path, ADMISSION_LIMITS.bytes));
+    }
     // Local staging stays private; grant only the Hosted runtime read access
     // to the validated additional files after extraction.
-    for (const file of resolveDeployFiles(release.deployFiles)) {
+    for (const file of resolveDeployFiles(release.deployFiles, true)) {
       await prepareHostedRuntimeFileAccess(path.join(tempReleaseDirectory, file.path), 0o400, {
         message: "Unsafe additional release file.", hint: "Upload regular deployment files.",
       });
@@ -1514,7 +1564,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
   const createdSeeds: PreservedSeed[] = [];
   let seedJournal: string | undefined;
   try {
-    seedJournal = await beginPreservedFileAttempt(hostedPreservedFilesRoot(paths), release.id, resolveDeployFiles(release.deployFiles).length > 0);
+    seedJournal = await beginPreservedFileAttempt(hostedPreservedFilesRoot(paths), release.id, resolveDeployFiles(release.deployFiles, true).length > 0);
     if (seedJournal) activePreservedAttempts.add(seedJournal);
   } catch (error) {
     await removeInstalledReleasePrivateKey(release, paths);
@@ -1522,7 +1572,7 @@ async function installClaimedRelease(request: HostHelperRequest, previousRecord:
     throw error;
   }
   try {
-    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths.release, hostedPreservedFilesRoot(paths), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
+    await preparePreservedFiles(resolveDeployFiles(release.deployFiles, true), paths.release, hostedPreservedFilesRoot(paths), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
     await symlink(paths.release, tempCurrentLink);
     await rename(tempCurrentLink, paths.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
@@ -3268,7 +3318,8 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
     data: { host: paths.data, container: "/app/data", mode: "rw" },
   };
   const deployRelease = normaliseReleaseHistory(registryRecord).find((entry: any) => entry.id === (options.releaseId ?? registryRecord?.currentRelease?.id));
-  const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles), currentLink, path.join(paths.capsule, "preserved-files"));
+  const admissionPolicyPath = resolveDeployFiles(deployRelease?.source?.deployFiles, true).find(file => file.update === "admission")?.path ?? null;
+  const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles, true), currentLink, path.join(paths.capsule, "preserved-files"));
   const fileMounts = authoritativeSshAuthorizedKeysMount(
     authoritativeSealedServerEnvPrivateKeyMount(
       provided.mounts?.files ?? defaultMounts.files,
@@ -3341,6 +3392,7 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
     routes: canonicalRoutes,
   });
   return {
+    admissionPolicyPath,
     subname,
     domain,
     hostedUrl,
@@ -5028,6 +5080,8 @@ async function dockerRunArgs(lifecycle: HostedCapsuleLifecycle, releaseId: strin
     "--env",
     "SPORADES_SECURITY_SESSION=hosted",
     "--env",
+    `SPORADES_ADMISSION_POLICY_PATH=${lifecycle.admissionPolicyPath ?? ""}`,
+    "--env",
     "SPORADES_CLAMAV_MANAGED=1",
     "--env",
     `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbe.token}`,
@@ -5884,7 +5938,7 @@ async function recordReleaseUploaded(request: HostHelperRequest, release: HostHe
         hostedUrl: release.hostedUrl ?? entry.source?.hostedUrl ?? null,
         remoteCapsuleId: release.remoteCapsuleId ?? entry.source?.remoteCapsuleId ?? null,
         files: Array.isArray(release.files) ? [...release.files] : [],
-        deployFiles: resolveDeployFiles(release.deployFiles),
+        deployFiles: resolveDeployFiles(release.deployFiles, true),
         fileInventory: fileInventory.map((file) => ({ ...file })),
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
         inspection: Array.isArray(release.inspection?.requiredInspectors)
@@ -6632,7 +6686,8 @@ async function preparePreservedReleaseFiles(request: HostHelperRequest, recorded
   if (interrupted) {
     throw helperError("Interrupted deploy.files attempt requires recovery.", "Run `sporades host reconcile <subname>` to settle the interrupted release install before starting, restarting or selecting a release.");
   }
-  for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
+  for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles, true)) {
+    if (file.update === "admission") { await assertPreservedDeployFile(admissionStorageRoot(hostedPreservedFilesRoot(paths)), file.path); continue; }
     if (file.update !== "preserve") continue;
     const target = await assertPreservedDeployFile(hostedPreservedFilesRoot(paths), file.path);
     await prepareHostedRuntimeFileAccess(target, 0o600, { message: "Unsafe preserved release file.", hint: "Restore a regular preserved file before restarting." });

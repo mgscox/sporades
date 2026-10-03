@@ -484,40 +484,40 @@ var require_strings = __commonJS({
     exports.escapeRegExp = function(str) {
       return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     };
-    exports.cleanText = function(text) {
-      return text.replace(/\t|\u0085|\u2028|\u2029/g, "    ").replace(/[\b\v]/g, "");
+    exports.cleanText = function(text2) {
+      return text2.replace(/\t|\u0085|\u2028|\u2029/g, "    ").replace(/[\b\v]/g, "");
     };
     exports.escapedNewlineChars = ["\\n", "\\f", "\\r", "\\u000B"];
     exports.newlineChars = ["\n", "\f", "\r", "\v"];
-    exports.isNewlineChar = function(text) {
-      return /^[\n\f\r\u000B]$/.test(text);
+    exports.isNewlineChar = function(text2) {
+      return /^[\n\f\r\u000B]$/.test(text2);
     };
-    exports.lineSplit = function(text) {
-      return text.split(/[\n\f\r\u000B]/);
+    exports.lineSplit = function(text2) {
+      return text2.split(/[\n\f\r\u000B]/);
     };
-    exports.mergeLines = function(text) {
-      return text.replace(/[\n\f\r\u000B]/g, " ");
+    exports.mergeLines = function(text2) {
+      return text2.replace(/[\n\f\r\u000B]/g, " ");
     };
-    exports.charAtIndex = function(text, index) {
-      var cuFirst = text.charCodeAt(index);
+    exports.charAtIndex = function(text2, index) {
+      var cuFirst = text2.charCodeAt(index);
       var cuSecond;
       var nextIndex2 = index + 1;
       var length = 1;
       if (
         // Check if it's the start of a surrogate pair.
         cuFirst >= 55296 && cuFirst <= 56319 && // high surrogate
-        text.length > nextIndex2
+        text2.length > nextIndex2
       ) {
-        cuSecond = text.charCodeAt(nextIndex2);
+        cuSecond = text2.charCodeAt(nextIndex2);
         if (cuSecond >= 56320 && cuSecond <= 57343)
           length = 2;
       }
-      return [text.slice(index, index + length), length];
+      return [text2.slice(index, index + length), length];
     };
-    exports.charSplit = function(text) {
+    exports.charSplit = function(text2) {
       var chars = [];
-      for (var idx = 0, len = text.length; idx < len; ) {
-        var _a = exports.charAtIndex(text, idx), c = _a[0], cLen = _a[1];
+      for (var idx = 0, len = text2.length; idx < len; ) {
+        var _a = exports.charAtIndex(text2, idx), c = _a[0], cLen = _a[1];
         chars.push(c);
         idx += cLen;
       }
@@ -536,9 +536,9 @@ var require_strings = __commonJS({
       var breakRules = escapedRules.join("|");
       return new RegExp("(" + newlineCharUnion + ")|((.*?)(" + breakRules + "))", "gm");
     };
-    exports.breakTextIntoLines = function(text, wordBreaks, maxWidth, computeWidthOfText) {
+    exports.breakTextIntoLines = function(text2, wordBreaks, maxWidth, computeWidthOfText) {
       var regex = buildWordBreakRegex(wordBreaks);
-      var words = exports.cleanText(text).match(regex);
+      var words = exports.cleanText(text2).match(regex);
       var currLine = "";
       var currWidth = 0;
       var lines = [];
@@ -1322,10 +1322,10 @@ var require_trees = __commonJS({
       utils.arraySet(s.pending_buf, s.window, buf, len, s.pending);
       s.pending += len;
     }
-    function smaller(tree, n, m, depth) {
+    function smaller(tree, n, m, depth2) {
       var _n2 = n * 2;
       var _m2 = m * 2;
-      return tree[_n2] < tree[_m2] || tree[_n2] === tree[_m2] && depth[n] <= depth[m];
+      return tree[_n2] < tree[_m2] || tree[_n2] === tree[_m2] && depth2[n] <= depth2[m];
     }
     function pqdownheap(s, tree, k) {
       var v = s.heap[k];
@@ -5147,9 +5147,9 @@ var require_pako = __commonJS({
     var assign = require_common().assign;
     var deflate = require_deflate2();
     var inflate = require_inflate2();
-    var constants2 = require_constants();
+    var constants3 = require_constants();
     var pako = {};
-    assign(pako, deflate, inflate, constants2);
+    assign(pako, deflate, inflate, constants3);
     module.exports = pako;
   }
 });
@@ -6436,21 +6436,21 @@ var require_PDFArray = __commonJS({
         PDFArray3.prototype.size = function() {
           return this.array.length;
         };
-        PDFArray3.prototype.push = function(object) {
-          this.array.push(object);
+        PDFArray3.prototype.push = function(object2) {
+          this.array.push(object2);
         };
-        PDFArray3.prototype.insert = function(index, object) {
-          this.array.splice(index, 0, object);
+        PDFArray3.prototype.insert = function(index, object2) {
+          this.array.splice(index, 0, object2);
         };
-        PDFArray3.prototype.indexOf = function(object) {
-          var index = this.array.indexOf(object);
+        PDFArray3.prototype.indexOf = function(object2) {
+          var index = this.array.indexOf(object2);
           return index === -1 ? void 0 : index;
         };
         PDFArray3.prototype.remove = function(index) {
           this.array.splice(index, 1);
         };
-        PDFArray3.prototype.set = function(idx, object) {
-          this.array[idx] = object;
+        PDFArray3.prototype.set = function(idx, object2) {
+          this.array[idx] = object2;
         };
         PDFArray3.prototype.get = function(index) {
           return this.array[index];
@@ -7490,8 +7490,8 @@ var require_PDFContext = __commonJS({
           this.indirectObjects = /* @__PURE__ */ new Map();
           this.rng = rng_1.SimpleRNG.withSeed(1);
         }
-        PDFContext2.prototype.assign = function(ref2, object) {
-          this.indirectObjects.set(ref2, object);
+        PDFContext2.prototype.assign = function(ref2, object2) {
+          this.indirectObjects.set(ref2, object2);
           if (ref2.objectNumber > this.largestObjectNumber) {
             this.largestObjectNumber = ref2.objectNumber;
           }
@@ -7500,9 +7500,9 @@ var require_PDFContext = __commonJS({
           this.largestObjectNumber += 1;
           return PDFRef_1.default.of(this.largestObjectNumber);
         };
-        PDFContext2.prototype.register = function(object) {
+        PDFContext2.prototype.register = function(object2) {
           var ref2 = this.nextRef();
-          this.assign(ref2, object);
+          this.assign(ref2, object2);
           return ref2;
         };
         PDFContext2.prototype.delete = function(ref2) {
@@ -7552,8 +7552,8 @@ var require_PDFContext = __commonJS({
         PDFContext2.prototype.getObjectRef = function(pdfObject) {
           var entries = Array.from(this.indirectObjects.entries());
           for (var idx = 0, len = entries.length; idx < len; idx++) {
-            var _a = entries[idx], ref2 = _a[0], object = _a[1];
-            if (object === pdfObject) {
+            var _a = entries[idx], ref2 = _a[0], object2 = _a[1];
+            if (object2 === pdfObject) {
               return ref2;
             }
           }
@@ -7581,9 +7581,9 @@ var require_PDFContext = __commonJS({
             return array;
           } else {
             var dict = PDFDict_1.default.withContext(this);
-            var keys = Object.keys(literal3);
-            for (var idx = 0, len = keys.length; idx < len; idx++) {
-              var key = keys[idx];
+            var keys2 = Object.keys(literal3);
+            for (var idx = 0, len = keys2.length; idx < len; idx++) {
+              var key = keys2[idx];
               var value = literal3[key];
               if (value !== void 0)
                 dict.set(PDFName_1.default.of(key), this.obj(value));
@@ -7883,8 +7883,8 @@ var require_PDFObjectCopier = __commonJS({
         function PDFObjectCopier2(src, dest) {
           var _this = this;
           this.traversedObjects = /* @__PURE__ */ new Map();
-          this.copy = function(object) {
-            return object instanceof PDFPageLeaf_1.default ? _this.copyPDFPage(object) : object instanceof PDFDict_1.default ? _this.copyPDFDict(object) : object instanceof PDFArray_1.default ? _this.copyPDFArray(object) : object instanceof PDFStream_1.default ? _this.copyPDFStream(object) : object instanceof PDFRef_1.default ? _this.copyPDFIndirectObject(object) : object.clone();
+          this.copy = function(object2) {
+            return object2 instanceof PDFPageLeaf_1.default ? _this.copyPDFPage(object2) : object2 instanceof PDFDict_1.default ? _this.copyPDFDict(object2) : object2 instanceof PDFArray_1.default ? _this.copyPDFArray(object2) : object2 instanceof PDFStream_1.default ? _this.copyPDFStream(object2) : object2 instanceof PDFRef_1.default ? _this.copyPDFIndirectObject(object2) : object2.clone();
           };
           this.copyPDFPage = function(originalPage) {
             var clonedPage = originalPage.clone();
@@ -8221,8 +8221,8 @@ var require_PDFObjectStream = __commonJS({
         PDFObjectStream2.prototype.getContentsString = function() {
           var value = this.offsetsString;
           for (var idx = 0, len = this.objects.length; idx < len; idx++) {
-            var _a = this.objects[idx], object = _a[1];
-            value += object + "\n";
+            var _a = this.objects[idx], object2 = _a[1];
+            value += object2 + "\n";
           }
           return value;
         };
@@ -8230,8 +8230,8 @@ var require_PDFObjectStream = __commonJS({
           var buffer = new Uint8Array(this.getUnencodedContentsSize());
           var offset2 = utils_1.copyStringIntoBuffer(this.offsetsString, buffer, 0);
           for (var idx = 0, len = this.objects.length; idx < len; idx++) {
-            var _a = this.objects[idx], object = _a[1];
-            offset2 += object.copyBytesInto(buffer, offset2);
+            var _a = this.objects[idx], object2 = _a[1];
+            offset2 += object2.copyBytesInto(buffer, offset2);
             buffer[offset2++] = CharCodes_1.default.Newline;
           }
           return buffer;
@@ -8251,9 +8251,9 @@ var require_PDFObjectStream = __commonJS({
           var offset2 = 0;
           var offsets = new Array(this.objects.length);
           for (var idx = 0, len = this.objects.length; idx < len; idx++) {
-            var _a = this.objects[idx], ref2 = _a[0], object = _a[1];
+            var _a = this.objects[idx], ref2 = _a[0], object2 = _a[1];
             offsets[idx] = [ref2.objectNumber, offset2];
-            offset2 += object.sizeInBytes() + 1;
+            offset2 += object2.sizeInBytes() + 1;
           }
           return offsets;
         };
@@ -8298,7 +8298,7 @@ var require_PDFWriter = __commonJS({
         }
         PDFWriter2.prototype.serializeToBuffer = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var _a, size, header, indirectObjects, xref, trailerDict, trailer, offset2, buffer, idx, len, _b, ref2, object, objectNumber, generationNumber, n;
+            var _a, size, header, indirectObjects, xref, trailerDict, trailer, offset2, buffer, idx, len, _b, ref2, object2, objectNumber, generationNumber, n;
             return tslib_1.__generator(this, function(_c) {
               switch (_c.label) {
                 case 0:
@@ -8314,7 +8314,7 @@ var require_PDFWriter = __commonJS({
                   _c.label = 2;
                 case 2:
                   if (!(idx < len)) return [3, 5];
-                  _b = indirectObjects[idx], ref2 = _b[0], object = _b[1];
+                  _b = indirectObjects[idx], ref2 = _b[0], object2 = _b[1];
                   objectNumber = String(ref2.objectNumber);
                   offset2 += utils_1.copyStringIntoBuffer(objectNumber, buffer, offset2);
                   buffer[offset2++] = CharCodes_1.default.Space;
@@ -8325,7 +8325,7 @@ var require_PDFWriter = __commonJS({
                   buffer[offset2++] = CharCodes_1.default.b;
                   buffer[offset2++] = CharCodes_1.default.j;
                   buffer[offset2++] = CharCodes_1.default.Newline;
-                  offset2 += object.copyBytesInto(buffer, offset2);
+                  offset2 += object2.copyBytesInto(buffer, offset2);
                   buffer[offset2++] = CharCodes_1.default.Newline;
                   buffer[offset2++] = CharCodes_1.default.e;
                   buffer[offset2++] = CharCodes_1.default.n;
@@ -8335,7 +8335,7 @@ var require_PDFWriter = __commonJS({
                   buffer[offset2++] = CharCodes_1.default.j;
                   buffer[offset2++] = CharCodes_1.default.Newline;
                   buffer[offset2++] = CharCodes_1.default.Newline;
-                  n = object instanceof PDFObjectStream_1.default ? object.getObjectsCount() : 1;
+                  n = object2 instanceof PDFObjectStream_1.default ? object2.getObjectsCount() : 1;
                   if (!this.shouldWaitForTick(n)) return [3, 4];
                   return [4, utils_1.waitForTick()];
                 case 3:
@@ -8361,9 +8361,9 @@ var require_PDFWriter = __commonJS({
           });
         };
         PDFWriter2.prototype.computeIndirectObjectSize = function(_a) {
-          var ref2 = _a[0], object = _a[1];
+          var ref2 = _a[0], object2 = _a[1];
           var refSize = ref2.sizeInBytes() + 3;
-          var objectSize = object.sizeInBytes() + 9;
+          var objectSize = object2.sizeInBytes() + 9;
           return refSize + objectSize;
         };
         PDFWriter2.prototype.createTrailerDict = function() {
@@ -8686,7 +8686,7 @@ var require_PDFStreamWriter = __commonJS({
         }
         PDFStreamWriter2.prototype.computeBufferSize = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var objectNumber, header, size, xrefStream, uncompressedObjects, compressedObjects, objectStreamRefs, indirectObjects, idx, len, indirectObject, ref2, object, shouldNotCompress, chunk, objectStreamRef, idx, len, chunk, ref2, objectStream, xrefStreamRef, xrefOffset, trailer;
+            var objectNumber, header, size, xrefStream, uncompressedObjects, compressedObjects, objectStreamRefs, indirectObjects, idx, len, indirectObject, ref2, object2, shouldNotCompress, chunk, objectStreamRef, idx, len, chunk, ref2, objectStream, xrefStreamRef, xrefOffset, trailer;
             return tslib_1.__generator(this, function(_a) {
               switch (_a.label) {
                 case 0:
@@ -8703,8 +8703,8 @@ var require_PDFStreamWriter = __commonJS({
                 case 1:
                   if (!(idx < len)) return [3, 6];
                   indirectObject = indirectObjects[idx];
-                  ref2 = indirectObject[0], object = indirectObject[1];
-                  shouldNotCompress = ref2 === this.context.trailerInfo.Encrypt || object instanceof PDFStream_1.default || object instanceof PDFInvalidObject_1.default || ref2.generationNumber !== 0;
+                  ref2 = indirectObject[0], object2 = indirectObject[1];
+                  shouldNotCompress = ref2 === this.context.trailerInfo.Encrypt || object2 instanceof PDFStream_1.default || object2 instanceof PDFInvalidObject_1.default || ref2.generationNumber !== 0;
                   if (!shouldNotCompress) return [3, 4];
                   uncompressedObjects.push(indirectObject);
                   xrefStream.addUncompressedEntry(ref2, size);
@@ -8820,10 +8820,10 @@ var require_PDFHexString = __commonJS({
           return utils_1.pdfDocEncodingDecode(bytes);
         };
         PDFHexString2.prototype.decodeDate = function() {
-          var text = this.decodeText();
-          var date = utils_1.parseDate(text);
+          var text2 = this.decodeText();
+          var date = utils_1.parseDate(text2);
           if (!date)
-            throw new errors_1.InvalidPDFDateStringError(text);
+            throw new errors_1.InvalidPDFDateStringError(text2);
           return date;
         };
         PDFHexString2.prototype.asString = function() {
@@ -8880,16 +8880,16 @@ var require_StandardFontEmbedder = __commonJS({
           this.fontName = this.font.FontName;
           this.customName = customName;
         }
-        StandardFontEmbedder2.prototype.encodeText = function(text) {
-          var glyphs = this.encodeTextAsGlyphs(text);
+        StandardFontEmbedder2.prototype.encodeText = function(text2) {
+          var glyphs = this.encodeTextAsGlyphs(text2);
           var hexCodes = new Array(glyphs.length);
           for (var idx = 0, len = glyphs.length; idx < len; idx++) {
             hexCodes[idx] = utils_1.toHexString(glyphs[idx].code);
           }
           return PDFHexString_1.default.of(hexCodes.join(""));
         };
-        StandardFontEmbedder2.prototype.widthOfTextAtSize = function(text, size) {
-          var glyphs = this.encodeTextAsGlyphs(text);
+        StandardFontEmbedder2.prototype.widthOfTextAtSize = function(text2, size) {
+          var glyphs = this.encodeTextAsGlyphs(text2);
           var totalWidth = 0;
           for (var idx = 0, len = glyphs.length; idx < len; idx++) {
             var left = glyphs[idx].name;
@@ -8936,8 +8936,8 @@ var require_StandardFontEmbedder = __commonJS({
         StandardFontEmbedder2.prototype.widthOfGlyph = function(glyphName) {
           return this.font.getWidthOfGlyph(glyphName) || 250;
         };
-        StandardFontEmbedder2.prototype.encodeTextAsGlyphs = function(text) {
-          var codePoints = Array.from(text);
+        StandardFontEmbedder2.prototype.encodeTextAsGlyphs = function(text2) {
+          var codePoints = Array.from(text2);
           var glyphs = new Array(codePoints.length);
           for (var idx = 0, len = codePoints.length; idx < len; idx++) {
             var codePoint2 = utils_1.toCodePoint(codePoints[idx]);
@@ -9127,10 +9127,10 @@ var require_PDFString = __commonJS({
           return utils_1.pdfDocEncodingDecode(bytes);
         };
         PDFString2.prototype.decodeDate = function() {
-          var text = this.decodeText();
-          var date = utils_1.parseDate(text);
+          var text2 = this.decodeText();
+          var date = utils_1.parseDate(text2);
           if (!date)
-            throw new errors_1.InvalidPDFDateStringError(text);
+            throw new errors_1.InvalidPDFDateStringError(text2);
           return date;
         };
         PDFString2.prototype.asString = function() {
@@ -9219,16 +9219,16 @@ var require_CustomFontEmbedder = __commonJS({
             });
           });
         };
-        CustomFontEmbedder2.prototype.encodeText = function(text) {
-          var glyphs = this.font.layout(text, this.fontFeatures).glyphs;
+        CustomFontEmbedder2.prototype.encodeText = function(text2) {
+          var glyphs = this.font.layout(text2, this.fontFeatures).glyphs;
           var hexCodes = new Array(glyphs.length);
           for (var idx = 0, len = glyphs.length; idx < len; idx++) {
             hexCodes[idx] = utils_1.toHexStringOfMinLength(glyphs[idx].id, 4);
           }
           return PDFHexString_1.default.of(hexCodes.join(""));
         };
-        CustomFontEmbedder2.prototype.widthOfTextAtSize = function(text, size) {
-          var glyphs = this.font.layout(text, this.fontFeatures).glyphs;
+        CustomFontEmbedder2.prototype.widthOfTextAtSize = function(text2, size) {
+          var glyphs = this.font.layout(text2, this.fontFeatures).glyphs;
           var totalWidth = 0;
           for (var idx = 0, len = glyphs.length; idx < len; idx++) {
             totalWidth += glyphs[idx].advanceWidth * this.scale;
@@ -9450,8 +9450,8 @@ var require_CustomFontSubsetEmbedder = __commonJS({
             });
           });
         };
-        CustomFontSubsetEmbedder2.prototype.encodeText = function(text) {
-          var glyphs = this.font.layout(text, this.fontFeatures).glyphs;
+        CustomFontSubsetEmbedder2.prototype.encodeText = function(text2) {
+          var glyphs = this.font.layout(text2, this.fontFeatures).glyphs;
           var hexCodes = new Array(glyphs.length);
           for (var idx = 0, len = glyphs.length; idx < len; idx++) {
             var glyph = glyphs[idx];
@@ -9725,39 +9725,39 @@ var require_UPNG = __commonJS({
       var area = w * h, bpp = UPNG.decode._getBPP(out);
       var bpl = Math.ceil(w * bpp / 8);
       var bf = new Uint8Array(area * 4), bf32 = new Uint32Array(bf.buffer);
-      var ctype = out.ctype, depth = out.depth;
+      var ctype = out.ctype, depth2 = out.depth;
       var rs = UPNG._bin.readUshort;
       var time = Date.now();
       if (ctype == 6) {
         var qarea = area << 2;
-        if (depth == 8) for (var i = 0; i < qarea; i += 4) {
+        if (depth2 == 8) for (var i = 0; i < qarea; i += 4) {
           bf[i] = data2[i];
           bf[i + 1] = data2[i + 1];
           bf[i + 2] = data2[i + 2];
           bf[i + 3] = data2[i + 3];
         }
-        if (depth == 16) for (var i = 0; i < qarea; i++) {
+        if (depth2 == 16) for (var i = 0; i < qarea; i++) {
           bf[i] = data2[i << 1];
         }
       } else if (ctype == 2) {
         var ts = out.tabs["tRNS"];
         if (ts == null) {
-          if (depth == 8) for (var i = 0; i < area; i++) {
+          if (depth2 == 8) for (var i = 0; i < area; i++) {
             var ti = i * 3;
             bf32[i] = 255 << 24 | data2[ti + 2] << 16 | data2[ti + 1] << 8 | data2[ti];
           }
-          if (depth == 16) for (var i = 0; i < area; i++) {
+          if (depth2 == 16) for (var i = 0; i < area; i++) {
             var ti = i * 6;
             bf32[i] = 255 << 24 | data2[ti + 4] << 16 | data2[ti + 2] << 8 | data2[ti];
           }
         } else {
           var tr = ts[0], tg = ts[1], tb = ts[2];
-          if (depth == 8) for (var i = 0; i < area; i++) {
+          if (depth2 == 8) for (var i = 0; i < area; i++) {
             var qi = i << 2, ti = i * 3;
             bf32[i] = 255 << 24 | data2[ti + 2] << 16 | data2[ti + 1] << 8 | data2[ti];
             if (data2[ti] == tr && data2[ti + 1] == tg && data2[ti + 2] == tb) bf[qi + 3] = 0;
           }
-          if (depth == 16) for (var i = 0; i < area; i++) {
+          if (depth2 == 16) for (var i = 0; i < area; i++) {
             var qi = i << 2, ti = i * 6;
             bf32[i] = 255 << 24 | data2[ti + 4] << 16 | data2[ti + 2] << 8 | data2[ti];
             if (rs(data2, ti) == tr && rs(data2, ti + 2) == tg && rs(data2, ti + 4) == tb) bf[qi + 3] = 0;
@@ -9765,7 +9765,7 @@ var require_UPNG = __commonJS({
         }
       } else if (ctype == 3) {
         var p = out.tabs["PLTE"], ap = out.tabs["tRNS"], tl = ap ? ap.length : 0;
-        if (depth == 1) for (var y = 0; y < h; y++) {
+        if (depth2 == 1) for (var y = 0; y < h; y++) {
           var s0 = y * bpl, t0 = y * w;
           for (var i = 0; i < w; i++) {
             var qi = t0 + i << 2, j = data2[s0 + (i >> 3)] >> 7 - ((i & 7) << 0) & 1, cj = 3 * j;
@@ -9775,7 +9775,7 @@ var require_UPNG = __commonJS({
             bf[qi + 3] = j < tl ? ap[j] : 255;
           }
         }
-        if (depth == 2) for (var y = 0; y < h; y++) {
+        if (depth2 == 2) for (var y = 0; y < h; y++) {
           var s0 = y * bpl, t0 = y * w;
           for (var i = 0; i < w; i++) {
             var qi = t0 + i << 2, j = data2[s0 + (i >> 2)] >> 6 - ((i & 3) << 1) & 3, cj = 3 * j;
@@ -9785,7 +9785,7 @@ var require_UPNG = __commonJS({
             bf[qi + 3] = j < tl ? ap[j] : 255;
           }
         }
-        if (depth == 4) for (var y = 0; y < h; y++) {
+        if (depth2 == 4) for (var y = 0; y < h; y++) {
           var s0 = y * bpl, t0 = y * w;
           for (var i = 0; i < w; i++) {
             var qi = t0 + i << 2, j = data2[s0 + (i >> 1)] >> 4 - ((i & 1) << 2) & 15, cj = 3 * j;
@@ -9795,7 +9795,7 @@ var require_UPNG = __commonJS({
             bf[qi + 3] = j < tl ? ap[j] : 255;
           }
         }
-        if (depth == 8) for (var i = 0; i < area; i++) {
+        if (depth2 == 8) for (var i = 0; i < area; i++) {
           var qi = i << 2, j = data2[i], cj = 3 * j;
           bf[qi] = p[cj];
           bf[qi + 1] = p[cj + 1];
@@ -9803,14 +9803,14 @@ var require_UPNG = __commonJS({
           bf[qi + 3] = j < tl ? ap[j] : 255;
         }
       } else if (ctype == 4) {
-        if (depth == 8) for (var i = 0; i < area; i++) {
+        if (depth2 == 8) for (var i = 0; i < area; i++) {
           var qi = i << 2, di = i << 1, gr = data2[di];
           bf[qi] = gr;
           bf[qi + 1] = gr;
           bf[qi + 2] = gr;
           bf[qi + 3] = data2[di + 1];
         }
-        if (depth == 16) for (var i = 0; i < area; i++) {
+        if (depth2 == 16) for (var i = 0; i < area; i++) {
           var qi = i << 2, di = i << 2, gr = data2[di];
           bf[qi] = gr;
           bf[qi + 1] = gr;
@@ -9821,23 +9821,23 @@ var require_UPNG = __commonJS({
         var tr = out.tabs["tRNS"] ? out.tabs["tRNS"] : -1;
         for (var y = 0; y < h; y++) {
           var off = y * bpl, to = y * w;
-          if (depth == 1) for (var x = 0; x < w; x++) {
+          if (depth2 == 1) for (var x = 0; x < w; x++) {
             var gr = 255 * (data2[off + (x >>> 3)] >>> 7 - (x & 7) & 1), al = gr == tr * 255 ? 0 : 255;
             bf32[to + x] = al << 24 | gr << 16 | gr << 8 | gr;
           }
-          else if (depth == 2) for (var x = 0; x < w; x++) {
+          else if (depth2 == 2) for (var x = 0; x < w; x++) {
             var gr = 85 * (data2[off + (x >>> 2)] >>> 6 - ((x & 3) << 1) & 3), al = gr == tr * 85 ? 0 : 255;
             bf32[to + x] = al << 24 | gr << 16 | gr << 8 | gr;
           }
-          else if (depth == 4) for (var x = 0; x < w; x++) {
+          else if (depth2 == 4) for (var x = 0; x < w; x++) {
             var gr = 17 * (data2[off + (x >>> 1)] >>> 4 - ((x & 1) << 2) & 15), al = gr == tr * 17 ? 0 : 255;
             bf32[to + x] = al << 24 | gr << 16 | gr << 8 | gr;
           }
-          else if (depth == 8) for (var x = 0; x < w; x++) {
+          else if (depth2 == 8) for (var x = 0; x < w; x++) {
             var gr = data2[off + x], al = gr == tr ? 0 : 255;
             bf32[to + x] = al << 24 | gr << 16 | gr << 8 | gr;
           }
-          else if (depth == 16) for (var x = 0; x < w; x++) {
+          else if (depth2 == 16) for (var x = 0; x < w; x++) {
             var gr = data2[off + (x << 1)], al = rs(data2, off + (x << i)) == tr ? 0 : 255;
             bf32[to + x] = al << 24 | gr << 16 | gr << 8 | gr;
           }
@@ -9904,8 +9904,8 @@ var require_UPNG = __commonJS({
           if (out.tabs[type] == null) out.tabs[type] = {};
           var nz = bin.nextZero(data2, offset2);
           var keyw = bin.readASCII(data2, offset2, nz - offset2);
-          var text = bin.readASCII(data2, nz + 1, offset2 + len - nz - 1);
-          out.tabs[type][keyw] = text;
+          var text2 = bin.readASCII(data2, nz + 1, offset2 + len - nz - 1);
+          out.tabs[type][keyw] = text2;
         } else if (type == "iTXt") {
           if (out.tabs[type] == null) out.tabs[type] = {};
           var nz = 0, off = offset2;
@@ -9920,8 +9920,8 @@ var require_UPNG = __commonJS({
           nz = bin.nextZero(data2, off);
           var tkeyw = bin.readUTF8(data2, off, nz - off);
           off = nz + 1;
-          var text = bin.readUTF8(data2, off, len - (off - offset2));
-          out.tabs[type][keyw] = text;
+          var text2 = bin.readUTF8(data2, off, len - (off - offset2));
+          out.tabs[type][keyw] = text2;
         } else if (type == "PLTE") {
           out.tabs[type] = bin.readBytes(data2, offset2, len);
         } else if (type == "hIST") {
@@ -10457,14 +10457,14 @@ var require_UPNG = __commonJS({
       UPNG.encode.compressPNG(nimg, -1);
       return UPNG.encode._main(nimg, w, h, dels, tabs);
     };
-    UPNG.encodeLL = function(bufs, w, h, cc, ac, depth, dels, tabs) {
+    UPNG.encodeLL = function(bufs, w, h, cc, ac, depth2, dels, tabs) {
       var nimg = {
         ctype: 0 + (cc == 1 ? 0 : 2) + (ac == 0 ? 0 : 4),
-        depth,
+        depth: depth2,
         frames: []
       };
       var time = Date.now();
-      var bipp = (cc + ac) * depth, bipl = bipp * w;
+      var bipp = (cc + ac) * depth2, bipl = bipp * w;
       for (var i = 0; i < bufs.length; i++) nimg.frames.push({
         rect: {
           x: 0,
@@ -10647,7 +10647,7 @@ var require_UPNG = __commonJS({
     };
     UPNG.encode.compress = function(bufs, w, h, ps, prms) {
       var onlyBlend = prms[0], evenCrd = prms[1], forbidPrev = prms[2], minBits = prms[3], forbidPlte = prms[4];
-      var ctype = 6, depth = 8, alphaAnd = 255;
+      var ctype = 6, depth2 = 8, alphaAnd = 255;
       for (var j = 0; j < bufs.length; j++) {
         var img = new Uint8Array(bufs[j]), ilen = img.length;
         for (var i = 0; i < ilen; i += 4) alphaAnd &= img[i + 3];
@@ -10695,26 +10695,26 @@ var require_UPNG = __commonJS({
       }
       var cc = plte.length;
       if (cc <= 256 && forbidPlte == false) {
-        if (cc <= 2) depth = 1;
-        else if (cc <= 4) depth = 2;
-        else if (cc <= 16) depth = 4;
-        else depth = 8;
-        depth = Math.max(depth, minBits);
+        if (cc <= 2) depth2 = 1;
+        else if (cc <= 4) depth2 = 2;
+        else if (cc <= 16) depth2 = 4;
+        else depth2 = 8;
+        depth2 = Math.max(depth2, minBits);
       }
       for (var j = 0; j < frms.length; j++) {
         var frm = frms[j], nx = frm.rect.x, ny = frm.rect.y, nw = frm.rect.width, nh = frm.rect.height;
         var cimg = frm.img, cimg32 = new Uint32Array(cimg.buffer);
         var bpl = 4 * nw, bpp = 4;
         if (cc <= 256 && forbidPlte == false) {
-          bpl = Math.ceil(depth * nw / 8);
+          bpl = Math.ceil(depth2 * nw / 8);
           var nimg = new Uint8Array(bpl * nh);
           var inj = inds[j];
           for (var y = 0; y < nh; y++) {
             var i = y * bpl, ii = y * nw;
-            if (depth == 8) for (var x = 0; x < nw; x++) nimg[i + x] = inj[ii + x];
-            else if (depth == 4) for (var x = 0; x < nw; x++) nimg[i + (x >> 1)] |= inj[ii + x] << 4 - (x & 1) * 4;
-            else if (depth == 2) for (var x = 0; x < nw; x++) nimg[i + (x >> 2)] |= inj[ii + x] << 6 - (x & 3) * 2;
-            else if (depth == 1) for (var x = 0; x < nw; x++) nimg[i + (x >> 3)] |= inj[ii + x] << 7 - (x & 7) * 1;
+            if (depth2 == 8) for (var x = 0; x < nw; x++) nimg[i + x] = inj[ii + x];
+            else if (depth2 == 4) for (var x = 0; x < nw; x++) nimg[i + (x >> 1)] |= inj[ii + x] << 4 - (x & 1) * 4;
+            else if (depth2 == 2) for (var x = 0; x < nw; x++) nimg[i + (x >> 2)] |= inj[ii + x] << 6 - (x & 3) * 2;
+            else if (depth2 == 1) for (var x = 0; x < nw; x++) nimg[i + (x >> 3)] |= inj[ii + x] << 7 - (x & 7) * 1;
           }
           cimg = nimg;
           ctype = 3;
@@ -10738,7 +10738,7 @@ var require_UPNG = __commonJS({
       }
       return {
         ctype,
-        depth,
+        depth: depth2,
         plte,
         frames: frms
       };
@@ -13714,9 +13714,9 @@ var require_PDFWidgetAnnotation = __commonJS({
           var _a;
           var normal = (_a = this.getAppearances()) === null || _a === void 0 ? void 0 : _a.normal;
           if (normal instanceof PDFDict_1.default) {
-            var keys = normal.keys();
-            for (var idx = 0, len = keys.length; idx < len; idx++) {
-              var key = keys[idx];
+            var keys2 = normal.keys();
+            for (var idx = 0, len = keys2.length; idx < len; idx++) {
+              var key = keys2[idx];
               if (key !== PDFName_1.default.of("Off"))
                 return key;
             }
@@ -15505,7 +15505,7 @@ var require_PDFObjectStreamParser = __commonJS({
         }
         PDFObjectStreamParser2.prototype.parseIntoContext = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var offsetsAndObjectNumbers, idx, len, _a, objectNumber, offset2, object, ref2;
+            var offsetsAndObjectNumbers, idx, len, _a, objectNumber, offset2, object2, ref2;
             return tslib_1.__generator(this, function(_b) {
               switch (_b.label) {
                 case 0:
@@ -15520,9 +15520,9 @@ var require_PDFObjectStreamParser = __commonJS({
                   if (!(idx < len)) return [3, 4];
                   _a = offsetsAndObjectNumbers[idx], objectNumber = _a.objectNumber, offset2 = _a.offset;
                   this.bytes.moveTo(this.firstOffset + offset2);
-                  object = this.parseObject();
+                  object2 = this.parseObject();
                   ref2 = PDFRef_1.default.of(objectNumber, 0);
-                  this.context.assign(ref2, object);
+                  this.context.assign(ref2, object2);
                   if (!this.shouldWaitForTick()) return [3, 3];
                   return [4, utils_1.waitForTick()];
                 case 2:
@@ -15746,8 +15746,8 @@ var require_PDFParser = __commonJS({
           if (!isValidCatalog(catalog)) {
             var indirectObjects = this.context.enumerateIndirectObjects();
             for (var idx = 0, len = indirectObjects.length; idx < len; idx++) {
-              var _a = indirectObjects[idx], ref2 = _a[0], object = _a[1];
-              if (isValidCatalog(object)) {
+              var _a = indirectObjects[idx], ref2 = _a[0], object2 = _a[1];
+              if (isValidCatalog(object2)) {
                 this.context.trailerInfo.Root = ref2;
               }
             }
@@ -15790,25 +15790,25 @@ var require_PDFParser = __commonJS({
         };
         PDFParser2.prototype.parseIndirectObject = function() {
           return tslib_1.__awaiter(this, void 0, void 0, function() {
-            var ref2, object;
+            var ref2, object2;
             return tslib_1.__generator(this, function(_a) {
               switch (_a.label) {
                 case 0:
                   ref2 = this.parseIndirectObjectHeader();
                   this.skipWhitespaceAndComments();
-                  object = this.parseObject();
+                  object2 = this.parseObject();
                   this.skipWhitespaceAndComments();
                   this.matchKeyword(Keywords_1.Keywords.endobj);
-                  if (!(object instanceof PDFRawStream_1.default && object.dict.lookup(PDFName_1.default.of("Type")) === PDFName_1.default.of("ObjStm"))) return [3, 2];
-                  return [4, PDFObjectStreamParser_1.default.forStream(object, this.shouldWaitForTick).parseIntoContext()];
+                  if (!(object2 instanceof PDFRawStream_1.default && object2.dict.lookup(PDFName_1.default.of("Type")) === PDFName_1.default.of("ObjStm"))) return [3, 2];
+                  return [4, PDFObjectStreamParser_1.default.forStream(object2, this.shouldWaitForTick).parseIntoContext()];
                 case 1:
                   _a.sent();
                   return [3, 3];
                 case 2:
-                  if (object instanceof PDFRawStream_1.default && object.dict.lookup(PDFName_1.default.of("Type")) === PDFName_1.default.of("XRef")) {
-                    PDFXRefStreamParser_1.default.forStream(object).parseIntoContext();
+                  if (object2 instanceof PDFRawStream_1.default && object2.dict.lookup(PDFName_1.default.of("Type")) === PDFName_1.default.of("XRef")) {
+                    PDFXRefStreamParser_1.default.forStream(object2).parseIntoContext();
                   } else {
-                    this.context.assign(ref2, object);
+                    this.context.assign(ref2, object2);
                   }
                   _a.label = 3;
                 case 3:
@@ -15839,8 +15839,8 @@ var require_PDFParser = __commonJS({
           if (failed)
             throw new errors_1.PDFInvalidObjectParsingError(startPos);
           var end = this.bytes.offset() - Keywords_1.Keywords.endobj.length;
-          var object = PDFInvalidObject_1.default.of(this.bytes.slice(start, end));
-          this.context.assign(ref2, object);
+          var object2 = PDFInvalidObject_1.default.of(this.bytes.slice(start, end));
+          this.context.assign(ref2, object2);
           return ref2;
         };
         PDFParser2.prototype.parseIndirectObjects = function() {
@@ -16486,8 +16486,8 @@ var require_operators = __commonJS({
     exports.moveText = function(x, y) {
       return core_1.PDFOperator.of(core_1.PDFOperatorNames.MoveText, [objects_1.asPDFNumber(x), objects_1.asPDFNumber(y)]);
     };
-    exports.showText = function(text) {
-      return core_1.PDFOperator.of(core_1.PDFOperatorNames.ShowText, [text]);
+    exports.showText = function(text2) {
+      return core_1.PDFOperator.of(core_1.PDFOperatorNames.ShowText, [text2]);
     };
     exports.beginText = function() {
       return core_1.PDFOperator.of(core_1.PDFOperatorNames.BeginText);
@@ -16678,14 +16678,14 @@ var require_svgPath = __commonJS({
       ["Z", 0],
       ["z", 0]
     ]);
-    var parse5 = function(path9) {
+    var parse5 = function(path12) {
       var cmd;
       var ret = [];
       var args = [];
       var curArg = "";
       var foundDecimal = false;
       var params = 0;
-      for (var _i = 0, path_1 = path9; _i < path_1.length; _i++) {
+      for (var _i = 0, path_1 = path12; _i < path_1.length; _i++) {
         var c = path_1[_i];
         if (parameters.has(c)) {
           params = parameters.get(c);
@@ -16999,8 +16999,8 @@ var require_svgPath = __commonJS({
       ];
       return result;
     };
-    exports.svgPathToOperators = function(path9) {
-      return apply(parse5(path9));
+    exports.svgPathToOperators = function(path12) {
+      return apply(parse5(path12));
     };
   }
 });
@@ -17183,7 +17183,7 @@ var require_operations = __commonJS({
         operators_1.popGraphicsState()
       ]).filter(Boolean);
     };
-    exports.drawSvgPath = function(path9, options) {
+    exports.drawSvgPath = function(path12, options) {
       var _a, _b, _c;
       return tslib_1.__spreadArrays([
         operators_1.pushGraphicsState(),
@@ -17197,7 +17197,7 @@ var require_operations = __commonJS({
         options.borderWidth && operators_1.setLineWidth(options.borderWidth),
         options.borderLineCap && operators_1.setLineCap(options.borderLineCap),
         operators_1.setDashPattern((_b = options.borderDashArray) !== null && _b !== void 0 ? _b : [], (_c = options.borderDashPhase) !== null && _c !== void 0 ? _c : 0)
-      ], svgPath_1.svgPathToOperators(path9), [
+      ], svgPath_1.svgPathToOperators(path12), [
         // prettier-ignore
         options.color && options.borderWidth ? operators_1.fillAndStroke() : options.color ? operators_1.fill() : options.borderColor ? operators_1.stroke() : operators_1.closePath(),
         operators_1.popGraphicsState()
@@ -17772,9 +17772,9 @@ var require_layout = __commonJS({
         remainder: void 0
       };
     };
-    exports.layoutMultilineText = function(text, _a) {
+    exports.layoutMultilineText = function(text2, _a) {
       var alignment = _a.alignment, fontSize = _a.fontSize, font = _a.font, bounds = _a.bounds;
-      var lines = utils_1.lineSplit(utils_1.cleanText(text));
+      var lines = utils_1.lineSplit(utils_1.cleanText(text2));
       if (fontSize === void 0 || fontSize === 0) {
         fontSize = computeFontSize(lines, font, bounds, true);
       }
@@ -17816,9 +17816,9 @@ var require_layout = __commonJS({
         }
       };
     };
-    exports.layoutCombedText = function(text, _a) {
+    exports.layoutCombedText = function(text2, _a) {
       var fontSize = _a.fontSize, font = _a.font, bounds = _a.bounds, cellCount = _a.cellCount;
-      var line = utils_1.mergeLines(utils_1.cleanText(text));
+      var line = utils_1.mergeLines(utils_1.cleanText(text2));
       if (line.length > cellCount) {
         throw new errors_1.CombedTextLayoutError(line.length, cellCount);
       }
@@ -17864,9 +17864,9 @@ var require_layout = __commonJS({
         }
       };
     };
-    exports.layoutSinglelineText = function(text, _a) {
+    exports.layoutSinglelineText = function(text2, _a) {
       var alignment = _a.alignment, fontSize = _a.fontSize, font = _a.font, bounds = _a.bounds;
-      var line = utils_1.mergeLines(utils_1.cleanText(text));
+      var line = utils_1.mergeLines(utils_1.cleanText(text2));
       if (fontSize === void 0 || fontSize === 0) {
         fontSize = computeFontSize([line], font, bounds);
       }
@@ -18092,7 +18092,7 @@ var require_appearances = __commonJS({
       var rectangle = widget.getRectangle();
       var ap = widget.getAppearanceCharacteristics();
       var bs = widget.getBorderStyle();
-      var text = (_a = textField.getText()) !== null && _a !== void 0 ? _a : "";
+      var text2 = (_a = textField.getText()) !== null && _a !== void 0 ? _a : "";
       var borderWidth = (_b = bs === null || bs === void 0 ? void 0 : bs.getWidth()) !== null && _b !== void 0 ? _b : 0;
       var rotation = rotations_1.reduceRotation(ap === null || ap === void 0 ? void 0 : ap.getRotation());
       var _e = rotations_1.adjustDimsForRotation(rectangle, rotation), width = _e.width, height = _e.height;
@@ -18110,7 +18110,7 @@ var require_appearances = __commonJS({
         height: height - (borderWidth + padding) * 2
       };
       if (textField.isMultiline()) {
-        var layout = layout_1.layoutMultilineText(text, {
+        var layout = layout_1.layoutMultilineText(text2, {
           alignment: textField.getAlignment(),
           fontSize: widgetFontSize !== null && widgetFontSize !== void 0 ? widgetFontSize : fieldFontSize,
           font,
@@ -18119,7 +18119,7 @@ var require_appearances = __commonJS({
         textLines = layout.lines;
         fontSize = layout.fontSize;
       } else if (textField.isCombed()) {
-        var layout = layout_1.layoutCombedText(text, {
+        var layout = layout_1.layoutCombedText(text2, {
           fontSize: widgetFontSize !== null && widgetFontSize !== void 0 ? widgetFontSize : fieldFontSize,
           font,
           bounds,
@@ -18128,7 +18128,7 @@ var require_appearances = __commonJS({
         textLines = layout.cells;
         fontSize = layout.fontSize;
       } else {
-        var layout = layout_1.layoutSinglelineText(text, {
+        var layout = layout_1.layoutSinglelineText(text2, {
           alignment: textField.getAlignment(),
           fontSize: widgetFontSize !== null && widgetFontSize !== void 0 ? widgetFontSize : fieldFontSize,
           font,
@@ -18168,7 +18168,7 @@ var require_appearances = __commonJS({
       var rectangle = widget.getRectangle();
       var ap = widget.getAppearanceCharacteristics();
       var bs = widget.getBorderStyle();
-      var text = (_a = dropdown.getSelected()[0]) !== null && _a !== void 0 ? _a : "";
+      var text2 = (_a = dropdown.getSelected()[0]) !== null && _a !== void 0 ? _a : "";
       var borderWidth = (_b = bs === null || bs === void 0 ? void 0 : bs.getWidth()) !== null && _b !== void 0 ? _b : 0;
       var rotation = rotations_1.reduceRotation(ap === null || ap === void 0 ? void 0 : ap.getRotation());
       var _d = rotations_1.adjustDimsForRotation(rectangle, rotation), width = _d.width, height = _d.height;
@@ -18183,7 +18183,7 @@ var require_appearances = __commonJS({
         width: width - (borderWidth + padding) * 2,
         height: height - (borderWidth + padding) * 2
       };
-      var _e = layout_1.layoutSinglelineText(text, {
+      var _e = layout_1.layoutSinglelineText(text2, {
         alignment: alignment_1.TextAlignment.Left,
         fontSize: widgetFontSize !== null && widgetFontSize !== void 0 ? widgetFontSize : fieldFontSize,
         font,
@@ -18231,11 +18231,11 @@ var require_appearances = __commonJS({
       var selected = optionList.getSelected();
       if (optionList.isSorted())
         options.sort();
-      var text = "";
+      var text2 = "";
       for (var idx = 0, len = options.length; idx < len; idx++) {
-        text += options[idx];
+        text2 += options[idx];
         if (idx < len - 1)
-          text += "\n";
+          text2 += "\n";
       }
       var padding = 1;
       var bounds = {
@@ -18244,7 +18244,7 @@ var require_appearances = __commonJS({
         width: width - (borderWidth + padding) * 2,
         height: height - (borderWidth + padding) * 2
       };
-      var _d = layout_1.layoutMultilineText(text, {
+      var _d = layout_1.layoutMultilineText(text2, {
         alignment: alignment_1.TextAlignment.Left,
         fontSize: widgetFontSize !== null && widgetFontSize !== void 0 ? widgetFontSize : fieldFontSize,
         font,
@@ -18369,15 +18369,15 @@ var require_PDFFont = __commonJS({
           this.name = embedder.fontName;
           this.embedder = embedder;
         }
-        PDFFont2.prototype.encodeText = function(text) {
-          utils_1.assertIs(text, "text", ["string"]);
+        PDFFont2.prototype.encodeText = function(text2) {
+          utils_1.assertIs(text2, "text", ["string"]);
           this.modified = true;
-          return this.embedder.encodeText(text);
+          return this.embedder.encodeText(text2);
         };
-        PDFFont2.prototype.widthOfTextAtSize = function(text, size) {
-          utils_1.assertIs(text, "text", ["string"]);
+        PDFFont2.prototype.widthOfTextAtSize = function(text2, size) {
+          utils_1.assertIs(text2, "text", ["string"]);
           utils_1.assertIs(size, "size", ["number"]);
-          return this.embedder.widthOfTextAtSize(text, size);
+          return this.embedder.widthOfTextAtSize(text2, size);
         };
         PDFFont2.prototype.heightAtSize = function(size, options) {
           var _a;
@@ -19522,16 +19522,16 @@ var require_PDFTextField = __commonJS({
           }
           return value === null || value === void 0 ? void 0 : value.decodeText();
         };
-        PDFTextField2.prototype.setText = function(text) {
-          utils_1.assertOrUndefined(text, "text", ["string"]);
+        PDFTextField2.prototype.setText = function(text2) {
+          utils_1.assertOrUndefined(text2, "text", ["string"]);
           var maxLength = this.getMaxLength();
-          if (maxLength !== void 0 && text && text.length > maxLength) {
-            throw new errors_1.ExceededMaxLengthError(text.length, maxLength, this.getName());
+          if (maxLength !== void 0 && text2 && text2.length > maxLength) {
+            throw new errors_1.ExceededMaxLengthError(text2.length, maxLength, this.getName());
           }
           this.markAsDirty();
           this.disableRichFormatting();
-          if (text) {
-            this.acroField.setValue(core_1.PDFHexString.fromText(text));
+          if (text2) {
+            this.acroField.setValue(core_1.PDFHexString.fromText(text2));
           } else {
             this.acroField.removeValue();
           }
@@ -19554,9 +19554,9 @@ var require_PDFTextField = __commonJS({
           if (maxLength === void 0) {
             this.acroField.removeMaxLength();
           } else {
-            var text = this.getText();
-            if (text && text.length > maxLength) {
-              throw new errors_1.InvalidMaxLengthError(text.length, maxLength, this.getName());
+            var text2 = this.getText();
+            if (text2 && text2.length > maxLength) {
+              throw new errors_1.InvalidMaxLengthError(text2.length, maxLength, this.getName());
             }
             this.acroField.setMaxLength(maxLength);
           }
@@ -19924,10 +19924,10 @@ var require_PDFForm = __commonJS({
           utils_1.assertIs(name2, "name", ["string"]);
           var nameParts = splitFieldName(name2);
           var parent = this.findOrCreateNonTerminals(nameParts.nonTerminal);
-          var text = core_1.PDFAcroText.create(this.doc.context);
-          text.setPartialName(nameParts.terminal);
-          addFieldToParent(parent, [text, text.ref], nameParts.terminal);
-          return PDFTextField_1.default.of(text, text.ref, this.doc);
+          var text2 = core_1.PDFAcroText.create(this.doc.context);
+          text2.setPartialName(nameParts.terminal);
+          addFieldToParent(parent, [text2, text2.ref], nameParts.terminal);
+          return PDFTextField_1.default.of(text2, text2.ref, this.doc);
         };
         PDFForm2.prototype.flatten = function(options) {
           if (options === void 0) {
@@ -21371,12 +21371,12 @@ var require_PDFPage = __commonJS({
           var contentStream = this.getContentStream();
           contentStream.push.apply(contentStream, operator2);
         };
-        PDFPage2.prototype.drawText = function(text, options) {
+        PDFPage2.prototype.drawText = function(text2, options) {
           var _a, _b, _c, _d, _e, _f, _g;
           if (options === void 0) {
             options = {};
           }
-          utils_1.assertIs(text, "text", ["string"]);
+          utils_1.assertIs(text2, "text", ["string"]);
           utils_1.assertOrUndefined(options.color, "options.color", [[Object, "Color"]]);
           utils_1.assertRangeOrUndefined(options.opacity, "opacity.opacity", 0, 1);
           utils_1.assertOrUndefined(options.font, "options.font", [[PDFFont_1.default, "PDFFont"]]);
@@ -21396,7 +21396,7 @@ var require_PDFPage = __commonJS({
           var textWidth = function(t2) {
             return newFont.widthOfTextAtSize(t2, fontSize);
           };
-          var lines = options.maxWidth === void 0 ? utils_1.lineSplit(utils_1.cleanText(text)) : utils_1.breakTextIntoLines(text, wordBreaks, options.maxWidth, textWidth);
+          var lines = options.maxWidth === void 0 ? utils_1.lineSplit(utils_1.cleanText(text2)) : utils_1.breakTextIntoLines(text2, wordBreaks, options.maxWidth, textWidth);
           var encodedLines = new Array(lines.length);
           for (var idx = 0, len = lines.length; idx < len; idx++) {
             encodedLines[idx] = newFont.encodeText(lines[idx]);
@@ -21495,12 +21495,12 @@ var require_PDFPage = __commonJS({
             graphicsState: graphicsStateKey
           }));
         };
-        PDFPage2.prototype.drawSvgPath = function(path9, options) {
+        PDFPage2.prototype.drawSvgPath = function(path12, options) {
           var _a, _b, _c, _d, _e, _f, _g, _h, _j;
           if (options === void 0) {
             options = {};
           }
-          utils_1.assertIs(path9, "path", ["string"]);
+          utils_1.assertIs(path12, "path", ["string"]);
           utils_1.assertOrUndefined(options.x, "options.x", ["number"]);
           utils_1.assertOrUndefined(options.y, "options.y", ["number"]);
           utils_1.assertOrUndefined(options.scale, "options.scale", ["number"]);
@@ -21529,7 +21529,7 @@ var require_PDFPage = __commonJS({
             options.borderColor = colors_1.rgb(0, 0, 0);
           }
           var contentStream = this.getContentStream();
-          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path9, {
+          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path12, {
             x: (_a = options.x) !== null && _a !== void 0 ? _a : this.x,
             y: (_b = options.y) !== null && _b !== void 0 ? _b : this.y,
             scale: options.scale,
@@ -21832,9 +21832,9 @@ var require_PDFButton = __commonJS({
           this.acroField.setFontSize(fontSize);
           this.markAsDirty();
         };
-        PDFButton2.prototype.addToPage = function(text, page, options) {
+        PDFButton2.prototype.addToPage = function(text2, page, options) {
           var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l;
-          utils_1.assertOrUndefined(text, "text", ["string"]);
+          utils_1.assertOrUndefined(text2, "text", ["string"]);
           utils_1.assertOrUndefined(page, "page", [[PDFPage_1.default, "PDFPage"]]);
           PDFField_1.assertFieldAppearanceOptions(options);
           var widget = this.createWidget({
@@ -21847,7 +21847,7 @@ var require_PDFButton = __commonJS({
             borderColor: options === null || options === void 0 ? void 0 : options.borderColor,
             borderWidth: (_j = options === null || options === void 0 ? void 0 : options.borderWidth) !== null && _j !== void 0 ? _j : 0,
             rotate: (_k = options === null || options === void 0 ? void 0 : options.rotate) !== null && _k !== void 0 ? _k : rotations_1.degrees(0),
-            caption: text,
+            caption: text2,
             hidden: options === null || options === void 0 ? void 0 : options.hidden,
             page: page.ref
           });
@@ -23605,9 +23605,9 @@ var require_decoder = __commonJS({
         return a < 0 ? 0 : a > 255 ? 255 : a;
       }
       constructor.prototype = {
-        load: function load(path9) {
+        load: function load(path12) {
           var xhr = new XMLHttpRequest();
-          xhr.open("GET", path9, true);
+          xhr.open("GET", path12, true);
           xhr.responseType = "arraybuffer";
           xhr.onload = (function() {
             var data2 = new Uint8Array(xhr.response || xhr.mozResponseArrayBuffer);
@@ -24420,10 +24420,10 @@ var require_filter_parse = __commonJS({
     "use strict";
     var interlaceUtils = require_interlace();
     var paethPredictor = require_paeth_predictor();
-    function getByteWidth(width, bpp, depth) {
+    function getByteWidth(width, bpp, depth2) {
       let byteWidth = width * bpp;
-      if (depth !== 8) {
-        byteWidth = Math.ceil(byteWidth / (8 / depth));
+      if (depth2 !== 8) {
+        byteWidth = Math.ceil(byteWidth / (8 / depth2));
       }
       return byteWidth;
     }
@@ -24432,7 +24432,7 @@ var require_filter_parse = __commonJS({
       let height = bitmapInfo.height;
       let interlace = bitmapInfo.interlace;
       let bpp = bitmapInfo.bpp;
-      let depth = bitmapInfo.depth;
+      let depth2 = bitmapInfo.depth;
       this.read = dependencies.read;
       this.write = dependencies.write;
       this.complete = dependencies.complete;
@@ -24442,21 +24442,21 @@ var require_filter_parse = __commonJS({
         let passes = interlaceUtils.getImagePasses(width, height);
         for (let i = 0; i < passes.length; i++) {
           this._images.push({
-            byteWidth: getByteWidth(passes[i].width, bpp, depth),
+            byteWidth: getByteWidth(passes[i].width, bpp, depth2),
             height: passes[i].height,
             lineIndex: 0
           });
         }
       } else {
         this._images.push({
-          byteWidth: getByteWidth(width, bpp, depth),
+          byteWidth: getByteWidth(width, bpp, depth2),
           height,
           lineIndex: 0
         });
       }
-      if (depth === 8) {
+      if (depth2 === 8) {
         this._xComparison = bpp;
-      } else if (depth === 16) {
+      } else if (depth2 === 16) {
         this._xComparison = bpp * 2;
       } else {
         this._xComparison = 1;
@@ -24660,7 +24660,7 @@ var require_crc = __commonJS({
 var require_parser = __commonJS({
   "node_modules/pngjs/lib/parser.js"(exports, module) {
     "use strict";
-    var constants2 = require_constants2();
+    var constants3 = require_constants2();
     var CrcCalculator = require_crc();
     var Parser5 = module.exports = function(options, dependencies) {
       this._options = options;
@@ -24671,12 +24671,12 @@ var require_parser = __commonJS({
       this._palette = [];
       this._colorType = 0;
       this._chunks = {};
-      this._chunks[constants2.TYPE_IHDR] = this._handleIHDR.bind(this);
-      this._chunks[constants2.TYPE_IEND] = this._handleIEND.bind(this);
-      this._chunks[constants2.TYPE_IDAT] = this._handleIDAT.bind(this);
-      this._chunks[constants2.TYPE_PLTE] = this._handlePLTE.bind(this);
-      this._chunks[constants2.TYPE_tRNS] = this._handleTRNS.bind(this);
-      this._chunks[constants2.TYPE_gAMA] = this._handleGAMA.bind(this);
+      this._chunks[constants3.TYPE_IHDR] = this._handleIHDR.bind(this);
+      this._chunks[constants3.TYPE_IEND] = this._handleIEND.bind(this);
+      this._chunks[constants3.TYPE_IDAT] = this._handleIDAT.bind(this);
+      this._chunks[constants3.TYPE_PLTE] = this._handlePLTE.bind(this);
+      this._chunks[constants3.TYPE_tRNS] = this._handleTRNS.bind(this);
+      this._chunks[constants3.TYPE_gAMA] = this._handleGAMA.bind(this);
       this.read = dependencies.read;
       this.error = dependencies.error;
       this.metadata = dependencies.metadata;
@@ -24691,10 +24691,10 @@ var require_parser = __commonJS({
       };
     };
     Parser5.prototype.start = function() {
-      this.read(constants2.PNG_SIGNATURE.length, this._parseSignature.bind(this));
+      this.read(constants3.PNG_SIGNATURE.length, this._parseSignature.bind(this));
     };
     Parser5.prototype._parseSignature = function(data2) {
-      let signature = constants2.PNG_SIGNATURE;
+      let signature = constants3.PNG_SIGNATURE;
       for (let i = 0; i < signature.length; i++) {
         if (data2[i] !== signature[i]) {
           this.error(new Error("Invalid file signature"));
@@ -24711,7 +24711,7 @@ var require_parser = __commonJS({
         name2 += String.fromCharCode(data2[i]);
       }
       let ancillary = Boolean(data2[4] & 32);
-      if (!this._hasIHDR && type !== constants2.TYPE_IHDR) {
+      if (!this._hasIHDR && type !== constants3.TYPE_IHDR) {
         this.error(new Error("Expected IHDR on beggining"));
         return;
       }
@@ -24750,16 +24750,16 @@ var require_parser = __commonJS({
       this._crc.write(data2);
       let width = data2.readUInt32BE(0);
       let height = data2.readUInt32BE(4);
-      let depth = data2[8];
+      let depth2 = data2[8];
       let colorType = data2[9];
       let compr = data2[10];
       let filter = data2[11];
       let interlace = data2[12];
-      if (depth !== 8 && depth !== 4 && depth !== 2 && depth !== 1 && depth !== 16) {
-        this.error(new Error("Unsupported bit depth " + depth));
+      if (depth2 !== 8 && depth2 !== 4 && depth2 !== 2 && depth2 !== 1 && depth2 !== 16) {
+        this.error(new Error("Unsupported bit depth " + depth2));
         return;
       }
-      if (!(colorType in constants2.COLORTYPE_TO_BPP_MAP)) {
+      if (!(colorType in constants3.COLORTYPE_TO_BPP_MAP)) {
         this.error(new Error("Unsupported color type"));
         return;
       }
@@ -24776,16 +24776,16 @@ var require_parser = __commonJS({
         return;
       }
       this._colorType = colorType;
-      let bpp = constants2.COLORTYPE_TO_BPP_MAP[this._colorType];
+      let bpp = constants3.COLORTYPE_TO_BPP_MAP[this._colorType];
       this._hasIHDR = true;
       this.metadata({
         width,
         height,
-        depth,
+        depth: depth2,
         interlace: Boolean(interlace),
-        palette: Boolean(colorType & constants2.COLORTYPE_PALETTE),
-        color: Boolean(colorType & constants2.COLORTYPE_COLOR),
-        alpha: Boolean(colorType & constants2.COLORTYPE_ALPHA),
+        palette: Boolean(colorType & constants3.COLORTYPE_PALETTE),
+        color: Boolean(colorType & constants3.COLORTYPE_COLOR),
+        alpha: Boolean(colorType & constants3.COLORTYPE_ALPHA),
         bpp,
         colorType
       });
@@ -24809,7 +24809,7 @@ var require_parser = __commonJS({
     };
     Parser5.prototype._parseTRNS = function(data2) {
       this._crc.write(data2);
-      if (this._colorType === constants2.COLORTYPE_PALETTE_COLOR) {
+      if (this._colorType === constants3.COLORTYPE_PALETTE_COLOR) {
         if (this._palette.length === 0) {
           this.error(new Error("Transparency chunk must be after palette"));
           return;
@@ -24823,10 +24823,10 @@ var require_parser = __commonJS({
         }
         this.palette(this._palette);
       }
-      if (this._colorType === constants2.COLORTYPE_GRAYSCALE) {
+      if (this._colorType === constants3.COLORTYPE_GRAYSCALE) {
         this.transColor([data2.readUInt16BE(0)]);
       }
-      if (this._colorType === constants2.COLORTYPE_COLOR) {
+      if (this._colorType === constants3.COLORTYPE_COLOR) {
         this.transColor([
           data2.readUInt16BE(0),
           data2.readUInt16BE(2),
@@ -24840,7 +24840,7 @@ var require_parser = __commonJS({
     };
     Parser5.prototype._parseGAMA = function(data2) {
       this._crc.write(data2);
-      this.gamma(data2.readUInt32BE(0) / constants2.GAMMA_DIVISION);
+      this.gamma(data2.readUInt32BE(0) / constants3.GAMMA_DIVISION);
       this._handleChunkEnd();
     };
     Parser5.prototype._handleIDAT = function(length) {
@@ -24852,7 +24852,7 @@ var require_parser = __commonJS({
     };
     Parser5.prototype._parseIDAT = function(length, data2) {
       this._crc.write(data2);
-      if (this._colorType === constants2.COLORTYPE_PALETTE_COLOR && this._palette.length === 0) {
+      if (this._colorType === constants3.COLORTYPE_PALETTE_COLOR && this._palette.length === 0) {
         throw new Error("Expected palette not found");
       }
       this.inflateData(data2);
@@ -24972,7 +24972,7 @@ var require_bitmapper = __commonJS({
         pxData[pxPos + 3] = pixelData[3];
       }
     ];
-    function bitRetriever(data2, depth) {
+    function bitRetriever(data2, depth2) {
       let leftOver = [];
       let i = 0;
       function split() {
@@ -24982,7 +24982,7 @@ var require_bitmapper = __commonJS({
         let byte = data2[i];
         i++;
         let byte8, byte7, byte6, byte5, byte4, byte3, byte2, byte1;
-        switch (depth) {
+        switch (depth2) {
           default:
             throw new Error("unrecognised depth");
           case 16:
@@ -25063,20 +25063,20 @@ var require_bitmapper = __commonJS({
     exports.dataToBitMap = function(data2, bitmapInfo) {
       let width = bitmapInfo.width;
       let height = bitmapInfo.height;
-      let depth = bitmapInfo.depth;
+      let depth2 = bitmapInfo.depth;
       let bpp = bitmapInfo.bpp;
       let interlace = bitmapInfo.interlace;
       let bits;
-      if (depth !== 8) {
-        bits = bitRetriever(data2, depth);
+      if (depth2 !== 8) {
+        bits = bitRetriever(data2, depth2);
       }
       let pxData;
-      if (depth <= 8) {
+      if (depth2 <= 8) {
         pxData = Buffer.alloc(width * height * 4);
       } else {
         pxData = new Uint16Array(width * height * 4);
       }
-      let maxBit = Math.pow(2, depth) - 1;
+      let maxBit = Math.pow(2, depth2) - 1;
       let rawPos = 0;
       let images;
       let getPxPos;
@@ -25093,7 +25093,7 @@ var require_bitmapper = __commonJS({
         images = [{ width, height }];
       }
       for (let imageIndex = 0; imageIndex < images.length; imageIndex++) {
-        if (depth === 8) {
+        if (depth2 === 8) {
           rawPos = mapImage8Bit(
             images[imageIndex],
             pxData,
@@ -25113,7 +25113,7 @@ var require_bitmapper = __commonJS({
           );
         }
       }
-      if (depth === 8) {
+      if (depth2 === 8) {
         if (rawPos !== data2.length) {
           throw new Error("extra data found");
         }
@@ -25165,9 +25165,9 @@ var require_format_normaliser = __commonJS({
         }
       }
     }
-    function scaleDepth(indata, outdata, width, height, depth) {
+    function scaleDepth(indata, outdata, width, height, depth2) {
       let maxOutSample = 255;
-      let maxInSample = Math.pow(2, depth) - 1;
+      let maxInSample = Math.pow(2, depth2) - 1;
       let pxPos = 0;
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
@@ -25181,7 +25181,7 @@ var require_format_normaliser = __commonJS({
       }
     }
     module.exports = function(indata, imageData, skipRescale = false) {
-      let depth = imageData.depth;
+      let depth2 = imageData.depth;
       let width = imageData.width;
       let height = imageData.height;
       let colorType = imageData.colorType;
@@ -25194,11 +25194,11 @@ var require_format_normaliser = __commonJS({
         if (transColor) {
           replaceTransparentColor(indata, outdata, width, height, transColor);
         }
-        if (depth !== 8 && !skipRescale) {
-          if (depth === 16) {
+        if (depth2 !== 8 && !skipRescale) {
+          if (depth2 === 16) {
             outdata = Buffer.alloc(width * height * 4);
           }
-          scaleDepth(indata, outdata, width, height, depth);
+          scaleDepth(indata, outdata, width, height, depth2);
         }
       }
       return outdata;
@@ -25340,9 +25340,9 @@ var require_parser_async = __commonJS({
 var require_bitpacker = __commonJS({
   "node_modules/pngjs/lib/bitpacker.js"(exports, module) {
     "use strict";
-    var constants2 = require_constants2();
+    var constants3 = require_constants2();
     module.exports = function(dataIn, width, height, options) {
-      let outHasAlpha = [constants2.COLORTYPE_COLOR_ALPHA, constants2.COLORTYPE_ALPHA].indexOf(
+      let outHasAlpha = [constants3.COLORTYPE_COLOR_ALPHA, constants3.COLORTYPE_ALPHA].indexOf(
         options.colorType
       ) !== -1;
       if (options.colorType === options.inputColorType) {
@@ -25362,11 +25362,11 @@ var require_bitpacker = __commonJS({
       }
       let data2 = options.bitDepth !== 16 ? dataIn : new Uint16Array(dataIn.buffer);
       let maxValue = 255;
-      let inBpp = constants2.COLORTYPE_TO_BPP_MAP[options.inputColorType];
+      let inBpp = constants3.COLORTYPE_TO_BPP_MAP[options.inputColorType];
       if (inBpp === 4 && !options.inputHasAlpha) {
         inBpp = 3;
       }
-      let outBpp = constants2.COLORTYPE_TO_BPP_MAP[options.colorType];
+      let outBpp = constants3.COLORTYPE_TO_BPP_MAP[options.colorType];
       if (options.bitDepth === 16) {
         maxValue = 65535;
         outBpp *= 2;
@@ -25390,24 +25390,24 @@ var require_bitpacker = __commonJS({
         let blue;
         let alpha = maxValue;
         switch (options.inputColorType) {
-          case constants2.COLORTYPE_COLOR_ALPHA:
+          case constants3.COLORTYPE_COLOR_ALPHA:
             alpha = data2[inIndex + 3];
             red = data2[inIndex];
             green = data2[inIndex + 1];
             blue = data2[inIndex + 2];
             break;
-          case constants2.COLORTYPE_COLOR:
+          case constants3.COLORTYPE_COLOR:
             red = data2[inIndex];
             green = data2[inIndex + 1];
             blue = data2[inIndex + 2];
             break;
-          case constants2.COLORTYPE_ALPHA:
+          case constants3.COLORTYPE_ALPHA:
             alpha = data2[inIndex + 1];
             red = data2[inIndex];
             green = red;
             blue = red;
             break;
-          case constants2.COLORTYPE_GRAYSCALE:
+          case constants3.COLORTYPE_GRAYSCALE:
             red = data2[inIndex];
             green = red;
             blue = red;
@@ -25440,8 +25440,8 @@ var require_bitpacker = __commonJS({
         for (let x = 0; x < width; x++) {
           let rgba = getRGBA(data2, inIndex);
           switch (options.colorType) {
-            case constants2.COLORTYPE_COLOR_ALPHA:
-            case constants2.COLORTYPE_COLOR:
+            case constants3.COLORTYPE_COLOR_ALPHA:
+            case constants3.COLORTYPE_COLOR:
               if (options.bitDepth === 8) {
                 outData[outIndex] = rgba.red;
                 outData[outIndex + 1] = rgba.green;
@@ -25458,8 +25458,8 @@ var require_bitpacker = __commonJS({
                 }
               }
               break;
-            case constants2.COLORTYPE_ALPHA:
-            case constants2.COLORTYPE_GRAYSCALE: {
+            case constants3.COLORTYPE_ALPHA:
+            case constants3.COLORTYPE_GRAYSCALE: {
               let grayscale = (rgba.red + rgba.green + rgba.blue) / 3;
               if (options.bitDepth === 8) {
                 outData[outIndex] = grayscale;
@@ -25632,7 +25632,7 @@ var require_filter_pack = __commonJS({
 var require_packer = __commonJS({
   "node_modules/pngjs/lib/packer.js"(exports, module) {
     "use strict";
-    var constants2 = require_constants2();
+    var constants3 = require_constants2();
     var CrcStream = require_crc();
     var bitPacker = require_bitpacker();
     var filter = require_filter_pack();
@@ -25645,23 +25645,23 @@ var require_packer = __commonJS({
       options.inputHasAlpha = options.inputHasAlpha != null ? options.inputHasAlpha : true;
       options.deflateFactory = options.deflateFactory || zlib2.createDeflate;
       options.bitDepth = options.bitDepth || 8;
-      options.colorType = typeof options.colorType === "number" ? options.colorType : constants2.COLORTYPE_COLOR_ALPHA;
-      options.inputColorType = typeof options.inputColorType === "number" ? options.inputColorType : constants2.COLORTYPE_COLOR_ALPHA;
+      options.colorType = typeof options.colorType === "number" ? options.colorType : constants3.COLORTYPE_COLOR_ALPHA;
+      options.inputColorType = typeof options.inputColorType === "number" ? options.inputColorType : constants3.COLORTYPE_COLOR_ALPHA;
       if ([
-        constants2.COLORTYPE_GRAYSCALE,
-        constants2.COLORTYPE_COLOR,
-        constants2.COLORTYPE_COLOR_ALPHA,
-        constants2.COLORTYPE_ALPHA
+        constants3.COLORTYPE_GRAYSCALE,
+        constants3.COLORTYPE_COLOR,
+        constants3.COLORTYPE_COLOR_ALPHA,
+        constants3.COLORTYPE_ALPHA
       ].indexOf(options.colorType) === -1) {
         throw new Error(
           "option color type:" + options.colorType + " is not supported at present"
         );
       }
       if ([
-        constants2.COLORTYPE_GRAYSCALE,
-        constants2.COLORTYPE_COLOR,
-        constants2.COLORTYPE_COLOR_ALPHA,
-        constants2.COLORTYPE_ALPHA
+        constants3.COLORTYPE_GRAYSCALE,
+        constants3.COLORTYPE_COLOR,
+        constants3.COLORTYPE_COLOR_ALPHA,
+        constants3.COLORTYPE_ALPHA
       ].indexOf(options.inputColorType) === -1) {
         throw new Error(
           "option input color type:" + options.inputColorType + " is not supported at present"
@@ -25685,7 +25685,7 @@ var require_packer = __commonJS({
     };
     Packer.prototype.filterData = function(data2, width, height) {
       let packedData = bitPacker(data2, width, height, this._options);
-      let bpp = constants2.COLORTYPE_TO_BPP_MAP[this._options.colorType];
+      let bpp = constants3.COLORTYPE_TO_BPP_MAP[this._options.colorType];
       let filteredData = filter(packedData, width, height, this._options, bpp);
       return filteredData;
     };
@@ -25705,8 +25705,8 @@ var require_packer = __commonJS({
     };
     Packer.prototype.packGAMA = function(gamma) {
       let buf = Buffer.alloc(4);
-      buf.writeUInt32BE(Math.floor(gamma * constants2.GAMMA_DIVISION), 0);
-      return this._packChunk(constants2.TYPE_gAMA, buf);
+      buf.writeUInt32BE(Math.floor(gamma * constants3.GAMMA_DIVISION), 0);
+      return this._packChunk(constants3.TYPE_gAMA, buf);
     };
     Packer.prototype.packIHDR = function(width, height) {
       let buf = Buffer.alloc(13);
@@ -25717,13 +25717,13 @@ var require_packer = __commonJS({
       buf[10] = 0;
       buf[11] = 0;
       buf[12] = 0;
-      return this._packChunk(constants2.TYPE_IHDR, buf);
+      return this._packChunk(constants3.TYPE_IHDR, buf);
     };
     Packer.prototype.packIDAT = function(data2) {
-      return this._packChunk(constants2.TYPE_IDAT, data2);
+      return this._packChunk(constants3.TYPE_IDAT, data2);
     };
     Packer.prototype.packIEND = function() {
-      return this._packChunk(constants2.TYPE_IEND, null);
+      return this._packChunk(constants3.TYPE_IEND, null);
     };
   }
 });
@@ -25734,7 +25734,7 @@ var require_packer_async = __commonJS({
     "use strict";
     var util = __require("util");
     var Stream = __require("stream");
-    var constants2 = require_constants2();
+    var constants3 = require_constants2();
     var Packer = require_packer();
     var PackerAsync = module.exports = function(opt) {
       Stream.call(this);
@@ -25745,7 +25745,7 @@ var require_packer_async = __commonJS({
     };
     util.inherits(PackerAsync, Stream);
     PackerAsync.prototype.pack = function(data2, width, height, gamma) {
-      this.emit("data", Buffer.from(constants2.PNG_SIGNATURE));
+      this.emit("data", Buffer.from(constants3.PNG_SIGNATURE));
       this.emit("data", this._packer.packIHDR(width, height));
       if (gamma) {
         this.emit("data", this._packer.packGAMA(gamma));
@@ -26073,7 +26073,7 @@ var require_packer_sync = __commonJS({
     if (!zlib2.deflateSync) {
       hasSyncZlib = false;
     }
-    var constants2 = require_constants2();
+    var constants3 = require_constants2();
     var Packer = require_packer();
     module.exports = function(metaData, opt) {
       if (!hasSyncZlib) {
@@ -26084,7 +26084,7 @@ var require_packer_sync = __commonJS({
       let options = opt || {};
       let packer = new Packer(options);
       let chunks = [];
-      chunks.push(Buffer.from(constants2.PNG_SIGNATURE));
+      chunks.push(Buffer.from(constants3.PNG_SIGNATURE));
       chunks.push(packer.packIHDR(metaData.width, metaData.height));
       if (metaData.gamma) {
         chunks.push(packer.packGAMA(metaData.gamma));
@@ -26261,13 +26261,20 @@ var require_png2 = __commonJS({
   }
 });
 
+// src/admission-policy.ts
+import path2 from "node:path";
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { isIP } from "node:net";
+import { constants as constants2 } from "node:fs";
+import { lstat as lstat2, open as open2, rename as rename2, rm as rm2 } from "node:fs/promises";
+
 // src/deploy-files.ts
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, link, rename, rm, realpath } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
-function resolveDeployFiles(value) {
+function resolveDeployFiles(value, allowAdmission = false) {
   if (value === void 0) return [];
   if (!Array.isArray(value)) throw new Error("deploy.files must be an array.");
   const root = path.resolve("/app");
@@ -26292,9 +26299,10 @@ function resolveDeployFiles(value) {
       throw new Error(`Unsupported deploy.files path: ${entry.path}`);
     }
     const update = entry.update === void 0 ? "replace" : entry.update;
-    if (update !== "replace" && update !== "preserve") throw new Error(`Invalid deploy.files update for ${entry.path}: use replace or preserve.`);
+    if (update !== "replace" && update !== "preserve" && !(allowAdmission && update === "admission")) throw new Error(`Invalid deploy.files update for ${entry.path}: use replace or preserve.`);
     return { path: normalized, update };
   });
+  if (files.filter((file) => file.update === "admission").length > 1) throw new Error("Only one admission policy may be declared.");
   const seen = [];
   for (const file of files) {
     const name2 = file.path.normalize("NFC");
@@ -26341,7 +26349,7 @@ function preservedDeployFilePath(root, relative) {
 async function assertPreservedDeployFile(root, relative) {
   return assertDeployFile(root, path.basename(preservedDeployFilePath(root, relative)), true);
 }
-async function readDeployFile(root, relative) {
+async function readDeployFile(root, relative, maxBytes) {
   root = path.resolve(root);
   const rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   const handles = [rootHandle];
@@ -26362,13 +26370,13 @@ async function readDeployFile(root, relative) {
       const O_NOFOLLOW_ANY = 536870912;
       file = await open(path.join(canonicalRoot, relative), constants.O_RDONLY | constants.O_NONBLOCK | O_NOFOLLOW_ANY);
     } else if (process.platform === "linux") {
-      let directory = rootHandle;
+      let directory2 = rootHandle;
       const parts = relative.split("/");
       for (const part of parts.slice(0, -1)) {
-        directory = await open(`/proc/self/fd/${directory.fd}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-        handles.push(directory);
+        directory2 = await open(`/proc/self/fd/${directory2.fd}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        handles.push(directory2);
       }
-      file = await open(`/proc/self/fd/${directory.fd}/${parts.at(-1)}`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+      file = await open(`/proc/self/fd/${directory2.fd}/${parts.at(-1)}`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
     } else {
       const target = path.join(root, relative);
       file = await open(target, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -26377,22 +26385,43 @@ async function readDeployFile(root, relative) {
       await assertDeployFile(root, relative);
       const named = await lstat(target);
       if (!opened.isFile() || named.dev !== opened.dev || named.ino !== opened.ino) throw new Error(`deploy.files source changed during the build: ${relative}`);
-      return await file.readFile();
+      return await readBoundedDeployFile(file, maxBytes);
     }
     handles.push(file);
     await checkRoot?.();
     if (!(await file.stat()).isFile()) throw new Error(`deploy.files requires a regular file: ${relative}`);
-    return await file.readFile();
+    return await readBoundedDeployFile(file, maxBytes);
   } finally {
     for (const handle of handles.reverse()) await handle.close();
   }
 }
+async function readBoundedDeployFile(file, maxBytes) {
+  if (maxBytes === void 0) return file.readFile();
+  const info = await file.stat();
+  if (!info.isFile() || info.nlink !== 1 || info.size > maxBytes) throw new Error("Unsafe or oversized admission file.");
+  const bytes = Buffer.alloc(maxBytes + 1);
+  let length = 0;
+  while (length < bytes.length) {
+    const read = await file.read(bytes, length, bytes.length - length, length);
+    if (!read.bytesRead) break;
+    length += read.bytesRead;
+  }
+  if (length > maxBytes) throw new Error("Oversized admission file.");
+  return bytes.subarray(0, length);
+}
+function deployFileStorageRoot(file, preservedRoot) {
+  return file.update === "admission" ? path.join(preservedRoot, "admission") : preservedRoot;
+}
 function deployFileMounts(files, releaseRoot, preservedRoot) {
-  return files.map((file) => ({
+  return files.map((file) => file.update === "admission" ? {
+    host: deployFileStorageRoot(file, preservedRoot),
+    container: "/run/sporades-admission",
+    mode: "ro"
+  } : {
     host: file.update === "preserve" ? preservedDeployFilePath(preservedRoot, file.path) : path.join(releaseRoot, file.path),
     container: `/app/${file.path}`,
     mode: file.update === "preserve" ? "rw" : "ro"
-  }));
+  });
 }
 function attemptJournalPath(preservedRoot) {
   return path.join(path.dirname(preservedRoot), "deploy-file-attempt.jsonl");
@@ -26481,21 +26510,29 @@ async function finishPreservedFileAttempt(journal) {
   await rm(journal, { force: true });
 }
 async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, created = [], journal) {
-  for (const file of files.filter((entry) => entry.update === "preserve")) {
-    await mkdir(preservedRoot, { mode: 448 }).catch((error) => {
+  const journalRoot = preservedRoot;
+  for (const file of files.filter((entry) => entry.update !== "replace")) {
+    const storageRoot = deployFileStorageRoot(file, journalRoot);
+    await mkdir(journalRoot, { mode: 448 }).catch((error) => {
       if (error.code !== "EEXIST") throw error;
     });
-    const directory = await lstat(preservedRoot);
-    if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error(`Unsafe preserved deploy.files directory: ${file.path}`);
-    const rootHandle = await open(preservedRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const parent = await lstat(journalRoot);
+    if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Unsafe preserved directory.");
+    const preservedRoot2 = storageRoot;
+    await mkdir(preservedRoot2, { mode: 448 }).catch((error) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+    const directory2 = await lstat(preservedRoot2);
+    if (!directory2.isDirectory() || directory2.isSymbolicLink()) throw new Error(`Unsafe preserved deploy.files directory: ${file.path}`);
+    const rootHandle = await open(preservedRoot2, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try {
-      await rootHandle.chmod(448);
+      await rootHandle.chmod(file.update === "admission" ? 493 : 448);
     } finally {
       await rootHandle.close();
     }
-    const destination = preservedDeployFilePath(preservedRoot, file.path);
+    const destination = preservedDeployFilePath(preservedRoot2, file.path);
     try {
-      await assertPreservedDeployFile(preservedRoot, file.path);
+      await assertPreservedDeployFile(preservedRoot2, file.path);
       continue;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
@@ -26503,13 +26540,14 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
     let handle;
     const temporary = path.join(path.dirname(destination), `.seed-${randomUUID()}`);
     try {
-      await recordPreservedFileAttempt(journal, { temporary: path.relative(preservedRoot, temporary) });
+      await recordPreservedFileAttempt(journal, { temporary: path.relative(journalRoot, temporary) });
       const contents = await readDeployFile(releaseRoot, file.path);
       handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
       await handle.writeFile(contents);
-      if (owner) await owner(handle, destination, await handle.stat());
+      if (file.update === "admission") await handle.chmod(292);
+      else if (owner) await owner(handle, destination, await handle.stat());
       const identity = await handle.stat();
-      const seed = { root: preservedRoot, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
+      const seed = { root: preservedRoot2, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
       await recordPreservedFileAttempt(journal, seed);
       await link(temporary, destination);
       created.push(seed);
@@ -26519,7 +26557,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
       await handle?.close();
       await rm(temporary, { force: true });
     }
-    await assertPreservedDeployFile(preservedRoot, file.path);
+    await assertPreservedDeployFile(preservedRoot2, file.path);
   }
 }
 async function rollbackPreservedFiles(created, hooks = {}) {
@@ -26564,9 +26602,142 @@ async function rethrowAfterDeployCleanup(error, cleanups) {
   throw error;
 }
 
+// src/admission-policy.ts
+var ADMISSION_LIMITS = Object.freeze({ bytes: 65536, depth: 8, rules: 128, conditions: 16, textBytes: 1024, reloadMs: 2e3 });
+var invalid = () => {
+  throw new Error("Invalid admission policy.");
+};
+function object(value, keys2) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys2.includes(key))) invalid();
+}
+function text(value) {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= ADMISSION_LIMITS.textBytes && !/[\x00-\x1f\x7f]/.test(value);
+}
+function freeze(value) {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+function depth(value, level = 0) {
+  if (level > ADMISSION_LIMITS.depth) invalid();
+  if (value && typeof value === "object") for (const child of Object.values(value)) depth(child, level + 1);
+}
+var controls = ["/__sporades/health/runtime", "/__sporades/connection-token"];
+function condition(value) {
+  object(value, ["kind", "value", "exact", "prefix", "name"]);
+  switch (value.kind) {
+    case "method":
+      object(value, ["kind", "value"]);
+      if (!text(value.value) || !/^[A-Z]{1,32}$/.test(value.value)) invalid();
+      break;
+    case "pathname": {
+      object(value, ["kind", "exact", "prefix"]);
+      const target = value.exact ?? value.prefix;
+      if (value.exact !== void 0 === (value.prefix !== void 0) || !text(target) || !target.startsWith("/") || target.startsWith("//") || /[\\?#%]/.test(target) || new URL(target, "http://localhost").pathname !== target) invalid();
+      if (controls.some((control) => value.exact === control || value.prefix !== void 0 && (control === target || control.startsWith(target.endsWith("/") ? target : `${target}/`)))) invalid();
+      break;
+    }
+    case "address": {
+      object(value, ["kind", "value"]);
+      if (!text(value.value)) invalid();
+      const [address, prefix, extra] = value.value.split("/");
+      const family = isIP(address);
+      if (!family || extra !== void 0 || prefix !== void 0 && (!/^(0|[1-9][0-9]{0,2})$/.test(prefix) || Number(prefix) > (family === 4 ? 32 : 128))) invalid();
+      break;
+    }
+    case "header":
+      object(value, ["kind", "name", "value"]);
+      if (!text(value.name) || !/^[a-z0-9!#$&'*+.^_`|~-]+$/.test(value.name) || /^(authorization|proxy-authorization|cookie|set-cookie|forwarded|x-forwarded-.*|x-sporades-.*|cf-.*)$/.test(value.name) || value.value !== void 0 && (typeof value.value !== "string" || Buffer.byteLength(value.value) > ADMISSION_LIMITS.textBytes || /[\x00-\x1f\x7f]/.test(value.value))) invalid();
+      break;
+    case "query-key":
+      object(value, ["kind", "name"]);
+      if (!text(value.name)) invalid();
+      break;
+    default:
+      invalid();
+  }
+}
+function parseAdmissionPolicy(bytes) {
+  if (bytes.length > ADMISSION_LIMITS.bytes) invalid();
+  if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) invalid();
+  let value;
+  try {
+    value = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    invalid();
+  }
+  depth(value);
+  object(value, ["version", "rules"]);
+  if (value.version !== 1 || !Array.isArray(value.rules) || value.rules.length > ADMISSION_LIMITS.rules) invalid();
+  const ids = /* @__PURE__ */ new Set();
+  for (const rule of value.rules) {
+    object(rule, ["id", "enabled", "conditions", "action"]);
+    if (typeof rule.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(rule.id) || ids.has(rule.id) || typeof rule.enabled !== "boolean" || !Array.isArray(rule.conditions) || rule.conditions.length < 1 || rule.conditions.length > ADMISSION_LIMITS.conditions) invalid();
+    ids.add(rule.id);
+    for (const item of rule.conditions) condition(item);
+    object(rule.action, ["kind", "limit", "windowMs"]);
+    if (rule.action.kind === "deny") object(rule.action, ["kind"]);
+    else if (rule.action.kind === "rate-limit") {
+      if (!Number.isSafeInteger(rule.action.limit) || rule.action.limit < 1 || rule.action.limit > 1e6 || !Number.isSafeInteger(rule.action.windowMs) || rule.action.windowMs < 1e3 || rule.action.windowMs > 864e5) invalid();
+    } else invalid();
+  }
+  return freeze({ digest: createHash2("sha256").update(bytes).digest("hex"), policy: value });
+}
+function resolveAdmissionPolicy(value, files = void 0) {
+  if (value === void 0) return null;
+  object(value, ["path"]);
+  const relative = resolveDeployFiles([{ path: value.path }])[0].path;
+  const name2 = relative.normalize("NFC").toLowerCase();
+  if (resolveDeployFiles(files).some((file) => {
+    const other = file.path.normalize("NFC").toLowerCase();
+    return other === name2 || other.startsWith(`${name2}/`) || name2.startsWith(`${other}/`);
+  })) throw new Error("Admission policy overlaps deploy.files.");
+  return relative;
+}
+function admissionStorageRoot(preservedRoot) {
+  return path2.join(preservedRoot, "admission");
+}
+var REMOVED = Buffer.from('{"sporadesAdmissionPublication":1,"removed":true}\n');
+async function publishAdmissionPolicy(root, relative, bytes) {
+  if (bytes) parseAdmissionPolicy(bytes);
+  const directory2 = await lstat2(root);
+  if (!directory2.isDirectory() || directory2.isSymbolicLink()) throw new Error("Unsafe admission storage.");
+  const handle = await open2(root, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
+  const temporary = `.publish-${randomUUID2()}`;
+  const anchored = process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : root;
+  const target = path2.join(anchored, path2.basename(preservedDeployFilePath(root, relative)));
+  let output;
+  try {
+    const identity = await handle.stat();
+    const named = await lstat2(root);
+    if (identity.dev !== named.dev || identity.ino !== named.ino || named.isSymbolicLink()) throw new Error("Unsafe admission storage.");
+    const previous = await lstat2(target).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (previous && (!previous.isFile() || previous.isSymbolicLink() || previous.nlink !== 1)) throw new Error("Unsafe admission policy file.");
+    output = await open2(path2.join(anchored, temporary), constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, 292);
+    await output.writeFile(bytes ?? REMOVED);
+    await output.chmod(292);
+    await output.sync();
+    await output.close();
+    output = void 0;
+    const current2 = await lstat2(root);
+    if (current2.dev !== identity.dev || current2.ino !== identity.ino || current2.isSymbolicLink()) throw new Error("Unsafe admission storage.");
+    await rename2(path2.join(anchored, temporary), target);
+    await handle.sync();
+  } finally {
+    await output?.close();
+    await rm2(path2.join(anchored, temporary), { force: true });
+    await handle.close();
+  }
+}
+
 // src/cli/host-domain-aliases.ts
 import { readdir as readdir2, readFile as readFile2 } from "node:fs/promises";
-import path2 from "node:path";
+import path3 from "node:path";
 
 // src/cli/cli-support.ts
 function errorDetails(error) {
@@ -26635,25 +26806,25 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
       );
     }
   };
-  const entries = async (directory) => readdir2(directory, { withFileTypes: true }).catch((error) => {
+  const entries = async (directory2) => readdir2(directory2, { withFileTypes: true }).catch((error) => {
     if (error.code === "ENOENT") return [];
     throw error;
   });
-  for (const entry of await entries(path2.join(remoteRoot, "caddy", "hosts"))) {
+  for (const entry of await entries(path3.join(remoteRoot, "caddy", "hosts"))) {
     if (entry.name.endsWith(".caddy")) {
       const domain = entry.name.slice(0, -6);
       assertUnclaimed(`host.${domain}`, `health:${domain}`);
     }
   }
-  for (const domain of await entries(path2.join(remoteRoot, "hosts"))) {
+  for (const domain of await entries(path3.join(remoteRoot, "hosts"))) {
     if (domain.isSymbolicLink()) throw helperError("Cannot inspect Hosted domain ownership.", "Replace symbolic links in the Host registry with canonical directories.");
     if (!domain.isDirectory()) continue;
     for (const collection of ["capsules", "registration-claims"]) {
-      const directory = path2.join(remoteRoot, "hosts", domain.name, "registry", collection);
-      for (const entry of await entries(directory)) {
+      const directory2 = path3.join(remoteRoot, "hosts", domain.name, "registry", collection);
+      for (const entry of await entries(directory2)) {
         if (!entry.name.endsWith(".json")) continue;
         if (!entry.isFile()) throw helperError("Cannot inspect Hosted Capsule ownership.", "Repair the Host registry before registering domains.");
-        const record = JSON.parse(await readFile2(path2.join(directory, entry.name), "utf8"));
+        const record = JSON.parse(await readFile2(path3.join(directory2, entry.name), "utf8"));
         if (record.domain !== domain.name || record.subname !== entry.name.slice(0, -5)) {
           throw helperError("Invalid Hosted Capsule registry identity.", "Repair the Host registry before registering domains.");
         }
@@ -26670,12 +26841,12 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
 }
 
 // src/cli/sporades-host-helper.ts
-import { spawnSync as spawnSync5 } from "node:child_process";
+import { spawnSync as spawnSync6 } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
-import { access as access2, chmod as chmod2, lstat as lstat5, mkdir as mkdir4, open as open2, opendir, readdir as readdir3, readFile as readFile7, readlink, rename as rename5, rm as rm5, stat, statfs, symlink, writeFile as writeFile4 } from "node:fs/promises";
-import { createHash as createHash5, generateKeyPairSync, randomBytes as randomBytes4 } from "node:crypto";
+import { access as access2, chmod, lstat as lstat8, mkdir as mkdir4, open as open6, opendir, readdir as readdir4, readFile as readFile8, readlink, rename as rename7, rm as rm7, stat, statfs, symlink, writeFile as writeFile3 } from "node:fs/promises";
+import { createHash as createHash7, generateKeyPairSync, randomBytes as randomBytes5 } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
-import path8 from "node:path";
+import path11 from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 // src/base-image.ts
@@ -26832,6 +27003,11 @@ function validatePublicTreeFileSet(files) {
   return { ok: true, fileCount: files.length, totalBytes };
 }
 
+// src/runtime-request-context.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage();
+var runtimeJobScope = new AsyncLocalStorage();
+
 // src/resource-runtime.ts
 var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
   sqlite: "supported",
@@ -26855,10 +27031,10 @@ var unsupportedResources = Object.freeze({
 });
 
 // src/log-envelope.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 
 // src/runtime-telemetry.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/auth-admission.ts
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
@@ -26903,10 +27079,6 @@ var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 
 // src/team-billing-erasure.ts
 var CLAIM_TTL_MS2 = 5 * 6e4;
-
-// src/runtime-request-context.ts
-import { AsyncLocalStorage } from "node:async_hooks";
-var runtimeRequestScope = new AsyncLocalStorage();
 
 // src/jobs-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
@@ -26993,8 +27165,8 @@ function normalizePrivilegedAuditCorrelation(value) {
   return { id: String(value) };
 }
 function auditString(value, fallback) {
-  const text = value === null || value === void 0 ? "" : String(value);
-  return text.trim() ? text : fallback;
+  const text2 = value === null || value === void 0 ? "" : String(value);
+  return text2.trim() ? text2 : fallback;
 }
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
@@ -27405,10 +27577,10 @@ function getOptions(opts) {
   return options;
 }
 function pushComment(options, array) {
-  return function(block, text, start, end, startLoc, endLoc) {
+  return function(block, text2, start, end, startLoc, endLoc) {
     var comment2 = {
       type: block ? "Block" : "Line",
-      value: text,
+      value: text2,
       start,
       end
     };
@@ -33848,7 +34020,7 @@ var TreeCursor = class {
   get node() {
     if (!this.buffer)
       return this._tree;
-    let cache = this.bufferNode, result = null, depth = 0;
+    let cache = this.bufferNode, result = null, depth2 = 0;
     if (cache && cache.context == this.buffer) {
       scan: for (let index = this.index, d = this.stack.length; d >= 0; ) {
         for (let c = cache; c; c = c._parent)
@@ -33856,13 +34028,13 @@ var TreeCursor = class {
             if (index == this.index)
               return c;
             result = c;
-            depth = d + 1;
+            depth2 = d + 1;
             break scan;
           }
         index = this.stack[--d];
       }
     }
-    for (let i = depth; i < this.stack.length; i++)
+    for (let i = depth2; i < this.stack.length; i++)
       result = new BufferNode(this.buffer, result, this.stack[i]);
     return this.bufferNode = new BufferNode(this.buffer, result, this.index);
   }
@@ -33881,11 +34053,11 @@ var TreeCursor = class {
   skipped, and `leave` isn't called for it.
   */
   iterate(enter, leave) {
-    for (let depth = 0; ; ) {
+    for (let depth2 = 0; ; ) {
       let mustLeave = false;
       if (this.type.isAnonymous || enter(this) !== false) {
         if (this.firstChild()) {
-          depth++;
+          depth2++;
           continue;
         }
         if (!this.type.isAnonymous)
@@ -33895,12 +34067,12 @@ var TreeCursor = class {
         if (mustLeave && leave)
           leave(this);
         mustLeave = this.type.isAnonymous;
-        if (!depth)
+        if (!depth2)
           return;
         if (this.nextSibling())
           break;
         this.parent();
-        depth--;
+        depth2--;
         mustLeave = true;
       }
     }
@@ -33936,7 +34108,7 @@ function buildTree(data2) {
   let cursor = Array.isArray(buffer) ? new FlatBufferCursor(buffer, buffer.length) : buffer;
   let types2 = nodeSet.types;
   let contextHash = 0, lookAhead = 0;
-  function takeNode(parentStart, minPos, children2, positions2, inRepeat, depth) {
+  function takeNode(parentStart, minPos, children2, positions2, inRepeat, depth2) {
     let { id: id2, start, end, size } = cursor;
     let lookAheadAtStart = lookAhead, contextAtStart = contextHash;
     if (size < 0) {
@@ -33979,10 +34151,10 @@ function buildTree(data2) {
             lastEnd = cursor.end;
           }
           cursor.next();
-        } else if (depth > 2500) {
+        } else if (depth2 > 2500) {
           takeFlatNode(start, endPos, localChildren, localPositions);
         } else {
-          takeNode(start, endPos, localChildren, localPositions, localInRepeat, depth + 1);
+          takeNode(start, endPos, localChildren, localPositions, localInRepeat, depth2 + 1);
         }
       }
       if (localInRepeat >= 0 && lastGroup > 0 && lastGroup < localChildren.length)
@@ -34289,13 +34461,13 @@ var Stack = class _Stack {
   */
   reduce(action) {
     var _a;
-    let depth = action >> 19, type = action & 65535;
+    let depth2 = action >> 19, type = action & 65535;
     let { parser: parser2 } = this.p;
     let lookaheadRecord = this.reducePos < this.pos - 25 && this.setLookAhead(this.pos);
     let dPrec = parser2.dynamicPrecedence(type);
     if (dPrec)
       this.score += dPrec;
-    if (depth == 0) {
+    if (depth2 == 0) {
       if (type < parser2.minRepeatTerm && this.reducePos < this.pos)
         this.reducePos = this.pos;
       this.pushState(parser2.getGoto(this.state, type, true), this.reducePos);
@@ -34304,7 +34476,7 @@ var Stack = class _Stack {
       this.reduceContext(type, this.reducePos);
       return;
     }
-    let base = this.stack.length - (depth - 1) * 3 - (action & 262144 ? 6 : 0);
+    let base = this.stack.length - (depth2 - 1) * 3 - (action & 262144 ? 6 : 0);
     let start = base ? this.stack[base - 2] : this.p.ranges[0].from;
     if (type < parser2.minRepeatTerm && start == this.reducePos && this.reducePos < this.pos)
       this.reducePos = this.pos;
@@ -34547,8 +34719,8 @@ var Stack = class _Stack {
     if ((reduce & 65536) == 0)
       return false;
     if (!parser2.validAction(this.state, reduce)) {
-      let depth = reduce >> 19, term = reduce & 65535;
-      let target = this.stack.length - depth * 3;
+      let depth2 = reduce >> 19, term = reduce & 65535;
+      let target = this.stack.length - depth2 * 3;
       if (target < 0 || parser2.getGoto(this.stack[target], term, false) < 0) {
         let backup = this.findForcedReduction();
         if (backup == null)
@@ -34569,21 +34741,21 @@ var Stack = class _Stack {
   */
   findForcedReduction() {
     let { parser: parser2 } = this.p, seen = [];
-    let explore = (state, depth) => {
+    let explore = (state, depth2) => {
       if (seen.includes(state))
         return;
       seen.push(state);
       return parser2.allActions(state, (action) => {
         if (action & (262144 | 131072)) ;
         else if (action & 65536) {
-          let rDepth = (action >> 19) - depth;
+          let rDepth = (action >> 19) - depth2;
           if (rDepth > 1) {
             let term = action & 65535, target = this.stack.length - rDepth * 3;
             if (target >= 0 && parser2.getGoto(this.stack[target], term, false) >= 0)
               return rDepth << 19 | 65536 | term;
           }
         } else {
-          let found = explore(action, depth + 1);
+          let found = explore(action, depth2 + 1);
           if (found != null)
             return found;
         }
@@ -34727,14 +34899,14 @@ var SimulatedStack = class {
     this.base = this.stack.length;
   }
   reduce(action) {
-    let term = action & 65535, depth = action >> 19;
-    if (depth == 0) {
+    let term = action & 65535, depth2 = action >> 19;
+    if (depth2 == 0) {
       if (this.stack == this.start.stack)
         this.stack = this.stack.slice();
       this.stack.push(this.state, 0, 0);
       this.base += 3;
     } else {
-      this.base -= (depth - 1) * 3;
+      this.base -= (depth2 - 1) * 3;
     }
     let goto = this.start.p.parser.getGoto(this.stack[this.base - 3], term, true);
     this.state = goto;
@@ -36739,16 +36911,16 @@ var indentation = new ExternalTokenizer((input, stack) => {
   if (context.flags) return;
   let prev = input.peek(-1);
   if (prev == newline || prev == carriageReturn) {
-    let depth = 0, chars = 0;
+    let depth2 = 0, chars = 0;
     for (; ; ) {
-      if (input.next == space) depth++;
-      else if (input.next == tab) depth += 8 - depth % 8;
+      if (input.next == space) depth2++;
+      else if (input.next == tab) depth2 += 8 - depth2 % 8;
       else break;
       input.advance();
       chars++;
     }
-    if (depth != context.indent && input.next != newline && input.next != carriageReturn && input.next != hash) {
-      if (depth < context.indent) input.acceptToken(dedent, -chars);
+    if (depth2 != context.indent && input.next != newline && input.next != carriageReturn && input.next != hash) {
+      if (depth2 < context.indent) input.acceptToken(dedent, -chars);
       else input.acceptToken(indent);
     }
   }
@@ -36767,10 +36939,10 @@ function Context(parent, indent2, flags) {
 }
 var topIndent = new Context(null, 0, 0);
 function countIndent(space2) {
-  let depth = 0;
+  let depth2 = 0;
   for (let i = 0; i < space2.length; i++)
-    depth += space2.charCodeAt(i) == tab ? 8 - depth % 8 : 1;
-  return depth;
+    depth2 += space2.charCodeAt(i) == tab ? 8 - depth2 % 8 : 1;
+  return depth2;
 }
 var stringFlags = new Map([
   [stringStart, 0],
@@ -37506,13 +37678,13 @@ function parseArithmeticExpression(src, offset2 = 0, collector) {
           pos = expansionEnd - offset2;
         } else {
           pos += 2;
-          let depth = 1;
-          while (pos < len && depth > 0) {
+          let depth2 = 1;
+          while (pos < len && depth2 > 0) {
             if (src.charCodeAt(pos) === CH_LPAREN && src.charCodeAt(pos + 1) === CH_LPAREN) {
-              depth++;
+              depth2++;
               pos += 2;
             } else if (src.charCodeAt(pos) === CH_RPAREN && src.charCodeAt(pos + 1) === CH_RPAREN) {
-              depth--;
+              depth2--;
               pos += 2;
             } else {
               pos++;
@@ -37525,22 +37697,22 @@ function parseArithmeticExpression(src, offset2 = 0, collector) {
         if (close !== -1) {
           pos = close - offset2 + 1;
         } else {
-          let depth = 1;
-          while (pos < len && depth > 0) {
+          let depth2 = 1;
+          while (pos < len && depth2 > 0) {
             const ch = src.charCodeAt(pos++);
             if (ch === CH_LPAREN)
-              depth++;
+              depth2++;
             else if (ch === CH_RPAREN)
-              depth--;
+              depth2--;
           }
         }
-        const text = src.slice(start, pos);
-        const inner = text.slice(2, -1);
+        const text2 = src.slice(start, pos);
+        const inner = text2.slice(2, -1);
         const node = {
           type: "ArithmeticCommandExpansion",
           pos: start + offset2,
           end: pos + offset2,
-          text,
+          text: text2,
           inner,
           script: void 0
         };
@@ -37553,13 +37725,13 @@ function parseArithmeticExpression(src, offset2 = 0, collector) {
         pos = close - offset2 + 1;
       } else {
         pos++;
-        let depth = 1;
-        while (pos < len && depth > 0) {
+        let depth2 = 1;
+        while (pos < len && depth2 > 0) {
           const ch = src.charCodeAt(pos++);
           if (ch === CH_LBRACE)
-            depth++;
+            depth2++;
           else if (ch === CH_RBRACE)
-            depth--;
+            depth2--;
         }
       }
     } else {
@@ -37588,13 +37760,13 @@ function parseArithmeticExpression(src, offset2 = 0, collector) {
         pos = close - offset2 + 1;
       } else {
         pos++;
-        let depth = 1;
-        while (pos < len && depth > 0) {
+        let depth2 = 1;
+        while (pos < len && depth2 > 0) {
           const c = src.charCodeAt(pos);
           if (c === CH_LBRACKET)
-            depth++;
+            depth2++;
           else if (c === CH_RBRACKET)
-            depth--;
+            depth2--;
           pos++;
         }
       }
@@ -37626,35 +37798,35 @@ function dequoteValue(parts) {
     s += c.type === "Literal" ? c.value : c.text;
   return s;
 }
-function unescapeBareValue(text) {
-  const first = text.indexOf("\\");
+function unescapeBareValue(text2) {
+  const first = text2.indexOf("\\");
   if (first === -1)
-    return text;
+    return text2;
   let s = "";
   let start = 0;
-  for (let i = first; i < text.length; i++) {
-    if (text.charCodeAt(i) !== 92)
+  for (let i = first; i < text2.length; i++) {
+    if (text2.charCodeAt(i) !== 92)
       continue;
-    s += text.slice(start, i);
+    s += text2.slice(start, i);
     i++;
-    if (i >= text.length) {
+    if (i >= text2.length) {
       s += "\\";
       start = i;
       break;
     }
-    if (text.charCodeAt(i) !== 10)
-      s += text[i];
+    if (text2.charCodeAt(i) !== 10)
+      s += text2[i];
     start = i + 1;
   }
-  return s + text.slice(start);
+  return s + text2.slice(start);
 }
-function commandExpansionValue(text) {
-  if (text[0] !== "$")
-    return text;
+function commandExpansionValue(text2) {
+  if (text2[0] !== "$")
+    return text2;
   let pos = 1;
-  while (text[pos] === "\\" && text[pos + 1] === "\n")
+  while (text2[pos] === "\\" && text2[pos + 1] === "\n")
     pos += 2;
-  return pos === 1 || text[pos] !== "(" ? text : "$" + text.slice(pos);
+  return pos === 1 || text2[pos] !== "(" ? text2 : "$" + text2.slice(pos);
 }
 var WordImpl = class _WordImpl {
   static _resolveWord;
@@ -37667,13 +37839,13 @@ var WordImpl = class _WordImpl {
   #depth;
   #parts;
   #value = null;
-  constructor(text, pos, end, source, resolver, depth = 0) {
-    this.text = text;
+  constructor(text2, pos, end, source, resolver, depth2 = 0) {
+    this.text = text2;
     this.pos = pos;
     this.end = end;
     this.#source = source;
     this.#resolver = resolver ?? _WordImpl._resolveWord;
-    this.#depth = depth;
+    this.#depth = depth2;
     this.#parts = source !== void 0 ? null : void 0;
   }
   get value() {
@@ -37901,7 +38073,7 @@ function hasEmbeddedWordStructure(source, start, end) {
   return false;
 }
 function findUnnested(s, target, pairTernaries = false, findNestedEnd) {
-  let depth = 0;
+  let depth2 = 0;
   let ternaryDepth = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
@@ -37910,12 +38082,12 @@ function findUnnested(s, target, pairTernaries = false, findNestedEnd) {
       continue;
     }
     if (c === CH_LBRACE) {
-      depth++;
+      depth2++;
       continue;
     }
     if (c === CH_RBRACE) {
-      if (depth > 0)
-        depth--;
+      if (depth2 > 0)
+        depth2--;
       continue;
     }
     if (c === CH_SQUOTE) {
@@ -37948,7 +38120,7 @@ function findUnnested(s, target, pairTernaries = false, findNestedEnd) {
       i = nestedEnd - 1;
       continue;
     }
-    if (pairTernaries && depth === 0) {
+    if (pairTernaries && depth2 === 0) {
       if (c === CH_QUESTION) {
         ternaryDepth++;
         continue;
@@ -37958,7 +38130,7 @@ function findUnnested(s, target, pairTernaries = false, findNestedEnd) {
         continue;
       }
     }
-    if (c === target && depth === 0)
+    if (c === target && depth2 === 0)
       return i;
   }
   return -1;
@@ -37989,13 +38161,13 @@ function isDQChild(p) {
   const t2 = p.type;
   return t2 === "Literal" || t2 === "SimpleExpansion" || t2 === "ParameterExpansion" || t2 === "CommandExpansion" || t2 === "ArithmeticExpansion";
 }
-function isAllDigits(text) {
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
+function isAllDigits(text2) {
+  for (let i = 0; i < text2.length; i++) {
+    const c = text2.charCodeAt(i);
     if (c < CH_0 || c > CH_9)
       return false;
   }
-  return text.length > 0;
+  return text2.length > 0;
 }
 function isAllDigitsRange(src, start, end) {
   for (let i = start; i < end; i++) {
@@ -38140,25 +38312,25 @@ function scanBraceExpansion(src, pos, len) {
   const nextCh = pos + 1 < len ? src.charCodeAt(pos + 1) : 0;
   if (nextCh <= CH_SPACE || nextCh === CH_RBRACE)
     return -1;
-  let depth = 1;
+  let depth2 = 1;
   let hasSep = false;
   let scanPos = pos + 1;
-  while (scanPos < len && depth > 0) {
+  while (scanPos < len && depth2 > 0) {
     const bc = src.charCodeAt(scanPos);
     if (bc === CH_LBRACE)
-      depth++;
+      depth2++;
     else if (bc === CH_RBRACE) {
-      if (--depth === 0)
+      if (--depth2 === 0)
         break;
     } else if (bc <= CH_SPACE || bc === CH_SEMI || bc === CH_PIPE || bc === CH_AMP)
       return -1;
-    else if (depth === 1 && (bc === 44 || bc === 46 && scanPos + 1 < len && src.charCodeAt(scanPos + 1) === 46))
+    else if (depth2 === 1 && (bc === 44 || bc === 46 && scanPos + 1 < len && src.charCodeAt(scanPos + 1) === 46))
       hasSep = true;
     if (bc === CH_BACKSLASH)
       scanPos++;
     scanPos++;
   }
-  if (depth === 0 && hasSep)
+  if (depth2 === 0 && hasSep)
     return scanPos + 1;
   return -1;
 }
@@ -38617,7 +38789,7 @@ var Lexer = class _Lexer {
     }
   }
   skipTestGroup() {
-    let depth = 1;
+    let depth2 = 1;
     for (; ; ) {
       const value = this.next(LexContext.TestMode);
       if (value.token === Token3.EOF)
@@ -38627,8 +38799,8 @@ var Lexer = class _Lexer {
         return -1;
       }
       if (value.token === Token3.LParen)
-        depth++;
-      else if (value.token === Token3.RParen && --depth === 0)
+        depth2++;
+      else if (value.token === Token3.RParen && --depth2 === 0)
         return value.end;
     }
   }
@@ -38651,10 +38823,10 @@ var Lexer = class _Lexer {
       const inner = this.extractBalanced();
       if (this._unbalanced)
         this.errors.push({ message: "unterminated process substitution", pos: startPos });
-      const text = this.src.slice(startPos, this.pos);
+      const text2 = this.src.slice(startPos, this.pos);
       const part = {
         type: "ProcessSubstitution",
-        text,
+        text: text2,
         operator: ch === 60 ? "<" : ">",
         script: void 0,
         inner: inner ?? void 0,
@@ -38771,11 +38943,11 @@ var Lexer = class _Lexer {
     const src = this.src;
     const len = this.srcEnd;
     const start = this.pos;
-    let depth = 0;
+    let depth2 = 0;
     while (this.pos < len) {
       const ch = src.charCodeAt(this.pos);
       if (ch === CH_LPAREN) {
-        depth++;
+        depth2++;
         this.pos++;
         continue;
       }
@@ -38809,9 +38981,9 @@ var Lexer = class _Lexer {
         this.readBacktickExpansion();
         continue;
       }
-      if (depth > 0) {
+      if (depth2 > 0) {
         if (ch === CH_RPAREN)
-          depth--;
+          depth2--;
         this.pos++;
         continue;
       }
@@ -38847,16 +39019,16 @@ var Lexer = class _Lexer {
     const starts = [this.pos, 0, 0];
     const parts = ["", "", "", 0, 0, 0];
     let partIdx = 0;
-    let depth = 1;
+    let depth2 = 1;
     let partStart = this.pos;
-    while (this.pos < len && depth > 0) {
+    while (this.pos < len && depth2 > 0) {
       const c = src.charCodeAt(this.pos);
       if (c === CH_LPAREN) {
-        depth++;
+        depth2++;
         this.pos++;
       } else if (c === CH_RPAREN) {
-        depth--;
-        if (depth === 0) {
+        depth2--;
+        if (depth2 === 0) {
           const raw = src.slice(partStart, this.pos);
           parts[partIdx] = raw.trim();
           parts[3 + partIdx] = starts[partIdx] + raw.length - raw.trimStart().length;
@@ -38868,7 +39040,7 @@ var Lexer = class _Lexer {
           break;
         }
         this.pos++;
-      } else if (c === CH_SEMI && depth === 1) {
+      } else if (c === CH_SEMI && depth2 === 1) {
         const raw = src.slice(partStart, this.pos);
         parts[partIdx] = raw.trim();
         parts[3 + partIdx] = starts[partIdx] + raw.length - raw.trimStart().length;
@@ -39169,8 +39341,8 @@ var Lexer = class _Lexer {
     this.extractBalanced();
     if (this._unbalanced)
       this.errors.push({ message: "unterminated process substitution", pos: tokenStart });
-    const text = this.src.slice(tokenStart, this.pos);
-    setToken(out, Token3.Word, text, tokenStart, this.pos);
+    const text2 = this.src.slice(tokenStart, this.pos);
+    setToken(out, Token3.Word, text2, tokenStart, this.pos);
   }
   // The delimiter is the word after quote removal: quote and escape segments may
   // appear anywhere in the word, any of them makes the heredoc quoted, and inside
@@ -39558,7 +39730,7 @@ var Lexer = class _Lexer {
     }
     const bp = this._buildParts;
     const bt = bp || this._buildValue;
-    let text = bt && pos > fastStart ? src.slice(fastStart, pos) : "";
+    let text2 = bt && pos > fastStart ? src.slice(fastStart, pos) : "";
     let quoted = false;
     let hasExpansions = false;
     let keywordEligible = true;
@@ -39570,7 +39742,7 @@ var Lexer = class _Lexer {
     let litStart = 0;
     if (bp) {
       parts = [];
-      litBuf = text;
+      litBuf = text2;
       litStart = fastStart;
     }
     while (pos < len) {
@@ -39588,7 +39760,7 @@ var Lexer = class _Lexer {
         assignmentState = scanAssignmentPrefix(src, runStart, pos, assignmentState);
         if (bt) {
           const chunk = src.slice(runStart, pos);
-          text += chunk;
+          text2 += chunk;
           if (bp)
             litBuf += chunk;
         }
@@ -39608,7 +39780,7 @@ var Lexer = class _Lexer {
           lastValueChar = src.charCodeAt(pos - 1);
           if (bt) {
             const eg = "(" + src.slice(innerStart, pos);
-            text += eg;
+            text2 += eg;
             if (bp && prefixChar !== CH_EQ) {
               if (litBuf.length > 0) {
                 const trimmed = litBuf.slice(0, -1);
@@ -39639,7 +39811,7 @@ var Lexer = class _Lexer {
             lastValueChar = src.charCodeAt(close);
             if (bt) {
               const chunk = src.slice(pos, spanEnd);
-              text += chunk;
+              text2 += chunk;
               if (bp)
                 litBuf += chunk;
             }
@@ -39663,7 +39835,7 @@ var Lexer = class _Lexer {
             valueIsRaw = false;
             lastValueChar = src.charCodeAt(pos);
             if (bt) {
-              text += src[pos];
+              text2 += src[pos];
               if (bp)
                 litBuf += src[pos];
             }
@@ -39676,7 +39848,7 @@ var Lexer = class _Lexer {
           keywordEligible = false;
           lastValueChar = CH_BACKSLASH;
           if (bt) {
-            text += "\\";
+            text2 += "\\";
             if (bp)
               litBuf += "\\";
           }
@@ -39698,7 +39870,7 @@ var Lexer = class _Lexer {
           lastValueChar = src.charCodeAt(pos - 1);
         const value = bt ? src.slice(start, pos) : "";
         if (bt)
-          text += value;
+          text2 += value;
         if (pos < len)
           pos++;
         else
@@ -39729,7 +39901,7 @@ var Lexer = class _Lexer {
         if (this._dqHasExpansions)
           hasExpansions = true;
         if (bt)
-          text += this._dqText;
+          text2 += this._dqText;
         if (bp) {
           if (litBuf) {
             parts.push({ type: "Literal", value: litBuf, text: src.slice(litStart, dqStart) });
@@ -39762,7 +39934,7 @@ var Lexer = class _Lexer {
         if (this._resultHasExpansion)
           hasExpansions = true;
         if (bt)
-          text += this._resultText;
+          text2 += this._resultText;
         if (bp) {
           if (this._resultPart) {
             if (litBuf) {
@@ -39789,7 +39961,7 @@ var Lexer = class _Lexer {
         lastValueChar = src.charCodeAt(pos - 1);
         hasExpansions = true;
         if (bt)
-          text += this._resultText;
+          text2 += this._resultText;
         if (bp) {
           if (litBuf) {
             parts.push({ type: "Literal", value: litBuf, text: src.slice(litStart, btStart) });
@@ -39809,7 +39981,7 @@ var Lexer = class _Lexer {
           lastValueChar = src.charCodeAt(braceEnd - 1);
           if (bt) {
             const braceText = src.slice(pos, braceEnd);
-            text += braceText;
+            text2 += braceText;
             if (bp) {
               if (litBuf) {
                 parts.push({ type: "Literal", value: litBuf, text: src.slice(litStart, pos) });
@@ -39828,7 +40000,7 @@ var Lexer = class _Lexer {
         }
         lastValueChar = CH_LBRACE;
         if (bt) {
-          text += "{";
+          text2 += "{";
           if (bp)
             litBuf += "{";
         }
@@ -39840,7 +40012,7 @@ var Lexer = class _Lexer {
     if (bp && litBuf)
       parts.push({ type: "Literal", value: litBuf, text: src.slice(litStart, pos) });
     this.pos = pos;
-    this._wordText = text;
+    this._wordText = text2;
     this._wordRaw = valueIsRaw;
     this._wordQuoted = quoted;
     this._wordHasExpansions = hasExpansions;
@@ -39855,7 +40027,7 @@ var Lexer = class _Lexer {
     const src = this.src;
     const len = this.srcEnd;
     let pos = this.pos;
-    let text = "";
+    let text2 = "";
     const bp = this._buildParts;
     let parts;
     let litBuf = "";
@@ -39873,7 +40045,7 @@ var Lexer = class _Lexer {
             pos++;
           } else {
             const escaped = src[pos++];
-            text += escaped;
+            text2 += escaped;
             if (bp)
               litBuf += escaped;
           }
@@ -39887,7 +40059,7 @@ var Lexer = class _Lexer {
         while (pos < len && src.charCodeAt(pos) !== CH_SQUOTE)
           pos++;
         const value = src.slice(start, pos);
-        text += value;
+        text2 += value;
         if (pos < len)
           pos++;
         if (bp) {
@@ -39906,7 +40078,7 @@ var Lexer = class _Lexer {
         this.pos = pos;
         this.readDoubleQuoted();
         pos = this.pos;
-        text += this._dqText;
+        text2 += this._dqText;
         if (bp) {
           if (litBuf) {
             parts.push({ type: "Literal", value: litBuf, text: src.slice(litStart, dqStart) });
@@ -39929,7 +40101,7 @@ var Lexer = class _Lexer {
         this.pos = pos;
         this.readDollar();
         pos = this.pos;
-        text += this._resultText;
+        text2 += this._resultText;
         if (bp) {
           if (this._resultPart) {
             if (litBuf) {
@@ -39949,7 +40121,7 @@ var Lexer = class _Lexer {
         this.pos = pos;
         this.readBacktickExpansion();
         pos = this.pos;
-        text += this._resultText;
+        text2 += this._resultText;
         if (bp) {
           if (litBuf) {
             parts.push({ type: "Literal", value: litBuf, text: src.slice(litStart, btStart) });
@@ -39966,7 +40138,7 @@ var Lexer = class _Lexer {
         const inner = this.extractBalanced();
         pos = this.pos;
         const raw = src.slice(psStart, pos);
-        text += raw;
+        text2 += raw;
         if (bp) {
           if (litBuf) {
             parts.push({ type: "Literal", value: litBuf, text: src.slice(litStart, psStart) });
@@ -39986,7 +40158,7 @@ var Lexer = class _Lexer {
         }
         continue;
       }
-      text += src[pos];
+      text2 += src[pos];
       if (bp)
         litBuf += src[pos];
       pos++;
@@ -39994,7 +40166,7 @@ var Lexer = class _Lexer {
     if (bp && litBuf)
       parts.push({ type: "Literal", value: litBuf, text: src.slice(litStart, pos) });
     this.pos = pos;
-    this._wordText = text;
+    this._wordText = text2;
     this._wordRaw = false;
     this._wordQuoted = false;
     this._wordHasExpansions = false;
@@ -40151,7 +40323,7 @@ var Lexer = class _Lexer {
         p++;
       }
     }
-    let text = "";
+    let text2 = "";
     let parts = null;
     let litBuf = "";
     let litStart = bp ? this.pos : 0;
@@ -40165,7 +40337,7 @@ var Lexer = class _Lexer {
       }
       if (bt && this.pos > runStart) {
         const chunk = src.slice(runStart, this.pos);
-        text += chunk;
+        text2 += chunk;
         if (bp)
           litBuf += chunk;
       }
@@ -40183,12 +40355,12 @@ var Lexer = class _Lexer {
           if (bt) {
             if (next === CH_DOLLAR || next === CH_BACKTICK || next === CH_DQUOTE || next === CH_BACKSLASH) {
               const c = src[this.pos];
-              text += c;
+              text2 += c;
               if (bp)
                 litBuf += c;
             } else {
               const pair2 = "\\" + src[this.pos];
-              text += pair2;
+              text2 += pair2;
               if (bp)
                 litBuf += pair2;
             }
@@ -40201,7 +40373,7 @@ var Lexer = class _Lexer {
         const afterDollar = this.pos + 1 < len ? src.charCodeAt(this.pos + 1) : 0;
         if (afterDollar === CH_DQUOTE || afterDollar === CH_SQUOTE) {
           if (bt) {
-            text += "$";
+            text2 += "$";
             if (bp)
               litBuf += "$";
           }
@@ -40211,7 +40383,7 @@ var Lexer = class _Lexer {
         const expStart = this.pos;
         this.readDollar();
         if (bt)
-          text += this._resultText;
+          text2 += this._resultText;
         if (this._resultHasExpansion)
           hasExpansions = true;
         if (bp) {
@@ -40235,7 +40407,7 @@ var Lexer = class _Lexer {
         const btStart = this.pos;
         this.readBacktickExpansion(true);
         if (bt)
-          text += this._resultText;
+          text2 += this._resultText;
         hasExpansions = true;
         if (bp && this._resultPart && isDQChild(this._resultPart)) {
           if (!parts)
@@ -40257,7 +40429,7 @@ var Lexer = class _Lexer {
       this.pos++;
     else
       this.errors.push({ message: "unterminated double quote", pos: contentStart - 1 });
-    this._dqText = text;
+    this._dqText = text2;
     this._dqHasExpansions = hasExpansions;
     this._dqParts = parts;
   }
@@ -40326,10 +40498,10 @@ var Lexer = class _Lexer {
       this._resultIsRaw = false;
       this._resultHasExpansion = this._dqHasExpansions;
       if (this._buildParts) {
-        const text = src.slice(dollarPos, this.pos);
+        const text2 = src.slice(dollarPos, this.pos);
         this._resultPart = {
           type: "LocaleString",
-          text,
+          text: text2,
           parts: this._dqParts ?? [
             { type: "Literal", value: this._dqText, text: src.slice(dollarPos + 2, this._dqEnd) }
           ]
@@ -40341,11 +40513,11 @@ var Lexer = class _Lexer {
     }
     if (ch === CH_AT || ch === CH_STAR || ch === CH_HASH || ch === CH_QUESTION || ch === CH_DASH || ch === CH_DOLLAR || ch === CH_BANG || ch >= CH_0 && ch <= CH_9) {
       this.pos++;
-      const text = bt ? src.slice(this.pos - 2, this.pos) : "";
-      this._resultText = text;
+      const text2 = bt ? src.slice(this.pos - 2, this.pos) : "";
+      this._resultText = text2;
       this._resultIsRaw = true;
       this._resultHasExpansion = false;
-      this._resultPart = this._buildParts ? { type: "SimpleExpansion", text } : void 0;
+      this._resultPart = this._buildParts ? { type: "SimpleExpansion", text: text2 } : void 0;
       return;
     }
     if (ch < 128 && isIdChar[ch] & 1) {
@@ -40357,11 +40529,11 @@ var Lexer = class _Lexer {
         else
           break;
       }
-      const text = bt ? src.slice(namePos, this.pos) : "";
-      this._resultText = text;
+      const text2 = bt ? src.slice(namePos, this.pos) : "";
+      this._resultText = text2;
       this._resultIsRaw = true;
       this._resultHasExpansion = false;
-      this._resultPart = this._buildParts ? { type: "SimpleExpansion", text } : void 0;
+      this._resultPart = this._buildParts ? { type: "SimpleExpansion", text: text2 } : void 0;
       return;
     }
     if (ch === CH_LBRACKET) {
@@ -40370,11 +40542,11 @@ var Lexer = class _Lexer {
         const bodyStart = this.pos + 1;
         const body = src.slice(bodyStart, close);
         this.pos = close + 1;
-        const text = bt ? src.slice(dollarPos, this.pos) : "";
-        this._resultText = text;
+        const text2 = bt ? src.slice(dollarPos, this.pos) : "";
+        this._resultText = text2;
         this._resultIsRaw = true;
         this._resultHasExpansion = false;
-        this._resultPart = this._buildParts ? { type: "ArithmeticExpansion", text, expression: this.buildArithmeticExpression(body, bodyStart) } : void 0;
+        this._resultPart = this._buildParts ? { type: "ArithmeticExpansion", text: text2, expression: this.buildArithmeticExpression(body, bodyStart) } : void 0;
         return;
       }
     }
@@ -40386,7 +40558,7 @@ var Lexer = class _Lexer {
   scanArithmeticBody() {
     this._notArithmetic = false;
     this.pos += 2;
-    let depth = 1;
+    let depth2 = 1;
     let parenDepth = 0;
     let parentParenDepth = 0;
     let parenDepths;
@@ -40395,7 +40567,7 @@ var Lexer = class _Lexer {
     const src = this.src;
     const len = this.srcEnd;
     const start = this.pos;
-    while (this.pos < len && depth > 0) {
+    while (this.pos < len && depth2 > 0) {
       const c = src.charCodeAt(this.pos);
       if (c === CH_BACKSLASH) {
         this.pos += 2;
@@ -40428,11 +40600,11 @@ var Lexer = class _Lexer {
         this.extractBalanced();
       } else if (c === CH_LPAREN) {
         if (src.charCodeAt(this.pos - 1) === CH_DOLLAR && src.charCodeAt(this.pos + 1) === CH_LPAREN) {
-          if (depth === 1)
+          if (depth2 === 1)
             parentParenDepth = parenDepth;
           else
             (parenDepths ??= []).push(parenDepth);
-          depth++;
+          depth2++;
           parenDepth = 0;
           if (++expansions + this._nestingDepth >= MAX_SYNTAX_NESTING) {
             if (!reported) {
@@ -40449,13 +40621,13 @@ var Lexer = class _Lexer {
         parenDepth--;
         this.pos++;
       } else if (c === CH_RPAREN && this.pos + 1 < len && src.charCodeAt(this.pos + 1) === CH_RPAREN) {
-        if (--depth === 0) {
+        if (--depth2 === 0) {
           this.pos += 2;
           break;
         }
-        parenDepth = depth === 1 ? parentParenDepth : parenDepths.pop();
+        parenDepth = depth2 === 1 ? parentParenDepth : parenDepths.pop();
         this.pos += 2;
-      } else if (c === CH_RPAREN && depth === 1) {
+      } else if (c === CH_RPAREN && depth2 === 1) {
         this._notArithmetic = true;
         return "";
       } else {
@@ -40469,11 +40641,11 @@ var Lexer = class _Lexer {
     const body = this.scanArithmeticBody();
     if (this._notArithmetic)
       return;
-    const text = this._buildParts || this._buildValue ? "$((" + body + "))" : "";
-    this._resultText = text;
+    const text2 = this._buildParts || this._buildValue ? "$((" + body + "))" : "";
+    this._resultText = text2;
     this._resultIsRaw = true;
     this._resultHasExpansion = false;
-    this._resultPart = this._buildParts ? { type: "ArithmeticExpansion", text, expression: this.buildArithmeticExpression(body, bodyStart) } : void 0;
+    this._resultPart = this._buildParts ? { type: "ArithmeticExpansion", text: text2, expression: this.buildArithmeticExpression(body, bodyStart) } : void 0;
   }
   // Pass the absolute body offset so arithmetic nodes index the original source directly
   // (no re-basing). Nested $(...) command subs inside the arithmetic get an absolute
@@ -40516,8 +40688,8 @@ var Lexer = class _Lexer {
       this.errors.push({ message: "unterminated command substitution", pos: dollarPos });
     const bt = this._buildParts || this._buildValue;
     const rawText = bt ? this.src.slice(dollarPos, this.pos) : "";
-    const text = !bt || openPos === dollarPos + 1 ? rawText : "$" + this.src.slice(openPos, this.pos);
-    this._resultText = text;
+    const text2 = !bt || openPos === dollarPos + 1 ? rawText : "$" + this.src.slice(openPos, this.pos);
+    this._resultText = text2;
     this._resultIsRaw = openPos === dollarPos + 1;
     this._resultHasExpansion = true;
     if (this._buildParts) {
@@ -40538,14 +40710,14 @@ var Lexer = class _Lexer {
     this.pos += skip;
     const src = this.src;
     const len = this.srcEnd;
-    let depth = 1;
+    let depth2 = 1;
     const start = this.pos;
     while (this.pos < len) {
       const c = src.charCodeAt(this.pos);
       if (c === CH_LBRACE)
-        depth++;
+        depth2++;
       else if (c === CH_RBRACE) {
-        if (--depth === 0) {
+        if (--depth2 === 0) {
           this.pos++;
           break;
         }
@@ -40566,11 +40738,11 @@ var Lexer = class _Lexer {
     if (this._buildParts || this._buildValue) {
       const rawInner = src.slice(start, this.pos - 1);
       const inner = rawInner.trim();
-      const text = src.slice(dollarPos, this.pos);
-      this._resultText = text;
+      const text2 = src.slice(dollarPos, this.pos);
+      this._resultText = text2;
       if (this._buildParts) {
         const innerStart = start + (rawInner.length - rawInner.trimStart().length);
-        this._resultPart = { type: "CommandExpansion", text, script: void 0, inner, innerStart };
+        this._resultPart = { type: "CommandExpansion", text: text2, script: void 0, inner, innerStart };
         this.collect(this._resultPart);
       } else {
         this._resultPart = void 0;
@@ -40642,13 +40814,13 @@ var Lexer = class _Lexer {
       this.pos++;
     else
       this.errors.push({ message: "unterminated backtick", pos: start - 1 });
-    const text = src.slice(start - 1, this.pos);
+    const text2 = src.slice(start - 1, this.pos);
     this._resultText = inner;
     this._resultHasExpansion = true;
     if (this._buildParts) {
       this._resultPart = {
         type: "CommandExpansion",
-        text,
+        text: text2,
         script: void 0,
         inner,
         innerStart: hasEscapes ? void 0 : start
@@ -40663,15 +40835,15 @@ var Lexer = class _Lexer {
     const len = this.srcEnd;
     const start = this.pos;
     this.pos++;
-    let depth = 1;
+    let depth2 = 1;
     let reported = false;
-    while (this.pos < len && depth > 0) {
+    while (this.pos < len && depth2 > 0) {
       const ch = src.charCodeAt(this.pos);
       if (ch === CH_DOLLAR) {
         const next = this.pos + 1 < len ? src.charCodeAt(this.pos + 1) : 0;
         if (next === CH_LBRACE) {
-          depth++;
-          if (this._nestingDepth + depth > MAX_SYNTAX_NESTING && !reported) {
+          depth2++;
+          if (this._nestingDepth + depth2 > MAX_SYNTAX_NESTING && !reported) {
             this.errors.push({ message: "maximum parameter expansion nesting depth exceeded", pos: this.pos });
             reported = true;
           }
@@ -40701,7 +40873,7 @@ var Lexer = class _Lexer {
           this.pos++;
         continue;
       } else if (ch === CH_RBRACE) {
-        if (--depth === 0) {
+        if (--depth2 === 0) {
           this.pos++;
           break;
         }
@@ -40721,16 +40893,16 @@ var Lexer = class _Lexer {
       }
       this.pos++;
     }
-    const closed = depth === 0;
+    const closed = depth2 === 0;
     if (!closed)
       this.errors.push({ message: "unterminated parameter expansion", pos: start - 1 });
-    const text = this._buildParts || this._buildValue ? src.slice(start - 1, this.pos) : "";
-    this._resultText = text;
+    const text2 = this._buildParts || this._buildValue ? src.slice(start - 1, this.pos) : "";
+    this._resultText = text2;
     this._resultIsRaw = true;
     this._resultHasExpansion = false;
     if (this._buildParts) {
       const inner = src.slice(start + 1, closed ? this.pos - 1 : this.pos);
-      this._resultPart = this.parseParamInner(text, inner, start + 1);
+      this._resultPart = this.parseParamInner(text2, inner, start + 1);
     } else {
       this._resultPart = void 0;
     }
@@ -40738,10 +40910,10 @@ var Lexer = class _Lexer {
   // `innerStart` is the absolute offset of `inner` in the original source, so each sub-field
   // word is parsed in place at its true position. `sub(a, b)` maps inner-relative offsets to
   // that absolute window.
-  parseParamInner(text, inner, innerStart) {
+  parseParamInner(text2, inner, innerStart) {
     const result = {
       type: "ParameterExpansion",
-      text,
+      text: text2,
       parameter: "",
       index: void 0,
       indexParts: void 0,
@@ -40952,17 +41124,17 @@ var Lexer = class _Lexer {
       if (next < end && this.src.charCodeAt(next) === CH_LBRACE) {
         close = this.findClosingBrace(next + 1, end);
       } else {
-        const open3 = skipLineContinuations(this.src, next, end);
-        if (open3 >= end || this.src.charCodeAt(open3) !== CH_LPAREN)
+        const open7 = skipLineContinuations(this.src, next, end);
+        if (open7 >= end || this.src.charCodeAt(open7) !== CH_LPAREN)
           return start;
-        close = this.findClosingParenthesis(open3 + 1, end);
+        close = this.findClosingParenthesis(open7 + 1, end);
       }
     } else {
-      const open3 = start + 1;
-      if (quoted || ch !== CH_LT && ch !== CH_GT || open3 >= end || this.src.charCodeAt(open3) !== CH_LPAREN) {
+      const open7 = start + 1;
+      if (quoted || ch !== CH_LT && ch !== CH_GT || open7 >= end || this.src.charCodeAt(open7) !== CH_LPAREN) {
         return start;
       }
-      close = this.findClosingParenthesis(open3 + 1, end);
+      close = this.findClosingParenthesis(open7 + 1, end);
     }
     return close === -1 ? end : close + 1;
   }
@@ -41004,7 +41176,7 @@ var Lexer = class _Lexer {
     const src = this.src;
     const len = this.srcEnd;
     const bt = this._buildParts || this._buildValue;
-    let depth = 1;
+    let depth2 = 1;
     const start = this.pos;
     this._unbalanced = false;
     let wordStart = true;
@@ -41037,7 +41209,7 @@ var Lexer = class _Lexer {
     let reported = false;
     let continuedDollarPos = -1;
     let continuedParenPos = -1;
-    while (this.pos < len && depth > 0) {
+    while (this.pos < len && depth2 > 0) {
       const ch = src.charCodeAt(this.pos);
       if (ch === CH_LPAREN) {
         const prev = this.pos > start ? src.charCodeAt(this.pos - 1) : 0;
@@ -41046,7 +41218,7 @@ var Lexer = class _Lexer {
         wordStartAfterParen.push(!wordParen);
         wordStart = true;
         if (arithBase < 0 && this.pos + 1 < len && src.charCodeAt(this.pos + 1) === CH_LPAREN) {
-          arithBase = depth;
+          arithBase = depth2;
         }
         if (commandDollarPos !== -1 && ++substitutions + this._nestingDepth >= MAX_SYNTAX_NESTING) {
           if (!reported) {
@@ -41056,7 +41228,7 @@ var Lexer = class _Lexer {
         }
         continuedDollarPos = -1;
         continuedParenPos = -1;
-        depth++;
+        depth2++;
         if (caseDepth > 0)
           caseParens++;
         this.pos++;
@@ -41067,13 +41239,13 @@ var Lexer = class _Lexer {
         } else {
           if (caseDepth > 0)
             caseParens--;
-          depth--;
-          if (depth === 0) {
+          depth2--;
+          if (depth2 === 0) {
             const result = bt ? src.slice(start, this.pos) : "";
             this.pos++;
             return result;
           }
-          if (depth <= arithBase)
+          if (depth2 <= arithBase)
             arithBase = -1;
           wordStart = wordStartAfterParen.pop() ?? true;
           this.pos++;
@@ -41170,29 +41342,29 @@ var Lexer = class _Lexer {
 };
 
 // node_modules/unbash/dist/parts.js
-function computeWordParts(source, word, depth = 0) {
+function computeWordParts(source, word, depth2 = 0) {
   const lexer = new Lexer(source, word.pos, word.end);
-  lexer._nestingDepth = depth;
+  lexer._nestingDepth = depth2;
   const parts = lexer.buildWordParts(word.pos);
   if (!parts)
     return void 0;
   resolveCollected(lexer);
   return parts;
 }
-function computeEmbeddedWordParts(source, word, depth = 0) {
+function computeEmbeddedWordParts(source, word, depth2 = 0) {
   if (!hasEmbeddedWordStructure(source, word.pos, word.end))
     return void 0;
   const lexer = new Lexer(source, word.pos, word.end);
-  lexer._nestingDepth = depth;
+  lexer._nestingDepth = depth2;
   const parts = lexer.buildEmbeddedWordParts(word.pos);
   if (!parts)
     return void 0;
   resolveCollected(lexer);
   return parts;
 }
-function computeHereDocBodyParts(source, word, depth = 0) {
+function computeHereDocBodyParts(source, word, depth2 = 0) {
   const lexer = new Lexer(source, word.pos, word.end);
-  lexer._nestingDepth = depth;
+  lexer._nestingDepth = depth2;
   const parts = lexer.buildHereDocParts(word.pos, word.end);
   if (!parts)
     return void 0;
@@ -41203,10 +41375,10 @@ function resolveCollected(lexer) {
   const source = lexer.getSource();
   for (const [e, innerDepth] of lexer.getCollectedExpansions()) {
     if (e.inner !== void 0) {
-      const depth = innerDepth + 1;
-      if (depth > MAX_SYNTAX_NESTING + 1) {
+      const depth2 = innerDepth + 1;
+      if (depth2 > MAX_SYNTAX_NESTING + 1) {
       } else if (e.innerStart !== void 0) {
-        e.script = parseRegion(source, e.innerStart, e.innerStart + e.inner.length, depth);
+        e.script = parseRegion(source, e.innerStart, e.innerStart + e.inner.length, depth2);
       } else {
         e.script = parse3(e.inner);
         Object.defineProperty(e.script, "source", { value: e.inner, enumerable: false });
@@ -41228,12 +41400,12 @@ var ArithmeticCommandImpl = class {
   #source;
   #depth;
   #expression = null;
-  constructor(pos, end, body, source, depth) {
+  constructor(pos, end, body, source, depth2) {
     this.pos = pos;
     this.end = end;
     this.body = body;
     this.#source = source;
-    this.#depth = depth;
+    this.#depth = depth2;
   }
   get expression() {
     if (this.#expression === null) {
@@ -41270,7 +41442,7 @@ var ArithmeticForImpl = class {
   #initialize = null;
   #test = null;
   #update = null;
-  constructor(pos, end, body, initStr, testStr, updateStr, initPos, testPos, updatePos, source, depth) {
+  constructor(pos, end, body, initStr, testStr, updateStr, initPos, testPos, updatePos, source, depth2) {
     this.pos = pos;
     this.end = end;
     this.body = body;
@@ -41281,7 +41453,7 @@ var ArithmeticForImpl = class {
     this.#testPos = testPos;
     this.#updatePos = updatePos;
     this.#source = source;
-    this.#depth = depth;
+    this.#depth = depth2;
   }
   get initialize() {
     if (this.#initialize === null) {
@@ -41353,7 +41525,7 @@ var REDIRECT_OPS = {
   "&>": "&>",
   "&>>": "&>>"
 };
-function parseArithmeticWithParts(body, offset2, source, depth = 0) {
+function parseArithmeticWithParts(body, offset2, source, depth2 = 0) {
   if (!hasEmbeddedWordStructure(source, offset2, offset2 + body.length)) {
     return parseArithmeticExpression(body, offset2) ?? void 0;
   }
@@ -41371,15 +41543,15 @@ function parseArithmeticWithParts(body, offset2, source, depth = 0) {
   }) ?? void 0;
   for (const node of commandExpansions) {
     if (node.inner !== void 0) {
-      if (depth <= MAX_SYNTAX_NESTING) {
+      if (depth2 <= MAX_SYNTAX_NESTING) {
         const innerStart = node.pos + 2;
-        node.script = parseRegion(source, innerStart, innerStart + node.inner.length, depth + 1);
+        node.script = parseRegion(source, innerStart, innerStart + node.inner.length, depth2 + 1);
       }
       node.inner = void 0;
     }
   }
   for (const node of embeddedWords)
-    node.parts = computeEmbeddedWordParts(source, node, depth);
+    node.parts = computeEmbeddedWordParts(source, node, depth2);
   return expression;
 }
 var listTerminators = new Uint8Array(37);
@@ -41482,8 +41654,8 @@ function ownEmpty(values) {
 function parse3(source) {
   return new Parser4(source, 0, source.length).run();
 }
-function parseRegion(source, start, end, depth = 0) {
-  return new Parser4(source, start, end, depth).run();
+function parseRegion(source, start, end, depth2 = 0) {
+  return new Parser4(source, start, end, depth2).run();
 }
 var Parser4 = class {
   tok;
@@ -41496,13 +41668,13 @@ var Parser4 = class {
   syntaxDepth = 0;
   // `depth` counts the substitution scripts (and sub-fields) enclosing this region; it
   // shares the MAX_SYNTAX_NESTING budget with the lexer's lazy word-part materialization.
-  constructor(source, start, end, depth = 0) {
+  constructor(source, start, end, depth2 = 0) {
     this.tok = new Lexer(source, start, end);
-    this.tok._nestingDepth = depth;
+    this.tok._nestingDepth = depth2;
     this.source = source;
     this.start = start;
     this.end = end;
-    this.depth = depth;
+    this.depth = depth2;
   }
   run() {
     const start = this.start;
@@ -42461,8 +42633,8 @@ var Parser4 = class {
     if (t2.targetEnd > t2.targetPos) {
       const heredoc = t2.value === "<<" || t2.value === "<<-";
       const resolver = heredoc ? heredocDelimiterParts(t2.content ?? "") : void 0;
-      const text = this.source.slice(t2.targetPos, t2.targetEnd);
-      r.target = new WordImpl(text, t2.targetPos, t2.targetEnd, this.source, resolver, this.depth);
+      const text2 = this.source.slice(t2.targetPos, t2.targetEnd);
+      r.target = new WordImpl(text2, t2.targetPos, t2.targetEnd, this.source, resolver, this.depth);
     } else {
       this.error("expected redirect target", t2.targetPos);
     }
@@ -42485,22 +42657,22 @@ var Parser4 = class {
     return this.toWord(this.tok.next(ctx));
   }
   toWord(tok) {
-    const text = tok.raw ? tok.value : this.source.slice(tok.pos, tok.end);
-    return new WordImpl(text, tok.pos, tok.end, this.source, void 0, this.depth);
+    const text2 = tok.raw ? tok.value : this.source.slice(tok.pos, tok.end);
+    return new WordImpl(text2, tok.pos, tok.end, this.source, void 0, this.depth);
   }
   toWordFromPosEnd(tok, pos, end) {
-    const text = tok.raw && tok.pos === pos && tok.end === end ? tok.value : this.source.slice(pos, end);
-    return new WordImpl(text, pos, end, this.source, void 0, this.depth);
+    const text2 = tok.raw && tok.pos === pos && tok.end === end ? tok.value : this.source.slice(pos, end);
+    return new WordImpl(text2, pos, end, this.source, void 0, this.depth);
   }
   parseAssignment(tok) {
-    const text = tok.raw ? tok.value : this.source.slice(tok.pos, tok.end);
+    const text2 = tok.raw ? tok.value : this.source.slice(tok.pos, tok.end);
     const tokPos = tok.pos;
     const tokEnd = tok.end;
     const result = {
       type: "Assignment",
       pos: tokPos,
       end: tokEnd,
-      text,
+      text: text2,
       name: void 0,
       value: void 0,
       append: void 0,
@@ -42515,21 +42687,21 @@ var Parser4 = class {
     let append = false;
     let index;
     let appendPos = eqIdx;
-    while (appendPos >= 2 && text.charCodeAt(appendPos - 2) === 92 && text.charCodeAt(appendPos - 1) === 10)
+    while (appendPos >= 2 && text2.charCodeAt(appendPos - 2) === 92 && text2.charCodeAt(appendPos - 1) === 10)
       appendPos -= 2;
-    if (text.charCodeAt(appendPos - 1) === 43) {
+    if (text2.charCodeAt(appendPos - 1) === 43) {
       append = true;
       nameEnd = appendPos - 1;
     }
-    const bracketIdx = text.indexOf("[");
+    const bracketIdx = text2.indexOf("[");
     if (bracketIdx > 0 && bracketIdx < nameEnd) {
-      const rbracketIdx = text.lastIndexOf("]", eqIdx);
+      const rbracketIdx = text2.lastIndexOf("]", eqIdx);
       if (rbracketIdx > bracketIdx) {
-        index = text.slice(bracketIdx + 1, rbracketIdx);
+        index = text2.slice(bracketIdx + 1, rbracketIdx);
         nameEnd = bracketIdx;
       }
     }
-    const rawName = text.slice(0, nameEnd);
+    const rawName = text2.slice(0, nameEnd);
     const name2 = rawName.includes("\\\n") ? rawName.split("\\\n").join("") : rawName;
     result.name = name2;
     if (append)
@@ -42552,11 +42724,11 @@ var Parser4 = class {
     }
     const valStart = eqIdx + 1;
     const valueStart = tokPos + valStart;
-    if (valStart < text.length && text.charCodeAt(valStart) === 40 && text.charCodeAt(text.length - 1) === 41) {
+    if (valStart < text2.length && text2.charCodeAt(valStart) === 40 && text2.charCodeAt(text2.length - 1) === 41) {
       const elements = this.parseArrayElements(valueStart + 1, tokEnd - 1);
       result.array = elements;
     } else {
-      result.value = new WordImpl(text.slice(valStart), valueStart, tokEnd, this.source, void 0, this.depth);
+      result.value = new WordImpl(text2.slice(valStart), valueStart, tokEnd, this.source, void 0, this.depth);
     }
     return result;
   }
@@ -42570,8 +42742,8 @@ var Parser4 = class {
       }
       const t2 = subTok.next(LexContext.Normal);
       if (t2.token === Token3.Word || t2.token === Token3.Assignment) {
-        const text = t2.raw ? t2.value : this.source.slice(t2.pos, t2.end);
-        elements.push(new WordImpl(text, t2.pos, t2.end, this.source, void 0, this.depth));
+        const text2 = t2.raw ? t2.value : this.source.slice(t2.pos, t2.end);
+        elements.push(new WordImpl(text2, t2.pos, t2.end, this.source, void 0, this.depth));
       }
     }
     return elements;
@@ -42698,7 +42870,7 @@ var clamavRefreshRetryMs = 15 * 60 * 1e3;
 var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 
 // src/runtime-telemetry.ts
-var processInstanceId = randomUUID2();
+var processInstanceId = randomUUID3();
 function activeRuntimeLogIdentity() {
   const scope = runtimeRequestScope.getStore();
   if (!scope) return void 0;
@@ -42726,7 +42898,7 @@ function uncappedLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request || identity ? {
-      id: input.request?.id ?? identity?.requestId ?? randomUUID3(),
+      id: input.request?.id ?? identity?.requestId ?? randomUUID4(),
       method: input.request?.method ?? null,
       path: input.request?.path ?? null
     } : null,
@@ -42803,8 +42975,8 @@ function plain(value) {
   return prototype === Object.prototype || prototype === null;
 }
 function exactKeys(value, required, optional = []) {
-  const keys = Object.keys(value);
-  return required.every((key) => keys.includes(key)) && keys.every((key) => required.includes(key) || optional.includes(key));
+  const keys2 = Object.keys(value);
+  return required.every((key) => keys2.includes(key)) && keys2.every((key) => required.includes(key) || optional.includes(key));
 }
 function boundedString(value, maximum = 256) {
   return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= maximum;
@@ -42825,37 +42997,37 @@ function encodedWithinLimit(value, maximum) {
     return false;
   }
 }
-function validateAccessKeyOperatorActionInput(action, value, invalid2) {
-  if (typeof action !== "string" || !ACTIONS.has(action) || !plain(value) || !encodedWithinLimit(value, 16 * 1024)) return invalid2();
+function validateAccessKeyOperatorActionInput(action, value, invalid4) {
+  if (typeof action !== "string" || !ACTIONS.has(action) || !plain(value) || !encodedWithinLimit(value, 16 * 1024)) return invalid4();
   if (action === "access-keys.list") {
-    if (!exactKeys(value, ["userId", "options"]) || !boundedString(value.userId) || !plain(value.options) || !exactKeys(value.options, [], ["cursor", "limit", "status"])) return invalid2();
+    if (!exactKeys(value, ["userId", "options"]) || !boundedString(value.userId) || !plain(value.options) || !exactKeys(value.options, [], ["cursor", "limit", "status"])) return invalid4();
     const options = {};
     if (value.options.cursor !== void 0) {
-      if (!boundedString(value.options.cursor, 512)) return invalid2();
+      if (!boundedString(value.options.cursor, 512)) return invalid4();
       options.cursor = value.options.cursor;
     }
     if (value.options.limit !== void 0) {
-      if (!Number.isInteger(value.options.limit) || value.options.limit < 1 || value.options.limit > 100) return invalid2();
+      if (!Number.isInteger(value.options.limit) || value.options.limit < 1 || value.options.limit > 100) return invalid4();
       options.limit = value.options.limit;
     }
     if (value.options.status !== void 0) {
-      if (typeof value.options.status !== "string" || !STATUSES.has(value.options.status)) return invalid2();
+      if (typeof value.options.status !== "string" || !STATUSES.has(value.options.status)) return invalid4();
       options.status = value.options.status;
     }
     return { userId: value.userId, options };
   }
   if (action === "access-keys.revoke-all") {
-    if (!exactKeys(value, ["userId"]) || !boundedString(value.userId)) return invalid2();
+    if (!exactKeys(value, ["userId"]) || !boundedString(value.userId)) return invalid4();
     return { userId: value.userId };
   }
-  if (!exactKeys(value, ["keyId"]) || !boundedString(value.keyId)) return invalid2();
+  if (!exactKeys(value, ["keyId"]) || !boundedString(value.keyId)) return invalid4();
   return { keyId: value.keyId };
 }
-function canonicalCapsule(value, invalid2) {
-  if (!plain(value) || !exactKeys(value, ["name"]) || !boundedString(value.name)) return invalid2();
+function canonicalCapsule(value, invalid4) {
+  if (!plain(value) || !exactKeys(value, ["name"]) || !boundedString(value.name)) return invalid4();
   return { name: value.name };
 }
-function canonicalSummary(value, invalid2) {
+function canonicalSummary(value, invalid4) {
   const fields = [
     "id",
     "ownerUserId",
@@ -42871,47 +43043,52 @@ function canonicalSummary(value, invalid2) {
     "lastUsedAt",
     "lifecycleRevision"
   ];
-  if (!plain(value) || !exactKeys(value, fields) || !boundedString(value.id) || !boundedString(value.ownerUserId) || !boundedString(value.name, 512) || !stringList(value.grants, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANT_BYTE_LIMIT) || !stringList(value.effectiveScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT) || typeof value.status !== "string" || !STATUSES.has(value.status) || !boundedString(value.createdAt, 64) || !optionalString(value.expiresAt, 64) || !optionalString(value.rotatedAt, 64) || !optionalString(value.revokedAt, 64) || !optionalRevocationCause(value.revocationCause) || !optionalString(value.lastUsedAt, 64) || !Number.isSafeInteger(value.lifecycleRevision) || value.lifecycleRevision < 1) return invalid2();
+  if (!plain(value) || !exactKeys(value, fields) || !boundedString(value.id) || !boundedString(value.ownerUserId) || !boundedString(value.name, 512) || !stringList(value.grants, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANT_BYTE_LIMIT) || !stringList(value.effectiveScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT) || typeof value.status !== "string" || !STATUSES.has(value.status) || !boundedString(value.createdAt, 64) || !optionalString(value.expiresAt, 64) || !optionalString(value.rotatedAt, 64) || !optionalString(value.revokedAt, 64) || !optionalRevocationCause(value.revocationCause) || !optionalString(value.lastUsedAt, 64) || !Number.isSafeInteger(value.lifecycleRevision) || value.lifecycleRevision < 1) return invalid4();
   return Object.fromEntries(fields.map((field) => [field, value[field]]));
 }
-function canonicalSuccessData(action, value, input, invalid2) {
-  if (!plain(value)) return invalid2();
-  const capsule = canonicalCapsule(value.capsule, invalid2);
+function canonicalSuccessData(action, value, input, invalid4) {
+  if (!plain(value)) return invalid4();
+  const capsule = canonicalCapsule(value.capsule, invalid4);
   if (action === "access-keys.list") {
-    if (!exactKeys(value, ["capsule", "accessKeys", "declaredScopes", "nextCursor", "totalCount"]) || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100 || !stringList(value.declaredScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT) || !optionalString(value.nextCursor, 512) || !Number.isSafeInteger(value.totalCount) || value.totalCount < 0) return invalid2();
-    const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid2));
-    if (accessKeys.some((item) => item.ownerUserId !== input.userId)) return invalid2();
+    if (!exactKeys(value, ["capsule", "accessKeys", "declaredScopes", "nextCursor", "totalCount"]) || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100 || !stringList(value.declaredScopes, ACCESS_KEY_SCOPE_LIMIT, ACCESS_KEY_SCOPE_BYTE_LIMIT) || !optionalString(value.nextCursor, 512) || !Number.isSafeInteger(value.totalCount) || value.totalCount < 0) return invalid4();
+    const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid4));
+    if (accessKeys.some((item) => item.ownerUserId !== input.userId)) return invalid4();
     return { capsule, accessKeys, declaredScopes: [...value.declaredScopes], nextCursor: value.nextCursor, totalCount: value.totalCount };
   }
   if (["access-keys.inspect", "access-keys.revoke"].includes(action)) {
-    if (!exactKeys(value, ["capsule", "accessKey"])) return invalid2();
-    const accessKey = canonicalSummary(value.accessKey, invalid2);
-    if (accessKey.id !== input.keyId || action === "access-keys.revoke" && accessKey.status !== "revoked") return invalid2();
+    if (!exactKeys(value, ["capsule", "accessKey"])) return invalid4();
+    const accessKey = canonicalSummary(value.accessKey, invalid4);
+    if (accessKey.id !== input.keyId || action === "access-keys.revoke" && accessKey.status !== "revoked") return invalid4();
     return { capsule, accessKey };
   }
   if (action === "access-keys.revoke-all") {
-    if (!exactKeys(value, ["capsule", "ownerUserId", "revokedCount", "accessKeys"]) || value.ownerUserId !== input.userId || !Number.isSafeInteger(value.revokedCount) || value.revokedCount < 0 || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100) return invalid2();
-    const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid2));
-    if (accessKeys.some((item) => item.ownerUserId !== input.userId || item.status !== "revoked" || item.revocationCause !== "operator") || accessKeys.length !== value.revokedCount) return invalid2();
+    if (!exactKeys(value, ["capsule", "ownerUserId", "revokedCount", "accessKeys"]) || value.ownerUserId !== input.userId || !Number.isSafeInteger(value.revokedCount) || value.revokedCount < 0 || !Array.isArray(value.accessKeys) || value.accessKeys.length > 100) return invalid4();
+    const accessKeys = value.accessKeys.map((item) => canonicalSummary(item, invalid4));
+    if (accessKeys.some((item) => item.ownerUserId !== input.userId || item.status !== "revoked" || item.revocationCause !== "operator") || accessKeys.length !== value.revokedCount) return invalid4();
     return { capsule, ownerUserId: value.ownerUserId, revokedCount: value.revokedCount, accessKeys };
   }
-  if (!exactKeys(value, ["capsule", "id", "ownerUserId", "deleted"]) || value.id !== input.keyId || !boundedString(value.ownerUserId) || value.deleted !== true) return invalid2();
+  if (!exactKeys(value, ["capsule", "id", "ownerUserId", "deleted"]) || value.id !== input.keyId || !boundedString(value.ownerUserId) || value.deleted !== true) return invalid4();
   return { capsule, id: value.id, ownerUserId: value.ownerUserId, deleted: true };
 }
-function canonicalError(value, invalid2) {
-  if (!plain(value) || !exactKeys(value, ["code", "message", "hint"]) || typeof value.code !== "string" || !SAFE_ERRORS[value.code] || !boundedString(value.message, 1024) || !boundedString(value.hint, 1024)) return invalid2();
+function canonicalError(value, invalid4) {
+  if (!plain(value) || !exactKeys(value, ["code", "message", "hint"]) || typeof value.code !== "string" || !SAFE_ERRORS[value.code] || !boundedString(value.message, 1024) || !boundedString(value.hint, 1024)) return invalid4();
   return { code: value.code, ...SAFE_ERRORS[value.code] };
 }
-function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid2) {
-  if (!plain(value) || !encodedWithinLimit(value, ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT) || typeof value.ok !== "boolean") return invalid2();
-  const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid2);
+function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid4) {
+  if (!plain(value) || !encodedWithinLimit(value, ACCESS_KEY_OPERATOR_ENVELOPE_BYTE_LIMIT) || typeof value.ok !== "boolean") return invalid4();
+  const boundedInput = validateAccessKeyOperatorActionInput(action, input, invalid4);
   if (value.ok) {
-    if (!exactKeys(value, ["ok", "data", "error"]) || value.error !== null) return invalid2();
-    return { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid2), error: null };
+    if (!exactKeys(value, ["ok", "data", "error"]) || value.error !== null) return invalid4();
+    return { ok: true, data: canonicalSuccessData(String(action), value.data, boundedInput, invalid4), error: null };
   }
-  if (!exactKeys(value, ["ok", "data", "error"]) || value.data !== null) return invalid2();
-  return { ok: false, data: null, error: canonicalError(value.error, invalid2) };
+  if (!exactKeys(value, ["ok", "data", "error"]) || value.data !== null) return invalid4();
+  return { ok: false, data: null, error: canonicalError(value.error, invalid4) };
 }
+
+// src/database-telemetry.ts
+import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
+var databaseTelemetry = Symbol("sporades.database.telemetry");
+var operationScope = new AsyncLocalStorage3();
 
 // src/database-runtime.ts
 var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
@@ -43074,7 +43251,7 @@ function boundedScheduleDiagnostic(candidate) {
   }
   return void 0;
 }
-function sanitizeScheduleInspectionEnvelope(envelope, invalid2) {
+function sanitizeScheduleInspectionEnvelope(envelope, invalid4) {
   if (envelope?.ok === false) {
     const source = envelope.error;
     const candidate = source?.diagnostics ?? source;
@@ -43085,16 +43262,16 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid2) {
       ...diagnostics ? { diagnostics } : {}
     } };
   }
-  if (envelope?.ok !== true || typeof envelope.data?.capsule?.name !== "string" || !Array.isArray(envelope.data?.schedules)) invalid2();
+  if (envelope?.ok !== true || typeof envelope.data?.capsule?.name !== "string" || !Array.isArray(envelope.data?.schedules)) invalid4();
   const schedules = envelope.data.schedules.map((value) => {
-    if (!value || typeof value.name !== "string" || typeof value.expression !== "string" || typeof value.timezone !== "string" || !["skip", "latest"].includes(value.missedRun) || typeof value.enabled !== "boolean" || value.nextOccurrence !== null && typeof value.nextOccurrence !== "string") invalid2();
+    if (!value || typeof value.name !== "string" || typeof value.expression !== "string" || typeof value.timezone !== "string" || !["skip", "latest"].includes(value.missedRun) || typeof value.enabled !== "boolean" || value.nextOccurrence !== null && typeof value.nextOccurrence !== "string") invalid4();
     let latestOccurrence = null;
     if (value.latestOccurrence !== null) {
       const latest = value.latestOccurrence;
-      if (!latest || typeof latest.scheduledFor !== "string" || !["enqueued", "payload-failed"].includes(latest.outcome)) invalid2();
+      if (!latest || typeof latest.scheduledFor !== "string" || !["enqueued", "payload-failed"].includes(latest.outcome)) invalid4();
       if (latest.outcome === "enqueued" && typeof latest.jobId === "string") latestOccurrence = { scheduledFor: latest.scheduledFor, outcome: latest.outcome, jobId: latest.jobId };
       else if (latest.outcome === "payload-failed" && ["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(latest.errorCode)) latestOccurrence = { scheduledFor: latest.scheduledFor, outcome: latest.outcome, errorCode: latest.errorCode };
-      else invalid2();
+      else invalid4();
     }
     return { name: value.name, expression: value.expression, timezone: value.timezone, missedRun: value.missedRun, enabled: value.enabled, nextOccurrence: value.nextOccurrence, latestOccurrence };
   });
@@ -43109,7 +43286,7 @@ import { gunzipSync } from "node:zlib";
 // src/cli/host-helper-release-files.ts
 function expectedReleaseFiles(release) {
   const publicFiles = Array.isArray(release.files) ? release.files.filter((file) => typeof file === "string" && file.startsWith("public/")) : [];
-  const files = ["server.mjs", "sporades.json", ...publicFiles, ...resolveDeployFiles(release.deployFiles).map((file) => file.path)];
+  const files = ["server.mjs", "sporades.json", ...publicFiles, ...resolveDeployFiles(release.deployFiles, true).map((file) => file.path)];
   if (release.serverEnvIncluded) {
     files.push(".env.sporades.server");
   }
@@ -43323,7 +43500,7 @@ function validatePublicArchiveBounds(entries) {
 
 // src/cli/host-helper-config.ts
 import { readFile as readFile3 } from "node:fs/promises";
-import path3 from "node:path";
+import path4 from "node:path";
 var HOST_HELPER_CONFIG_FILE = "sporades-host-helper.json";
 var DEFAULT_HOSTED_CAPSULE_DOCKER_IMAGE = SPORADES_BASE_IMAGE.image;
 var DEFAULT_HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
@@ -43379,7 +43556,7 @@ function hostHelperConfigPath(request) {
   if (typeof request.host?.remoteRoot !== "string" || request.host.remoteRoot.length === 0) {
     return null;
   }
-  return path3.join(request.host.remoteRoot, HOST_HELPER_CONFIG_FILE);
+  return path4.join(request.host.remoteRoot, HOST_HELPER_CONFIG_FILE);
 }
 function applyHostHelperConfig(loaded, config, configPath) {
   assertPlainObject(config, "Host helper config", configPath);
@@ -43452,17 +43629,88 @@ function readConfigPositiveInteger(value, key, configPath) {
 
 // src/cli/host-telemetry-relay.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
-import { createHash as createHash3, randomBytes as randomBytes2 } from "node:crypto";
-import { lstat as lstat3, mkdir as mkdir3, readFile as readFile5, rename as rename3, writeFile as writeFile2, chmod, rm as rm3 } from "node:fs/promises";
+import { createHash as createHash4, randomBytes as randomBytes2 } from "node:crypto";
+import { lstat as lstat5, mkdir as mkdir3, open as open4, readFile as readFile5, rename as rename4, rm as rm4 } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
+import path7 from "node:path";
+
+// src/cli/host-telemetry-state.ts
+import { spawn } from "node:child_process";
+import { lstat as lstat3, open as open3 } from "node:fs/promises";
 import path5 from "node:path";
+async function protectedPath(file, isDirectory = false) {
+  const stat2 = await lstat3(file);
+  if (stat2.isSymbolicLink() || (isDirectory ? !stat2.isDirectory() : !stat2.isFile()) || stat2.mode & 63 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unprotected Host inventory state.");
+}
+async function withHostTelemetryLock(root, operation) {
+  const dir = path5.join(root, "telemetry");
+  if (!path5.isAbsolute(root) || root === "/" || path5.normalize(root) !== root) throw new Error("Invalid Host inventory root.");
+  await protectedPath(dir, true);
+  const file = path5.join(dir, "inventory.lock");
+  const handle = await open3(file, "a", 384);
+  await handle.close();
+  await protectedPath(file);
+  const child = spawn(process.env.SPORADES_TEST_FLOCK_PATH || "/usr/bin/flock", ["--exclusive", "--timeout", "2", "--conflict-exit-code", "75", "--no-fork", file, process.execPath, "-e", "process.stdout.write('locked');process.stdin.resume();"], { stdio: ["pipe", "pipe", "ignore"] });
+  try {
+    await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", () => reject(new Error("Inventory lock unavailable.")));
+      child.stdout.once("data", () => resolve());
+    });
+    return await operation();
+  } finally {
+    child.stdin.end();
+  }
+}
+
+// src/cli/inventory-contract.ts
+var INVENTORY_MAX_BYTES = 1024 * 1024;
+function inventoryHost(value) {
+  return typeof value === "string" && value.length <= 253 && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+}
+function invalid2() {
+  throw new Error("Invalid lifecycle inventory.");
+}
+function keys(value, names) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== names.sort().join()) invalid2();
+}
+function validateInventory(value) {
+  keys(value, ["schemaVersion", "host", "revision", "capsules"]);
+  if (value.schemaVersion !== 1 || !inventoryHost(value.host) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) invalid2();
+  if (!Array.isArray(value.capsules) || value.capsules.length > 2e3 || JSON.stringify(value).length > INVENTORY_MAX_BYTES) invalid2();
+  const ids = /* @__PURE__ */ new Set();
+  const capsules = value.capsules.map((item) => {
+    keys(item, ["id", "state", "changedAt", "release", "targets"]);
+    if (typeof item.id !== "string" || item.id.length > 320) invalid2();
+    const [domain, subname, extra] = item.id.split("/");
+    if (!inventoryHost(domain) || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(subname ?? "") || extra !== void 0 || ids.has(item.id)) invalid2();
+    ids.add(item.id);
+    if (!["registered", "released", "running", "stopped", "failed", "deleted", "opted-out"].includes(String(item.state))) invalid2();
+    if (typeof item.changedAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(item.changedAt) || !Number.isFinite(Date.parse(item.changedAt))) invalid2();
+    if (item.release !== null && (typeof item.release !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(item.release))) invalid2();
+    if (!Array.isArray(item.targets) || item.targets.length > 21 || new Set(item.targets).size !== item.targets.length) invalid2();
+    for (const target of item.targets) {
+      if (typeof target !== "string" || target.length > 2048) invalid2();
+      let url;
+      try {
+        url = new URL(target);
+      } catch {
+        return invalid2();
+      }
+      if (!["https:", "http:"].includes(url.protocol) || !inventoryHost(url.hostname) || url.username || url.password || url.port || url.search || url.hash || url.pathname !== "/" || url.href !== target) invalid2();
+    }
+    if (["deleted", "opted-out", "stopped"].includes(String(item.state)) && item.targets.length) invalid2();
+    return { ...item, targets: [...item.targets].sort() };
+  }).sort((a, b) => a.id.localeCompare(b.id));
+  return { schemaVersion: 1, host: value.host, revision: Number(value.revision), capsules };
+}
 
 // src/cli/host-metrics.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash2, randomBytes } from "node:crypto";
-import { mkdir as mkdir2, lstat as lstat2, readFile as readFile4, writeFile, rename as rename2, rm as rm2, access } from "node:fs/promises";
-import { isIP } from "node:net";
-import path4 from "node:path";
+import { createHash as createHash3, randomBytes } from "node:crypto";
+import { mkdir as mkdir2, lstat as lstat4, readFile as readFile4, writeFile, rename as rename3, rm as rm3, access } from "node:fs/promises";
+import { isIP as isIP2 } from "node:net";
+import path6 from "node:path";
 var HOST_METRICS_NETWORK = "sporades-host-metrics";
 var NAME = "sporades-node-exporter";
 var IMAGE = "quay.io/prometheus/node-exporter:v1.12.1";
@@ -43490,34 +43738,34 @@ function ownedContainer() {
 }
 async function trusted(file, optional = false) {
   try {
-    const s = await lstat2(file);
+    const s = await lstat4(file);
     if (s.isSymbolicLink() || !s.isFile() && !s.isDirectory() || s.mode & 18 || process.geteuid && s.uid !== process.geteuid()) fail("Unsafe Host metrics configuration path.");
   } catch (e) {
     if (!optional || e.code !== "ENOENT") throw e;
   }
 }
-async function publish(file, text, mode = 384) {
-  await trusted(path4.dirname(file));
+async function publish(file, text2, mode = 384) {
+  await trusted(path6.dirname(file));
   await trusted(file, true);
   const tmp = `${file}.${randomBytes(8).toString("hex")}.tmp`;
-  await writeFile(tmp, text, { flag: "wx", mode });
+  await writeFile(tmp, text2, { flag: "wx", mode });
   try {
-    await rename2(tmp, file);
+    await rename3(tmp, file);
   } finally {
-    await rm2(tmp, { force: true });
+    await rm3(tmp, { force: true });
   }
 }
 async function readHostMetrics(root) {
-  const file = path4.join(root, "telemetry", "resources.json");
+  const file = path6.join(root, "telemetry", "resources.json");
   try {
-    await trusted(path4.dirname(file));
+    await trusted(path6.dirname(file));
     await trusted(file);
   } catch (e) {
     if (e.code === "ENOENT") return null;
     throw e;
   }
   const v = JSON.parse(await readFile4(file, "utf8"));
-  if (typeof v.host !== "string" || !/^[a-z0-9][a-z0-9.-]{0,252}$/.test(v.host) || isIP(v.address) !== 4 || typeof v.enabled !== "boolean" || typeof v.psi !== "boolean") fail("Invalid Host metrics state.");
+  if (typeof v.host !== "string" || !/^[a-z0-9][a-z0-9.-]{0,252}$/.test(v.host) || isIP2(v.address) !== 4 || typeof v.enabled !== "boolean" || typeof v.psi !== "boolean") fail("Invalid Host metrics state.");
   if (v.caddyMetricsServer !== void 0 && !/^[a-zA-Z0-9_-]{1,80}$/.test(v.caddyMetricsServer)) fail("Invalid Caddy metrics server identity.");
   return v;
 }
@@ -43559,24 +43807,24 @@ ${END}
 }
 ${s}`;
   } else {
-    let depth = 1, globalEnd = -1, catchall = false;
+    let depth2 = 1, globalEnd = -1, catchall = false;
     for (let i = 1; i < t2.length; i++) {
-      if (depth === 1 && t2[i].value === "servers") {
-        let open3 = i + 1;
-        while (open3 < t2.length && t2[open3].value !== "{") open3++;
-        if (open3 === t2.length) fail("Cannot locate Caddy servers options.");
-        if (open3 === i + 1) catchall = true;
+      if (depth2 === 1 && t2[i].value === "servers") {
+        let open7 = i + 1;
+        while (open7 < t2.length && t2[open7].value !== "{") open7++;
+        if (open7 === t2.length) fail("Cannot locate Caddy servers options.");
+        if (open7 === i + 1) catchall = true;
         let d = 1, hasMetrics = false;
-        for (let j = open3 + 1; j < t2.length && d; j++) {
+        for (let j = open7 + 1; j < t2.length && d; j++) {
           if (d === 1 && t2[j].value === "metrics") hasMetrics = true;
           if (t2[j].value === "{") d++;
           if (t2[j].value === "}") d--;
         }
-        if (!hasMetrics) additions.push({ at: t2[open3].end, text: metric });
+        if (!hasMetrics) additions.push({ at: t2[open7].end, text: metric });
       }
-      if (t2[i].value === "{") depth++;
-      if (t2[i].value === "}") depth--;
-      if (depth === 0) {
+      if (t2[i].value === "{") depth2++;
+      if (t2[i].value === "}") depth2--;
+      if (depth2 === 0) {
         globalEnd = t2[i].start;
         break;
       }
@@ -43606,8 +43854,8 @@ async function configureBootOrder(root) {
   await trusted("/etc/systemd/system");
   await mkdir2(dir, { recursive: true, mode: 493 });
   await trusted(dir);
-  const file = path4.join(dir, "90-sporades-host-metrics.conf");
-  const config = JSON.stringify(path4.join(root, "caddy", "Caddyfile")).replace(/%/g, "%%");
+  const file = path6.join(dir, "90-sporades-host-metrics.conf");
+  const config = JSON.stringify(path6.join(root, "caddy", "Caddyfile")).replace(/%/g, "%%");
   const content2 = `# Sporades Host metrics boot ordering
 [Unit]
 After=docker.service
@@ -43631,19 +43879,19 @@ RestartSec=5s
   if (!run("systemctl", ["daemon-reload"]).ok) fail("Could not reload Caddy boot ordering.");
 }
 async function configureCaddy(root, address, enabled) {
-  const dir = path4.join(root, "caddy");
-  const file = path4.join(dir, "Caddyfile");
+  const dir = path6.join(root, "caddy");
+  const file = path6.join(dir, "Caddyfile");
   await trusted(root);
   await trusted(dir);
   await trusted(file);
   const before = await readFile4(file, "utf8");
   const after = enabled ? enableCaddy(before, address) : stripManaged(before);
   if (before === after) return enabled ? metricsServer(file, address) : void 0;
-  const candidate = path4.join(dir, `.telemetry-${randomBytes(8).toString("hex")}.tmp`);
+  const candidate = path6.join(dir, `.telemetry-${randomBytes(8).toString("hex")}.tmp`);
   await writeFile(candidate, after, { flag: "wx", mode: 420 });
   try {
     if (!run("caddy", ["validate", "--config", candidate, "--adapter", "caddyfile"]).ok) fail("Caddy rejected the Host metrics configuration; the active configuration was preserved.");
-    await publish(path4.join(root, "telemetry", "caddy-before-resources.conf"), before);
+    await publish(path6.join(root, "telemetry", "caddy-before-resources.conf"), before);
     await publish(file, after, 420);
     if (!run("caddy", ["reload", "--config", file, "--adapter", "caddyfile"]).ok) {
       await publish(file, before, 420);
@@ -43651,7 +43899,7 @@ async function configureCaddy(root, address, enabled) {
       fail("Caddy reload failed; the previous configuration was restored.");
     }
   } finally {
-    await rm2(candidate, { force: true });
+    await rm3(candidate, { force: true });
   }
   return enabled ? metricsServer(file, address) : void 0;
 }
@@ -43672,7 +43920,7 @@ async function configureHostMetrics(root, host, operation = "reconcile") {
     await configureCaddy(root, saved?.address ?? "127.0.0.1", false);
     if (ownedContainer() && !run("docker", operation === "remove" ? ["rm", "-f", NAME] : ["stop", NAME]).ok) fail("Could not stop the Host exporter.");
     const state2 = { host, address: saved?.address ?? "127.0.0.1", enabled: false, psi: saved?.psi ?? false };
-    await publish(path4.join(root, "telemetry", "resources.json"), JSON.stringify(state2));
+    await publish(path6.join(root, "telemetry", "resources.json"), JSON.stringify(state2));
     return state2;
   }
   let network = inspect("network", HOST_METRICS_NETWORK);
@@ -43681,10 +43929,10 @@ async function configureHostMetrics(root, host, operation = "reconcile") {
     network = inspect("network", HOST_METRICS_NETWORK);
   }
   if (network?.Labels?.[OWNER] !== "true" || network?.Internal !== true) fail("The Host metrics network is not privately owned by Sporades.");
-  const address = network?.IPAM?.Config?.find((c) => isIP(c.Gateway ?? "") === 4)?.Gateway;
+  const address = network?.IPAM?.Config?.find((c) => isIP2(c.Gateway ?? "") === 4)?.Gateway;
   if (!address) fail("The Host metrics network needs an IPv4 gateway.");
   const args = ["--network", "host", "--pid", "host", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65534:65534", "--memory", "128m", "--cpus", "0.25", "--pids-limit", "64", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--mount", "type=bind,source=/,target=/host,readonly,bind-propagation=rslave", IMAGE, "--path.rootfs=/host", "--path.procfs=/host/proc", "--path.sysfs=/host/sys", `--web.listen-address=${address}:9100`, "--collector.disable-defaults", ...["cpu", "loadavg", "meminfo", "vmstat", "diskstats", "filesystem", "netdev", "netstat", "pressure", "uname", "time", "stat"].map((c) => `--collector.${c}`), "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|pstore|rpc_pipefs|securityfs|squashfs|sysfs|tracefs)$", "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/docker/netns)($|/)", "--collector.netdev.device-exclude=^(veth.*|br-.*|docker.*|lo)$"];
-  const hash2 = createHash2("sha256").update(JSON.stringify(args)).digest("hex");
+  const hash2 = createHash3("sha256").update(JSON.stringify(args)).digest("hex");
   const current2 = ownedContainer();
   if (current2?.Config?.Labels?.[`${OWNER}.hash`] !== hash2) {
     if (!run("docker", ["pull", IMAGE], 18e4).ok) fail("Could not obtain the pinned Host exporter image.");
@@ -43701,7 +43949,7 @@ async function configureHostMetrics(root, host, operation = "reconcile") {
   await configureBootOrder(root);
   const psi = await access("/proc/pressure/cpu").then(() => true, () => false);
   const state = { host, address, enabled: true, psi, caddyMetricsServer };
-  await publish(path4.join(root, "telemetry", "resources.json"), JSON.stringify(state));
+  await publish(path6.join(root, "telemetry", "resources.json"), JSON.stringify(state));
   return state;
 }
 function hostScrapeConfig(state) {
@@ -43739,30 +43987,32 @@ var RELAY_NAME = "sporades-telemetry-relay";
 var RELAY_ALIAS = "sporades-telemetry";
 var RELAY_LABEL = "com.sporades.host-telemetry-relay=true";
 var MAX_CA_BYTES = 1024 * 1024;
-function invalid() {
+function invalid3() {
   throw helperError("Invalid Host Telemetry connection.", "Use a verified HTTPS OTLP/HTTP origin and a scoped ingestion credential without control characters.");
 }
 function validateHostRelayConnection(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid3();
   const input = value;
-  if (Object.keys(input).some((key) => !["endpoint", "credential", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid();
-  if (typeof input.endpoint !== "string" || input.endpoint.length > 2048) invalid();
+  if (Object.keys(input).some((key) => !["endpoint", "credential", "inventoryCredential", "inventoryHost", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid3();
+  if (typeof input.endpoint !== "string" || input.endpoint.length > 2048) invalid3();
   let url;
   try {
     url = new URL(input.endpoint);
   } catch {
-    return invalid();
+    return invalid3();
   }
-  if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash || url.pathname !== "/") invalid();
-  if (typeof input.credential !== "string" || !input.credential || input.credential.length > 4096 || /[\x00-\x1f\x7f]/.test(input.credential)) invalid();
-  if (input.caPem !== void 0 && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----"))) invalid();
-  if (input.metricsIntervalMs !== void 0 && (!Number.isSafeInteger(input.metricsIntervalMs) || input.metricsIntervalMs < 5e3 || input.metricsIntervalMs > 3e5)) invalid();
-  if (input.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || input.eventLoopDelayResolutionMs < 10 || input.eventLoopDelayResolutionMs > 1e3)) invalid();
+  if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash || url.pathname !== "/") invalid3();
+  if (typeof input.credential !== "string" || !input.credential || input.credential.length > 4096 || /[\x00-\x1f\x7f]/.test(input.credential)) invalid3();
+  if (input.inventoryCredential !== void 0 && (typeof input.inventoryCredential !== "string" || input.inventoryCredential.length < 16 || input.inventoryCredential.length > 4096 || /[\x00-\x20\x7f]/.test(input.inventoryCredential))) invalid3();
+  if (input.inventoryHost !== void 0 && !inventoryHost(input.inventoryHost)) invalid3();
+  if (input.caPem !== void 0 && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----"))) invalid3();
+  if (input.metricsIntervalMs !== void 0 && (!Number.isSafeInteger(input.metricsIntervalMs) || input.metricsIntervalMs < 5e3 || input.metricsIntervalMs > 3e5)) invalid3();
+  if (input.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || input.eventLoopDelayResolutionMs < 10 || input.eventLoopDelayResolutionMs > 1e3)) invalid3();
   return input;
 }
 function renderHostRelayCollectorConfig(options) {
   const endpoint = new URL(options.endpoint);
-  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") invalid();
+  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") invalid3();
   return `receivers:
 ${options.resources ? hostScrapeConfig(options.resources) : ""}  otlp:
     protocols:
@@ -43802,19 +44052,19 @@ service:
 `;
 }
 function paths(remoteRoot) {
-  if (!path5.isAbsolute(remoteRoot) || path5.normalize(remoteRoot) !== remoteRoot || remoteRoot === "/") invalid();
-  const directory = path5.join(remoteRoot, "telemetry");
-  return { directory, descriptor: path5.join(directory, "connection.json"), config: path5.join(directory, "collector.yaml"), credential: path5.join(directory, "credential.env"), ca: path5.join(directory, "ca.pem") };
+  if (!path7.isAbsolute(remoteRoot) || path7.normalize(remoteRoot) !== remoteRoot || remoteRoot === "/") invalid3();
+  const directory2 = path7.join(remoteRoot, "telemetry");
+  return { directory: directory2, descriptor: path7.join(directory2, "connection.json"), config: path7.join(directory2, "collector.yaml"), credential: path7.join(directory2, "credential.env"), ca: path7.join(directory2, "ca.pem") };
 }
-async function assertOwnedDirectory(directory) {
-  const details = await lstat3(directory);
+async function assertOwnedDirectory(directory2) {
+  const details = await lstat5(directory2);
   if (!details.isDirectory() || details.isSymbolicLink() || process.geteuid && details.uid !== process.geteuid() || (details.mode & 63) !== 0) {
     throw helperError("Host Telemetry state is not protected.", "Use a helper-owned telemetry directory with mode 0700 and no symlinks.");
   }
 }
 async function readProtected(file) {
   try {
-    const details = await lstat3(file);
+    const details = await lstat5(file);
     if (!details.isFile() || details.isSymbolicLink() || process.geteuid && details.uid !== process.geteuid() || (details.mode & 18) !== 0) throw new Error("unsafe file");
     return await readFile5(file, "utf8");
   } catch (error) {
@@ -43824,12 +44074,23 @@ async function readProtected(file) {
 }
 async function atomicWrite(file, content2, mode) {
   const candidate = `${file}.${randomBytes2(8).toString("hex")}.tmp`;
-  await writeFile2(candidate, content2, { flag: "wx", mode });
   try {
-    await rename3(candidate, file);
-    await chmod(file, mode);
-  } catch (error) {
-    throw error;
+    const handle = await open4(candidate, "wx", mode);
+    try {
+      await handle.writeFile(content2);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename4(candidate, file);
+    const directory2 = await open4(path7.dirname(file), "r");
+    try {
+      await directory2.sync();
+    } finally {
+      await directory2.close();
+    }
+  } finally {
+    await rm4(candidate, { force: true });
   }
 }
 function docker(args) {
@@ -43847,7 +44108,7 @@ function inspectRelay() {
     throw helperError("Host Telemetry relay name is occupied.", "Inspect the existing relay container before reconciling it.");
   }
 }
-async function readHostTelemetryConnection(remoteRoot) {
+async function readConnectionRecord(remoteRoot) {
   const files = paths(remoteRoot);
   try {
     await assertOwnedDirectory(files.directory);
@@ -43868,6 +44129,37 @@ async function readHostTelemetryConnection(remoteRoot) {
   }
   return value;
 }
+async function readHostTelemetryConnection(remoteRoot) {
+  const record = await readConnectionRecord(remoteRoot);
+  if (!record) return null;
+  const { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost: inventoryHost2, metricsIntervalMs, eventLoopDelayResolutionMs } = record;
+  const value = { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost: inventoryHost2, metricsIntervalMs, eventLoopDelayResolutionMs };
+  return value;
+}
+async function readHostInventoryConnection(remoteRoot) {
+  const record = await readConnectionRecord(remoteRoot);
+  if (!record) return null;
+  const files = paths(remoteRoot);
+  const details = await lstat5(files.descriptor);
+  if (details.mode & 63) throw new Error("Unprotected Host inventory state.");
+  if (!inventoryHost(record.inventoryHost)) throw new Error("Reconnect Host Telemetry to assign inventory authority.");
+  const bundle = record.inventory;
+  let credential, caPem, generation;
+  if (bundle !== void 0) {
+    if (!bundle || typeof bundle.generation !== "string" || !/^[a-f0-9]{32}$/.test(bundle.generation)) throw new Error("Invalid inventory connection.");
+    ({ credential, caPem, generation } = bundle);
+    if (Boolean(caPem) !== record.caConfigured) throw new Error("Invalid inventory connection.");
+  } else {
+    const tokenPath = path7.join(files.directory, "inventory-credential");
+    if ((await lstat5(tokenPath)).mode & 63) throw new Error("Unprotected Host inventory state.");
+    credential = (await readProtected(tokenPath) ?? "").trim();
+    caPem = record.caConfigured ? await readProtected(files.ca) ?? void 0 : void 0;
+    if (record.caConfigured && !caPem) throw new Error("Invalid inventory connection.");
+    generation = createHash4("sha256").update(JSON.stringify([record, credential, caPem])).digest("hex");
+  }
+  validateHostRelayConnection({ endpoint: record.endpoint, credential, ...caPem ? { caPem } : {} });
+  return { generation, endpoint: record.endpoint, host: record.inventoryHost, credential, caPem };
+}
 async function statusHostTelemetryRelay(remoteRoot) {
   const connection = await readHostTelemetryConnection(remoteRoot);
   const relay = inspectRelay();
@@ -43882,50 +44174,54 @@ async function statusHostTelemetryRelay(remoteRoot) {
 }
 async function connectHostTelemetryRelay(remoteRoot, network, input, host) {
   const connection = validateHostRelayConnection(input);
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(network)) invalid();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(network)) invalid3();
   if (!docker(["network", "inspect", network]).ok) throw helperError("Hosted Docker network is unavailable.", "Bootstrap the Host before connecting Telemetry.");
   const files = paths(remoteRoot);
   await mkdir3(files.directory, { recursive: true, mode: 448 });
   await assertOwnedDirectory(files.directory);
-  const resources = host ? await configureHostMetrics(remoteRoot, host) : await readHostMetrics(remoteRoot);
-  const previous = await readHostTelemetryConnection(remoteRoot);
-  const previousConfig = previous ? await readProtected(files.config) : null;
-  const previousCredential = previous ? await readProtected(files.credential) : null;
-  const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-  const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: (/* @__PURE__ */ new Date()).toISOString(), ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} };
-  await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 420);
-  await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}
+  return withHostTelemetryLock(remoteRoot, async () => {
+    const previous = await readHostTelemetryConnection(remoteRoot);
+    if (previous?.inventoryHost && connection.inventoryHost && previous.inventoryHost !== connection.inventoryHost) throw helperError("Host inventory identity cannot change.", "Use the persisted exact Host identity when reconnecting; restore retained state rather than resetting authority.");
+    const resources = host ? await configureHostMetrics(remoteRoot, host) : await readHostMetrics(remoteRoot);
+    const previousConfig = previous ? await readProtected(files.config) : null;
+    const previousCredential = previous ? await readProtected(files.credential) : null;
+    const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
+    const descriptor = { inventory: { generation: randomBytes2(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...connection.caPem ? { caPem: connection.caPem } : {} }, schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: (/* @__PURE__ */ new Date()).toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} };
+    await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 420);
+    await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}
 `, 384);
-  if (connection.caPem) await atomicWrite(files.ca, connection.caPem, 420);
-  try {
-    await startRelay(files, network, Boolean(connection.caPem));
-  } catch (error) {
-    if (previous && previousConfig && previousCredential && (!previous.caConfigured || previousCa)) {
-      await atomicWrite(files.config, previousConfig, 420);
-      await atomicWrite(files.credential, previousCredential, 384);
-      if (previousCa) await atomicWrite(files.ca, previousCa, 420);
-      try {
-        await startRelay(files, previous.network, previous.caConfigured);
-      } catch {
-        throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile.");
+    if (connection.caPem) await atomicWrite(files.ca, connection.caPem, 420);
+    try {
+      await startRelay(files, network, Boolean(connection.caPem));
+    } catch (error) {
+      if (previous && previousConfig && previousCredential && (!previous.caConfigured || previousCa)) {
+        await atomicWrite(files.config, previousConfig, 420);
+        await atomicWrite(files.credential, previousCredential, 384);
+        if (previousCa) await atomicWrite(files.ca, previousCa, 420);
+        try {
+          await startRelay(files, previous.network, previous.caConfigured);
+        } catch {
+          throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile.");
+        }
+      } else {
+        await rm4(files.config, { force: true });
+        await rm4(files.credential, { force: true });
       }
-    } else {
-      await rm3(files.config, { force: true });
-      await rm3(files.credential, { force: true });
+      throw error;
     }
-    throw error;
-  }
-  await atomicWrite(files.descriptor, `${JSON.stringify(descriptor, null, 2)}
+    await atomicWrite(files.descriptor, `${JSON.stringify(descriptor, null, 2)}
 `, 384);
-  return await statusHostTelemetryRelay(remoteRoot);
+    await rm4(path7.join(files.directory, "inventory-credential"), { force: true });
+    return await statusHostTelemetryRelay(remoteRoot);
+  });
 }
 async function startRelay(files, network, caConfigured) {
   const existing = inspectRelay();
   if (existing) {
     if (!docker(["rm", "-f", RELAY_NAME]).ok) throw helperError("Host Telemetry relay could not be reconciled.", "Inspect Docker relay state and retry.");
   }
-  const hash2 = createHash3("sha256").update(await readFile5(files.config)).digest("hex");
-  const resources = await readHostMetrics(path5.dirname(files.directory));
+  const hash2 = createHash4("sha256").update(await readFile5(files.config)).digest("hex");
+  const resources = await readHostMetrics(path7.dirname(files.directory));
   const args = ["run", "--detach", "--name", RELAY_NAME, "--label", RELAY_LABEL, "--label", `com.sporades.relay-config=${hash2}`, "--network", network, "--network-alias", RELAY_ALIAS, "--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--memory", "192m", "--cpus", "0.5", "--pids-limit", "128", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", files.credential, "--mount", `type=bind,source=${files.config},target=/etc/otelcol/config.yaml,readonly`, ...caConfigured ? ["--mount", `type=bind,source=${files.ca},target=/etc/otelcol/ca.pem,readonly`] : [], RELAY_IMAGE, "--config=/etc/otelcol/config.yaml"];
   if (!docker(args).ok) throw helperError("Host Telemetry relay failed to start.", "Inspect protected relay configuration and Docker logs, then retry `sporades host telemetry connect`.");
   if (resources?.enabled && !docker(["network", "connect", HOST_METRICS_NETWORK, RELAY_NAME]).ok) throw helperError("Could not attach relay to the private metrics network.", "Retry telemetry reconcile.");
@@ -43943,7 +44239,7 @@ async function reconcileHostTelemetryRelay(remoteRoot, host, operation = "reconc
   const resources = host ? await configureHostMetrics(remoteRoot, host, operation) : await readHostMetrics(remoteRoot);
   const oldConfig = await readProtected(files.config);
   const config = renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: connection.caConfigured, resources });
-  const hash2 = createHash3("sha256").update(config).digest("hex");
+  const hash2 = createHash4("sha256").update(config).digest("hex");
   const existing = inspectRelay();
   const restart = !existing?.State?.Running || !existing?.NetworkSettings?.Networks?.[connection.network] || existing?.Config?.Labels?.["com.sporades.relay-config"] !== hash2 || resources?.enabled && !existing?.NetworkSettings?.Networks?.[HOST_METRICS_NETWORK];
   if (oldConfig !== config) await atomicWrite(files.config, config, 420);
@@ -43995,20 +44291,265 @@ async function checkHostTelemetryDelivery(remoteRoot) {
   return { ...result, origin: "host", traceId, relayReady, relayAccepted, backendStorage: "verification-unavailable", capsuleCoverage: "not-configured" };
 }
 
-// src/cli/host-autostart.ts
+// src/cli/host-inventory.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
-import { createHash as createHash4, randomBytes as randomBytes3 } from "node:crypto";
-import { lstat as lstat4, readFile as readFile6, writeFile as writeFile3, rename as rename4, rm as rm4 } from "node:fs/promises";
-import path6 from "node:path";
+import { createHash as createHash5, randomBytes as randomBytes3 } from "node:crypto";
+import { lstat as lstat6, open as open5, readFile as readFile6, readdir as readdir3, rename as rename5, rm as rm5 } from "node:fs/promises";
+import { request as httpsRequest2 } from "node:https";
+import path8 from "node:path";
+function directory(root) {
+  if (!path8.isAbsolute(root) || root === "/" || path8.normalize(root) !== root) throw new Error("Invalid Host inventory root.");
+  return path8.join(root, "telemetry");
+}
+async function protectedPath2(file, isDirectory = false) {
+  const stat2 = await lstat6(file);
+  if (stat2.isSymbolicLink() || (isDirectory ? !stat2.isDirectory() : !stat2.isFile()) || stat2.mode & 63 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unprotected Host inventory state.");
+}
+async function readState(root) {
+  const file = path8.join(directory(root), "inventory.json");
+  try {
+    await protectedPath2(file);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  let state;
+  try {
+    state = JSON.parse(await readFile6(file, "utf8"));
+  } catch {
+    throw new Error("Invalid inventory outbox.");
+  }
+  state.desired = validateInventory(state.desired);
+  if (typeof state.endpoint !== "string" || state.acknowledgement && (!Number.isSafeInteger(state.acknowledgement.revision) || !Number.isFinite(Date.parse(state.acknowledgement.acknowledgedAt)))) throw new Error("Invalid inventory outbox.");
+  return state;
+}
+async function atomicWrite2(file, content2) {
+  const temporary = `${file}.${randomBytes3(8).toString("hex")}.tmp`;
+  try {
+    const handle = await open5(temporary, "wx", 384);
+    try {
+      await handle.writeFile(content2);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename5(temporary, file);
+    const dir = await open5(path8.dirname(file), "r");
+    try {
+      await dir.sync();
+    } finally {
+      await dir.close();
+    }
+  } finally {
+    await rm5(temporary, { force: true });
+  }
+}
+async function registrySnapshot(root, previous) {
+  const capsules = [];
+  const hostsDirectory = path8.join(root, "hosts");
+  for (const dir of [root, hostsDirectory]) {
+    const stat2 = await lstat6(dir);
+    if (!stat2.isDirectory() || stat2.isSymbolicLink() || stat2.mode & 18 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unsafe Host registry root.");
+  }
+  const domains = await readdir3(hostsDirectory, { withFileTypes: true });
+  for (const domain of domains.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!inventoryHost(domain.name)) continue;
+    if (!domain.isDirectory() || domain.isSymbolicLink()) throw new Error("Unsafe Host registry directory.");
+    const registry = path8.join(hostsDirectory, domain.name, "registry");
+    const records = path8.join(registry, "capsules");
+    for (const dir of [registry, records]) {
+      const stat2 = await lstat6(dir);
+      if (!stat2.isDirectory() || stat2.isSymbolicLink() || stat2.mode & 18 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unsafe Host registry.");
+    }
+    for (const file of await readdir3(records, { withFileTypes: true })) {
+      if (!file.name.endsWith(".json")) continue;
+      if (!file.isFile() || file.isSymbolicLink()) throw new Error("Unsafe registry record.");
+      const recordPath = path8.join(records, file.name);
+      const stat2 = await lstat6(recordPath);
+      if (stat2.mode & 18 || process.geteuid && stat2.uid !== process.geteuid() || stat2.size > 8 * 1024 * 1024) throw new Error("Unsafe registry record.");
+      let record;
+      try {
+        record = JSON.parse(await readFile6(recordPath, "utf8"));
+      } catch {
+        throw new Error("Invalid Host registry record.");
+      }
+      if (record.domain !== domain.name || `${record.subname}.json` !== file.name || record.remoteCapsuleId && record.remoteCapsuleId !== `${domain.name}/${record.subname}`) throw new Error("Invalid registry identity.");
+      const state = record.status === "unregistered" ? "deleted" : record.telemetry?.disabled === true ? "opted-out" : record.status;
+      const disabled = ["deleted", "stopped", "opted-out"].includes(state);
+      const url = new URL(record.hostedUrl);
+      if (url.hostname !== `${record.subname}.${domain.name}`) throw new Error("Invalid registry address.");
+      const targets = disabled ? [] : [url.href, ...(record.aliasDomains ?? []).map((alias) => `${url.protocol}//${alias}/`)];
+      capsules.push({ id: `${domain.name}/${record.subname}`, state, changedAt: record.updatedAt, release: record.currentRelease?.id ?? null, targets });
+    }
+  }
+  for (const capsule of previous) {
+    if (!capsules.some((item) => item.id === capsule.id)) {
+      const domain = capsule.id.split("/")[0];
+      if (!domains.some((item) => item.name === domain)) throw new Error("Expected Host registry disappeared.");
+      capsules.push(capsule.state === "deleted" ? capsule : { ...capsule, state: "deleted", changedAt: (/* @__PURE__ */ new Date()).toISOString(), targets: [] });
+    }
+  }
+  return capsules;
+}
+async function queueLocked(root, connection) {
+  const previous = await readState(root);
+  if (previous && previous.desired.host !== connection.host) throw new Error("Inventory Host identity cannot change.");
+  const desired = validateInventory({ schemaVersion: 1, host: connection.host, revision: previous?.desired.revision ?? 1, capsules: await registrySnapshot(root, previous?.desired.capsules ?? []) });
+  const sameGeneration = previous?.connectionGeneration === connection.generation;
+  const changed = !previous || JSON.stringify(desired) !== JSON.stringify(previous.desired) || !sameGeneration;
+  if (changed && previous) desired.revision++;
+  const state = changed ? { desired, endpoint: connection.endpoint, connectionGeneration: connection.generation, acknowledgement: sameGeneration ? previous.acknowledgement : null, lastAttemptAt: previous?.lastAttemptAt ?? null, failure: null } : previous;
+  if (changed) await atomicWrite2(path8.join(directory(root), "inventory.json"), JSON.stringify(state) + "\n");
+  return state;
+}
+async function queueHostInventory(root) {
+  if (!await readHostTelemetryConnection(root)) return null;
+  return withHostTelemetryLock(root, async () => {
+    const connection = await readHostInventoryConnection(root);
+    return connection ? queueLocked(root, connection) : null;
+  });
+}
+async function hostInventoryStatus(root, snapshotFailed = false) {
+  const connected = await readHostTelemetryConnection(root);
+  const status = async () => {
+    const state = await readState(root);
+    let unavailable = false;
+    const connection = connected ? await readHostInventoryConnection(root).catch(() => {
+      unavailable = true;
+      return null;
+    }) : null;
+    const failed = snapshotFailed || unavailable;
+    const sameGeneration = Boolean(connection && state?.connectionGeneration === connection.generation);
+    const acknowledgement = sameGeneration ? state?.acknowledgement : null;
+    const reconcilerInstalled = spawnSync4("systemctl", ["is-enabled", `${inventoryUnit(root)}.timer`], { stdio: "ignore", timeout: 1e3 }).status === 0;
+    return { host: state?.desired.host ?? connection?.host ?? connected?.inventoryHost ?? null, desiredRevision: state?.desired.revision ?? null, acknowledgedRevision: acknowledgement?.revision ?? null, acknowledgedAt: acknowledgement?.acknowledgedAt ?? null, pending: Boolean(connected && (failed || !sameGeneration || !state || state.desired.revision !== acknowledgement?.revision)), stale: Boolean(connected && (failed || !acknowledgement || Date.now() - Date.parse(acknowledgement.acknowledgedAt) > 18e4)), lastAttemptAt: state?.lastAttemptAt ?? null, failure: failed ? "snapshot-unavailable" : sameGeneration ? state?.failure ?? null : connected ? "snapshot-unavailable" : null, reconcilerInstalled };
+  };
+  return connected ? withHostTelemetryLock(root, status) : status();
+}
+async function exportHostInventory(root) {
+  return (await queueHostInventory(root))?.desired ?? null;
+}
+async function reconcileHostInventory(root) {
+  if (!await readHostTelemetryConnection(root)) return hostInventoryStatus(root);
+  const captured = await withHostTelemetryLock(root, async () => {
+    const connection2 = await readHostInventoryConnection(root);
+    return connection2 ? { connection: connection2, state: await queueLocked(root, connection2) } : null;
+  });
+  if (!captured) return hostInventoryStatus(root);
+  const { state, connection } = captured;
+  const { credential, caPem: ca } = connection;
+  const body = JSON.stringify(state.desired);
+  const result = await new Promise((resolve) => {
+    const req = httpsRequest2(new URL(`/v1/inventory/${state.desired.host}`, state.endpoint), { method: "PUT", ...ca ? { ca } : {}, headers: { authorization: `Bearer ${credential}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (res) => {
+      let text2 = "";
+      res.once("error", () => resolve({ failure: "network-or-tls" }));
+      res.once("aborted", () => resolve({ failure: "network-or-tls" }));
+      res.on("data", (chunk) => {
+        text2 += chunk;
+        if (text2.length > 8192) req.destroy();
+      });
+      res.on("end", () => {
+        if (res.statusCode !== 200) {
+          resolve({ failure: res.statusCode === 401 || res.statusCode === 403 ? "auth" : res.statusCode === 409 ? "revision-conflict" : "destination" });
+          return;
+        }
+        try {
+          const acknowledgement = JSON.parse(text2).data;
+          if (acknowledgement.revision !== state.desired.revision || typeof acknowledgement.acknowledgedAt !== "string" || !Number.isFinite(Date.parse(acknowledgement.acknowledgedAt))) throw new Error();
+          resolve({ acknowledgement });
+        } catch {
+          resolve({ failure: "invalid-acknowledgement" });
+        }
+      });
+    });
+    const deadline = setTimeout(() => req.destroy(new Error("timeout")), 5e3);
+    req.once("close", () => clearTimeout(deadline));
+    req.once("error", () => resolve({ failure: "network-or-tls" }));
+    req.end(body);
+  });
+  await withHostTelemetryLock(root, async () => {
+    const current2 = await readState(root);
+    const active = await readHostInventoryConnection(root);
+    if (!active || active.generation !== connection.generation || !current2 || current2.connectionGeneration !== connection.generation || current2.desired.host !== state.desired.host) return;
+    if ((current2.acknowledgement?.revision ?? 0) > state.desired.revision) return;
+    if (result.acknowledgement && (!current2.acknowledgement || current2.acknowledgement.revision < result.acknowledgement.revision || current2.acknowledgement.revision === result.acknowledgement.revision && Date.parse(current2.acknowledgement.acknowledgedAt) <= Date.parse(result.acknowledgement.acknowledgedAt))) current2.acknowledgement = result.acknowledgement;
+    current2.lastAttemptAt = (/* @__PURE__ */ new Date()).toISOString();
+    current2.failure = result.failure ?? null;
+    await atomicWrite2(path8.join(directory(root), "inventory.json"), JSON.stringify(current2) + "\n");
+  });
+  return hostInventoryStatus(root);
+}
+function inventoryUnit(root) {
+  return `sporades-inventory-${createHash5("sha256").update(root).digest("hex").slice(0, 16)}`;
+}
+function kickHostInventory(root) {
+  spawnSync4("systemctl", ["start", "--no-block", `${inventoryUnit(root)}.service`], { stdio: "ignore", timeout: 1e3 });
+}
+async function installHostInventoryWorker(root) {
+  directory(root);
+  const probe = spawnSync4("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e3 });
+  if (probe.status !== 0 || probe.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-unavailable" };
+  const helper = path8.join(root, "bin", "sporades-host-helper");
+  for (const file of ["/etc/systemd/system", helper]) {
+    const stat2 = await lstat6(file);
+    if (stat2.isSymbolicLink() || stat2.uid !== 0 || stat2.mode & 18) throw new Error("Unsafe inventory worker installation path.");
+  }
+  const unit = inventoryUnit(root);
+  const marker = "# Managed by Sporades: lifecycle inventory\n";
+  const executable = JSON.stringify(helper).replace(/%/g, "%%").replace(/\$/g, () => "$$");
+  const encoded = Buffer.from(root).toString("base64url");
+  const files = {
+    [`${unit}.service`]: `${marker}[Unit]
+Description=Sporades lifecycle inventory
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${executable} --reconcile-inventory ${encoded}
+TimeoutStartSec=30
+UMask=0077
+`,
+    [`${unit}.timer`]: `${marker}[Unit]
+Description=Reconcile Sporades lifecycle inventory
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+RandomizedDelaySec=5s
+
+[Install]
+WantedBy=timers.target
+`
+  };
+  for (const [name2, content2] of Object.entries(files)) {
+    const file = path8.join("/etc/systemd/system", name2);
+    try {
+      const stat2 = await lstat6(file);
+      if (stat2.isSymbolicLink() || stat2.uid !== 0 || stat2.mode & 18 || !(await readFile6(file, "utf8")).startsWith(marker)) throw new Error("Inventory unit is operator-owned.");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await atomicWrite2(file, content2);
+  }
+  for (const args of [["daemon-reload"], ["enable", "--now", `${unit}.timer`]]) if (spawnSync4("systemctl", args, { timeout: 1e4, stdio: "ignore" }).status !== 0) throw new Error("Inventory worker installation failed.");
+  return { installed: true, unit: `${unit}.timer`, intervalSeconds: 60 };
+}
+
+// src/cli/host-autostart.ts
+import { spawnSync as spawnSync5 } from "node:child_process";
+import { createHash as createHash6, randomBytes as randomBytes4 } from "node:crypto";
+import { lstat as lstat7, readFile as readFile7, writeFile as writeFile2, rename as rename6, rm as rm6 } from "node:fs/promises";
+import path9 from "node:path";
 async function installHostAutostart(host) {
-  const probe = spawnSync4("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e4 });
+  const probe = spawnSync5("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e4 });
   if (probe.status !== 0 || probe.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-docker-unavailable" };
-  const unit = `sporades-capsules-${createHash4("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}.service`;
+  const unit = `sporades-capsules-${createHash6("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}.service`;
   const shutdownUnit = unit.replace(/\.service$/, "-shutdown.service");
-  const file = path6.join("/etc/systemd/system", unit);
-  const shutdownFile = path6.join("/etc/systemd/system", shutdownUnit);
+  const file = path9.join("/etc/systemd/system", unit);
+  const shutdownFile = path9.join("/etc/systemd/system", shutdownUnit);
   const marker = "# Managed by Sporades Host bootstrap: Capsule boot recovery\n";
-  const helper = path6.join(host.remoteRoot, "bin", "sporades-host-helper");
+  const helper = path9.join(host.remoteRoot, "bin", "sporades-host-helper");
   const encoded = Buffer.from(JSON.stringify({ alias: host.alias, domain: host.domain, scheme: host.scheme ?? "https", remoteRoot: host.remoteRoot })).toString("base64url");
   const quotedHelper = JSON.stringify(helper).replace(/%/g, "%%").replace(/\$/g, () => "$$");
   const content2 = `${marker}[Unit]
@@ -44048,7 +44589,7 @@ WantedBy=multi-user.target docker.service
 `;
   for (const target of ["/etc/systemd/system", helper, file, shutdownFile]) {
     try {
-      const s = await lstat4(target);
+      const s = await lstat7(target);
       if (s.isSymbolicLink() || s.mode & 18 || s.uid !== 0) throw new Error("unsafe");
     } catch (e) {
       if ((target === file || target === shutdownFile) && e.code === "ENOENT") continue;
@@ -44057,25 +44598,25 @@ WantedBy=multi-user.target docker.service
   }
   let changed = false;
   for (const [target, contents] of [[file, content2], [shutdownFile, shutdownContent]]) {
-    const before = await readFile6(target, "utf8").catch((e) => {
+    const before = await readFile7(target, "utf8").catch((e) => {
       if (e.code === "ENOENT") return null;
       throw e;
     });
     if (before && !before.startsWith(marker)) throw helperError("Host autostart service is operator-owned.", "Resolve the service name conflict before bootstrap.");
     if (before !== contents) {
-      const temporary = `${target}.${randomBytes3(8).toString("hex")}.tmp`;
-      await writeFile3(temporary, contents, { mode: 420, flag: "wx" });
+      const temporary = `${target}.${randomBytes4(8).toString("hex")}.tmp`;
+      await writeFile2(temporary, contents, { mode: 420, flag: "wx" });
       try {
-        await rename4(temporary, target);
+        await rename6(temporary, target);
       } finally {
-        await rm4(temporary, { force: true });
+        await rm6(temporary, { force: true });
       }
       changed = true;
     }
   }
-  if (changed && spawnSync4("systemctl", ["daemon-reload"], { timeout: 3e4 }).status !== 0) throw helperError("Cannot reload Host autostart service.", "Inspect systemd and retry bootstrap.");
-  if (spawnSync4("systemctl", ["enable", unit, shutdownUnit], { timeout: 3e4 }).status !== 0) throw helperError("Cannot enable Host autostart service.", "Inspect systemd and retry bootstrap.");
-  if (spawnSync4("systemctl", ["start", shutdownUnit], { timeout: 3e4 }).status !== 0) throw helperError("Cannot activate Host shutdown evidence.", "Inspect systemd and retry bootstrap.");
+  if (changed && spawnSync5("systemctl", ["daemon-reload"], { timeout: 3e4 }).status !== 0) throw helperError("Cannot reload Host autostart service.", "Inspect systemd and retry bootstrap.");
+  if (spawnSync5("systemctl", ["enable", unit, shutdownUnit], { timeout: 3e4 }).status !== 0) throw helperError("Cannot enable Host autostart service.", "Inspect systemd and retry bootstrap.");
+  if (spawnSync5("systemctl", ["start", shutdownUnit], { timeout: 3e4 }).status !== 0) throw helperError("Cannot activate Host shutdown evidence.", "Inspect systemd and retry bootstrap.");
   return { installed: true, unit, shutdownUnit, startsExistingCapsules: false };
 }
 
@@ -44100,7 +44641,7 @@ function hostedTelemetryCoverage(desired, running, runtime, expectedServiceName,
 }
 
 // src/cli/host-helper-validation.ts
-import path7 from "node:path";
+import path10 from "node:path";
 function missingCapsuleHint(request, purpose) {
   if (purpose === "push") {
     return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before pushing a release.`;
@@ -44248,7 +44789,7 @@ function validateListRequest(request) {
 }
 function validateListRegistryRecord(request, record, recordPath) {
   const capsuleRecord = record;
-  const expectedSubname = path7.basename(recordPath, ".json");
+  const expectedSubname = path10.basename(recordPath, ".json");
   const expectedRemoteCapsuleId = `${request.host.domain}/${typeof capsuleRecord?.subname === "string" ? capsuleRecord.subname : expectedSubname}`;
   const valid = capsuleRecord && typeof capsuleRecord.subname === "string" && capsuleRecord.subname.length > 0 && capsuleRecord.subname === expectedSubname && capsuleRecord.domain === request.host.domain && (capsuleRecord.remoteCapsuleId ?? expectedRemoteCapsuleId) === expectedRemoteCapsuleId;
   if (!valid) {
@@ -44361,7 +44902,7 @@ function validateInstallRequest(request) {
   if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(release.id)) {
     throw helperError("Invalid Hosted Capsule release ID.", "Push again to generate a fresh UTC-sortable release ID.");
   }
-  const deployFiles = resolveDeployFiles(release.deployFiles);
+  const deployFiles = resolveDeployFiles(release.deployFiles, true);
   if (JSON.stringify(release.deployFiles ?? []) !== JSON.stringify(deployFiles)) throw helperError("Invalid release deploy.files manifest.", "Rebuild with canonical relative paths and retry.");
   if (!Array.isArray(release.files) || release.files.some((file) => !isExpectedClaimedReleaseFile(file, deployFiles.map((entry) => entry.path)))) {
     throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
@@ -44377,8 +44918,8 @@ function validateInstallRequest(request) {
   if (!directories?.releases || !directories.release) {
     throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
   }
-  const expectedReleaseDirectory = path7.join(directories.releases, release.id);
-  if (path7.resolve(directories.release) !== path7.resolve(expectedReleaseDirectory)) {
+  const expectedReleaseDirectory = path10.join(directories.releases, release.id);
+  if (path10.resolve(directories.release) !== path10.resolve(expectedReleaseDirectory)) {
     throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
   }
 }
@@ -44459,7 +45000,7 @@ runHostHelperEntry().catch((error) => {
     },
     false
   );
-  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host"].includes(process.argv[2])) process.exitCode = 1;
+  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host", "--reconcile-inventory"].includes(process.argv[2])) process.exitCode = 1;
 });
 async function runHostHelperEntry() {
   if (process.argv[2] === "--install-host-helper" || process.argv[2] === "--install-host-helper-internal") {
@@ -44468,6 +45009,11 @@ async function runHostHelperEntry() {
   }
   if (["--resume-host", "--checkpoint-host"].includes(process.argv[2])) {
     await resumeHostAtBoot();
+    return;
+  }
+  if (process.argv[2] === "--reconcile-inventory") {
+    const root = Buffer.from(process.argv[3] ?? "", "base64url").toString();
+    writeEnvelope({ ok: true, data: await reconcileHostInventory(root), error: null });
     return;
   }
   await runHostHelperProcess();
@@ -44507,26 +45053,26 @@ async function runHostHelperInstaller() {
   const internal = process.argv[2] === "--install-host-helper-internal";
   const target = process.argv[3];
   const expectedChecksum = process.argv[4];
-  if (process.argv.length !== 5 || typeof target !== "string" || !path8.isAbsolute(target) || path8.basename(target) !== "sporades-host-helper" || !/^[a-f0-9]{64}$/.test(expectedChecksum ?? "")) {
+  if (process.argv.length !== 5 || typeof target !== "string" || !path11.isAbsolute(target) || path11.basename(target) !== "sporades-host-helper" || !/^[a-f0-9]{64}$/.test(expectedChecksum ?? "")) {
     throw helperError("Invalid Host helper upgrade request.", "Retry with `sporades host upgrade --host <alias>`.");
   }
   const stage = process.argv[1];
-  const directory = path8.dirname(target);
-  const expectedStage = path8.join(directory, `.sporades-host-helper-stage-${expectedChecksum}.mjs`);
+  const directory2 = path11.dirname(target);
+  const expectedStage = path11.join(directory2, `.sporades-host-helper-stage-${expectedChecksum}.mjs`);
   if (stage !== expectedStage) {
     throw helperError("Invalid staged Host helper path.", "Retry with `sporades host upgrade --host <alias>`.");
   }
   if (!internal) {
     const timeoutMs = hostHelperUpgradeTimeoutMs("SPORADES_HOST_UPGRADE_LOCK_TIMEOUT_MS", 6e4);
     const flock = process.env.SPORADES_TEST_FLOCK_PATH || "/usr/bin/flock";
-    const result = spawnSync5(flock, [
+    const result = spawnSync6(flock, [
       "--exclusive",
       "--timeout",
       String(timeoutMs / 1e3),
       "--conflict-exit-code",
       "75",
       "--no-fork",
-      path8.join(directory, ".sporades-host-helper.upgrade.lock"),
+      path11.join(directory2, ".sporades-host-helper.upgrade.lock"),
       process.execPath,
       stage,
       "--install-host-helper-internal",
@@ -44567,14 +45113,14 @@ function hostHelperUpgradeTimeoutMs(name2, fallback) {
   return value;
 }
 async function installHostHelperPayload(stage, target, expectedChecksum) {
-  const directory = path8.dirname(target);
-  const pointer = path8.join(directory, ".sporades-host-helper.active");
-  const blocked = path8.join(directory, ".sporades-host-helper.upgrade-blocked");
-  const needsDrain = path8.join(directory, ".sporades-host-helper.needs-drain");
+  const directory2 = path11.dirname(target);
+  const pointer = path11.join(directory2, ".sporades-host-helper.active");
+  const blocked = path11.join(directory2, ".sporades-host-helper.upgrade-blocked");
+  const needsDrain = path11.join(directory2, ".sporades-host-helper.needs-drain");
   const newPayloadName = `.sporades-host-helper-payload-${expectedChecksum}.mjs`;
-  const newPayload = path8.join(directory, newPayloadName);
-  await mkdir4(directory, { recursive: true });
-  if (createHash5("sha256").update(await readFile7(stage)).digest("hex") !== expectedChecksum) {
+  const newPayload = path11.join(directory2, newPayloadName);
+  await mkdir4(directory2, { recursive: true });
+  if (createHash7("sha256").update(await readFile8(stage)).digest("hex") !== expectedChecksum) {
     throw helperError("Staged Host helper checksum did not match.", "Upload the immutable Host helper again, then retry the upgrade.");
   }
   await publishHostHelperFile(stage, newPayload, 493);
@@ -44582,7 +45128,7 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
   let firstCooperativeUpgrade = true;
   let currentTarget;
   try {
-    currentTarget = await readFile7(target);
+    currentTarget = await readFile8(target);
   } catch {
     throw helperError("Current Host helper was not found.", "Install the current Host helper before retrying the upgrade.");
   }
@@ -44590,53 +45136,53 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
 # ${HOST_HELPER_DISPATCHER_MARKER}
 `)) {
     firstCooperativeUpgrade = false;
-    previousPayloadName = (await readFile7(pointer, "utf8")).trim();
-    await validateHostHelperPayload(directory, previousPayloadName);
+    previousPayloadName = (await readFile8(pointer, "utf8")).trim();
+    await validateHostHelperPayload(directory2, previousPayloadName);
   } else {
-    const previousChecksum = createHash5("sha256").update(currentTarget).digest("hex");
+    const previousChecksum = createHash7("sha256").update(currentTarget).digest("hex");
     previousPayloadName = `.sporades-host-helper-payload-${previousChecksum}.mjs`;
-    await publishHostHelperFile(target, path8.join(directory, previousPayloadName), 493);
+    await publishHostHelperFile(target, path11.join(directory2, previousPayloadName), 493);
     await writeHostHelperPointer(pointer, previousPayloadName);
-    await writeFile4(needsDrain, "legacy-helper-drain-required\n", { mode: 384 });
+    await writeFile3(needsDrain, "legacy-helper-drain-required\n", { mode: 384 });
   }
-  await writeFile4(blocked, "upgrade-in-progress\n", { mode: 384 });
+  await writeFile3(blocked, "upgrade-in-progress\n", { mode: 384 });
   await publishHostHelperBytes(Buffer.from(HOST_HELPER_DISPATCHER, "utf8"), target, 493);
   await fakeManagedRouteLockPause("SPORADES_FAKE_HOST_UPGRADE_PAUSE_AFTER_DISPATCHER_MS");
   try {
     if (firstCooperativeUpgrade || await pathExists(needsDrain)) await drainUncooperativeHostHelpers(target);
     await writeHostHelperPointer(pointer, newPayloadName);
-    await rm5(needsDrain, { force: true });
-    await rm5(blocked, { force: true });
-    await rm5(stage, { force: true });
+    await rm7(needsDrain, { force: true });
+    await rm7(blocked, { force: true });
+    await rm7(stage, { force: true });
   } catch (error) {
-    await writeFile4(blocked, "upgrade-recovery-required\n", { mode: 384 });
+    await writeFile3(blocked, "upgrade-recovery-required\n", { mode: 384 });
     throw error;
   }
 }
 async function publishHostHelperFile(source, target, mode) {
-  const contents = await readFile7(source);
+  const contents = await readFile8(source);
   await publishHostHelperBytes(contents, target, mode);
 }
 async function publishHostHelperBytes(contents, target, mode) {
-  const temporary = `${target}.tmp-${process.pid}-${randomBytes4(8).toString("hex")}`;
+  const temporary = `${target}.tmp-${process.pid}-${randomBytes5(8).toString("hex")}`;
   try {
-    await writeFile4(temporary, contents, { flag: "wx", mode });
-    await chmod2(temporary, mode);
-    await rename5(temporary, target);
+    await writeFile3(temporary, contents, { flag: "wx", mode });
+    await chmod(temporary, mode);
+    await rename7(temporary, target);
   } finally {
-    await rm5(temporary, { force: true });
+    await rm7(temporary, { force: true });
   }
 }
 async function writeHostHelperPointer(pointer, payloadName) {
-  await validateHostHelperPayload(path8.dirname(pointer), payloadName);
+  await validateHostHelperPayload(path11.dirname(pointer), payloadName);
   await publishHostHelperBytes(Buffer.from(`${payloadName}
 `, "utf8"), pointer, 384);
 }
-async function validateHostHelperPayload(directory, payloadName) {
+async function validateHostHelperPayload(directory2, payloadName) {
   const match = /^\.sporades-host-helper-payload-([a-f0-9]{64})\.mjs$/.exec(payloadName);
   if (!match) throw helperError("Host helper payload pointer was invalid.", "Retry the Host helper upgrade.");
-  const payload = path8.join(directory, payloadName);
-  const actual = createHash5("sha256").update(await readFile7(payload)).digest("hex");
+  const payload = path11.join(directory2, payloadName);
+  const actual = createHash7("sha256").update(await readFile8(payload)).digest("hex");
   if (actual !== match[1]) throw helperError("Host helper payload checksum did not match.", "Retry the Host helper upgrade.");
 }
 async function drainUncooperativeHostHelpers(target) {
@@ -44686,16 +45232,16 @@ function hostHelperProcScanMaxEntries() {
 async function findUncooperativeHostHelperProcesses(target, deadline) {
   const procRoot = process.env.SPORADES_TEST_PROC_ROOT || "/proc";
   const maxEntries = hostHelperProcScanMaxEntries();
-  let directory;
+  let directory2;
   try {
-    directory = await opendir(procRoot);
+    directory2 = await opendir(procRoot);
   } catch {
     throw helperError("Host process inspection is unavailable.", "Mount Linux procfs at /proc, then retry the Host helper upgrade.");
   }
   const active = [];
   let inspected = 0;
   try {
-    for await (const entry of directory) {
+    for await (const entry of directory2) {
       assertHostHelperDrainDeadline(deadline);
       if (!/^[1-9][0-9]*$/.test(entry.name) || Number(entry.name) === process.pid) continue;
       inspected += 1;
@@ -44706,11 +45252,11 @@ async function findUncooperativeHostHelperProcesses(target, deadline) {
         );
       }
       try {
-        const processDir = path8.join(procRoot, entry.name);
-        const argv = (await readFile7(path8.join(processDir, "cmdline"))).toString("utf8").split("\0").filter(Boolean);
+        const processDir = path11.join(procRoot, entry.name);
+        const argv = (await readFile8(path11.join(processDir, "cmdline"))).toString("utf8").split("\0").filter(Boolean);
         assertHostHelperDrainDeadline(deadline);
         if (argv[1] !== target) continue;
-        const environment = (await readFile7(path8.join(processDir, "environ"))).toString("utf8").split("\0");
+        const environment = (await readFile8(path11.join(processDir, "environ"))).toString("utf8").split("\0");
         assertHostHelperDrainDeadline(deadline);
         if (environment.includes("SPORADES_HOST_DISPATCH_LOCK_HELD=1")) continue;
         active.push(Number(entry.name));
@@ -44719,7 +45265,7 @@ async function findUncooperativeHostHelperProcesses(target, deadline) {
       }
     }
   } finally {
-    await directory.close().catch(() => {
+    await directory2.close().catch(() => {
     });
   }
   return active;
@@ -44766,7 +45312,7 @@ async function runManagedRouteActionProcess(request, input, lockIdentity) {
     process.execPath,
     process.argv[1]
   ] : [process.execPath, process.argv[1]];
-  const result = spawnSync5(flock, [
+  const result = spawnSync6(flock, [
     lockIdentity.routeLockFile && request.action !== "capsule.register" ? "--shared" : "--exclusive",
     "--timeout",
     String(timeoutMs / 1e3),
@@ -44824,6 +45370,7 @@ function managedRouteMutationLockIdentity(request) {
     case "capsule.release.rollback":
       validateRollbackRequest(request);
       break;
+    case "capsule.admission.publish":
     case "capsule.release.reconcile":
     case "capsule.resume":
     case "capsule.shutdown.checkpoint":
@@ -44849,7 +45396,7 @@ function managedRouteMutationLockIdentity(request) {
         const domainDirectory = canonicalManagedRouteDomainDirectory(request, remoteRoot2);
         const bootstrapTrust = bootstrapTrustManifest(request);
         return {
-          globalLockFile: path8.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"),
+          globalLockFile: path11.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"),
           routeLockFile: null,
           domainDirectory,
           bootstrapTrust
@@ -44862,7 +45409,7 @@ function managedRouteMutationLockIdentity(request) {
     case "host.telemetry.reconcile": {
       const remoteRoot2 = validateCanonicalHostRouteRoot(request);
       return {
-        globalLockFile: path8.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"),
+        globalLockFile: path11.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"),
         routeLockFile: null,
         domainDirectory: canonicalManagedRouteDomainDirectory(request, remoteRoot2)
       };
@@ -44872,7 +45419,7 @@ function managedRouteMutationLockIdentity(request) {
   }
   const remoteRoot = validateCanonicalHostRouteRoot(request);
   return {
-    globalLockFile: path8.join(remoteRoot, "bin", ".sporades-host-helper.host-route.lock"),
+    globalLockFile: path11.join(remoteRoot, "bin", ".sporades-host-helper.host-route.lock"),
     routeLockFile: `${canonicalManagedRouteFile(request, remoteRoot)}.lock`,
     domainDirectory: canonicalManagedRouteDomainDirectory(request, remoteRoot),
     ...actionCanProvisionCapsuleHttpLog(request.action) ? { routeLogTrust: capsuleHttpLogTrustManifest(request, remoteRoot) } : {}
@@ -44883,7 +45430,7 @@ function actionCanProvisionCapsuleHttpLog(action) {
 }
 function validateCanonicalHostRouteRoot(request) {
   const remoteRoot = request.host.remoteRoot;
-  if (typeof remoteRoot !== "string" || remoteRoot.length < 2 || remoteRoot.length > 4096 || !path8.isAbsolute(remoteRoot) || /[\0\r\n]/.test(remoteRoot) || path8.normalize(remoteRoot) !== remoteRoot || remoteRoot === path8.parse(remoteRoot).root) {
+  if (typeof remoteRoot !== "string" || remoteRoot.length < 2 || remoteRoot.length > 4096 || !path11.isAbsolute(remoteRoot) || /[\0\r\n]/.test(remoteRoot) || path11.normalize(remoteRoot) !== remoteRoot || remoteRoot === path11.parse(remoteRoot).root) {
     throw helperError("Invalid Hosted Capsule route identity.", "Use a bounded absolute canonical Host remote root and retry.");
   }
   const domain = request.host.domain;
@@ -44902,47 +45449,47 @@ function canonicalManagedRouteFile(request, validatedRemoteRoot = validateCanoni
     throw helperError("Invalid Hosted Capsule route identity.", "Use a canonical DNS-safe Capsule subname and retry.");
   }
   const domainDirectory = canonicalManagedRouteDomainDirectory(request, validatedRemoteRoot);
-  const routeFile = path8.resolve(domainDirectory, `${subname}.caddy`);
-  if (path8.dirname(routeFile) !== domainDirectory) {
+  const routeFile = path11.resolve(domainDirectory, `${subname}.caddy`);
+  if (path11.dirname(routeFile) !== domainDirectory) {
     throw helperError("Invalid Hosted Capsule route identity.", "Use a route identity within the configured Hosted domain directory and retry.");
   }
   return routeFile;
 }
 function canonicalManagedRouteDomainDirectory(request, validatedRemoteRoot = validateCanonicalHostRouteRoot(request)) {
-  const hostsDirectory = path8.resolve(validatedRemoteRoot, "caddy", "hosts");
-  const domainDirectory = path8.resolve(hostsDirectory, request.host.domain);
-  if (path8.dirname(domainDirectory) !== hostsDirectory) {
+  const hostsDirectory = path11.resolve(validatedRemoteRoot, "caddy", "hosts");
+  const domainDirectory = path11.resolve(hostsDirectory, request.host.domain);
+  if (path11.dirname(domainDirectory) !== hostsDirectory) {
     throw helperError("Invalid Hosted Capsule route identity.", "Use a route identity within the configured Hosted domain directory and retry.");
   }
   return domainDirectory;
 }
 async function captureManagedRouteTrust(lockIdentity, createMissing) {
-  const remoteRoot = path8.dirname(path8.dirname(lockIdentity.globalLockFile));
+  const remoteRoot = path11.dirname(path11.dirname(lockIdentity.globalLockFile));
   const canonicalRemoteRoot = await canonicalTrustedTarget(remoteRoot);
   const directoryIdentities = /* @__PURE__ */ new Map();
-  const captureDirectory = async (directory, caddyOwned = false) => {
-    const expectedOwner = caddyOwned ? await expectedCaddyOwnerForExistingPath(directory) : void 0;
-    for (const identity of await trustedDirectoryChain(directory, createMissing, canonicalRemoteRoot, expectedOwner)) {
+  const captureDirectory = async (directory2, caddyOwned = false) => {
+    const expectedOwner = caddyOwned ? await expectedCaddyOwnerForExistingPath(directory2) : void 0;
+    for (const identity of await trustedDirectoryChain(directory2, createMissing, canonicalRemoteRoot, expectedOwner)) {
       directoryIdentities.set(identity.path, identity);
     }
   };
   await captureDirectory(remoteRoot);
-  await captureDirectory(path8.join(canonicalRemoteRoot, "bin"));
+  await captureDirectory(path11.join(canonicalRemoteRoot, "bin"));
   let routeFile = null;
   if (lockIdentity.routeLockFile) {
     routeFile = lockIdentity.routeLockFile.slice(0, -5);
-    const domainDirectory = path8.dirname(routeFile);
-    await captureDirectory(path8.join(canonicalRemoteRoot, "caddy"));
-    await captureDirectory(path8.join(canonicalRemoteRoot, "caddy", "hosts"));
+    const domainDirectory = path11.dirname(routeFile);
+    await captureDirectory(path11.join(canonicalRemoteRoot, "caddy"));
+    await captureDirectory(path11.join(canonicalRemoteRoot, "caddy", "hosts"));
     await captureDirectory(await canonicalTrustedTarget(domainDirectory));
     await assertTrustedRegularFileIfExists(routeFile);
   } else {
-    await captureDirectory(path8.join(canonicalRemoteRoot, "caddy"));
-    await captureDirectory(path8.join(canonicalRemoteRoot, "caddy", "hosts"));
+    await captureDirectory(path11.join(canonicalRemoteRoot, "caddy"));
+    await captureDirectory(path11.join(canonicalRemoteRoot, "caddy", "hosts"));
     await captureDirectory(await canonicalTrustedTarget(lockIdentity.domainDirectory));
-    for (const directory of lockIdentity.bootstrapTrust?.directories ?? []) await captureDirectory(directory.path, directory.caddyOwned === true);
+    for (const directory2 of lockIdentity.bootstrapTrust?.directories ?? []) await captureDirectory(directory2.path, directory2.caddyOwned === true);
   }
-  for (const directory of lockIdentity.routeLogTrust?.directories ?? []) await captureDirectory(directory.path, directory.caddyOwned === true);
+  for (const directory2 of lockIdentity.routeLogTrust?.directories ?? []) await captureDirectory(directory2.path, directory2.caddyOwned === true);
   await assertTrustedRegularFileIfExists(lockIdentity.globalLockFile);
   if (lockIdentity.routeLockFile) await assertTrustedRegularFileIfExists(lockIdentity.routeLockFile);
   const finalFiles = [];
@@ -44962,20 +45509,20 @@ async function captureManagedRouteTrust(lockIdentity, createMissing) {
   return { directories: [...directoryIdentities.values()], managedRoot: canonicalRemoteRoot, finalFiles, globalLockFile: lockIdentity.globalLockFile, routeLockFile: lockIdentity.routeLockFile, routeFile };
 }
 async function canonicalTrustedTarget(target) {
-  if (!path8.isAbsolute(target) || path8.normalize(target) !== target) throw routeTrustError();
+  if (!path11.isAbsolute(target) || path11.normalize(target) !== target) throw routeTrustError();
   return target;
 }
 async function trustedDirectoryChain(target, createMissing, managedRoot, targetOwner) {
   const canonicalTarget = await canonicalTrustedTarget(target);
-  const parsed = path8.parse(canonicalTarget);
-  const components = canonicalTarget.slice(parsed.root.length).split(path8.sep).filter(Boolean);
+  const parsed = path11.parse(canonicalTarget);
+  const components = canonicalTarget.slice(parsed.root.length).split(path11.sep).filter(Boolean);
   const identities = [];
   let current2 = parsed.root;
   for (const component of [null, ...components]) {
-    if (component !== null) current2 = path8.join(current2, component);
+    if (component !== null) current2 = path11.join(current2, component);
     let details;
     try {
-      details = await lstat5(current2);
+      details = await lstat8(current2);
     } catch (error) {
       if (!createMissing || errorDetails(error).code !== "ENOENT") throw routeTrustError();
       try {
@@ -44984,12 +45531,12 @@ async function trustedDirectoryChain(target, createMissing, managedRoot, targetO
         if (errorDetails(mkdirError).code !== "EEXIST") throw routeTrustError();
       }
       try {
-        details = await lstat5(current2);
+        details = await lstat8(current2);
       } catch {
         throw routeTrustError();
       }
     }
-    const managed = current2 === managedRoot || current2.startsWith(`${managedRoot}${path8.sep}`);
+    const managed = current2 === managedRoot || current2.startsWith(`${managedRoot}${path11.sep}`);
     const expectedOwner = current2 === canonicalTarget ? targetOwner : void 0;
     if (!details.isDirectory() || details.isSymbolicLink() || !(expectedOwner ? trustedExactOwnerMetadata(details, expectedOwner) : managed ? trustedHostPathMetadata(details) : trustedAnchorPathMetadata(details))) throw routeTrustError();
     identities.push({ path: current2, dev: details.dev, ino: details.ino, ...expectedOwner ? { expectedOwner } : {} });
@@ -45002,7 +45549,7 @@ function trustedExactOwnerMetadata(details, owner) {
 async function expectedCaddyOwnerForExistingPath(target) {
   let details;
   try {
-    details = await lstat5(target);
+    details = await lstat8(target);
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") return void 0;
     throw routeTrustError();
@@ -45032,7 +45579,7 @@ function trustedAnchorPathMetadata(details) {
 async function assertTrustedRegularFileIfExists(file, expectedOwner) {
   let details;
   try {
-    details = await lstat5(file);
+    details = await lstat8(file);
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") return null;
     throw routeTrustError();
@@ -45046,11 +45593,11 @@ async function assertActiveManagedRouteTrust(routeFile) {
   for (const expected of trust.directories) {
     let current2;
     try {
-      current2 = await lstat5(expected.path);
+      current2 = await lstat8(expected.path);
     } catch {
       throw routeTrustError();
     }
-    const managed = expected.path === trust.managedRoot || expected.path.startsWith(`${trust.managedRoot}${path8.sep}`);
+    const managed = expected.path === trust.managedRoot || expected.path.startsWith(`${trust.managedRoot}${path11.sep}`);
     if (!current2.isDirectory() || current2.isSymbolicLink() || !(expected.expectedOwner ? trustedExactOwnerMetadata(current2, expected.expectedOwner) : managed ? trustedHostPathMetadata(current2) : trustedAnchorPathMetadata(current2)) || current2.dev !== expected.dev || current2.ino !== expected.ino) throw routeTrustError();
   }
   await assertTrustedRegularFileIfExists(trust.globalLockFile);
@@ -45090,7 +45637,7 @@ async function inspectHostedTelemetryCoverage(request, record, connection) {
   const serviceName = `${request.host.domain}/${record.subname}`;
   const desired = Boolean(connection) && record.telemetry?.disabled !== true;
   const expectedConfig = hostedTelemetryConfig(connection, { domain: request.host.domain, subname: record.subname, telemetry: record.telemetry });
-  const expectedHash = createHash5("sha256").update(JSON.stringify(expectedConfig)).digest("hex");
+  const expectedHash = createHash7("sha256").update(JSON.stringify(expectedConfig)).digest("hex");
   const name2 = createHostedContainerName(request.host.domain, record.subname);
   const state = inspectContainerRunning(name2);
   if (!state.ok || !state.running) return { capsule: serviceName, optedOut: record.telemetry?.disabled === true, ...hostedTelemetryCoverage(desired, false, null) };
@@ -45113,7 +45660,8 @@ async function hostTelemetryStatusWithCoverage(request, relayStatus) {
   for (const record of records) {
     if (record.status !== "unregistered") capsules.push(await inspectHostedTelemetryCoverage(request, record, connection));
   }
-  return { ...relay, capsuleCoverage: {
+  const snapshot = await queueHostInventory(request.host.remoteRoot).catch(() => false);
+  return { ...relay, inventory: await hostInventoryStatus(request.host.remoteRoot, snapshot === false), capsuleCoverage: {
     capsules,
     pendingRestart: capsules.filter((capsule) => capsule.restartRequired === true).length,
     pendingCoverage: capsules.filter((capsule) => capsule.state !== "instrumented" && capsule.state !== "disabled").length,
@@ -45121,6 +45669,20 @@ async function hostTelemetryStatusWithCoverage(request, relayStatus) {
   } };
 }
 async function main(request) {
+  try {
+    await dispatchMain(request);
+  } finally {
+    const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.reconcile", "host.telemetry.enable", "host.telemetry.disable"];
+    if (mutations.includes(request.action)) {
+      try {
+        if (await queueHostInventory(request.host.remoteRoot)) kickHostInventory(request.host.remoteRoot);
+      } catch {
+        process.stderr.write("Host inventory is pending; periodic reconciliation will retry.\n");
+      }
+    }
+  }
+}
+async function dispatchMain(request) {
   if (request.action === "schedules.inspect") validateScheduleInspectionRequest(request);
   hostHelperConfig = await loadHostHelperConfig(request);
   if (request.action.startsWith("host.telemetry.")) {
@@ -45129,9 +45691,27 @@ async function main(request) {
       throw helperError("Invalid Host Telemetry request.", "Upgrade the local CLI and Host helper together.");
     }
     validateCanonicalHostRouteRoot(request);
-    const data2 = capsuleOperation ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable") : request.action === "host.telemetry.connect" ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain)) : ["host.telemetry.reconcile", "host.telemetry.resources-enable", "host.telemetry.resources-disable", "host.telemetry.resources-remove"].includes(request.action) ? await hostTelemetryStatusWithCoverage(request, await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain, request.action === "host.telemetry.reconcile" ? "reconcile" : request.action.slice("host.telemetry.resources-".length))) : request.action === "host.telemetry.status" ? await hostTelemetryStatusWithCoverage(request) : request.action === "host.telemetry.check" ? await checkHostTelemetryDelivery(request.host.remoteRoot) : null;
+    if (request.action === "host.telemetry.connect" || request.action === "host.telemetry.reconcile") await installHostInventoryWorker(request.host.remoteRoot);
+    const data2 = request.action === "host.telemetry.inventory-export" ? { inventory: await exportHostInventory(request.host.remoteRoot) } : request.action === "host.telemetry.inventory-reconcile" ? await reconcileHostInventory(request.host.remoteRoot) : capsuleOperation ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable") : request.action === "host.telemetry.connect" ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain)) : ["host.telemetry.reconcile", "host.telemetry.resources-enable", "host.telemetry.resources-disable", "host.telemetry.resources-remove"].includes(request.action) ? await hostTelemetryStatusWithCoverage(request, await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain, request.action === "host.telemetry.reconcile" ? "reconcile" : request.action.slice("host.telemetry.resources-".length))) : request.action === "host.telemetry.status" ? await hostTelemetryStatusWithCoverage(request) : request.action === "host.telemetry.check" ? await checkHostTelemetryDelivery(request.host.remoteRoot) : null;
     if (!data2) throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, check, enable, or disable.");
     writeEnvelope({ ok: true, data: data2, error: null });
+    return;
+  }
+  if (request.action === "capsule.admission.publish") {
+    validateLifecycleRequest(request);
+    const contents = request.admission?.contents;
+    if (contents !== null && (typeof contents !== "string" || contents.length > Math.ceil(ADMISSION_LIMITS.bytes / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(contents))) throw helperError("Invalid admission publication.", "Publish a bounded v1 policy.");
+    const bytes = contents === null ? null : Buffer.from(contents, "base64");
+    if (bytes) parseAdmissionPolicy(bytes);
+    const record = await readRegistryRecordForCapsule(request, "lifecycle");
+    assertRegistryRecordMatchesRequest(request, record);
+    const release = normaliseReleaseHistory(record).find((entry) => entry.id === record.currentRelease?.id);
+    const policy = resolveDeployFiles(release?.source?.deployFiles, true).find((file) => file.update === "admission");
+    if (!policy) throw helperError("The deployed Capsule has no admission policy.", "Declare admissionPolicy.path and push it first.");
+    const paths2 = canonicalReleasePaths(request);
+    if (await readPreservedFileAttempt(attemptJournalPath(hostedPreservedFilesRoot(paths2)))) throw helperError("Interrupted deployment requires recovery.", "Run sporades host reconcile first.");
+    await publishAdmissionPolicy(admissionStorageRoot(hostedPreservedFilesRoot(paths2)), policy.path, bytes);
+    writeEnvelope({ ok: true, data: { published: true, removed: bytes === null, digest: bytes ? parseAdmissionPolicy(bytes).digest : null }, error: null });
     return;
   }
   if (request.action === "capsule.register") {
@@ -45242,7 +45822,7 @@ function inspectCapsuleSchedules(request) {
   }), [], true);
 }
 function runCapsuleAccessKeyAction(request) {
-  const exactKeys2 = (value, keys) => Object.keys(value).length === keys.length && Object.keys(value).every((key) => keys.includes(key));
+  const exactKeys2 = (value, keys2) => Object.keys(value).length === keys2.length && Object.keys(value).every((key) => keys2.includes(key));
   if (!exactKeys2(request, ["action", "host", "capsule", "accessKeys"]) || !request.host || typeof request.host !== "object" || Array.isArray(request.host) || !exactKeys2(request.host, ["alias", "domain", "scheme", "remoteRoot"]) || !request.capsule || typeof request.capsule !== "object" || Array.isArray(request.capsule) || !exactKeys2(request.capsule, ["subname"])) {
     throw Object.assign(helperError("Invalid Hosted Access-key action request.", "Upgrade the local Sporades CLI and Host helper together."), { code: "INVALID_ACCESS_KEY_ACTION_INPUT" });
   }
@@ -45304,12 +45884,14 @@ async function bootstrapHost(request) {
   const accessLog = await provisionCaddyAccessLog(request, bootstrap);
   const caddy = await installCaddyBootstrapConfig(request, bootstrap);
   const autostart = await installHostAutostart(request.host);
+  const inventoryWorker = await installHostInventoryWorker(request.host.remoteRoot);
   const telemetry = await readHostTelemetryConnection(request.host.remoteRoot) ? await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain) : null;
   writeEnvelope({
     ok: true,
     data: {
       bootstrapped: true,
       autostart,
+      inventoryWorker,
       telemetry,
       domain: request.host.domain,
       remoteRoot: request.host.remoteRoot,
@@ -45326,8 +45908,8 @@ async function bootstrapHost(request) {
 }
 async function registerCapsule(request) {
   validateRegisterRequest(request);
-  const claimPath = path8.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "registration-claims", `${request.capsule.subname}.json`);
-  const pendingClaim = await readFile7(claimPath, "utf8").then((contents) => JSON.parse(contents)).catch((error) => {
+  const claimPath = path11.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "registration-claims", `${request.capsule.subname}.json`);
+  const pendingClaim = await readFile8(claimPath, "utf8").then((contents) => JSON.parse(contents)).catch((error) => {
     if (errorDetails(error).code === "ENOENT") return null;
     throw error;
   });
@@ -45351,7 +45933,7 @@ async function registerCapsule(request) {
   let claimWritten = Boolean(pendingClaim);
   const reserveClaim = async (previous = null) => {
     if (claimWritten) return;
-    await mkdir4(path8.dirname(claimPath), { recursive: true });
+    await mkdir4(path11.dirname(claimPath), { recursive: true });
     await publishHostHelperBytes(Buffer.from(JSON.stringify({
       domain: registration.domain,
       subname: registration.subname,
@@ -45361,7 +45943,7 @@ async function registerCapsule(request) {
     claimWritten = true;
   };
   try {
-    await mkdir4(path8.dirname(registryLockPath(request)), { recursive: true });
+    await mkdir4(path11.dirname(registryLockPath(request)), { recursive: true });
     await withRegistryLock(request, async () => {
       if (await pathExists(registration.registryRecord)) {
         const existing = await readRegistryRecordForCapsule(request, "register");
@@ -45373,7 +45955,7 @@ async function registerCapsule(request) {
           await reserveClaim(existing);
           priorRuntime = captureCapsuleRuntimeSettlement(request, existing);
           quiesceCapsuleRuntime(priorRuntime);
-          await mkdir4(path8.dirname(registration.registryRecord), { recursive: true });
+          await mkdir4(path11.dirname(registration.registryRecord), { recursive: true });
           await mkdir4(registration.directories.releases, { recursive: true });
           routeAttempted = true;
           await writeUnavailableRoute(registration.lifecycle);
@@ -45391,7 +45973,7 @@ async function registerCapsule(request) {
       await assertHostnamesAvailable(request.host.remoteRoot, [registration.route.hostname, ...registration.aliasDomains], registration.remoteCapsuleId);
       priorRoute = await captureReleaseInstallRoute(request, null);
       await reserveClaim();
-      await mkdir4(path8.dirname(registration.registryRecord), { recursive: true });
+      await mkdir4(path11.dirname(registration.registryRecord), { recursive: true });
       await mkdir4(registration.directories.releases, { recursive: true });
       await mkdir4(registration.directories.logs, { recursive: true });
       routeAttempted = true;
@@ -45421,7 +46003,7 @@ async function registerCapsule(request) {
   }
   if (claimWritten && recoveryErrors.length === 0 && (!admissionError || !pendingClaim)) {
     try {
-      await rm5(claimPath);
+      await rm7(claimPath);
     } catch (error) {
       recoveryErrors.push(`Reservation cleanup: ${errorDetails(error).message}`);
     }
@@ -45457,7 +46039,7 @@ async function registerCapsule(request) {
 }
 async function rotateCapsuleSealedEnvKey(request) {
   validateSealedEnvRotationRequest(request);
-  await mkdir4(path8.dirname(registryLockPath(request)), { recursive: true });
+  await mkdir4(path11.dirname(registryLockPath(request)), { recursive: true });
   let data2;
   let priorRuntime = null;
   let rotationError = null;
@@ -45473,7 +46055,7 @@ async function rotateCapsuleSealedEnvKey(request) {
       }
       priorRuntime = captureCapsuleRuntimeSettlement(request, record);
       quiesceCapsuleRuntime(priorRuntime);
-      const dataDirectory = path8.join(request.host.remoteRoot, "hosts", request.host.domain, "capsules", request.capsule.subname, "data");
+      const dataDirectory = path11.join(request.host.remoteRoot, "hosts", request.host.domain, "capsules", request.capsule.subname, "data");
       const previousPublicKeyFingerprint = record.sealedServerEnv?.currentKeyFingerprint ?? null;
       const sealedServerEnv = await generateHostSealedEnvKeyPair(dataDirectory);
       const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -45515,8 +46097,8 @@ async function rotateCapsuleSealedEnvKey(request) {
   writeEnvelope({ ok: true, data: data2, error: null });
 }
 async function assertRegistrationRecoveryComplete(request) {
-  const claimPath = path8.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "registration-claims", `${request.capsule.subname}.json`);
-  const pending = await lstat5(claimPath).catch((error) => {
+  const claimPath = path11.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "registration-claims", `${request.capsule.subname}.json`);
+  const pending = await lstat8(claimPath).catch((error) => {
     if (errorDetails(error).code === "ENOENT") return null;
     throw error;
   });
@@ -45531,7 +46113,7 @@ async function unregisterCapsule(request) {
   validateUnregisterRequest(request);
   await assertRegistrationRecoveryComplete(request);
   const unregister = normaliseUnregister(request);
-  await mkdir4(path8.dirname(registryLockPath(request)), { recursive: true });
+  await mkdir4(path11.dirname(registryLockPath(request)), { recursive: true });
   let data2;
   await withRegistryLock(request, async () => {
     const record = await readRegistryRecordForCapsule(request, "unregister");
@@ -45569,7 +46151,7 @@ async function deleteCapsule(request) {
   validateDeleteRequest(request);
   await assertRegistrationRecoveryComplete(request);
   const deletion = normaliseDeletion(request);
-  await mkdir4(path8.dirname(registryLockPath(request)), { recursive: true });
+  await mkdir4(path11.dirname(registryLockPath(request)), { recursive: true });
   let data2;
   await withRegistryLock(request, async () => {
     const record = await readOptionalRegistryRecordForCapsule(request);
@@ -45616,14 +46198,14 @@ async function installRelease(request) {
     await installClaimedRelease(request, previousRecord, { ...paths2, release: paths2.release }, claimedArchive);
   } finally {
     activePreservedAttempts.delete(attemptJournalPath(hostedPreservedFilesRoot(paths2)));
-    await rm5(claimedArchive.path, { force: true });
-    await rm5(request.release.remoteArchive, { force: true });
+    await rm7(claimedArchive.path, { force: true });
+    await rm7(request.release.remoteArchive, { force: true });
   }
 }
 async function installClaimedRelease(request, previousRecord, paths2, claimedArchive) {
   const release = request.release;
   const previousCurrentRelease = previousRecord.currentRelease?.id ? { id: previousRecord.currentRelease.id } : null;
-  const previousRegistryContents = await readFile7(registryPath(request), "utf8");
+  const previousRegistryContents = await readFile8(registryPath(request), "utf8");
   const previousCurrentTarget = await readlink(paths2.currentLink).catch((error) => {
     if (errorDetails(error).code === "ENOENT") return null;
     throw error;
@@ -45641,14 +46223,14 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
   await mkdir4(paths2.logs, { recursive: true });
   const tempReleaseDirectory = `${paths2.release}.tmp-${process.pid}`;
   const tempCurrentLink = `${paths2.currentLink}.tmp-${process.pid}`;
-  await rm5(tempReleaseDirectory, { recursive: true, force: true });
-  await rm5(tempCurrentLink, { force: true });
+  await rm7(tempReleaseDirectory, { recursive: true, force: true });
+  await rm7(tempCurrentLink, { force: true });
   await mkdir4(tempReleaseDirectory, { recursive: true });
-  const extract = spawnSync5("tar", ["-xzf", claimedArchive.path, "-C", tempReleaseDirectory], {
+  const extract = spawnSync6("tar", ["-xzf", claimedArchive.path, "-C", tempReleaseDirectory], {
     encoding: "utf8"
   });
   if (extract.error || extract.status !== 0) {
-    await rm5(tempReleaseDirectory, { recursive: true, force: true });
+    await rm7(tempReleaseDirectory, { recursive: true, force: true });
     throw helperError(
       "Failed to extract Hosted Capsule release archive.",
       "Upload the release again with `sporades host push` and check that tar is installed on the Host server."
@@ -45657,8 +46239,19 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
   let installedInventory;
   try {
     installedInventory = await validateExtractedReleaseTree(tempReleaseDirectory, validatedArchive.files);
-    for (const file of resolveDeployFiles(release.deployFiles)) {
-      await prepareHostedRuntimeFileAccess(path8.join(tempReleaseDirectory, file.path), 256, {
+    const admission = resolveDeployFiles(release.deployFiles, true).find((file) => file.update === "admission");
+    if (admission) {
+      let config;
+      try {
+        config = JSON.parse((await readDeployFile(tempReleaseDirectory, "sporades.json", 1024 * 1024)).toString("utf8"));
+      } catch {
+        throw helperError("Invalid admission release configuration.", "Publish valid sporades.json of at most 1 MiB.");
+      }
+      if (resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files) !== admission.path) throw helperError("Invalid admission manifest.", "Rebuild the declared policy.");
+      parseAdmissionPolicy(await readDeployFile(tempReleaseDirectory, admission.path, ADMISSION_LIMITS.bytes));
+    }
+    for (const file of resolveDeployFiles(release.deployFiles, true)) {
+      await prepareHostedRuntimeFileAccess(path11.join(tempReleaseDirectory, file.path), 256, {
         message: "Unsafe additional release file.",
         hint: "Upload regular deployment files."
       });
@@ -45667,13 +46260,13 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
       throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
     }
   } catch (error) {
-    await rm5(tempReleaseDirectory, { recursive: true, force: true });
+    await rm7(tempReleaseDirectory, { recursive: true, force: true });
     throw error;
   }
   try {
-    await rename5(tempReleaseDirectory, paths2.release);
+    await rename7(tempReleaseDirectory, paths2.release);
   } catch (error) {
-    await rm5(tempReleaseDirectory, { recursive: true, force: true });
+    await rm7(tempReleaseDirectory, { recursive: true, force: true });
     const details = errorDetails(error);
     if (details.code === "EEXIST" || details.code === "ENOTEMPTY") {
       throw helperError(
@@ -45687,24 +46280,24 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
     try {
       await installSealedServerEnvPrivateKey(release, paths2);
     } catch (error) {
-      await rm5(paths2.release, { recursive: true, force: true });
+      await rm7(paths2.release, { recursive: true, force: true });
       throw error;
     }
   }
   const createdSeeds = [];
   let seedJournal;
   try {
-    seedJournal = await beginPreservedFileAttempt(hostedPreservedFilesRoot(paths2), release.id, resolveDeployFiles(release.deployFiles).length > 0);
+    seedJournal = await beginPreservedFileAttempt(hostedPreservedFilesRoot(paths2), release.id, resolveDeployFiles(release.deployFiles, true).length > 0);
     if (seedJournal) activePreservedAttempts.add(seedJournal);
   } catch (error) {
     await removeInstalledReleasePrivateKey(release, paths2);
-    await rm5(paths2.release, { recursive: true, force: true });
+    await rm7(paths2.release, { recursive: true, force: true });
     throw error;
   }
   try {
-    await preparePreservedFiles(resolveDeployFiles(release.deployFiles), paths2.release, hostedPreservedFilesRoot(paths2), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
+    await preparePreservedFiles(resolveDeployFiles(release.deployFiles, true), paths2.release, hostedPreservedFilesRoot(paths2), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
     await symlink(paths2.release, tempCurrentLink);
-    await rename5(tempCurrentLink, paths2.currentLink);
+    await rename7(tempCurrentLink, paths2.currentLink);
     await recordReleaseUploaded(request, release, installedInventory);
   } catch (error) {
     let pointerRestored = false;
@@ -45717,7 +46310,7 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
         if (pointerRestored) await removeInstalledReleasePrivateKey(release, paths2);
       },
       async () => {
-        if (pointerRestored) await rm5(paths2.release, { recursive: true, force: true });
+        if (pointerRestored) await rm7(paths2.release, { recursive: true, force: true });
       },
       async () => {
         if (pointerRestored) {
@@ -45836,34 +46429,34 @@ async function installClaimedRelease(request, previousRecord, paths2, claimedArc
   writeEnvelope({ ok: true, data: data2, error: null });
 }
 async function claimReleaseArchive(request) {
-  const expectedIncoming = path8.join(request.host.remoteRoot, "incoming", `${request.release.id}.tar.gz`);
-  if (path8.resolve(request.release.remoteArchive) !== path8.resolve(expectedIncoming)) {
+  const expectedIncoming = path11.join(request.host.remoteRoot, "incoming", `${request.release.id}.tar.gz`);
+  if (path11.resolve(request.release.remoteArchive) !== path11.resolve(expectedIncoming)) {
     throw helperError("Invalid release install request.", "Upload the release to the canonical Host incoming path and retry `sporades host push`.");
   }
-  const claimsDirectory = path8.join(request.host.remoteRoot, ".release-claims");
+  const claimsDirectory = path11.join(request.host.remoteRoot, ".release-claims");
   await mkdir4(claimsDirectory, { recursive: true, mode: 448 });
-  const claimsStats = await lstat5(claimsDirectory);
+  const claimsStats = await lstat8(claimsDirectory);
   if (!claimsStats.isDirectory() || claimsStats.isSymbolicLink() || typeof process.getuid === "function" && claimsStats.uid !== process.getuid()) {
     throw helperError("Hosted Capsule release claim directory is unsafe.", "Repair Host helper ownership of the release claim directory and retry.");
   }
-  await chmod2(claimsDirectory, 448);
-  const claimedPath = path8.join(claimsDirectory, `${request.release.id}-${process.pid}-${randomBytes4(16).toString("hex")}.tar.gz`);
-  await rename5(request.release.remoteArchive, claimedPath);
+  await chmod(claimsDirectory, 448);
+  const claimedPath = path11.join(claimsDirectory, `${request.release.id}-${process.pid}-${randomBytes5(16).toString("hex")}.tar.gz`);
+  await rename7(request.release.remoteArchive, claimedPath);
   try {
-    const stats = await lstat5(claimedPath);
+    const stats = await lstat8(claimedPath);
     if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || stats.size > HOST_RELEASE_ARCHIVE_LIMITS.compressedBytes) {
       throw helperError("Hosted Capsule release archive is unsafe.", "Upload one bounded regular archive file and retry `sporades host push`.");
     }
-    await chmod2(claimedPath, 384);
+    await chmod(claimedPath, 384);
     return { path: claimedPath, sha256: await releaseArchiveSha256(claimedPath) };
   } catch (error) {
-    await rm5(claimedPath, { force: true });
+    await rm7(claimedPath, { force: true });
     throw error;
   }
 }
 async function releaseArchiveSha256(archivePath) {
   return new Promise((resolve, reject) => {
-    const hash2 = createHash5("sha256");
+    const hash2 = createHash7("sha256");
     const stream = createReadStream(archivePath);
     stream.on("data", (chunk) => hash2.update(chunk));
     stream.on("error", reject);
@@ -45873,7 +46466,7 @@ async function releaseArchiveSha256(archivePath) {
 async function maybeSwapUnclaimedArchiveForTest(release) {
   const replacement = process.env.SPORADES_TEST_HOST_ARCHIVE_SWAP_PATH;
   if (!replacement) return;
-  await rename5(replacement, release.remoteArchive);
+  await rename7(replacement, release.remoteArchive);
 }
 async function validateExtractedReleaseTree(root, expectedFiles) {
   const expected = new Map(expectedFiles.map((file) => [file.path, file]));
@@ -45881,17 +46474,17 @@ async function validateExtractedReleaseTree(root, expectedFiles) {
   const actual = [];
   let totalBytes = 0;
   const publicClaims = [];
-  async function visit(directory, prefix = "") {
-    for (const entry of await readdir3(directory, { withFileTypes: true })) {
+  async function visit(directory2, prefix = "") {
+    for (const entry of await readdir4(directory2, { withFileTypes: true })) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       const normalized = relative.normalize("NFC");
-      const safe = relative.length > 0 && !relative.startsWith("/") && !relative.includes("\\") && !relative.includes("\0") && path8.posix.normalize(relative) === relative && Buffer.byteLength(relative, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..");
+      const safe = relative.length > 0 && !relative.startsWith("/") && !relative.includes("\\") && !relative.includes("\0") && path11.posix.normalize(relative) === relative && Buffer.byteLength(relative, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..");
       if (!safe || canonical.has(normalized)) {
         throw helperError("Extracted Hosted Capsule release is unsafe.", "Upload a release with unique bounded relative paths.");
       }
       canonical.add(normalized);
-      const entryPath = path8.join(directory, entry.name);
-      const stats = await lstat5(entryPath);
+      const entryPath = path11.join(directory2, entry.name);
+      const stats = await lstat8(entryPath);
       if (stats.isSymbolicLink()) {
         throw helperError("Extracted Hosted Capsule release is unsafe.", "Upload regular release files without symbolic links.");
       }
@@ -45920,7 +46513,7 @@ async function validateExtractedReleaseTree(root, expectedFiles) {
         }
         publicClaims.push({ path: publicPath, size: stats.size });
       }
-      actual.push({ path: relative, size: stats.size, sha256: createHash5("sha256").update(await readFile7(entryPath)).digest("hex") });
+      actual.push({ path: relative, size: stats.size, sha256: createHash7("sha256").update(await readFile8(entryPath)).digest("hex") });
     }
   }
   await visit(root);
@@ -46113,9 +46706,9 @@ async function maybeFallbackToPreviousRelease(request, failedReleaseId, previous
 }
 async function switchCurrentReleaseLink(currentLink, releaseDirectory) {
   const tempCurrentLink = `${currentLink}.tmp-${process.pid}`;
-  await rm5(tempCurrentLink, { force: true });
+  await rm7(tempCurrentLink, { force: true });
   await symlink(releaseDirectory, tempCurrentLink);
-  await rename5(tempCurrentLink, currentLink);
+  await rename7(tempCurrentLink, currentLink);
 }
 async function restoreFailedReleaseAfterFallbackRestartFailure(request, failedReleaseId, fallbackReleaseId, reason, restartError) {
   const failedPaths = canonicalRollbackPaths(request, failedReleaseId);
@@ -46232,13 +46825,13 @@ async function resumeHostAtBoot() {
   validateListRequest(request);
   const root = validateCanonicalHostRouteRoot(request);
   canonicalManagedRouteDomainDirectory(request, root);
-  const directory = path8.join(root, "hosts", host.domain, "registry", "capsules");
-  await trustedDirectoryChain(directory, false, root);
+  const directory2 = path11.join(root, "hosts", host.domain, "registry", "capsules");
+  await trustedDirectoryChain(directory2, false, root);
   const results = [];
-  for (const entry of (await readdir3(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entry of (await readdir4(directory2, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isFile() || !/^[a-z0-9][a-z0-9-]*\.json$/.test(entry.name)) continue;
     const subname = entry.name.slice(0, -5);
-    const child = spawnSync5(process.execPath, [process.argv[1]], {
+    const child = spawnSync6(process.execPath, [process.argv[1]], {
       input: JSON.stringify({ action, host, capsule: { subname } }),
       encoding: "utf8",
       timeout: checkpointing ? 15e3 : 3e5,
@@ -46469,7 +47062,7 @@ function releaseIncludesSealedServerEnvPrivateKey(release) {
   return Boolean(release.sealedServerEnvIncluded && privateKey && privateKeyPath);
 }
 function releasePrivateKeyPath(paths2, releaseId) {
-  return path8.join(paths2.data, "sealed-server-env", "releases", `${releaseId}.private.pem`);
+  return path11.join(paths2.data, "sealed-server-env", "releases", `${releaseId}.private.pem`);
 }
 async function installSealedServerEnvPrivateKey(release, paths2) {
   if (!releaseIncludesSealedServerEnvPrivateKey(release)) return;
@@ -46477,9 +47070,9 @@ async function installSealedServerEnvPrivateKey(release, paths2) {
   const privateKeyPath = releasePrivateKeyPath(paths2, release.id);
   const dataHandle = await openCanonicalRuntimeDataDirectory(paths2.data, true);
   try {
-    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path8.join(paths2.data, "sealed-server-env"));
+    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path11.join(paths2.data, "sealed-server-env"));
     try {
-      const releasesHandle = await openOrCreateRuntimeDirectory(rootHandle, path8.dirname(privateKeyPath));
+      const releasesHandle = await openOrCreateRuntimeDirectory(rootHandle, path11.dirname(privateKeyPath));
       try {
         await publishRuntimeFile(releasesHandle, privateKeyPath, privateKey, 384, "release-private-key-publish");
       } finally {
@@ -46500,12 +47093,12 @@ async function removeReleasePrivateKeyIfPresent(paths2, releaseId) {
   const privateKeyPath = releasePrivateKeyPath(paths2, releaseId);
   const dataHandle = await openCanonicalRuntimeDataDirectory(paths2.data, false);
   try {
-    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path8.join(paths2.data, "sealed-server-env"));
+    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path11.join(paths2.data, "sealed-server-env"));
     try {
-      const releasesHandle = await openOrCreateRuntimeDirectory(rootHandle, path8.dirname(privateKeyPath));
+      const releasesHandle = await openOrCreateRuntimeDirectory(rootHandle, path11.dirname(privateKeyPath));
       try {
-        const descriptorPath = descriptorChildPath(releasesHandle.fd, path8.basename(privateKeyPath), privateKeyPath);
-        const retained = await open2(descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch((error) => {
+        const descriptorPath = descriptorChildPath(releasesHandle.fd, path11.basename(privateKeyPath), privateKeyPath);
+        const retained = await open6(descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch((error) => {
           if (errorDetails(error).code === "ENOENT") return null;
           throw runtimeDataTrustError(privateKeyPath);
         });
@@ -46514,7 +47107,7 @@ async function removeReleasePrivateKeyIfPresent(paths2, releaseId) {
           const identity = await retained.stat();
           if (!identity.isFile()) throw runtimeDataTrustError(privateKeyPath);
           await assertRuntimeDataPathIdentity(privateKeyPath, { dev: identity.dev, ino: identity.ino }, false);
-          await rm5(descriptorPath, { force: true });
+          await rm7(descriptorPath, { force: true });
         } finally {
           await retained.close();
         }
@@ -46531,21 +47124,21 @@ async function removeReleasePrivateKeyIfPresent(paths2, releaseId) {
 async function captureReleaseInstallRoute(request, previousRecord) {
   const lifecycle = normaliseLifecycle(request, previousRecord, { ignoreProvidedLifecycle: true });
   const routeFile = lifecycle.routes.running.routeFile;
-  const contents = await readFile7(routeFile, "utf8").catch((error) => {
+  const contents = await readFile8(routeFile, "utf8").catch((error) => {
     if (errorDetails(error).code === "ENOENT") return null;
     throw error;
   });
   return { lifecycle, routeFile, contents };
 }
 async function restoreCurrentReleasePointerTarget(currentLink, previousTarget) {
-  const temporary = `${currentLink}.restore-${process.pid}-${randomBytes4(8).toString("hex")}`;
-  await rm5(temporary, { force: true });
+  const temporary = `${currentLink}.restore-${process.pid}-${randomBytes5(8).toString("hex")}`;
+  await rm7(temporary, { force: true });
   if (!previousTarget) {
-    await rm5(currentLink, { force: true });
+    await rm7(currentLink, { force: true });
     return;
   }
   await symlink(previousTarget, temporary);
-  await rename5(temporary, currentLink);
+  await rename7(temporary, currentLink);
 }
 async function restoreReleaseInstallRoute(snapshot, reloadWhenAbsent = false) {
   if (snapshot.contents !== null) {
@@ -46584,7 +47177,7 @@ async function restoreFailedReleaseInstall(request, paths2, previousRecord, prev
     if (!runningRouteRestored && !missingRunningRuntimeSettled) await restoreReleaseInstallRoute(previousRoute);
     if (!missingRunningRuntimeSettled) await writeRegistryContentsAtomic(registryPath(request), previousRegistryContents);
     await removeInstalledReleasePrivateKey(release, paths2);
-    await rm5(paths2.release, { recursive: true, force: true });
+    await rm7(paths2.release, { recursive: true, force: true });
   } catch {
     throw helperError(
       "Hosted Capsule runtime restoration failed.",
@@ -46608,11 +47201,11 @@ function validateSealedServerEnvPrivateKeyPath(release, paths2) {
     );
   }
   const compatiblePrivateKeyPaths = /* @__PURE__ */ new Set([
-    path8.resolve(releasePrivateKeyPath(paths2, release.id)),
-    path8.resolve(path8.join(paths2.data, "sealed-server-env", "server-env.private.pem")),
-    ...fingerprint ? [path8.resolve(path8.join(paths2.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`))] : []
+    path11.resolve(releasePrivateKeyPath(paths2, release.id)),
+    path11.resolve(path11.join(paths2.data, "sealed-server-env", "server-env.private.pem")),
+    ...fingerprint ? [path11.resolve(path11.join(paths2.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`))] : []
   ]);
-  if (typeof privateKeyPath !== "string" || !compatiblePrivateKeyPaths.has(path8.resolve(privateKeyPath))) {
+  if (typeof privateKeyPath !== "string" || !compatiblePrivateKeyPaths.has(path11.resolve(privateKeyPath))) {
     throw helperError(
       "Invalid Sealed Server env private key path.",
       "Update the Sporades CLI and retry `sporades host push`."
@@ -47046,9 +47639,9 @@ async function rollbackRelease(request) {
   await assertRollbackReleaseFiles(request, paths2.release, selectedRelease);
   const previousCurrentRelease = record.currentRelease ?? null;
   const tempCurrentLink = `${paths2.currentLink}.tmp-${process.pid}`;
-  await rm5(tempCurrentLink, { force: true });
+  await rm7(tempCurrentLink, { force: true });
   await symlink(paths2.release, tempCurrentLink);
-  await rename5(tempCurrentLink, paths2.currentLink);
+  await rename7(tempCurrentLink, paths2.currentLink);
   await recordReleaseRollbackSelected(request, releaseId);
   let lifecycle = null;
   let restartError = null;
@@ -47198,7 +47791,7 @@ function createUnregisterResult(request, unregister, record, idempotent, route =
     registryRecord: unregister.registryRecord,
     directories: unregister.directories,
     preserved: {
-      releases: record.currentRelease?.id ? path8.join(unregister.directories.releases, record.currentRelease.id) : unregister.directories.releases,
+      releases: record.currentRelease?.id ? path11.join(unregister.directories.releases, record.currentRelease.id) : unregister.directories.releases,
       data: unregister.directories.data
     },
     deleteAfter: record.deleteAfter ?? null,
@@ -47247,28 +47840,28 @@ function createDeleteResult(request, deletion, removals) {
   };
 }
 function canonicalReleasePaths(request) {
-  const capsule = path8.join(
+  const capsule = path11.join(
     request.host.remoteRoot,
     "hosts",
     request.host.domain,
     "capsules",
     request.capsule.subname
   );
-  const releases = path8.join(capsule, "releases");
+  const releases = path11.join(capsule, "releases");
   return {
     capsule,
     releases,
-    release: request.release?.id ? path8.join(releases, request.release.id) : null,
-    data: path8.join(capsule, "data"),
-    logs: path8.join(capsule, "logs"),
-    currentLink: path8.join(capsule, "current")
+    release: request.release?.id ? path11.join(releases, request.release.id) : null,
+    data: path11.join(capsule, "data"),
+    logs: path11.join(capsule, "logs"),
+    currentLink: path11.join(capsule, "current")
   };
 }
 function canonicalRollbackPaths(request, releaseId) {
   const paths2 = canonicalReleasePaths({ ...request, release: { id: releaseId, remoteArchive: "", files: [] } });
   return {
     ...paths2,
-    release: path8.join(paths2.releases, releaseId)
+    release: path11.join(paths2.releases, releaseId)
   };
 }
 function normaliseLifecycle(request, registryRecord = null, options = {}) {
@@ -47295,12 +47888,12 @@ function normaliseLifecycle(request, registryRecord = null, options = {}) {
   };
   const defaultMounts = {
     files: [
-      { host: path8.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-      { host: path8.join(currentLink, "public"), container: "/app/public", mode: "ro" },
-      { host: path8.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
-      { host: path8.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
+      { host: path11.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
+      { host: path11.join(currentLink, "public"), container: "/app/public", mode: "ro" },
+      { host: path11.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
+      { host: path11.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
       {
-        host: path8.join(currentLink, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+        host: path11.join(currentLink, ".sporades", "sealed-server-env", "server-env.sealed.json"),
         container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
         mode: "ro",
         optional: true
@@ -47317,7 +47910,8 @@ function normaliseLifecycle(request, registryRecord = null, options = {}) {
     data: { host: paths2.data, container: "/app/data", mode: "rw" }
   };
   const deployRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === (options.releaseId ?? registryRecord?.currentRelease?.id));
-  const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles), currentLink, path8.join(paths2.capsule, "preserved-files"));
+  const admissionPolicyPath = resolveDeployFiles(deployRelease?.source?.deployFiles, true).find((file) => file.update === "admission")?.path ?? null;
+  const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles, true), currentLink, path11.join(paths2.capsule, "preserved-files"));
   const fileMounts = authoritativeSshAuthorizedKeysMount(
     authoritativeSealedServerEnvPrivateKeyMount(
       provided.mounts?.files ?? defaultMounts.files,
@@ -47390,6 +47984,7 @@ function normaliseLifecycle(request, registryRecord = null, options = {}) {
     routes: canonicalRoutes
   });
   return {
+    admissionPolicyPath,
     subname,
     domain,
     hostedUrl,
@@ -47417,12 +48012,12 @@ function canonicalLifecycleRouteTls(request, registryRecord, provided) {
   if (!(/* @__PURE__ */ new Set(["automatic", "cloudflare-origin"])).has(mode) || suppliedModes.some((value) => value !== mode)) {
     throw invalidLifecycleAuthorityError();
   }
-  const directory = path8.join(request.host.remoteRoot, "hosts", request.host.domain, "tls");
+  const directory2 = path11.join(request.host.remoteRoot, "hosts", request.host.domain, "tls");
   return {
     mode,
-    directory,
-    certificate: mode === "cloudflare-origin" ? path8.join(directory, "origin.crt") : null,
-    key: mode === "cloudflare-origin" ? path8.join(directory, "origin.key") : null
+    directory: directory2,
+    certificate: mode === "cloudflare-origin" ? path11.join(directory2, "origin.crt") : null,
+    key: mode === "cloudflare-origin" ? path11.join(directory2, "origin.key") : null
   };
 }
 function invalidLifecycleAuthorityError() {
@@ -47465,14 +48060,14 @@ function assertCanonicalLifecycleAuthority(provided, canonical) {
       const allowedByContainer = new Map(canonical.defaultMounts.files.map((mount) => [mount.container, mount]));
       const privateKeyContainerPath = "/app/.sporades/sealed-server-env/server-env.private.pem";
       const legacySealedServerEnvPrivateKeyMount = {
-        host: path8.join(canonical.paths.data, "sealed-server-env", "server-env.private.pem"),
+        host: path11.join(canonical.paths.data, "sealed-server-env", "server-env.private.pem"),
         container: privateKeyContainerPath,
         mode: "ro",
         optional: true
       };
       const legacyAllowed = [
-        { host: path8.join(canonical.currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
-        { host: path8.join(canonical.currentLink, "index.html"), container: "/app/index.html", mode: "ro" }
+        { host: path11.join(canonical.currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
+        { host: path11.join(canonical.currentLink, "index.html"), container: "/app/index.html", mode: "ro" }
       ];
       for (const mount of legacyAllowed) allowedByContainer.set(mount.container, mount);
       const seen = /* @__PURE__ */ new Set();
@@ -47593,7 +48188,7 @@ async function ensureRuntimeProbeCredential(request) {
   await mutateRegistryRecord(request, (record) => {
     probe = readRuntimeProbeCredential(record) ?? {
       header: RUNTIME_PROBE_HEADER,
-      token: randomBytes4(32).toString("hex"),
+      token: randomBytes5(32).toString("hex"),
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     return { ...record, runtimeProbe: probe };
@@ -47704,7 +48299,7 @@ function checkDockerAvailable() {
   return runDocker(["version", "--format", "{{.Server.Version}}"]).ok;
 }
 function checkCaddyAvailable() {
-  const result = spawnSync5("caddy", ["version"], { encoding: "utf8" });
+  const result = spawnSync6("caddy", ["version"], { encoding: "utf8" });
   return !result.error && result.status === 0;
 }
 function countHostedCapsules(records, dockerStates) {
@@ -47761,10 +48356,10 @@ function inspectContainerLifecycle(containerName) {
   };
 }
 async function readCapsuleRegistryRecords(request) {
-  const registryDirectory = path8.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "capsules");
+  const registryDirectory = path11.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "capsules");
   let entries;
   try {
-    entries = await readdir3(registryDirectory, { withFileTypes: true });
+    entries = await readdir4(registryDirectory, { withFileTypes: true });
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return [];
@@ -47774,10 +48369,10 @@ async function readCapsuleRegistryRecords(request) {
   const records = [];
   const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).map((entry) => entry.name).sort();
   for (const file of files) {
-    const recordPath = path8.join(registryDirectory, file);
+    const recordPath = path11.join(registryDirectory, file);
     let record;
     try {
-      record = JSON.parse(await readFile7(recordPath, "utf8"));
+      record = JSON.parse(await readFile8(recordPath, "utf8"));
     } catch (error) {
       if (error instanceof SyntaxError) {
         throw helperError(
@@ -47913,8 +48508,8 @@ function normaliseRegistration(request, existing = null) {
   const scheme = request.host.scheme ?? "https";
   const hostedUrl = `${scheme}://${subname}.${domain}`;
   const remoteCapsuleId = `${domain}/${subname}`;
-  const capsuleDirectory = path8.join(remoteRoot, "hosts", domain, "capsules", subname);
-  const routeFile = path8.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
+  const capsuleDirectory = path11.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const routeFile = path11.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const routeTls = normaliseRegistrationTls(request);
   const accessLog = canonicalCapsuleHttpLogPath(request, remoteRoot);
   const route = {
@@ -47933,12 +48528,12 @@ function normaliseRegistration(request, existing = null) {
     hostedUrl,
     remoteCapsuleId,
     aliasDomains,
-    registryRecord: path8.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    registryRecord: path11.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
     directories: {
       capsule: capsuleDirectory,
-      releases: path8.join(capsuleDirectory, "releases"),
-      data: path8.join(capsuleDirectory, "data"),
-      logs: path8.join(capsuleDirectory, "logs")
+      releases: path11.join(capsuleDirectory, "releases"),
+      data: path11.join(capsuleDirectory, "data"),
+      logs: path11.join(capsuleDirectory, "logs")
     },
     baseImage: normaliseProvidedBaseImage(request.registration?.baseImage),
     route,
@@ -47956,19 +48551,19 @@ function normaliseUnregister(request) {
   const scheme = request.host.scheme ?? "https";
   const hostedUrl = `${scheme}://${subname}.${domain}`;
   const remoteCapsuleId = `${domain}/${subname}`;
-  const capsuleDirectory = path8.join(remoteRoot, "hosts", domain, "capsules", subname);
-  const routeFile = path8.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
+  const capsuleDirectory = path11.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const routeFile = path11.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const containerName = createHostedContainerName(domain, subname);
   return {
     subname,
     domain,
     hostedUrl,
     remoteCapsuleId,
-    registryRecord: path8.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    registryRecord: path11.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
     directories: {
       capsule: capsuleDirectory,
-      releases: path8.join(capsuleDirectory, "releases"),
-      data: path8.join(capsuleDirectory, "data")
+      releases: path11.join(capsuleDirectory, "releases"),
+      data: path11.join(capsuleDirectory, "data")
     },
     container: {
       name: containerName
@@ -47989,21 +48584,21 @@ function normaliseDeletion(request) {
   const domain = request.host.domain;
   const remoteRoot = request.host.remoteRoot;
   const scheme = request.host.scheme ?? "https";
-  const capsuleDirectory = path8.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const capsuleDirectory = path11.join(remoteRoot, "hosts", domain, "capsules", subname);
   return {
     subname,
     domain,
     hostedUrl: `${scheme}://${subname}.${domain}`,
     remoteCapsuleId: `${domain}/${subname}`,
-    registryRecord: path8.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    registryRecord: path11.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
     directories: {
       capsule: capsuleDirectory,
-      releases: path8.join(capsuleDirectory, "releases"),
-      data: path8.join(capsuleDirectory, "data")
+      releases: path11.join(capsuleDirectory, "releases"),
+      data: path11.join(capsuleDirectory, "data")
     },
     route: {
       hostname: `${subname}.${domain}`,
-      routeFile: path8.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`)
+      routeFile: path11.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`)
     },
     lifecycle: {
       remoteRoot
@@ -48014,17 +48609,17 @@ function normaliseRegistrationTls(request) {
   const remoteRoot = request.host.remoteRoot;
   const domain = request.host.domain;
   const tlsMode = request.registration?.bootstrap?.tls?.mode ?? request.bootstrap?.tls?.mode ?? "automatic";
-  const tlsDirectory = path8.join(remoteRoot, "hosts", domain, "tls");
+  const tlsDirectory = path11.join(remoteRoot, "hosts", domain, "tls");
   return {
     mode: tlsMode,
     directory: tlsDirectory,
-    certificate: tlsMode === "cloudflare-origin" ? path8.join(tlsDirectory, "origin.crt") : null,
-    key: tlsMode === "cloudflare-origin" ? path8.join(tlsDirectory, "origin.key") : null
+    certificate: tlsMode === "cloudflare-origin" ? path11.join(tlsDirectory, "origin.crt") : null,
+    key: tlsMode === "cloudflare-origin" ? path11.join(tlsDirectory, "origin.key") : null
   };
 }
 async function ensureHostedDomainBootstrapped(request, registration) {
-  const caddyfile = path8.join(request.host.remoteRoot, "caddy", "Caddyfile");
-  const domainInclude = path8.join(request.host.remoteRoot, "caddy", "hosts", `${request.host.domain}.caddy`);
+  const caddyfile = path11.join(request.host.remoteRoot, "caddy", "Caddyfile");
+  const domainInclude = path11.join(request.host.remoteRoot, "caddy", "hosts", `${request.host.domain}.caddy`);
   const bootstrapped = await pathExists(caddyfile) && await pathExists(domainInclude);
   if (bootstrapped) {
     return;
@@ -48103,11 +48698,11 @@ async function generateHostSealedEnvKeyPair(dataDirectory) {
   };
 }
 async function openOrCreateRuntimeDirectory(parentHandle, targetPath) {
-  const descriptorPath = descriptorChildPath(parentHandle.fd, path8.basename(targetPath), targetPath);
+  const descriptorPath = descriptorChildPath(parentHandle.fd, path11.basename(targetPath), targetPath);
   await mkdir4(descriptorPath, { mode: 448 }).catch((error) => {
     if (errorDetails(error).code !== "EEXIST") throw runtimeDataTrustError(targetPath);
   });
-  const handle = await open2(
+  const handle = await open6(
     descriptorPath,
     fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0)
   ).catch(() => {
@@ -48124,8 +48719,8 @@ async function openOrCreateRuntimeDirectory(parentHandle, targetPath) {
   return handle;
 }
 async function writeExclusiveRuntimeFile(parentHandle, targetPath, contents, mode) {
-  const descriptorPath = descriptorChildPath(parentHandle.fd, path8.basename(targetPath), targetPath);
-  const handle = await open2(
+  const descriptorPath = descriptorChildPath(parentHandle.fd, path11.basename(targetPath), targetPath);
+  const handle = await open6(
     descriptorPath,
     fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
     mode
@@ -48147,24 +48742,24 @@ async function writeExclusiveRuntimeFile(parentHandle, targetPath, contents, mod
   }
 }
 async function publishRuntimeFile(parentHandle, targetPath, contents, mode, boundary) {
-  const temporaryPath = path8.join(path8.dirname(targetPath), `.${path8.basename(targetPath)}.tmp-${process.pid}-${randomBytes4(8).toString("hex")}`);
+  const temporaryPath = path11.join(path11.dirname(targetPath), `.${path11.basename(targetPath)}.tmp-${process.pid}-${randomBytes5(8).toString("hex")}`);
   await writeExclusiveRuntimeFile(parentHandle, temporaryPath, contents, mode);
-  const temporaryDescriptor = descriptorChildPath(parentHandle.fd, path8.basename(temporaryPath), temporaryPath);
-  const targetDescriptor = descriptorChildPath(parentHandle.fd, path8.basename(targetPath), targetPath);
+  const temporaryDescriptor = descriptorChildPath(parentHandle.fd, path11.basename(temporaryPath), temporaryPath);
+  const targetDescriptor = descriptorChildPath(parentHandle.fd, path11.basename(targetPath), targetPath);
   try {
     await pauseRuntimeTreePublication(boundary, targetPath);
     const parentIdentity = await parentHandle.stat();
-    await assertRuntimeDataPathIdentity(path8.dirname(targetPath), { dev: parentIdentity.dev, ino: parentIdentity.ino }, true);
+    await assertRuntimeDataPathIdentity(path11.dirname(targetPath), { dev: parentIdentity.dev, ino: parentIdentity.ino }, true);
     try {
-      const existing = await lstat5(targetPath);
+      const existing = await lstat8(targetPath);
       if (!existing.isFile() || existing.isSymbolicLink()) throw runtimeDataTrustError(targetPath);
     } catch (error) {
       if (errorDetails(error).code !== "ENOENT") throw error;
     }
-    await rename5(temporaryDescriptor, targetDescriptor).catch(() => {
+    await rename7(temporaryDescriptor, targetDescriptor).catch(() => {
       throw runtimeDataTrustError(targetPath);
     });
-    const installed = await open2(targetDescriptor, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
+    const installed = await open6(targetDescriptor, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
       throw runtimeDataTrustError(targetPath);
     });
     try {
@@ -48175,14 +48770,14 @@ async function publishRuntimeFile(parentHandle, targetPath, contents, mode, boun
       await installed.close();
     }
   } finally {
-    await rm5(temporaryDescriptor, { force: true }).catch(() => {
+    await rm7(temporaryDescriptor, { force: true }).catch(() => {
     });
   }
 }
 async function pauseRuntimeTreePublication(boundary, targetPath) {
   if (process.env.SPORADES_TEST_RUNTIME_TREE_PUBLICATION_BOUNDARY !== boundary) return;
   const marker = process.env.SPORADES_TEST_RUNTIME_TREE_PUBLICATION_MARKER;
-  if (marker) await writeFile4(marker, `${targetPath}
+  if (marker) await writeFile3(marker, `${targetPath}
 `, { flag: "wx", mode: 384 });
   await fakeManagedRouteLockPause("SPORADES_FAKE_RUNTIME_TREE_PUBLICATION_PAUSE_MS");
 }
@@ -48197,13 +48792,13 @@ async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFin
       try {
         const keysIdentity = await keysHandle.stat();
         const descriptorDirectory = process.platform === "linux" ? `/proc/self/fd/${keysHandle.fd}` : paths2.keys;
-        const entries = await readdir3(descriptorDirectory);
+        const entries = await readdir4(descriptorDirectory);
         for (const entry of entries) {
           const match = /^([a-f0-9]{16})\.(private|public)\.pem$/.exec(entry);
           if (!match || referencedFingerprints.has(match[1])) continue;
-          const targetPath = path8.join(paths2.keys, entry);
+          const targetPath = path11.join(paths2.keys, entry);
           const descriptorPath = descriptorChildPath(keysHandle.fd, entry, targetPath);
-          const retained = await open2(descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
+          const retained = await open6(descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
             throw runtimeDataTrustError(targetPath);
           });
           try {
@@ -48212,7 +48807,7 @@ async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFin
             await pauseRuntimeTreePublication("sealed-key-cleanup", targetPath);
             await assertRuntimeDataPathIdentity(paths2.keys, { dev: keysIdentity.dev, ino: keysIdentity.ino }, true);
             await assertRuntimeDataPathIdentity(targetPath, { dev: details.dev, ino: details.ino }, false);
-            await rm5(descriptorPath, { force: true });
+            await rm7(descriptorPath, { force: true });
           } finally {
             await retained.close();
           }
@@ -48259,7 +48854,7 @@ async function inspectHostSealedEnvKey(record, remoteRoot) {
   if (typeof publicKeyFingerprint !== "string" || publicKeyFingerprint.length === 0) {
     return null;
   }
-  const dataDirectory = path8.join(remoteRoot, "hosts", record.domain, "capsules", record.subname, "data");
+  const dataDirectory = path11.join(remoteRoot, "hosts", record.domain, "capsules", record.subname, "data");
   const paths2 = hostSealedEnvKeyPaths(dataDirectory, publicKeyFingerprint);
   const [publicKeyReadable, privateKeyReadable] = await Promise.all([
     pathReadable(paths2.publicKey),
@@ -48279,7 +48874,7 @@ async function inspectHostSealedEnvKey(record, remoteRoot) {
   try {
     return {
       ...base,
-      publicKey: await readFile7(paths2.publicKey, "utf8")
+      publicKey: await readFile8(paths2.publicKey, "utf8")
     };
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
@@ -48326,17 +48921,17 @@ function currentReleaseSealedServerEnvFingerprint(record) {
   return typeof fingerprint === "string" ? fingerprint : null;
 }
 function hostSealedEnvKeyPaths(dataDirectory, fingerprint) {
-  const root = path8.join(dataDirectory, "sealed-server-env");
-  const keys = path8.join(root, "keys");
+  const root = path11.join(dataDirectory, "sealed-server-env");
+  const keys2 = path11.join(root, "keys");
   return {
     root,
-    keys,
-    privateKey: path8.join(keys, `${fingerprint}.private.pem`),
-    publicKey: path8.join(keys, `${fingerprint}.public.pem`)
+    keys: keys2,
+    privateKey: path11.join(keys2, `${fingerprint}.private.pem`),
+    publicKey: path11.join(keys2, `${fingerprint}.public.pem`)
   };
 }
 function fingerprintPublicKey(publicKey) {
-  return createHash5("sha256").update(publicKey).digest("hex").slice(0, 16);
+  return createHash7("sha256").update(publicKey).digest("hex").slice(0, 16);
 }
 function reactivateRegistrationRecord(record, sealedServerEnv = null) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -48392,20 +48987,20 @@ function normaliseBootstrap(request) {
   const provided = request.bootstrap ?? {};
   const remoteRoot = request.host.remoteRoot;
   const domain = request.host.domain;
-  const caddyDirectory = path8.join(remoteRoot, "caddy");
-  const domainDirectory = path8.join(remoteRoot, "hosts", domain);
-  const tlsDirectory = path8.join(domainDirectory, "tls");
+  const caddyDirectory = path11.join(remoteRoot, "caddy");
+  const domainDirectory = path11.join(remoteRoot, "hosts", domain);
+  const tlsDirectory = path11.join(domainDirectory, "tls");
   const expectedDirectories = {
     remoteRoot,
-    bin: path8.join(remoteRoot, "bin"),
-    incoming: path8.join(remoteRoot, "incoming"),
+    bin: path11.join(remoteRoot, "bin"),
+    incoming: path11.join(remoteRoot, "incoming"),
     caddy: caddyDirectory,
-    caddyHosts: path8.join(caddyDirectory, "hosts"),
-    hosts: path8.join(remoteRoot, "hosts"),
+    caddyHosts: path11.join(caddyDirectory, "hosts"),
+    hosts: path11.join(remoteRoot, "hosts"),
     domain: domainDirectory,
     tls: tlsDirectory,
-    registry: path8.join(domainDirectory, "registry"),
-    capsules: path8.join(domainDirectory, "capsules")
+    registry: path11.join(domainDirectory, "registry"),
+    capsules: path11.join(domainDirectory, "capsules")
   };
   for (const [name2, value] of Object.entries(provided.directories ?? {})) {
     if (!(name2 in expectedDirectories) || value !== expectedDirectories[name2]) throw bootstrapPathError();
@@ -48415,8 +49010,8 @@ function normaliseBootstrap(request) {
   const directories = {
     ...expectedDirectories
   };
-  const expectedCertificate = path8.join(directories.tls, "origin.crt");
-  const expectedKey = path8.join(directories.tls, "origin.key");
+  const expectedCertificate = path11.join(directories.tls, "origin.crt");
+  const expectedKey = path11.join(directories.tls, "origin.key");
   if (provided.tls?.directory !== void 0 && provided.tls.directory !== directories.tls) throw bootstrapPathError();
   if (provided.tls?.certificate != null && provided.tls.certificate !== expectedCertificate) throw bootstrapPathError();
   if (provided.tls?.key != null && provided.tls.key !== expectedKey) throw bootstrapPathError();
@@ -48426,8 +49021,8 @@ function normaliseBootstrap(request) {
     certificate: tlsMode === "cloudflare-origin" ? expectedCertificate : null,
     key: tlsMode === "cloudflare-origin" ? expectedKey : null
   };
-  const expectedManagedInclude = path8.join(directories.caddy, "sporades-hosted-domains.caddy");
-  const expectedDomainInclude = path8.join(directories.caddyHosts, `${domain}.caddy`);
+  const expectedManagedInclude = path11.join(directories.caddy, "sporades-hosted-domains.caddy");
+  const expectedDomainInclude = path11.join(directories.caddyHosts, `${domain}.caddy`);
   const expectedAccessLog = defaultCaddyAccessLogPath(remoteRoot);
   if (provided.caddy?.managedInclude !== void 0 && provided.caddy.managedInclude !== expectedManagedInclude) throw bootstrapPathError();
   if (provided.caddy?.domainInclude !== void 0 && provided.caddy.domainInclude !== expectedDomainInclude) throw bootstrapPathError();
@@ -48442,11 +49037,11 @@ function normaliseBootstrap(request) {
     tls,
     network: provided.network ?? hostHelperConfig.hostedCapsule.dockerNetwork,
     caddy: {
-      caddyfile: path8.join(directories.caddy, "Caddyfile"),
+      caddyfile: path11.join(directories.caddy, "Caddyfile"),
       managedInclude: expectedManagedInclude,
       domainInclude: expectedDomainInclude,
-      routesDirectory: path8.join(directories.caddyHosts, domain),
-      healthRoute: path8.join(directories.caddyHosts, domain, "host.caddy"),
+      routesDirectory: path11.join(directories.caddyHosts, domain),
+      healthRoute: path11.join(directories.caddyHosts, domain, "host.caddy"),
       accessLog: expectedAccessLog
     }
   };
@@ -48459,7 +49054,7 @@ function bootstrapPathError() {
 }
 function bootstrapTrustManifest(request) {
   const bootstrap = normaliseBootstrap(request);
-  const placeholder = path8.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
+  const placeholder = path11.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
   const finalFiles = [
     { path: bootstrap.caddy.caddyfile },
     { path: bootstrap.caddy.managedInclude },
@@ -48474,8 +49069,8 @@ function bootstrapTrustManifest(request) {
   return {
     directories: [
       ...Object.values(bootstrap.directories).map((entry) => ({ path: entry })),
-      { path: path8.dirname(bootstrap.caddy.accessLog), caddyOwned: true },
-      { path: path8.join(bootstrap.directories.registry, "capsules") },
+      { path: path11.dirname(bootstrap.caddy.accessLog), caddyOwned: true },
+      { path: path11.join(bootstrap.directories.registry, "capsules") },
       { path: bootstrap.caddy.routesDirectory }
     ],
     finalFiles
@@ -48487,24 +49082,24 @@ async function ensureBootstrapDirectories(bootstrap) {
     bootstrap.directories.bin,
     bootstrap.directories.incoming,
     bootstrap.directories.caddy,
-    path8.dirname(bootstrap.caddy.accessLog),
+    path11.dirname(bootstrap.caddy.accessLog),
     bootstrap.directories.caddyHosts,
     bootstrap.directories.hosts,
     bootstrap.directories.domain,
     bootstrap.directories.tls,
     bootstrap.directories.registry,
-    path8.join(bootstrap.directories.registry, "capsules"),
+    path11.join(bootstrap.directories.registry, "capsules"),
     bootstrap.directories.capsules,
     bootstrap.caddy.routesDirectory
   ];
-  for (const directory of directories) {
-    const details = await lstat5(directory);
+  for (const directory2 of directories) {
+    const details = await lstat8(directory2);
     if (!details.isDirectory() || details.isSymbolicLink()) throw routeTrustError();
   }
 }
 async function provisionCaddyAccessLog(request, bootstrap) {
   const logFile = bootstrap.caddy.accessLog;
-  const logDirectory = path8.dirname(logFile);
+  const logDirectory = path11.dirname(logFile);
   const caddyUser = resolveCaddyServiceUser();
   if (!caddyUser) {
     throw helperError(
@@ -48539,7 +49134,7 @@ async function provisionCaddyOwnedLogDescriptors(options) {
   const fileIdentity = trust.finalFiles.find((entry) => entry.path === logFile && entry.caddyOwned);
   if (!directoryIdentity || !fileIdentity) throw routeTrustError();
   await assertManagedLogMutationBoundary(logFile);
-  const directoryHandle = await open2(
+  const directoryHandle = await open6(
     logDirectory,
     fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0)
   ).catch(() => {
@@ -48548,17 +49143,17 @@ async function provisionCaddyOwnedLogDescriptors(options) {
   try {
     let directoryDetails = await directoryHandle.stat();
     if (!directoryDetails.isDirectory() || directoryDetails.dev !== directoryIdentity.dev || directoryDetails.ino !== directoryIdentity.ino || !(directoryIdentity.expectedOwner ? trustedExactOwnerMetadata(directoryDetails, directoryIdentity.expectedOwner) : trustedHostPathMetadata(directoryDetails))) throw routeTrustError();
-    const descriptorFile = process.platform === "linux" ? `/proc/self/fd/${directoryHandle.fd}/${path8.basename(logFile)}` : logFile;
+    const descriptorFile = process.platform === "linux" ? `/proc/self/fd/${directoryHandle.fd}/${path11.basename(logFile)}` : logFile;
     let fileHandle;
     try {
-      fileHandle = await open2(
+      fileHandle = await open6(
         descriptorFile,
         fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
         416
       );
     } catch (error) {
       if (errorDetails(error).code !== "EEXIST") throw routeTrustError();
-      fileHandle = await open2(descriptorFile, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW).catch(() => {
+      fileHandle = await open6(descriptorFile, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW).catch(() => {
         throw routeTrustError();
       });
     }
@@ -48590,10 +49185,10 @@ async function provisionCaddyOwnedLogDescriptors(options) {
         directoryDetails = await directoryHandle.stat();
         fileDetails = await fileHandle.stat();
       }
-      const directoryPathDetails = await lstat5(logDirectory).catch(() => {
+      const directoryPathDetails = await lstat8(logDirectory).catch(() => {
         throw routeTrustError();
       });
-      const filePathDetails = await lstat5(logFile).catch(() => {
+      const filePathDetails = await lstat8(logFile).catch(() => {
         throw routeTrustError();
       });
       if (!directoryPathDetails.isDirectory() || directoryPathDetails.isSymbolicLink() || !filePathDetails.isFile() || filePathDetails.isSymbolicLink() || directoryPathDetails.dev !== directoryDetails.dev || directoryPathDetails.ino !== directoryDetails.ino || filePathDetails.dev !== fileDetails.dev || filePathDetails.ino !== fileDetails.ino || !trustedExactOwnerMetadata(directoryDetails, owner) || !trustedExactOwnerMetadata(fileDetails, owner) || (Number(directoryDetails.mode) & 511) !== 488 || (Number(fileDetails.mode) & 511) !== 416) throw routeTrustError();
@@ -48616,7 +49211,7 @@ async function assertManagedLogMutationBoundary(logFile) {
 async function pauseCaddyLogDescriptorMutation(boundary) {
   if (process.env.SPORADES_TEST_ROUTE_MUTATION_BOUNDARY !== boundary) return;
   const marker = process.env.SPORADES_TEST_ROUTE_MUTATION_MARKER;
-  if (marker) await writeFile4(marker, `${boundary}
+  if (marker) await writeFile3(marker, `${boundary}
 `, { flag: "wx", mode: 384 });
   await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS");
 }
@@ -48625,7 +49220,7 @@ async function provisionRouteLogFile(route, mutationBoundary) {
   if (!logFile) {
     return;
   }
-  const logDirectory = path8.dirname(logFile);
+  const logDirectory = path11.dirname(logFile);
   const caddyUser = resolveCaddyServiceUser() ?? {
     uid: String(process.geteuid?.() ?? process.getuid?.() ?? 0),
     gid: String(process.getegid?.() ?? process.getgid?.() ?? 0)
@@ -48640,8 +49235,8 @@ async function provisionRouteLogFile(route, mutationBoundary) {
   });
 }
 function resolveCaddyServiceUser() {
-  const user = spawnSync5("id", ["-u", "caddy"], { encoding: "utf8" });
-  const group = spawnSync5("id", ["-g", "caddy"], { encoding: "utf8" });
+  const user = spawnSync6("id", ["-u", "caddy"], { encoding: "utf8" });
+  const group = spawnSync6("id", ["-g", "caddy"], { encoding: "utf8" });
   if (user.error || user.status !== 0 || group.error || group.status !== 0) {
     return null;
   }
@@ -48669,7 +49264,7 @@ async function validateBootstrapTls(request, bootstrap) {
   }
 }
 function ensureDockerNetwork(networkName) {
-  const inspect2 = spawnSync5("docker", ["network", "inspect", networkName], { encoding: "utf8" });
+  const inspect2 = spawnSync6("docker", ["network", "inspect", networkName], { encoding: "utf8" });
   if (inspect2.error) {
     throw helperError(
       "Docker is unavailable on the Host server.",
@@ -48679,7 +49274,7 @@ function ensureDockerNetwork(networkName) {
   if (inspect2.status === 0) {
     return { name: networkName, created: false };
   }
-  const create = spawnSync5("docker", ["network", "create", networkName], { encoding: "utf8" });
+  const create = spawnSync6("docker", ["network", "create", networkName], { encoding: "utf8" });
   if (create.error || create.status !== 0) {
     throw helperError(
       "Failed to create the Hosted Capsule Docker network.",
@@ -48693,15 +49288,15 @@ async function installCaddyBootstrapConfig(request, bootstrap) {
   const caddyfile = bootstrap.caddy.caddyfile;
   const managedInclude = bootstrap.caddy.managedInclude;
   const domainInclude = bootstrap.caddy.domainInclude;
-  const placeholderRoute = path8.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
+  const placeholderRoute = path11.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
   await atomicPublishBootstrapFile(placeholderRoute, "# Sporades keeps this placeholder so Caddy route imports are valid before Capsules are registered.\n", "bootstrap-placeholder");
   await atomicPublishBootstrapFile(bootstrap.caddy.healthRoute, renderHostHealthRoute(request.host.domain, bootstrap.tls), "bootstrap-health-route");
   await writeManagedCaddyfile(caddyfile, `import ${managedInclude}`);
   await atomicPublishBootstrapFile(managedInclude, `# Sporades-managed Hosted domain include list.
-import ${path8.join(bootstrap.directories.caddyHosts, "*.caddy")}
+import ${path11.join(bootstrap.directories.caddyHosts, "*.caddy")}
 `, "bootstrap-managed-include");
   await atomicPublishBootstrapFile(domainInclude, `# Sporades-managed routes for ${request.host.domain}.
-import ${path8.join(bootstrap.caddy.routesDirectory, "*.caddy")}
+import ${path11.join(bootstrap.caddy.routesDirectory, "*.caddy")}
 `, "bootstrap-domain-include");
   await assertActiveManagedRouteTrust(null);
   validateCaddyBootstrap(caddyfile);
@@ -48745,7 +49340,7 @@ ${end}
   let existing = "";
   await assertBootstrapMutationBoundary("bootstrap-caddyfile-read", [caddyfile]);
   try {
-    existing = await readFile7(caddyfile, "utf8");
+    existing = await readFile8(caddyfile, "utf8");
   } catch (error) {
     if (errorDetails(error).code !== "ENOENT") {
       throw error;
@@ -48763,16 +49358,16 @@ ${end}
   await atomicPublishBootstrapFile(caddyfile, next, "bootstrap-caddyfile");
 }
 async function atomicPublishBootstrapFile(target, contents, boundary) {
-  const temporary = `${target}.sporades-${process.pid}-${randomBytes4(8).toString("hex")}.tmp`;
+  const temporary = `${target}.sporades-${process.pid}-${randomBytes5(8).toString("hex")}.tmp`;
   await assertBootstrapMutationBoundary(`${boundary}-write`, [target, temporary]);
-  await writeFile4(temporary, contents, { flag: "wx", mode: 420 });
+  await writeFile3(temporary, contents, { flag: "wx", mode: 420 });
   try {
     await assertBootstrapMutationBoundary(`${boundary}-publish`, [target, temporary]);
-    await rename5(temporary, target);
+    await rename7(temporary, target);
     await refreshTrustedBootstrapFinalFileIdentity(target);
   } catch (error) {
     await assertBootstrapMutationBoundary(`${boundary}-cleanup`, [target, temporary]);
-    await rm5(temporary, { force: true });
+    await rm7(temporary, { force: true });
     throw error;
   }
 }
@@ -48789,7 +49384,7 @@ async function assertBootstrapMutationBoundary(boundary, relatedFiles = []) {
   for (const file of relatedFiles) await assertTrustedRegularFileIfExists(file, trustedBootstrapFinalFileOwner(file));
   if (process.env.SPORADES_TEST_ROUTE_MUTATION_BOUNDARY === boundary) {
     const marker = process.env.SPORADES_TEST_ROUTE_MUTATION_MARKER;
-    if (marker) await writeFile4(marker, `${boundary}
+    if (marker) await writeFile3(marker, `${boundary}
 `, { flag: "wx", mode: 384 });
     await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS");
   }
@@ -48800,7 +49395,7 @@ function trustedBootstrapFinalFileOwner(file) {
   return activeManagedRouteTrust?.finalFiles.find((entry) => entry.path === file)?.expectedOwner;
 }
 function validateCaddyBootstrap(caddyfile) {
-  const result = spawnSync5("caddy", ["validate", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
+  const result = spawnSync6("caddy", ["validate", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to validate the Sporades Caddy bootstrap configuration.",
@@ -48809,7 +49404,7 @@ function validateCaddyBootstrap(caddyfile) {
   }
 }
 function reloadCaddyBootstrap(caddyfile) {
-  const result = spawnSync5("caddy", ["reload", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
+  const result = spawnSync6("caddy", ["reload", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to reload the Sporades Caddy bootstrap configuration.",
@@ -48930,6 +49525,8 @@ async function dockerRunArgs(lifecycle, releaseId, runtimeProbe, hostedTelemetry
     "--env",
     "SPORADES_SECURITY_SESSION=hosted",
     "--env",
+    `SPORADES_ADMISSION_POLICY_PATH=${lifecycle.admissionPolicyPath ?? ""}`,
+    "--env",
     "SPORADES_CLAMAV_MANAGED=1",
     "--env",
     `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbe.token}`,
@@ -49018,7 +49615,7 @@ function ensureHostedBaseImage(lifecycle) {
   if (pull.ok) {
     return;
   }
-  const dockerfilePath = path8.join(lifecycle.remoteRoot, "Dockerfile.base");
+  const dockerfilePath = path11.join(lifecycle.remoteRoot, "Dockerfile.base");
   if (!pathExistsSync(dockerfilePath)) {
     throw helperError(
       "Unable to prepare the Sporades Base image.",
@@ -49034,7 +49631,7 @@ function ensureHostedBaseImage(lifecycle) {
   }
 }
 function runDocker(args, options = {}) {
-  const result = spawnSync5("docker", args, { encoding: "utf8", ...options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}, ...options.timeoutMs ? { timeout: options.timeoutMs } : {} });
+  const result = spawnSync6("docker", args, { encoding: "utf8", ...options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}, ...options.timeoutMs ? { timeout: options.timeoutMs } : {} });
   if (options.ignoreFailure) {
     return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   }
@@ -49108,7 +49705,7 @@ async function currentReleaseId(currentLink, request) {
     }
     throw error;
   }
-  return path8.basename(target);
+  return path11.basename(target);
 }
 function loopbackRunningRoute(route, publishedPort) {
   return {
@@ -49124,7 +49721,7 @@ async function refreshLoopbackRunningRoute(request, registryRecord, containerNam
   return withManagedRouteLock(routeFile, async () => {
     let currentRoute;
     try {
-      currentRoute = await readFile7(routeFile, "utf8");
+      currentRoute = await readFile8(routeFile, "utf8");
     } catch (error) {
       if (errorDetails(error).code === "ENOENT") {
         return { ok: true, refreshed: false };
@@ -49245,16 +49842,16 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
   const tempRouteFile = `${routeFile}.tmp`;
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
   await assertManagedRouteMutationBoundary(routeFile, "apply-remove-temp", [tempRouteFile, previousRouteFile]);
-  await rm5(tempRouteFile, { force: true });
+  await rm7(tempRouteFile, { force: true });
   await assertManagedRouteMutationBoundary(routeFile, "apply-remove-previous", [previousRouteFile]);
-  await rm5(previousRouteFile, { force: true });
+  await rm7(previousRouteFile, { force: true });
   await assertManagedRouteMutationBoundary(routeFile, "apply-write-temp", [tempRouteFile]);
-  await writeFile4(tempRouteFile, contents, { flag: "wx", mode: 420 });
+  await writeFile3(tempRouteFile, contents, { flag: "wx", mode: 420 });
   try {
     validateCaddyRoute(tempRouteFile);
   } catch (error) {
     await assertManagedRouteMutationBoundary(routeFile, "apply-validation-cleanup", [tempRouteFile]);
-    await rm5(tempRouteFile, { force: true });
+    await rm7(tempRouteFile, { force: true });
     throw error;
   }
   const hadPreviousRoute = await pathExists(routeFile);
@@ -49262,20 +49859,20 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
   try {
     if (hadPreviousRoute) {
       await assertManagedRouteMutationBoundary(routeFile, "apply-move-current", [previousRouteFile]);
-      await rename5(routeFile, previousRouteFile);
+      await rename7(routeFile, previousRouteFile);
       previousRouteMoved = true;
     }
     await assertManagedRouteMutationBoundary(routeFile, "apply-publish-temp", [tempRouteFile, previousRouteFile]);
-    await rename5(tempRouteFile, routeFile);
+    await rename7(tempRouteFile, routeFile);
     reloadCaddy(lifecycle);
   } catch (error) {
     await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-remove-temp", [tempRouteFile, previousRouteFile]);
-    await rm5(tempRouteFile, { force: true });
+    await rm7(tempRouteFile, { force: true });
     await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-remove-current", [previousRouteFile]);
-    await rm5(routeFile, { force: true });
+    await rm7(routeFile, { force: true });
     if (previousRouteMoved) {
       await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-restore", [previousRouteFile]);
-      await rename5(previousRouteFile, routeFile);
+      await rename7(previousRouteFile, routeFile);
     }
     if (previousRouteMoved) {
       try {
@@ -49290,23 +49887,23 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
     throw error;
   }
   await assertManagedRouteMutationBoundary(routeFile, "apply-finalize-previous", [previousRouteFile]);
-  await rm5(previousRouteFile, { force: true });
+  await rm7(previousRouteFile, { force: true });
 }
 async function removeManagedRouteLocked(lifecycle, routeFile) {
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
   await assertManagedRouteMutationBoundary(routeFile, "remove-remove-previous", [previousRouteFile]);
-  await rm5(previousRouteFile, { force: true });
+  await rm7(previousRouteFile, { force: true });
   const hadRoute = await pathExists(routeFile);
   if (!hadRoute) {
     return { routeFile, removed: false };
   }
   await assertManagedRouteMutationBoundary(routeFile, "remove-move-current", [previousRouteFile]);
-  await rename5(routeFile, previousRouteFile);
+  await rename7(routeFile, previousRouteFile);
   try {
     reloadCaddy(lifecycle);
   } catch (error) {
     await assertManagedRouteMutationBoundary(routeFile, "remove-rollback-restore", [previousRouteFile]);
-    await rename5(previousRouteFile, routeFile);
+    await rename7(previousRouteFile, routeFile);
     try {
       reloadCaddy(lifecycle);
     } catch {
@@ -49325,7 +49922,7 @@ async function removeManagedRouteLocked(lifecycle, routeFile) {
 async function finalizeRemovedRouteLocked(route) {
   if (route?.previousRouteFile) {
     await assertManagedRouteMutationBoundary(route.routeFile, "remove-finalize-previous", [route.previousRouteFile]);
-    await rm5(route.previousRouteFile, { force: true });
+    await rm7(route.previousRouteFile, { force: true });
   }
 }
 async function restoreRemovedRouteLocked(lifecycle, route) {
@@ -49333,9 +49930,9 @@ async function restoreRemovedRouteLocked(lifecycle, route) {
     return;
   }
   await assertManagedRouteMutationBoundary(route.routeFile, "restore-remove-current", [route.previousRouteFile]);
-  await rm5(route.routeFile, { force: true });
+  await rm7(route.routeFile, { force: true });
   await assertManagedRouteMutationBoundary(route.routeFile, "restore-publish-previous", [route.previousRouteFile]);
-  await rename5(route.previousRouteFile, route.routeFile);
+  await rename7(route.previousRouteFile, route.routeFile);
   reloadCaddy(lifecycle);
 }
 async function assertManagedRouteMutationBoundary(routeFile, boundary, relatedFiles = []) {
@@ -49343,7 +49940,7 @@ async function assertManagedRouteMutationBoundary(routeFile, boundary, relatedFi
   for (const file of relatedFiles) await assertTrustedRegularFileIfExists(file);
   if (process.env.SPORADES_TEST_ROUTE_MUTATION_BOUNDARY === boundary) {
     const marker = process.env.SPORADES_TEST_ROUTE_MUTATION_MARKER;
-    if (marker) await writeFile4(marker, `${boundary}
+    if (marker) await writeFile3(marker, `${boundary}
 `, { flag: "wx", mode: 384 });
     await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS");
   }
@@ -49361,7 +49958,7 @@ async function withManagedRouteLock(routeFile, fn) {
   await assertActiveManagedRouteTrust(routeFile);
   await cleanupManagedRouteProtocolArtifacts(lockFile);
   if (process.env.SPORADES_TEST_FLOCK_PATH && process.env.SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER) {
-    await writeFile4(process.env.SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER, "route-lock-proof-retained\n", { mode: 384 });
+    await writeFile3(process.env.SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER, "route-lock-proof-retained\n", { mode: 384 });
   }
   await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS");
   if (!await processRetainsOsFlock(lockFile)) throw routeTrustError();
@@ -49381,7 +49978,7 @@ async function processRetainsOsFlock(lockFile) {
   for (const descriptorRoot of ["/proc/self/fd", "/dev/fd"]) {
     let entries;
     try {
-      entries = await readdir3(descriptorRoot);
+      entries = await readdir4(descriptorRoot);
     } catch {
       continue;
     }
@@ -49393,7 +49990,7 @@ async function processRetainsOsFlock(lockFile) {
   for (const descriptor of descriptorNumbers) {
     for (const descriptorRoot of ["/proc/self/fd", "/dev/fd"]) {
       try {
-        const descriptorStat = await stat(path8.join(descriptorRoot, descriptor));
+        const descriptorStat = await stat(path11.join(descriptorRoot, descriptor));
         if (!routeLockFileIdentityMatches(descriptorStat, expected)) continue;
         if (process.platform === "linux") {
           if (descriptorStat.dev !== expected.dev) continue;
@@ -49410,7 +50007,7 @@ async function processRetainsOsFlock(lockFile) {
 async function linuxDescriptorOwnsFlock(descriptor, expected) {
   let fdinfo;
   try {
-    fdinfo = await readFile7(`/proc/self/fdinfo/${descriptor}`, "utf8");
+    fdinfo = await readFile8(`/proc/self/fdinfo/${descriptor}`, "utf8");
   } catch {
     return false;
   }
@@ -49428,7 +50025,7 @@ function linuxDeviceMajorMinor(deviceNumber) {
 function testDescriptorOwnsFlock(lockFile) {
   const flock = process.env.SPORADES_TEST_FLOCK_PATH;
   if (!flock) return false;
-  const result = spawnSync5(flock, [
+  const result = spawnSync6(flock, [
     "--exclusive",
     "--timeout",
     "0",
@@ -49468,7 +50065,7 @@ function managedRouteLockTimeoutMs() {
 async function readManagedRouteProtocolOwner(protocolFile) {
   let parsed;
   try {
-    parsed = JSON.parse(await readFile7(protocolFile, "utf8"));
+    parsed = JSON.parse(await readFile8(protocolFile, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return { state: "absent", owner: null };
@@ -49492,20 +50089,20 @@ function managedRouteProtocolOwnerIsLive(owner) {
   if (owner.processIdentity === null) {
     return true;
   }
-  const result = spawnSync5("ps", ["-o", "lstart=", "-p", String(owner.pid)], { encoding: "utf8" });
+  const result = spawnSync6("ps", ["-o", "lstart=", "-p", String(owner.pid)], { encoding: "utf8" });
   const currentIdentity = result.status === 0 ? result.stdout.trim() || null : null;
   return currentIdentity === null || currentIdentity === owner.processIdentity;
 }
 async function cleanupManagedRouteProtocolArtifacts(lockFile) {
-  const directory = path8.dirname(lockFile);
-  const base = path8.basename(lockFile);
+  const directory2 = path11.dirname(lockFile);
+  const base = path11.basename(lockFile);
   const artifact = new RegExp(`^${escapeRegExp(base)}\\.(?:claim|stale|reclaim)-[a-f0-9]{32}$`);
-  const entries = (await readdir3(directory)).filter((entry) => artifact.test(entry)).sort().slice(0, 100);
+  const entries = (await readdir4(directory2)).filter((entry) => artifact.test(entry)).sort().slice(0, 100);
   for (const entry of entries) {
-    const artifactPath = path8.join(directory, entry);
+    const artifactPath = path11.join(directory2, entry);
     const owner = await readManagedRouteProtocolOwner(artifactPath);
     if (owner.state === "owner" && !managedRouteProtocolOwnerIsLive(owner.owner)) {
-      await rm5(artifactPath, { force: true });
+      await rm7(artifactPath, { force: true });
     }
   }
 }
@@ -49520,7 +50117,7 @@ async function removePathIfPresent(targetPath, options = {}) {
   if (!existed) {
     return { path: targetPath, removed: false };
   }
-  await rm5(targetPath, { recursive: Boolean(options.recursive), force: true });
+  await rm7(targetPath, { recursive: Boolean(options.recursive), force: true });
   return { path: targetPath, removed: true };
 }
 async function prepareWritableDataPath(targetPath) {
@@ -49535,11 +50132,11 @@ async function prepareWritableDataPath(targetPath) {
 }
 async function openCanonicalRuntimeDataDirectory(targetPath, createData) {
   const managedRoot = activeManagedRouteTrust?.managedRoot;
-  if (!managedRoot || !path8.isAbsolute(targetPath) || path8.normalize(targetPath) !== targetPath) throw runtimeDataTrustError(targetPath);
-  const relative = path8.relative(managedRoot, targetPath);
-  const components = relative.split(path8.sep).filter(Boolean);
-  if (relative.startsWith("..") || path8.isAbsolute(relative) || components.length !== 5 || components[0] !== "hosts" || components[2] !== "capsules" || components[4] !== "data" || !/^[a-z0-9.-]+(?::[1-9][0-9]{0,4})?$/.test(components[1]) || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(components[3])) throw runtimeDataTrustError(targetPath);
-  let handle = await open2(
+  if (!managedRoot || !path11.isAbsolute(targetPath) || path11.normalize(targetPath) !== targetPath) throw runtimeDataTrustError(targetPath);
+  const relative = path11.relative(managedRoot, targetPath);
+  const components = relative.split(path11.sep).filter(Boolean);
+  if (relative.startsWith("..") || path11.isAbsolute(relative) || components.length !== 5 || components[0] !== "hosts" || components[2] !== "capsules" || components[4] !== "data" || !/^[a-z0-9.-]+(?::[1-9][0-9]{0,4})?$/.test(components[1]) || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(components[3])) throw runtimeDataTrustError(targetPath);
+  let handle = await open6(
     managedRoot,
     fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0)
   ).catch(() => {
@@ -49548,14 +50145,14 @@ async function openCanonicalRuntimeDataDirectory(targetPath, createData) {
   let logical = managedRoot;
   try {
     for (let index = 0; index < components.length; index += 1) {
-      logical = path8.join(logical, components[index]);
+      logical = path11.join(logical, components[index]);
       const descriptorPath = descriptorChildPath(handle.fd, components[index], logical);
       if (createData && index === components.length - 1) {
         await mkdir4(descriptorPath, { mode: 448 }).catch((error) => {
           if (errorDetails(error).code !== "EEXIST") throw runtimeDataTrustError(logical);
         });
       }
-      const child = await open2(
+      const child = await open6(
         descriptorPath,
         fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0)
       ).catch(() => {
@@ -49578,31 +50175,31 @@ async function openCanonicalRuntimeDataDirectory(targetPath, createData) {
   }
 }
 function descriptorChildPath(parentFd, name2, fallbackPath) {
-  if (name2.length === 0 || name2 === "." || name2 === ".." || name2.includes(path8.sep)) throw runtimeDataTrustError(fallbackPath);
+  if (name2.length === 0 || name2 === "." || name2 === ".." || name2.includes(path11.sep)) throw runtimeDataTrustError(fallbackPath);
   return process.platform === "linux" ? `/proc/self/fd/${parentFd}/${name2}` : fallbackPath;
 }
-async function prepareWritableDataHandle(handle, targetPath, directory) {
+async function prepareWritableDataHandle(handle, targetPath, directory2) {
   let details = await handle.stat();
-  if (directory && !details.isDirectory() || !directory && !details.isFile()) throw runtimeDataTrustError(targetPath);
+  if (directory2 && !details.isDirectory() || !directory2 && !details.isFile()) throw runtimeDataTrustError(targetPath);
   const identity = { dev: details.dev, ino: details.ino };
   await pauseRuntimeDataDescriptorMutation(targetPath);
   await prepareRuntimeDataOwnershipHandle(handle, targetPath, details);
-  const wantedMode = directory ? 448 : 384;
+  const wantedMode = directory2 ? 448 : 384;
   if ((Number(details.mode) & 511) !== wantedMode) await handle.chmod(wantedMode);
   details = await handle.stat();
   if (details.dev !== identity.dev || details.ino !== identity.ino) throw runtimeDataTrustError(targetPath);
-  await assertRuntimeDataPathIdentity(targetPath, identity, directory);
-  if (!directory) return;
+  await assertRuntimeDataPathIdentity(targetPath, identity, directory2);
+  if (!directory2) return;
   const descriptorDirectory = process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : targetPath;
-  const entries = await readdir3(descriptorDirectory, { withFileTypes: true }).catch(() => {
+  const entries = await readdir4(descriptorDirectory, { withFileTypes: true }).catch(() => {
     throw runtimeDataTrustError(targetPath);
   });
   for (const entry of entries) {
-    if (entry.name === "." || entry.name === ".." || entry.name.includes(path8.sep)) throw runtimeDataTrustError(targetPath);
-    const childPath = path8.join(targetPath, entry.name);
+    if (entry.name === "." || entry.name === ".." || entry.name.includes(path11.sep)) throw runtimeDataTrustError(targetPath);
+    const childPath = path11.join(targetPath, entry.name);
     const descriptorPath = descriptorChildPath(handle.fd, entry.name, childPath);
     const flags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (entry.isDirectory() ? fsConstants.O_DIRECTORY ?? 0 : 0);
-    const child = await open2(descriptorPath, flags).catch(() => {
+    const child = await open6(descriptorPath, flags).catch(() => {
       throw runtimeDataTrustError(childPath);
     });
     try {
@@ -49612,18 +50209,18 @@ async function prepareWritableDataHandle(handle, targetPath, directory) {
     }
   }
 }
-async function assertRuntimeDataPathIdentity(targetPath, identity, directory) {
-  const details = await lstat5(targetPath).catch(() => {
+async function assertRuntimeDataPathIdentity(targetPath, identity, directory2) {
+  const details = await lstat8(targetPath).catch(() => {
     throw runtimeDataTrustError(targetPath);
   });
-  if (details.isSymbolicLink() || details.dev !== identity.dev || details.ino !== identity.ino || (directory ? !details.isDirectory() : !details.isFile())) throw runtimeDataTrustError(targetPath);
+  if (details.isSymbolicLink() || details.dev !== identity.dev || details.ino !== identity.ino || (directory2 ? !details.isDirectory() : !details.isFile())) throw runtimeDataTrustError(targetPath);
 }
 async function pauseRuntimeDataDescriptorMutation(targetPath) {
   if (process.env.SPORADES_TEST_RUNTIME_DATA_MUTATION_BOUNDARY !== "runtime-data-descriptor-mutate") return;
   const targetSuffix = process.env.SPORADES_TEST_RUNTIME_DATA_MUTATION_TARGET_SUFFIX;
   if (targetSuffix && !targetPath.endsWith(targetSuffix)) return;
   const marker = process.env.SPORADES_TEST_RUNTIME_DATA_MUTATION_MARKER;
-  if (marker) await writeFile4(marker, `${targetPath}
+  if (marker) await writeFile3(marker, `${targetPath}
 `, { flag: "wx", mode: 384 });
   await fakeManagedRouteLockPause("SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS");
 }
@@ -49658,7 +50255,7 @@ function runtimeDataOwnershipError(targetPath, uid, gid) {
   );
 }
 function validateCaddyRoute(routeFile) {
-  const result = spawnSync5("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8" });
+  const result = spawnSync6("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to validate Hosted Capsule route.",
@@ -49667,8 +50264,8 @@ function validateCaddyRoute(routeFile) {
   }
 }
 function reloadCaddy(lifecycle) {
-  const configPath = path8.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
-  const result = spawnSync5("caddy", ["reload", "--config", configPath, "--adapter", "caddyfile"], { encoding: "utf8" });
+  const configPath = path11.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
+  const result = spawnSync6("caddy", ["reload", "--config", configPath, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to apply Hosted Capsule route.",
@@ -49711,7 +50308,7 @@ async function recordReleaseUploaded(request, release, fileInventory) {
         hostedUrl: release.hostedUrl ?? entry.source?.hostedUrl ?? null,
         remoteCapsuleId: release.remoteCapsuleId ?? entry.source?.remoteCapsuleId ?? null,
         files: Array.isArray(release.files) ? [...release.files] : [],
-        deployFiles: resolveDeployFiles(release.deployFiles),
+        deployFiles: resolveDeployFiles(release.deployFiles, true),
         fileInventory: fileInventory.map((file) => ({ ...file })),
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
         inspection: Array.isArray(release.inspection?.requiredInspectors) ? { requiredInspectors: [...release.inspection.requiredInspectors] } : void 0,
@@ -49984,12 +50581,12 @@ function releaseSealedServerEnvPrivateKeyMount(registryRecord, paths2) {
   const fingerprint = release?.source?.sealedServerEnv?.publicKeyFingerprint;
   if (typeof fingerprint === "string" && /^[a-f0-9]{16}$/.test(fingerprint)) {
     return {
-      host: path8.join(paths2.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`),
+      host: path11.join(paths2.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`),
       fingerprint
     };
   }
   return {
-    host: path8.join(paths2.data, "sealed-server-env", "server-env.private.pem"),
+    host: path11.join(paths2.data, "sealed-server-env", "server-env.private.pem"),
     fingerprint: null
   };
 }
@@ -50001,7 +50598,7 @@ function releaseSshAuthorizedKeysMount(registryRecord, paths2) {
     return null;
   }
   return {
-    host: path8.join(paths2.currentLink, ".sporades", "ssh", "authorized_keys"),
+    host: path11.join(paths2.currentLink, ".sporades", "ssh", "authorized_keys"),
     container: "/run/sporades/ssh/authorized_keys",
     mode: "ro",
     optional: false
@@ -50113,7 +50710,7 @@ function compareReleasesNewestFirst(left, right) {
 async function readRegistryRecordForCapsule(request, purpose) {
   const registryRecordPath = registryPath(request);
   try {
-    return JSON.parse(await readFile7(registryRecordPath, "utf8"));
+    return JSON.parse(await readFile8(registryRecordPath, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       throw helperError(
@@ -50153,7 +50750,7 @@ function assertRegistryRecordMatchesRequest(request, record) {
 async function mutateRegistryRecord(request, mutate) {
   return withRegistryLock(request, async () => {
     const registryRecordPath = registryPath(request);
-    const record = JSON.parse(await readFile7(registryRecordPath, "utf8"));
+    const record = JSON.parse(await readFile8(registryRecordPath, "utf8"));
     await writeRegistryRecordAtomic(registryRecordPath, mutate(record));
   });
 }
@@ -50164,16 +50761,16 @@ async function writeRegistryRecordAtomic(registryRecordPath, record) {
 async function writeRegistryContentsAtomic(registryRecordPath, contents) {
   const tempPath = `${registryRecordPath}.tmp-${process.pid}-${Date.now()}`;
   try {
-    await writeFile4(tempPath, contents);
+    await writeFile3(tempPath, contents);
     if (process.env.SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE === "1") {
       throw helperError(
         "Failed to write Hosted Capsule registry record.",
         "Check Host server disk permissions and free space, then retry the command."
       );
     }
-    await rename5(tempPath, registryRecordPath);
+    await rename7(tempPath, registryRecordPath);
   } catch (error) {
-    await rm5(tempPath, { force: true });
+    await rm7(tempPath, { force: true });
     throw error;
   }
 }
@@ -50201,11 +50798,11 @@ async function withRegistryLock(request, fn) {
   try {
     return await fn();
   } finally {
-    await rm5(lockDir, { recursive: true, force: true });
+    await rm7(lockDir, { recursive: true, force: true });
   }
 }
 function registryPath(request) {
-  return path8.join(
+  return path11.join(
     request.host.remoteRoot,
     "hosts",
     request.host.domain,
@@ -50215,7 +50812,7 @@ function registryPath(request) {
   );
 }
 function registryLockPath(request) {
-  return path8.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", ".lock");
+  return path11.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", ".lock");
 }
 function capsuleData(request, lifecycle) {
   return {
@@ -50267,11 +50864,11 @@ async function readManagedCaddyAccessLog(logs) {
     }
     return null;
   }
-  const contents = await readFile7(logs.file, "utf8");
+  const contents = await readFile8(logs.file, "utf8");
   return lastLogEntries(contents, logs.lines);
 }
 function readCaddyJournalLogs(logs) {
-  const result = spawnSync5("journalctl", ["-u", "caddy", "-n", String(logs.lines), "--no-pager", "-o", "cat"], {
+  const result = spawnSync6("journalctl", ["-u", "caddy", "-n", String(logs.lines), "--no-pager", "-o", "cat"], {
     encoding: "utf8"
   });
   if (result.error || result.status !== 0) {
@@ -50280,7 +50877,7 @@ function readCaddyJournalLogs(logs) {
   return lastLogEntries(result.stdout ?? "", logs.lines);
 }
 function readDockerStreamLogs(logs) {
-  const result = spawnSync5("docker", ["logs", "--tail", String(logs.lines), logs.container.name], {
+  const result = spawnSync6("docker", ["logs", "--tail", String(logs.lines), logs.container.name], {
     encoding: "utf8"
   });
   if (result.error || result.status !== 0) {
@@ -50317,14 +50914,14 @@ function createHostedContainerName(domain, subname) {
   return `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
 }
 function defaultCaddyAccessLogPath(remoteRoot) {
-  return path8.join(remoteRoot, "caddy", "logs", "access.log");
+  return path11.join(remoteRoot, "caddy", "logs", "access.log");
 }
 function defaultCapsuleHttpLogPath(remoteRoot, domain, subname) {
-  return path8.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
+  return path11.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
 }
 function canonicalCapsuleHttpLogPath(request, validatedRemoteRoot = validateCanonicalHostRouteRoot(request)) {
   canonicalManagedRouteFile(request, validatedRemoteRoot);
-  const expectedDirectory = path8.resolve(
+  const expectedDirectory = path11.resolve(
     validatedRemoteRoot,
     "hosts",
     request.host.domain,
@@ -50332,8 +50929,8 @@ function canonicalCapsuleHttpLogPath(request, validatedRemoteRoot = validateCano
     request.capsule.subname,
     "logs"
   );
-  const expected = path8.resolve(expectedDirectory, "http.log");
-  if (path8.dirname(expected) !== expectedDirectory) throw invalidCapsuleHttpLogPathError();
+  const expected = path11.resolve(expectedDirectory, "http.log");
+  if (path11.dirname(expected) !== expectedDirectory) throw invalidCapsuleHttpLogPathError();
   const lifecycle = request.lifecycle;
   const supplied = [
     request.registration?.route?.log?.file,
@@ -50348,7 +50945,7 @@ function canonicalCapsuleHttpLogPath(request, validatedRemoteRoot = validateCano
 function capsuleHttpLogTrustManifest(request, validatedRemoteRoot) {
   const logFile = canonicalCapsuleHttpLogPath(request, validatedRemoteRoot);
   return {
-    directories: [{ path: path8.dirname(logFile), caddyOwned: true }],
+    directories: [{ path: path11.dirname(logFile), caddyOwned: true }],
     finalFiles: [{ path: logFile, caddyOwned: true }]
   };
 }
@@ -50359,10 +50956,10 @@ function invalidCapsuleHttpLogPathError() {
   );
 }
 function hostedPreservedFilesRoot(paths2) {
-  return path8.join(paths2.capsule, "preserved-files");
+  return path11.join(paths2.capsule, "preserved-files");
 }
 async function prepareHostedRuntimeFileAccess(target, mode, failure) {
-  const handle = await open2(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  const handle = await open6(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
   try {
     const identity = await handle.stat();
     if (!identity.isFile() || identity.nlink !== 1) throw helperError(failure.message, failure.hint);
@@ -50383,7 +50980,11 @@ async function preparePreservedReleaseFiles(request, recordedRelease) {
   if (interrupted) {
     throw helperError("Interrupted deploy.files attempt requires recovery.", "Run `sporades host reconcile <subname>` to settle the interrupted release install before starting, restarting or selecting a release.");
   }
-  for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles)) {
+  for (const file of resolveDeployFiles(recordedRelease.source?.deployFiles, true)) {
+    if (file.update === "admission") {
+      await assertPreservedDeployFile(admissionStorageRoot(hostedPreservedFilesRoot(paths2)), file.path);
+      continue;
+    }
     if (file.update !== "preserve") continue;
     const target = await assertPreservedDeployFile(hostedPreservedFilesRoot(paths2), file.path);
     await prepareHostedRuntimeFileAccess(target, 384, { message: "Unsafe preserved release file.", hint: "Restore a regular preserved file before restarting." });
@@ -50411,7 +51012,7 @@ async function reconcileReleaseAttempt(request) {
   if (!recorded) {
     await rollbackPreservedFiles(attempt.seeds);
     if (attempt.seeds.length) actions.push("seeds-rolled-back");
-    const recordedTarget = record.currentRelease?.id ? path8.join(paths2.releases, record.currentRelease.id) : null;
+    const recordedTarget = record.currentRelease?.id ? path11.join(paths2.releases, record.currentRelease.id) : null;
     const currentTarget = await readlink(paths2.currentLink).catch((error) => {
       if (errorDetails(error).code === "ENOENT") return null;
       throw error;
@@ -50423,7 +51024,7 @@ async function reconcileReleaseAttempt(request) {
     const candidate = canonicalRollbackPaths(request, attempt.release);
     await removeReleasePrivateKeyIfPresent(candidate, attempt.release);
     if (await pathExists(candidate.release)) {
-      await rm5(candidate.release, { recursive: true, force: true });
+      await rm7(candidate.release, { recursive: true, force: true });
       actions.push("candidate-release-removed");
     }
   }
@@ -50489,7 +51090,7 @@ async function recordedReleaseFileClaims(releaseDirectory, recordedRelease) {
     const normalized = file.normalize("NFC");
     if (canonical.has(normalized)) throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
     canonical.add(normalized);
-    const stats = await lstat5(path8.join(releaseDirectory, ...file.split("/")));
+    const stats = await lstat8(path11.join(releaseDirectory, ...file.split("/")));
     if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
       throw helperError("Hosted Capsule release files are missing.", "Choose another complete immutable release.");
     }
@@ -50499,14 +51100,14 @@ async function recordedReleaseFileClaims(releaseDirectory, recordedRelease) {
 }
 async function deriveReleaseFileClaims(root) {
   const claims = [];
-  async function visit(directory, prefix = "") {
-    for (const entry of await readdir3(directory, { withFileTypes: true })) {
+  async function visit(directory2, prefix = "") {
+    for (const entry of await readdir4(directory2, { withFileTypes: true })) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (!safeRecordedReleasePath(relative)) {
         throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
       }
-      const entryPath = path8.join(directory, entry.name);
-      const stats = await lstat5(entryPath);
+      const entryPath = path11.join(directory2, entry.name);
+      const stats = await lstat8(entryPath);
       if (stats.isSymbolicLink()) {
         throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
       }
@@ -50529,7 +51130,7 @@ function validRecordedReleaseIdentity(file) {
   return file && safeRecordedReleasePath(file.path) && Number.isSafeInteger(file.size) && file.size >= 0 && typeof file.sha256 === "string" && /^[a-f0-9]{64}$/.test(file.sha256);
 }
 function safeRecordedReleasePath(file) {
-  return file.length > 0 && !file.startsWith("/") && !file.includes("\\") && !file.includes("\0") && path8.posix.normalize(file) === file && Buffer.byteLength(file, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && file.split("/").every((segment) => segment && segment !== "." && segment !== "..");
+  return file.length > 0 && !file.startsWith("/") && !file.includes("\\") && !file.includes("\0") && path11.posix.normalize(file) === file && Buffer.byteLength(file, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && file.split("/").every((segment) => segment && segment !== "." && segment !== "..");
 }
 async function verifyRegisteredCapsule(request, purpose = "push") {
   const record = await readRegistryRecordForCapsule(request, purpose);

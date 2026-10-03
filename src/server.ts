@@ -1,3 +1,4 @@
+export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceNotificationIntentStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 import type {
   EndpointBodyBytes as CanonicalEndpointBodyBytes,
@@ -383,7 +384,11 @@ export function message<const HandlerType extends Handler>(
   };
 }
 
-/** Declare a named, server-only durable Job handler in `capsule({ jobs })`. */
+/**
+ * Declare a named, server-only durable Job handler in `capsule({ jobs })`.
+ * Enabled operator telemetry automatically traces each attempt with a causal
+ * enqueue link and independent queue metrics; no tracing API is required.
+ */
 export function job<const HandlerType extends Handler>(handler: HandlerType): JobDefinition<HandlerType> {
   return { kind: "job", handler };
 }

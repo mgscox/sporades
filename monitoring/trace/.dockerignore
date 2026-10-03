@@ -1,3 +1,6 @@
 **
 !gateway.mjs
+!inventory-contract.mjs
+!inventory-store.mjs
+!inventory.mjs
 !Dockerfile.gateway

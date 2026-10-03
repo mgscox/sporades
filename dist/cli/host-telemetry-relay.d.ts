@@ -2,6 +2,8 @@ import { type HostMetrics } from "./host-metrics.js";
 export type HostRelayConnection = {
     endpoint: string;
     credential: string;
+    inventoryCredential?: string;
+    inventoryHost?: string;
     caPem?: string;
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
@@ -19,9 +21,19 @@ export declare function readHostTelemetryConnection(remoteRoot: string): Promise
     internalEndpoint: string;
     caConfigured: boolean;
     connectedAt: string;
+    inventoryHost?: string;
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
 } | null>;
+export type HostInventoryConnection = {
+    generation: string;
+    endpoint: string;
+    host: string;
+    credential: string;
+    caPem?: string;
+};
+/** Call only while holding withHostTelemetryLock; legacy split state needs it too. */
+export declare function readHostInventoryConnection(remoteRoot: string): Promise<HostInventoryConnection | null>;
 export declare function statusHostTelemetryRelay(remoteRoot: string): Promise<{
     eventLoopDelayResolutionMs?: number | undefined;
     metricsIntervalMs?: number | undefined;

@@ -1,0 +1,29 @@
+import { type BuiltDeployFile } from "./deploy-files.js";
+export declare const ADMISSION_LIMITS: Readonly<{
+    bytes: 65536;
+    depth: 8;
+    rules: 128;
+    conditions: 16;
+    textBytes: 1024;
+    reloadMs: 2000;
+}>;
+export type { AdmissionCondition, AdmissionAction, AdmissionPolicy, AdmissionGeneration, AdmissionHealth } from "../src/types/admission-policy.js";
+import type { AdmissionGeneration, AdmissionHealth } from "../src/types/admission-policy.js";
+export declare function parseAdmissionPolicy(bytes: Buffer): AdmissionGeneration;
+export declare function resolveAdmissionPolicy(value: unknown, files?: unknown): string | null;
+export declare function admissionStorageRoot(preservedRoot: string): string;
+export declare function buildAdmissionPolicy(projectDir: string, value: unknown, files?: unknown): Promise<BuiltDeployFile[]>;
+export declare function publishAdmissionPolicy(root: string, relative: string, bytes: Buffer | null): Promise<void>;
+export declare function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth) => void): Promise<Readonly<{
+    current: () => Readonly<{
+        digest: string;
+        policy: import("../src/types/admission-policy.js").AdmissionPolicy;
+    }> | null;
+    health: () => Readonly<{
+        state: "healthy" | "degraded" | "disabled";
+        digest: string | null;
+    }>;
+    reload: () => Promise<void>;
+    close: () => Promise<void>;
+}>>;
+//# sourceMappingURL=admission-policy.d.ts.map

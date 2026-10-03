@@ -1410,7 +1410,7 @@ async function writeHostedCapsuleInstallFixture(dir, options = {}) {
   await mkdir(path.join(runtimeDir, "public", "assets", "images"), { recursive: true });
   await mkdir(path.dirname(registryRecordPath), { recursive: true });
   await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-  await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+  await writeFile(path.join(runtimeDir, "sporades.json"), JSON.stringify({name:"team-notes", ...(options.admissionPolicy ? {admissionPolicy:options.admissionPolicy} : {})})+"\n");
   await writeFile(path.join(runtimeDir, "public", "index.html"), '<link rel="stylesheet" href="/assets/app-a1b2.css"><script type="module" src="/assets/app-a1b2.js"></script>\n');
   await writeFile(path.join(runtimeDir, "public", "assets", "app-a1b2.js"), "console.log('client bundle');\n//# sourceMappingURL=app-a1b2.js.map\n");
   await writeFile(path.join(runtimeDir, "public", "assets", "app-a1b2.js.map"), '{"version":3,"sources":[]}\n');
@@ -6719,7 +6719,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     const telemetryDir = path.join(remoteRoot, "telemetry");
     await mkdir(telemetryDir, { recursive: true, mode: 0o700 });
     await chmod(telemetryDir, 0o700);
-    await writeFile(path.join(telemetryDir, "connection.json"), JSON.stringify({ schemaVersion: 1, endpoint: "https://monitor.example:4318/", network: "sporades-hosted-capsules", internalEndpoint: "http://sporades-telemetry:4318/", caConfigured: false, connectedAt: "2026-09-28T00:00:00.000Z" }), { mode: 0o600 });
+    await writeFile(path.join(telemetryDir, "connection.json"), JSON.stringify({ schemaVersion: 1, endpoint: "https://monitor.example:4318/", network: "sporades-hosted-capsules", internalEndpoint: "http://sporades-telemetry:4318/", caConfigured: false, inventoryHost: "capsules.example.dev", connectedAt: "2026-09-28T00:00:00.000Z", inventory: { generation: "00000000000000000000000000000001", credential: "test-host-inventory-token" } }), { mode: 0o600 });
     const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
     const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
@@ -6893,13 +6893,21 @@ test("sporades host helper starts the current release in Docker and routes throu
       assert.equal(preparedDatabase.uid, 10001);
       assert.equal(preparedDatabase.gid, 10001);
     }
+    const inventoryOutbox = async () => JSON.parse(await readFile(path.join(telemetryDir, "inventory.json"), "utf8"));
+    assert.equal((await inventoryOutbox()).desired.capsules[0].state, "running");
+    const inventoryRevision = (await inventoryOutbox()).desired.revision;
+    assert.doesNotMatch(JSON.stringify(await inventoryOutbox()), /swordfish|runtimeProbe|SECRET_TOKEN/);
     const disabled = await runHostHelper({ action: "host.telemetry.disable", host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot }, capsule: { subname: "team-notes" } }, { cwd: dir, env: docker.env });
     assert.equal(JSON.parse(disabled.stdout).ok, true, disabled.stdout);
     assert.equal(JSON.parse(disabled.stdout).data.coverage.state, "unverified", "the fixture does not prove the running runtime's Telemetry capability");
     assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).telemetry.disabled, true);
+    assert.equal((await inventoryOutbox()).desired.capsules[0].state, "opted-out");
+    assert.equal((await inventoryOutbox()).desired.revision, inventoryRevision + 1);
     const enabled = await runHostHelper({ action: "host.telemetry.enable", host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot }, capsule: { subname: "team-notes" } }, { cwd: dir, env: docker.env });
     assert.equal(JSON.parse(enabled.stdout).ok, true, enabled.stdout);
     assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).telemetry.disabled, false);
+    assert.equal((await inventoryOutbox()).desired.capsules[0].state, "running");
+    assert.equal((await inventoryOutbox()).desired.revision, inventoryRevision + 2);
   });
 });
 
@@ -10560,7 +10568,9 @@ test("sporades host helper fails start when Docker does not report a usable loop
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
         ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.2.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${record.runtimeProbe.token}`, "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_PUBLIC_ALIASES=[]", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--env", "SPORADES_HOSTED_TELEMETRY_CONFIG=null", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine", "node", "/app/server.mjs"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.2.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted",
+        "--env",
+        "SPORADES_ADMISSION_POLICY_PATH=", "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${record.runtimeProbe.token}`, "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_PUBLIC_ALIASES=[]", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--env", "SPORADES_HOSTED_TELEMETRY_CONFIG=null", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],
@@ -15560,4 +15570,92 @@ test("Host shutdown evidence cannot authorize OOM, stale containers, or stale re
       assert(!(await docker.calls()).some((call) => ["run", "start"].includes(call.args[0])));
     });
   });
+});
+
+
+test("Hosted admission policy uses Host-owned read-only storage and authorized publication", async () => {
+  await withTempDir(async dir => {
+    const json = id => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact:"/blocked"}],action:{kind:"deny"}}]});
+    const docker = await installFakeDocker(path.join(dir,"admission-docker"));
+    const fixture = await writeHostedCapsuleInstallFixture(dir, {rootName:"admission-host", previousReleaseId:null, deployFiles:[{path:"policy.json",update:"admission"}], admissionPolicy:{path:"policy.json"}, fileContents:json("seed")});
+    const target = {host:{alias:"personal",domain:fixture.domain,remoteRoot:fixture.remoteRoot},capsule:{subname:fixture.subname}};
+    const installed = await runHostHelper({...target,action:"capsule.release.install",release:fixture.release},{cwd:dir,env:docker.env});
+    assert.equal(installed.code,0,installed.stdout+installed.stderr);
+    assert.equal(JSON.parse(installed.stdout).ok,true,installed.stdout+installed.stderr);
+    const storage = path.join(fixture.capsuleDir,"preserved-files","admission");
+    const file = preservedDeployFilePath(storage,"policy.json");
+    assert.equal((await stat(file)).mode & 0o777,0o444);
+    const run = (await docker.calls()).filter(call=>call.args[0]==="run").at(-1);
+    assert(run.args.includes(`${storage}:/run/sporades-admission:ro`));
+    assert.equal(run.args[run.args.indexOf("SPORADES_ADMISSION_POLICY_PATH=policy.json")-1],"--env");
+    const publish = contents => runHostHelper({...target,action:"capsule.admission.publish",admission:{contents}},{cwd:dir,env:docker.env});
+    const changed = await publish(Buffer.from(json("updated")).toString("base64")); assert.equal(changed.code,0,changed.stdout+changed.stderr); assert.equal(JSON.parse(changed.stdout).ok,true,changed.stdout);
+    assert.equal(JSON.parse(await readFile(file,"utf8")).rules[0].id,"updated");
+    const invalid = await publish(Buffer.from("{}").toString("base64")); assert.equal(JSON.parse(invalid.stdout).ok,false,invalid.stdout); assert.equal(JSON.parse(await readFile(file,"utf8")).rules[0].id,"updated");
+    const removed = await publish(null); assert.equal(removed.code,0,removed.stdout+removed.stderr); assert.equal(JSON.parse(removed.stdout).ok,true,removed.stdout);
+    assert.equal(JSON.parse(await readFile(file,"utf8")).removed,true);
+    const restart = await runHostHelper({...target,action:"capsule.restart"},{cwd:dir,env:docker.env}); assert.equal(restart.code,0,restart.stdout+restart.stderr);
+    assert.equal(JSON.parse(await readFile(file,"utf8")).removed,true);
+  });
+});
+
+test("Hosted admission publication denies untrusted authority without mutation or Docker operations", async (t) => {
+  const messages = {
+    "registry identity mismatch": "Hosted Capsule registry record does not match the release request.",
+    "interrupted deployment journal": "Interrupted deployment requires recovery.",
+    "undeclared policy": "The deployed Capsule has no admission policy.",
+    "symlink storage": "Unsafe admission storage.",
+  };
+  const policy = id => Buffer.from(JSON.stringify({ version: 1, rules: [{
+    id, enabled: true, conditions: [{ kind: "header", name: "x-policy-test", value: "private-policy-value" }], action: { kind: "deny" },
+  }] }));
+  for (const scenario of ["registry identity mismatch", "interrupted deployment journal", "undeclared policy", "symlink storage"]) {
+    await t.test(scenario, async () => withTempDir(async dir => {
+      const docker = await installFakeDocker(path.join(dir, "denied-admission-docker"));
+      await writeFile(path.join(dir, "denied-admission-docker", "docker-calls.jsonl"), "");
+      const fixture = await writeHostedCapsuleInstallFixture(dir, {
+        rootName: "denied-admission-host", previousReleaseId: null,
+        deployFiles: [{ path: "policy.json", update: "admission" }],
+        admissionPolicy: { path: "policy.json" }, fileContents: policy("retained-policy").toString(),
+      });
+      const target = { host: { alias: "personal", domain: fixture.domain, remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+      const installed = await runHostHelper({ ...target, action: "capsule.release.install", release: { ...fixture.release, restart: false } }, { cwd: dir, env: docker.env });
+      assert.equal(JSON.parse(installed.stdout).ok, true, installed.stdout + installed.stderr);
+      const storage = path.join(fixture.capsuleDir, "preserved-files", "admission");
+      const file = preservedDeployFilePath(storage, "policy.json");
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      if (scenario === "registry identity mismatch") {
+        record.remoteCapsuleId = `${fixture.domain}/another-capsule`;
+        await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      } else if (scenario === "interrupted deployment journal") {
+        await writeFile(path.join(fixture.capsuleDir, "deploy-file-attempt.jsonl"), JSON.stringify({
+          release: "interrupted-attempt", preservedRoot: path.join(fixture.capsuleDir, "preserved-files"),
+        }) + "\n");
+      } else if (scenario === "undeclared policy") {
+        record.releases.find(release => release.id === record.currentRelease.id).source.deployFiles = [];
+        await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      } else {
+        await rename(storage, `${storage}-retained`);
+        await symlink(`${storage}-retained`, storage);
+      }
+      const bytesBefore = await readFile(file);
+      const registryBefore = await readFile(fixture.registryRecordPath);
+      const dockerBefore = await docker.calls();
+      // The same authority boundary applies to replacement and explicit removal.
+      for (const contents of [policy("replacement-policy").toString("base64"), null]) {
+        const result = await runHostHelper({ ...target, action: "capsule.admission.publish", admission: { contents } }, { cwd: dir, env: docker.env });
+        const output = JSON.parse(result.stdout);
+        assert.equal(output.ok, false, result.stdout);
+        assert.equal(result.stderr, "");
+        assert.equal(output.data, null);
+        assert.equal(output.error.message, messages[scenario]);
+        for (const sensitive of ["private-policy-value", "retained-policy", "replacement-policy", contents, storage, "Error:", " at "]) {
+          if (sensitive) assert(!result.stdout.includes(sensitive), `denial exposes ${sensitive}`);
+        }
+        assert.deepEqual(await readFile(file), bytesBefore);
+        assert.deepEqual(await readFile(fixture.registryRecordPath), registryBefore);
+        assert.deepEqual(await docker.calls(), dockerBefore);
+      }
+    }));
+  }
 });

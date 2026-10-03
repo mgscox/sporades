@@ -155,6 +155,12 @@ test("the walker guards' collector sees both forms a top-level function can take
 // show the census a function somebody had registered, and reading declarations shows it every
 // function in the file.
 const MIGRATED_RUNTIME_MODULES = [
+  // Conservative label extraction reads SQL but never emits or rewrites it.
+  { file: "database-telemetry.js", atLeast: 1, sentinel: "createDatabaseTelemetry" },
+  // Admission generations carry their bounded validator and the shared no-follow
+  // deployment-file reader into the Bundle. Include their private helpers too.
+  { file: "admission-policy.js", atLeast: 8, sentinel: "condition" },
+  { file: "deploy-files.js", atLeast: 15, sentinel: "readBoundedDeployFile" },
   // The monolith. `sendJsonWithCompletion` is the sentinel: the WebSocket transport's one write path
   // that reports when the frame actually reached the socket, which every subscription rebroadcast
   // and every query reply goes through. It is exported from nothing, and it was an emitted-list
@@ -526,6 +532,8 @@ function walkerGuardSubject(name) {
 // the conformance coverage gate under one of the three ADR-0035 mechanics — connection lifecycle,
 // SQL dialect emission, transaction session mechanics — which is the same line drawn from the
 // other side.
+// Statement primitives now have one shared telemetry wrapper. Their underlying engine
+// behavior is still exercised by conformance; the wrapper's body is identical across engines.
 const ENGINE_MECHANICS = ["close", "exec", "prepare", "withReadOnlySnapshot", "withTransaction"];
 
 const ENGINES = [
@@ -551,7 +559,7 @@ for (const engine of ENGINES) {
 
     assert.deepEqual(
       overridden.sort(),
-      ENGINE_MECHANICS,
+      ENGINE_MECHANICS.filter(name => name !== "exec" && name !== "prepare"),
       `${engine.name} replaces a shared Database adapter method body. A difference the engines genuinely have ` +
       "belongs in the dialect or in row normalization, which ADR-0034 licenses; a replacement method body is " +
       "how a behavioural divergence gets in, and how the shared definition it shadows stays wrong and dormant.",
@@ -1322,6 +1330,7 @@ const namesRunDelimiters = (source) => {
 // distinguish these languages, which share quote characters. Listing each non-SQL purpose keeps
 // the detector broad instead of hiding new walkers behind language-specific exclusions.
 const RUN_LEXER_CENSUS = {
+  resolveDeployFiles: "not a lexer: rejects deployment path segments starting with a hyphen",
   skipSqlQuotedOrCommented: "the one tokenizer every read-only inspection consumer asks a dialect of",
   // On the inspection path — every Postgres inspection query passes through it twice — and left
   // uncollapsed deliberately. It is *not* inert there: a `?` inside a form it does not know makes it

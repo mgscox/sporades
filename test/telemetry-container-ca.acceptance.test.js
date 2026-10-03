@@ -49,6 +49,7 @@ test("a real pre-descriptor Container retains its implicit telemetry after a cur
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.telemetry = { profile: "old" };
+    config.deploy = { ...config.deploy, port: await availablePort() };
     await writeFile(configPath, `${JSON.stringify(config)}\n`);
     const deployed = await run(process.execPath, [legacyCli, "deploy", "--json"], { cwd: projectDir, env, timeout: 120_000 });
     containerId = JSON.parse(deployed.stdout.trim().split("\n").at(-1)).data.containerId;
@@ -81,7 +82,9 @@ test("packed CLI exports through a private CA from a disposable Container", {
   skip: enabled ? false : "Set SPORADES_REAL_TELEMETRY_CA_CONTAINER=1 for disposable Docker acceptance.",
   timeout: 300_000,
 }, async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "sporades-ca-container-"));
+  const scratch = path.join(repoRoot, ".scratch");
+  await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "sporades-ca-container-"));
   const packageDir = path.join(root, "package");
   const configDir = path.join(root, "config");
   const projectDir = path.join(root, "ca-acceptance");
@@ -115,7 +118,16 @@ test("packed CLI exports through a private CA from a disposable Container", {
     const env = { ...process.env, SPORADES_CONFIG_DIR: configDir, TELEMETRY_ACCEPTANCE_TOKEN: "session-owned-credential" };
     const created = await run(process.execPath, [cli, "create", "ca-acceptance", "--template", "blank", "--no-install", "--no-git", "--json"], { cwd: root, env, timeout: 120_000 });
     assert.equal(JSON.parse(created.stdout.trim().split("\n").at(-1)).ok, true);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.deploy = { ...config.deploy, port: await availablePort() };
+    await writeFile(configPath, JSON.stringify(config));
     await run("npm", ["install", "--ignore-scripts", "--package-lock=false"], { cwd: projectDir, timeout: 120_000 });
+    const acceptanceConfigPath = path.join(projectDir, "sporades.json");
+    const acceptanceConfig = JSON.parse(await readFile(acceptanceConfigPath, "utf8"));
+    acceptanceConfig.dev = { ...acceptanceConfig.dev, port: 5689 };
+    acceptanceConfig.deploy = { ...acceptanceConfig.deploy, port: 5691 };
+    await writeFile(acceptanceConfigPath, JSON.stringify(acceptanceConfig));
     const deployed = await run(process.execPath, [cli, "deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env, timeout: 120_000 });
     const result = JSON.parse(deployed.stdout.trim().split("\n").at(-1));
     assert.equal(result.ok, true, deployed.stderr);
@@ -180,7 +192,7 @@ function isContainerMetric(event) {
 }
 
 async function devBuild(cli, projectDir, env, selection) {
-  const child = spawn(process.execPath, [cli, "dev", ...selection, "--json"], { cwd: projectDir, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [cli, "dev", "--port", "0", ...selection, "--json"], { cwd: projectDir, env, stdio: ["ignore", "pipe", "pipe"] });
   const events = [];
   let buffered = "";
   let stderr = "";
@@ -209,4 +221,12 @@ async function waitUntil(predicate, timeoutMs, diagnostics = () => "") {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
   assert(predicate(), `Timed out waiting for session event. ${diagnostics()}`);
+}
+
+async function availablePort() {
+  const server = createHttpServer().listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = server.address().port;
+  await new Promise(resolve => server.close(resolve));
+  return port;
 }

@@ -2,6 +2,10 @@
 
 Logs, database inspection, Container sessions, Hosted Capsules, Doctor, workflows, and troubleshooting.
 
+Connected Hosts automatically synchronize [lifecycle inventory](./lifecycle-inventory.md)
+with durable pending state and exact Host-scoped recovery. Probe scheduling and
+absence-alert delivery remain separate work.
+
 [Back to the feature reference index](../guide/reference.md).
 
 ## Inspect Logs and Data
@@ -59,6 +63,13 @@ are replaced with `[REDACTED]`; exact Server env values are also redacted if
 they appear in structured log data. Request method and path may be recorded, but
 raw request bodies are not logged by default. Each log event is capped to a
 bounded payload size, with oversized structured data marked as truncated.
+
+HTTP failure logging is best effort: malformed request targets and log sink
+failures cannot prevent the HTTP error response or restart the runtime. The
+`http.request.failed` event records a path capped at 1,024 characters, with
+control characters replaced and URL credentials, query strings, and fragments
+omitted. Repeated leading slashes such as `//` remain literal route paths;
+invalid targets such as `/%` receive a 400 response.
 
 Within one HTTP request, `request.id` is a stable runtime UUID across async
 log calls, including when telemetry export is disabled. An explicitly supplied

@@ -1,3 +1,5 @@
+import { openAdmissionPolicy, resolveAdmissionPolicy } from "../admission-policy.js";
+import { preservedDeployFilePath } from "../deploy-files.js";
 // The generated Capsule server bundle: the boot program a deployed Capsule runs, written as
 // ordinary imports so that esbuild resolves every name.
 //
@@ -48,6 +50,13 @@ if (sporadesActionInputIndex >= 0) {
 // Loaded through a variable rather than a literal so esbuild leaves the import for the runtime to
 // perform. Resolving it at build time would both inline the Capsule into the graph and evaluate it
 // on the one-shot action path, which ADR-0028 requires stay unevaluated.
+const admissionLaunchPath = process.env.SPORADES_ADMISSION_POLICY_PATH;
+const admissionPath = sporadesAction ? null : admissionLaunchPath !== undefined
+    ? (admissionLaunchPath ? resolveAdmissionPolicy({ path: admissionLaunchPath }) : null)
+    : resolveAdmissionPolicy(sporadesConfig.admissionPolicy, sporadesConfig.deploy?.files);
+const admissionDeployed = ["container", "hosted"].includes(process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession);
+let admissionLog;
+const admissionPolicyRuntime = admissionPath ? await openAdmissionPolicy(admissionDeployed ? "/run/sporades-admission" : process.cwd(), admissionDeployed ? path.basename(preservedDeployFilePath("/run/sporades-admission", admissionPath)) : admissionPath, health => admissionLog?.(health)) : null;
 const sporadesCapsuleModule = sporadesAction ? null : await import(sporadesCapsuleModuleUrl);
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
@@ -120,13 +129,38 @@ if (sporadesAction) {
     }
     process.exit();
 }
-const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
-    serviceEnv: runtimeServiceEnv,
-    createStripeCallbackEndpoint,
-    createStripeTeamBillingProvider,
-});
-database.runtimeProbeToken = process.env.SPORADES_RUNTIME_PROBE_TOKEN ?? null;
-await database.init();
+let jobTelemetryLifecycle;
+let database;
+try {
+    database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
+        serviceEnv: runtimeServiceEnv,
+        createStripeCallbackEndpoint,
+        createStripeTeamBillingProvider,
+        // Bind after storage/definitions are ready, before the existing recovery scan.
+        onJobQueueReady(queueDatabase) {
+            jobTelemetryLifecycle = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry, (diagnostic) => queueDatabase.log.emit({
+                category: "platform",
+                event: diagnostic.event,
+                level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
+                message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
+                data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
+            }));
+            jobTelemetryLifecycle.bindJobQueue(queueDatabase);
+        },
+    });
+    database.runtimeProbeToken = process.env.SPORADES_RUNTIME_PROBE_TOKEN ?? null;
+    await database.init();
+}
+catch (error) {
+    await jobTelemetryLifecycle?.shutdown();
+    throw error;
+}
+const telemetry = jobTelemetryLifecycle;
+if (admissionPolicyRuntime) {
+    database.admissionPolicy = admissionPolicyRuntime;
+    admissionLog = health => database.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+    admissionLog(admissionPolicyRuntime.health());
+}
 database.log.emit({
     category: "platform",
     event: "runtime.started",
@@ -135,15 +169,8 @@ database.log.emit({
     data: { diagnostics: database.runtimeDiagnostics },
     release: process.env.SPORADES_RELEASE_ID ? { id: process.env.SPORADES_RELEASE_ID } : null,
 });
-const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
-const telemetry = createHttpRequestTelemetry(runtimeConfig.__sporadesTelemetry, (diagnostic) => database.log.emit({
-    category: "platform",
-    event: diagnostic.event,
-    level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
-    message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
-    data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
-}));
+const websocketHub = createWebSocketHub(() => database, null, { telemetry: runtimeConfig.__sporadesTelemetry ? telemetry.websocket : undefined });
 database.runtimeTelemetry = {
     supported: true,
     enabled: runtimeConfig.__sporadesTelemetry !== null && runtimeConfig.__sporadesTelemetry !== undefined,
@@ -208,6 +235,7 @@ const shutdown = async () => {
     if (shutdownStarted)
         return;
     shutdownStarted = true;
+    await admissionPolicyRuntime?.close();
     websocketHub.disconnectAll();
     let shutdownError;
     try {

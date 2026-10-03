@@ -22,6 +22,7 @@ export type HostHelperAction =
   | "capsule.resume"
   | "capsule.start"
   | "capsule.stop"
+  | "capsule.admission.publish"
   | "capsule.restart"
   | "capsule.stats"
   | "capsule.ssh"
@@ -42,6 +43,7 @@ export type HostHelperAction =
   | "host.telemetry.reconcile"
   | "host.telemetry.status"
   | "host.telemetry.check"
+  | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile"
   | "host.telemetry.enable"
   | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable";
 
@@ -95,7 +97,7 @@ export type HostHelperRequestBase = JsonObject & {
   lines?: number;
   verification?: HostHelperVerification;
   accessKeys?: JsonObject;
-  telemetry?: { endpoint: string; credential: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
+  telemetry?: { endpoint: string; credential: string; inventoryCredential?: string; inventoryHost?: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
 };
 
 export type HostRegistrationOptions = JsonObject & {
@@ -191,7 +193,8 @@ export type HostLogsRequest = HostHelperRequestBase & {
 };
 export type HostCapsuleListRequest = HostHelperRequestBase & { action: "capsule.list" };
 export type HostVersionRequest = HostHelperRequestBase & { action: "host.version" };
-export type HostTelemetryRequest = HostHelperRequestBase & { action: "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable" };
+export type HostTelemetryRequest = HostHelperRequestBase & { action: "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check"
+  | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable" };
 export type HostJobsInspectRequest = HostHelperRequestBase & { action: "jobs.inspect"; capsule: HostHelperCapsuleTarget };
 export type HostSchedulesInspectRequest = HostHelperRequestBase & { action: "schedules.inspect"; capsule: HostHelperCapsuleTarget };
 export type HostAccessKeyRequest = HostHelperRequestBase & {
@@ -200,7 +203,13 @@ export type HostAccessKeyRequest = HostHelperRequestBase & {
   accessKeys: JsonObject;
 };
 
+export type HostAdmissionPublishRequest = HostHelperRequestBase & {
+  action: "capsule.admission.publish";
+  capsule: HostHelperCapsuleTarget;
+  admission: { contents: string | null };
+};
 export type HostHelperRequest =
+  | HostAdmissionPublishRequest
   | HostBootstrapRequest
   | HostRegistrationRequest
   | HostSealedEnvRotationRequest

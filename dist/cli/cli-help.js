@@ -150,6 +150,8 @@ Options for profile add:
   --endpoint <url>        OTLP/HTTP base origin (HTTPS, or HTTP loopback with --loopback)
   --dashboard <url>       Optional dashboard HTTPS URL
   --credential-env <KEY>  Environment variable containing the ingestion bearer token
+  --inventory-credential-env <KEY>  Exact Host-scoped lifecycle inventory token
+  --inventory-host <id>   Stable inventory identity (default: first connected domain)
   --metrics-interval-ms <N>  Metrics export period, 5000-300000 ms (default 15000)
   --event-loop-delay-resolution-ms <N>  Delay timer precision, 10-1000 ms (default 20)
   --ca-file <path>        Absolute private CA certificate path for verified TLS
@@ -166,6 +168,8 @@ Commands:
   deploy status       Print Container session status
   deploy stop         Stop the running Container session
   deploy restart      Restart the running Container session
+  deploy policy publish <file>|remove
+                      Publish or remove the declared admission policy
   deploy reconcile    Settle an interrupted deployment-file attempt
   deploy ssh          Inspect effective Container SSH access
   deploy remove       Remove the Container session
@@ -191,6 +195,7 @@ Profile commands:
   upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
   telemetry connect|reconcile|status|check
+  telemetry inventory-export|inventory-reconcile
                       Manage the shared Host Telemetry relay
   telemetry resources-enable|resources-disable|resources-remove
                      Manage Host OS and Caddy collection independently of Capsules
@@ -204,6 +209,8 @@ Capsule commands:
   start <subname>     Start a Hosted Capsule
   stop <subname>      Stop a Hosted Capsule
   restart <subname>   Restart a Hosted Capsule
+  policy publish <file>|remove --host <alias> --subname <name>
+                      Publish or remove the recorded admission policy
   reconcile <subname> Settle an interrupted deployment-file attempt
   ssh [subname]       Inspect effective Hosted Capsule SSH access
   stats [subname]     Print Host server or Hosted Capsule stats

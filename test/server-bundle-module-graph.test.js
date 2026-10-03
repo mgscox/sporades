@@ -36,6 +36,7 @@ import ts from "typescript";
 import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
 import { ensureSealedServerEnvKeyPair, sealServerEnv, sealedServerEnvPaths } from "../dist/sealed-server-env.js";
 import { createSqliteDatabaseAdapter, emitHttpFailureLog } from "../dist/server-runtime-source.js";
+import { writeUnhandledHttpError } from "../dist/http-runtime.js";
 import { createServerBundleModuleSource } from "../dist/templates/server-bundle-module-graph.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
@@ -326,7 +327,9 @@ function compiledCapsuleModule() {
 // which does not care about the Capsule's own source cannot accidentally build from nothing.
 async function buildBundle(inputs, options = {}) {
   const serverModuleSource = inputs.serverModuleSource ?? (await compiledCapsuleModule());
-  return createServerBundleModuleSource({ ...inputs, serverModuleSource, ...options });
+  return createServerBundleModuleSource({ ...inputs, serverModuleSource, ...options,
+    epilogue: `${options.epilogue ?? ""}\nprocess.stdout.write(JSON.stringify({ __sporadesTestListeningPort: server.address().port }) + "\\n");`,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -360,10 +363,11 @@ async function writePublicTree(dir, html) {
 async function bootBundle({ source, dir, env = {} }) {
   const bundlePath = path.join(dir, "server.mjs");
   await writeFile(bundlePath, source);
-  const port = await reserveFreePort();
+  // Let the kernel allocate the listening port; reserving then closing a socket
+  // races with other desks running the same generated-Bundle acceptance.
   const child = spawn(process.execPath, [bundlePath], {
     cwd: dir,
-    env: { ...process.env, PORT: String(port), SPORADES_RUNTIME_PROBE_TOKEN: "a".repeat(64), ...env },
+    env: { ...process.env, PORT: "0", SPORADES_RUNTIME_PROBE_TOKEN: "a".repeat(64), ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
@@ -373,13 +377,15 @@ async function bootBundle({ source, dir, env = {} }) {
   child.stdout.on("data", (chunk) => { stdout += chunk; });
   child.on("exit", (code, signal) => { exited = { code, signal }; });
 
-  const baseUrl = `http://127.0.0.1:${port}`;
+  let baseUrl;
   const deadline = Date.now() + BOOT_TIMEOUT_MS;
   for (;;) {
     if (exited) {
       throw new Error(`Bundle exited before it listened (code ${exited.code}, signal ${exited.signal}).\n${stderr}\n${stdout}`);
     }
-    const reached = await fetch(`${baseUrl}/__sporades/health/runtime`, {
+    const signal = stdout.split("\n").map(line => { try { return JSON.parse(line); } catch { return null; } }).find(value => Number.isInteger(value?.__sporadesTestListeningPort));
+    if (signal) baseUrl = `http://127.0.0.1:${signal.__sporadesTestListeningPort}`;
+    const reached = baseUrl && await fetch(`${baseUrl}/__sporades/health/runtime`, {
       headers: { "x-sporades-host-probe": "a".repeat(64) },
     }).then(() => true, () => false);
     if (reached) break;
@@ -2383,7 +2389,7 @@ test("the bundle mints ACL_HELPER_STATE exactly once, from the runtime's own dec
   assert.match(bundle, /\bACL_HELPER_STATE\b/);
 });
 
-test("a generated server bundle keeps serving after a repeated-slash origin-form request", async () => {
+test("a generated server bundle keeps serving after unusual raw HTTP request targets", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-http-liveness-"));
   let booted;
   try {
@@ -2395,13 +2401,49 @@ test("a generated server bundle keeps serving after a repeated-slash origin-form
     await writePublicTree(root, "<!doctype html><html><body>HTTP liveness</body></html>");
     booted = await bootBundle({ source, dir: root });
 
-    const failed = await rawHttpResponse(booted.baseUrl, "//");
-    assert.match(failed, /^HTTP\/1\.1 404\b/);
-    assert.equal((await fetch(booted.baseUrl)).status, 200);
-    assert.doesNotMatch(booted.stderr, /unhandledRejection|uncaughtException|fatal-runtime/i);
+    for (const [target, status] of [["//", 404], ["///x", 404], ["/%", 400], ["http://evil.example/x", 404]]) {
+      const response = await rawHttpResponse(booted.baseUrl, target);
+      assert.match(response, new RegExp(`^HTTP/1\\.1 ${status}\\b`), `${target}: ${response}`);
+      assert.equal((await fetch(booted.baseUrl)).status, 200, `runtime stopped after ${target}`);
+    }
+    assert.doesNotMatch(booted.stderr, /unhandledRejection|uncaughtException|fatal-runtime|Invalid URL/i);
   } finally {
     await booted?.stop();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("HTTP failure logging handles the exact double-slash crash target", () => {
+  const entries = [];
+  const database = { log: { emit: (entry) => entries.push(entry) } };
+  assert.doesNotThrow(() => emitHttpFailureLog(database, { method: "GET", url: "//" }, new Error("route failed")));
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].event, "http.request.failed");
+  assert.deepEqual(entries[0].request, { method: "GET", path: "//" });
+});
+
+test("HTTP error responses survive malformed targets and throwing failure log sinks", () => {
+  for (const database of [{ log: { emit() { throw new Error("log sink unavailable"); } } }, {}]) {
+    let status;
+    let headers;
+    let body;
+    const response = {
+      writeHead(code, value) { status = code; headers = value; },
+      end(value) { body = value; },
+    };
+    const error = new TypeError("Invalid URL");
+    error.code = "ERR_INVALID_URL";
+    for (const url of ["//", "/ordinary"]) {
+      status = headers = body = undefined;
+      assert.doesNotThrow(() => writeUnhandledHttpError(database, { method: "GET", url }, response, error));
+      assert.equal(status, 500);
+      assert.equal(headers["content-type"], "application/json; charset=utf-8");
+      assert.deepEqual(JSON.parse(body), {
+        ok: false,
+        data: null,
+        error: { message: "Internal server error.", hint: "Check server logs and retry the request." },
+      });
+    }
   }
 });
 
@@ -2561,4 +2603,34 @@ export default capsule({ name: 'resource-bundle',
     assert.equal(adapter.prepare('SELECT count(*) n FROM writes').get().n, 1);
     assert.equal(adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get().n, 1);
   } finally { await adapter?.close(); await booted?.stop(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a generated Bundle refuses invalid configured policy before Capsule evaluation or listening", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-admission-cold-"));
+  try {
+    await writeFile(path.join(root,"policy.json"),"{");
+    const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:"",serverModuleSource:"throw new Error('CAPSULE_EVALUATED'); export default {};"});
+    await writeFile(path.join(root,"server.mjs"),source);
+    const result = spawnSync(process.execPath,[path.join(root,"server.mjs")],{cwd:root,encoding:"utf8",timeout:5000,env:{...process.env,PORT:"5688"}});
+    assert.equal(result.status,1,result.stderr); assert.match(result.stderr,/Configured admission policy could not be loaded/); assert.doesNotMatch(result.stderr,/CAPSULE_EVALUATED/);
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test("a generated Bundle reports bounded policy reload health without enforcing application traffic", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-admission-hot-")); let booted;
+  try {
+    const json = id => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact:"/probe/status"}],action:{kind:"deny"}}]});
+    await writeFile(path.join(root,"policy.json"),json("seed"));
+    const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:CAPSULE_SOURCE});
+    await writePublicTree(root,"plain bytes"); booted = await bootBundle({source,dir:root});
+    const health = async () => (await (await fetch(`${booted.baseUrl}/__sporades/health/runtime`,{headers:{"x-sporades-host-probe":"a".repeat(64)}})).json()).data.runtime.admissionPolicy;
+    const initial = await health(); assert.equal(initial.state,"healthy"); assert.deepEqual(Object.keys(initial),["state","digest"]);
+    assert.equal((await fetch(`${booted.baseUrl}/probe/status`)).status,202);
+    await writeFile(path.join(root,"policy.json"),"{");
+    const wait = async predicate => { const deadline=Date.now()+9000; while(Date.now()<deadline) { if(await predicate()) return; await new Promise(resolve=>setTimeout(resolve,100)); } assert.fail("policy reload exceeded ten seconds"); };
+    await wait(async()=> (await health()).state==="degraded"); assert.equal((await health()).digest,initial.digest);
+    await writeFile(path.join(root,"policy.json"),json("replacement"));
+    await wait(async()=> (await health()).state==="healthy" && (await health()).digest!==initial.digest);
+    assert.equal((await fetch(`${booted.baseUrl}/probe/status`)).status,202);
+  } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
 });

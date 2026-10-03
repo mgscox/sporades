@@ -267,7 +267,8 @@ The following work is intentionally deferred:
 
 - Additional automatic OpenTelemetry signals and centralized JSON logging:
   Dev and local Container HTTP SERVER tracing, API request metrics, and periodic
-  process CPU/memory and GC/event-loop metrics are available through explicit operator Telemetry
+  process CPU/memory and GC/event-loop metrics, and linked background Job attempts
+  with independent queue/duration/retry/failure metrics are available through explicit operator Telemetry
   profiles. A local Container's resolved telemetry selection persists in its launch
   environment across restart when a Dev build publishes a new Bundle.
   Legacy Containers without a launch descriptor retain their mounted server Bundle
@@ -276,7 +277,18 @@ The following work is intentionally deferred:
   transport and Host-owned Hosted Capsule activation are available; each Host
   connection enables its Capsules by default with per-Capsule opt-out, and
   running Capsules need a controlled restart before coverage is confirmed.
-  Host OS pressure and Caddy Prometheus collection are available through the Host relay; external container-resource collection is out of scope, and operation spans remain deferred under
+  Connected Hosts automatically synchronize versioned lifecycle inventory through
+  an exact Host-scoped interface, durable outbox and independent periodic worker.
+  Central acknowledgements survive sender outages; manual import/export is recovery
+  only. Probe scheduling and absence-alert delivery remain separate work.
+  Host OS pressure and Caddy Prometheus collection are available through the Host relay.
+  Internal Database adapter statement and transaction spans explain database time
+  within sampled HTTP requests and WebSocket operations for SQLite, PostgreSQL and libSQL, with bounded
+  metadata and no SQL, parameters, rows or exception details. WebSocket query and
+  mutation executions have isolated SERVER spans, independent counts/durations/outcomes
+  and active-connection metrics, including live-query refresh and cancellation,
+  without socket-lifetime tracing or a browser SDK. External
+  container-resource collection is out of scope; other operation spans remain deferred under
   [automatic monitoring issue #107](https://github.com/mgscox/sporades/issues/107).
   Centralized JSON logging remains deferred in
   `.scratch/post-v2-platform-hardening-and-ops/issues/05-centralize-json-server-logging.md`.
@@ -1459,3 +1471,15 @@ checkpoint binds authenticated readiness to the exact container instance, start
 time, and current release. Matching non-OOM shutdown signal exits can recover
 despite historical restart counts; absent, stale, or OOM evidence cannot override
 exhausted crash retry state.
+
+### Deployer-owned request-admission generations
+
+One optional `admissionPolicy.path` declares a validated v1 JSON seed. Container
+and Hosted runtimes receive isolated read-only persistent storage; CLI/Host
+publication and explicit removal are atomic and survive redeploy and restart.
+Startup rejects invalid configured policy before app traffic. Bounded immutable
+generations reload within ten seconds under normal scheduling; hot failures
+retain the last-known-good generation and report redacted digest/health.
+This lifecycle slice does not yet enforce requests. See the
+[configuration reference](reference/projects-and-configuration.md#request-admission-policy-publication)
+and [ADR-0054](adr/0054-request-admission-policy-is-deployer-owned.md).

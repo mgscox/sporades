@@ -5790,3 +5790,29 @@ fs.promises.open = async function(file, ...rest) {
     assert.equal(await readFile(stored, "utf8"), "concurrent save");
   });
 });
+
+test("Container deployment seeds and pins read-only admission authority across publication and redeploy", async () => {
+  await withTempDir(async dir => {
+    const created = await runCli(["create","admission-capsule","--no-install","--no-git","--json"],{cwd:dir}); assert.equal(created.code,0,created.stderr);
+    const projectDir = await realpath(path.join(dir,"admission-capsule")); await installFakeReact(projectDir);
+    const docker = await installFakeDocker(path.join(dir,"docker"),"admission-container");
+    const configPath = path.join(projectDir,"sporades.json"); const config = JSON.parse(await readFile(configPath,"utf8")); config.admissionPolicy = {path:"policy.json"}; await writeFile(configPath,JSON.stringify(config));
+    const json = id => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact:"/blocked"}],action:{kind:"deny"}}]});
+    await writeFile(path.join(projectDir,"policy.json"),json("seed"));
+    const deploy = () => runCli(["deploy","--port","5688","--json"],{cwd:projectDir,env:docker.env});
+    const first = await deploy(); assert.equal(first.code,0,first.stdout+first.stderr);
+    const storage = path.join(projectDir,".sporades","preserved-files","admission"); const stored = preservedDeployFilePath(storage,"policy.json");
+    assert.equal((await stat(stored)).mode & 0o777,0o444);
+    const run = (await docker.calls()).filter(call=>call.args[0]==="run").at(-1);
+    assert(run.args.includes(`${storage}:/run/sporades-admission:ro`)); assert(run.args.includes("SPORADES_ADMISSION_POLICY_PATH=policy.json"));
+    const binding = JSON.parse(await readFile(path.join(projectDir,".sporades","binding.json"),"utf8")); assert.deepEqual(binding.deployFiles,[{path:"policy.json",update:"admission"}]);
+    await writeFile(path.join(projectDir,"next.json"),json("published"));
+    const published = await runCli(["deploy","policy","publish","next.json","--json"],{cwd:projectDir,env:docker.env}); assert.equal(published.code,0,published.stdout+published.stderr);
+    await writeFile(path.join(projectDir,"policy.json"),json("new-seed")); const again = await deploy(); assert.equal(again.code,0,again.stdout+again.stderr);
+    assert.equal(JSON.parse(await readFile(stored,"utf8")).rules[0].id,"published");
+    const removed = await runCli(["deploy","policy","remove","--json"],{cwd:projectDir,env:docker.env}); assert.equal(removed.code,0,removed.stdout+removed.stderr);
+    const afterRemoval = await deploy(); assert.equal(afterRemoval.code,0,afterRemoval.stdout+afterRemoval.stderr); assert.equal(JSON.parse(await readFile(stored,"utf8")).removed,true);
+    delete config.admissionPolicy; await writeFile(configPath,JSON.stringify(config)); const unconfigured = await deploy(); assert.equal(unconfigured.code,0,unconfigured.stdout+unconfigured.stderr);
+    const last = (await docker.calls()).filter(call=>call.args[0]==="run").at(-1); assert(!last.args.some(arg=>arg.includes(":/run/sporades-admission:"))); assert.equal(JSON.parse(await readFile(stored,"utf8")).removed,true);
+  });
+});

@@ -57,6 +57,23 @@ test('dashboard regex variables use PromQL raw strings in panels and variable qu
   }
 });
 
+test('Capsule API dashboard exposes bounded WebSocket signals independently of the HTTP Route selector', async () => {
+  const dashboard = JSON.parse(await readFile(new URL('../monitoring/trace/api-dashboard.json', import.meta.url), 'utf8'));
+  for (const [title, metric] of [
+    ['WebSocket operations per second', 'sporades_websocket_operation_count_total'],
+    ['WebSocket p95 operation duration', 'sporades_websocket_operation_duration_seconds_bucket'],
+    ['WebSocket errors, denials and cancellations', 'sporades_websocket_operation_count_total'],
+    ['WebSocket active connections', 'sporades_websocket_active_connections_ratio'],
+  ]) {
+    const panel = dashboard.panels.find(panel => panel.title === title);
+    assert(panel, title);
+    assert(panel.targets[0].expr.includes(metric + '{'));
+    assert(panel.targets[0].expr.includes('service_name=~`${service:regex}`'));
+    assert(panel.targets[0].expr.includes('deployment_environment_name=~`${environment:regex}`'));
+    assert(!panel.targets[0].expr.includes('http_route'));
+  }
+});
+
 test('root Linux setup keeps the gateway non-root; unprivileged setup keeps its owner', () => {
   assert.deepEqual(gatewayRunIdentity('linux', 0, 0), { uid: 1000, gid: 1000, transferOwnership: true });
   assert.deepEqual(gatewayRunIdentity('linux', 1234, 4321), { uid: 1234, gid: 4321, transferOwnership: false });
@@ -99,7 +116,7 @@ test('setup preserves literal credential characters for the gateway', async () =
   assert.equal((await stat(credentialsPath)).mode & 0o777, 0o600);
   const credentials = JSON.parse(await readFile(credentialsPath, 'utf8'));
   assert.deepEqual(credentials, {
-    ingestToken: 't#1:$TOKEN', uiUser: 'viewer', uiPassword: 'before$MISSING_after:# space',
+    ingestToken: 't#1:$TOKEN', uiUser: 'viewer', uiPassword: 'before$MISSING_after:# space', inventoryHosts: {},
   });
   assert.match(await readFile(path, 'utf8'), /TRACE_UI_PASSWORD=before\$MISSING_after:# space/);
   const composeEnvironment = await readFile(join(directory, '.compose.env'), 'utf8');

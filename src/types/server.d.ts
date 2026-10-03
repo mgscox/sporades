@@ -291,7 +291,7 @@ export type TableApi<Row extends Record<string, unknown> = Record<string, unknow
   get(): Row | null;
   all(): Row[];
 };
-
+/** With operator telemetry enabled, internal statement/transaction spans explain HTTP request database time. No SQL, parameters or rows are exported; authoring and transaction semantics are unchanged. */
 export type DatabaseFromSchema<Schema extends SchemaDefinition> = {
   [TableName in keyof Schema]: Schema[TableName] extends TableDefinition<infer Fields> ? TableApi<RowFromFields<Fields>> : TableApi;
 };
@@ -1391,7 +1391,11 @@ export function mutation<Handler extends (...args: any[]) => any>(handler: AuthG
 /** Define a server-mediated App message handler. */
 export function message(handler: MessageHandler): MessageDefinition<MessageHandler>;
 export function message<Handler extends (...args: any[]) => any>(handler: AuthGuardedHandler<Handler>): MessageDefinition<AuthGuardedHandler<Handler>>;
-/** Declare a named server-only Job handler in `capsule({ jobs })`. */
+/**
+ * Declare a named server-only Job handler in `capsule({ jobs })` for durable work.
+ * Enabled operator telemetry automatically traces each attempt with a causal
+ * enqueue link and independent queue metrics; no tracing API is required.
+ */
 export function job<Payload extends JsonValue, Result extends JsonValue>(
   handler: (ctx: JobHandlerContext, payload: Payload) => MaybePromise<Result>,
 ): JobDefinition<(ctx: JobHandlerContext, payload: Payload) => MaybePromise<Result>>;
@@ -1421,5 +1425,12 @@ export function Json<Value extends JsonValue = JsonValue>(): FieldBuilder<Value>
 /** Reference field storing the row id of another table. */
 export function Reference(targetTable: string): ReferenceFieldBuilder;
 
-/** Explicit private-File Bearer admission; omitted read scopes leave policy to ownership and File ACL rules. */
+/**
+ * Explicit private-File Bearer admission; omitted read scopes leave policy to ownership and File ACL rules.
+ * Enabled HTTP telemetry times existing credential/admission and File operations with bounded names
+ * and outcomes only. Credentials, grants, actor identifiers and File metadata are never child-span attributes.
+ */
 export type CapsuleFileAccessKeyPolicy = { read: { scopes?: readonly string[] } };
+
+/** Deployer-owned v1 request-admission JSON; publication does not yet enforce traffic. */
+export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionPolicyConfig } from "./admission-policy.js";

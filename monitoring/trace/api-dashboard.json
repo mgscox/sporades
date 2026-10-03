@@ -1,9 +1,9 @@
 {
   "uid": "sporades-api",
   "title": "Sporades Capsule API",
-  "description": "Independent request metrics for enabled Capsules. Rate and latency lookback follow the Metric window selector; streams are included in throughput and latency excludes aborted requests.",
+  "description": "Independent request metrics for enabled Capsules. Rate and latency lookback follow the Metric window selector; streams are included in throughput and latency excludes aborted requests. WebSocket panels show logical executions and accepted connections; the HTTP Route selector does not filter those panels.",
   "schemaVersion": 41,
-  "version": 6,
+  "version": 7,
   "refresh": "15s",
   "time": {
     "from": "now-1h",
@@ -151,6 +151,122 @@
       "fieldConfig": {
         "defaults": {
           "unit": "s",
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "WebSocket operations per second",
+      "description": "WebSocket telemetry. The HTTP Route selector does not apply.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service_name, sporades_websocket_operation_type, sporades_websocket_operation_name) (rate(sporades_websocket_operation_count_total{service_name=~`${service:regex}`,deployment_environment_name=~`${environment:regex}`}[${metric_window}]))",
+          "legendFormat": "{{service_name}} {{sporades_websocket_operation_type}} {{sporades_websocket_operation_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "WebSocket p95 operation duration",
+      "description": "Logical WebSocket operations. The HTTP Route selector does not apply. Cancelled executions are excluded from p95.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, service_name, sporades_websocket_operation_type) (rate(sporades_websocket_operation_duration_seconds_bucket{service_name=~`${service:regex}`,deployment_environment_name=~`${environment:regex}`,sporades_websocket_outcome!=\"cancelled\"}[${metric_window}])))",
+          "legendFormat": "{{service_name}} {{sporades_websocket_operation_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "WebSocket errors, denials and cancellations",
+      "description": "WebSocket telemetry. The HTTP Route selector does not apply.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service_name, sporades_websocket_outcome) (rate(sporades_websocket_operation_count_total{service_name=~`${service:regex}`,deployment_environment_name=~`${environment:regex}`,sporades_websocket_outcome=~\"error|denied|cancelled\"}[${metric_window}]))",
+          "legendFormat": "{{service_name}} {{sporades_websocket_outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "WebSocket active connections",
+      "description": "WebSocket telemetry. The HTTP Route selector does not apply.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service_name) (sporades_websocket_active_connections_ratio{service_name=~`${service:regex}`,deployment_environment_name=~`${environment:regex}`})",
+          "legendFormat": "{{service_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
           "min": 0
         }
       }

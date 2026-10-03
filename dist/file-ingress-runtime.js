@@ -1,6 +1,7 @@
 // Runtime-owned endpoint multipart ingress. Leases deliberately have no File row, URL or ACL
 // visibility: only claim() creates an ordinary File in the handler transaction.
 /// <reference path="./vendor-decoders.d.ts" />
+import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFStream } from "pdf-lib";
 import { parse, tokenizer } from "acorn";
@@ -3088,6 +3089,9 @@ export async function* multipartParts(request, boundaryText, maxWireBytes, maxPa
 }
 /** Parse only after endpoint credential admission. The bounded body is never exposed as an ordinary endpoint body. */
 export async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles = true) {
+    return traceRuntimeOperation("sporades.file.ingress.stage", () => stageMultipartIngressOperation(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles));
+}
+async function stageMultipartIngressOperation(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles = true) {
     let policy;
     try {
         policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
@@ -3213,7 +3217,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
                 throw inspectionRequiredError();
             if (acquired.winner) {
                 wonReceipts.push(row);
-                await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
+                await traceRuntimeOperation("sporades.file.bytes.write", () => database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body }));
                 const published = await publishStagedReceipt(database, row);
                 if (published)
                     row = published;
@@ -3224,7 +3228,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
                     else {
                         const primary = Object.assign(new Error("Multipart ingress staging lost its publication lease."), { code: "INGRESS_STAGING_INCOMPLETE" });
                         try {
-                            await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
+                            await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version }));
                         }
                         catch (cleanup) {
                             throw new AggregateError([primary, cleanup], "Multipart ingress staging lost publication and object cleanup failed.");
@@ -3244,7 +3248,7 @@ export async function stageMultipartIngress(database, endpoint, request, endpoin
             try {
                 const deleted = await database.adapter.prepare(database.adapter.dialect.sql("DELETE FROM [sporades_file_ingress] WHERE [key] = ? AND [leaseId] = ? AND [state] IN ('staging', 'leased')")).run(row.key, row.leaseId);
                 if (Number(deleted?.changes ?? 0) > 0)
-                    await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
+                    await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version }));
             }
             catch (cleanupError) {
                 cleanupErrors.push(cleanupError);
@@ -3571,7 +3575,7 @@ export async function sweepExpiredFileIngress(database, options = {}) {
             if (!armed)
                 continue;
             try {
-                await database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version });
+                await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version }));
             }
             catch {
                 failures.push(Object.freeze({ leaseId, code: "INGRESS_ORPHAN_CLEANUP_FAILED" }));

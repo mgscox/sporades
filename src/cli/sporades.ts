@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
+import { openAdmissionPolicy, type AdmissionHealth, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
+import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
@@ -507,6 +508,8 @@ async function runTelemetryProfileCommand(args: string[]) {
       if (arg === "--endpoint") { input.endpoint = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--dashboard") { input.dashboard = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--credential-env") { input.credentialEnv = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--inventory-credential-env") { input.inventoryCredentialEnv = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--inventory-host") { input.inventoryHost = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--metrics-interval-ms") { input.metricsIntervalMs = Number(readFlagValue(rest, ++index, arg)); continue; }
       if (arg === "--event-loop-delay-resolution-ms") { input.eventLoopDelayResolutionMs = Number(readFlagValue(rest, ++index, arg)); continue; }
       if (arg === "--ca-file") { input.caFile = readFlagValue(rest, ++index, arg); continue; }
@@ -520,6 +523,8 @@ async function runTelemetryProfileCommand(args: string[]) {
       ...(input.dashboard ? { dashboard: input.dashboard } : {}),
       tls: { mode: input.loopback ? "loopback" : "verified", ...(input.caFile ? { caFile: input.caFile } : {}) },
       ...(input.credentialEnv ? { credentialEnv: input.credentialEnv } : {}),
+      ...(input.inventoryCredentialEnv ? { inventoryCredentialEnv: input.inventoryCredentialEnv } : {}),
+      ...(input.inventoryHost ? { inventoryHost: input.inventoryHost } : {}),
       ...(input.metricsIntervalMs !== undefined ? { metricsIntervalMs: input.metricsIntervalMs } : {}),
       ...(input.eventLoopDelayResolutionMs !== undefined ? { eventLoopDelayResolutionMs: input.eventLoopDelayResolutionMs } : {}),
     };
@@ -602,7 +607,26 @@ function parseDevArgs(args: string[]): LooseRecord {
   };
 }
 
+function parsePolicyOperation(positional: string[]) {
+  const [operation, source, ...extra] = positional;
+  if (extra.length || !["publish", "remove"].includes(operation) || (operation === "publish" ? !source : source !== undefined)) throw commandError("Invalid policy publication command.", "Use `policy publish <file>` or `policy remove`.");
+  return { operation, source };
+}
+
+async function policyPublicationBytes(options: LooseRecord) {
+  if (options.operation === "remove") return null;
+  const source = path.resolve(options.projectDir, options.source);
+  const bytes = await readDeployFile(path.dirname(source), path.basename(source), ADMISSION_LIMITS.bytes);
+  parseAdmissionPolicy(bytes);
+  return bytes;
+}
+
 function parseDeployArgs(args: string[]): LooseRecord {
+  if (args[0] === "policy") {
+    const json = args.includes("--json");
+    const operation = parsePolicyOperation(args.slice(1).filter(arg => arg !== "--json"));
+    return { subcommand: "policy", ...operation, json, projectDir: process.cwd() };
+  }
   const lifecycleCommands = new Set(["status", "stop", "restart", "remove", "reconcile", "reset", "ssh", "jobs", "schedules"]);
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
   const rest = subcommand === "start" ? args : args.slice(1);
@@ -1292,7 +1316,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   switch (subcommand) {
     case "telemetry": {
       const [operation, ...extra] = positional;
-      if (!operation || !["connect", "reconcile", "status", "check", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
+      if (!operation || !["connect", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
         throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
       }
       if ((operation === "enable" || operation === "disable") && extra.length !== 1) throw commandError("Missing Capsule subname.", `Use \`sporades host telemetry ${operation} <subname> --host <alias>\`.`);
@@ -1448,6 +1472,11 @@ function parseHostArgs(args: string[]): LooseRecord {
       return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
     }
 
+    case "policy": {
+      if (!hostAlias || !subname) throw commandError("Missing Host policy target.", "Pass --host <alias> --subname <name>.");
+      validateHostAlias(hostAlias); validateCapsuleSubname(subname);
+      return { subcommand, ...parsePolicyOperation(positional), hostAlias, subname, json, projectDir: process.cwd() };
+    }
     case "jobs":
       if (positional.length > 0) throw commandError("Too many positional arguments.", "Use `sporades host jobs --host <alias> --subname <name>`.");
       if (!hostAlias) throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
@@ -2026,6 +2055,19 @@ async function manageLocalLifecycle(surface: string, options: LooseRecord) {
 
 async function manageLocalLifecycleUnlocked(surface: string, options: LooseRecord) {
   switch (options.subcommand) {
+    case "policy": {
+      if (surface !== "deploy") throw commandError("Unsupported policy command.", "Use `sporades deploy policy`.");
+      await assertNoLocalDeployFileAttempt(options, "policy");
+      const { binding } = await requireLocalContainerBinding(options, "policy");
+      const policy = resolveDeployFiles(binding.deployFiles, true).find(file => file.update === "admission");
+      if (!policy) throw commandError("The deployed Capsule has no admission policy.", "Declare admissionPolicy.path and deploy it first.");
+      const bytes = await policyPublicationBytes(options);
+      await publishAdmissionPolicy(admissionStorageRoot(localPreservedFilesRoot(options)), policy.path, bytes);
+      const data = { published: true, removed: bytes === null, digest: bytes ? parseAdmissionPolicy(bytes).digest : null };
+      if (options.json) writeResult({ ok: true, data, error: null });
+      else process.stdout.write("Admission policy publication committed.\n");
+      return;
+    }
     case "status":
       await printLocalCapsuleServiceStatus(options, surface);
       return;
@@ -2311,26 +2353,31 @@ async function startDevSession(options: LooseRecord) {
 
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
-  const runtime: any = await createDevRuntime({
-    projectDir: options.projectDir,
-    databasePath,
-    serverSource: bundle.serverRuntime.source,
-    serverEnv: bundle.serverRuntime.env,
-    serviceEnv: capsuleServiceEnv,
-    capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-    config: withRuntimeSecuritySession(config, session),
-    runtimeProbeToken: inspectionToken,
-  });
-  let telemetry: ReturnType<typeof createHttpRequestTelemetry>;
-  const emitTelemetryDiagnostic = (diagnostic: { event: "telemetry.export.failed"; reason: string } | { event: "telemetry.export.recovered" }) => runtime.database.log.emit({
+  let runtime: any;
+  const emitTelemetryDiagnostic = (diagnostic: { event: "telemetry.export.failed"; reason: string } | { event: "telemetry.export.recovered" }) => runtime?.database.log.emit({
     category: "platform",
     event: diagnostic.event,
     level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
     message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
     data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
   });
-  try { telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic); }
-  catch (error) { await runtime.shutdown(); throw error; }
+  let telemetry!: ReturnType<typeof createHttpRequestTelemetry>;
+  try {
+    runtime = await createDevRuntime({
+      projectDir: options.projectDir,
+      databasePath,
+      serverSource: bundle.serverRuntime.source,
+      serverEnv: bundle.serverRuntime.env,
+      serviceEnv: capsuleServiceEnv,
+      capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
+      config: withRuntimeSecuritySession(config, session),
+      runtimeProbeToken: inspectionToken,
+      onJobQueueReady(queueDatabase: any) {
+        telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
+        telemetry.bindJobQueue(queueDatabase);
+      },
+    });
+  } catch (error) { await telemetry?.shutdown(); throw error; }
   await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
   runtime.database.log.emit({
     category: "platform",
@@ -2340,7 +2387,14 @@ async function startDevSession(options: LooseRecord) {
     data: { diagnostics: runtime.database.runtimeDiagnostics },
   });
   const devRefresh = createDevRefreshController();
-  const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
+  const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport, {
+    // Resolve the current adapter at dispatch/accept time. Operations and close
+    // callbacks already returned by an adapter remain owned by that adapter.
+    telemetry: {
+      startOperation: (...args) => telemetry.websocket.startOperation(...args),
+      connectionOpened: () => telemetry.websocket.connectionOpened(),
+    },
+  });
 
   const server = createServer(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
     try {
@@ -2617,6 +2671,7 @@ async function startDevSession(options: LooseRecord) {
         runtimeServiceEnv,
         bundle.serverRuntime.capsuleModuleSource,
         withRuntimeSecuritySession(config, session),
+        telemetry,
       );
       websocketHub.disconnectAll();
       runtime.database.log.emit({
@@ -2635,6 +2690,7 @@ async function startDevSession(options: LooseRecord) {
         fatal: errorData,
       });
     } catch (restartError) {
+      telemetry.bindJobQueue(runtime.database);
       const details = errorDetails(restartError);
       runtime.database.log.emit({
         category: "platform",
@@ -2715,20 +2771,24 @@ async function startDevSession(options: LooseRecord) {
           nextCapsuleServiceEnv,
           rebuild.serverRuntime.capsuleModuleSource,
           withRuntimeSecuritySession(nextConfig, session),
+          nextTelemetry ?? telemetry,
         ).catch(async (error: unknown) => {
+          telemetry.bindJobQueue(runtime.database);
           await nextTelemetry?.shutdown();
           throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
         });
+        const previousTelemetry = nextTelemetry ? telemetry : null;
         if (nextTelemetry) {
-          const previousTelemetry = telemetry;
           telemetry = nextTelemetry;
           telemetryConfig = nextTelemetryConfig;
-          void previousTelemetry.shutdown();
         }
         runtimeServiceEnv = nextCapsuleServiceEnv;
         fatalRestartAttempts = 0;
-        refresh = await devRefresh.broadcast();
-        websocketHub.disconnectAll();
+        try { refresh = await devRefresh.broadcast(); }
+        finally {
+          websocketHub.disconnectAll();
+          void previousTelemetry?.shutdown();
+        }
         // A capsule reload is in-process, so nothing outside the session — not the pid, not its
         // uptime — records that a server change took effect. Without this the only trace of a
         // reload is stdout the developer has usually scrolled past, and an empty `sporades logs`
@@ -3002,7 +3062,15 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     const attached = await attachRequiredDevClamavSidecar(clamavSidecar, candidate, async () => await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() }));
     clamavSidecar = attached.sidecar; return attached.attached;
   };
-  let database: any = await openDevDatabase(
+  let database: any;
+  const reportAdmissionHealth = (health: AdmissionHealth) => {
+    try { database?.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health }); }
+    catch { /* Policy diagnostics never interrupt runtime work. */ }
+  };
+  let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
+  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
+  try {
+  database = await openDevDatabase(
     options.databasePath,
     options.serverSource,
     options.serverEnv,
@@ -3010,14 +3078,17 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     await importCapsuleDefinition(options.capsuleModuleSource),
     {
       serviceEnv: options.serviceEnv,
+      onJobQueueReady: options.onJobQueueReady,
       createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
       createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
     },
   );
   database.runtimeProbeToken = options.runtimeProbeToken;
-  try { await attachRequiredSidecar(database); await database.init(); }
+  await attachRequiredSidecar(database); await database.init();
+  if (admissionPolicy) { database.admissionPolicy = admissionPolicy; reportAdmissionHealth(admissionPolicy.health()); }
+  }
   catch (error) {
-    const cleanup = await Promise.allSettled([Promise.resolve().then(() => database.close()), clamavSidecar?.stop?.()].filter(Boolean));
+    const cleanup = await Promise.allSettled([Promise.resolve().then(() => database?.close()), admissionPolicy?.close(), clamavSidecar?.stop?.()].filter(Boolean));
     const failures = cleanup.filter((item) => item.status === "rejected").map((item: any) => item.reason);
     if (failures.length) throw new AggregateError([error, ...failures], "Dev runtime startup and scanner cleanup both failed."); throw error;
   }
@@ -3026,7 +3097,17 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     get database() {
       return database;
     },
-    async restart(serverSource: any, serverEnv: {}, serviceEnv: any, capsuleModuleSource: any, config: {}) {
+    async restart(serverSource: any, serverEnv: {}, serviceEnv: any, capsuleModuleSource: any, config: {}, jobTelemetry: ReturnType<typeof createHttpRequestTelemetry>) {
+      const nextPath = resolveAdmissionPolicy((config as LooseRecord).admissionPolicy, (config as LooseRecord).deploy?.files);
+      const changed = nextPath !== admissionPath;
+      let nextAdmission = admissionPolicy;
+      if (changed) {
+        nextAdmission = null;
+        nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, health => {
+          if (nextAdmission && nextAdmission === admissionPolicy) reportAdmissionHealth(health);
+        }) : null;
+      }
+      try {
       const nextDatabase: any = await openDevDatabase(
         options.databasePath,
         serverSource,
@@ -3035,11 +3116,13 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
         await importCapsuleDefinition(capsuleModuleSource),
         {
           serviceEnv,
+          onJobQueueReady: (queueDatabase: any) => jobTelemetry.bindJobQueue(queueDatabase),
           createStripeCallbackEndpoint: await stripeCallbackFactory(config),
           createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
         },
       );
       nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
+      if (nextAdmission) nextDatabase.admissionPolicy = nextAdmission;
       const sidecarBeforePreparation = clamavSidecar;
       database = await replacePreparedRuntimeDatabase(
         database,
@@ -3050,10 +3133,17 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
           clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
         },
       );
+      const previousAdmission = admissionPolicy;
+      admissionPath = nextPath; admissionPolicy = nextAdmission;
+      if (changed) {
+        await previousAdmission?.close();
+        if (admissionPolicy) reportAdmissionHealth(admissionPolicy.health());
+      }
       clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
+      } catch (error) { if (changed && nextAdmission !== admissionPolicy) await nextAdmission?.close(); throw error; }
     },
     async shutdown() {
-      const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), clamavSidecar?.stop?.()].filter(Boolean)); const failures = settled.filter((item) => item.status === "rejected").map((item: any) => item.reason); if (failures.length === 1) throw failures[0]; if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");
+      const settled = await Promise.allSettled([shutdownAndCloseDatabase(database), admissionPolicy?.close(), clamavSidecar?.stop?.()].filter(Boolean)); const failures = settled.filter((item) => item.status === "rejected").map((item: any) => item.reason); if (failures.length === 1) throw failures[0]; if (failures.length > 1) throw new AggregateError(failures, "Dev runtime and scanner shutdown both failed.");
     },
   };
 }
@@ -3808,12 +3898,23 @@ async function manageHost(options: LooseRecord) {
             caPem = readFileSync(profile.tls.caFile, "utf8");
           } catch { throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB."); }
         }
-        telemetry = { endpoint: profile.endpoint, credential, ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
+        const inventoryCredential = profile.inventoryCredentialEnv ? process.env[profile.inventoryCredentialEnv] : undefined;
+        if (profile.inventoryCredentialEnv && !inventoryCredential) throw commandError("Telemetry inventory credential is unavailable.", "Set the inventory credential environment reference before connecting.");
+        telemetry = { endpoint: profile.endpoint, credential, ...(inventoryCredential ? { inventoryCredential } : {}), ...(profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}), ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
       }
       const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);
       else if (!result.ok) throw commandError(result.error.message, result.error.hint);
       else process.stdout.write(`${JSON.stringify(result.data, null, 2)}\n`);
+      return;
+    }
+    case "policy": {
+      const bytes = await policyPublicationBytes(options);
+      const resolved = resolveHostProfile(await readHostConfig(), options.hostAlias);
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: "capsule.admission.publish", subname: options.subname, admission: { contents: bytes ? bytes.toString("base64") : null }, projectDir: options.projectDir });
+      if (options.json) writeResult(result, !result.ok);
+      else if (!result.ok) throw commandError(result.error.message, result.error.hint);
+      else process.stdout.write("Admission policy publication committed.\n");
       return;
     }
     case "schedules": {
@@ -4776,6 +4877,8 @@ async function startContainerSession(options: LooseRecord) {
       // sealed Server env cannot replace the session-owned telemetry decision.
       "--env",
       "SPORADES_SECURITY_SESSION=container",
+      "--env",
+      `SPORADES_ADMISSION_POLICY_PATH=${bundle.deployFiles.find(file => file.update === "admission")?.path ?? ""}`,
       "--env",
       `SPORADES_CONTAINER_TELEMETRY_CONFIG=${JSON.stringify(telemetryConfig)}`,
       SPORADES_BASE_IMAGE.image,
@@ -5894,6 +5997,7 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
     },
     capsule: options.subname ? { subname: options.subname } : null,
   };
+  if (options.admission) request.admission = options.admission;
   if (options.bootstrap) {
     request.bootstrap = options.bootstrap;
   }
@@ -6888,7 +6992,7 @@ async function stopLocalContainerSession(options: LooseRecord) {
 // SSH-enabled sessions reach them the same way they reach `/app/data`.
 async function prepareLocalPreservedFiles(options: LooseRecord, binding: LooseRecord, hint = "Restore a regular owner-writable preserved file before restarting the bound Container.") {
   const preservedRoot = localPreservedFilesRoot(options);
-  for (const relative of new Set(resolveDeployFiles(binding.deployFiles).filter((file) => file.update === "preserve").map((file) => file.path.normalize("NFC")))) {
+  for (const relative of new Set(resolveDeployFiles(binding.deployFiles, true).filter((file) => file.update === "preserve").map((file) => file.path.normalize("NFC")))) {
     try {
       await preparePreservedFileStorage(preservedRoot, relative);
     } catch (error) {

@@ -62,6 +62,7 @@ export async function generatedSourceManifest(repoRoot) {
   const outputs = [
     ...await listFiles(repoRoot, "dist", (file) => file !== path.join("dist", "generated-source-manifest.json")),
     ...await listFiles(repoRoot, "bin"),
+    ...await existingFiles(repoRoot, ["monitoring/trace/inventory-contract.mjs"]),
   ];
   return {
     version: 2,

@@ -4,14 +4,14 @@ import type { FileHandle } from "node:fs/promises";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, link, rename, rm, realpath } from "node:fs/promises";
 
-export type DeployFile = { path: string; update: "replace" | "preserve" };
+export type DeployFile = { path: string; update: "replace" | "preserve" | "admission" };
 export type PreservedSeed = { root: string; path: string; storagePath?: string; dev: number; ino: number; sha256: string };
 export type BuiltDeployFile = DeployFile & { contents: Buffer };
 
 // Paths owned by the runtime, including legacy release paths and writable data.
 const RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
 
-export function resolveDeployFiles(value: unknown): DeployFile[] {
+export function resolveDeployFiles(value: unknown, allowAdmission = false): DeployFile[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("deploy.files must be an array.");
   const root = path.resolve("/app");
@@ -38,9 +38,10 @@ export function resolveDeployFiles(value: unknown): DeployFile[] {
       throw new Error(`Unsupported deploy.files path: ${entry.path}`);
     }
     const update = entry.update === undefined ? "replace" : entry.update;
-    if (update !== "replace" && update !== "preserve") throw new Error(`Invalid deploy.files update for ${entry.path}: use replace or preserve.`);
+    if (update !== "replace" && update !== "preserve" && !(allowAdmission && update === "admission")) throw new Error(`Invalid deploy.files update for ${entry.path}: use replace or preserve.`);
     return { path: normalized, update };
   });
+  if (files.filter(file => file.update === "admission").length > 1) throw new Error("Only one admission policy may be declared.");
   const seen: string[] = [];
   for (const file of files) {
     const name = file.path.normalize("NFC");
@@ -92,7 +93,7 @@ export async function assertPreservedDeployFile(root: string, relative: string) 
 
 // Node does not expose openat. Linux's descriptor paths let each directory
 // remain pinned while opening its child; Darwin provides O_NOFOLLOW_ANY.
-async function readDeployFile(root: string, relative: string) {
+export async function readDeployFile(root: string, relative: string, maxBytes?: number) {
   root = path.resolve(root);
   const rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   const handles: FileHandle[] = [rootHandle];
@@ -132,15 +133,34 @@ async function readDeployFile(root: string, relative: string) {
       await assertDeployFile(root, relative);
       const named = await lstat(target);
       if (!opened.isFile() || named.dev !== opened.dev || named.ino !== opened.ino) throw new Error(`deploy.files source changed during the build: ${relative}`);
-      return await file.readFile();
+      return await readBoundedDeployFile(file, maxBytes);
     }
     handles.push(file);
     await checkRoot?.();
     if (!(await file.stat()).isFile()) throw new Error(`deploy.files requires a regular file: ${relative}`);
-    return await file.readFile();
+    return await readBoundedDeployFile(file, maxBytes);
   } finally {
     for (const handle of handles.reverse()) await handle.close();
   }
+}
+
+async function readBoundedDeployFile(file: FileHandle, maxBytes?: number) {
+  if (maxBytes === undefined) return file.readFile();
+  const info = await file.stat();
+  if (!info.isFile() || info.nlink !== 1 || info.size > maxBytes) throw new Error("Unsafe or oversized admission file.");
+  const bytes = Buffer.alloc(maxBytes + 1);
+  let length = 0;
+  while (length < bytes.length) {
+    const read = await file.read(bytes, length, bytes.length - length, length);
+    if (!read.bytesRead) break;
+    length += read.bytesRead;
+  }
+  if (length > maxBytes) throw new Error("Oversized admission file.");
+  return bytes.subarray(0, length);
+}
+
+export function deployFileStorageRoot(file: DeployFile, preservedRoot: string) {
+  return file.update === "admission" ? path.join(preservedRoot, "admission") : preservedRoot;
 }
 
 export async function buildDeployFiles(projectDir: string, value: unknown): Promise<BuiltDeployFile[]> {
@@ -156,11 +176,12 @@ export async function buildDeployFiles(projectDir: string, value: unknown): Prom
 }
 
 export function deployFileMounts(files: DeployFile[], releaseRoot: string, preservedRoot: string) {
-  return files.map((file) => ({
+  return files.map((file) => file.update === "admission" ? {
+    host: deployFileStorageRoot(file, preservedRoot), container: "/run/sporades-admission", mode: "ro",
+  } : {
     host: file.update === "preserve" ? preservedDeployFilePath(preservedRoot, file.path) : path.join(releaseRoot, file.path),
-    container: `/app/${file.path}`,
-    mode: file.update === "preserve" ? "rw" : "ro",
-  }));
+    container: `/app/${file.path}`, mode: file.update === "preserve" ? "rw" : "ro",
+  });
 }
 
 export function attemptJournalPath(preservedRoot: string) {
@@ -247,12 +268,18 @@ export async function finishPreservedFileAttempt(journal?: string) {
 
 // Parent directories stay host-owned; only explicitly declared files are writable.
 export async function preparePreservedFiles(files: DeployFile[], releaseRoot: string, preservedRoot: string, owner?: (handle: FileHandle, target: string, stats: Awaited<ReturnType<FileHandle["stat"]>>) => Promise<void>, created: PreservedSeed[] = [], journal?: string) {
-  for (const file of files.filter((entry) => entry.update === "preserve")) {
+  const journalRoot = preservedRoot;
+  for (const file of files.filter((entry) => entry.update !== "replace")) {
+    const storageRoot = deployFileStorageRoot(file, journalRoot);
+    await mkdir(journalRoot, { mode: 0o700 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
+    const parent = await lstat(journalRoot);
+    if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Unsafe preserved directory.");
+    const preservedRoot = storageRoot;
     await mkdir(preservedRoot, { mode: 0o700 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
     const directory = await lstat(preservedRoot);
     if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error(`Unsafe preserved deploy.files directory: ${file.path}`);
     const rootHandle = await open(preservedRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    try { await rootHandle.chmod(0o700); } finally { await rootHandle.close(); }
+    try { await rootHandle.chmod(file.update === "admission" ? 0o755 : 0o700); } finally { await rootHandle.close(); }
     const destination = preservedDeployFilePath(preservedRoot, file.path);
     try {
       await assertPreservedDeployFile(preservedRoot, file.path);
@@ -261,11 +288,12 @@ export async function preparePreservedFiles(files: DeployFile[], releaseRoot: st
     let handle;
     const temporary = path.join(path.dirname(destination), `.seed-${randomUUID()}`);
     try {
-      await recordPreservedFileAttempt(journal, { temporary: path.relative(preservedRoot, temporary) });
+      await recordPreservedFileAttempt(journal, { temporary: path.relative(journalRoot, temporary) });
       const contents = await readDeployFile(releaseRoot, file.path);
       handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       await handle.writeFile(contents);
-      if (owner) await owner(handle, destination, await handle.stat());
+      if (file.update === "admission") await handle.chmod(0o444);
+      else if (owner) await owner(handle, destination, await handle.stat());
       const identity = await handle.stat();
       const seed = { root: preservedRoot, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
       await recordPreservedFileAttempt(journal, seed);

@@ -1684,7 +1684,7 @@ test("sporades dev bundles and serves a Capsule built from the runtime module gr
   });
 });
 
-test("sporades dev keeps serving after a repeated-slash origin-form request", async () => {
+test("sporades dev keeps serving after unusual raw HTTP request targets", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "http-liveness", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
@@ -1699,12 +1699,14 @@ test("sporades dev keeps serving after a repeated-slash origin-form request", as
     const events = captureJsonEvents(child);
     try {
       const started = await events.next((event) => event.ok && event.data?.event === "started");
-      const failed = await rawHttpResponse(started.data.url, "//");
-      assert.match(failed, /^HTTP\/1\.1 404\b/);
-      assert.equal((await fetch(started.data.url)).status, 200);
-      assert.equal(child.exitCode, null);
+      for (const [target, status] of [["//", 404], ["///x", 404], ["/%", 400], ["http://evil.example/x", 404]]) {
+        const response = await rawHttpResponse(started.data.url, target);
+        assert.match(response, new RegExp(`^HTTP/1\\.1 ${status}\\b`), `${target}: ${response}`);
+        assert.equal((await fetch(started.data.url)).status, 200, `runtime stopped after ${target}`);
+        assert.equal(child.exitCode, null, `runtime exited after ${target}`);
+      }
       assert.equal(events.events.some((event) => /unhandledRejection|uncaughtException|fatal-runtime|restart/i.test(JSON.stringify(event))), false);
-      assert.doesNotMatch(events.stderr, /unhandledRejection|uncaughtException|fatal-runtime/i);
+      assert.doesNotMatch(events.stderr, /unhandledRejection|uncaughtException|fatal-runtime|Invalid URL/i);
     } finally {
       events.dispose();
       if (child.exitCode === null) {
@@ -11524,6 +11526,7 @@ test("sporades db dump returns structured table data from the running dev sessio
                 "credentialJson",
                 "payloadRetentionUntil",
                 "payloadRedactedAt",
+                "enqueueTraceContext",
               ],
               rows: [],
             },
@@ -15586,5 +15589,31 @@ test("sporades dev runs todo queries and mutations over WebSocket", async () => 
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
+  });
+});
+
+test("Dev admission policy fails cold startup and retains last-known-good state across hot updates and rebuilds", async () => {
+  await withTempDir(async dir => {
+    const created = await runCli(["create","admission-dev","--no-install","--no-git","--json"],{cwd:dir}); assert.equal(created.code,0,created.stderr);
+    const projectDir = path.join(dir,"admission-dev"); await installFakeReact(projectDir);
+    const configPath = path.join(projectDir,"sporades.json"); const config = JSON.parse(await readFile(configPath,"utf8")); config.dev.port=0; config.admissionPolicy={path:"policy.json"}; await writeFile(configPath,JSON.stringify(config));
+    const policyPath = path.join(projectDir,"policy.json"); await writeFile(policyPath,"{");
+    let child = startCli(["dev","--json"],{cwd:projectDir}); let exited = new Promise(resolve=>child.once("exit",resolve));
+    try { const first = await waitForJsonLine(child); assert.equal(first.ok,false,JSON.stringify(first)); assert.match(first.error.message,/Configured admission policy/); }
+    finally { if(child.exitCode===null) child.kill("SIGTERM"); await exited; }
+    const json = id => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact:"/blocked"}],action:{kind:"deny"}}]}); await writeFile(policyPath,json("seed"));
+    child = startCli(["dev","--json"],{cwd:projectDir}); exited = new Promise(resolve=>child.once("exit",resolve));
+    try {
+      const started = await waitForJsonLine(child); assert.equal(started.ok,true,JSON.stringify(started));
+      const session = JSON.parse(await readFile(path.join(projectDir,".sporades","dev-session.json"),"utf8"));
+      const health = async () => (await (await fetch(`${started.data.url}/__sporades/health/runtime`,{headers:{"x-sporades-host-probe":session.inspectionToken}})).json()).data.runtime.admissionPolicy;
+      const initial = await health(); assert.equal(initial.state,"healthy");
+      const wait = async predicate => {const deadline=Date.now()+9000;while(Date.now()<deadline){if(await predicate())return;await new Promise(resolve=>setTimeout(resolve,100));}assert.fail("policy failed to converge");};
+      await writeFile(policyPath,"{"); await wait(async()=> (await health()).state==="degraded"); assert.equal((await health()).digest,initial.digest);
+      const rebuilt = waitForJsonEvent(child,event=>event.ok&&event.data?.event==="rebuild"&&event.data?.status==="success");
+      await writeFile(path.join(projectDir,"server","index.ts"),(await readFile(path.join(projectDir,"server","index.ts"),"utf8"))+"\n// rebuild while policy is degraded\n");
+      await rebuilt; assert.equal((await health()).digest,initial.digest);
+      await writeFile(policyPath,json("updated")); await wait(async()=> (await health()).state==="healthy" && (await health()).digest!==initial.digest);
+    } finally { if(child.exitCode===null) child.kill("SIGTERM"); await exited; }
   });
 });
