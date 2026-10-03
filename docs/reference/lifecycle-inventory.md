@@ -91,6 +91,13 @@ no explicit ports, userinfo, queries, fragments, readiness paths/tokens, headers
 or response content. Unknown fields, invalid/duplicate identities and oversized
 snapshots (1 MiB, 2,000 Capsules) are rejected. No target is fetched here.
 
+Scope identities, Hosted domains and target hostnames use lowercase DNS labels
+of 1–63 characters (253 characters total), with letters or digits at each end.
+Consecutive internal hyphens and ASCII punycode are supported, including
+`a--b.apps.example` and `xn--bcher-kva.example`. Capsule subnames use the same
+single-label rule. Every valid Hosted domain under the connected root is included,
+even when the exact inventory scope is an independent name such as `host-one`.
+
 Revisions increase on authoritative lifecycle/release/address changes. Matching
 retries are idempotent and renew acknowledgement time. Stale updates or changed
 content at the same revision return 409; cross-Host writes return 403. Success

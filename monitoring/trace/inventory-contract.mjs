@@ -1,6 +1,8 @@
 export const INVENTORY_MAX_BYTES = 1024 * 1024;
 export function inventoryHost(value) {
-    return typeof value === "string" && value.length <= 253 && /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(value);
+    // Match Hosted domain/subname labels, including consecutive hyphens and punycode.
+    return typeof value === "string" && value.length <= 253
+        && value.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
 }
 function invalid() { throw new Error("Invalid lifecycle inventory."); }
 function keys(value, names) {

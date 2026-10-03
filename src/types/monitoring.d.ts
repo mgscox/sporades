@@ -1,5 +1,7 @@
 /** Lifecycle inventory recovery files and Host-scoped HTTPS wire contract.
  * Each Capsule permits its canonical origin plus 20 aliases (21 targets total).
+ * Domains and subnames use lowercase DNS labels of 1–63 characters, including
+ * consecutive hyphens and ASCII punycode; targets remain bare HTTP(S) origins.
  * This grants no runtime, dashboard, probe scheduling or remote-admin capability.
  */
 export type {

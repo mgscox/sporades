@@ -100311,7 +100311,7 @@ import path9 from "node:path";
 // src/cli/inventory-contract.ts
 var INVENTORY_MAX_BYTES = 1024 * 1024;
 function inventoryHost(value) {
-  return typeof value === "string" && value.length <= 253 && /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(value);
+  return typeof value === "string" && value.length <= 253 && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
 }
 
 // src/cli/telemetry-profile.ts

@@ -17,7 +17,10 @@ const image = `${prefix}-gateway`;
 const network = `${prefix}-network`;
 const monitoring = `${prefix}-monitoring`;
 const host = `${prefix}-host`;
-const scope = 'docker-host.example';
+const scope = 'xn--bcher-kva.example';
+const subname = 'a--b';
+const neighborDomain = 'z--neighbor.example';
+const neighborSubname = 'xn--bcher-kva';
 const credential = randomBytes(24).toString('hex');
 const wrongCredential = randomBytes(24).toString('hex');
 const run = (program, args, timeout = 60_000, input) => {
@@ -45,12 +48,19 @@ try {
   await writeFile(path.join(telemetry, 'connection.json'), JSON.stringify({ schemaVersion: 1, endpoint: 'https://inventory-monitor:8443/', internalEndpoint: 'http://sporades-telemetry:4318/', network: 'unused', inventoryHost: scope, caConfigured: true, inventory: { generation: randomBytes(16).toString('hex'), credential, caPem: (await readFile(path.join(certs, 'cert.pem'))).toString() } }), { mode: 0o600 });
   await writeFile(path.join(telemetry, 'ca.pem'), await readFile(path.join(certs, 'cert.pem')));
   let changed = 0;
-  const record = async (state, release = 'release-1', optedOut = false) => {
-    const data = { domain: scope, subname: 'notes', remoteCapsuleId: `${scope}/notes`, hostedUrl: 'https://notes.docker-host.example', aliasDomains: Array.from({ length: 20 }, (_, i) => `alias-${i}.example`), status: state, updatedAt: new Date(Date.now() + changed++).toISOString(), currentRelease: { id: release }, telemetry: { disabled: optedOut } };
-    await writeFile(path.join(registry, 'notes.json'), JSON.stringify(data));
-    if (hostStarted) run('docker', ['exec', '--interactive', host, 'node', '-e', `require('node:fs').writeFileSync('/host/hosts/${scope}/registry/capsules/notes.json',require('node:fs').readFileSync(0))`], 60_000, JSON.stringify(data));
+  const persist = async data => {
+    const directory = path.join(hostRoot, 'hosts', data.domain, 'registry/capsules');
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, data.subname + '.json'), JSON.stringify(data));
+    if (hostStarted) run('docker', ['exec', '--interactive', host, 'node', '-e', `require('node:fs').writeFileSync('/host/hosts/${data.domain}/registry/capsules/${data.subname}.json',require('node:fs').readFileSync(0))`], 60_000, JSON.stringify(data));
   };
+  const record = async (state, release = 'release-1', optedOut = false) => {
+    const data = { domain: scope, subname, remoteCapsuleId: `${scope}/${subname}`, hostedUrl: `https://${subname}.${scope}`, aliasDomains: ['xn--bcher-kva.example', 'alias--one.example', ...Array.from({ length: 18 }, (_, i) => `alias-${i}.example`)], status: state, updatedAt: new Date(Date.now() + changed++).toISOString(), currentRelease: { id: release }, telemetry: { disabled: optedOut } };
+    await persist(data);
+  };
+  const neighbor = release => persist({ domain: neighborDomain, subname: neighborSubname, hostedUrl: `https://${neighborSubname}.${neighborDomain}/`, status: 'running', updatedAt: new Date(Date.now() + changed++).toISOString(), currentRelease: { id: release } });
   await record('registered');
+  await neighbor('neighbor-release-1');
   // Check generated persistent timer units on disposable Linux with local systemctl fakes.
   const unitScript = `
     const fs = await import('node:fs/promises');
@@ -97,6 +107,10 @@ try {
   const centralFile = createHash('sha256').update(scope).digest('hex') + '.json';
   const central = async () => JSON.parse(docker('run', '--rm', '--name', `${prefix}-read`, '--user', user, '--read-only', '--cap-drop', 'ALL', '--mount', `type=volume,source=${centralVolume},target=/inventory,readonly`, 'node:24-bookworm-slim', 'node', '-e', `process.stdout.write(require('node:fs').readFileSync('/inventory/${centralFile}','utf8'))`));
   assert.equal((await central()).inventory.capsules[0].targets.length, 21, 'canonical origin and all 20 aliases reach central storage');
+  assert.deepEqual((await central()).inventory.capsules.map(item => item.id), [`${scope}/${subname}`, `${neighborDomain}/${neighborSubname}`], 'punycode and consecutive-hyphen Hosted domains are never omitted');
+  await neighbor('neighbor-release-2');
+  assert.equal(reconcile().data.pending, false);
+  assert.equal((await central()).inventory.capsules[1].release, 'neighbor-release-2', 'neighbor updates continue alongside supported DNS names');
   const states = [];
   for (const state of ['released', 'running', 'stopped']) {
     await record(state);
@@ -131,9 +145,10 @@ try {
   assert.equal(await put(snapshot, wrongCredential), '403');
   assert.equal(await put({ ...snapshot, capsules: [] }, credential), '409');
   await record('unregistered'); reconcile();
-  docker('exec', host, 'node', '-e', `require('node:fs').unlinkSync('/host/hosts/${scope}/registry/capsules/notes.json')`); reconcile();
+  docker('exec', host, 'node', '-e', `require('node:fs').unlinkSync('/host/hosts/${scope}/registry/capsules/${subname}.json')`); reconcile();
   assert.equal((await central()).inventory.capsules[0].state, 'deleted');
-  evidence = { topology: 'two isolated Linux Docker containers, authenticated TLS, persisted independent state', sourceVersion: JSON.parse(await readFile('package.json', 'utf8')).version, states, connectionGeneration: true, canonicalAndTwentyAliases: true, registryRollback: true, optOut: true, staleAndConflictingDenied: true, crossHostDenied: true, outageRetainsExpectations: true, hostAndGatewayRestart: true, deletion: true, timerUnitContract: true, operatorUnitConflictDenied: true, realSeparateVmAcceptance: 'manager manual step' };
+  assert.equal((await central()).inventory.capsules[1].release, 'neighbor-release-2');
+  evidence = { topology: 'two isolated Linux Docker containers, authenticated TLS, persisted independent state', sourceVersion: JSON.parse(await readFile('package.json', 'utf8')).version, states, connectionGeneration: true, canonicalAndTwentyAliases: true, supportedDnsNames: true, neighboringCapsuleUpdates: true, registryRollback: true, optOut: true, staleAndConflictingDenied: true, crossHostDenied: true, outageRetainsExpectations: true, hostAndGatewayRestart: true, deletion: true, timerUnitContract: true, operatorUnitConflictDenied: true, realSeparateVmAcceptance: 'not rerun; see committed separate-VM evidence and its qualification' };
   await writeFile(path.join(base, 'evidence.json'), JSON.stringify(evidence, null, 2) + '\n');
   process.stdout.write(JSON.stringify(evidence) + '\n');
 } finally {

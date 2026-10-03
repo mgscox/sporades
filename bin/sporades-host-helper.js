@@ -43660,7 +43660,7 @@ async function withHostTelemetryLock(root, operation) {
 // src/cli/inventory-contract.ts
 var INVENTORY_MAX_BYTES = 1024 * 1024;
 function inventoryHost(value) {
-  return typeof value === "string" && value.length <= 253 && /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(value);
+  return typeof value === "string" && value.length <= 253 && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
 }
 function invalid2() {
   throw new Error("Invalid lifecycle inventory.");

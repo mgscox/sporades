@@ -87,6 +87,66 @@ test('configuration refuses reused scope tokens without exposing secrets and shi
   for (const value of [null, { ...inventory(1), revision: 0 }, { ...inventory(1), capsules: [capsule(), capsule()] }]) {
     assert.throws(() => validateInventory(value)); assert.throws(() => generated.validateInventory(value));
   }
+  for (const validate of [validateInventory, generated.validateInventory]) {
+    for (const host of ['host--one', 'xn--bcher-kva.example', 'a'.repeat(63) + '.example']) {
+      const value = { ...inventory(1), host, capsules: [{ ...capsule(), id: `${host}/a--b`, targets: [`https://a--b.${host}/`, 'https://xn--bcher-kva.example/'] }] };
+      assert.deepEqual(validate(value), value);
+    }
+    for (const host of ['a'.repeat(64) + '.example', '-a.example', 'a-.example', 'a..example', '.example', 'example.', 'UPPER.example', 'bücher.example', 'a_b.example']) {
+      assert.throws(() => validate({ ...inventory(1), host }));
+      assert.throws(() => validate({ ...inventory(1), capsules: [{ ...capsule(), id: `${host}/notes` }] }));
+      assert.throws(() => validate({ ...inventory(1), capsules: [{ ...capsule(), targets: [`https://${host}/`] }] }));
+    }
+    for (const target of ['https://xn--bcher-kva.example/?token=secret', 'https://user:secret@a--b.example/', 'https://a--b.example/__sporades/health', 'https://a--b.example:1234/', 'https://a--b.example/#secret']) {
+      assert.throws(() => validate({ ...inventory(1), capsules: [{ ...capsule(), targets: [target] }] }));
+    }
+  }
+});
+
+test('all supported Hosted domains queue and acknowledge while neighboring Capsules keep updating', async t => {
+  const dir = await fixture(t);
+  const telemetry = path.join(dir, 'telemetry');
+  await mkdir(telemetry, { mode: 0o700 });
+  await writeFile(path.join(telemetry, 'connection.json'), JSON.stringify({ schemaVersion: 1, endpoint: 'https://monitor.example/', network: 'fake-network', internalEndpoint: 'http://sporades-telemetry:4318/', caConfigured: false, inventoryHost: 'host-one' }), { mode: 0o600 });
+  await writeFile(path.join(telemetry, 'inventory-credential'), token + '\n', { mode: 0o600 });
+  const persist = async (domain, subname, release = 'release-1', aliasDomains = []) => {
+    const registry = path.join(dir, 'hosts', domain, 'registry/capsules');
+    await mkdir(registry, { recursive: true });
+    await writeFile(path.join(registry, subname + '.json'), JSON.stringify({ domain, subname, hostedUrl: `https://${subname}.${domain}/`, status: 'running', updatedAt: '2026-10-03T00:00:00.000Z', currentRelease: { id: release }, aliasDomains }));
+  };
+  for (const domain of ['apps.example', 'xn--bcher-kva.example', 'a--b.example']) await persist(domain, 'notes');
+  const oldFlock = process.env.SPORADES_TEST_FLOCK_PATH;
+  process.env.SPORADES_TEST_FLOCK_PATH = path.resolve('test/support/exec-flock.py');
+  t.after(() => { if (oldFlock === undefined) delete process.env.SPORADES_TEST_FLOCK_PATH; else process.env.SPORADES_TEST_FLOCK_PATH = oldFlock; });
+  const first = (await queueHostInventory(dir)).desired;
+  assert.deepEqual(first.capsules.map(item => item.id).sort(), ['a--b.example/notes', 'apps.example/notes', 'xn--bcher-kva.example/notes'], 'every valid Hosted domain is included under an independent exact scope');
+  const gateway = createGateway({ ...config, inventoryHosts: { 'host-one': token, 'host--one': otherToken }, inventoryDirectory: path.join(dir, 'central') });
+  const port = await listen(gateway);
+  t.after(() => close(gateway));
+  const endpoint = `http://127.0.0.1:${port}/v1/inventory/host-one`;
+  const acknowledge = async value => {
+    const response = await fetch(endpoint, { method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(value) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).data.revision, value.revision);
+    const stored = await fetch(endpoint, { headers: { authorization: `Bearer ${token}` } }).then(response => response.json());
+    assert.deepEqual(stored.data.inventory, value);
+  };
+  await acknowledge(first);
+  await persist('apps.example', 'a--b', 'hyphen-release', ['xn--bcher-kva.example', 'alias--one.example']);
+  await persist('a--b.example', 'xn--bcher-kva', 'punycode-release', ['alias.xn--bcher-kva.example']);
+  const second = (await queueHostInventory(dir)).desired;
+  assert.equal(second.revision, first.revision + 1);
+  assert.equal(second.capsules.length, 5);
+  assert.deepEqual(second.capsules.find(item => item.id === 'apps.example/a--b').targets, ['https://a--b.apps.example/', 'https://alias--one.example/', 'https://xn--bcher-kva.example/']);
+  assert.deepEqual(second.capsules.find(item => item.id === 'a--b.example/xn--bcher-kva').targets, ['https://alias.xn--bcher-kva.example/', 'https://xn--bcher-kva.a--b.example/']);
+  await acknowledge(second);
+  await persist('apps.example', 'notes', 'neighbor-release-2');
+  const third = (await queueHostInventory(dir)).desired;
+  assert.equal(third.revision, second.revision + 1);
+  assert.equal(third.capsules.find(item => item.id === 'apps.example/notes').release, 'neighbor-release-2');
+  assert.equal(third.capsules.length, 5, 'valid neighboring domains remain in later snapshots');
+  await acknowledge(third);
+  assert.equal((await fetch(endpoint, { method: 'PUT', headers: { authorization: `Bearer ${otherToken}`, 'content-type': 'application/json' }, body: JSON.stringify(third) })).status, 403, 'a similar consecutive-hyphen scope grants no authority over host-one');
 });
 
 test('reconnect cannot replace saved exact Host identity or mutate connection authority', async t => {

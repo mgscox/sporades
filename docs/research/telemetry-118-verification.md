@@ -109,10 +109,12 @@ were retained. The origin key used the documented Caddy group permissions.
    and higher-revision omission updates (409). Other-Host, ingestion-only and
    UI credentials were denied (403). The stored inventory remained unchanged.
 4. Stop the Monitoring service. Schedule a **Host-local** systemd timer to invoke
-   the actual helper's `host.telemetry.disable` operation and reboot the Host;
-   close all workstation SSH/tunnel sessions before it fires. The operation
-   completed independently, queued revision 15 against acknowledgement 14,
-   and rebooted. Real boot recovery resumed the Capsule at the rolled-back
+   the actual helper's `host.telemetry.disable` operation and reboot the Host.
+   The recorded mutation completed at `00:19:29.648Z`, before the recorded
+   workstation disconnection at `00:19:48Z`; this interval does not establish
+   that the mutation or reboot happened with management connections closed.
+   The operation queued revision 15 against acknowledgement 14 and rebooted.
+   Real boot recovery resumed the Capsule at the rolled-back
    release and queued revision 16. The timer remained enabled, retries reported
    opaque `network-or-tls`, and Monitoring retained revision 14 with two targets.
 5. Schedule the Monitoring VM's reboot and close management connections. Its

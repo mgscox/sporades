@@ -137,6 +137,7 @@
   },
   "outageAndHostReboot": {
     "workstationDisconnectedAt": "2026-10-03T00:19:48Z",
+    "qualification": "The mutation completed at 00:19:29.648Z before the recorded workstation disconnection. This interval establishes outage/reboot recovery, not a mutation or reboot with management connections closed; disconnected mutation and acknowledgement are evidenced by the later healthy interval.",
     "hostBootIdBefore": "171afbf6-0573-48f6-bfe8-625b5035f2cc",
     "hostBootIdAfter": "21437d8b-5bae-4f01-87d8-b98c4d14d140",
     "offlineMutation": {
