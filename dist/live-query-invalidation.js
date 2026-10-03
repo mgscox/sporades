@@ -4,7 +4,7 @@
 // client after each writing mutation or job.
 //
 // Only adapters that record every statement they execute can scope a refresh. Such an adapter
-// carries `liveQueryTablesTracked`; with any other adapter the refresh stays unscoped (#105).
+// carries `liveQueryTablesTracked`; with any other adapter the refresh stays unscoped.
 const { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
 /** Marks a database adapter whose statement operations report reads and writes here. */
 export const liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
@@ -16,7 +16,7 @@ let dirtyTables = new Set();
 const quotedIdentifier = String.raw `(?:\[([^\]]+)\]|"([^"]+)")`;
 const readTablePattern = new RegExp(String.raw `\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
 const writeTablePattern = new RegExp(String.raw `^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`, "i");
-const nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT)\b/i;
+const nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT|LOCK\s+TABLE)\b/i;
 /** Runs a live query, collecting every table it reads into `tables`. */
 export function trackLiveQueryReads(tables, run) {
     return liveQueryReads.run(tables, run);
@@ -45,6 +45,14 @@ export function recordLiveQueryStatementWrite(sql, result) {
     if (result && typeof result === "object" && "changes" in result && Number(result.changes) === 0)
         return;
     const text = String(sql);
+    // exec can execute several statements but has no per-statement change counts. A semicolon
+    // inside a literal or comment can over-refresh; treating a second statement as just the first
+    // table would under-refresh. A single trailing terminator is harmless.
+    const terminator = text.indexOf(";");
+    if (terminator !== -1 && /\S/.test(text.slice(terminator + 1))) {
+        dirtyTables.add(LIVE_QUERY_ANY_TABLE);
+        return;
+    }
     if (nonWritingStatementPattern.test(text))
         return;
     const match = writeTablePattern.exec(text);

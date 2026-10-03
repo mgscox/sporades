@@ -454,8 +454,14 @@ authState.unsubscribe();
 ```
 
 Subscriptions immediately deliver their latest complete state, resubscribe
-after reconnect, and may be unsubscribed more than once safely. React and
-Preact clients can adapt those same primitives with `createHooks`:
+after reconnect, and may be unsubscribed more than once safely.
+
+SQLite, Postgres and libsql refresh subscribed queries only when a writing
+mutation or completed Job changed a table their last run read. Unknown statement
+tables and failed query runs retain the full-refresh fallback. Transaction writes
+are tracked conservatively, including writes that later roll back.
+
+React and Preact clients can adapt those same primitives with `createHooks`:
 
 Declared Custom queries may take JSON-compatible positional arguments after
 the listener (or after the query name for framework adapters). The arguments

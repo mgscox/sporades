@@ -212,12 +212,14 @@ be at most 65,536 UTF-8 bytes. Runtime-owned queries, implicit table queries,
 and legacy rows subscriptions remain argument-free.
 
 Subscribed queries re-run after a mutation that writes and after a Job
-finishes. On SQLite, the runtime re-runs only the subscriptions whose last run
+finishes. On SQLite, Postgres and libsql, the runtime re-runs only the subscriptions whose last run
 read a table written since the previous refresh; a statement whose table it
 cannot identify re-runs every subscription, and a subscription whose last run
 failed re-runs on every refresh. A query result that depends on the
 clock or other state outside the database therefore does not update on
-unrelated writes. Postgres and libsql Capsules still re-run every subscription.
+unrelated writes. Transaction statements are tracked too; rolled-back writes
+may cause an extra refresh. Multi-statement and unparseable writes conservatively
+refresh every subscription. libsql resource transactions remain unsupported.
 
 ### Change Data With Mutations
 

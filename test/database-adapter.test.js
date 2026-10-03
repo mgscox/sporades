@@ -386,6 +386,9 @@ test("terminating only the owning Postgres backend revokes its scoped connection
 test("Postgres reports an unknown resource COMMIT after a real server commit loses its acknowledgement", { skip: POSTGRES_SKIP_REASON }, async () => {
   const direct = await createPostgresDatabaseAdapter({ url: postgresTestUrl() });
   await resetPostgresSchema(direct, ['commit_ack_drop_rows']);
+  // Publish the resource schema before fault injection. Otherwise the proxy drops the
+  // bootstrap COMMIT acknowledgement before the protected callback ever executes.
+  await direct.withResourceTransaction(() => undefined, undefined, { table: 'grants', id: 'bootstrap' });
   const target = new URL(postgresTestUrl());
   const sockets = new Set();
   const proxy = net.createServer((client) => {

@@ -1802,9 +1802,10 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     return telemetry.operations({
     exec(sql: string) {
       return run(() => useConnection(() => {
-        const result = connection.exec(sql);
+        // exec may apply an earlier statement before a later one throws. Keep invalidation
+        // conservative even when no combined result reaches the caller.
         recordLiveQueryStatementWrite(sql);
-        return result;
+        return connection.exec(sql);
       }));
     },
     prepare(sql: string) {
@@ -1860,9 +1861,8 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         let commitIssued = false;
         const operations = {
           exec: (sql: string) => {
-            const result = dedicated.exec(sql);
             recordLiveQueryStatementWrite(sql);
-            return result;
+            return dedicated.exec(sql);
           },
           prepare: (sql: string) => {
             const statement = dedicated.prepare(sql);
@@ -2171,22 +2171,27 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
 
   const createOperations = (run: (operation: () => any) => any) => telemetry.operations({
     exec(sql: string) {
-      return run(() => rawQuery(sql).then((): undefined => undefined));
+      return run(() => {
+        recordLiveQueryStatementWrite(sql);
+        return rawQuery(sql).then((): undefined => undefined);
+      });
     },
     prepare(sql: string) {
       assertOpen();
       return {
         all(...params: (number | undefined)[]) {
+          recordLiveQueryStatementRead(sql);
           return run(() => rawQuery(sql, params).then((result: any) => postgresRowsFromResult(normalization, result)));
         },
         get(...params: undefined[]) {
           return this.all(...params).then((rows: any[]) => rows[0] ?? null);
         },
         run(...params: string[]) {
-          return run(() => rawQuery(sql, params).then((result) => ({
-            changes: Number(result.rowCount ?? 0),
-            lastInsertRowid: undefined as any,
-          })));
+          return run(() => rawQuery(sql, params).then((result) => {
+            const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any };
+            recordLiveQueryStatementWrite(sql, written);
+            return written;
+          }));
         },
         columns() {
           return run(() => rawQuery(
@@ -2201,6 +2206,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "postgres",
+    [liveQueryTablesTracked]: true,
     [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
     [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
     [resourceConsumptionMechanics]: function() { return lockAndVerifyResourceSchema(this); },
@@ -2250,11 +2256,25 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
           }
         };
         const operations = {
-          exec: async (statement: string) => { await query(statement); },
+          exec: async (statement: string) => {
+            recordLiveQueryStatementWrite(statement);
+            await query(statement);
+          },
           prepare: (statement: string) => ({
-            all: async (...params: any[]) => postgresRowsFromResult(normalization, await query(statement, params)),
-            get: async (...params: any[]) => (postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null),
-            run: async (...params: any[]) => { const result = await query(statement, params); return { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any }; },
+            all: async (...params: any[]) => {
+              recordLiveQueryStatementRead(statement);
+              return postgresRowsFromResult(normalization, await query(statement, params));
+            },
+            get: async (...params: any[]) => {
+              recordLiveQueryStatementRead(statement);
+              return postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null;
+            },
+            run: async (...params: any[]) => {
+              const result = await query(statement, params);
+              const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any };
+              recordLiveQueryStatementWrite(statement, written);
+              return written;
+            },
             columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field: any) => ({ name: normalization.columnName(field.name) })),
           }),
         };
@@ -2933,6 +2953,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
         : { type: "execute", stmt: { sql } };
       return run(() => {
         assertLibsqlOpen(closed);
+        recordLiveQueryStatementWrite(sql);
         return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then((): undefined => undefined);
       });
     },
@@ -2940,6 +2961,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       assertLibsqlOpen(closed);
       return {
         all(...params: (number | undefined)[]) {
+          recordLiveQueryStatementRead(sql);
           return run(() => {
             assertLibsqlOpen(closed);
             return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) =>
@@ -2953,13 +2975,17 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
         run(...params: string[]) {
           return run(() => {
             assertLibsqlOpen(closed);
-            return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
-              changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
-              lastInsertRowid:
-                result.last_insert_rowid === null || result.last_insert_rowid === undefined
-                  ? undefined
-                  : BigInt(result.last_insert_rowid),
-            }));
+            return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => {
+              const written = {
+                changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
+                lastInsertRowid:
+                  result.last_insert_rowid === null || result.last_insert_rowid === undefined
+                    ? undefined
+                    : BigInt(result.last_insert_rowid),
+              };
+              recordLiveQueryStatementWrite(sql, written);
+              return written;
+            });
           });
         },
         columns() {
@@ -2976,6 +3002,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(null, connectionGate.runOperation),
     engine: "libsql",
+    [liveQueryTablesTracked]: true,
     dialect,
     normalization,
     // No behavioural method body lives here either, for the reasons ADR-0037 records and the

@@ -6285,7 +6285,7 @@ export function createWebSocketHub(
   function refreshQueries() {
     // Scope the refresh to subscriptions that read a table written since the last refresh. An
     // empty window means an earlier refresh already covered those writes. Adapters that do not
-    // report their statements keep refreshing every subscription (#105).
+    // report their statements keep refreshing every subscription.
     const dirty = takeLiveQueryDirtyTables();
     const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
     for (const subscribedClient of clients) {
