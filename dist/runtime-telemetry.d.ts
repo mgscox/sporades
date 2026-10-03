@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Span } from "@opentelemetry/api";
 export type RuntimeTelemetryConfig = {
+    tracePropagationOrigins?: string[];
     endpoint: string;
     tls: {
         mode: "verified" | "loopback";

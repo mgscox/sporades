@@ -82,6 +82,7 @@
       "src/public-tree.ts",
       "src/resource-runtime.ts",
       "src/runtime-errors.ts",
+      "src/runtime-fetch-telemetry.ts",
       "src/runtime-log-policy.ts",
       "src/runtime-request-context.ts",
       "src/runtime-restart-policy.ts",
@@ -104,6 +105,7 @@
       "src/team-billing-runtime.ts",
       "src/team-billing-subscription-semantics.ts",
       "src/teams-runtime.ts",
+      "src/telemetry-propagation-policy.ts",
       "src/templates/client-runtime-template.ts",
       "src/templates/scaffold-template.ts",
       "src/templates/server-bundle-entry.ts",
@@ -120,7 +122,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "69a666d6a689338d4029eb3ba2513834d609cf82eaffd92b52752ddbcb695dd9"
+    "digest": "6d1505f3dbdc616a30353af4e2e01db0920605b518296b838a2c9d64db62c674"
   },
   "outputs": {
     "files": [
@@ -418,6 +420,10 @@
       "dist/runtime-errors.d.ts.map",
       "dist/runtime-errors.js",
       "dist/runtime-errors.js.map",
+      "dist/runtime-fetch-telemetry.d.ts",
+      "dist/runtime-fetch-telemetry.d.ts.map",
+      "dist/runtime-fetch-telemetry.js",
+      "dist/runtime-fetch-telemetry.js.map",
       "dist/runtime-log-policy.d.ts",
       "dist/runtime-log-policy.d.ts.map",
       "dist/runtime-log-policy.js",
@@ -510,6 +516,10 @@
       "dist/teams-runtime.d.ts.map",
       "dist/teams-runtime.js",
       "dist/teams-runtime.js.map",
+      "dist/telemetry-propagation-policy.d.ts",
+      "dist/telemetry-propagation-policy.d.ts.map",
+      "dist/telemetry-propagation-policy.js",
+      "dist/telemetry-propagation-policy.js.map",
       "dist/templates/client-runtime-template.d.ts",
       "dist/templates/client-runtime-template.d.ts.map",
       "dist/templates/client-runtime-template.js",
@@ -532,6 +542,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "3031ecf0c7958ade89ccd652661c1ea38b781ce4a7893ce7a766960e8e835d3c"
+    "digest": "17579cd8b1ea9814c40ca2ded211d9d89260859e37ae577c39e2de1a9e570ed9"
   }
 }

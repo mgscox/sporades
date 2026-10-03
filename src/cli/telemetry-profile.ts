@@ -1,11 +1,13 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { validateTracePropagationOrigins } from "../telemetry-propagation-policy.js";
 import type { RuntimeTelemetryConfig } from "../runtime-telemetry.js";
 import { commandError } from "./cli-support.js";
 import { inventoryHost } from "./inventory-contract.js";
 
 export type TelemetryProfile = {
+  tracePropagationOrigins?: string[];
   endpoint: string;
   dashboard?: string;
   tls: { mode: "verified" | "loopback"; caFile?: string };
@@ -38,7 +40,7 @@ export function validateTelemetryProjectConfig(value: unknown) {
 export function validateTelemetryProfile(value: unknown): TelemetryProfile {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Provide an endpoint, TLS mode and optional references.");
   const profile = value as Record<string, unknown>;
-  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "inventoryCredentialEnv", "inventoryHost", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid("Remove unsupported Telemetry profile fields.");
+  if (Object.keys(profile).some((key) => !["endpoint", "dashboard", "tls", "credentialEnv", "inventoryCredentialEnv", "inventoryHost", "metricsIntervalMs", "eventLoopDelayResolutionMs", "tracePropagationOrigins"].includes(key))) invalid("Remove unsupported Telemetry profile fields.");
   if (typeof profile.endpoint !== "string" || profile.endpoint.length > 2048) invalid("Use an OTLP/HTTP base URL without credentials or query strings.");
   let url: URL;
   try { url = new URL(profile.endpoint); } catch { return invalid("Use a valid OTLP/HTTP base URL."); }
@@ -61,6 +63,10 @@ export function validateTelemetryProfile(value: unknown): TelemetryProfile {
     let dashboard: URL;
     try { dashboard = new URL(profile.dashboard); } catch { return invalid("Use a valid dashboard URL."); }
     if (dashboard.protocol !== "https:" || dashboard.username || dashboard.password || dashboard.search || dashboard.hash) invalid("Use a dashboard HTTPS URL without credentials, query or fragment.");
+  }
+  if (profile.tracePropagationOrigins !== undefined) {
+    try { profile.tracePropagationOrigins = validateTracePropagationOrigins(profile.tracePropagationOrigins); }
+    catch { invalid("Use at most 32 exact HTTP/HTTPS origins without credentials, paths, queries or fragments."); }
   }
   return profile as TelemetryProfile;
 }
@@ -118,7 +124,7 @@ export async function resolveLocalTelemetryConfig(config: { name?: string; telem
   const profile = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
   if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
   if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name}.`);
-  return { endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs, eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs };
+  return { ...(profile.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}), endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs, eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs };
 }
 
 /** Docker loopback is the Capsule itself; route an explicitly local profile to its Host. */

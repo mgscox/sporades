@@ -16,8 +16,11 @@ import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { interpretHttpRequestTarget } from "./http-runtime.js";
 import { runtimeJobScope, runtimeRequestScope, withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
 import type { RuntimeOperationOutcome, RuntimeOperationRunner } from "./runtime-request-context.js";
+import { installRuntimeFetchTelemetry, outboundFetchTelemetry } from "./runtime-fetch-telemetry.js";
+import { validateTracePropagationOrigins } from "./telemetry-propagation-policy.js";
 
 export type RuntimeTelemetryConfig = {
+  tracePropagationOrigins?: string[];
   endpoint: string;
   tls: { mode: "verified" | "loopback"; caFile?: string };
   credentialEnv?: string;
@@ -148,6 +151,7 @@ function createProfileExporters(traceOptions: ConstructorParameters<typeof OTLPT
 
 export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>) {
   if (!config) return { websocket: disabledWebSocketTelemetry, bindJobQueue: (_database: any) => {}, run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => runtimeRequestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => {} };
+  const propagationOrigins = new Set(validateTracePropagationOrigins(config.tracePropagationOrigins));
   if (config.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1000)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
   const endpoint = new URL("/v1/traces", url).toString();
@@ -348,6 +352,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
   const websocketNames = new Set<string>();
   const websocketEnds = new Set<(outcome: WebSocketOperationOutcome) => void>();
   let closing = false;
+  const releaseFetch = installRuntimeFetchTelemetry();
   const websocket: RuntimeWebSocketTelemetry = {
     connectionOpened() {
       if (closing) return () => {};
@@ -550,7 +555,8 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = runtimeRequestScope.run({ requestId: randomUUID(), span, operation, tracer, isOpen: () => !ended && !closing }, handle);
+        const isOpen = () => !ended && !closing;
+        const result = runtimeRequestScope.run({ requestId: randomUUID(), span, operation, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
         if (result && typeof (result as unknown as Promise<unknown>).then === "function") {
           return Promise.resolve(result).catch((error) => { end("error"); throw error; });
         }
@@ -564,6 +570,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       if (closing) return;
       for (const end of websocketEnds) end("cancelled");
       closing = true;
+      releaseFetch();
       gcObserver.disconnect();
       delayMonitorStoppedAt = performance.now();
       loopDelay.disable();

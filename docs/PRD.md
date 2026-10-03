@@ -277,6 +277,9 @@ The following work is intentionally deferred:
   transport and Host-owned Hosted Capsule activation are available; each Host
   connection enables its Capsules by default with per-Capsule opt-out, and
   running Capsules need a controlled restart before coverage is confirmed.
+  Native global fetch calls within active HTTP requests have CLIENT spans through
+  response headers, with exact operator-approved origin propagation restricted to
+  caller-selected manual/error redirects.
   Connected Hosts automatically synchronize versioned lifecycle inventory through
   an exact Host-scoped interface, durable outbox and independent periodic worker.
   Central acknowledgements survive sender outages; manual import/export is recovery
