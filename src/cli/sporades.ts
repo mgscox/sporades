@@ -276,6 +276,10 @@ async function main() {
 
     case "monitoring": {
       if (isHelp) { printHelp('monitoring'); return; }
+      if (args[0] === 'sender') {
+        await runMonitoringSenderCommand(args);
+        return;
+      }
       if (args[0] !== 'stack' || !['init', 'validate'].includes(args[1] ?? '')) {
         throw commandError('Unknown monitoring operation.', 'Use `sporades monitoring stack init|validate --dir <path>`.');
       }
@@ -490,6 +494,42 @@ function parseCreateArgs(args: string[]): LooseRecord {
 
 function isLocalTemplateReference(value: string) {
   return path.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
+}
+
+async function runMonitoringSenderCommand(args: string[]) {
+  const action = args[1];
+  if (!['issue', 'rotate', 'commit', 'cancel', 'revoke', 'export', 'status', 'legacy-revoke'].includes(action ?? '')) {
+    throw commandError('Unknown sender operation.', 'Run `sporades monitoring --help`.');
+  }
+  let directory = process.cwd();
+  let json = false;
+  const options: { sender?: string; host?: string; out?: string; generation?: number; ingest?: boolean } = {};
+  for (let index = 2; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--dir') directory = readFlagValue(args, ++index, arg);
+    else if (arg === '--sender') options.sender = readFlagValue(args, ++index, arg);
+    else if (arg === '--host' && ['issue', 'legacy-revoke'].includes(action)) options.host = readFlagValue(args, ++index, arg);
+    else if (arg === '--out' && action === 'export') options.out = readFlagValue(args, ++index, arg);
+    else if (arg === '--generation' && action === 'commit') options.generation = Number(readFlagValue(args, ++index, arg));
+    else if (arg === '--ingest' && action === 'legacy-revoke') options.ingest = true;
+    else if (arg === '--json') json = true;
+    else throw commandError('Unknown sender option.', 'Run `sporades monitoring --help`.');
+  }
+  if (action === 'legacy-revoke' && (options.sender || (!!options.host === !!options.ingest))) {
+    throw commandError('Choose one legacy capability.', 'Use exactly one of --host or --ingest without --sender.');
+  }
+  const source = path.join(resolveSporadesPackageRoot(), 'monitoring', 'trace');
+  const lifecycle = await import(pathToFileURL(path.join(source, 'sender-credentials.mjs')).href);
+  const setup = await import(pathToFileURL(path.join(source, 'setup.mjs')).href);
+  let data;
+  try {
+    data = await lifecycle.manageSenderCredentials(path.join(path.resolve(directory), '.private', 'senders'), action, options, setup.gatewayRunIdentity());
+  } catch (error) {
+    // Registry parsing and OS errors must never echo stored secret bytes.
+    throw commandError('Sender credential operation failed.', error instanceof Error && !('code' in error) ? error.message : 'Initialize the stack and inspect protected file permissions and output paths.');
+  }
+  if (json) writeResult({ ok: true, data, error: null });
+  else process.stdout.write(JSON.stringify(data, null, 2) + "\n");
 }
 
 async function runTelemetryProfileCommand(args: string[]) {

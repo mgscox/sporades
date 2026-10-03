@@ -14,6 +14,7 @@ const env = parseEnvironment(await readFile(new URL('./.env', import.meta.url), 
 let token;
 try { token = JSON.parse(env.get('INVENTORY_HOSTS') ?? '{}')[host]; }
 catch { throw new Error('Invalid INVENTORY_HOSTS configuration.'); }
+token = process.env.HOST_INVENTORY_TOKEN ?? token;
 if (typeof token !== 'string' || token.length < 16 || /[\x00-\x20\x7f]/.test(token)) throw new Error('No scoped inventory credential for this Host.');
 let body;
 const ca = caFile ? await readFile(caFile) : undefined;

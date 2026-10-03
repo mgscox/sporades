@@ -34,7 +34,7 @@ export type JourneyEnableResult = { enabled: true; userId: string; capture: Requ
 export type JourneyEvent = { type: "snapshot"; states: JourneyRecord[] } | { type: "added" | "updated" | "removed"; state: JourneyRecord };
 /** A Journey listener lifetime owned by the subscribing page. */
 export type JourneySubscription = { unsubscribe(): void };
-/** Client-only API for consent, publication, observation, and retirement of transient Journey state. */
+/** Client-only Journey API. Publication waits for same-identity consent restoration on reconnect; closed operations are not replayed. */
 export type JourneyApi = {
   enable(options?: JourneyEnableOptions): Promise<SporadesResult<JourneyEnableResult>>;
   set(state: JourneySetInput): Promise<SporadesResult<{ journey: JourneyRecord }>>;

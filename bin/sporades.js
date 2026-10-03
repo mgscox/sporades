@@ -81858,6 +81858,7 @@ function createConnection() {
   let latestAuthSocket = null;
   let journeyConsentOptions = null;
   let journeyEnabledUserId = null;
+  let journeyRestoration = null;
   let journeyCapture = null;
   let journeyCaptureTeardown = null;
   const journeySubscriptions = new Map();
@@ -81937,6 +81938,8 @@ function createConnection() {
     let openedAt = null;
     let receivedMessage = false;
     socket = openedSocket;
+    let finishJourneyRestoration;
+    journeyRestoration = { socket: openedSocket, promise: new Promise((resolve) => { finishJourneyRestoration = resolve; }) };
     openedSocket.addEventListener("open", () => {
       openedAt = Date.now();
       retryInFlight = false;
@@ -81945,12 +81948,12 @@ function createConnection() {
       const consentUserId = journeyEnabledUserId;
       const stillOwnsConsent = () => !pageRetired && socket === openedSocket && journeyConsentOptions === consent
         && journeyEnabledUserId === consentUserId && latestAuthUserId === consentUserId;
-      request("auth.get").then((confirmation) => {
-        if (!consent || confirmation.error || !stillOwnsConsent()) return;
-        request("journey.enable", { options: consent }).then((result) => {
-          if (!result.error && result.data?.capture && stillOwnsConsent()) startJourneyCapture(result.data.capture);
+      request("auth.get").then((result) => {
+        if (!consent || result.error || !stillOwnsConsent()) return;
+        return request("journey.enable", { options: consent }).then((enabled) => {
+          if (!enabled.error && enabled.data?.capture && stillOwnsConsent()) startJourneyCapture(enabled.data.capture);
         });
-      });
+      }).finally(finishJourneyRestoration);
       for (const subscription of journeySubscriptions.values()) send({ id: subscription.id, type: "journey.subscribe", resume: subscription.started });
       for (const subscription of subscriptions.values()) {
         send({
@@ -82016,6 +82019,7 @@ function createConnection() {
       }
     });
     openedSocket.addEventListener("close", async () => {
+      finishJourneyRestoration();
       for (const [id, entry] of pending) {
         if (entry.socket !== openedSocket) continue;
         entry.resolve({
@@ -82155,17 +82159,22 @@ function createConnection() {
     const outboundMessage = currentSessionToken
       ? { ...message, sessionToken: currentSessionToken }
       : message;
+    const transmit = () => {
+      const restoration = journeyRestoration;
+      if (message.type === "journey.set" && restoration?.socket === activeSocket) {
+        // Opening the transport precedes authentication and restored consent.
+        // Bind publication to this socket; a close must never replay it elsewhere.
+        restoration.promise.then(() => {
+          if (!pageRetired && socket === activeSocket && activeSocket.readyState === WebSocket.OPEN
+            && pending.has(message.id)) activeSocket.send(JSON.stringify(outboundMessage));
+        });
+      } else activeSocket.send(JSON.stringify(outboundMessage));
+    };
     if (activeSocket.readyState === WebSocket.OPEN) {
-      activeSocket.send(JSON.stringify(outboundMessage));
+      transmit();
       return;
     }
-    activeSocket.addEventListener(
-      "open",
-      () => {
-        activeSocket.send(JSON.stringify(outboundMessage));
-      },
-      { once: true },
-    );
+    activeSocket.addEventListener("open", transmit, { once: true });
   }
 
   function sendIfOpen(message) {
@@ -146395,12 +146404,20 @@ Options:
   --help, -h          Show this help
 `,
   monitoring: `Usage: sporades monitoring stack <init|validate> [options]
+       sporades monitoring sender <issue|rotate|commit|cancel|revoke|export|status|legacy-revoke> [options]
 
 Generate or inspect the versioned trace stack from an installed Sporades package.
 Initialization creates a reviewable directory; it does not start services.
+Sender operations run locally on the Monitoring server; results contain no secrets.
+Rotation stages a second generation; commit retires the old one after sender verification.
 
 Options:
   --dir <path>        Target stack directory (default: current directory)
+  --sender <name>     Named sender for lifecycle operations (optional for status)
+  --host <identity>   Exact inventory Host scope (issue or legacy-revoke only)
+  --out <path>        New mode-0600 credential handoff file (export only)
+  --generation <n>    Verified pending generation to activate (commit only)
+  --ingest            Disable shared legacy ingestion (legacy-revoke only)
   --json              Write { ok, data, error } JSON output
   --help, -h          Show this help
 `,
@@ -146579,8 +146596,8 @@ import { createHash as createHash15 } from "node:crypto";
 import { cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
 import path17 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
-var STACK_SCHEMA = 2;
-var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "inventory-contract.mjs", "inventory-store.mjs", "inventory.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "setup.mjs", "smoke.mjs"];
+var STACK_SCHEMA = 3;
+var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "sender-credentials.mjs", "inventory-contract.mjs", "inventory-store.mjs", "inventory.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "setup.mjs", "smoke.mjs"];
 function prerequisite() {
   if (!["arm64", "x64"].includes(process.arch) || !["linux", "darwin"].includes(process.platform)) {
     throw commandError("Unsupported monitoring stack architecture.", "Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.");
@@ -148823,6 +148840,10 @@ async function main() {
         printHelp("monitoring");
         return;
       }
+      if (args[0] === "sender") {
+        await runMonitoringSenderCommand(args);
+        return;
+      }
       if (args[0] !== "stack" || !["init", "validate"].includes(args[1] ?? "")) {
         throw commandError("Unknown monitoring operation.", "Use `sporades monitoring stack init|validate --dir <path>`.");
       }
@@ -149016,6 +149037,40 @@ function parseCreateArgs(args) {
 }
 function isLocalTemplateReference(value) {
   return path20.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
+}
+async function runMonitoringSenderCommand(args) {
+  const action = args[1];
+  if (!["issue", "rotate", "commit", "cancel", "revoke", "export", "status", "legacy-revoke"].includes(action ?? "")) {
+    throw commandError("Unknown sender operation.", "Run `sporades monitoring --help`.");
+  }
+  let directory = process.cwd();
+  let json = false;
+  const options = {};
+  for (let index = 2; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--dir") directory = readFlagValue(args, ++index, arg);
+    else if (arg === "--sender") options.sender = readFlagValue(args, ++index, arg);
+    else if (arg === "--host" && ["issue", "legacy-revoke"].includes(action)) options.host = readFlagValue(args, ++index, arg);
+    else if (arg === "--out" && action === "export") options.out = readFlagValue(args, ++index, arg);
+    else if (arg === "--generation" && action === "commit") options.generation = Number(readFlagValue(args, ++index, arg));
+    else if (arg === "--ingest" && action === "legacy-revoke") options.ingest = true;
+    else if (arg === "--json") json = true;
+    else throw commandError("Unknown sender option.", "Run `sporades monitoring --help`.");
+  }
+  if (action === "legacy-revoke" && (options.sender || !!options.host === !!options.ingest)) {
+    throw commandError("Choose one legacy capability.", "Use exactly one of --host or --ingest without --sender.");
+  }
+  const source = path20.join(resolveSporadesPackageRoot(), "monitoring", "trace");
+  const lifecycle = await import(pathToFileURL5(path20.join(source, "sender-credentials.mjs")).href);
+  const setup = await import(pathToFileURL5(path20.join(source, "setup.mjs")).href);
+  let data2;
+  try {
+    data2 = await lifecycle.manageSenderCredentials(path20.join(path20.resolve(directory), ".private", "senders"), action, options, setup.gatewayRunIdentity());
+  } catch (error) {
+    throw commandError("Sender credential operation failed.", error instanceof Error && !("code" in error) ? error.message : "Initialize the stack and inspect protected file permissions and output paths.");
+  }
+  if (json) writeResult({ ok: true, data: data2, error: null });
+  else process.stdout.write(JSON.stringify(data2, null, 2) + "\n");
 }
 async function runTelemetryProfileCommand(args) {
   if (args[0] !== "profile" || !["add", "list", "show", "remove"].includes(args[1] ?? "")) {
