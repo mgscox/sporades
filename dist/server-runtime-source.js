@@ -5010,14 +5010,22 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 client.buffer = Buffer.concat([client.buffer, chunk]);
                 drainWebSocketFrames(client, (message) => enqueueClientMessage(client, message));
             });
+            let removed = false;
             const removeClient = () => {
+                if (removed)
+                    return;
+                removed = true;
                 try {
                     connectionClosed?.();
                 }
                 catch { }
                 if (client.telemetryOperations) {
-                    for (const operation of client.telemetryOperations)
-                        operation.end("cancelled");
+                    for (const operation of client.telemetryOperations) {
+                        try {
+                            operation.end("cancelled");
+                        }
+                        catch { }
+                    }
                     client.telemetryOperations.clear();
                 }
                 clearInterval(client.heartbeat);
@@ -5027,6 +5035,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 client.journeySubscriptions.clear();
                 client.journey = null;
             };
+            client.remove = removeClient;
             socket.on("close", removeClient);
             socket.on("error", removeClient);
         },
@@ -5035,8 +5044,10 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 getDatabase().clock.clearTimer(journeyExpiryTimer);
             journeyExpiryTimer = null;
             for (const client of clients) {
-                trustedRefresh?.disconnected(client.id);
                 closeWebSocketClient(client);
+                // Settle accounting before final export; socket close/error callbacks
+                // can arrive after shutdown has already collected its metrics.
+                client.remove();
             }
             clients.clear();
             journeys.clear();

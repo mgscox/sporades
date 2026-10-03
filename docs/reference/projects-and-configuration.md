@@ -144,6 +144,10 @@ dispatch, each subsequent live-query execution, and `mutation.run`. No additiona
 configuration, Capsule import, browser SDK or public API is required. Connection
 tokens, Origin checks, credential revalidation, per-connection message ordering,
 subscription generations and reconnection behavior retain their existing meaning.
+Dev uses the current session profile after a successful configuration reload;
+outgoing connections settle against their original adapter before it exports.
+Graceful shutdown settles accepted connections before final metric collection,
+so its last active-connection sample is zero even with operations in flight.
 
 | Signal | Meaning |
 | --- | --- |

@@ -36,11 +36,11 @@ const metrics = batches => batches.filter(batch => batch.path === '/v1/metrics')
 const attr = (item, key) => item.attributes?.find(attribute => attribute.key === key)?.value.stringValue;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, message) {
-  for (let i = 0; i < 200; i++) { if (predicate()) return; await pause(25); }
+  for (let i = 0; i < 800; i++) { if (predicate()) return; await pause(25); }
   assert.fail(message);
 }
 
-async function fixture(run, { samplingRatio = 1, rejectExports = false } = {}) {
+async function fixture(run, { samplingRatio = 1, rejectExports = false, dev = false, serverSource = source } = {}) {
   await mkdir('.scratch', { recursive: true });
   const root = await mkdtemp(path.join(process.cwd(), '.scratch', 'websocket-telemetry-'));
   const received = [];
@@ -74,7 +74,7 @@ async function fixture(run, { samplingRatio = 1, rejectExports = false } = {}) {
     const exited = once(child, 'exit');
     child.kill('SIGTERM');
     const timer = setTimeout(() => child.kill('SIGKILL'), 4000);
-    try { await exited; } finally { clearTimeout(timer); }
+    try { assert.deepEqual(await exited, [0, null], 'runtime exits cleanly'); } finally { clearTimeout(timer); }
   };
   try {
     const tree = path.join(root, '.sporades', 'build', '.public-trees');
@@ -86,23 +86,49 @@ async function fixture(run, { samplingRatio = 1, rejectExports = false } = {}) {
       endpoint: `http://127.0.0.1:${collector.address().port}`, tls: { mode: 'loopback' },
       serviceName: 'websocket-telemetry', samplingRatio, metricsIntervalMs: 1000,
     } };
-    const serverModuleSource = await bundleServerCapsuleModule({ serverSource: source, serverSourcePath: path.join(process.cwd(), 'server', 'index.ts') });
-    await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv: {}, serverSource: source, serverModuleSource,
-      epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");',
-    }));
-    child = spawn(process.execPath, [path.join(root, 'server.mjs')], { cwd: root,
-      env: { ...process.env, PORT: '0', SPORADES_CONFIG_DIR: path.join(root, 'config') }, stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let output = '', errors = '';
-    child.stdout.on('data', chunk => { output += chunk; });
-    child.stderr.on('data', chunk => { errors += chunk; });
-    let port;
-    await until(() => {
-      assert.equal(child.exitCode, null, errors.replace(/data:text\/javascript;base64,[A-Za-z0-9+/=]+/g, '[embedded module]'));
-      port = output.split('\n').map(line => { try { return JSON.parse(line).listening; } catch { return null; } }).find(Number.isInteger);
-      return port;
-    }, 'generated runtime did not listen');
-    const origin = `http://127.0.0.1:${port}`;
+    const cli = path.join(process.cwd(), 'bin', 'sporades.js');
+    let project = root;
+    if (dev) {
+      const created = spawn(process.execPath, [cli, 'create', 'app', '--template', 'blank', '--framework', 'vanilla', '--no-install', '--no-git'], {
+        cwd: root, env: { ...process.env, SPORADES_CONFIG_DIR: path.join(root, 'config') }, stdio: 'pipe',
+      });
+      assert.deepEqual(await once(created, 'exit'), [0, null]);
+      project = path.join(root, 'app');
+      await writeFile(path.join(project, 'server', 'index.ts'), serverSource);
+      await mkdir(path.join(root, 'config'), { recursive: true });
+      await writeFile(path.join(root, 'config', 'telemetry.json'), JSON.stringify({ schemaVersion: 1, profiles: {
+        first: { endpoint: config.__sporadesTelemetry.endpoint, tls: { mode: 'loopback' }, metricsIntervalMs: 5000 },
+        second: { endpoint: config.__sporadesTelemetry.endpoint, tls: { mode: 'loopback' }, metricsIntervalMs: 6000 },
+      } }));
+      const devConfig = JSON.parse(await readFile(path.join(project, 'sporades.json'), 'utf8'));
+      devConfig.name = 'websocket-telemetry';
+      devConfig.dev.port = 0;
+      devConfig.telemetry = { profile: 'first' };
+      await writeFile(path.join(project, 'sporades.json'), JSON.stringify(devConfig));
+    }
+    if (!dev) {
+      const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), 'server', 'index.ts') });
+      await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv: {}, serverSource, serverModuleSource,
+        epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");',
+      }));
+    }
+    let output = '', errors = '', origin;
+    const start = async () => {
+      output = ''; errors = '';
+      child = spawn(process.execPath, dev ? [cli, 'dev', '--json'] : [path.join(root, 'server.mjs')], { cwd: project,
+        env: { ...process.env, PORT: '0', SPORADES_CONFIG_DIR: path.join(root, 'config') }, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      child.stdout.on('data', chunk => { output += chunk; });
+      child.stderr.on('data', chunk => { errors += chunk; });
+      let port;
+      await until(() => {
+        assert.equal(child.exitCode, null, (errors + output).replace(/data:text\/javascript;base64,[A-Za-z0-9+/=]+/g, '[embedded module]'));
+        port = output.split('\n').map(line => { try { const event = JSON.parse(line); return dev && event.data?.event === 'started' ? event.data.port : event.listening; } catch { return null; } }).find(Number.isInteger);
+        return port;
+      }, 'runtime did not listen');
+      origin = `http://127.0.0.1:${port}`;
+    };
+    await start();
     const open = async () => {
       const html = await (await fetch(origin, { headers: { 'sec-fetch-dest': 'document' } })).text();
       const token = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(html)?.[1];
@@ -119,7 +145,7 @@ async function fixture(run, { samplingRatio = 1, rejectExports = false } = {}) {
         return replies.slice(start).find(reply => reply.id === message.id);
       } };
     };
-    await run({ open, received, stop, origin, stack });
+    await run({ open, received, stop, start, origin, stack, project, output: () => output, errors: () => errors });
   } finally {
     for (const socket of sockets) socket.close();
     await stop();
@@ -338,3 +364,92 @@ test('invalid connection tokens and cross-origin upgrades remain denied without 
     assert.doesNotMatch(JSON.stringify(received), /token-private-125|attacker-private-125/);
   });
 });
+
+const gaugeValue = received => {
+  const metric = metrics(received).filter(metric => metric.name === 'sporades.websocket.active_connections').at(-1);
+  return metric && Number(metric.gauge.dataPoints[0].asInt ?? metric.gauge.dataPoints[0].asDouble);
+};
+const operationCount = received => metrics(received).filter(metric => metric.name === 'sporades.websocket.operation.count').at(-1)
+  ?.sum.dataPoints.reduce((sum, point) => sum + Number(point.asInt ?? point.asDouble), 0);
+
+test('CLI Dev exports WebSocket operations and database children across profile reload and reconnection', { timeout: 90_000 }, async () => {
+  await fixture(async ({ open, received, stop, project, output }) => {
+    const first = await open(), second = await open();
+    for (const [client, message] of [
+      [first, { id: 'read', type: 'query.subscribe', query: 'read' }],
+      [second, { id: 'write', type: 'mutation.run', mutation: 'write' }],
+    ]) assert(!(await client.send(message)).error);
+    await until(() => spans(received).filter(span => span.name.startsWith('websocket.')).length === 2, 'Dev must export query and mutation spans');
+    for (const operation of spans(received).filter(span => span.name.startsWith('websocket.'))) {
+      assert(spans(received).some(child => child.parentSpanId === operation.spanId && child.traceId === operation.traceId && attr(child, 'db.system.name') === 'sqlite'), 'Dev database work is a child of its operation');
+    }
+    await until(() => gaugeValue(received) === 2, 'Dev gauge counts both accepted connections');
+    await first.send({ id: 'refresh-ready', type: 'dev.refresh.subscribe' });
+    first.socket.addEventListener('message', event => {
+      const message = JSON.parse(event.data);
+      if (message.type === 'refresh') first.socket.send(JSON.stringify({ type: 'dev.refresh.received', sequence: message.data.sequence }));
+    });
+    const configPath = path.join(project, 'sporades.json');
+    const config = JSON.parse(await readFile(configPath, 'utf8'));
+    config.telemetry.profile = 'missing';
+    await writeFile(configPath, JSON.stringify(config));
+    await until(() => output().split('\n').some(line => {
+      try { const event = JSON.parse(line); return event.data?.event === 'rebuild' && event.data.status === 'failed'; } catch { return false; }
+    }), 'invalid profile reload is rejected');
+    assert(!(await second.send({ id: 'retained-write', type: 'mutation.run', mutation: 'write' })).error);
+    config.telemetry.profile = 'second';
+    config.name = 'replacement-telemetry';
+    await writeFile(configPath, JSON.stringify(config));
+    await until(() => output().split('\n').some(line => {
+      try { const event = JSON.parse(line); return event.data?.event === 'rebuild' && event.data.status === 'success'; } catch { return false; }
+    }), 'Dev configuration reload completes');
+    await until(() => first.socket.readyState === WebSocket.CLOSED && second.socket.readyState === WebSocket.CLOSED, 'reload disconnects old clients');
+    assert(first.replies.some(reply => reply.type === 'refresh'), 'profile replacement delivers the existing browser refresh before disconnecting');
+    const outgoing = () => received.filter(batch => JSON.stringify(batch.body).includes('websocket-telemetry'));
+    await until(() => gaugeValue(outgoing()) === 0, 'outgoing adapter finishes its final metric export');
+    const oldBatches = outgoing();
+    assert.equal(gaugeValue(oldBatches), 0, 'outgoing adapter exports settled connections');
+    assert.equal(operationCount(oldBatches), 3, 'failed reload retains the original adapter and clients');
+    const reconnected = await open();
+    assert(!(await reconnected.send({ id: 'new-read', type: 'query.subscribe', query: 'read' })).error);
+    assert(!(await reconnected.send({ id: 'new-write', type: 'mutation.run', mutation: 'write' })).error);
+    const replacement = () => received.filter(batch => JSON.stringify(batch.body).includes('replacement-telemetry'));
+    await until(() => gaugeValue(replacement()) === 1, 'replacement adapter counts reconnected client');
+    await until(() => spans(replacement()).filter(span => span.name.startsWith('websocket.')).length === 2, 'new operations use replacement adapter');
+    await stop();
+    assert.equal(gaugeValue(replacement()), 0);
+    assert.equal(operationCount(replacement()), 2);
+    const durations = metrics(replacement()).filter(metric => metric.name === 'sporades.websocket.operation.duration').at(-1).histogram.dataPoints;
+    assert.equal(durations.reduce((sum, point) => sum + Number(point.count), 0), 2);
+  }, { dev: true });
+});
+
+for (const type of ['query', 'mutation']) {
+  test(`generated runtime SIGTERM settles an active ${type} and connections before export, then restarts once`, { timeout: 30_000 }, async () => {
+    const markedSource = source.replaceAll('await new Promise(resolve => setTimeout(resolve, delay));', `process.stderr.write('operation-started\\n'); await new Promise(resolve => setTimeout(resolve, delay));`);
+    await fixture(async ({ open, received, stop, start, errors }) => {
+      const client = await open();
+      client.socket.send(JSON.stringify({ id: 'interrupted', type: type === 'query' ? 'query.subscribe' : 'mutation.run', [type]: type === 'query' ? 'read' : 'write', args: [30_000] }));
+      await until(() => errors().includes('operation-started'), 'handler begins before SIGTERM');
+      await stop();
+      const cancelled = spans(received).filter(span => span.name === `websocket.${type}`);
+      assert.equal(cancelled.length, 1);
+      assert.equal(attr(cancelled[0], 'sporades.websocket.outcome'), 'cancelled');
+      assert.equal(operationCount(received), 1);
+      const count = metrics(received).filter(metric => metric.name === 'sporades.websocket.operation.count').at(-1).sum.dataPoints;
+      assert.equal(count.length, 1);
+      assert.equal(attr(count[0], 'sporades.websocket.outcome'), 'cancelled');
+      assert.equal(gaugeValue(received), 0, 'final shutdown gauge is zero');
+      received.length = 0;
+      await start();
+      const fresh = await open();
+      assert(!(await fresh.send({ id: 'fresh', type: type === 'query' ? 'query.subscribe' : 'mutation.run', [type]: type === 'query' ? 'read' : 'write' })).error);
+      await stop();
+      const successful = spans(received).filter(span => span.name === `websocket.${type}`);
+      assert.equal(successful.length, 1);
+      assert.equal(attr(successful[0], 'sporades.websocket.outcome'), 'success');
+      assert.equal(operationCount(received), 1);
+      assert.equal(gaugeValue(received), 0);
+    }, { serverSource: markedSource });
+  });
+}

@@ -138901,13 +138901,21 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         client.buffer = Buffer.concat([client.buffer, chunk]);
         drainWebSocketFrames(client, (message) => enqueueClientMessage(client, message));
       });
+      let removed = false;
       const removeClient = () => {
+        if (removed) return;
+        removed = true;
         try {
           connectionClosed?.();
         } catch {
         }
         if (client.telemetryOperations) {
-          for (const operation of client.telemetryOperations) operation.end("cancelled");
+          for (const operation of client.telemetryOperations) {
+            try {
+              operation.end("cancelled");
+            } catch {
+            }
+          }
           client.telemetryOperations.clear();
         }
         clearInterval(client.heartbeat);
@@ -138917,6 +138925,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         client.journeySubscriptions.clear();
         client.journey = null;
       };
+      client.remove = removeClient;
       socket.on("close", removeClient);
       socket.on("error", removeClient);
     },
@@ -138924,8 +138933,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       if (journeyExpiryTimer !== null) getDatabase().clock.clearTimer(journeyExpiryTimer);
       journeyExpiryTimer = null;
       for (const client of clients) {
-        trustedRefresh?.disconnected(client.id);
         closeWebSocketClient(client);
+        client.remove();
       }
       clients.clear();
       journeys.clear();
@@ -150167,7 +150176,14 @@ async function startDevSession(options) {
     data: { diagnostics: runtime.database.runtimeDiagnostics }
   });
   const devRefresh = createDevRefreshController();
-  const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
+  const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport, {
+    // Resolve the current adapter at dispatch/accept time. Operations and close
+    // callbacks already returned by an adapter remain owned by that adapter.
+    telemetry: {
+      startOperation: (...args) => telemetry.websocket.startOperation(...args),
+      connectionOpened: () => telemetry.websocket.connectionOpened()
+    }
+  });
   const server = createServer2(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
     try {
       if (prepareHttpSecurity(runtime.database, request, response)) {
@@ -150528,16 +150544,19 @@ async function startDevSession(options) {
             await nextTelemetry?.shutdown();
             throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
           });
+          const previousTelemetry = nextTelemetry ? telemetry : null;
           if (nextTelemetry) {
-            const previousTelemetry = telemetry;
             telemetry = nextTelemetry;
             telemetryConfig = nextTelemetryConfig;
-            void previousTelemetry.shutdown();
           }
           runtimeServiceEnv = nextCapsuleServiceEnv;
           fatalRestartAttempts = 0;
-          refresh = await devRefresh.broadcast();
-          websocketHub.disconnectAll();
+          try {
+            refresh = await devRefresh.broadcast();
+          } finally {
+            websocketHub.disconnectAll();
+            void previousTelemetry?.shutdown();
+          }
           try {
             await runtime.database.log.emit({
               category: "platform",

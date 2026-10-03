@@ -2125,7 +2125,14 @@ async function startDevSession(options) {
         data: { diagnostics: runtime.database.runtimeDiagnostics },
     });
     const devRefresh = createDevRefreshController();
-    const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
+    const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport, {
+        // Resolve the current adapter at dispatch/accept time. Operations and close
+        // callbacks already returned by an adapter remain owned by that adapter.
+        telemetry: {
+            startOperation: (...args) => telemetry.websocket.startOperation(...args),
+            connectionOpened: () => telemetry.websocket.connectionOpened(),
+        },
+    });
     const server = createServer(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
         try {
             if (prepareHttpSecurity(runtime.database, request, response)) {
@@ -2460,16 +2467,20 @@ async function startDevSession(options) {
                         await nextTelemetry?.shutdown();
                         throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
                     });
+                    const previousTelemetry = nextTelemetry ? telemetry : null;
                     if (nextTelemetry) {
-                        const previousTelemetry = telemetry;
                         telemetry = nextTelemetry;
                         telemetryConfig = nextTelemetryConfig;
-                        void previousTelemetry.shutdown();
                     }
                     runtimeServiceEnv = nextCapsuleServiceEnv;
                     fatalRestartAttempts = 0;
-                    refresh = await devRefresh.broadcast();
-                    websocketHub.disconnectAll();
+                    try {
+                        refresh = await devRefresh.broadcast();
+                    }
+                    finally {
+                        websocketHub.disconnectAll();
+                        void previousTelemetry?.shutdown();
+                    }
                     // A capsule reload is in-process, so nothing outside the session — not the pid, not its
                     // uptime — records that a server change took effect. Without this the only trace of a
                     // reload is stdout the developer has usually scrolled past, and an empty `sporades logs`
