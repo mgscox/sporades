@@ -1,4 +1,5 @@
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
+import { CLIENT_ADDRESS_TOKEN_HEADER } from "./client-address.js";
 import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 import { withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
 // `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
@@ -4042,7 +4043,7 @@ async function readEndpointRequest(database, requestUrl, request, parseJsonBody 
     return { ...head, ...payload };
 }
 function endpointRequestHead(requestUrl, request, requestPath = requestUrl.pathname) {
-    const headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [
+    const headers = Object.fromEntries(Object.entries(request.headers).filter(([name]) => name.toLowerCase() !== CLIENT_ADDRESS_TOKEN_HEADER).map(([name, value]) => [
         name.toLowerCase(),
         Array.isArray(value) ? value.join(", ") : value,
     ]));

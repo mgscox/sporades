@@ -6,6 +6,8 @@ Changes since v0.9.30.
 
 ### 🚀 Features
 
+- Enforce trusted Hosted address/CIDR admission with authenticated proxy identity, mapped IPv6 normalization, and fail-closed missing identity in Dev and local Container sessions (#69).
+
 - Trace individual WebSocket query and mutation executions with isolated context, cancellation outcomes, independent operation metrics and active connections (#125).
 
 - Trace durable background Job attempts with causal enqueue links and independent queue pressure, execution duration, retry and failure metrics (#126).
@@ -169,7 +171,6 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
-
 
 
 
