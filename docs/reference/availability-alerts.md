@@ -120,8 +120,11 @@ production event loop or stop a production Capsule for validation. Run
 telemetry absence and acknowledged-stop removal. Two 317-character IDs sharing
 the first 80 characters remain healthy past the grace window; stopping one must
 alert while its sibling keeps exporting. The script uses a unique Compose
-project and cleans up only its own resources. Its local Docker topology does not
-substitute for separate-VM acceptance. Place the Capsule Host and Monitoring stack
+project and cleans up only its own resources. The blocked request and webhook
+receiver record monotonic timestamps on the same Linux VM, with a strict
+120-second delivery assertion. Probe samples, rule state and Alertmanager state
+are retained in a per-run notification timeline, including on failure. For
+separate-VM acceptance, place the Capsule Host and Monitoring stack
 on different disposable VMs, retain verified TLS on the relay, repeat the drill,
 and record delivery timestamps, topology and cleanup. After an intentional stop,
 wait for its inventory acknowledgement before expecting pages to cease.
