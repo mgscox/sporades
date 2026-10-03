@@ -1,3 +1,4 @@
+import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
 import { type BuiltDeployFile } from "./deploy-files.js";
 export declare const ADMISSION_LIMITS: Readonly<{
     bytes: 65536;
@@ -21,15 +22,21 @@ export declare function resolveAdmissionPolicy(value: unknown, files?: unknown):
 export declare function admissionStorageRoot(preservedRoot: string): string;
 export declare function buildAdmissionPolicy(projectDir: string, value: unknown, files?: unknown): Promise<BuiltDeployFile[]>;
 export declare function publishAdmissionPolicy(root: string, relative: string, bytes: Buffer | null): Promise<void>;
-export declare function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth) => void): Promise<Readonly<{
+export declare function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth) => void, limiterOptions?: Parameters<typeof createAdmissionRateLimiter>[0]): Promise<Readonly<{
     current: () => Readonly<{
         digest: string;
         policy: import("../src/types/admission-policy.js").AdmissionPolicy;
     }> | null;
-    health: () => Readonly<{
-        state: "healthy" | "degraded" | "disabled";
-        digest: string | null;
+    rateLimiter: Readonly<{
+        reconcile: (generation: AdmissionGeneration | null) => void;
+        consume: (id: string, address: string, limit: number, windowMs: number) => number;
+        stats: () => Readonly<{
+            buckets: number;
+            maxBuckets: number;
+            evictions: number;
+        }>;
     }>;
+    health: () => AdmissionHealth;
     reload: () => Promise<void>;
     close: () => Promise<void>;
 }>>;

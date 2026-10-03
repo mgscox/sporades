@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { validClientAddressNetwork, clientAddressMatches } from "./client-address.js";
+import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
 import { readDeployFile, resolveDeployFiles, preservedDeployFilePath } from "./deploy-files.js";
@@ -174,7 +175,8 @@ export async function publishAdmissionPolicy(root, relative, bytes) {
         await handle.close();
     }
 }
-export async function openAdmissionPolicy(root, relative, onHealth) {
+export async function openAdmissionPolicy(root, relative, onHealth, limiterOptions = {}) {
+    const rateLimiter = createAdmissionRateLimiter(limiterOptions);
     let active = null;
     let health = Object.freeze({ state: "disabled", digest: null });
     let closed = false;
@@ -193,6 +195,7 @@ export async function openAdmissionPolicy(root, relative, onHealth) {
         try {
             const bytes = await readDeployFile(root, relative, ADMISSION_LIMITS.bytes);
             const next = bytes.equals(REMOVED) ? null : parseAdmissionPolicy(bytes);
+            rateLimiter.reconcile(next);
             active = next;
             report(next ? "healthy" : "disabled");
         }
@@ -212,6 +215,8 @@ export async function openAdmissionPolicy(root, relative, onHealth) {
     };
     const timer = setInterval(() => { void reload(); }, ADMISSION_LIMITS.reloadMs);
     timer.unref();
-    return Object.freeze({ current: () => active, health: () => health, reload, close: async () => { closed = true; clearInterval(timer); await pending; } });
+    return Object.freeze({ current: () => active, rateLimiter,
+        health: () => Object.freeze({ ...health, rateLimit: rateLimiter.stats() }),
+        reload, close: async () => { closed = true; clearInterval(timer); await pending; } });
 }
 //# sourceMappingURL=admission-policy.js.map
