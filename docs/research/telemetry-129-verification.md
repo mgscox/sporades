@@ -213,3 +213,83 @@ changing failures is not conclusively established. An isolated recheck does
 not turn a failing full suite into a pass. A clean full run and resolution or
 QA disposition of these failures remain required before this draft is ready
 for merge. Local logs are under `.sporades/issue-129-*.log` in this worktree.
+
+## Poirot round-three restart and committed-drill correction
+
+Read the full [round-three QA report](https://github.com/mgscox/sporades/pull/207#issuecomment-5971462652). Both native blockers #112/#118 remain closed.
+The reported full run (2,740 passed, one failed, 209 skipped) remains a failed
+historical run; its unchanged Dev rollback case passed isolated and is classified
+under #208. It is not substituted for the completed runs below.
+
+The committed new promtool restart fixture reproduced the precise defect before
+the fix: at minute 21, `old-process` alerted despite continuous fresh collection
+from its replacement. `restart-red.log` retains that failure. Freshness now takes
+the maximum across process-lifetime `instance`/`service_instance_id` labels while
+preserving every remaining target label. The 24-hour history, strict 15-minute
+threshold, replay and unknown/absent-source semantics remain. Pinned Prometheus
+passes healthy replacement, repeated restarts, older replay, independently stale
+replicas, distinct Capsule/environment targets and all earlier fixtures.
+
+The unchanged Docker drill also reproduced its slow-relay failure locally. A
+first bounded polling attempt exposed oversized trace batches: 256-span batches
+could exceed the drill's accelerated 64 KiB queue and be rejected before export.
+The committed drill caps relay batches at 16 spans, asserts receipt of the fault
+traffic, and polls for a **new** send-failure counter increment within a finite
+45-second observation budget. Each uniquely named diagnostics probe has its own
+HTTP/process deadline and cleanup; a prior outage failure cannot satisfy the
+new observation. Production batching, queues and retry limits are unchanged.
+
+Two follow-up runs reached the intended failed export but failed the old RSS-only
+budget assertion (about 203 MB RSS). RSS includes shared/mapped executable pages;
+it is retained as a diagnostic. The unchanged 192 MiB Docker budget is now
+verified using the relay's [cgroup v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html) current and whole-run peak charge, configured
+limit and zero OOM events. A bounded fixture-only probe joins only this relay's
+private PID namespace; SYS_PTRACE permits the cross-UID cgroup read, without a
+host PID namespace or host filesystem mount. Missing evidence fails the test.
+One intermediate probe-permission failure and all preceding failures are retained
+as failures, not passes.
+
+The final committed Docker drill passed before and after the main integration.
+On integrated source it completed every fault phase in 67.5 seconds: a new
+16-span failure was observed in 8.5 seconds; relay charged memory peaked at
+70,352,896 bytes under the unchanged 201,326,592-byte limit, with zero OOM events.
+RSS was separately recorded as 207,069,184 bytes. Collector restart/persistence,
+saturation, expiry, full-disk recovery and continued Capsule Jobs passed.
+Capsule SIGTERM completed with exit zero in 17 ms. Resource evidence is
+`.sporades/outage-drills/run-XPfGLV/resource-report.json`; the integrated Docker
+log SHA-256 is `cc5bbd8ea049ed3caff21aac2a2118b3a91b00fa75ed7f939b054ab7eee6a763`.
+Task-owned containers, volumes and diagnostics probes were removed.
+
+Merged main at `b274551d`, preserving pipeline shutdown idempotence and main's
+fetch instrumentation, and regenerated conflicting artifacts. While the first
+complete suite ran, main advanced to `789b4862` (sender credentials). Merge
+`d917f629` retains both sender and pipeline/recovery provisioning assets and
+parity assertions. Generated CLI/runtime artifacts were rebuilt from combined
+source; release archive bytes match sender credentials, rules, dashboard,
+persistent Collector configuration, queue overlay and outage runbook.
+
+All commands used worktree-local `SPORADES_CONFIG_DIR`; the complete suites used
+`COPYFILE_DISABLE=1` with a short private gid-20/mode-0700 TMPDIR. Build, typecheck,
+generated parity, documentation (53 tests and VitePress), 48 integrated focused
+credential/pipeline/recovery/inventory tests, real pinned promtool and the
+committed Docker drill passed. Rendered freshness docs passed desktop/390px
+checks with no overflow; the sole console error was the existing favicon 404.
+Screenshots and all logs are retained in `.sporades/pr207-r3-evidence/`. The
+task-owned browser and documentation server were closed.
+
+The first full suite on `ac11d974` exited zero: 2,973 tests, **2,760 passed,
+213 skipped, zero failures/cancellations**, in 1,265.2 seconds. After the late
+main integration, the final `SPORADES_REAL_PROMTOOL=1 npm test` on `d917f629`
+exited zero: 2,989 tests, **2,776 passed, 213 skipped, zero failures and zero
+cancellations**, in 1,248.0 seconds. Both build/generated prechecks passed.
+The known Dev rollback case passed in both complete runs. No exclusions or
+isolated retries establish these gates. `integrated-full-suite.log` SHA-256 is
+`f989b80aa2228a086c558bbc57c805defc72a5343a99d2705208c19722b1a481`.
+
+Assumptions: a logical target consists of all labels other than the two process
+identifiers; independently monitored replicas need distinct existing stable
+labels or service names (Hosted uses domain/subname). No new Capsule API, profile
+setting or invented Host identity is introduced. The Linux Docker drill requires
+cgroup v2; its memory measurement is container charge, with RSS still reported.
+Separate-VM power loss, real durable filesystem quotas and long canary acceptance
+remain operator follow-ups. Main stayed at `789b4862` at final verification.
