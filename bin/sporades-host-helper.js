@@ -26263,14 +26263,87 @@ var require_png2 = __commonJS({
 
 // src/admission-policy.ts
 import path2 from "node:path";
-import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
+
+// src/client-address.ts
 import { isIP } from "node:net";
+import { createHash, timingSafeEqual } from "node:crypto";
+
+// src/access-key-contract.ts
+var ACCESS_KEY_GRANT_LIMIT = 128;
+var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
+var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
+var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
+
+// src/client-address.ts
+var CLIENT_ADDRESS_TOKEN_HEADER = "x-sporades-client-address-token";
+function parseAddress(value) {
+  if (typeof value !== "string" || value.length > 45 || /[%\s]/.test(value)) return null;
+  const family = isIP(value);
+  if (family === 4) {
+    return { family: 4, bits: value.split(".").reduce((bits2, part) => bits2 << 8n | BigInt(part), 0n), canonical: value, mapped: false };
+  }
+  if (family !== 6) return null;
+  let expanded = value.toLowerCase();
+  if (expanded.includes(".")) {
+    const colon = expanded.lastIndexOf(":");
+    const octets = expanded.slice(colon + 1).split(".").map(Number);
+    expanded = `${expanded.slice(0, colon)}:${(octets[0] << 8 | octets[1]).toString(16)}:${(octets[2] << 8 | octets[3]).toString(16)}`;
+  }
+  const [left, right] = expanded.split("::");
+  const groups = left ? left.split(":") : [];
+  const tail = right ? right.split(":") : [];
+  if (right !== void 0) groups.push(...Array(8 - groups.length - tail.length).fill("0"), ...tail);
+  const words = groups.map((part) => parseInt(part, 16));
+  const bits = words.reduce((bits2, word) => bits2 << 16n | BigInt(word), 0n);
+  if (bits >> 32n === 0xffffn) {
+    const ipv4 = Number(bits & 0xffffffffn);
+    return { family: 4, bits: bits & 0xffffffffn, canonical: [ipv4 >>> 24, ipv4 >>> 16 & 255, ipv4 >>> 8 & 255, ipv4 & 255].join("."), mapped: true };
+  }
+  let start = -1, length = 1;
+  for (let i = 0; i < words.length; ) {
+    if (words[i] !== 0) {
+      i++;
+      continue;
+    }
+    const from = i;
+    while (i < words.length && words[i] === 0) i++;
+    if (i - from > length) {
+      start = from;
+      length = i - from;
+    }
+  }
+  const hex = words.map((word) => word.toString(16));
+  const canonical = start < 0 ? hex.join(":") : `${hex.slice(0, start).join(":")}::${hex.slice(start + length).join(":")}`;
+  return { family: 6, bits, canonical, mapped: false };
+}
+function parseNetwork(value) {
+  const [literal3, prefix, extra] = value.split("/");
+  const address = parseAddress(literal3);
+  if (!address || extra !== void 0 || prefix !== void 0 && !/^(0|[1-9][0-9]{0,2})$/.test(prefix)) return null;
+  const width = address.family === 4 ? 32 : 128;
+  let length = prefix === void 0 ? width : Number(prefix);
+  if (address.mapped && prefix !== void 0) {
+    if (length < 96 || length > 128) return null;
+    length -= 96;
+  }
+  if (length > width) return null;
+  return { address, shift: BigInt(width - length) };
+}
+function validClientAddressNetwork(value) {
+  return parseNetwork(value) !== null;
+}
+function clientAddressBoundaryToken(probeToken) {
+  return createHash("sha256").update("sporades-client-address\0").update(probeToken).digest("hex");
+}
+
+// src/admission-policy.ts
 import { constants as constants2 } from "node:fs";
 import { lstat as lstat2, open as open2, rename as rename2, rm as rm2 } from "node:fs/promises";
 
 // src/deploy-files.ts
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash as createHash2, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, link, rename, rm, realpath } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
@@ -26343,7 +26416,7 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
   return current2;
 }
 function preservedDeployFilePath(root, relative) {
-  const key = createHash("sha256").update(relative.normalize("NFC")).digest("hex");
+  const key = createHash2("sha256").update(relative.normalize("NFC")).digest("hex");
   return path.join(root, `${key}.file`);
 }
 async function assertPreservedDeployFile(root, relative) {
@@ -26547,7 +26620,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
       if (file.update === "admission") await handle.chmod(292);
       else if (owner) await owner(handle, destination, await handle.stat());
       const identity = await handle.stat();
-      const seed = { root: preservedRoot2, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash("sha256").update(contents).digest("hex") };
+      const seed = { root: preservedRoot2, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash2("sha256").update(contents).digest("hex") };
       await recordPreservedFileAttempt(journal, seed);
       await link(temporary, destination);
       created.push(seed);
@@ -26568,12 +26641,12 @@ async function rollbackPreservedFiles(created, hooks = {}) {
       handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
       const info = await handle.stat();
       if (info.dev !== seed.dev || info.ino !== seed.ino || info.nlink !== 1) continue;
-      if (createHash("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
+      if (createHash2("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
       await hooks.beforeClaim?.(target);
       const claimed = path.join(seed.root, `.rollback-${randomUUID()}`);
       await rename(target, claimed);
       const captured = await lstat(claimed);
-      const sameSeed = captured.isFile() && captured.dev === info.dev && captured.ino === info.ino && createHash("sha256").update(await readFile(claimed)).digest("hex") === seed.sha256;
+      const sameSeed = captured.isFile() && captured.dev === info.dev && captured.ino === info.ino && createHash2("sha256").update(await readFile(claimed)).digest("hex") === seed.sha256;
       if (!sameSeed) {
         try {
           await link(claimed, target);
@@ -26642,9 +26715,7 @@ function condition(value) {
     case "address": {
       object(value, ["kind", "value"]);
       if (!text(value.value)) invalid();
-      const [address, prefix, extra] = value.value.split("/");
-      const family = isIP(address);
-      if (!family || extra !== void 0 || prefix !== void 0 && (!/^(0|[1-9][0-9]{0,2})$/.test(prefix) || Number(prefix) > (family === 4 ? 32 : 128))) invalid();
+      if (!validClientAddressNetwork(value.value)) invalid();
       break;
     }
     case "header":
@@ -26683,7 +26754,7 @@ function parseAdmissionPolicy(bytes) {
       if (!Number.isSafeInteger(rule.action.limit) || rule.action.limit < 1 || rule.action.limit > 1e6 || !Number.isSafeInteger(rule.action.windowMs) || rule.action.windowMs < 1e3 || rule.action.windowMs > 864e5) invalid();
     } else invalid();
   }
-  return freeze({ digest: createHash2("sha256").update(bytes).digest("hex"), policy: value });
+  return freeze({ digest: createHash3("sha256").update(bytes).digest("hex"), policy: value });
 }
 function resolveAdmissionPolicy(value, files = void 0) {
   if (value === void 0) return null;
@@ -26844,7 +26915,7 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
 import { spawnSync as spawnSync6 } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
 import { access as access2, chmod, lstat as lstat8, mkdir as mkdir4, open as open6, opendir, readdir as readdir4, readFile as readFile8, readlink, rename as rename7, rm as rm7, stat, statfs, symlink, writeFile as writeFile3 } from "node:fs/promises";
-import { createHash as createHash7, generateKeyPairSync, randomBytes as randomBytes5 } from "node:crypto";
+import { createHash as createHash8, generateKeyPairSync, randomBytes as randomBytes5 } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path11 from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -27040,12 +27111,6 @@ import { randomUUID as randomUUID3 } from "node:crypto";
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 var ACCESS_KEY_SCOPE_LIMIT = 1024;
 var ACCESS_KEY_SCOPE_BYTE_LIMIT = 256;
-
-// src/access-key-contract.ts
-var ACCESS_KEY_GRANT_LIMIT = 128;
-var ACCESS_KEY_GRANT_BYTE_LIMIT = 256;
-var ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT = 32 * 1024;
-var ACCESS_KEY_CLIENT_ADDRESS_HEADER = "x-sporades-client-address";
 
 // src/access-keys-runtime.ts
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
@@ -43652,7 +43717,7 @@ function readConfigPositiveInteger(value, key, configPath) {
 
 // src/cli/host-telemetry-relay.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
-import { createHash as createHash4, randomBytes as randomBytes2 } from "node:crypto";
+import { createHash as createHash5, randomBytes as randomBytes2 } from "node:crypto";
 import { lstat as lstat5, mkdir as mkdir3, open as open4, readFile as readFile5, rename as rename4, rm as rm4 } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import path7 from "node:path";
@@ -43730,7 +43795,7 @@ function validateInventory(value) {
 
 // src/cli/host-metrics.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash3, randomBytes } from "node:crypto";
+import { createHash as createHash4, randomBytes } from "node:crypto";
 import { mkdir as mkdir2, lstat as lstat4, readFile as readFile4, writeFile, rename as rename3, rm as rm3, access } from "node:fs/promises";
 import { isIP as isIP2 } from "node:net";
 import path6 from "node:path";
@@ -43955,7 +44020,7 @@ async function configureHostMetrics(root, host, operation = "reconcile") {
   const address = network?.IPAM?.Config?.find((c) => isIP2(c.Gateway ?? "") === 4)?.Gateway;
   if (!address) fail("The Host metrics network needs an IPv4 gateway.");
   const args = ["--network", "host", "--pid", "host", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65534:65534", "--memory", "128m", "--cpus", "0.25", "--pids-limit", "64", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--mount", "type=bind,source=/,target=/host,readonly,bind-propagation=rslave", IMAGE, "--path.rootfs=/host", "--path.procfs=/host/proc", "--path.sysfs=/host/sys", `--web.listen-address=${address}:9100`, "--collector.disable-defaults", ...["cpu", "loadavg", "meminfo", "vmstat", "diskstats", "filesystem", "netdev", "netstat", "pressure", "uname", "time", "stat"].map((c) => `--collector.${c}`), "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|pstore|rpc_pipefs|securityfs|squashfs|sysfs|tracefs)$", "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/docker/netns)($|/)", "--collector.netdev.device-exclude=^(veth.*|br-.*|docker.*|lo)$"];
-  const hash2 = createHash3("sha256").update(JSON.stringify(args)).digest("hex");
+  const hash2 = createHash4("sha256").update(JSON.stringify(args)).digest("hex");
   const current2 = ownedContainer();
   if (current2?.Config?.Labels?.[`${OWNER}.hash`] !== hash2) {
     if (!run("docker", ["pull", IMAGE], 18e4).ok) fail("Could not obtain the pinned Host exporter image.");
@@ -44192,7 +44257,7 @@ async function readHostInventoryConnection(remoteRoot) {
     credential = (await readProtected(tokenPath) ?? "").trim();
     caPem = record.caConfigured ? await readProtected(files.ca) ?? void 0 : void 0;
     if (record.caConfigured && !caPem) throw new Error("Invalid inventory connection.");
-    generation = createHash4("sha256").update(JSON.stringify([record, credential, caPem])).digest("hex");
+    generation = createHash5("sha256").update(JSON.stringify([record, credential, caPem])).digest("hex");
   }
   validateHostRelayConnection({ endpoint: record.endpoint, credential, ...caPem ? { caPem } : {} });
   return { generation, endpoint: record.endpoint, host: record.inventoryHost, credential, caPem };
@@ -44257,7 +44322,7 @@ async function startRelay(files, network, caConfigured) {
   if (existing) {
     if (!docker(["rm", "-f", RELAY_NAME]).ok) throw helperError("Host Telemetry relay could not be reconciled.", "Inspect Docker relay state and retry.");
   }
-  const hash2 = createHash4("sha256").update(await readFile5(files.config)).digest("hex");
+  const hash2 = createHash5("sha256").update(await readFile5(files.config)).digest("hex");
   const resources = await readHostMetrics(path7.dirname(files.directory));
   const args = ["run", "--detach", "--name", RELAY_NAME, "--label", RELAY_LABEL, "--label", `com.sporades.relay-config=${hash2}`, "--network", network, "--network-alias", RELAY_ALIAS, "--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--memory", "192m", "--cpus", "0.5", "--pids-limit", "128", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", files.credential, "--mount", `type=bind,source=${files.config},target=/etc/otelcol/config.yaml,readonly`, ...caConfigured ? ["--mount", `type=bind,source=${files.ca},target=/etc/otelcol/ca.pem,readonly`] : [], RELAY_IMAGE, "--config=/etc/otelcol/config.yaml"];
   if (!docker(args).ok) throw helperError("Host Telemetry relay failed to start.", "Inspect protected relay configuration and Docker logs, then retry `sporades host telemetry connect`.");
@@ -44276,7 +44341,7 @@ async function reconcileHostTelemetryRelay(remoteRoot, host, operation = "reconc
   const resources = host ? await configureHostMetrics(remoteRoot, host, operation) : await readHostMetrics(remoteRoot);
   const oldConfig = await readProtected(files.config);
   const config = renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: connection.caConfigured, resources });
-  const hash2 = createHash4("sha256").update(config).digest("hex");
+  const hash2 = createHash5("sha256").update(config).digest("hex");
   const existing = inspectRelay();
   const restart = !existing?.State?.Running || !existing?.NetworkSettings?.Networks?.[connection.network] || existing?.Config?.Labels?.["com.sporades.relay-config"] !== hash2 || resources?.enabled && !existing?.NetworkSettings?.Networks?.[HOST_METRICS_NETWORK];
   if (oldConfig !== config) await atomicWrite(files.config, config, 420);
@@ -44330,7 +44395,7 @@ async function checkHostTelemetryDelivery(remoteRoot) {
 
 // src/cli/host-inventory.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
-import { createHash as createHash5, randomBytes as randomBytes3 } from "node:crypto";
+import { createHash as createHash6, randomBytes as randomBytes3 } from "node:crypto";
 import { lstat as lstat6, open as open5, readFile as readFile6, readdir as readdir3, rename as rename5, rm as rm5 } from "node:fs/promises";
 import { request as httpsRequest2 } from "node:https";
 import path8 from "node:path";
@@ -44517,7 +44582,7 @@ async function reconcileHostInventory(root) {
   return hostInventoryStatus(root);
 }
 function inventoryUnit(root) {
-  return `sporades-inventory-${createHash5("sha256").update(root).digest("hex").slice(0, 16)}`;
+  return `sporades-inventory-${createHash6("sha256").update(root).digest("hex").slice(0, 16)}`;
 }
 function kickHostInventory(root) {
   spawnSync4("systemctl", ["start", "--no-block", `${inventoryUnit(root)}.service`], { stdio: "ignore", timeout: 1e3 });
@@ -44575,13 +44640,13 @@ WantedBy=timers.target
 
 // src/cli/host-autostart.ts
 import { spawnSync as spawnSync5 } from "node:child_process";
-import { createHash as createHash6, randomBytes as randomBytes4 } from "node:crypto";
+import { createHash as createHash7, randomBytes as randomBytes4 } from "node:crypto";
 import { lstat as lstat7, readFile as readFile7, writeFile as writeFile2, rename as rename6, rm as rm6 } from "node:fs/promises";
 import path9 from "node:path";
 async function installHostAutostart(host) {
   const probe = spawnSync5("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e4 });
   if (probe.status !== 0 || probe.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-docker-unavailable" };
-  const unit = `sporades-capsules-${createHash6("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}.service`;
+  const unit = `sporades-capsules-${createHash7("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}.service`;
   const shutdownUnit = unit.replace(/\.service$/, "-shutdown.service");
   const file = path9.join("/etc/systemd/system", unit);
   const shutdownFile = path9.join("/etc/systemd/system", shutdownUnit);
@@ -45158,7 +45223,7 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
   const newPayloadName = `.sporades-host-helper-payload-${expectedChecksum}.mjs`;
   const newPayload = path11.join(directory2, newPayloadName);
   await mkdir4(directory2, { recursive: true });
-  if (createHash7("sha256").update(await readFile8(stage)).digest("hex") !== expectedChecksum) {
+  if (createHash8("sha256").update(await readFile8(stage)).digest("hex") !== expectedChecksum) {
     throw helperError("Staged Host helper checksum did not match.", "Upload the immutable Host helper again, then retry the upgrade.");
   }
   await publishHostHelperFile(stage, newPayload, 493);
@@ -45177,7 +45242,7 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
     previousPayloadName = (await readFile8(pointer, "utf8")).trim();
     await validateHostHelperPayload(directory2, previousPayloadName);
   } else {
-    const previousChecksum = createHash7("sha256").update(currentTarget).digest("hex");
+    const previousChecksum = createHash8("sha256").update(currentTarget).digest("hex");
     previousPayloadName = `.sporades-host-helper-payload-${previousChecksum}.mjs`;
     await publishHostHelperFile(target, path11.join(directory2, previousPayloadName), 493);
     await writeHostHelperPointer(pointer, previousPayloadName);
@@ -45220,7 +45285,7 @@ async function validateHostHelperPayload(directory2, payloadName) {
   const match = /^\.sporades-host-helper-payload-([a-f0-9]{64})\.mjs$/.exec(payloadName);
   if (!match) throw helperError("Host helper payload pointer was invalid.", "Retry the Host helper upgrade.");
   const payload = path11.join(directory2, payloadName);
-  const actual = createHash7("sha256").update(await readFile8(payload)).digest("hex");
+  const actual = createHash8("sha256").update(await readFile8(payload)).digest("hex");
   if (actual !== match[1]) throw helperError("Host helper payload checksum did not match.", "Retry the Host helper upgrade.");
 }
 async function drainUncooperativeHostHelpers(target) {
@@ -45675,7 +45740,7 @@ async function inspectHostedTelemetryCoverage(request, record, connection) {
   const serviceName = `${request.host.domain}/${record.subname}`;
   const desired = Boolean(connection) && record.telemetry?.disabled !== true;
   const expectedConfig = hostedTelemetryConfig(connection, { domain: request.host.domain, subname: record.subname, telemetry: record.telemetry });
-  const expectedHash = createHash7("sha256").update(JSON.stringify(expectedConfig)).digest("hex");
+  const expectedHash = createHash8("sha256").update(JSON.stringify(expectedConfig)).digest("hex");
   const name2 = createHostedContainerName(request.host.domain, record.subname);
   const state = inspectContainerRunning(name2);
   if (!state.ok || !state.running) return { capsule: serviceName, optedOut: record.telemetry?.disabled === true, ...hostedTelemetryCoverage(desired, false, null) };
@@ -46494,7 +46559,7 @@ async function claimReleaseArchive(request) {
 }
 async function releaseArchiveSha256(archivePath) {
   return new Promise((resolve, reject) => {
-    const hash2 = createHash7("sha256");
+    const hash2 = createHash8("sha256");
     const stream = createReadStream(archivePath);
     stream.on("data", (chunk) => hash2.update(chunk));
     stream.on("error", reject);
@@ -46551,7 +46616,7 @@ async function validateExtractedReleaseTree(root, expectedFiles) {
         }
         publicClaims.push({ path: publicPath, size: stats.size });
       }
-      actual.push({ path: relative, size: stats.size, sha256: createHash7("sha256").update(await readFile8(entryPath)).digest("hex") });
+      actual.push({ path: relative, size: stats.size, sha256: createHash8("sha256").update(await readFile8(entryPath)).digest("hex") });
     }
   }
   await visit(root);
@@ -48969,7 +49034,7 @@ function hostSealedEnvKeyPaths(dataDirectory, fingerprint) {
   };
 }
 function fingerprintPublicKey(publicKey) {
-  return createHash7("sha256").update(publicKey).digest("hex").slice(0, 16);
+  return createHash8("sha256").update(publicKey).digest("hex").slice(0, 16);
 }
 function reactivateRegistrationRecord(record, sealedServerEnv = null) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -49801,9 +49866,14 @@ function renderRunningRoute(route) {
   const proxyLine = [
     `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4e3}`} {`,
     `    header_up ${ACCESS_KEY_CLIENT_ADDRESS_HEADER} ${cloudflareOrigin ? "{http.request.header.CF-Connecting-IP}" : "{http.request.remote.host}"}`,
+    ...route.runtimeProbe?.token && /^[a-f0-9]{64}$/.test(route.runtimeProbe.token) ? [`    header_up ${CLIENT_ADDRESS_TOKEN_HEADER} ${clientAddressBoundaryToken(route.runtimeProbe.token)}`] : [],
     "  }"
   ].join("\n");
-  const routeHandler = renderRunningRouteHandler(route, proxyLine);
+  const routeHandler = [
+    `request_header -${ACCESS_KEY_CLIENT_ADDRESS_HEADER}`,
+    `request_header -${CLIENT_ADDRESS_TOKEN_HEADER}`,
+    renderRunningRouteHandler(route, proxyLine)
+  ].join("\n  ");
   const guardedHandler = cloudflareOrigin ? [
     `@sporadesUntrustedCloudflareSource not remote_ip ${CLOUDFLARE_ORIGIN_IP_RANGES.join(" ")}`,
     "respond @sporadesUntrustedCloudflareSource 403",

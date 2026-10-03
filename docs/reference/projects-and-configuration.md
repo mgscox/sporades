@@ -1196,7 +1196,8 @@ They never read the admission generation. Reserved exact paths and prefixes
 covering them are rejected during policy validation, even in disabled rules or
 rules with additional conditions. Aliases and other methods enter admission.
 
-This enforcement slice supports exact pathname conditions and `deny` only.
+This enforcement slice supports exact pathname and trusted Hosted address/CIDR
+conditions with `deny` actions.
 The schema below reserves later matchers and quotas: if an enabled rule cannot
 be ruled out by a nonmatching exact pathname but has an unsupported condition,
 the request receives the same opaque denial. A matching quota action also fails
@@ -1227,7 +1228,52 @@ Unknown fields, versions, match kinds and actions fail validation. Paths must be
 absolute canonical pathnames, without percent escapes, backslashes, query or
 fragment components or dot-segment normalization. Prefix matching is reserved for a subsequent slice. Rules cannot name the runtime-health or
 connection-token controls, or a prefix covering them. Header matching excludes
-credentials, cookies and internal/proxy address headers. Address provenance, the remaining matchers and quota enforcement are subsequent slices.
+credentials, cookies and internal/proxy address headers. The remaining matchers
+and quota enforcement are subsequent slices.
+
+Address conditions match one canonical IPv4 or IPv6 literal, or a CIDR network.
+IPv6 is normalized to lowercase with the first longest zero run compressed.
+IPv4-mapped IPv6 (`::ffff:192.0.2.1` or `::ffff:c000:201`) is the same identity as
+`192.0.2.1`, and matches IPv4 networks. Mapped CIDRs must use prefixes 96–128,
+which normalize to IPv4 prefixes 0–32; shorter mapped prefixes are rejected.
+Other IPv6 networks never match normalized IPv4 identities, including `::/0`.
+Network host bits are masked during matching. Prefix lengths must be decimal,
+without signs or leading zeros, in 0–32 for IPv4 or 0–128 for IPv6. Malformed
+addresses, multiple slashes, zones, ports, brackets, whitespace and lists fail
+generation validation, including in disabled rules.
+
+Only Hosted mode can supply trusted client identity. The Host's Caddy route
+replaces caller-supplied `x-sporades-client-address` and
+`x-sporades-client-address-token` values. Automatic TLS routes use the connection
+peer, never `Forwarded`, `X-Forwarded-For` or `CF-Connecting-IP`. In
+`cloudflare-origin` mode the existing Cloudflare IPv4/IPv6 source allowlist rejects
+other peers before forwarding `CF-Connecting-IP`. This uses the ordinary free
+Cloudflare proxy and requires no paid account feature. Duplicate Cloudflare
+headers become a list and cannot supply identity.
+
+The Host/runtime boundary validates and canonicalizes exactly one address before
+admission. It requires a per-runtime capability derived separately from the
+Host-owned readiness token; Hosted mode or a private header name alone grants no
+authority. Missing/invalid capability, duplicate headers, absent address, or an
+invalid address yields no trusted identity. The capability is omitted from
+Capsule endpoint request headers and never emitted by admission diagnostics.
+Changing the Host readiness credential revokes older address capabilities;
+ordinary restarts retain the existing Host credential. Upgrade the Host helper
+and regenerated Capsules together and recreate their managed routes; an older
+route without the capability cannot provide trusted identity. Existing
+loopback-only published ports and managed route ownership remain required;
+public callers must not reach a Capsule origin around Caddy. The capability also
+prevents an unauthenticated caller reaching the origin from forging identity.
+Access-key source limiting uses this same canonical authenticated identity.
+
+An enabled address-dependent rule is evaluated after any exact-path mismatch has
+been ruled out. If it might apply and trusted identity is absent, the request
+receives the same opaque `403`, `Forbidden\n` bytes and `Cache-Control: no-store`
+as a matched denial. It does not fall back to a public forwarding header or the
+runtime socket's proxy address. Dev (including Public Dev) and local Container
+sessions always have no trusted address, even if supplied with internal headers;
+potentially applicable address rules therefore fail closed there. Disabled rules
+are skipped and unrelated exact-path rules continue to operate normally.
 
 Bounds are 65,536 UTF-8 bytes, nesting depth 8 (root depth 0), 128 rules,
 16 conditions per rule, and 1,024 UTF-8 bytes per match string. An empty rule array

@@ -106,6 +106,7 @@ import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import { matchExactAdmissionRule } from "./admission-policy.js";
+import { trustedClientAddress } from "./client-address.js";
 import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
 import { checkClamavRuntime } from "./file-ingress-runtime.js";
@@ -156,7 +157,7 @@ export function interpretHttpRequestTarget(target, method) {
         return null;
     }
 }
-/** Exact-path HTTP admission, before Capsule routing; genuine controls dispatch first. */
+/** Exact-path and trusted-address HTTP admission; genuine controls dispatch first. */
 export function routeHttpAdmission(database, request, response, target) {
     const runtime = database.admissionPolicy;
     if (!runtime)
@@ -174,7 +175,7 @@ export function routeHttpAdmission(database, request, response, target) {
         const pathname = parsed.form === "asterisk" ? "*" : decodeURIComponent(parsed.url.pathname);
         if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(pathname))
             throw new Error("Invalid admission pathname.");
-        if (!matchExactAdmissionRule(generation, pathname))
+        if (!matchExactAdmissionRule(generation, pathname, trustedClientAddress(database, request)))
             return false;
         // This slice implements deny. Future actions cannot silently admit traffic.
     }

@@ -22,6 +22,9 @@ import { installProjectInfernoToolchain } from "./support/project-inferno-toolch
 import { installPrerenderFixture } from "./support/prerender-capsule.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 import { summarizePublicTree } from "../dist/public-tree.js";
+import { routeHttpAdmission } from "../dist/http-runtime.js";
+import { parseAdmissionPolicy } from "../dist/admission-policy.js";
+import { trustedClientAddress } from "../dist/client-address.js";
 import { installPrerenderWarnings, assertPrerenderWarnings } from "./support/prerender-warnings.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -6978,6 +6981,9 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.match(routeContents, /respond @sporadesRuntimeHealth 404/);
     assert.match(routeContents, /reverse_proxy 127\.0\.0\.1:49153/);
     assert.match(routeContents, /header_up x-sporades-client-address \{http\.request\.remote\.host\}/);
+    assert.match(routeContents, /request_header -x-sporades-client-address\n/);
+    assert.match(routeContents, /request_header -x-sporades-client-address-token\n/);
+    assert.match(routeContents, /header_up x-sporades-client-address-token [a-f0-9]{64}/);
     assert.doesNotMatch(routeContents, /CF-Connecting-IP|sporadesUntrustedCloudflareSource/);
     const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
     assert.equal(record.runtimeProbe.header, "x-sporades-host-probe");
@@ -10036,6 +10042,9 @@ test("sporades host helper writes explicit Cloudflare origin TLS routes when req
     assert.match(routeContents, /2400:cb00::\/32/);
     assert.match(routeContents, /respond @sporadesUntrustedCloudflareSource 403/);
     assert.match(routeContents, /header_up x-sporades-client-address \{http\.request\.header\.CF-Connecting-IP\}/i);
+    assert.match(routeContents, /request_header -x-sporades-client-address\n/);
+    assert.match(routeContents, /request_header -x-sporades-client-address-token\n/);
+    assert.match(routeContents, /header_up x-sporades-client-address-token [a-f0-9]{64}/);
     assert.doesNotMatch(routeContents, /header_up x-sporades-client-address \{http\.request\.remote\.host\}/);
   });
 });
@@ -15786,4 +15795,90 @@ test("Hosted admission publication denies untrusted authority without mutation o
       }
     }));
   }
+});
+
+test('real Caddy rewrites Hosted identity and gates simulated Cloudflare traffic before admission', { skip: !process.env.SPORADES_CADDY_ACCEPTANCE_BIN, timeout: 30000 }, async () => {
+  await withTempDir(async dir => {
+    const remoteRoot = path.join(dir, 'remote-root');
+    const capsuleDir = path.join(remoteRoot, 'hosts', 'capsules.example.dev', 'capsules', 'address');
+    const releaseDir = path.join(capsuleDir, 'releases', '20260630T221500Z-feedface');
+    const recordPath = path.join(remoteRoot, 'hosts', 'capsules.example.dev', 'registry', 'capsules', 'address.json');
+    const routeFile = path.join(remoteRoot, 'caddy', 'hosts', 'capsules.example.dev', 'address.caddy');
+    await mkdir(releaseDir, { recursive: true });
+    for (const [name, bytes] of [['server.mjs','export default {};'],['client.js',''],['index.html',''],['sporades.json','{}']]) await writeFile(path.join(releaseDir,name),bytes);
+    await mkdir(path.dirname(recordPath), { recursive: true });
+    await writeFile(recordPath, JSON.stringify({subname:'address',domain:'capsules.example.dev'}));
+    await symlink(releaseDir, path.join(capsuleDir,'current'));
+    const policy = parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'address',enabled:true,conditions:[{kind:'pathname',exact:'/blocked'},{kind:'address',value:'192.0.2.0/24'}],action:{kind:'deny'}}]})));
+    const database = {securitySession:'hosted',runtimeProbeToken:null,admissionPolicy:{current:()=>policy}};
+    let calls = 0;
+    const runtime = createServer((request,response) => {
+      calls++;
+      if (routeHttpAdmission(database,request,response)) return;
+      response.setHeader('content-type','application/json');
+      response.end(JSON.stringify({address:trustedClientAddress(database,request),count:request.rawHeaders.filter((name,i)=>i%2===0 && name.toLowerCase()==='x-sporades-client-address').length}));
+    });
+    await new Promise(resolve=>runtime.listen(0,'127.0.0.1',resolve));
+    try {
+      const docker = await installFakeDocker(path.join(dir,'docker'),{env:{FAKE_DOCKER_PUBLISHED_PORT:`127.0.0.1:${runtime.address().port}`}});
+      const caddy = await installFakeCaddy(path.join(dir,'caddy'));
+      const env = {...docker.env,...caddy.env,PATH:`${caddy.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`};
+      for (const mode of ['automatic','cloudflare-origin','simulated-cloudflare']) {
+        const tls = mode === 'automatic' ? {mode:'automatic'} : {mode:'cloudflare-origin',certificate:path.join(remoteRoot,'hosts','capsules.example.dev','tls','origin.crt'),key:path.join(remoteRoot,'hosts','capsules.example.dev','tls','origin.key')};
+        const result = await runHostHelper({action:'capsule.start',host:{alias:'local',domain:'capsules.example.dev',scheme:'https',remoteRoot},capsule:{subname:'address'},lifecycle:{hostedUrl:'https://address.capsules.example.dev',container:{name:'sporades-capsules-example-dev-address'},routes:{running:{hostname:'address.capsules.example.dev',target:'container',containerName:'sporades-capsules-example-dev-address',port:4000,routeFile,tls}}}},{cwd:dir,env});
+        assert.equal(result.code,0,result.stderr);
+        database.runtimeProbeToken = JSON.parse(await readFile(recordPath,'utf8')).runtimeProbe.token;
+        const reservation = createServer(); await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));
+        const port = reservation.address().port; await new Promise(resolve=>reservation.close(resolve));
+        let route = (await readFile(routeFile,'utf8')).replace('address.capsules.example.dev {',`http://127.0.0.1:${port} {`).replace(/^  tls .*\n/m,'');
+        // This fixture models an already validated CF source without claiming real CF infrastructure proof.
+        if (mode === 'simulated-cloudflare') route = route.replace(/(@sporadesUntrustedCloudflareSource not remote_ip )[^\n]+/,(_match,prefix)=>`${prefix}127.0.0.1/32`);
+        const configPath = path.join(dir,'Caddyfile'); await writeFile(configPath,`{\n admin off\n auto_https off\n}\n${route}`);
+        const child = spawn(process.env.SPORADES_CADDY_ACCEPTANCE_BIN,['run','--config',configPath,'--adapter','caddyfile'],{env:{...process.env,XDG_CONFIG_HOME:path.join(dir,'config'),XDG_DATA_HOME:path.join(dir,'data')},stdio:['ignore','ignore','pipe']});
+        let stderr = ''; child.stderr.on('data',chunk=>{stderr+=chunk;});
+        const base = `http://127.0.0.1:${port}`;
+        try {
+          const deadline = Date.now()+5000;
+          for (;;) {
+            if (await fetch(base+'/ready').then(()=>true,()=>false)) break;
+            assert.equal(child.exitCode,null,stderr);
+            assert.ok(Date.now()<deadline,stderr);
+            await new Promise(resolve=>setTimeout(resolve,25));
+          }
+          const headers = {'x-sporades-client-address':'192.0.2.1','x-sporades-client-address-token':'b'.repeat(64),forwarded:'for=192.0.2.1','x-forwarded-for':'192.0.2.1','cf-connecting-ip':'192.0.2.1'};
+          const before = calls;
+          const response = await fetch(base+'/blocked',{headers});
+          if (mode === 'automatic') {
+            assert.equal(response.status,200); assert.deepEqual(await response.json(),{address:'127.0.0.1',count:1});
+          } else {
+            assert.equal(response.status,403);
+            if (mode === 'cloudflare-origin') assert.equal(calls,before,'untrusted CF peer must never reach runtime');
+          }
+          if (mode === 'simulated-cloudflare') {
+            const ipv6 = await fetch(base+'/blocked',{headers:{...headers,'cf-connecting-ip':'2001:0DB8:0:0:0:0:0:1'}});
+            assert.equal(ipv6.status,200); assert.deepEqual(await ipv6.json(),{address:'2001:db8::1',count:1});
+            for (const value of [undefined,'invalid','198.51.100.1,198.51.100.2','::ffff:192.0.2.1']) {
+              const cfHeaders = {...headers}; if (value === undefined) delete cfHeaders['cf-connecting-ip']; else cfHeaders['cf-connecting-ip']=value;
+              const denied = await fetch(base+'/blocked',{headers:cfHeaders}); assert.equal(denied.status,403); assert.equal(await denied.text(),'Forbidden\n');
+            }
+          }
+          // Send duplicate wire fields, not merely a comma-containing fixture value.
+          const {request:httpRequest} = await import('node:http');
+          const duplicate = await new Promise((resolve,reject)=>{
+            const outgoing = httpRequest(base+'/blocked',{headers:{...headers,'x-sporades-client-address':['192.0.2.1','192.0.2.2'],'x-sporades-client-address-token':['b'.repeat(64),'c'.repeat(64)],'cf-connecting-ip':['198.51.100.1','198.51.100.1']}},incoming=>{
+              const chunks=[]; incoming.on('data',chunk=>chunks.push(chunk)); incoming.on('end',()=>resolve({status:incoming.statusCode,body:Buffer.concat(chunks).toString()}));
+            }); outgoing.on('error',reject); outgoing.end();
+          });
+          assert.equal(duplicate.status,mode==='automatic'?200:403);
+          if (mode==='automatic') assert.deepEqual(JSON.parse(duplicate.body),{address:'127.0.0.1',count:1});
+          if (mode==='simulated-cloudflare') assert.equal(duplicate.body,'Forbidden\n');
+        } finally {
+          if (child.exitCode === null) {
+            child.kill('SIGTERM'); const kill = setTimeout(()=>child.kill('SIGKILL'),1000);
+            await new Promise(resolve=>child.once('exit',resolve)); clearTimeout(kill);
+          }
+        }
+      }
+    } finally { runtime.closeAllConnections(); await new Promise(resolve=>runtime.close(resolve)); }
+  });
 });

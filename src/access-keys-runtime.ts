@@ -1,13 +1,13 @@
 import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { accessKeyGrantsSatisfyScopes, scopeGrantMatches } from "./auth-admission.js";
 import {
-  ACCESS_KEY_CLIENT_ADDRESS_HEADER,
   ACCESS_KEY_GRANT_BYTE_LIMIT,
   ACCESS_KEY_GRANT_LIMIT,
   ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT,
 } from "./access-key-contract.js";
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
+import { trustedClientAddress } from "./client-address.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -842,18 +842,9 @@ function accessKeySelectorFingerprint(selector: string) {
 }
 
 function accessKeySourceBucket(database: LooseRecord, request: LooseRecord) {
-  const forwarded = database.securitySession === "hosted"
-    ? request?.headers?.[ACCESS_KEY_CLIENT_ADDRESS_HEADER]
-    : null;
-  const trustedClientAddress = typeof forwarded === "string"
-    && forwarded.length > 0
-    && Buffer.byteLength(forwarded, "utf8") <= 128
-    && !/[,\s\u0000-\u001f\u007f]/.test(forwarded)
-    ? forwarded
-    : null;
   return accessKeyCrypto().createHash("sha256")
     .update("sporades-access-key-source-limit\0")
-    .update(trustedClientAddress ?? String(request?.socket?.remoteAddress ?? "unknown"))
+    .update(trustedClientAddress(database, request) ?? String(request?.socket?.remoteAddress ?? "unknown"))
     .digest("hex");
 }
 
