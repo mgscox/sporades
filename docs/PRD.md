@@ -1513,7 +1513,13 @@ never independently grant authority. Cloudflare-origin identity retains the
 existing Cloudflare-source gate. Missing identity fails closed for potentially
 applicable enabled address rules; Dev and local Container ignore internal identity
 headers while non-address rules continue to operate. IPv4-mapped IPv6 normalizes
-to IPv4, with mapped CIDRs restricted to prefixes 96–128. Remaining matchers, quotas and WebSocket upgrades
-are subsequent slices. See the
+to IPv4, with mapped CIDRs restricted to prefixes 96–128. Fixed-window quotas count
+matching requests by stable rule ID and trusted address
+using monotonic elapsed time, returning opaque 429/no-store with rounded-up
+Retry-After over quota. The combined per-process table caps at 10,000 buckets with
+deterministic LRU eviction and aggregate protected health diagnostics. Compatible
+IDs/parameters retain buckets across hot reload; restart resets state. Boundary
+bursts and independent process quotas are documented. Remaining matchers and
+WebSocket upgrades are subsequent slices. See the
 [configuration reference](reference/projects-and-configuration.md#request-admission-policy-publication)
 and [ADR-0054](adr/0054-request-admission-policy-is-deployer-owned.md).

@@ -111,6 +111,14 @@ One placed fragment instance. Browser discovery exposes only its configured name
 and an idempotent dismissal operation through an opaque snapshot handle. The
 Capsule owns the readiness decision; Sporades never dismisses automatically.
 
+**Request-admission quota**:
+A deployer-owned `rate-limit` rule that counts a canonical trusted Hosted client
+address under a stable rule ID in a monotonic fixed window before Capsule code.
+Its combined local table is bounded to 10,000 buckets with deterministic eviction
+and aggregate protected health diagnostics. Compatible reloads retain buckets;
+process restart resets them. v1 quotas are per-process and allow boundary bursts.
+_Avoid_: token bucket, global quota, distributed limiter
+
 ## Server runtime
 
 **sporades/server**:

@@ -80445,6 +80445,73 @@ function trustedClientAddress(database, request) {
   return canonicalClientAddress(singleHeader(request, ACCESS_KEY_CLIENT_ADDRESS_HEADER));
 }
 
+// src/bounded-fixed-window.ts
+import { performance as performance2 } from "node:perf_hooks";
+function createBoundedFixedWindow(options = {}) {
+  const now2 = options.now ?? (() => performance2.now());
+  const maxBuckets = options.maxBuckets ?? 1e4;
+  const idleMs = options.idleMs ?? 15 * 6e4;
+  if (!Number.isSafeInteger(maxBuckets) || maxBuckets < 1 || !Number.isFinite(idleMs) || idleMs < 0) throw new Error("Invalid limiter bounds.");
+  const buckets = /* @__PURE__ */ new Map();
+  let evictions = 0;
+  function retryAfter(key, limit, windowMs) {
+    const bucket = buckets.get(key);
+    const remaining = bucket ? windowMs - (now2() - bucket.startedAt) : 0;
+    return bucket && bucket.count >= limit && remaining > 0 ? Math.ceil(remaining / 1e3) : 0;
+  }
+  function record(key, windowMs, ceiling = Number.MAX_SAFE_INTEGER) {
+    const elapsed = now2();
+    const previous = buckets.get(key);
+    const bucket = !previous || elapsed - previous.startedAt >= windowMs ? { count: 1, startedAt: elapsed, lastSeenAt: elapsed, windowMs } : { ...previous, count: Math.min(previous.count + 1, ceiling), lastSeenAt: elapsed };
+    buckets.delete(key);
+    buckets.set(key, bucket);
+    for (const [candidate, state] of buckets) {
+      if (elapsed - state.lastSeenAt > idleMs || options.expireWindows && elapsed - state.startedAt >= state.windowMs) buckets.delete(candidate);
+      else if (!options.expireWindows) break;
+    }
+    while (buckets.size > maxBuckets) {
+      buckets.delete(buckets.keys().next().value);
+      evictions++;
+    }
+    return { count: bucket.count, remainingSeconds: Math.ceil((windowMs - (elapsed - bucket.startedAt)) / 1e3) };
+  }
+  return Object.freeze({
+    retryAfter,
+    record,
+    delete: (key) => buckets.delete(key),
+    retain: (keep) => {
+      for (const key of buckets.keys()) if (!keep(key)) buckets.delete(key);
+    },
+    stats: () => Object.freeze({ buckets: buckets.size, maxBuckets, evictions })
+  });
+}
+
+// src/admission-rate-limit.ts
+function createAdmissionRateLimiter(options = {}) {
+  const windows = createBoundedFixedWindow({ ...options, idleMs: 864e5, expireWindows: true });
+  let digest;
+  let parameters = /* @__PURE__ */ new Map();
+  function reconcile(generation) {
+    if ((generation?.digest ?? null) === digest) return;
+    const next = /* @__PURE__ */ new Map();
+    for (const rule of generation?.policy.rules ?? []) {
+      if (rule.enabled && rule.action.kind === "rate-limit") next.set(rule.id, `${rule.action.limit}:${rule.action.windowMs}`);
+    }
+    windows.retain((key) => {
+      const id2 = key.slice(0, key.indexOf("\0"));
+      return next.has(id2) && next.get(id2) === parameters.get(id2);
+    });
+    parameters = next;
+    digest = generation?.digest ?? null;
+  }
+  function consume(id2, address, limit, windowMs) {
+    const key = `${id2}\0${address}`;
+    const counted = windows.record(key, windowMs, limit + 1);
+    return counted.count <= limit ? 0 : counted.remainingSeconds;
+  }
+  return Object.freeze({ reconcile, consume, stats: windows.stats });
+}
+
 // src/admission-policy.ts
 import { constants as constants2 } from "node:fs";
 import { lstat as lstat2, open as open2, rename as rename2, rm as rm2 } from "node:fs/promises";
@@ -80961,7 +81028,8 @@ async function publishAdmissionPolicy(root, relative, bytes) {
     await handle.close();
   }
 }
-async function openAdmissionPolicy(root, relative, onHealth) {
+async function openAdmissionPolicy(root, relative, onHealth, limiterOptions = {}) {
+  const rateLimiter = createAdmissionRateLimiter(limiterOptions);
   let active = null;
   let health = Object.freeze({ state: "disabled", digest: null });
   let closed = false;
@@ -80979,6 +81047,7 @@ async function openAdmissionPolicy(root, relative, onHealth) {
     try {
       const bytes = await readDeployFile(root, relative, ADMISSION_LIMITS.bytes);
       const next = bytes.equals(REMOVED) ? null : parseAdmissionPolicy(bytes);
+      rateLimiter.reconcile(next);
       active = next;
       report(next ? "healthy" : "disabled");
     } catch {
@@ -80998,11 +81067,17 @@ async function openAdmissionPolicy(root, relative, onHealth) {
     void reload();
   }, ADMISSION_LIMITS.reloadMs);
   timer.unref();
-  return Object.freeze({ current: () => active, health: () => health, reload, close: async () => {
-    closed = true;
-    clearInterval(timer);
-    await pending;
-  } });
+  return Object.freeze({
+    current: () => active,
+    rateLimiter,
+    health: () => Object.freeze({ ...health, rateLimit: rateLimiter.stats() }),
+    reload,
+    close: async () => {
+      closed = true;
+      clearInterval(timer);
+      await pending;
+    }
+  });
 }
 
 // src/cli/cli-support.ts
@@ -103311,25 +103386,17 @@ function accessKeySourceBucket(database, request) {
 }
 function accessKeyLimiter(database, kind) {
   const root = database.__rootDatabase ?? database;
-  root.__accessKeyFailureLimiters ??= { source: /* @__PURE__ */ new Map(), selector: /* @__PURE__ */ new Map() };
+  root.__accessKeyFailureLimiters ??= {
+    source: createBoundedFixedWindow({ now: () => root.clock.now().getTime() }),
+    selector: createBoundedFixedWindow({ now: () => root.clock.now().getTime() })
+  };
   return root.__accessKeyFailureLimiters[kind];
 }
 function assertAccessKeyFailureLimit(database, kind, key, limit, windowMs) {
-  const state = accessKeyLimiter(database, kind).get(key);
-  const now2 = database.clock.now().getTime();
-  if (state && now2 - state.startedAt < windowMs && state.count >= limit) throw accessKeyAuthenticationError("rate-limited", true);
+  if (accessKeyLimiter(database, kind).retryAfter(key, limit, windowMs)) throw accessKeyAuthenticationError("rate-limited", true);
 }
 function recordAccessKeyFailure(database, kind, key, windowMs) {
-  const limiter = accessKeyLimiter(database, kind);
-  const now2 = database.clock.now().getTime();
-  const previous = limiter.get(key);
-  const state = !previous || now2 - previous.startedAt >= windowMs ? { count: 1, startedAt: now2, lastSeenAt: now2 } : { count: previous.count + 1, startedAt: previous.startedAt, lastSeenAt: now2 };
-  limiter.delete(key);
-  limiter.set(key, state);
-  for (const [candidate, candidateState] of limiter) {
-    if (now2 - candidateState.lastSeenAt > 15 * 6e4 || limiter.size > 1e4) limiter.delete(candidate);
-    else break;
-  }
+  accessKeyLimiter(database, kind).record(key, windowMs);
 }
 function clearAccessKeyFailure(database, kind, key) {
   accessKeyLimiter(database, kind).delete(key);
@@ -123545,17 +123612,40 @@ function interpretHttpRequestTarget(target, method) {
     return null;
   }
 }
+var admissionLimiters = /* @__PURE__ */ new WeakMap();
 function routeHttpAdmission(database, request, response, target) {
   const runtime = database.admissionPolicy;
   if (!runtime) return false;
   try {
     const generation = runtime.current();
+    let limiter = runtime.rateLimiter ?? admissionLimiters.get(runtime);
+    if (!limiter) {
+      limiter = createAdmissionRateLimiter();
+      admissionLimiters.set(runtime, limiter);
+    }
+    limiter.reconcile(generation);
     if (!generation || generation.policy.rules.length === 0) return false;
     const parsed = target ?? requestTarget(request);
     if (/[\\]|%2f|%5c/i.test(parsed.pathname)) throw new Error("Invalid admission pathname.");
     const pathname = parsed.form === "asterisk" ? "*" : decodeURIComponent(parsed.url.pathname);
     if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(pathname)) throw new Error("Invalid admission pathname.");
-    if (!matchExactAdmissionRule(generation, pathname, trustedClientAddress(database, request))) return false;
+    const address = trustedClientAddress(database, request);
+    const rule = matchExactAdmissionRule(generation, pathname, address);
+    if (!rule) return false;
+    if (rule.action.kind === "rate-limit") {
+      if (!address) throw new Error("Missing trusted admission address.");
+      const retryAfter = limiter.consume(rule.id, address, rule.action.limit, rule.action.windowMs);
+      if (!retryAfter) return false;
+      response.writeHead(429, {
+        "cache-control": "no-store",
+        "retry-after": String(retryAfter),
+        "content-type": "text/plain; charset=utf-8",
+        "content-length": "18",
+        connection: "close"
+      });
+      response.end("Too Many Requests\n");
+      return true;
+    }
   } catch {
   }
   response.writeHead(403, {
@@ -128581,7 +128671,7 @@ var import_sdk_trace_base = __toESM(require_index_shim(), 1);
 import { randomUUID as randomUUID9 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
-import { constants as performanceConstants, monitorEventLoopDelay, performance as performance2, PerformanceObserver } from "node:perf_hooks";
+import { constants as performanceConstants, monitorEventLoopDelay, performance as performance3, PerformanceObserver } from "node:perf_hooks";
 
 // src/runtime-fetch-telemetry.ts
 init_esm();
@@ -128987,9 +129077,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const delayResolutionMs = config.eventLoopDelayResolutionMs ?? 20;
   const loopDelay = monitorEventLoopDelay({ resolution: delayResolutionMs });
   loopDelay.enable();
-  let lastDelayResetAt = performance2.now();
+  let lastDelayResetAt = performance3.now();
   let delayMonitorStoppedAt;
-  let previousElu = performance2.eventLoopUtilization();
+  let previousElu = performance3.eventLoopUtilization();
   const cpuTime = processMeter.createObservableCounter("process.cpu.time", { unit: "s" });
   const rss = processMeter.createObservableGauge("process.memory.rss", { unit: "By" });
   const heapUsed = processMeter.createObservableGauge("process.memory.heap.used", { unit: "By" });
@@ -129023,7 +129113,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       result.observe(gcDuration, total.durationSeconds, { kind });
     }
     const rawMaxMs = loopDelay.count > 0 ? loopDelay.max / 1e6 : 0;
-    const elapsedMs = Math.max(0, (delayMonitorStoppedAt ?? performance2.now()) - lastDelayResetAt);
+    const elapsedMs = Math.max(0, (delayMonitorStoppedAt ?? performance3.now()) - lastDelayResetAt);
     const unrecordedMaxLowerBoundMs = Math.max(0, (elapsedMs - loopDelay.count * rawMaxMs) / 2 - delayResolutionMs);
     if (loopDelay.count > 0 || unrecordedMaxLowerBoundMs > 0) {
       result.observe(delayMax, Math.max(0, rawMaxMs - delayResolutionMs, unrecordedMaxLowerBoundMs));
@@ -129033,9 +129123,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       result.observe(delayP99, Math.max(0, loopDelay.percentile(99) / 1e6 - delayResolutionMs));
     }
     loopDelay.reset();
-    lastDelayResetAt = delayMonitorStoppedAt ?? performance2.now();
-    const currentElu = performance2.eventLoopUtilization();
-    const intervalElu = performance2.eventLoopUtilization(previousElu);
+    lastDelayResetAt = delayMonitorStoppedAt ?? performance3.now();
+    const currentElu = performance3.eventLoopUtilization();
+    const intervalElu = performance3.eventLoopUtilization(previousElu);
     previousElu = currentElu;
     if (Number.isFinite(intervalElu.utilization) && intervalElu.active + intervalElu.idle > 0) result.observe(loopUtilization, intervalElu.utilization);
   }, [cpuTime, rss, heapUsed, heapAllocated, heapLimit, external, arrayBuffers, uptime, gcCount, gcDuration, delayMax, delayMean, delayP99, loopUtilization]);
@@ -129314,7 +129404,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       closing = true;
       releaseFetch();
       gcObserver.disconnect();
-      delayMonitorStoppedAt = performance2.now();
+      delayMonitorStoppedAt = performance3.now();
       loopDelay.disable();
       let timer;
       shutdownPromise = Promise.race([

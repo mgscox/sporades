@@ -42,7 +42,7 @@ test('hot failures retain a complete immutable generation; explicit removal and 
     await writeFile(path.join(root, 'next.json'), JSON.stringify(policy('new'))); await rename(path.join(root, 'next.json'),path.join(root, 'policy.json'));
     await runtime.reload(); assert.equal(runtime.health().state, 'healthy'); assert.equal(runtime.current().policy.rules[0].id,'new'); assert.equal(old.policy.rules[0].id,'block-path');
     assert.deepEqual(events.map(event => event.state), ['healthy','degraded','healthy']);
-    assert.deepEqual(Object.keys(runtime.health()), ['state','digest']);
+    assert.deepEqual(Object.keys(runtime.health()), ['state','digest','rateLimit']);
   } finally { await runtime.close(); }
   await assert.rejects(openAdmissionPolicy(root,'missing.json'), /could not be loaded/);
   await writeFile(path.join(root,'policy.json'),'{'); await assert.rejects(openAdmissionPolicy(root,'policy.json'), /could not be loaded/);
@@ -54,7 +54,7 @@ test('authorized removal disables policy and survives restart; invalid publicati
   try {
     await assert.rejects(publishAdmissionPolicy(root, relative, Buffer.from('{}')), /Invalid admission policy/);
     await publishAdmissionPolicy(root,relative,null); await runtime.reload();
-    assert.equal(runtime.current(),null); assert.deepEqual(runtime.health(),{state:'disabled',digest:null});
+    assert.equal(runtime.current(),null); assert.deepEqual(runtime.health(),{state:'disabled',digest:null,rateLimit:{buckets:0,maxBuckets:10000,evictions:0}});
     const restarted = await openAdmissionPolicy(root,stored); await restarted.close();
     await publishAdmissionPolicy(root,relative,Buffer.from(JSON.stringify(policy()))); await runtime.reload(); assert.equal(runtime.health().state,'healthy');
   } finally { await runtime.close(); }
