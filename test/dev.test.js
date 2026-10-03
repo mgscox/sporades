@@ -2817,9 +2817,13 @@ test("sporades dev preserves unusual request targets across HTTP and WebSocket a
       assert.equal(started.ok, true, JSON.stringify(started.error));
       const session = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
       assert.match(session.inspectionToken, /^[a-f0-9]{64}$/);
-      for (const [target, method, expectedStatus] of [["//", "GET", 404], ["//unrelated.example/", "GET", 404], ["///", "GET", 404], ["/%", "GET", 400], ["/?query=%", "GET", 200], ["http://unrelated.example\\path", "GET", 400], ["http://unrelated.example/", "GET", 200], ["*", "OPTIONS", 404], ["*", "GET", 400]]) {
+      for (const [target, method, expectedStatus] of [["//", "GET", 404], ["//unrelated.example/", "GET", 404], ["///", "GET", 404], ["/%", "GET", 400], ["ftp://example.test/admin", "GET", 400], ["http://user:secret@example.test/admin", "GET", 400], ["http://example.test:bad/admin", "GET", 400], ["/?query=%", "GET", 200], ["http://unrelated.example\\path", "GET", 400], ["http://unrelated.example/", "GET", 200], ["*", "OPTIONS", 404], ["*", "GET", 400]]) {
         const response = await rawHttpResponse(started.data.url, target, { method, headers: { host: "wrong.example" } });
         assert.match(response, new RegExp(`^HTTP/1\\.1 ${expectedStatus} `), `${target}: ${response}`);
+        if (["/%", "ftp://example.test/admin", "http://user:secret@example.test/admin", "http://example.test:bad/admin"].includes(target)) {
+          assert.match(response, /\r\nBad request\r\n/);
+          assert.doesNotMatch(response, /\r\ncache-control: no-store\r\n/i);
+        }
         if (target === "*") assert.match(response, /x-content-type-options: nosniff/i, response);
         assert.equal((await fetch(`${started.data.url}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": session.inspectionToken } })).status, 200);
       }
@@ -15588,6 +15592,52 @@ test("sporades dev runs todo queries and mutations over WebSocket", async () => 
       socket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("Dev admission denies malformed raw targets before application execution and fallback failure logging", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "malformed-admission", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "malformed-admission");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.admissionPolicy = { path: "policy.json" };
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "policy.json"), JSON.stringify({
+      version: 1,
+      rules: [{ id: "unrelated", enabled: true, conditions: [{ kind: "pathname", exact: "/blocked" }], action: { kind: "deny" } }],
+    }));
+    await writeFile(path.join(projectDir, "server", "index.ts"), `import { capsule, endpoint } from "sporades/server";
+export default capsule({ name: "malformed-admission", middleware: [(ctx) => {
+  globalThis.process.getBuiltinModule("node:fs").appendFileSync("app-called", "called\\n");
+  return ctx;
+}], endpoints: { admin: endpoint({ method: "GET", path: "/admin" }, () => ({ status: 200, body: "application" })) } });`);
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      assert.equal(await (await fetch(`${started.data.url}/admin`)).text(), "application");
+      assert.equal(await readFile(path.join(projectDir, "app-called"), "utf8"), "called\n");
+      await rm(path.join(projectDir, "app-called"));
+      for (const target of ["/%", "ftp://example.test/admin", "http://user:secret@example.test/admin", "http://example.test:bad/admin"]) {
+        const response = await rawHttpResponse(started.data.url, target);
+        assert.match(response, /^HTTP\/1\.1 403 Forbidden\r\n/, response);
+        assert.match(response, /\r\ncache-control: no-store\r\n/i, response);
+        assert.match(response, /\r\ncontent-length: 10\r\n/i, response);
+        assert.deepEqual(Buffer.from(response.slice(response.indexOf("\r\n\r\n") + 4)), Buffer.from("Forbidden\n"));
+        await assert.rejects(readFile(path.join(projectDir, "app-called")), { code: "ENOENT" });
+      }
+      const logs = await runCli(["logs", "--json"], { cwd: projectDir });
+      assert.equal(logs.code, 0, logs.stderr);
+      assert.equal(JSON.parse(logs.stdout).data.entries.some((entry) => entry.event === "http.request.failed"), false, logs.stdout);
+    } finally {
+      if (child.exitCode === null) child.kill("SIGTERM");
+      await exited;
     }
   });
 });
