@@ -7,6 +7,9 @@ Changes since v0.9.30.
 ### 🚀 Features
 
 - Trace individual WebSocket query and mutation executions with isolated context, cancellation outcomes, independent operation metrics and active connections (#125).
+
+- Trace durable background Job attempts with causal enqueue links and independent queue pressure, execution duration, retry and failure metrics (#126).
+
 - Include optional project `public/` files in Dev, Container, and Hosted releases, with stable paths, Dev rebuilding, collision checks, and XML MIME handling (#187).
 - Open telemetry docs (a1ef804f).
 - Enable Host-owned telemetry coverage for Hosted Capsules (7b1af535).

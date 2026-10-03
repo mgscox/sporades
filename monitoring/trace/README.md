@@ -63,3 +63,26 @@ children. Refreshes are separate root traces; connections and subscriptions have
 no lifetime span. Cancellation settles telemetry without aborting app work.
 See the [operator signal reference](https://mgscox.github.io/sporades/reference/projects-and-configuration#websocket-operation-signals)
 for exact names, units, outcome labels, correlation validation and privacy limits.
+
+## Background Jobs
+
+Enabled Capsule Telemetry profiles also export independent Job queue depth,
+oldest pending age, execution-duration histograms, retries and failures. Search
+Jaeger for operation `job <declared handler>`; each attempt has its own trace and
+links to the enqueue operation. Retried attempts share the enqueue link rather
+than extending an HTTP trace across queue delays. No payload or private Job/actor
+identifier is exported. See the [Job signal contract](https://mgscox.github.io/sporades/reference/projects-and-configuration#background-job-traces-and-queue-metrics)
+for metric definitions, label bounds, recovery and sampling semantics.
+
+In Grafana Explore's Prometheus source, select the Capsule with `service_name`,
+`deployment_environment_name` and `instance` before querying
+`sporades_job_queue_depth_ratio` (the value is a Job count) or `sporades_job_queue_oldest_pending_age_seconds`.
+Both include deliberately delayed work. Use
+`rate(sporades_job_retry_count_total[5m])` and
+`rate(sporades_job_failure_count_total[5m])` for retry/failure rates, and
+`histogram_quantile(0.95, sum by (le, sporades_job_handler) (rate(sporades_job_execution_duration_seconds_bucket[5m])))`
+for p95 duration (add the Capsule selectors inside the metric braces for fleet
+queries). These examples assume the default 15-second export interval; increase
+the window to include at least two exports for slower profiles. Metrics remain available when trace sampling is zero. Missing export
+is not a zero backlog; inspect the existing telemetry failure diagnostics and
+use the CLI Job inspection surface for retained history.

@@ -113,6 +113,7 @@
 // sees only builtins behind `kind: "dynamic-import"` — which is the one external ADR-0041 allows,
 // and the route the SMTP transport has always taken.
 
+import { traceRuntimeOperation } from "./runtime-request-context.js";
 import type { WithImplicitCoercion } from "buffer";
 import type { BinaryLike, KeyObject } from "node:crypto";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
@@ -655,6 +656,10 @@ export function contentTypeForFile(type: any) {
 }
 
 export async function createPendingFileUpload(database: LooseRecord, auth: LooseRecord, message: LooseRecord) {
+  return traceRuntimeOperation("sporades.file.upload.prepare", () => createPendingFileUploadOperation(database, auth, message), result => result.ok ? "success" : "denied");
+}
+
+async function createPendingFileUploadOperation(database: LooseRecord, auth: LooseRecord, message: LooseRecord) {
   const input = message.file ?? {};
   const size = Number(input.size ?? 0);
   if (!Number.isFinite(size) || size < 0) {
@@ -780,6 +785,10 @@ export async function createPendingFileUpload(database: LooseRecord, auth: Loose
 }
 
 export async function completePendingFileUpload(database: LooseRecord, uploadId: string, request: any, websocketHub: any = null) {
+  return traceRuntimeOperation("sporades.file.upload", () => completePendingFileUploadOperation(database, uploadId, request, websocketHub), result => result.ok ? "success" : "denied");
+}
+
+async function completePendingFileUploadOperation(database: LooseRecord, uploadId: string, request: any, websocketHub: any = null) {
   const upload = await database.adapter.selectFileUpload(uploadId);
   if (!upload) {
     return {
@@ -808,7 +817,7 @@ export async function completePendingFileUpload(database: LooseRecord, uploadId:
       // Losing PUTs never write this version. Keep compensation inside the transaction so a
       // retried upload cannot acquire ownership before a failed writer finishes cleanup.
       try {
-        await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
+        await traceRuntimeOperation("sporades.file.bytes.write", () => database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes }));
         await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
         return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
       } catch (error) {
@@ -856,6 +865,10 @@ export async function completePendingFileUpload(database: LooseRecord, uploadId:
 }
 
 export async function getPrivateFileUrl(database: any, auth: LooseRecord, fileReference: any) {
+  return traceRuntimeOperation("sporades.file.private_url", () => getPrivateFileUrlOperation(database, auth, fileReference), result => result.ok ? "success" : "denied");
+}
+
+async function getPrivateFileUrlOperation(database: any, auth: LooseRecord, fileReference: any) {
   const resolved: any = await resolveAccessibleFileReference(database, auth, fileReference, "read");
   if (!resolved.ok) {
     return resolved;
@@ -878,6 +891,10 @@ export async function getPrivateFileUrl(database: any, auth: LooseRecord, fileRe
 }
 
 export async function createPublicFileUrl(database: LooseRecord, auth: LooseRecord, fileReference: any, options: LooseRecord = {}) {
+  return traceRuntimeOperation("sporades.file.public_url.create", () => createPublicFileUrlOperation(database, auth, fileReference, options), result => result.ok ? "success" : "denied");
+}
+
+async function createPublicFileUrlOperation(database: LooseRecord, auth: LooseRecord, fileReference: any, options: LooseRecord = {}) {
   const expiry = validatePublicUrlExpiry(options);
   if (!expiry.ok) {
     return expiry;
@@ -927,6 +944,10 @@ export async function createPublicFileUrl(database: LooseRecord, auth: LooseReco
 }
 
 export async function revokePublicFileUrl(database: LooseRecord, auth: LooseRecord, publicUrlId: any) {
+  return traceRuntimeOperation("sporades.file.public_url.revoke", () => revokePublicFileUrlOperation(database, auth, publicUrlId), result => result.ok ? "success" : "denied");
+}
+
+async function revokePublicFileUrlOperation(database: LooseRecord, auth: LooseRecord, publicUrlId: any) {
   const now = new Date().toISOString();
   const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now);
   if (result.changes === 0) {
@@ -1540,6 +1561,17 @@ export async function deletePrivateFile(
   deferByteRemoval?: (file: Readonly<{ fileId: string; version: string }>) => void,
   requireLiveActor = false,
 ) {
+  return traceRuntimeOperation("sporades.file.delete", () => deletePrivateFileOperation(database, auth, fileReference, credential, deferByteRemoval, requireLiveActor), result => result.ok ? "success" : "denied");
+}
+
+async function deletePrivateFileOperation(
+  database: LooseRecord,
+  auth: LooseRecord,
+  fileReference: any,
+  credential: LooseRecord = { kind: "session" },
+  deferByteRemoval?: (file: Readonly<{ fileId: string; version: string }>) => void,
+  requireLiveActor = false,
+) {
   const now = new Date().toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite: LooseRecord) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
@@ -1642,6 +1674,10 @@ export async function fileRowForOwner(database: LooseRecord, fileId: string, own
 }
 
 export async function fileRowForActor(database: LooseRecord, auth: LooseRecord, fileReference: any, credential: LooseRecord = { kind: "session" }) {
+  return traceRuntimeOperation("sporades.file.authorize", () => fileRowForActorOperation(database, auth, fileReference, credential), result => result ? "success" : "denied");
+}
+
+async function fileRowForActorOperation(database: LooseRecord, auth: LooseRecord, fileReference: any, credential: LooseRecord = { kind: "session" }) {
   const resolved: any = await resolveAccessibleFileReference(database, auth, fileReference, "read", credential);
   return resolved.ok ? resolved.row : null;
 }
@@ -1936,5 +1972,5 @@ export function createStructuredFileError(message: string, hint: string) {
 }
 
 async function removeFileVersionBestEffort(database: LooseRecord, fileId: any, version: any) {
-  await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => { });
+  await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId, version })).catch(() => { });
 }

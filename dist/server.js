@@ -98,7 +98,11 @@ export function message(handler) {
         handler,
     };
 }
-/** Declare a named, server-only durable Job handler in `capsule({ jobs })`. */
+/**
+ * Declare a named, server-only durable Job handler in `capsule({ jobs })`.
+ * Enabled operator telemetry automatically traces each attempt with a causal
+ * enqueue link and independent queue metrics; no tracing API is required.
+ */
 export function job(handler) {
     return { kind: "job", handler };
 }

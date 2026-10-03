@@ -27003,6 +27003,11 @@ function validatePublicTreeFileSet(files) {
   return { ok: true, fileCount: files.length, totalBytes };
 }
 
+// src/runtime-request-context.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage();
+var runtimeJobScope = new AsyncLocalStorage();
+
 // src/resource-runtime.ts
 var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
   sqlite: "supported",
@@ -27024,10 +27029,6 @@ var unsupportedResources = Object.freeze({
     throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
   }
 });
-
-// src/runtime-request-context.ts
-import { AsyncLocalStorage } from "node:async_hooks";
-var runtimeRequestScope = new AsyncLocalStorage();
 
 // src/log-envelope.ts
 import { randomUUID as randomUUID4 } from "node:crypto";

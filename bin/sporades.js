@@ -102299,6 +102299,30 @@ function errorCode2(error) {
   return /^[A-Z][A-Z0-9_]{1,31}$/.test(code) ? code : "UNKNOWN";
 }
 
+// src/runtime-request-context.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage();
+function traceRuntimeOperation(operation, callback, outcome) {
+  const run2 = runtimeRequestScope.getStore()?.operation;
+  return run2 ? run2(operation, callback, outcome) : callback();
+}
+function withoutRuntimeRequestIdentity(callback) {
+  return runtimeRequestScope.exit(() => runtimeJobScope.exit(callback));
+}
+var runtimeJobScope = new AsyncLocalStorage();
+function captureJobTraceContext() {
+  try {
+    const job = runtimeJobScope.getStore();
+    const request = runtimeRequestScope.getStore();
+    const span = job?.isOpen() ? job.span : request?.isOpen?.() ? request.span : void 0;
+    const context2 = span?.spanContext();
+    if (!context2 || !/^[0-9a-f]{32}$/.test(context2.traceId) || /^0+$/.test(context2.traceId) || !/^[0-9a-f]{16}$/.test(context2.spanId) || /^0+$/.test(context2.spanId)) return null;
+    return `00-${context2.traceId}-${context2.spanId}-${context2.traceFlags & 1 ? "01" : "00"}`;
+  } catch {
+    return null;
+  }
+}
+
 // src/user-preferences-runtime.ts
 function createUserPreferencesTables(sqlite) {
   return sqlite.exec(
@@ -102805,6 +102829,9 @@ function readAccessKeyAuthorization(request) {
   return { token: matched[1], selector: matched[2], verifier: matched[3] };
 }
 async function resolveAccessKeyCredential(database, request, sessionToken) {
+  return traceRuntimeOperation("sporades.auth.access_key.resolve", () => resolveAccessKeyCredentialOperation(database, request, sessionToken), (result) => result ? "success" : "denied");
+}
+async function resolveAccessKeyCredentialOperation(database, request, sessionToken) {
   const source = accessKeySourceBucket(database, request);
   assertAccessKeyFailureLimit(database, "source", source, 30, 6e4);
   let parsed;
@@ -105434,13 +105461,6 @@ function unavailable() {
   return error;
 }
 
-// src/runtime-request-context.ts
-import { AsyncLocalStorage } from "node:async_hooks";
-var runtimeRequestScope = new AsyncLocalStorage();
-function withoutRuntimeRequestIdentity(callback) {
-  return runtimeRequestScope.exit(callback);
-}
-
 // src/jobs-runtime.ts
 var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var RESERVED_JOB_NAME_PREFIX = "_sporades";
@@ -106170,7 +106190,7 @@ async function ensureJobStorage(sqlite) {
   await sqlite.exec(
     sql2("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
   );
-  for (const [name2, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name2, type);
+  for (const [name2, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"], ["enqueueTraceContext", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name2, type);
   await sqlite.exec(sql2(
     "CREATE INDEX IF NOT EXISTS [sporades_jobs_stripe_payload_retention] ON [sporades_jobs]([handler], [status], [payloadRetentionUntil], [id])"
   ));
@@ -109192,6 +109212,9 @@ function contentTypeForFile(type) {
   return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
 }
 async function createPendingFileUpload(database, auth, message) {
+  return traceRuntimeOperation("sporades.file.upload.prepare", () => createPendingFileUploadOperation(database, auth, message), (result) => result.ok ? "success" : "denied");
+}
+async function createPendingFileUploadOperation(database, auth, message) {
   const input = message.file ?? {};
   const size = Number(input.size ?? 0);
   if (!Number.isFinite(size) || size < 0) {
@@ -109307,6 +109330,9 @@ async function createPendingFileUpload(database, auth, message) {
   });
 }
 async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
+  return traceRuntimeOperation("sporades.file.upload", () => completePendingFileUploadOperation(database, uploadId, request, websocketHub), (result) => result.ok ? "success" : "denied");
+}
+async function completePendingFileUploadOperation(database, uploadId, request, websocketHub = null) {
   const upload = await database.adapter.selectFileUpload(uploadId);
   if (!upload) {
     return {
@@ -109331,7 +109357,7 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
         return { ok: false, superseded: true };
       }
       try {
-        await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
+        await traceRuntimeOperation("sporades.file.bytes.write", () => database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes }));
         await sqlite.revokePublicFileUrlsForFile(upload.fileId, now2);
         return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
       } catch (error) {
@@ -109376,6 +109402,9 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
   }
 }
 async function getPrivateFileUrl(database, auth, fileReference) {
+  return traceRuntimeOperation("sporades.file.private_url", () => getPrivateFileUrlOperation(database, auth, fileReference), (result) => result.ok ? "success" : "denied");
+}
+async function getPrivateFileUrlOperation(database, auth, fileReference) {
   const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
   if (!resolved.ok) {
     return resolved;
@@ -109397,6 +109426,9 @@ async function getPrivateFileUrl(database, auth, fileReference) {
   };
 }
 async function createPublicFileUrl(database, auth, fileReference, options = {}) {
+  return traceRuntimeOperation("sporades.file.public_url.create", () => createPublicFileUrlOperation(database, auth, fileReference, options), (result) => result.ok ? "success" : "denied");
+}
+async function createPublicFileUrlOperation(database, auth, fileReference, options = {}) {
   const expiry = validatePublicUrlExpiry(options);
   if (!expiry.ok) {
     return expiry;
@@ -109445,6 +109477,9 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
   });
 }
 async function revokePublicFileUrl(database, auth, publicUrlId) {
+  return traceRuntimeOperation("sporades.file.public_url.revoke", () => revokePublicFileUrlOperation(database, auth, publicUrlId), (result) => result.ok ? "success" : "denied");
+}
+async function revokePublicFileUrlOperation(database, auth, publicUrlId) {
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now2);
   if (result.changes === 0) {
@@ -109948,6 +109983,9 @@ function revokeCurrentUserFileApi(context2) {
   if (state) state.active = false;
 }
 async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
+  return traceRuntimeOperation("sporades.file.delete", () => deletePrivateFileOperation(database, auth, fileReference, credential, deferByteRemoval, requireLiveActor), (result) => result.ok ? "success" : "denied");
+}
+async function deletePrivateFileOperation(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
@@ -110038,6 +110076,9 @@ function validatePublicUrlExpiry(options) {
   return { ok: true, expiresAt: expiresAt.toISOString() };
 }
 async function fileRowForActor(database, auth, fileReference, credential = { kind: "session" }) {
+  return traceRuntimeOperation("sporades.file.authorize", () => fileRowForActorOperation(database, auth, fileReference, credential), (result) => result ? "success" : "denied");
+}
+async function fileRowForActorOperation(database, auth, fileReference, credential = { kind: "session" }) {
   const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read", credential);
   return resolved.ok ? resolved.row : null;
 }
@@ -110282,7 +110323,7 @@ function createStructuredFileError(message, hint) {
   return { message, hint };
 }
 async function removeFileVersionBestEffort(database, fileId, version3) {
-  await database.fileStorage.deleteFileVersion({ fileId, version: version3 }).catch(() => {
+  await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId, version: version3 })).catch(() => {
   });
 }
 
@@ -122873,6 +122914,9 @@ async function* multipartParts(request, boundaryText, maxWireBytes, maxPartBytes
   throw Object.assign(new Error("Truncated multipart request."), { code: "INVALID_MULTIPART" });
 }
 async function stageMultipartIngress(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles = true) {
+  return traceRuntimeOperation("sporades.file.ingress.stage", () => stageMultipartIngressOperation(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles));
+}
+async function stageMultipartIngressOperation(database, endpoint, request, endpointRequest, actor, admittedAuthority, allowFiles = true) {
   let policy;
   try {
     policy = validateMultipartIngressPolicy(endpoint.options.body.multipart);
@@ -122967,7 +123011,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
       if (row.state === "complete" && !inspectionEvidenceIsCurrent(database, row, policy.inspection)) throw inspectionRequiredError();
       if (acquired.winner) {
         wonReceipts.push(row);
-        await database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body });
+        await traceRuntimeOperation("sporades.file.bytes.write", () => database.fileStorage.writeFileVersion({ fileId: row.fileId, version: row.version, bytes: body }));
         const published = await publishStagedReceipt(database, row);
         if (published) row = published;
         else {
@@ -122976,7 +123020,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
           else {
             const primary = Object.assign(new Error("Multipart ingress staging lost its publication lease."), { code: "INGRESS_STAGING_INCOMPLETE" });
             try {
-              await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
+              await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version }));
             } catch (cleanup) {
               throw new AggregateError([primary, cleanup], "Multipart ingress staging lost publication and object cleanup failed.");
             }
@@ -122992,7 +123036,7 @@ async function stageMultipartIngress(database, endpoint, request, endpointReques
     for (const row of wonReceipts.reverse()) {
       try {
         const deleted = await database.adapter.prepare(database.adapter.dialect.sql("DELETE FROM [sporades_file_ingress] WHERE [key] = ? AND [leaseId] = ? AND [state] IN ('staging', 'leased')")).run(row.key, row.leaseId);
-        if (Number(deleted?.changes ?? 0) > 0) await database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version });
+        if (Number(deleted?.changes ?? 0) > 0) await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: row.fileId, version: row.version }));
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }
@@ -123242,7 +123286,7 @@ async function sweepExpiredFileIngress(database, options = {}) {
       const armed = await armIngressSweep(database, candidate, now2, sweepToken);
       if (!armed) continue;
       try {
-        await database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version });
+        await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId: armed.fileId, version: armed.version }));
       } catch {
         failures.push(Object.freeze({ leaseId, code: "INGRESS_ORPHAN_CLEANUP_FAILED" }));
         continue;
@@ -123745,16 +123789,18 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
         auth = admission.auth;
         credential = admission.credential;
         admittedWithAccessKey = true;
-        if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
-          const error = commandError2("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
-          error.sporadesAuthDenialLogData = {
-            requirement: "file-access-key-scopes",
-            handler: { kind: "file", path: target.pathname },
-            actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false }
-          };
-          error.sporadesAccessKeyFailure = "forbidden";
-          throw error;
-        }
+        traceRuntimeOperation("sporades.auth.admit", () => {
+          if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
+            const error = commandError2("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
+            error.sporadesAuthDenialLogData = {
+              requirement: "file-access-key-scopes",
+              handler: { kind: "file", path: target.pathname },
+              actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false }
+            };
+            error.sporadesAccessKeyFailure = "forbidden";
+            throw error;
+          }
+        });
         emitAccessKeyAdmittedAudit(database, { kind: "file", auth, credential }, admission.record);
         await recordAccessKeyUsage(database, admission);
       } else {
@@ -123867,7 +123913,7 @@ function writeNotFound(response) {
 }
 async function sendFileHttpResponse(database, response, row, options = {}) {
   try {
-    const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
+    const bytes = await traceRuntimeOperation("sporades.file.read", () => database.fileStorage.readFileVersion({ fileId: row.id, version: row.version }));
     response.writeHead(200, {
       "content-type": contentTypeForFile(row.type),
       "cache-control": options.accessKey ? "private, no-store" : "private, max-age=31536000, immutable",
@@ -123926,7 +123972,7 @@ async function sendEndpointFileAttachmentResponse(database, response, attachment
       writeOpaqueAttachmentDenial(response);
       return;
     }
-    const stream = await database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version });
+    const stream = await traceRuntimeOperation("sporades.file.stream", () => database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version }));
     response.removeHeader?.("access-control-allow-origin");
     response.removeHeader?.("access-control-allow-credentials");
     response.removeHeader?.("access-control-expose-headers");
@@ -125242,6 +125288,9 @@ function readEndpointSessionToken(headers, query) {
   return headers["x-sporades-session-token"] ?? null;
 }
 function requireUserAuth(context2, options = {}) {
+  return traceRuntimeOperation("sporades.auth.admit", () => requireUserAuthOperation(context2, options));
+}
+function requireUserAuthOperation(context2, options = {}) {
   const linked = normalizeRequireUserAuthOptions(options).linked;
   const auth = context2?.auth;
   if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
@@ -127231,6 +127280,9 @@ async function refreshSessionOnAdapter(sqlite, token) {
   return expiresAt;
 }
 async function resolveAnonymousSession(database, sessionToken) {
+  return traceRuntimeOperation("sporades.auth.session.resolve", () => resolveAnonymousSessionOperation(database, sessionToken));
+}
+async function resolveAnonymousSessionOperation(database, sessionToken) {
   if (sessionToken) {
     const existing = await database.adapter.readAuthSessionWithUser(sessionToken);
     if (existing) {
@@ -128455,7 +128507,8 @@ function createProfileExporters(traceOptions, metricOptions) {
   }
 }
 function createHttpRequestTelemetry(config, onDiagnostic) {
-  if (!config) return { websocket: disabledWebSocketTelemetry, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID9() }, handle), shutdown: async () => {
+  if (!config) return { websocket: disabledWebSocketTelemetry, bindJobQueue: (_database) => {
+  }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID9() }, handle), shutdown: async () => {
   } };
   if (config.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1e3)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
@@ -128542,6 +128595,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     resource,
     readers: [metricReader],
     views: [
+      { instrumentName: "sporades.job.execution.duration", aggregationCardinalityLimit: 1024, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300] } } },
+      { instrumentName: "sporades.job.retry.count", aggregationCardinalityLimit: 129 },
+      { instrumentName: "sporades.job.failure.count", aggregationCardinalityLimit: 129 },
       { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
       { instrumentName: "http.server.active_requests", aggregationCardinalityLimit: 128 },
       { instrumentName: "http.server.request.duration", aggregationCardinalityLimit: 512, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [5e-3, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } },
@@ -128713,8 +128769,98 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       return { run: (handle) => runtimeRequestScope.run(scope, handle), end };
     }
   };
+  const jobMeter = meterProvider.getMeter("sporades-runtime-jobs", "1");
+  const jobDuration = jobMeter.createHistogram("sporades.job.execution.duration", { unit: "s" });
+  const jobRetries = jobMeter.createCounter("sporades.job.retry.count", { unit: "1" });
+  const jobFailures = jobMeter.createCounter("sporades.job.failure.count", { unit: "1" });
+  const queueDepth = jobMeter.createObservableGauge("sporades.job.queue.depth", { unit: "1" });
+  const queueAge = jobMeter.createObservableGauge("sporades.job.queue.oldest_pending_age", { unit: "s" });
+  let jobQueueDatabase;
+  let reading = false;
+  const seenJobNames = /* @__PURE__ */ new Set();
+  jobMeter.addBatchObservableCallback(async (result) => {
+    const database = jobQueueDatabase;
+    if (!database || reading || closing || database.__jobStopped) return;
+    reading = true;
+    try {
+      const row = await withoutRuntimeRequestIdentity(() => database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT COUNT(*) AS [depth], MIN([createdAt]) AS [oldest] FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')"
+      )).get());
+      if (closing || database.__jobStopped || jobQueueDatabase !== database) return;
+      const depth2 = Number(row?.depth);
+      const oldest = row?.oldest == null ? null : Date.parse(row.oldest);
+      if (!Number.isSafeInteger(depth2) || depth2 < 0 || depth2 > 0 && (oldest === null || !Number.isFinite(oldest))) return;
+      result.observe(queueDepth, depth2);
+      result.observe(queueAge, oldest === null ? 0 : Math.max(0, (database.clock.now().getTime() - oldest) / 1e3));
+    } catch {
+    } finally {
+      reading = false;
+    }
+  }, [queueDepth, queueAge]);
   return {
     websocket,
+    /** Internal generated-runtime seam. Only declared names can become labels. */
+    bindJobQueue(database) {
+      const names = /* @__PURE__ */ new Set();
+      for (const job of database.jobs ?? []) {
+        if (names.size >= 128) break;
+        if (typeof job.name === "string" && /^[A-Za-z_][A-Za-z0-9_.-]{0,79}$/.test(job.name) && (seenJobNames.has(job.name) || seenJobNames.size < 128)) {
+          names.add(job.name);
+          seenJobNames.add(job.name);
+        }
+      }
+      jobQueueDatabase = database;
+      const transition = (name2, outcome) => {
+        try {
+          const labels = { "sporades.job.handler": typeof name2 === "string" && names.has(name2) ? name2 : "__other" };
+          if (outcome === "retry") jobRetries.add(1, labels);
+          jobFailures.add(1, labels);
+        } catch {
+        }
+      };
+      database.__jobTelemetry = {
+        transition,
+        start(row) {
+          if (closing) return void 0;
+          const handler = names.has(row.handler) ? row.handler : "__other";
+          const started = process.hrtime.bigint();
+          const labels = { "sporades.job.handler": handler };
+          let span;
+          try {
+            const value = row.enqueueTraceContext;
+            const match = typeof value === "string" && value.length === 55 ? /^00-([a-f0-9]{32})-([a-f0-9]{16})-(00|01)$/.exec(value) : null;
+            const link2 = match && !/^0+$/.test(match[1]) && !/^0+$/.test(match[2]) ? { traceId: match[1], spanId: match[2], traceFlags: match[3] === "01" ? TraceFlags.SAMPLED : TraceFlags.NONE, isRemote: true } : void 0;
+            span = tracer.startSpan(`job ${handler}`, {
+              kind: SpanKind.CONSUMER,
+              attributes: { "sporades.job.handler": handler, "sporades.job.attempt": Number(row.attempts) + 1 },
+              ...link2 ? { links: [{ context: link2 }] } : {}
+            }, ROOT_CONTEXT);
+          } catch {
+          }
+          let ended = false;
+          return {
+            run(handle) {
+              return withoutRuntimeRequestIdentity(() => span ? runtimeJobScope.run({ span, isOpen: () => !ended && !closing }, handle) : handle());
+            },
+            end(outcome) {
+              if (ended) return;
+              ended = true;
+              try {
+                jobDuration.record(Number(process.hrtime.bigint() - started) / 1e9, { ...labels, "sporades.job.outcome": outcome });
+                if (outcome === "failed" || outcome === "retry") transition(handler, outcome);
+              } catch {
+              }
+              try {
+                span?.setAttribute("sporades.job.outcome", outcome);
+                if (outcome === "failed" || outcome === "retry") span?.setStatus({ code: SpanStatusCode.ERROR });
+                span?.end();
+              } catch {
+              }
+            }
+          };
+        }
+      };
+    },
     run(request, response, endpoints, handle) {
       if (closing) return handle();
       const method = safeMethod(request.method);
@@ -128728,9 +128874,53 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       activeRequests.add(1, activeLabels);
       const span = tracer.startSpan(`${method} ${route}`, { kind: SpanKind.SERVER, attributes: { "http.request.method": method, "http.route": route } }, validatedRemoteParent(request));
       let ended = false;
+      let operationBudget = 32;
+      const activeOperations = /* @__PURE__ */ new Set();
+      const operation = (name2, callback, resultOutcome) => {
+        if (ended || !span.isRecording() || operationBudget === 0) return callback();
+        operationBudget--;
+        const child = tracer.startSpan(name2, { kind: SpanKind.INTERNAL }, trace.setSpan(ROOT_CONTEXT, span));
+        let completed = false;
+        const finish = (outcome) => {
+          if (completed) return;
+          completed = true;
+          activeOperations.delete(finish);
+          child.setAttribute("sporades.operation.outcome", outcome);
+          if (outcome !== "success") child.setStatus({ code: SpanStatusCode.ERROR });
+          child.end();
+        };
+        activeOperations.add(finish);
+        const succeeded = (result) => {
+          let outcome = "success";
+          try {
+            outcome = resultOutcome?.(result) ?? "success";
+          } catch {
+          }
+          finish(["success", "denied", "error", "cancelled"].includes(outcome) ? outcome : "error");
+          return result;
+        };
+        const failed = (error) => {
+          let outcome = "error";
+          try {
+            const code = error?.code;
+            if (["UNAUTHENTICATED", "FORBIDDEN", "RATE_LIMITED"].includes(code)) outcome = "denied";
+            else if (code === "ABORT_ERR" || error?.name === "AbortError") outcome = "cancelled";
+          } catch {
+          }
+          finish(outcome);
+          throw error;
+        };
+        try {
+          const result = callback();
+          return result && typeof result.then === "function" ? Promise.resolve(result).then(succeeded, failed) : succeeded(result);
+        } catch (error) {
+          return failed(error);
+        }
+      };
       const end = (outcome) => {
         if (ended) return;
         ended = true;
+        for (const finish of activeOperations) finish(outcome === "error" ? "error" : "cancelled");
         const status = outcome === "abort" && !response.headersSent ? null : outcome === "error" && !response.headersSent ? 500 : Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
         const labels = { ...activeLabels, "http.response.status_code": status === null ? "none" : `${Math.floor(status / 100)}xx`, "sporades.http.outcome": outcome };
         requestCount.add(1, labels);
@@ -128748,7 +128938,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       response.once("error", () => end("error"));
       request.once("aborted", () => end("abort"));
       try {
-        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span, tracer, isOpen: () => !ended && !closing }, handle);
+        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span, operation, tracer, isOpen: () => !ended && !closing }, handle);
         if (result && typeof result.then === "function") {
           return Promise.resolve(result).catch((error) => {
             end("error");
@@ -135479,6 +135669,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   await sqlite.ensureFileStorage();
   await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
   await sqlite.ensureLogStorage();
+  options?.onJobQueueReady?.(database);
   if (!options?.runtimeActionOnly) {
     await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
   }
@@ -136136,9 +136327,10 @@ async function recoverExpiredJobLeases(database) {
       const ownership2 = jobClaimOwnership(row.claimToken);
       const leasePredicate = row.leaseExpiresAt === null ? "[leaseExpiresAt] IS NULL" : "[leaseExpiresAt] = ?";
       const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
-      await database.adapter.prepare(sql2(
+      const changed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership2.predicate
       )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership2.params);
+      if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "failed");
       continue;
     }
     if (!isCanonicalJobTimestamp(row.leaseExpiresAt)) {
@@ -136146,17 +136338,19 @@ async function recoverExpiredJobLeases(database) {
       const ownership2 = jobClaimOwnership(row.claimToken);
       const leasePredicate = row.leaseExpiresAt === null ? "[leaseExpiresAt] IS NULL" : "[leaseExpiresAt] = ?";
       const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
-      await database.adapter.prepare(sql2(
+      const changed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership2.predicate
       )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership2.params);
+      if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "failed");
       continue;
     }
     const provenanceFailure = invalidStoredJobFailure(row, recoveredAt);
     if (["JOB_ACTOR_SNAPSHOT_INVALID", "JOB_CREDENTIAL_INVALID"].includes(provenanceFailure?.code)) {
       const ownership2 = jobClaimOwnership(row.claimToken);
-      await database.adapter.prepare(sql2(
+      const changed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership2.predicate
       )).run(JSON.stringify(provenanceFailure), recoveredIso, row.id, row.leaseExpiresAt, ...ownership2.params);
+      if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "failed");
       continue;
     }
     const leaseExpiresAt = Date.parse(row.leaseExpiresAt);
@@ -136173,9 +136367,10 @@ async function recoverExpiredJobLeases(database) {
     const retryAvailableAt = retryEligible ? jobTimestampAfter(recoveredAt, retry.delayMs) : null;
     const retryLeaseExpiresAt = retryAvailableAt === null ? null : jobTimestampAfter(new Date(retryAvailableAt), RUNTIME_CLAIM_LEASE_MS);
     if (retryAvailableAt !== null && retryLeaseExpiresAt !== null) {
-      await database.adapter.prepare(sql2(
+      const changed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate
       )).run(retryAvailableAt, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
+      if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "retry");
     } else {
       const failure = storedFailure ?? (retry === null || retryEligible ? invalidJobRetryPolicyFailure() : { code: "JOB_LEASE_EXPIRED", message: "Job lease expired." });
       const teamBillingReplacementScheduled = await database.adapter.withTransaction(async (transaction) => {
@@ -136212,9 +136407,10 @@ async function recoverExpiredJobLeases(database) {
             replacementScheduled = erasureSettlement?.replacementScheduled === true;
           }
         }
-        return replacementScheduled;
+        return { replacementScheduled, changed: Number(settled?.changes ?? 0) === 1 };
       });
-      if (teamBillingReplacementScheduled && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
+      if (teamBillingReplacementScheduled.changed) database.__jobTelemetry?.transition(row.handler, "failed");
+      if (teamBillingReplacementScheduled.replacementScheduled && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
     }
   }
   return earliestFutureLeaseAt;
@@ -136363,9 +136559,11 @@ function jobRetryHorizonFits(firstAttempt, retry, attemptCount, allowShortFinalS
 }
 async function failInvalidQueuedJob(database, row, failure) {
   const sql2 = database.adapter.dialect.sql;
-  return await database.adapter.prepare(sql2(
+  const changed = await database.adapter.prepare(sql2(
     "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')"
   )).run(JSON.stringify(failure), database.clock.now().toISOString(), row.id, row.status, row.availableAt, row.retryJson);
+  if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "failed");
+  return changed;
 }
 async function recoverInvalidRetainedJobState(database) {
   const recoveredAt = database.clock.now();
@@ -136378,9 +136576,10 @@ async function recoverInvalidRetainedJobState(database) {
   for (const row of rows) {
     const failure = invalidStoredJobFailure(row, recoveredAt);
     if (!failure) continue;
-    await database.adapter.prepare(sql2(
+    const changed = await database.adapter.prepare(sql2(
       "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')"
     )).run(JSON.stringify(failure), failedAt, row.id, row.status, row.availableAt, row.retryJson);
+    if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "failed");
   }
 }
 function jobClaimOwnership(claimToken) {
@@ -138251,6 +138450,9 @@ async function applyContextMiddleware(database, baseContext, kind) {
   return context2;
 }
 function admitCredentialHandler(handler, context2, kind) {
+  return traceRuntimeOperation("sporades.auth.admit", () => admitCredentialHandlerOperation(handler, context2, kind));
+}
+function admitCredentialHandlerOperation(handler, context2, kind) {
   const requirements = readAuthRequirements(handler);
   if (!requirements) {
     return;
@@ -140004,7 +140206,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
   await jobAdapter.prepare(
     jobAdapter.dialect.sql(
-      "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL)"
+      "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor], [enqueueTraceContext]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL, ?)"
     )
   ).run(
     randomUUID12(),
@@ -140017,7 +140219,8 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
     jobAvailableAt,
     idempotencyKey,
     now2,
-    JSON.stringify(normalizeJobRetry(retry))
+    JSON.stringify(normalizeJobRetry(retry)),
+    captureJobTraceContext()
   );
   if (!deferDispatch) deferOrScheduleJobDispatch(database, queueDatabase);
 }
@@ -140904,11 +141107,12 @@ function createCurrentUserJobApi(database, contextGetter) {
       const provenanceContext = context2.__jobParentContext?.credential ? context2.__jobParentContext : context2;
       const authSnapshotJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(captureJobAuthSnapshot(provenanceContext.auth));
       const credentialJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(canonicalJobCredentialProvenance(provenanceContext.credential));
-      const row = { id: id2, handler: handlerName, enqueuedByUserId: context2.__jobEnqueuedBy ?? context2.auth.userId, actorUserId: context2.auth.userId, actorProvider: jobActorProvider(context2.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now2 ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now2, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
+      const enqueueTraceContext = captureJobTraceContext();
+      const row = { enqueueTraceContext, id: id2, handler: handlerName, enqueuedByUserId: context2.__jobEnqueuedBy ?? context2.auth.userId, actorUserId: context2.auth.userId, actorProvider: jobActorProvider(context2.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now2 ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now2, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       try {
         const result = await jobAdapter.prepare(jobAdapter.dialect.sql(
-          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" + (idempotencyKey ? " ON CONFLICT DO NOTHING" : "")
-        )).run(id2, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now2, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor], [enqueueTraceContext]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)" + (idempotencyKey ? " ON CONFLICT DO NOTHING" : "")
+        )).run(id2, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now2, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor, enqueueTraceContext);
         if (idempotencyKey && Number(result?.changes ?? 0) === 0) {
           const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context2.auth.userId, idempotencyKey);
           if (existing) {
@@ -141192,6 +141396,8 @@ async function runCurrentUserJobWorker(database) {
       const abortController = new AbortController();
       database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
       let handlerStarted = false;
+      const attemptTelemetry = database.__jobTelemetry?.start(row);
+      let telemetryOutcome = "claim_lost";
       try {
         const jobPayload = JSON.parse(row.payload);
         const claimedState = await database.adapter.prepare(sql2(
@@ -141212,7 +141418,7 @@ async function runCurrentUserJobWorker(database) {
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
             const releaseResources = bindOrdinaryJobResourceContext(database, privilegedCtx, { id: row.id, claimToken, leaseExpiresAt }, true);
             try {
-              return await handler.handler(privilegedCtx, jobPayload);
+              return await (attemptTelemetry ? attemptTelemetry.run(() => handler.handler(privilegedCtx, jobPayload)) : handler.handler(privilegedCtx, jobPayload));
             } finally {
               releaseResources();
               database.__runtimeJobAttempts.delete(privilegedCtx);
@@ -141235,7 +141441,7 @@ async function runCurrentUserJobWorker(database) {
           let handlerFailed = false;
           const releaseResources = bindOrdinaryJobResourceContext(database, context2, { id: row.id, claimToken, leaseExpiresAt });
           try {
-            result = await handler.handler(context2, jobPayload);
+            result = await (attemptTelemetry ? attemptTelemetry.run(() => handler.handler(context2, jobPayload)) : handler.handler(context2, jobPayload));
           } catch (error) {
             handlerFailed = true;
             throw error;
@@ -141261,6 +141467,7 @@ async function runCurrentUserJobWorker(database) {
         )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken) : await database.adapter.prepare(sql2(
           "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
         )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
+        if (Number(settled?.changes ?? 0) === 1) telemetryOutcome = "succeeded";
         if (Number(settled?.changes ?? 0) === 0) {
           const cancellation = await database.adapter.prepare(sql2(
             "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
@@ -141269,9 +141476,10 @@ async function runCurrentUserJobWorker(database) {
             const cancelledAt = database.clock.now().toISOString();
             const cancellationHistory = JSON.parse(row.attemptHistory || "[]");
             cancellationHistory.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "cancelled", code: "ABORTED", completedAt: cancelledAt });
-            await database.adapter.prepare(sql2(
+            const cancelled = await database.adapter.prepare(sql2(
               "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NOT NULL"
             )).run(JSON.stringify({ code: "ABORTED", message: "Job aborted." }), cancelledAt, JSON.stringify(cancellationHistory), row.id, claimToken);
+            if (Number(cancelled?.changes ?? 0) === 1) telemetryOutcome = "cancelled";
           }
         }
         if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && typeof payloadRetentionUntil === "string" && isCanonicalJobTimestamp(payloadRetentionUntil)) {
@@ -141285,7 +141493,10 @@ async function runCurrentUserJobWorker(database) {
         const runtimeError = error?.cause ?? error;
         if (row.handler === STRIPE_EVENT_JOB && runtimeError?.[atomicStripeFenceContention] === true) {
           const contention = await deferAtomicStripeFenceContention(database, row.id, claimToken);
-          if (contention === "deferred") continue;
+          if (contention === "deferred") {
+            telemetryOutcome = "deferred";
+            continue;
+          }
           if (contention === "cancelled") {
             abortController.abort();
             error = atomicStripeAbortError();
@@ -141310,20 +141521,26 @@ async function runCurrentUserJobWorker(database) {
         const failure = retryPolicyInvalid ? invalidJobRetryPolicyFailure() : handlerFailure;
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
         if (cancelled) {
-          await database.adapter.prepare(sql2(
+          const changed = await database.adapter.prepare(sql2(
             "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=?"
           )).run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id, claimToken);
+          if (Number(changed?.changes ?? 0) === 1) telemetryOutcome = "cancelled";
         } else if (retryAvailableAt !== null) {
           const changed = await database.adapter.prepare(sql2(
             "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=?"
           )).run(retryAvailableAt, JSON.stringify(history), row.id, claimToken);
-          if (Number(changed?.changes ?? 0) === 1) scheduleJobWorkerWake(database, retry.delayMs + 1);
+          if (Number(changed?.changes ?? 0) === 1) {
+            telemetryOutcome = "retry";
+            scheduleJobWorkerWake(database, retry.delayMs + 1);
+          }
         } else {
-          await database.adapter.prepare(sql2(
+          const changed = await database.adapter.prepare(sql2(
             "UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id] = ? AND [status]='running' AND [claimToken]=?"
           )).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id, claimToken);
+          if (Number(changed?.changes ?? 0) === 1) telemetryOutcome = "failed";
         }
       } finally {
+        attemptTelemetry?.end(telemetryOutcome);
         const activeClaim = database.__jobAbortControllers?.get(row.id);
         if (activeClaim?.claimToken === claimToken) database.__jobAbortControllers.delete(row.id);
         database.__notifyJobStateQueries?.();
@@ -150143,28 +150360,32 @@ async function startDevSession(options) {
   const actionBundlePath = path20.join(options.projectDir, ".sporades", "build", ".dev-actions", actionBundleId, "server.mjs");
   const sessionFilePath = path20.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path20.join(options.projectDir, ".sporades", "data.db");
-  const runtime = await createDevRuntime({
-    projectDir: options.projectDir,
-    databasePath,
-    serverSource: bundle.serverRuntime.source,
-    serverEnv: bundle.serverRuntime.env,
-    serviceEnv: capsuleServiceEnv,
-    capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-    config: withRuntimeSecuritySession(config, session),
-    runtimeProbeToken: inspectionToken
-  });
-  let telemetry;
-  const emitTelemetryDiagnostic = (diagnostic) => runtime.database.log.emit({
+  let runtime;
+  const emitTelemetryDiagnostic = (diagnostic) => runtime?.database.log.emit({
     category: "platform",
     event: diagnostic.event,
     level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
     message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
     data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null
   });
+  let telemetry;
   try {
-    telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
+    runtime = await createDevRuntime({
+      projectDir: options.projectDir,
+      databasePath,
+      serverSource: bundle.serverRuntime.source,
+      serverEnv: bundle.serverRuntime.env,
+      serviceEnv: capsuleServiceEnv,
+      capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
+      config: withRuntimeSecuritySession(config, session),
+      runtimeProbeToken: inspectionToken,
+      onJobQueueReady(queueDatabase) {
+        telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
+        telemetry.bindJobQueue(queueDatabase);
+      }
+    });
   } catch (error) {
-    await runtime.shutdown();
+    await telemetry?.shutdown();
     throw error;
   }
   await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
@@ -150437,7 +150658,8 @@ async function startDevSession(options) {
           bundle.serverRuntime.env,
           runtimeServiceEnv,
           bundle.serverRuntime.capsuleModuleSource,
-          withRuntimeSecuritySession(config, session)
+          withRuntimeSecuritySession(config, session),
+          telemetry
         );
         websocketHub.disconnectAll();
         runtime.database.log.emit({
@@ -150456,6 +150678,7 @@ async function startDevSession(options) {
           fatal: errorData
         });
       } catch (restartError) {
+        telemetry.bindJobQueue(runtime.database);
         const details = errorDetails(restartError);
         runtime.database.log.emit({
           category: "platform",
@@ -150539,8 +150762,10 @@ async function startDevSession(options) {
             rebuild.serverRuntime.env,
             nextCapsuleServiceEnv,
             rebuild.serverRuntime.capsuleModuleSource,
-            withRuntimeSecuritySession(nextConfig, session)
+            withRuntimeSecuritySession(nextConfig, session),
+            nextTelemetry ?? telemetry
           ).catch(async (error) => {
+            telemetry.bindJobQueue(runtime.database);
             await nextTelemetry?.shutdown();
             throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
           });
@@ -150832,6 +151057,7 @@ async function createDevRuntime(options) {
       await importCapsuleDefinition(options.capsuleModuleSource),
       {
         serviceEnv: options.serviceEnv,
+        onJobQueueReady: options.onJobQueueReady,
         createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
         createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config)
       }
@@ -150853,7 +151079,7 @@ async function createDevRuntime(options) {
     get database() {
       return database;
     },
-    async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
+    async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config, jobTelemetry) {
       const nextPath = resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
       const changed = nextPath !== admissionPath;
       let nextAdmission = admissionPolicy;
@@ -150872,6 +151098,7 @@ async function createDevRuntime(options) {
           await importCapsuleDefinition(capsuleModuleSource),
           {
             serviceEnv,
+            onJobQueueReady: (queueDatabase) => jobTelemetry.bindJobQueue(queueDatabase),
             createStripeCallbackEndpoint: await stripeCallbackFactory(config),
             createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config)
           }

@@ -45,6 +45,7 @@ export type RuntimeWebSocketTelemetry = {
 };
 export declare function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>): {
     websocket: RuntimeWebSocketTelemetry;
+    bindJobQueue: (_database: any) => void;
     run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => unknown;
     shutdown: () => Promise<void>;
 };

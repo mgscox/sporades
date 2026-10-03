@@ -2349,26 +2349,31 @@ async function startDevSession(options: LooseRecord) {
 
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
-  const runtime: any = await createDevRuntime({
-    projectDir: options.projectDir,
-    databasePath,
-    serverSource: bundle.serverRuntime.source,
-    serverEnv: bundle.serverRuntime.env,
-    serviceEnv: capsuleServiceEnv,
-    capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-    config: withRuntimeSecuritySession(config, session),
-    runtimeProbeToken: inspectionToken,
-  });
-  let telemetry: ReturnType<typeof createHttpRequestTelemetry>;
-  const emitTelemetryDiagnostic = (diagnostic: { event: "telemetry.export.failed"; reason: string } | { event: "telemetry.export.recovered" }) => runtime.database.log.emit({
+  let runtime: any;
+  const emitTelemetryDiagnostic = (diagnostic: { event: "telemetry.export.failed"; reason: string } | { event: "telemetry.export.recovered" }) => runtime?.database.log.emit({
     category: "platform",
     event: diagnostic.event,
     level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
     message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
     data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
   });
-  try { telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic); }
-  catch (error) { await runtime.shutdown(); throw error; }
+  let telemetry!: ReturnType<typeof createHttpRequestTelemetry>;
+  try {
+    runtime = await createDevRuntime({
+      projectDir: options.projectDir,
+      databasePath,
+      serverSource: bundle.serverRuntime.source,
+      serverEnv: bundle.serverRuntime.env,
+      serviceEnv: capsuleServiceEnv,
+      capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
+      config: withRuntimeSecuritySession(config, session),
+      runtimeProbeToken: inspectionToken,
+      onJobQueueReady(queueDatabase: any) {
+        telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
+        telemetry.bindJobQueue(queueDatabase);
+      },
+    });
+  } catch (error) { await telemetry?.shutdown(); throw error; }
   await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
   runtime.database.log.emit({
     category: "platform",
@@ -2662,6 +2667,7 @@ async function startDevSession(options: LooseRecord) {
         runtimeServiceEnv,
         bundle.serverRuntime.capsuleModuleSource,
         withRuntimeSecuritySession(config, session),
+        telemetry,
       );
       websocketHub.disconnectAll();
       runtime.database.log.emit({
@@ -2680,6 +2686,7 @@ async function startDevSession(options: LooseRecord) {
         fatal: errorData,
       });
     } catch (restartError) {
+      telemetry.bindJobQueue(runtime.database);
       const details = errorDetails(restartError);
       runtime.database.log.emit({
         category: "platform",
@@ -2760,7 +2767,9 @@ async function startDevSession(options: LooseRecord) {
           nextCapsuleServiceEnv,
           rebuild.serverRuntime.capsuleModuleSource,
           withRuntimeSecuritySession(nextConfig, session),
+          nextTelemetry ?? telemetry,
         ).catch(async (error: unknown) => {
+          telemetry.bindJobQueue(runtime.database);
           await nextTelemetry?.shutdown();
           throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
         });
@@ -3065,6 +3074,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     await importCapsuleDefinition(options.capsuleModuleSource),
     {
       serviceEnv: options.serviceEnv,
+      onJobQueueReady: options.onJobQueueReady,
       createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
       createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
     },
@@ -3083,7 +3093,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     get database() {
       return database;
     },
-    async restart(serverSource: any, serverEnv: {}, serviceEnv: any, capsuleModuleSource: any, config: {}) {
+    async restart(serverSource: any, serverEnv: {}, serviceEnv: any, capsuleModuleSource: any, config: {}, jobTelemetry: ReturnType<typeof createHttpRequestTelemetry>) {
       const nextPath = resolveAdmissionPolicy((config as LooseRecord).admissionPolicy, (config as LooseRecord).deploy?.files);
       const changed = nextPath !== admissionPath;
       let nextAdmission = admissionPolicy;
@@ -3102,6 +3112,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
         await importCapsuleDefinition(capsuleModuleSource),
         {
           serviceEnv,
+          onJobQueueReady: (queueDatabase: any) => jobTelemetry.bindJobQueue(queueDatabase),
           createStripeCallbackEndpoint: await stripeCallbackFactory(config),
           createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
         },

@@ -267,7 +267,8 @@ The following work is intentionally deferred:
 
 - Additional automatic OpenTelemetry signals and centralized JSON logging:
   Dev and local Container HTTP SERVER tracing, API request metrics, and periodic
-  process CPU/memory and GC/event-loop metrics are available through explicit operator Telemetry
+  process CPU/memory and GC/event-loop metrics, and linked background Job attempts
+  with independent queue/duration/retry/failure metrics are available through explicit operator Telemetry
   profiles. A local Container's resolved telemetry selection persists in its launch
   environment across restart when a Dev build publishes a new Bundle.
   Legacy Containers without a launch descriptor retain their mounted server Bundle
