@@ -20,7 +20,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
-import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, inspectRuntimeJobs, inspectRuntimeSchedules, interpretHttpRequestTarget, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, writeInvalidHttpRequestTarget, } from "../server-runtime-source.js";
+import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, inspectRuntimeJobs, inspectRuntimeSchedules, interpretHttpRequestTarget, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeHttpAdmission, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, writeInvalidHttpRequestTarget, } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
@@ -179,7 +179,7 @@ database.runtimeTelemetry = {
 };
 const server = createServer(async (request, response) => telemetry.run(request, response, database.endpoints, async () => {
     try {
-        if (prepareHttpSecurity(database, request, response)) {
+        if (prepareHttpSecurity(database, request, response, () => routeHttpAdmission(database, request, response))) {
             return;
         }
         if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
@@ -190,6 +190,9 @@ const server = createServer(async (request, response) => telemetry.run(request, 
             return;
         }
         if (await routeRuntimeHealth(database, request, response)) {
+            return;
+        }
+        if (routeHttpAdmission(database, request, response)) {
             return;
         }
         if (await routeSporadesAuth(database, request, response)) {

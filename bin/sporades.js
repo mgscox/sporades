@@ -80798,6 +80798,17 @@ function parseAdmissionPolicy(bytes) {
   }
   return freeze({ digest: createHash2("sha256").update(bytes).digest("hex"), policy: value });
 }
+function matchExactAdmissionRule(generation, pathname) {
+  for (const rule of generation.policy.rules) {
+    if (!rule.enabled) continue;
+    if (rule.conditions.some((item) => item.kind === "pathname" && "exact" in item && item.exact !== pathname)) continue;
+    if (rule.conditions.some((item) => item.kind !== "pathname" || !("exact" in item))) {
+      throw new Error("Unsupported admission condition.");
+    }
+    return rule;
+  }
+  return null;
+}
 function resolveAdmissionPolicy(value, files = void 0) {
   if (value === void 0) return null;
   object(value, ["path"]);
@@ -123413,6 +123424,28 @@ function interpretHttpRequestTarget(target, method) {
     return null;
   }
 }
+function routeHttpAdmission(database, request, response, target) {
+  const runtime = database.admissionPolicy;
+  if (!runtime) return false;
+  try {
+    const generation = runtime.current();
+    if (!generation || generation.policy.rules.length === 0) return false;
+    const parsed = target ?? requestTarget(request);
+    if (/[\\]|%2f|%5c/i.test(parsed.pathname)) throw new Error("Invalid admission pathname.");
+    const pathname = parsed.form === "asterisk" ? "*" : decodeURIComponent(parsed.url.pathname);
+    if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(pathname)) throw new Error("Invalid admission pathname.");
+    if (!matchExactAdmissionRule(generation, pathname)) return false;
+  } catch {
+  }
+  response.writeHead(403, {
+    "cache-control": "no-store",
+    "content-type": "text/plain; charset=utf-8",
+    "content-length": "10",
+    connection: "close"
+  });
+  response.end("Forbidden\n");
+  return true;
+}
 function requestTarget(request) {
   const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
   if (!target) {
@@ -123511,7 +123544,7 @@ function emitHttpFailureLog(database, request, error, context2 = {}) {
   } catch {
   }
 }
-function prepareHttpSecurity(database, request, response) {
+function prepareHttpSecurity(database, request, response, admitPreflight) {
   const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
   const originalWriteHead = response.writeHead.bind(response);
   response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
@@ -123552,6 +123585,7 @@ function prepareHttpSecurity(database, request, response) {
     return originalWriteHead(statusCode, headers);
   });
   if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
+    if (admitPreflight?.()) return true;
     const headers = {
       "content-length": "0"
     };
@@ -150466,7 +150500,7 @@ async function startDevSession(options) {
   });
   const server = createServer2(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
     try {
-      if (prepareHttpSecurity(runtime.database, request, response)) {
+      if (prepareHttpSecurity(runtime.database, request, response, () => routeHttpAdmission(runtime.database, request, response))) {
         return;
       }
       const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
@@ -150476,6 +150510,13 @@ async function startDevSession(options) {
       }
       const requestPath = target.pathname;
       if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
+        return;
+      }
+      if (request.method === "GET" && requestPath === "/__sporades/health/runtime") {
+        await routeRuntimeHealth(runtime.database, request, response);
+        return;
+      }
+      if (routeHttpAdmission(runtime.database, request, response, target)) {
         return;
       }
       switch (`${request.method}:${requestPath}`) {
@@ -150588,7 +150629,7 @@ async function startDevSession(options) {
           });
           return;
       }
-      if (await routeRuntimeHealth(runtime.database, request, response) || await routeSporadesAuth(runtime.database, request, response) || await handleFileHttpRoute(runtime.database, request, response, websocketHub) || await routeEndpoint(runtime.database, request, response)) {
+      if (await routeSporadesAuth(runtime.database, request, response) || await handleFileHttpRoute(runtime.database, request, response, websocketHub) || await routeEndpoint(runtime.database, request, response)) {
         return;
       }
       const publicAsset2 = await readPublicAsset(bundle.staticFiles.publicTree, requestPath);

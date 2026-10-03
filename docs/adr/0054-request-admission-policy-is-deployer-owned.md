@@ -40,8 +40,11 @@ conditions are bounded. A complete deeply frozen generation swaps by one referen
 assignment. Invalid cold configuration aborts startup. Invalid hot updates retain
 the last-known-good generation and expose degraded health; successful recovery
 emits a health transition. Only digest and health appear in the protected readiness
-response and platform reload events. Request matching and enforcement are later
-slices; no request path consults this loader yet.
+response and platform reload events. Issue #66 established this lifecycle independently of enforcement. Issue #67 now
+consumes one generation snapshot before HTTP Capsule routing to enforce exact-path
+denials. Genuine authenticated controls bypass admission; reserved targets fail
+validation. The remaining matchers, quota enforcement and WebSocket upgrades are
+later slices.
 
 ## Consequences
 
