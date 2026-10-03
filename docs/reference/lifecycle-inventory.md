@@ -5,7 +5,7 @@ deploy, start/restart/rollback, stop, unregister/delete, opt-out and registered
 address changes. The authoritative Host registry supplies each snapshot;
 Capsule operations make no monitoring HTTP request. A separate systemd timer
 reconciles every 60 seconds after outages/reboots without the workstation.
-Probe scheduling and absence-alert delivery remain ticket #120.
+Prometheus uses acknowledged inventory for [availability probes and alerts](./availability-alerts.md).
 
 ## Authority and installation
 
@@ -89,7 +89,10 @@ identities. Each Capsule permits its canonical origin plus all 20 supported
 registered aliases (21 targets total). Targets are bare HTTP(S) application origins and registered aliases:
 no explicit ports, userinfo, queries, fragments, readiness paths/tokens, headers
 or response content. Unknown fields, invalid/duplicate identities and oversized
-snapshots (1 MiB, 2,000 Capsules) are rejected. No target is fetched here.
+snapshots (1 MiB, 2,000 Capsules) are rejected. The private stored envelope has
+separate room for expectation ages (up to twice the wire limit plus 8 KiB);
+the same byte bound is checked before durable replacement and on every read,
+including discovery. The public wire limit is unchanged. No target is fetched here.
 
 Scope identities, Hosted domains and target hostnames use lowercase DNS labels
 of 1–63 characters (253 characters total), with letters or digits at each end.

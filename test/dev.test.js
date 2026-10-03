@@ -11834,9 +11834,12 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started));
       const socket = await openSocket(started.data.url);
+      // Mutation results and query refreshes can arrive in one socket turn.
+      // Keep both even while the test is asserting the first response.
+      const messages = captureSocketMessages(socket);
       try {
         socket.send(JSON.stringify({ id: "query-1", type: "query.subscribe", query: "todos" }));
-        assert.deepEqual(await readSocketMessage(socket), {
+        assert.deepEqual(await messages.next(message => message.id === "query-1"), {
           id: "query-1",
           type: "query.result",
           query: "todos",
@@ -11845,7 +11848,7 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
         });
 
         socket.send(JSON.stringify({ id: "mutation-1", type: "mutation.run", mutation: "addTodo", args: ["Buy milk"] }));
-        assert.deepEqual(await readSocketMessage(socket), {
+        assert.deepEqual(await messages.next(message => message.id === "mutation-1"), {
           id: "mutation-1",
           type: "mutation.result",
           mutation: "addTodo",
@@ -11853,7 +11856,7 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
           error: null,
         });
 
-        const refreshed = await readSocketMessage(socket);
+        const refreshed = await messages.next(message => message.id === "query-1");
         assert.equal(refreshed.id, "query-1");
         assert.equal(refreshed.type, "query.result");
         assert.equal(refreshed.query, "todos");
@@ -11872,6 +11875,7 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
         assert.equal(todosTable.rows[0].text, "Buy milk");
         assert.equal(todosTable.rows[0].done, 0);
       } finally {
+        messages.dispose();
         socket.close();
       }
     } finally {
@@ -11879,6 +11883,19 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
       await new Promise((resolve) => child.once("exit", resolve));
     }
   });
+});
+
+test("todo message capture retains a same-turn mutation result and query refresh", async () => {
+  const socket = new EventTarget();
+  const messages = captureSocketMessages(socket);
+  const result = { id: "mutation-1", type: "mutation.result", data: null, error: null };
+  const refresh = { id: "query-1", type: "query.result", data: [{ text: "Buy milk" }], error: null };
+  try {
+    socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(result) }));
+    socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(refresh) }));
+    assert.deepEqual(await messages.next(message => message.id === "mutation-1"), result);
+    assert.deepEqual(await messages.next(message => message.id === "query-1"), refresh);
+  } finally { messages.dispose(); }
 });
 
 test("query unsubscribe is connection-owned, idempotent, validated, and prevents accumulated mutation refreshes", async () => {

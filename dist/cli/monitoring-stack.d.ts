@@ -11,6 +11,7 @@ export declare function runMonitoringStack(action: 'init' | 'validate', director
         schema: number | null;
     } | null;
     missing: string[];
+    notificationDelivery: string;
     nextSteps: string[];
 }>;
 //# sourceMappingURL=monitoring-stack.d.ts.map

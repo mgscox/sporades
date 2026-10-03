@@ -280,7 +280,7 @@ The following work is intentionally deferred:
   Connected Hosts automatically synchronize versioned lifecycle inventory through
   an exact Host-scoped interface, durable outbox and independent periodic worker.
   Central acknowledgements survive sender outages; manual import/export is recovery
-  only. Probe scheduling and absence-alert delivery remain separate work.
+  only. Prometheus discovers public probes from acknowledged running/failed inventory; pinned Blackbox and Alertmanager provide 60-second probe failure, two-minute telemetry absence and stale-inventory notifications. Host readiness booleans travel through the relay without exporting protected tokens. Operator `.env` webhook settings configure firing/recovery delivery and silences. See `docs/reference/availability-alerts.md`.
   Host OS pressure and Caddy Prometheus collection are available through the Host relay.
   Internal Database adapter statement and transaction spans explain database time
   within sampled HTTP requests and WebSocket operations for SQLite, PostgreSQL and libSQL, with bounded

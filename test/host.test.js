@@ -1283,7 +1283,8 @@ async function writePublicRuntimeFiles(runtimeDir) {
 
 async function createTarGz(archivePath, sourceDir, entries) {
   const result = await new Promise((resolve) => {
-    // Fixtures model production archives, which exclude automatic macOS metadata.
+    // Only explicitly declared entries belong in release fixtures. macOS tar
+    // otherwise injects AppleDouble entries from filesystem metadata.
     const child = spawn("tar", ["-czf", archivePath, "-C", sourceDir, ...entries], { env: { ...process.env, COPYFILE_DISABLE: "1" }, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";

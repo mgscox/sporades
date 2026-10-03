@@ -2,6 +2,8 @@
 
 Logs, database inspection, Container sessions, Hosted Capsules, Doctor, workflows, and troubleshooting.
 
+[Availability alerts](./availability-alerts.md) provide independent application probes, missing telemetry notifications and recoveries.
+
 Connected Hosts automatically synchronize [lifecycle inventory](./lifecycle-inventory.md)
 with durable pending state and exact Host-scoped recovery. Probe scheduling and
 absence-alert delivery remain separate work.

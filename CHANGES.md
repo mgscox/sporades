@@ -6,6 +6,8 @@ Changes since v0.9.30.
 
 ### 🚀 Features
 
+- Notify operators about inventory-driven Capsule availability and missing telemetry, with independent application probes, grouped alerts, recovery messages, and timed silences (#120).
+
 - Trace individual WebSocket query and mutation executions with isolated context, cancellation outcomes, independent operation metrics and active connections (#125).
 
 - Trace durable background Job attempts with causal enqueue links and independent queue pressure, execution duration, retry and failure metrics (#126).

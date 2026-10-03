@@ -44291,6 +44291,55 @@ async function checkHostTelemetryDelivery(remoteRoot) {
   return { ...result, origin: "host", traceId, relayReady, relayAccepted, backendStorage: "verification-unavailable", capsuleCoverage: "not-configured" };
 }
 
+// src/cli/host-availability.ts
+import { execFile } from "node:child_process";
+import { isIP as isIP3 } from "node:net";
+import { promisify } from "node:util";
+var execute = promisify(execFile);
+var probe = `try {
+  const response = await fetch('http://127.0.0.1:' + (process.env.PORT || 4000) + '/__sporades/health/runtime', { headers: { 'x-sporades-host-probe': process.env.SPORADES_RUNTIME_PROBE_TOKEN || '' }, signal: AbortSignal.timeout(1000) });
+  const body = await response.json();
+  process.stdout.write(response.status === 200 && body?.ok === true && body?.data?.runtime?.ready === true ? '1' : '0');
+} catch { process.stdout.write('0'); }`;
+async function reportHostAvailability(input, relayPort = 4318) {
+  try {
+    const { stdout } = await execute("docker", ["inspect", "--format", "{{json .}}", "sporades-telemetry-relay"], { timeout: 1e3, maxBuffer: 1024 * 1024 });
+    const relay = JSON.parse(stdout);
+    if (relay.Config?.Labels?.["com.sporades.host-telemetry-relay"] !== "true") return false;
+    const address = relay.NetworkSettings?.Networks?.[input.network]?.IPAddress;
+    if (isIP3(address) !== 4) return false;
+    const started = Date.now();
+    const timeUnixNano = String(BigInt(started) * 1000000n);
+    const attribute = (key, value) => ({ key, value: { stringValue: value } });
+    const dataPoints = [];
+    const active = input.capsules.filter((capsule) => ["running", "failed"].includes(capsule.state));
+    let index = 0;
+    await Promise.all(Array.from({ length: Math.min(4, active.length) }, async () => {
+      while (index < active.length && Date.now() - started < 2e4) {
+        const capsule = active[index++];
+        const [domain, subname] = capsule.id.split("/");
+        const name2 = `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
+        let ready = "0";
+        try {
+          const result = await execute("docker", ["exec", name2, "node", "--input-type=module", "--eval", probe], { timeout: 1750, maxBuffer: 1024 });
+          if (result.stdout === "1") ready = "1";
+        } catch {
+        }
+        dataPoints.push({ timeUnixNano, asInt: ready, attributes: [attribute("host", input.host), attribute("service.name", capsule.id)] });
+      }
+    }));
+    const metrics = [
+      { name: "sporades.host.relay.contact", gauge: { dataPoints: [{ timeUnixNano, asInt: "1", attributes: [attribute("host", input.host)] }] } },
+      { name: "sporades.capsule.local.ready", gauge: { dataPoints } }
+    ];
+    const response = await fetch(`http://${address}:${relayPort}/v1/metrics`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resourceMetrics: [{ scopeMetrics: [{ scope: { name: "sporades.host.availability" }, metrics }] }] }), signal: AbortSignal.timeout(1500) });
+    await response.body?.cancel();
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 // src/cli/host-inventory.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
 import { createHash as createHash5, randomBytes as randomBytes3 } from "node:crypto";
@@ -44437,6 +44486,8 @@ async function reconcileHostInventory(root) {
   });
   if (!captured) return hostInventoryStatus(root);
   const { state, connection } = captured;
+  const relay = await readHostTelemetryConnection(root);
+  if (relay) await reportHostAvailability({ host: state.desired.host, network: relay.network, capsules: state.desired.capsules });
   const { credential, caPem: ca } = connection;
   const body = JSON.stringify(state.desired);
   const result = await new Promise((resolve) => {
@@ -44487,8 +44538,8 @@ function kickHostInventory(root) {
 }
 async function installHostInventoryWorker(root) {
   directory(root);
-  const probe = spawnSync4("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e3 });
-  if (probe.status !== 0 || probe.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-unavailable" };
+  const probe2 = spawnSync4("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e3 });
+  if (probe2.status !== 0 || probe2.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-unavailable" };
   const helper = path8.join(root, "bin", "sporades-host-helper");
   for (const file of ["/etc/systemd/system", helper]) {
     const stat2 = await lstat6(file);
@@ -44542,8 +44593,8 @@ import { createHash as createHash6, randomBytes as randomBytes4 } from "node:cry
 import { lstat as lstat7, readFile as readFile7, writeFile as writeFile2, rename as rename6, rm as rm6 } from "node:fs/promises";
 import path9 from "node:path";
 async function installHostAutostart(host) {
-  const probe = spawnSync5("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e4 });
-  if (probe.status !== 0 || probe.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-docker-unavailable" };
+  const probe2 = spawnSync5("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e4 });
+  if (probe2.status !== 0 || probe2.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-docker-unavailable" };
   const unit = `sporades-capsules-${createHash6("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}.service`;
   const shutdownUnit = unit.replace(/\.service$/, "-shutdown.service");
   const file = path9.join("/etc/systemd/system", unit);
@@ -45641,11 +45692,11 @@ async function inspectHostedTelemetryCoverage(request, record, connection) {
   const name2 = createHostedContainerName(request.host.domain, record.subname);
   const state = inspectContainerRunning(name2);
   if (!state.ok || !state.running) return { capsule: serviceName, optedOut: record.telemetry?.disabled === true, ...hostedTelemetryCoverage(desired, false, null) };
-  const probe = runDocker(["exec", name2, "node", "--input-type=module", "--eval", HOSTED_RUNTIME_PROBE_SCRIPT, "1000", "4000"], { maxBuffer: 128 * 1024, timeoutMs: 1500 });
+  const probe2 = runDocker(["exec", name2, "node", "--input-type=module", "--eval", HOSTED_RUNTIME_PROBE_SCRIPT, "1000", "4000"], { maxBuffer: 128 * 1024, timeoutMs: 1500 });
   let runtime = null;
-  if (probe.ok) {
+  if (probe2.ok) {
     try {
-      const body = JSON.parse(probe.stdout);
+      const body = JSON.parse(probe2.stdout);
       if (body.kind === "response" && body.status === 200 && body.valid === true) runtime = body.telemetry;
     } catch {
     }
@@ -46796,15 +46847,15 @@ async function waitForHostedRuntimeReadiness(lifecycle, timeoutMs) {
     if (!running.ok || !running.running) return { ok: false, failure: "exited" };
     const remaining = deadline - performance.now();
     const probeTimeoutMs = Math.max(1, Math.min(1e3, remaining));
-    const probe = runDocker(["exec", lifecycle.container.name, "node", "--input-type=module", "--eval", HOSTED_RUNTIME_PROBE_SCRIPT, String(probeTimeoutMs), String(lifecycle.routes.running.port ?? 4e3)], { maxBuffer: 128 * 1024, timeoutMs: Math.ceil(probeTimeoutMs + 250) });
-    if (!probe.ok) {
+    const probe2 = runDocker(["exec", lifecycle.container.name, "node", "--input-type=module", "--eval", HOSTED_RUNTIME_PROBE_SCRIPT, String(probeTimeoutMs), String(lifecycle.routes.running.port ?? 4e3)], { maxBuffer: 128 * 1024, timeoutMs: Math.ceil(probeTimeoutMs + 250) });
+    if (!probe2.ok) {
       const after = inspectContainerRunning(lifecycle.container.name);
       if (!after.ok || !after.running) return { ok: false, failure: "exited" };
       lastFailure = { ok: false, failure: "connection" };
     } else {
       let result;
       try {
-        result = JSON.parse(probe.stdout);
+        result = JSON.parse(probe2.stdout);
       } catch {
         result = null;
       }
@@ -48184,16 +48235,16 @@ function normaliseHealth(request, record = null) {
   };
 }
 async function ensureRuntimeProbeCredential(request) {
-  let probe = null;
+  let probe2 = null;
   await mutateRegistryRecord(request, (record) => {
-    probe = readRuntimeProbeCredential(record) ?? {
+    probe2 = readRuntimeProbeCredential(record) ?? {
       header: RUNTIME_PROBE_HEADER,
       token: randomBytes5(32).toString("hex"),
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     };
-    return { ...record, runtimeProbe: probe };
+    return { ...record, runtimeProbe: probe2 };
   });
-  return probe;
+  return probe2;
 }
 function readRuntimeProbeCredential(record) {
   const header = record?.runtimeProbe?.header;
@@ -49774,15 +49825,15 @@ function renderRunningRoute(route) {
   return renderRoute(route, guardedHandler);
 }
 function renderRunningRouteHandler(route, proxyLine) {
-  const probe = route.runtimeProbe;
-  if (!probe?.token || probe.header !== RUNTIME_PROBE_HEADER) {
+  const probe2 = route.runtimeProbe;
+  if (!probe2?.token || probe2.header !== RUNTIME_PROBE_HEADER) {
     return proxyLine;
   }
   return [
     `@sporadesRuntimeHealth path ${CAPSULE_RUNTIME_HEALTH_PATH}`,
     "@sporadesRuntimeProbe {",
     `  path ${CAPSULE_RUNTIME_HEALTH_PATH}`,
-    `  header ${RUNTIME_PROBE_HEADER} ${probe.token}`,
+    `  header ${RUNTIME_PROBE_HEADER} ${probe2.token}`,
     "}",
     "handle @sporadesRuntimeProbe {",
     `  ${proxyLine}`,

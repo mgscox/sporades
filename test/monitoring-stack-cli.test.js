@@ -37,12 +37,13 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert.equal(first.status, 0, first.stderr || first.stdout);
   const result = JSON.parse(first.stdout);
   assert.equal(result.ok, true);
+  assert.equal(result.data.notificationDelivery, 'disabled');
   assert.equal(result.data.path, target);
   assert.deepEqual(result.data.missingAssets, []);
   const gatewaySource = await readFile(join(root, 'monitoring', 'trace', 'gateway.mjs'), 'utf8');
   assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', 'gateway.mjs'), 'utf8'), gatewaySource);
   assert.equal(await readFile(join(target, 'gateway.mjs'), 'utf8'), gatewaySource);
-  for (const name of ['smoke.mjs', 'README.md', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs']) {
+  for (const name of ['smoke.mjs', 'README.md', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'availability.mjs', 'availability-rules.yaml', 'blackbox.yaml', 'blackbox-config.mjs']) {
     const source = await readFile(join(root, 'monitoring', 'trace', name), 'utf8');
     assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', name), 'utf8'), source);
     assert.equal(await readFile(join(target, name), 'utf8'), source);

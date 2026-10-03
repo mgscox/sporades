@@ -21,6 +21,7 @@ export type RuntimeTelemetryConfig = {
   endpoint: string;
   tls: { mode: "verified" | "loopback"; caFile?: string };
   credentialEnv?: string;
+  /** Stable Capsule identity; preserve the full Hosted domain/subname. */
   serviceName: string;
   samplingRatio?: number;
   environment?: "dev" | "container" | "hosted";
@@ -212,7 +213,9 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     exportTimeoutMillis: 800,
   });
   const resource = resourceFromAttributes({
-    "service.name": config.serviceName.slice(0, 80),
+    // Inventory and Host readiness use the full identity. Truncating it can
+    // both lose healthy targets and merge unrelated Capsules with a shared prefix.
+    "service.name": config.serviceName,
     "service.instance.id": processInstanceId,
     "deployment.environment.name": config.environment ?? "unknown",
   });
@@ -478,7 +481,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       };
     },
     run(request: IncomingMessage, response: ServerResponse, endpoints: readonly EndpointLike[], handle: () => unknown) {
-      if (closing) return handle();
+      if (closing || (request.method === "GET" && (request.url === "/__sporades/probe" || request.url?.startsWith("/__sporades/probe?")))) return handle();
       const method = safeMethod(request.method);
       let route = resolveTelemetryRoute(request, endpoints);
       if (!seenRoutes.has(route)) {
