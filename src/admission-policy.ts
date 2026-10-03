@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { isIP } from "node:net";
+import { validClientAddressNetwork, clientAddressMatches } from "./client-address.js";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
 import { readDeployFile, resolveDeployFiles, preservedDeployFilePath, type BuiltDeployFile } from "./deploy-files.js";
@@ -29,8 +29,7 @@ function condition(value: any) {
     }
     case "address": {
       object(value, ["kind", "value"]); if (!text(value.value)) invalid();
-      const [address, prefix, extra] = value.value.split("/"); const family = isIP(address);
-      if (!family || extra !== undefined || (prefix !== undefined && (!/^(0|[1-9][0-9]{0,2})$/.test(prefix) || Number(prefix) > (family === 4 ? 32 : 128)))) invalid();
+      if (!validClientAddressNetwork(value.value)) invalid();
       break;
     }
     case "header":
@@ -60,12 +59,14 @@ export function parseAdmissionPolicy(bytes: Buffer): AdmissionGeneration {
   }
   return freeze({ digest: createHash("sha256").update(bytes).digest("hex"), policy: value });
 }
-/** First-match exact-path slice. An indeterminate condition must never grant admission. */
-export function matchExactAdmissionRule(generation: AdmissionGeneration, pathname: string) {
+/** First-match exact-path/address slice. An indeterminate condition never grants admission. */
+export function matchExactAdmissionRule(generation: AdmissionGeneration, pathname: string, address: string | null = null) {
   for (const rule of generation.policy.rules) {
     if (!rule.enabled) continue;
     if (rule.conditions.some(item => item.kind === "pathname" && "exact" in item && item.exact !== pathname)) continue;
-    if (rule.conditions.some(item => item.kind !== "pathname" || !("exact" in item))) {
+    if (rule.conditions.some(item => item.kind === "address") && !address) throw new Error("Missing trusted admission address.");
+    if (rule.conditions.some(item => item.kind === "address" && !clientAddressMatches(address!, item.value))) continue;
+    if (rule.conditions.some(item => item.kind !== "address" && (item.kind !== "pathname" || !("exact" in item)))) {
       throw new Error("Unsupported admission condition.");
     }
     return rule;

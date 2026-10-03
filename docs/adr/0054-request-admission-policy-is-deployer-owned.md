@@ -43,7 +43,16 @@ emits a health transition. Only digest and health appear in the protected readin
 response and platform reload events. Issue #66 established this lifecycle independently of enforcement. Issue #67 now
 consumes one generation snapshot before HTTP Capsule routing to enforce exact-path
 denials. Genuine authenticated controls bypass admission; reserved targets fail
-validation. The remaining matchers, quota enforcement and WebSocket upgrades are
+validation. Issue #69 adds exact/CIDR address conditions using only canonical
+Host-authenticated identity in Hosted mode. Caddy replaces incoming internal
+identity and supplies a per-runtime capability derived from the existing
+Host-owned readiness token with a distinct domain. The runtime validates one
+address and rejects duplicate/list/invalid input; forwarding headers never
+independently grant identity. Cloudflare identity retains the existing peer
+allowlist boundary. Missing identity denies potentially applicable enabled
+address rules, including in Dev and local Container sessions. Mapped IPv6
+normalizes to IPv4; mapped network prefixes below 96 are rejected. The capability
+is filtered from Capsule endpoint headers. The remaining matchers, quota enforcement and WebSocket upgrades are
 later slices.
 
 ## Consequences

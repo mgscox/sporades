@@ -2639,3 +2639,31 @@ test("a generated Bundle enforces admission before Capsule middleware while cont
     assert.equal((await fetch(`${booted.baseUrl}/probe/status?unchanged=yes`)).status,202); assert.equal(await readFile(path.join(root,"app-called"),"utf8"),"called\n");
   } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
 });
+
+test("generated Hosted, Dev and Container Bundles require Host identity for address rules and never expose the boundary capability", async () => {
+  const { createHash } = await import('node:crypto');
+  const token = createHash('sha256').update('sporades-client-address\0').update('a'.repeat(64)).digest('hex');
+  for (const session of ['hosted', 'dev', 'container']) {
+    const root = await mkdtemp(path.join(tmpdir(), 'sporades-address-bundle-')); let booted;
+    try {
+      const app = `import { capsule, endpoint } from 'sporades/server'; export default capsule({name:'address-bundle',endpoints:{probe:endpoint({path:'/probe',method:'GET'},ctx=>({status:201,body:ctx.request.headers}))}});`;
+      await writeFile(path.join(root, 'policy.json'), JSON.stringify({version:1,rules:[{id:'address',enabled:true,conditions:[{kind:'pathname',exact:'/probe'},{kind:'address',value:'192.0.2.0/24'}],action:{kind:'deny'}}]}));
+      let source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:'policy.json'}}),serverEnv:{},serverSource:app,serverModuleSource:await bundleServerCapsuleModule({serverSource:app,serverSourcePath:path.join(root,'server','index.ts')})});
+      // Map the deployed read-only mount into this Node-only fixture; production keeps its fixed mount.
+      const { preservedDeployFilePath } = await import('../dist/deploy-files.js');
+      await writeFile(preservedDeployFilePath(root, 'policy.json'), await readFile(path.join(root, 'policy.json')));
+      source = source.replaceAll('/run/sporades-admission', root);
+      await writePublicTree(root, 'plain bytes');
+      booted = await bootBundle({source,dir:root,env:{SPORADES_SECURITY_SESSION:session}});
+      const headers = {'x-sporades-client-address':'198.51.100.10','x-sporades-client-address-token':token};
+      assert.equal((await fetch(booted.baseUrl + '/probe', {headers:{'x-sporades-client-address':'198.51.100.10'}})).status, 403);
+      const response = await fetch(booted.baseUrl + '/probe', {headers});
+      assert.equal(response.status, session === 'hosted' ? 201 : 403);
+      const text = await response.text();
+      assert.equal(text.includes(token), false, 'runtime capability must not reach Capsule request headers');
+      if (session === 'hosted') assert.equal(JSON.parse(text)['x-sporades-client-address-token'], undefined);
+      assert.equal((await fetch(booted.baseUrl + '/probe',{headers:{...headers,'x-sporades-client-address':'::ffff:192.0.2.1'}})).status,403);
+      assert.equal(booted.stderr.includes(token),false);
+    } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
+  }
+});
