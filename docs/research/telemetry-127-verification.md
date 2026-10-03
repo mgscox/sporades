@@ -321,3 +321,64 @@ to the ignored temporary directory's `package.json` restored the normal fixture
 environment, and all seven checks then passed. Logs, including that failed
 setup attempt, are retained in `.sporades/ken-pr203-checks/`. No real Host,
 cloud, publication or release operations were performed.
+
+
+## Office-restart recovery and latest-main integration
+
+The office restart resumed this task after its original fixes had been pushed.
+The original desk was subsequently assigned to `swarm/issue-105-barbara`; its
+checkout and untracked evidence were left untouched. Recovery used the isolated
+checkout `.sporades/pr203-recovery` inside that same desk. The original
+round-three logs and their SHA-256 hashes remain intact. GitHub confirms all
+original fixes are ancestors of the current PR branch.
+
+[Round-five QA](https://github.com/mgscox/sporades/pull/203#issuecomment-5969217991)
+at `bb10d44b` identified conflicts with main `3e59f886`. Merge commit `20de7141`
+includes that main revision. The sole source conflict was the health/unregister
+fixture: both sides required confirmed lock ownership. Resolution retains the
+PR's exact lock marker, bounded child-aware wait, detached-group cleanup and
+700ms pause, incorporates main's explanatory comment, and preserves main's other
+Host fixture changes and all assertions. The CLI source map and generated-source
+manifest were regenerated with `npm run build`. Main's exact-path HTTP denial
+and this PR's sender credential and Journey reconnect behavior are preserved.
+
+All commands used configuration inside the recovery checkout:
+
+```sh
+export SPORADES_CONFIG_DIR="$PWD/.sporades/recovery-config"
+export COPYFILE_DISABLE=1
+npm ci
+npm run build
+npm run typecheck
+node scripts/check-generated-bin.mjs
+node --test --test-concurrency=1 test/sender-credentials.test.js test/host-inventory-reconnect.test.js test/client-runtime.test.js test/user-journey-expiry.test.js test/telemetry-websocket-bundle.test.js test/lifecycle-inventory.test.js test/monitoring-smoke-origin.test.js test/monitoring-stack-cli.test.js
+node --test --test-name-pattern='Host helper (marker wait|cleanup releases)|descriptor-fences sealed-env key creation|serializes stale health repair against route removal|revalidates trust immediately before (apply and rollback|remove and restore)' test/host.test.js
+npm run docs:check
+npm test
+```
+
+Dependency installation, build, typecheck and generated parity passed. All 121
+combined credential/client/Journey/inventory/WebSocket tests and eight focused
+Host tests passed. Documentation passed 53 tests and the VitePress build.
+Playwright checked the integrated operator reference, including rotation-section
+navigation, at desktop and 390px widths on port 5203: no horizontal overflow,
+with only the existing favicon 404. Screenshots, console output and command logs
+are in the recovery checkout's `.sporades/recovery-evidence/`. The browser and
+task-owned docs server were stopped. No real Host or external provider operation
+was performed; separate-VM acceptance remains the operator follow-up above.
+
+The complete integrated `npm test` run exited zero on `20de7141`: **2,958 tests,
+2,750 passed, 208 skipped, zero failures and zero cancellations**, in 1,730.5
+seconds. Its build/generated precheck passed. `full-suite.log` has SHA-256
+`ff9f5bbe2219f6a0545ff9c491c9ffc431c761f5ce02f67d872889f6ad7eb480`.
+The health/unregister and apply/rollback fencing cases passed, as did the original
+real-transport second-reconnect publication/zero-disable assertions. The known
+independent cases tracked by #190 and #208 were unchanged and also passed in
+this completed run; no test exclusions or isolated retries establish this gate.
+Current GitHub main remained `3e59f886` at final verification.
+
+Assumptions: retain both branches' confirmed lock-ownership intent, use the PR's
+stronger bounded waiting and complete child cleanup, and regenerate conflicting
+artifacts from the combined source. Isolate recovery work instead of changing a
+desk that has been reassigned. Earlier QA full-run failures remain historical
+failures; this new completed run provides the integrated green gate.
