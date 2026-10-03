@@ -42,7 +42,7 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   const gatewaySource = await readFile(join(root, 'monitoring', 'trace', 'gateway.mjs'), 'utf8');
   assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', 'gateway.mjs'), 'utf8'), gatewaySource);
   assert.equal(await readFile(join(target, 'gateway.mjs'), 'utf8'), gatewaySource);
-  for (const name of ['smoke.mjs', 'README.md', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'sender-credentials.mjs']) {
+  for (const name of ['smoke.mjs', 'README.md', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'sender-credentials.mjs', 'pipeline-dashboard.json', 'pipeline-rules.yaml', 'collector-persistent.yaml', 'compose.queue.yaml', 'OUTAGES.md']) {
     const source = await readFile(join(root, 'monitoring', 'trace', name), 'utf8');
     assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', name), 'utf8'), source);
     assert.equal(await readFile(join(target, name), 'utf8'), source);
@@ -57,6 +57,8 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert(!(sender.stdout + exported.stdout).includes(token));
   assert.equal((await stat(handoff)).mode & 0o777, 0o600);
   assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /prom\/prometheus:v3\.13\.3[\s\S]*grafana\/grafana:13\.2\.2/);
+  assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /\.\/pipeline-rules\.yaml:\/etc\/prometheus\/pipeline-rules\.yaml:ro/);
+  assert.match(await readFile(join(target, 'prometheus.yaml'), 'utf8'), /rule_files:\s*\n\s*- \/etc\/prometheus\/pipeline-rules\.yaml/);
   const api = JSON.parse(await readFile(join(target, 'api-dashboard.json'), 'utf8'));
   assert.equal(api.title, 'Sporades Capsule API');
   assert.equal(api.templating.list.find(variable => variable.name === 'metric_window')?.current.value, '12m');

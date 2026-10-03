@@ -521,6 +521,10 @@ _Avoid_: Host profile, Capsule secret, app telemetry endpoint
 An internal Database adapter statement or transaction timing interval within a sampled HTTP request or WebSocket operation. SQLite, PostgreSQL and libSQL share the instrumentation boundary. Bounded engine, operation and declared table labels explain database time without SQL text, parameters, rows, connection credentials or exception details. Transaction spans include acquisition wait and callback work; their child statement intervals overlap rather than add to that duration. Telemetry changes no Database adapter authoring, ACL, retry, rollback or transaction ownership contract.
 _Avoid_: public adapter hook, SQL profiler, application instrumentation API
 
+**Telemetry pipeline**:
+The bounded best-effort path from Capsule SDK through the Host relay and authenticated Monitoring gateway to metric/trace storage. Queue capacity, failed sends, saturation loss and source freshness are operator signals; downstream acceptance is not a delivery guarantee. Missing diagnostics are unknown. Telemetry queues are volatile by default; optional persistent Collector queues require a separate quota-limited filesystem. Inventory's durable outbox is independent of telemetry queues. Business work never waits for Monitoring, and SDK shutdown flush has a 1500 ms bound. See `monitoring/trace/OUTAGES.md`.
+_Avoid_: guaranteed delivery, unbounded spool, healthy missing data
+
 **WebSocket operation span**:
 An internal SERVER span for one query or mutation execution, including live-query refreshes, with independent operation counts, duration histograms and an accepted-connection gauge. Each execution owns isolated context and completes on success, denial, error or cancellation; refreshes use new roots. A socket and its subscription never own a lifetime trace. Names are runtime-declared and bounded; payloads, credentials, user identities and baggage are excluded. Telemetry changes no authorization, subscription, transaction or reconnection semantics.
 _Avoid_: socket-lifetime trace, browser tracing SDK, subscription span
