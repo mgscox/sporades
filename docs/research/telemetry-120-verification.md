@@ -1,5 +1,9 @@
 # Issue #120 availability acceptance
 
+See the [Poirot round-1 follow-up](./telemetry-120-round-2.md) for the persistence
+regression, its fix, and fresh validation. The original author evidence below
+does not supersede Poirot's failed full-suite result.
+
 Verified on 2026-10-03 using disposable resources. Native blockers #112 and #118
 were closed before implementation. The branch integrates the current main
 WebSocket telemetry implementation and preserves the parked #192 history.

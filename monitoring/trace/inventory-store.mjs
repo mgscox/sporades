@@ -1,7 +1,15 @@
 import { mkdir, lstat, readFile, readdir, open, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
-import { validateInventory, inventoryHost } from './inventory-contract.mjs';
+import { validateInventory, inventoryHost, INVENTORY_MAX_BYTES } from './inventory-contract.mjs';
+
+// expectationSince duplicates only each Capsule's ASCII identity and ISO time,
+// less than that Capsule's wire representation. Budget a second wire-sized block
+// for metadata plus envelope headroom; keep the public request limit unchanged.
+const STORED_MAX_BYTES = 2 * INVENTORY_MAX_BYTES + 8192;
+const checkStoredSize = bytes => {
+  if (bytes > STORED_MAX_BYTES) throw new Error('Unsafe stored inventory.');
+};
 
 // JSON object field order has no semantic meaning. Normalize it before revision
 // equality checks so logically identical retries cannot become conflicts.
@@ -27,27 +35,33 @@ export function createInventoryStore(directory) {
     const details = await lstat(directory);
     if (!details.isDirectory() || details.isSymbolicLink() || (details.mode & 0o077)) throw new Error('Unsafe inventory storage.');
   };
+  const readStoredFile = async filename => {
+    const details = await lstat(filename);
+    if (!details.isFile() || details.isSymbolicLink() || (details.mode & 0o077)) throw new Error('Unsafe stored inventory.');
+    checkStoredSize(details.size);
+    const text = await readFile(filename, 'utf8');
+    checkStoredSize(Buffer.byteLength(text));
+    return JSON.parse(text);
+  };
   const read = async (host, expectations = false) => {
     if (!inventoryHost(host)) throw new Error('Invalid inventory identity.');
     await prepare();
-    let text;
-    try {
-      const filename = filenameFor(host);
-      const details = await lstat(filename);
-      if (!details.isFile() || details.isSymbolicLink() || (details.mode & 0o077) || details.size > 1024 * 1024 + 8192) throw new Error('Unsafe stored inventory.');
-      text = await readFile(filename, 'utf8');
-    }
+    let stored;
+    try { stored = await readStoredFile(filenameFor(host)); }
     catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-    const stored = JSON.parse(text);
     const inventory = canonicalInventory(stored.inventory);
     if (inventory.host !== host || typeof stored.acknowledgedAt !== 'string' || !Number.isFinite(Date.parse(stored.acknowledgedAt))) throw new Error('Invalid stored inventory.');
     return { inventory, acknowledgedAt: stored.acknowledgedAt, ...(expectations ? { expectationSince: stored.expectationSince ?? {} } : {}) };
   };
   const write = async (filename, value) => {
+    // Validate the exact durable bytes before creating/replacing a file or
+    // returning an acknowledgement. Readers use this identical envelope bound.
+    const serialized = JSON.stringify(value) + '\n';
+    checkStoredSize(Buffer.byteLength(serialized));
     const temporary = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
     try {
       const file = await open(temporary, 'wx', 0o600);
-      try { await file.writeFile(JSON.stringify(value) + '\n'); await file.sync(); }
+      try { await file.writeFile(serialized); await file.sync(); }
       finally { await file.close(); }
       await rename(temporary, filename);
       const dir = await open(directory, 'r');
@@ -60,9 +74,7 @@ export function createInventoryStore(directory) {
       const results = [];
       for (const name of await readdir(directory)) {
         if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
-        const details = await lstat(join(directory, name));
-        if (!details.isFile() || details.isSymbolicLink() || (details.mode & 0o077) || details.size > 1024 * 1024 + 8192) throw new Error('Unsafe stored inventory.');
-        const stored = JSON.parse(await readFile(join(directory, name), 'utf8'));
+        const stored = await readStoredFile(join(directory, name));
         if (!inventoryHost(stored.inventory?.host) || filenameFor(stored.inventory.host) !== join(directory, name)) throw new Error('Invalid stored inventory.');
         const value = await exclusive(stored.inventory.host, () => read(stored.inventory.host, true));
         if (value) results.push(value);
