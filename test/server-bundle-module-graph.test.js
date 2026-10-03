@@ -2616,21 +2616,26 @@ test("a generated Bundle refuses invalid configured policy before Capsule evalua
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 
-test("a generated Bundle reports bounded policy reload health without enforcing application traffic", async () => {
+test("a generated Bundle enforces admission before Capsule middleware while controls and reload remain available", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-admission-hot-")); let booted;
   try {
-    const json = id => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact:"/probe/status"}],action:{kind:"deny"}}]});
+    const json = (id, exact = "/probe/status") => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact}],action:{kind:"deny"}}]});
     await writeFile(path.join(root,"policy.json"),json("seed"));
-    const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:CAPSULE_SOURCE});
+    const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:CAPSULE_SOURCE, serverModuleSource: await bundleServerCapsuleModule({ serverSource: CAPSULE_SOURCE.replace('if (ctx.kind !== "endpoint") return ctx;', 'if (ctx.kind !== "endpoint") return ctx; globalThis.process.getBuiltinModule("node:fs").appendFileSync("app-called", "called\\n");'), serverSourcePath: path.join(process.cwd(), "server", "index.ts") })});
     await writePublicTree(root,"plain bytes"); booted = await bootBundle({source,dir:root});
     const health = async () => (await (await fetch(`${booted.baseUrl}/__sporades/health/runtime`,{headers:{"x-sporades-host-probe":"a".repeat(64)}})).json()).data.runtime.admissionPolicy;
     const initial = await health(); assert.equal(initial.state,"healthy"); assert.deepEqual(Object.keys(initial),["state","digest"]);
-    assert.equal((await fetch(`${booted.baseUrl}/probe/status`)).status,202);
+    const denied = await fetch(`${booted.baseUrl}/probe/status?private=opaque`);
+    assert.equal(denied.status,403); assert.equal(denied.headers.get("cache-control"),"no-store"); assert.equal(denied.headers.get("content-length"),"10"); assert.equal(await denied.text(),"Forbidden\n");
+    await assert.rejects(readFile(path.join(root,"app-called")),{code:"ENOENT"});
+    const preflight = await fetch(`${booted.baseUrl}/probe/status`,{method:"OPTIONS",headers:{origin:booted.baseUrl,"access-control-request-method":"GET"}});
+    assert.equal(preflight.status,403); assert.equal(await preflight.text(),"Forbidden\n");
+    const token = await fetch(`${booted.baseUrl}/__sporades/connection-token`,{headers:{"x-sporades-connection-token-request":"1"}}); assert.equal(token.status,200);
     await writeFile(path.join(root,"policy.json"),"{");
     const wait = async predicate => { const deadline=Date.now()+9000; while(Date.now()<deadline) { if(await predicate()) return; await new Promise(resolve=>setTimeout(resolve,100)); } assert.fail("policy reload exceeded ten seconds"); };
-    await wait(async()=> (await health()).state==="degraded"); assert.equal((await health()).digest,initial.digest);
-    await writeFile(path.join(root,"policy.json"),json("replacement"));
+    await wait(async()=> (await health()).state==="degraded"); assert.equal((await health()).digest,initial.digest); assert.equal((await fetch(`${booted.baseUrl}/probe/status`)).status,403);
+    await writeFile(path.join(root,"policy.json"),json("replacement", "/different"));
     await wait(async()=> (await health()).state==="healthy" && (await health()).digest!==initial.digest);
-    assert.equal((await fetch(`${booted.baseUrl}/probe/status`)).status,202);
+    assert.equal((await fetch(`${booted.baseUrl}/probe/status?unchanged=yes`)).status,202); assert.equal(await readFile(path.join(root,"app-called"),"utf8"),"called\n");
   } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
 });

@@ -646,6 +646,8 @@ storage, mounted read-only at `/run/sporades-admission`. Authorized CLI/Host
 publication replaces it atomically; explicit removal uses a durable marker.
 The runtime loads a bounded deeply frozen generation before app startup, polls
 every two seconds, and keeps the last-known-good generation on hot failure.
-Reload health and digest expose no match values. This publication slice does not
-yet enforce HTTP or WebSocket requests. Generic writable `deploy.files` authority
+Reload health and digest expose no match values. HTTP requests now enforce enabled exact-path deny rules before Capsule request code,
+with ordered first-match semantics and constant opaque 403 responses. Genuine authenticated
+Host controls bypass admission; reserved targets fail generation validation. Other matchers,
+quotas and WebSocket upgrades remain subsequent slices. Generic writable `deploy.files` authority
 never applies. See ADR-0054.

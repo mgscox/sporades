@@ -27,17 +27,14 @@ const flatten = batches => batches.flatMap(batch => batch.resourceSpans ?? []).f
 const attribute = (span, key) => span.attributes.find(item => item.key === key)?.value.stringValue;
 const pause = () => new Promise(resolve => setTimeout(resolve, 50));
 async function boot(dir, env) {
-  const reservation = createServer().listen(0, '127.0.0.1');
-  await once(reservation, 'listening');
-  const port = reservation.address().port;
-  await new Promise(resolve => reservation.close(resolve));
+  // Keep allocation and binding atomic; desks can consume a released reservation.
+  let output = '', origin;
   const child = spawn(process.execPath, [path.join(dir, 'server.mjs')], {
-    cwd: dir, env: { ...process.env, ...env, PORT: String(port), SPORADES_CONFIG_DIR: path.join(dir, 'config'), SPORADES_RUNTIME_PROBE_TOKEN: 'a'.repeat(64) }, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: dir, env: { ...process.env, ...env, PORT: '0', SPORADES_CONFIG_DIR: path.join(dir, 'config'), SPORADES_RUNTIME_PROBE_TOKEN: 'a'.repeat(64) }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   let errors = '';
   child.stderr.on('data', chunk => { errors += chunk; });
-  child.stdout.resume();
-  const origin = `http://127.0.0.1:${port}`;
+  child.stdout.on('data', chunk => { output += chunk; });
   const stop = async () => {
     if (child.exitCode !== null || child.signalCode !== null) return;
     const exited = once(child, 'exit');
@@ -48,7 +45,9 @@ async function boot(dir, env) {
   try {
     for (let attempt = 0; attempt < 200; attempt++) {
       assert.equal(child.exitCode, null, errors);
-      if (await fetch(origin + '/__sporades/health/runtime', { headers: { 'x-sporades-host-probe': 'a'.repeat(64) } }).then(response => response.ok, () => false)) return { origin, stop };
+      const signal = output.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(event => Number.isInteger(event?.listening));
+      if (signal) origin = `http://127.0.0.1:${signal.listening}`;
+      if (origin && await fetch(origin + '/__sporades/health/runtime', { headers: { 'x-sporades-host-probe': 'a'.repeat(64) } }).then(response => response.ok, () => false)) return { origin, stop };
       await pause();
     }
     assert.fail('Capsule did not become ready');
@@ -96,7 +95,9 @@ async function fixture(t, samplingRatio = 1, serverSource = source) {
   await once(collector, 'listening');
   const config = { name: 'job-trace-bundle', __sporadesTelemetry: samplingRatio === null ? null : { endpoint: `http://127.0.0.1:${collector.address().port}`, tls: { mode: 'loopback' }, serviceName: 'job-trace-bundle', samplingRatio, metricsIntervalMs: 1000 } };
   const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), 'server', 'index.ts') });
-  await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv: {}, serverSource, serverModuleSource }));
+  await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv: {}, serverSource, serverModuleSource,
+        epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");',
+      }));
   app = await boot(root, {});
   return {
     received, root, endpoint: `http://127.0.0.1:${collector.address().port}`, dataFile: path.join(root, 'data', 'data.db'),

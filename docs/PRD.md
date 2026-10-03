@@ -1490,6 +1490,12 @@ publication and explicit removal are atomic and survive redeploy and restart.
 Startup rejects invalid configured policy before app traffic. Bounded immutable
 generations reload within ten seconds under normal scheduling; hot failures
 retain the last-known-good generation and report redacted digest/health.
-This lifecycle slice does not yet enforce requests. See the
+HTTP admission enforces enabled exact-path deny rules before Capsule request code,
+with ordered first-match semantics, disabled-rule skipping, constant ten-byte opaque
+403 responses and no-store caching. Genuine authenticated control routes remain
+outside admission and reserved targeting fails generation validation. No declared
+policy leaves requests untouched; the incremental gate budget is a warmed median
+below one microsecond per call. Remaining matchers, quotas and WebSocket upgrades
+are subsequent slices. See the
 [configuration reference](reference/projects-and-configuration.md#request-admission-policy-publication)
 and [ADR-0054](adr/0054-request-admission-policy-is-deployer-owned.md).

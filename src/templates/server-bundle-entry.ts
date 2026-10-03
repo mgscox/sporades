@@ -35,6 +35,7 @@ import {
   runRuntimeAccessKeyOperatorAction,
   routeConnectionToken,
   routeEndpoint,
+  routeHttpAdmission,
   routeRuntimeHealth,
   routeSporadesAuth,
   shutdownAndCloseDatabase,
@@ -206,7 +207,7 @@ database.runtimeTelemetry = {
 
 const server = createServer(async (request, response) => telemetry.run(request, response, database.endpoints, async () => {
   try {
-    if (prepareHttpSecurity(database, request, response)) {
+    if (prepareHttpSecurity(database, request, response, () => routeHttpAdmission(database, request, response))) {
       return;
     }
     if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
@@ -219,6 +220,10 @@ const server = createServer(async (request, response) => telemetry.run(request, 
     }
 
     if (await routeRuntimeHealth(database, request as any, response)) {
+      return;
+    }
+
+    if (routeHttpAdmission(database, request, response)) {
       return;
     }
 

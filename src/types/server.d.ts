@@ -1441,5 +1441,5 @@ export function Reference(targetTable: string): ReferenceFieldBuilder;
  */
 export type CapsuleFileAccessKeyPolicy = { read: { scopes?: readonly string[] } };
 
-/** Deployer-owned v1 request-admission JSON; publication does not yet enforce traffic. */
+/** Deployer-owned v1 request-admission JSON; HTTP exact-path deny precedes Capsule code. */
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionPolicyConfig } from "./admission-policy.js";
