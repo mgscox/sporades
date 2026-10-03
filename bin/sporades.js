@@ -128466,8 +128466,7 @@ function activeRuntimeLogIdentity() {
   const spanId = traceId && context2 && /^[0-9a-f]{16}$/.test(context2.spanId) && !/^0+$/.test(context2.spanId) ? context2.spanId : null;
   return { requestId: scope.requestId, traceId, spanId };
 }
-function validatedRemoteParent(request) {
-  const value = request.headers.traceparent;
+function validatedRemoteParentValue(value) {
   if (typeof value !== "string" || value.length !== 55) return ROOT_CONTEXT;
   const match = /^00-([a-f0-9]{32})-([a-f0-9]{16})-(00|01)$/.exec(value);
   if (!match || /^0+$/.test(match[1]) || /^0+$/.test(match[2])) return ROOT_CONTEXT;
@@ -128478,6 +128477,19 @@ function validatedRemoteParent(request) {
     isRemote: true
   });
 }
+function validatedRemoteParent(request) {
+  return validatedRemoteParentValue(request.headers.traceparent);
+}
+var disabledWebSocketOperation = {
+  run: withoutRuntimeRequestIdentity,
+  end: () => {
+  }
+};
+var disabledWebSocketTelemetry = {
+  connectionOpened: () => () => {
+  },
+  startOperation: () => disabledWebSocketOperation
+};
 function exportFailureReason(error) {
   const code = error && typeof error === "object" ? error.code : void 0;
   if (code === 401 || code === 403) return "AUTH_REJECTED";
@@ -128505,7 +128517,7 @@ function createProfileExporters(traceOptions, metricOptions) {
   }
 }
 function createHttpRequestTelemetry(config, onDiagnostic) {
-  if (!config) return { bindJobQueue: (_database) => {
+  if (!config) return { websocket: disabledWebSocketTelemetry, bindJobQueue: (_database) => {
   }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID9() }, handle), shutdown: async () => {
   } };
   if (config.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1e3)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
@@ -128598,13 +128610,20 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       { instrumentName: "sporades.job.failure.count", aggregationCardinalityLimit: 129 },
       { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
       { instrumentName: "http.server.active_requests", aggregationCardinalityLimit: 128 },
-      { instrumentName: "http.server.request.duration", aggregationCardinalityLimit: 512, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [5e-3, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } }
+      { instrumentName: "http.server.request.duration", aggregationCardinalityLimit: 512, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [5e-3, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } },
+      { instrumentName: "sporades.websocket.operation.count", aggregationCardinalityLimit: 1024 },
+      { instrumentName: "sporades.websocket.operation.duration", aggregationCardinalityLimit: 1024, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [5e-3, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } }
     ]
   });
   const meter = meterProvider.getMeter("sporades-runtime-http", "1");
   const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
   const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
   const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
+  const websocketMeter = meterProvider.getMeter("sporades-runtime-websocket", "1");
+  const websocketCount = websocketMeter.createCounter("sporades.websocket.operation.count", { unit: "1" });
+  const websocketDuration = websocketMeter.createHistogram("sporades.websocket.operation.duration", { unit: "s" });
+  let connectionCount = 0;
+  websocketMeter.createObservableGauge("sporades.websocket.active_connections", { unit: "1" }).addCallback((result) => result.observe(connectionCount));
   const processMeter = meterProvider.getMeter("sporades-runtime-process", "1");
   const gcKinds = /* @__PURE__ */ new Map([
     [performanceConstants.NODE_PERFORMANCE_GC_MAJOR, "major"],
@@ -128703,13 +128722,69 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     spanProcessors: [processor]
   });
   const tracer = provider.getTracer("sporades-runtime-http", "1");
+  const websocketTracer = provider.getTracer("sporades-runtime-websocket", "1");
+  const websocketNames = /* @__PURE__ */ new Set();
+  const websocketEnds = /* @__PURE__ */ new Set();
+  let closing = false;
+  const websocket = {
+    connectionOpened() {
+      if (closing) return () => {
+      };
+      connectionCount++;
+      let closed = false;
+      return () => {
+        if (!closed) {
+          closed = true;
+          connectionCount--;
+        }
+      };
+    },
+    startOperation(type, rawName, declared, traceparent) {
+      if (closing) return disabledWebSocketOperation;
+      let name2 = declared && typeof rawName === "string" && /^[a-zA-Z_][a-zA-Z0-9_.:-]{0,79}$/.test(rawName) ? rawName : "__unknown";
+      if (!websocketNames.has(name2)) {
+        if (websocketNames.size < 64) websocketNames.add(name2);
+        else name2 = "__other";
+      }
+      const labels = { "sporades.websocket.operation.type": type, "sporades.websocket.operation.name": name2 };
+      const started = process.hrtime.bigint();
+      let span;
+      try {
+        span = websocketTracer.startSpan(`websocket.${type}`, { kind: SpanKind.SERVER, attributes: labels }, validatedRemoteParentValue(traceparent));
+      } catch {
+      }
+      let ended = false;
+      const end = (outcome) => {
+        if (ended) return;
+        ended = true;
+        websocketEnds.delete(end);
+        const terminalLabels = { ...labels, "sporades.websocket.outcome": outcome };
+        try {
+          websocketCount.add(1, terminalLabels);
+        } catch {
+        }
+        try {
+          websocketDuration.record(Number(process.hrtime.bigint() - started) / 1e9, terminalLabels);
+        } catch {
+        }
+        try {
+          span?.setAttribute("sporades.websocket.outcome", outcome);
+          if (outcome !== "success") span?.setStatus({ code: SpanStatusCode.ERROR });
+          span?.end();
+        } catch {
+        }
+      };
+      websocketEnds.add(end);
+      const scope = { requestId: randomUUID9(), span, tracer: websocketTracer, isOpen: () => !ended && !closing };
+      return { run: (handle) => runtimeRequestScope.run(scope, handle), end };
+    }
+  };
   const jobMeter = meterProvider.getMeter("sporades-runtime-jobs", "1");
   const jobDuration = jobMeter.createHistogram("sporades.job.execution.duration", { unit: "s" });
   const jobRetries = jobMeter.createCounter("sporades.job.retry.count", { unit: "1" });
   const jobFailures = jobMeter.createCounter("sporades.job.failure.count", { unit: "1" });
   const queueDepth = jobMeter.createObservableGauge("sporades.job.queue.depth", { unit: "1" });
   const queueAge = jobMeter.createObservableGauge("sporades.job.queue.oldest_pending_age", { unit: "s" });
-  let closing = false;
   let jobQueueDatabase;
   let reading = false;
   const seenJobNames = /* @__PURE__ */ new Set();
@@ -128733,6 +128808,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     }
   }, [queueDepth, queueAge]);
   return {
+    websocket,
     /** Internal generated-runtime seam. Only declared names can become labels. */
     bindJobQueue(database) {
       const names = /* @__PURE__ */ new Set();
@@ -128887,6 +128963,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     },
     async shutdown() {
       if (closing) return;
+      for (const end of websocketEnds) end("cancelled");
       closing = true;
       gcObserver.disconnect();
       delayMonitorStoppedAt = performance2.now();
@@ -138909,6 +138986,8 @@ async function runClientAccessKeyOperation(database, auth, message, sessionToken
   }
 }
 var WEBSOCKET_HEARTBEAT_MS = 3e4;
+var untracedWebSocketOperation = { run: withoutRuntimeRequestIdentity, end: () => {
+} };
 function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
   const heartbeatMs = options.heartbeatMs ?? WEBSOCKET_HEARTBEAT_MS;
   const clients = /* @__PURE__ */ new Set();
@@ -138919,6 +138998,30 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
   const maxConnectionTokens = 4096;
   let journeyExpiryTimer = null;
   let journeyDisableRequests = 0;
+  const queryOperations = /* @__PURE__ */ new WeakMap();
+  function operationOutcome(error) {
+    if (!error) return "success";
+    return ["UNAUTHENTICATED", "FORBIDDEN", "DENIED", "REAUTHENTICATION_REQUIRED"].includes(error.code) ? "denied" : "error";
+  }
+  function startOperation(client, type, name2, traceparent) {
+    if (!options.telemetry || client.socket.destroyed || client.closing) return untracedWebSocketOperation;
+    const database = getDatabase();
+    const declared = (type === "query" ? database.queries : database.mutations)?.some((handler) => handler.name === name2) || type === "query" && (name2 === "ctx.env" || database.schema?.tables?.some((table) => table.name === name2)) || type === "mutation" && typeof name2 === "string" && (resolveTableForAddMutation(database.schema, name2) || resolveTableForUpdateMutation(database.schema, name2));
+    let operation;
+    try {
+      operation = options.telemetry.startOperation(type, name2, Boolean(declared), traceparent);
+    } catch {
+      return untracedWebSocketOperation;
+    }
+    client.telemetryOperations.add(operation);
+    return { run: operation.run, end(outcome) {
+      client.telemetryOperations.delete(operation);
+      try {
+        operation.end(outcome);
+      } catch {
+      }
+    } };
+  }
   return {
     createConnectionToken(currentToken) {
       if (currentToken && validateConnectionToken(currentToken)) return currentToken;
@@ -138982,9 +139085,15 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         journeySubscriptions: /* @__PURE__ */ new Set(),
         lastFrameAt: Date.now(),
         pingSentAt: null,
-        heartbeat: null
+        heartbeat: null,
+        telemetryOperations: options.telemetry ? /* @__PURE__ */ new Set() : null
       };
       clients.add(client);
+      let connectionClosed;
+      try {
+        connectionClosed = options.telemetry?.connectionOpened();
+      } catch {
+      }
       const unanswered = () => client.pingSentAt !== null && client.lastFrameAt < client.pingSentAt;
       client.heartbeat = setInterval(() => {
         if (client.closing || socket.destroyed) return;
@@ -139004,7 +139113,23 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         client.buffer = Buffer.concat([client.buffer, chunk]);
         drainWebSocketFrames(client, (message) => enqueueClientMessage(client, message));
       });
+      let removed = false;
       const removeClient = () => {
+        if (removed) return;
+        removed = true;
+        try {
+          connectionClosed?.();
+        } catch {
+        }
+        if (client.telemetryOperations) {
+          for (const operation of client.telemetryOperations) {
+            try {
+              operation.end("cancelled");
+            } catch {
+            }
+          }
+          client.telemetryOperations.clear();
+        }
         clearInterval(client.heartbeat);
         clients.delete(client);
         trustedRefresh?.disconnected(client.id);
@@ -139012,6 +139137,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         client.journeySubscriptions.clear();
         client.journey = null;
       };
+      client.remove = removeClient;
       socket.on("close", removeClient);
       socket.on("error", removeClient);
     },
@@ -139019,8 +139145,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       if (journeyExpiryTimer !== null) getDatabase().clock.clearTimer(journeyExpiryTimer);
       journeyExpiryTimer = null;
       for (const client of clients) {
-        trustedRefresh?.disconnected(client.id);
         closeWebSocketClient(client);
+        client.remove();
       }
       clients.clear();
       journeys.clear();
@@ -139422,6 +139548,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     }
     if (message.type === "query.subscribe") {
       const queryName = message.query ?? message.name;
+      const operation = startOperation(client, "query", queryName, message.traceparent);
       const validId = typeof message.id === "string" && message.id.length > 0 || typeof message.id === "number" && Number.isFinite(message.id);
       if (!validId || typeof queryName !== "string" || queryName.length === 0) {
         sendJson(client, {
@@ -139433,6 +139560,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
             hint: "Use a string or numeric subscription ID and a non-empty query name."
           }
         });
+        operation.end("error");
         return;
       }
       let args;
@@ -139446,6 +139574,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
           data: null,
           error: invalidQueryArgumentsError()
         });
+        operation.end("error");
         return;
       }
       if (!message.query && args.length > 0) {
@@ -139456,12 +139585,15 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
           data: null,
           error: invalidQueryArgumentsError()
         });
+        operation.end("error");
         return;
       }
       const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
+      const previous = client.subscriptions.get(message.id);
+      if (previous) queryOperations.get(previous)?.end("cancelled");
       client.subscriptions.set(message.id, subscription);
       database.__notifyJobStateQueries = refreshQueries;
-      void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error));
+      void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
       return;
     }
     if (message.type === "query.unsubscribe") {
@@ -139479,6 +139611,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         });
         return;
       }
+      const subscription = client.subscriptions.get(subscriptionId);
+      if (subscription) queryOperations.get(subscription)?.end("cancelled");
       const removed = client.subscriptions.delete(subscriptionId);
       sendJson(client, {
         id: message.id ?? null,
@@ -139863,14 +139997,22 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     }
     if (message.type === "mutation.run") {
       const mutationName = message.mutation ?? message.name;
-      const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
-        sessionToken: client.session.token
+      const operation = startOperation(client, "mutation", mutationName, message.traceparent);
+      return operation.run(async () => {
+        try {
+          const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
+            sessionToken: client.session.token
+          });
+          sendJson(client, formatMutationResult(message, mutationName, result));
+          if (result.ok && mutationResultsWithWrites.has(result)) {
+            setTimeout(refreshQueries, 0);
+          }
+          operation.end(operationOutcome(result.error));
+        } catch (error) {
+          operation.end(operationOutcome(error));
+          throw error;
+        }
       });
-      sendJson(client, formatMutationResult(message, mutationName, result));
-      if (result.ok && mutationResultsWithWrites.has(result)) {
-        setTimeout(refreshQueries, 0);
-      }
-      return;
     }
     if (message.type === "app.send") {
       const messageName = message.message ?? message.name;
@@ -139946,33 +140088,44 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       }
     });
   }
-  async function sendQueryResult(client, subscription, onError) {
-    const generation = (subscription.generation ?? 0) + 1;
-    subscription.generation = generation;
-    try {
-      const database = getDatabase();
-      const readTables = /* @__PURE__ */ new Set();
-      const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
-        sessionToken: client.session.token
-      }));
-      if (subscription.generation === generation) subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
-      const data2 = subscription.style === "direct" ? result.data ?? result.rows : { rows: result.data ?? result.rows };
-      if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
-      sendJson(client, {
-        id: subscription.id,
-        type: "query.result",
-        query: subscription.name,
-        data: data2,
-        error: result.error
-      });
-    } catch (error) {
-      if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
-      subscription.readTables = null;
+  async function sendQueryResult(client, subscription, onError, operation = startOperation(client, "query", subscription.name)) {
+    queryOperations.get(subscription)?.end("cancelled");
+    queryOperations.set(subscription, operation);
+    return operation.run(async () => {
+      const generation = (subscription.generation ?? 0) + 1;
+      subscription.generation = generation;
       try {
-        onError(error);
-      } catch {
+        const database = getDatabase();
+        const readTables = /* @__PURE__ */ new Set();
+        const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
+          sessionToken: client.session.token
+        }));
+        if (subscription.generation === generation) subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
+        const data2 = subscription.style === "direct" ? result.data ?? result.rows : { rows: result.data ?? result.rows };
+        if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) {
+          operation.end("cancelled");
+          return;
+        }
+        sendJson(client, {
+          id: subscription.id,
+          type: "query.result",
+          query: subscription.name,
+          data: data2,
+          error: result.error
+        });
+        operation.end(operationOutcome(result.error));
+      } catch (error) {
+        operation.end(operationOutcome(error));
+        if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
+        subscription.readTables = null;
+        try {
+          onError(error);
+        } catch {
+        }
+      } finally {
+        if (queryOperations.get(subscription) === operation) queryOperations.delete(subscription);
       }
-    }
+    });
   }
   function refreshQueries() {
     const dirty = takeLiveQueryDirtyTables();
@@ -150313,7 +150466,14 @@ async function startDevSession(options) {
     data: { diagnostics: runtime.database.runtimeDiagnostics }
   });
   const devRefresh = createDevRefreshController();
-  const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
+  const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport, {
+    // Resolve the current adapter at dispatch/accept time. Operations and close
+    // callbacks already returned by an adapter remain owned by that adapter.
+    telemetry: {
+      startOperation: (...args) => telemetry.websocket.startOperation(...args),
+      connectionOpened: () => telemetry.websocket.connectionOpened()
+    }
+  });
   const server = createServer2(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
     try {
       if (prepareHttpSecurity(runtime.database, request, response)) {
@@ -150678,16 +150838,19 @@ async function startDevSession(options) {
             await nextTelemetry?.shutdown();
             throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
           });
+          const previousTelemetry = nextTelemetry ? telemetry : null;
           if (nextTelemetry) {
-            const previousTelemetry = telemetry;
             telemetry = nextTelemetry;
             telemetryConfig = nextTelemetryConfig;
-            void previousTelemetry.shutdown();
           }
           runtimeServiceEnv = nextCapsuleServiceEnv;
           fatalRestartAttempts = 0;
-          refresh = await devRefresh.broadcast();
-          websocketHub.disconnectAll();
+          try {
+            refresh = await devRefresh.broadcast();
+          } finally {
+            websocketHub.disconnectAll();
+            void previousTelemetry?.shutdown();
+          }
           try {
             await runtime.database.log.emit({
               category: "platform",
