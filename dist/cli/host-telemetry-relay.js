@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, readFile, rename, writeFile, chmod, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import path from "node:path";
 import { SPORADES_BASE_IMAGE } from "../base-image.js";
 import { helperError } from "./cli-support.js";
+import { withHostTelemetryLock } from "./host-telemetry-state.js";
 import { inventoryHost } from "./inventory-contract.js";
 import { configureHostMetrics, hostMetricsStatus, hostScrapeConfig, readHostMetrics, HOST_METRICS_NETWORK } from "./host-metrics.js";
 const RELAY_IMAGE = "otel/opentelemetry-collector-contrib:0.138.0";
@@ -79,13 +80,26 @@ async function readProtected(file) {
 }
 async function atomicWrite(file, content, mode) {
     const candidate = `${file}.${randomBytes(8).toString("hex")}.tmp`;
-    await writeFile(candidate, content, { flag: "wx", mode });
     try {
+        const handle = await open(candidate, "wx", mode);
+        try {
+            await handle.writeFile(content);
+            await handle.sync();
+        }
+        finally {
+            await handle.close();
+        }
         await rename(candidate, file);
-        await chmod(file, mode);
+        const directory = await open(path.dirname(file), "r");
+        try {
+            await directory.sync();
+        }
+        finally {
+            await directory.close();
+        }
     }
-    catch (error) {
-        throw error;
+    finally {
+        await rm(candidate, { force: true });
     }
 }
 function docker(args) {
@@ -106,7 +120,7 @@ function inspectRelay() {
         throw helperError("Host Telemetry relay name is occupied.", "Inspect the existing relay container before reconciling it.");
     }
 }
-export async function readHostTelemetryConnection(remoteRoot) {
+async function readConnectionRecord(remoteRoot) {
     const files = paths(remoteRoot);
     try {
         await assertOwnedDirectory(files.directory);
@@ -131,6 +145,49 @@ export async function readHostTelemetryConnection(remoteRoot) {
     }
     return value;
 }
+export async function readHostTelemetryConnection(remoteRoot) {
+    const record = await readConnectionRecord(remoteRoot);
+    if (!record)
+        return null;
+    const { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost, metricsIntervalMs, eventLoopDelayResolutionMs } = record;
+    const value = { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost, metricsIntervalMs, eventLoopDelayResolutionMs };
+    return value;
+}
+/** Call only while holding withHostTelemetryLock; legacy split state needs it too. */
+export async function readHostInventoryConnection(remoteRoot) {
+    const record = await readConnectionRecord(remoteRoot);
+    if (!record)
+        return null;
+    const files = paths(remoteRoot);
+    const details = await lstat(files.descriptor);
+    if (details.mode & 0o077)
+        throw new Error("Unprotected Host inventory state.");
+    if (!inventoryHost(record.inventoryHost))
+        throw new Error("Reconnect Host Telemetry to assign inventory authority.");
+    const bundle = record.inventory;
+    let credential, caPem, generation;
+    if (bundle !== undefined) {
+        if (!bundle || typeof bundle.generation !== "string" || !/^[a-f0-9]{32}$/.test(bundle.generation))
+            throw new Error("Invalid inventory connection.");
+        ({ credential, caPem, generation } = bundle);
+        if (Boolean(caPem) !== record.caConfigured)
+            throw new Error("Invalid inventory connection.");
+    }
+    else {
+        // Old Hosts remain usable. Every new reconnect uses this same OS lock and
+        // publishes a complete bundle, so a legacy capture cannot straddle rotation.
+        const tokenPath = path.join(files.directory, "inventory-credential");
+        if ((await lstat(tokenPath)).mode & 0o077)
+            throw new Error("Unprotected Host inventory state.");
+        credential = (await readProtected(tokenPath) ?? "").trim();
+        caPem = record.caConfigured ? await readProtected(files.ca) ?? undefined : undefined;
+        if (record.caConfigured && !caPem)
+            throw new Error("Invalid inventory connection.");
+        generation = createHash("sha256").update(JSON.stringify([record, credential, caPem])).digest("hex");
+    }
+    validateHostRelayConnection({ endpoint: record.endpoint, credential, ...(caPem ? { caPem } : {}) });
+    return { generation, endpoint: record.endpoint, host: record.inventoryHost, credential, caPem };
+}
 export async function statusHostTelemetryRelay(remoteRoot) {
     const connection = await readHostTelemetryConnection(remoteRoot);
     const relay = inspectRelay();
@@ -152,43 +209,46 @@ export async function connectHostTelemetryRelay(remoteRoot, network, input, host
     const files = paths(remoteRoot);
     await mkdir(files.directory, { recursive: true, mode: 0o700 });
     await assertOwnedDirectory(files.directory);
-    const previous = await readHostTelemetryConnection(remoteRoot);
-    if (previous?.inventoryHost && connection.inventoryHost && previous.inventoryHost !== connection.inventoryHost)
-        throw helperError("Host inventory identity cannot change.", "Use the persisted exact Host identity when reconnecting; restore retained state rather than resetting authority.");
-    const resources = host ? await configureHostMetrics(remoteRoot, host) : await readHostMetrics(remoteRoot);
-    const previousConfig = previous ? await readProtected(files.config) : null;
-    const previousCredential = previous ? await readProtected(files.credential) : null;
-    const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-    const descriptor = { schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
-    await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 0o644);
-    await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
-    if (connection.caPem)
-        await atomicWrite(files.ca, connection.caPem, 0o644);
-    try {
-        await startRelay(files, network, Boolean(connection.caPem));
-    }
-    catch (error) {
-        if (previous && previousConfig && previousCredential && (!previous.caConfigured || previousCa)) {
-            await atomicWrite(files.config, previousConfig, 0o644);
-            await atomicWrite(files.credential, previousCredential, 0o600);
-            if (previousCa)
-                await atomicWrite(files.ca, previousCa, 0o644);
-            try {
-                await startRelay(files, previous.network, previous.caConfigured);
-            }
-            catch {
-                throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile.");
-            }
+    return withHostTelemetryLock(remoteRoot, async () => {
+        const previous = await readHostTelemetryConnection(remoteRoot);
+        if (previous?.inventoryHost && connection.inventoryHost && previous.inventoryHost !== connection.inventoryHost)
+            throw helperError("Host inventory identity cannot change.", "Use the persisted exact Host identity when reconnecting; restore retained state rather than resetting authority.");
+        const resources = host ? await configureHostMetrics(remoteRoot, host) : await readHostMetrics(remoteRoot);
+        const previousConfig = previous ? await readProtected(files.config) : null;
+        const previousCredential = previous ? await readProtected(files.credential) : null;
+        const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
+        const descriptor = { inventory: { generation: randomBytes(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...(connection.caPem ? { caPem: connection.caPem } : {}) }, schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
+        await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 0o644);
+        await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
+        if (connection.caPem)
+            await atomicWrite(files.ca, connection.caPem, 0o644);
+        try {
+            await startRelay(files, network, Boolean(connection.caPem));
         }
-        else {
-            await rm(files.config, { force: true });
-            await rm(files.credential, { force: true });
+        catch (error) {
+            if (previous && previousConfig && previousCredential && (!previous.caConfigured || previousCa)) {
+                await atomicWrite(files.config, previousConfig, 0o644);
+                await atomicWrite(files.credential, previousCredential, 0o600);
+                if (previousCa)
+                    await atomicWrite(files.ca, previousCa, 0o644);
+                try {
+                    await startRelay(files, previous.network, previous.caConfigured);
+                }
+                catch {
+                    throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile.");
+                }
+            }
+            else {
+                await rm(files.config, { force: true });
+                await rm(files.credential, { force: true });
+            }
+            throw error;
         }
-        throw error;
-    }
-    await atomicWrite(files.descriptor, `${JSON.stringify(descriptor, null, 2)}\n`, 0o600);
-    await atomicWrite(path.join(files.directory, "inventory-credential"), `${connection.inventoryCredential ?? connection.credential}\n`, 0o600);
-    return await statusHostTelemetryRelay(remoteRoot);
+        await atomicWrite(files.descriptor, `${JSON.stringify(descriptor, null, 2)}\n`, 0o600);
+        // Remove superseded split credentials only after the complete bundle is durable.
+        await rm(path.join(files.directory, "inventory-credential"), { force: true });
+        return await statusHostTelemetryRelay(remoteRoot);
+    });
 }
 async function startRelay(files, network, caConfigured) {
     const existing = inspectRelay();

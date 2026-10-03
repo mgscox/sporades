@@ -28,7 +28,7 @@ export function validateInventory(value) {
             invalid();
         if (item.release !== null && (typeof item.release !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(item.release)))
             invalid();
-        if (!Array.isArray(item.targets) || item.targets.length > 20 || new Set(item.targets).size !== item.targets.length)
+        if (!Array.isArray(item.targets) || item.targets.length > 21 || new Set(item.targets).size !== item.targets.length)
             invalid();
         for (const target of item.targets) {
             if (typeof target !== "string" || target.length > 2048)

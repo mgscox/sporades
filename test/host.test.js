@@ -6717,7 +6717,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     const telemetryDir = path.join(remoteRoot, "telemetry");
     await mkdir(telemetryDir, { recursive: true, mode: 0o700 });
     await chmod(telemetryDir, 0o700);
-    await writeFile(path.join(telemetryDir, "connection.json"), JSON.stringify({ schemaVersion: 1, endpoint: "https://monitor.example:4318/", network: "sporades-hosted-capsules", internalEndpoint: "http://sporades-telemetry:4318/", caConfigured: false, inventoryHost: "capsules.example.dev", connectedAt: "2026-09-28T00:00:00.000Z" }), { mode: 0o600 });
+    await writeFile(path.join(telemetryDir, "connection.json"), JSON.stringify({ schemaVersion: 1, endpoint: "https://monitor.example:4318/", network: "sporades-hosted-capsules", internalEndpoint: "http://sporades-telemetry:4318/", caConfigured: false, inventoryHost: "capsules.example.dev", connectedAt: "2026-09-28T00:00:00.000Z", inventory: { generation: "00000000000000000000000000000001", credential: "test-host-inventory-token" } }), { mode: 0o600 });
     const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
     const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");

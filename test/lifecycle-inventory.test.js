@@ -80,6 +80,9 @@ test('configuration refuses reused scope tokens without exposing secrets and shi
   await assert.rejects(setupEnvironment(path.join(dir, '.env')), /Invalid INVENTORY_HOSTS/);
   await assert.rejects(readFile(path.join(dir, '.private/credentials.json')), /ENOENT/);
   const generated = await import('../monitoring/trace/inventory-contract.mjs');
+  const tooManyTargets = { ...inventory(1), capsules: [{ ...capsule(), targets: Array.from({ length: 22 }, (_, i) => `https://alias-${i}.example/`) }] };
+  assert.throws(() => validateInventory(tooManyTargets));
+  assert.throws(() => generated.validateInventory(tooManyTargets));
   assert.deepEqual(generated.validateInventory(inventory(1)), validateInventory(inventory(1)));
   for (const value of [null, { ...inventory(1), revision: 0 }, { ...inventory(1), capsules: [capsule(), capsule()] }]) {
     assert.throws(() => validateInventory(value)); assert.throws(() => generated.validateInventory(value));
@@ -95,12 +98,14 @@ test('reconnect cannot replace saved exact Host identity or mutate connection au
   const descriptor = JSON.stringify({ schemaVersion: 1, endpoint: 'https://monitor.example/', network: 'fake-network', internalEndpoint: 'http://sporades-telemetry:4318/', caConfigured: false, inventoryHost: 'saved-host' });
   await writeFile(path.join(telemetry, 'connection.json'), descriptor, { mode: 0o600 });
   const oldPath = process.env.PATH;
+  const oldFlock = process.env.SPORADES_TEST_FLOCK_PATH;
+  process.env.SPORADES_TEST_FLOCK_PATH = path.resolve("test/support/exec-flock.py");
   process.env.PATH = fakeBin + path.delimiter + oldPath;
   try {
     await assert.rejects(connectHostTelemetryRelay(dir, 'fake-network', { endpoint: 'https://monitor.example/', credential: 'test-ingestion-token', inventoryHost: 'other-host' }), /identity cannot change/);
     assert.equal(await readFile(path.join(telemetry, 'connection.json'), 'utf8'), descriptor);
     await assert.rejects(readFile(path.join(telemetry, 'credential.env')), /ENOENT/);
-  } finally { process.env.PATH = oldPath; }
+  } finally { process.env.PATH = oldPath; if (oldFlock === undefined) delete process.env.SPORADES_TEST_FLOCK_PATH; else process.env.SPORADES_TEST_FLOCK_PATH = oldFlock; }
 });
 
 async function runHelper(args, env, input, expectedCode = 0) {
@@ -143,7 +148,7 @@ test('Host outbox catches up after TLS outage, helper restarts, lifecycle change
   await writeFile(path.join(telemetry, 'inventory-credential'), token + '\n', { mode: 0o600 });
   await writeFile(path.join(telemetry, 'ca.pem'), cert);
   const recordPath = path.join(registry, 'notes.json');
-  let record = { domain: scope, subname: 'notes', hostedUrl: 'https://notes.apps.example', status: 'registered', updatedAt: '2026-10-02T00:00:00.000Z', currentRelease: null };
+  let record = { domain: scope, subname: 'notes', hostedUrl: 'https://notes.apps.example', status: 'registered', aliasDomains: Array.from({ length: 20 }, (_, i) => `alias-${i}.example`), updatedAt: '2026-10-02T00:00:00.000Z', currentRelease: null };
   const persist = async () => { const temporary = recordPath + '.tmp'; await writeFile(temporary, JSON.stringify(record)); await rename(temporary, recordPath); };
   await persist();
   const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(dir, 'config'), SPORADES_TEST_FLOCK_PATH: path.resolve('test/support/exec-flock.py') };
@@ -151,6 +156,8 @@ test('Host outbox catches up after TLS outage, helper restarts, lifecycle change
   const first = await worker();
   assert.equal(first.data.pending, false);
   assert.equal(first.data.acknowledgedRevision, 1);
+  const boundary = await sendTls(port, cert, 'GET', token);
+  assert.equal(boundary.body.data.inventory.capsules[0].targets.length, 21, 'canonical origin plus all 20 supported aliases are queued and centrally acknowledged');
   await close(gateway);
   record = { ...record, status: 'released', currentRelease: { id: 'release-2' }, updatedAt: '2026-10-02T00:01:00.000Z' }; await persist();
   const disconnected = await worker();

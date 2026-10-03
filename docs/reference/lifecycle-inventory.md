@@ -44,7 +44,12 @@ Inventory and ingestion credentials grant separate roles. If the inventory
 reference is omitted, connect uses the ingestion token for inventory too;
 it still has no inventory authority unless explicitly mapped to that exact Host.
 Prefer a dedicated inventory token, especially when sharing an ingestion token
-between Hosts. The Host stores it mode 0600 as `telemetry/inventory-credential`.
+between Hosts. The Host stores the inventory credential, CA and generation in
+mode-0600 `telemetry/connection.json`, alongside the exact destination and scope.
+Reconnect atomically publishes this complete connection under the same OS lock
+used to capture inventory deliveries. Legacy split credential/CA files remain
+readable under that lock until reconnect upgrades them. Secrets are omitted from
+status, export and public connection metadata.
 Local Dev/Container telemetry ignores the inventory reference.
 
 Upgrade CLI and helper together, then reconnect existing Hosts whose connection
@@ -80,7 +85,8 @@ States: `registered`, `released`, `running`, `stopped`, `failed`, `deleted`,
 `opted-out`. Stopped/deleted/opted-out targets are empty and change active probe
 expectations. Lost contact never removes the expected Host or its Capsules.
 Deleted identities remain tombstones; omission cannot erase acknowledged
-identities. Targets are bare HTTP(S) application origins and registered aliases:
+identities. Each Capsule permits its canonical origin plus all 20 supported
+registered aliases (21 targets total). Targets are bare HTTP(S) application origins and registered aliases:
 no explicit ports, userinfo, queries, fragments, readiness paths/tokens, headers
 or response content. Unknown fields, invalid/duplicate identities and oversized
 snapshots (1 MiB, 2,000 Capsules) are rejected. No target is fetched here.
@@ -96,14 +102,17 @@ Writable inventory storage is a stack `/health` dependency alongside ingestion
 and configured trace/metric storage; sender availability is not a dependency.
 
 The Host atomically replaces/fsyncs `telemetry/inventory.json` under an OS lock,
-then releases the lock before HTTPS delivery. The outbox stores desired state,
-destination, acknowledgement, attempt time and bounded failure category.
+then captures the matching destination, scope, credential and CA before releasing
+the lock for HTTPS delivery. Every successful reconnect, including token rotation
+at the same endpoint, starts a new generation and invalidates the prior
+acknowledgement. Responses from superseded generations are discarded. The outbox stores desired state,
+destination, connection generation, acknowledgement, attempt time and bounded failure category.
 Incomplete/corrupt registry directories fail closed without erasing expectations.
 Periodic reconciliation refreshes from the registry even if a command crashes
 before queuing. `host telemetry status --json` reports `inventory.host`,
 `desiredRevision`, `acknowledgedRevision`, `acknowledgedAt`, `lastAttemptAt`,
 `pending`, `stale`, `failure` and `reconcilerInstalled`. Pending means the latest
-revision is unacknowledged; stale means no acknowledgement within three minutes.
+revision or connection generation is unacknowledged; stale means no acknowledgement within three minutes.
 These fields do not claim probe coverage or alert delivery.
 
 ## Recovery and backup

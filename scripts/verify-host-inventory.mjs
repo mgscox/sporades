@@ -42,12 +42,11 @@ try {
   run('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(certs, 'key.pem'), '-out', path.join(certs, 'cert.pem'), '-days', '1', '-subj', '/CN=inventory-monitor', '-addext', 'subjectAltName=DNS:inventory-monitor']);
   const privateFile = path.join(root, 'credentials.json');
   await writeFile(privateFile, JSON.stringify({ ingestToken: randomBytes(24).toString('hex'), uiUser: 'operator', uiPassword: randomBytes(24).toString('hex'), inventoryHosts: { [scope]: credential, 'other.example': wrongCredential } }), { mode: 0o600 });
-  await writeFile(path.join(telemetry, 'connection.json'), JSON.stringify({ schemaVersion: 1, endpoint: 'https://inventory-monitor:8443/', internalEndpoint: 'http://sporades-telemetry:4318/', network: 'unused', inventoryHost: scope, caConfigured: true }), { mode: 0o600 });
-  await writeFile(path.join(telemetry, 'inventory-credential'), credential + '\n', { mode: 0o600 });
+  await writeFile(path.join(telemetry, 'connection.json'), JSON.stringify({ schemaVersion: 1, endpoint: 'https://inventory-monitor:8443/', internalEndpoint: 'http://sporades-telemetry:4318/', network: 'unused', inventoryHost: scope, caConfigured: true, inventory: { generation: randomBytes(16).toString('hex'), credential, caPem: (await readFile(path.join(certs, 'cert.pem'))).toString() } }), { mode: 0o600 });
   await writeFile(path.join(telemetry, 'ca.pem'), await readFile(path.join(certs, 'cert.pem')));
   let changed = 0;
   const record = async (state, release = 'release-1', optedOut = false) => {
-    const data = { domain: scope, subname: 'notes', remoteCapsuleId: `${scope}/notes`, hostedUrl: 'https://notes.docker-host.example', status: state, updatedAt: new Date(Date.now() + changed++).toISOString(), currentRelease: { id: release }, telemetry: { disabled: optedOut } };
+    const data = { domain: scope, subname: 'notes', remoteCapsuleId: `${scope}/notes`, hostedUrl: 'https://notes.docker-host.example', aliasDomains: Array.from({ length: 20 }, (_, i) => `alias-${i}.example`), status: state, updatedAt: new Date(Date.now() + changed++).toISOString(), currentRelease: { id: release }, telemetry: { disabled: optedOut } };
     await writeFile(path.join(registry, 'notes.json'), JSON.stringify(data));
     if (hostStarted) run('docker', ['exec', '--interactive', host, 'node', '-e', `require('node:fs').writeFileSync('/host/hosts/${scope}/registry/capsules/notes.json',require('node:fs').readFileSync(0))`], 60_000, JSON.stringify(data));
   };
@@ -97,6 +96,7 @@ try {
   assert.equal(connected.data.pending, false, JSON.stringify(connected));
   const centralFile = createHash('sha256').update(scope).digest('hex') + '.json';
   const central = async () => JSON.parse(docker('run', '--rm', '--name', `${prefix}-read`, '--user', user, '--read-only', '--cap-drop', 'ALL', '--mount', `type=volume,source=${centralVolume},target=/inventory,readonly`, 'node:24-bookworm-slim', 'node', '-e', `process.stdout.write(require('node:fs').readFileSync('/inventory/${centralFile}','utf8'))`));
+  assert.equal((await central()).inventory.capsules[0].targets.length, 21, 'canonical origin and all 20 aliases reach central storage');
   const states = [];
   for (const state of ['released', 'running', 'stopped']) {
     await record(state);
@@ -133,7 +133,7 @@ try {
   await record('unregistered'); reconcile();
   docker('exec', host, 'node', '-e', `require('node:fs').unlinkSync('/host/hosts/${scope}/registry/capsules/notes.json')`); reconcile();
   assert.equal((await central()).inventory.capsules[0].state, 'deleted');
-  evidence = { topology: 'two isolated Linux Docker containers, authenticated TLS, persisted independent state', sourceVersion: JSON.parse(await readFile('package.json', 'utf8')).version, states, registryRollback: true, optOut: true, staleAndConflictingDenied: true, crossHostDenied: true, outageRetainsExpectations: true, hostAndGatewayRestart: true, deletion: true, timerUnitContract: true, operatorUnitConflictDenied: true, realSeparateVmAcceptance: 'manager manual step' };
+  evidence = { topology: 'two isolated Linux Docker containers, authenticated TLS, persisted independent state', sourceVersion: JSON.parse(await readFile('package.json', 'utf8')).version, states, connectionGeneration: true, canonicalAndTwentyAliases: true, registryRollback: true, optOut: true, staleAndConflictingDenied: true, crossHostDenied: true, outageRetainsExpectations: true, hostAndGatewayRestart: true, deletion: true, timerUnitContract: true, operatorUnitConflictDenied: true, realSeparateVmAcceptance: 'manager manual step' };
   await writeFile(path.join(base, 'evidence.json'), JSON.stringify(evidence, null, 2) + '\n');
   process.stdout.write(JSON.stringify(evidence) + '\n');
 } finally {

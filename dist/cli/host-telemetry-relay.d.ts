@@ -25,6 +25,15 @@ export declare function readHostTelemetryConnection(remoteRoot: string): Promise
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
 } | null>;
+export type HostInventoryConnection = {
+    generation: string;
+    endpoint: string;
+    host: string;
+    credential: string;
+    caPem?: string;
+};
+/** Call only while holding withHostTelemetryLock; legacy split state needs it too. */
+export declare function readHostInventoryConnection(remoteRoot: string): Promise<HostInventoryConnection | null>;
 export declare function statusHostTelemetryRelay(remoteRoot: string): Promise<{
     eventLoopDelayResolutionMs?: number | undefined;
     metricsIntervalMs?: number | undefined;

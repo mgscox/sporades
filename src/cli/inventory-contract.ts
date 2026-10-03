@@ -4,6 +4,7 @@ export type InventoryCapsule = {
   state: "registered" | "released" | "running" | "stopped" | "failed" | "deleted" | "opted-out";
   changedAt: string;
   release: string | null;
+  /** Canonical origin plus up to 20 registered aliases (21 targets total). */
   targets: string[];
 };
 export type HostInventory = { schemaVersion: 1; host: string; revision: number; capsules: InventoryCapsule[] };
@@ -30,7 +31,7 @@ export function validateInventory(value: unknown): HostInventory {
     if (!["registered", "released", "running", "stopped", "failed", "deleted", "opted-out"].includes(String(item.state))) invalid();
     if (typeof item.changedAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(item.changedAt) || !Number.isFinite(Date.parse(item.changedAt))) invalid();
     if (item.release !== null && (typeof item.release !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(item.release))) invalid();
-    if (!Array.isArray(item.targets) || item.targets.length > 20 || new Set(item.targets).size !== item.targets.length) invalid();
+    if (!Array.isArray(item.targets) || item.targets.length > 21 || new Set(item.targets).size !== item.targets.length) invalid();
     for (const target of item.targets) {
       if (typeof target !== "string" || target.length > 2048) invalid();
       let url: URL; try { url = new URL(target); } catch { return invalid(); }

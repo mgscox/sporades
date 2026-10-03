@@ -1,12 +1,12 @@
 import { type HostInventory, type InventoryAcknowledgement } from "./inventory-contract.js";
 type Outbox = {
+    connectionGeneration?: string;
     desired: HostInventory;
     endpoint: string;
     acknowledgement: InventoryAcknowledgement | null;
     lastAttemptAt: string | null;
     failure: string | null;
 };
-/** Persist desired state only. No network access on Capsule operation paths. */
 export declare function queueHostInventory(root: string): Promise<Outbox | null>;
 export declare function hostInventoryStatus(root: string, snapshotFailed?: boolean): Promise<{
     host: string | null;

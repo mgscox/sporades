@@ -1,10 +1,11 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import path from "node:path";
-import { readHostTelemetryConnection } from "./host-telemetry-relay.js";
+import { readHostTelemetryConnection, readHostInventoryConnection } from "./host-telemetry-relay.js";
 import { inventoryHost, validateInventory } from "./inventory-contract.js";
+import { withHostTelemetryLock as locked } from "./host-telemetry-state.js";
 function directory(root) {
     if (!path.isAbsolute(root) || root === "/" || path.normalize(root) !== root)
         throw new Error("Invalid Host inventory root.");
@@ -59,28 +60,6 @@ async function atomicWrite(file, content) {
     }
     finally {
         await rm(temporary, { force: true });
-    }
-}
-// OS-owned lock releases on exit/crash. Neither a stale mkdir lock nor an HTTP
-// request can obstruct Capsule lifecycle locks. The sender releases it before HTTPS.
-async function locked(root, operation) {
-    const dir = directory(root);
-    await protectedPath(dir, true);
-    const file = path.join(dir, "inventory.lock");
-    const handle = await open(file, "a", 0o600);
-    await handle.close();
-    await protectedPath(file);
-    const child = spawn(process.env.SPORADES_TEST_FLOCK_PATH || "/usr/bin/flock", ["--exclusive", "--timeout", "2", "--conflict-exit-code", "75", "--no-fork", file, process.execPath, "-e", "process.stdout.write('locked');process.stdin.resume();"], { stdio: ["pipe", "pipe", "ignore"] });
-    try {
-        await new Promise((resolve, reject) => {
-            child.once("error", reject);
-            child.once("exit", () => reject(new Error("Inventory lock unavailable.")));
-            child.stdout.once("data", () => resolve());
-        });
-        return await operation();
-    }
-    finally {
-        child.stdin.end();
     }
 }
 async function registrySnapshot(root, previous) {
@@ -143,46 +122,56 @@ async function registrySnapshot(root, previous) {
     return capsules;
 }
 /** Persist desired state only. No network access on Capsule operation paths. */
+async function queueLocked(root, connection) {
+    const previous = await readState(root);
+    if (previous && previous.desired.host !== connection.host)
+        throw new Error("Inventory Host identity cannot change.");
+    const desired = validateInventory({ schemaVersion: 1, host: connection.host, revision: previous?.desired.revision ?? 1, capsules: await registrySnapshot(root, previous?.desired.capsules ?? []) });
+    const sameGeneration = previous?.connectionGeneration === connection.generation;
+    const changed = !previous || JSON.stringify(desired) !== JSON.stringify(previous.desired) || !sameGeneration;
+    if (changed && previous)
+        desired.revision++;
+    const state = changed ? { desired, endpoint: connection.endpoint, connectionGeneration: connection.generation, acknowledgement: sameGeneration ? previous.acknowledgement : null, lastAttemptAt: previous?.lastAttemptAt ?? null, failure: null } : previous;
+    if (changed)
+        await atomicWrite(path.join(directory(root), "inventory.json"), JSON.stringify(state) + "\n");
+    return state;
+}
 export async function queueHostInventory(root) {
-    const connection = await readHostTelemetryConnection(root);
-    if (!connection)
+    if (!await readHostTelemetryConnection(root))
         return null;
-    if (!inventoryHost(connection.inventoryHost))
-        throw new Error("Reconnect Host Telemetry to assign inventory authority.");
     return locked(root, async () => {
-        const previous = await readState(root);
-        if (previous && previous.desired.host !== connection.inventoryHost)
-            throw new Error("Inventory Host identity cannot change.");
-        const desired = validateInventory({ schemaVersion: 1, host: connection.inventoryHost, revision: previous?.desired.revision ?? 1, capsules: await registrySnapshot(root, previous?.desired.capsules ?? []) });
-        const changed = !previous || JSON.stringify(desired) !== JSON.stringify(previous.desired) || previous.endpoint !== connection.endpoint;
-        if (changed && previous)
-            desired.revision++;
-        const state = changed ? { desired, endpoint: connection.endpoint, acknowledgement: previous?.endpoint === connection.endpoint ? previous.acknowledgement : null, lastAttemptAt: previous?.lastAttemptAt ?? null, failure: null } : previous;
-        if (changed)
-            await atomicWrite(path.join(directory(root), "inventory.json"), JSON.stringify(state) + "\n");
-        return state;
+        const connection = await readHostInventoryConnection(root);
+        return connection ? queueLocked(root, connection) : null;
     });
 }
 export async function hostInventoryStatus(root, snapshotFailed = false) {
-    const state = await readState(root);
-    const connection = await readHostTelemetryConnection(root);
-    const reconcilerInstalled = spawnSync("systemctl", ["is-enabled", `${inventoryUnit(root)}.timer`], { stdio: "ignore", timeout: 1000 }).status === 0;
-    return { host: state?.desired.host ?? connection?.inventoryHost ?? null, desiredRevision: state?.desired.revision ?? null, acknowledgedRevision: state?.acknowledgement?.revision ?? null, acknowledgedAt: state?.acknowledgement?.acknowledgedAt ?? null, pending: Boolean(connection && (snapshotFailed || !state || state.desired.revision !== state.acknowledgement?.revision)), stale: Boolean(connection && (snapshotFailed || !state?.acknowledgement || Date.now() - Date.parse(state.acknowledgement.acknowledgedAt) > 180_000)), lastAttemptAt: state?.lastAttemptAt ?? null, failure: snapshotFailed ? "snapshot-unavailable" : state?.failure ?? (connection && !state ? "snapshot-unavailable" : null), reconcilerInstalled };
+    const connected = await readHostTelemetryConnection(root);
+    const status = async () => {
+        const state = await readState(root);
+        let unavailable = false;
+        const connection = connected ? await readHostInventoryConnection(root).catch(() => { unavailable = true; return null; }) : null;
+        const failed = snapshotFailed || unavailable;
+        const sameGeneration = Boolean(connection && state?.connectionGeneration === connection.generation);
+        const acknowledgement = sameGeneration ? state?.acknowledgement : null;
+        const reconcilerInstalled = spawnSync("systemctl", ["is-enabled", `${inventoryUnit(root)}.timer`], { stdio: "ignore", timeout: 1000 }).status === 0;
+        return { host: state?.desired.host ?? connection?.host ?? connected?.inventoryHost ?? null, desiredRevision: state?.desired.revision ?? null, acknowledgedRevision: acknowledgement?.revision ?? null, acknowledgedAt: acknowledgement?.acknowledgedAt ?? null, pending: Boolean(connected && (failed || !sameGeneration || !state || state.desired.revision !== acknowledgement?.revision)), stale: Boolean(connected && (failed || !acknowledgement || Date.now() - Date.parse(acknowledgement.acknowledgedAt) > 180_000)), lastAttemptAt: state?.lastAttemptAt ?? null, failure: failed ? "snapshot-unavailable" : sameGeneration ? state?.failure ?? null : connected ? "snapshot-unavailable" : null, reconcilerInstalled };
+    };
+    return connected ? locked(root, status) : status();
 }
 export async function exportHostInventory(root) { return (await queueHostInventory(root))?.desired ?? null; }
 export async function reconcileHostInventory(root) {
-    const state = await queueHostInventory(root);
-    if (!state)
+    if (!await readHostTelemetryConnection(root))
         return hostInventoryStatus(root);
-    const connection = await readHostTelemetryConnection(root);
-    if (!connection)
+    // Capture desired state and all transport authority under the reconnect lock.
+    // HTTP itself runs after releasing it, so lifecycle writes remain independent.
+    const captured = await locked(root, async () => {
+        const connection = await readHostInventoryConnection(root);
+        return connection ? { connection, state: await queueLocked(root, connection) } : null;
+    });
+    if (!captured)
         return hostInventoryStatus(root);
-    const tokenPath = path.join(directory(root), "inventory-credential");
-    await protectedPath(tokenPath);
-    const credential = (await readFile(tokenPath, "utf8")).trim();
-    if (!credential || /[\x00-\x20\x7f]/.test(credential))
-        throw new Error("Invalid inventory credential.");
-    const ca = connection.caConfigured ? await readFile(path.join(directory(root), "ca.pem")) : undefined;
+    const { state, connection } = captured;
+    const { credential, caPem: ca } = connection;
     const body = JSON.stringify(state.desired);
     const result = await new Promise(resolve => {
         const req = httpsRequest(new URL(`/v1/inventory/${state.desired.host}`, state.endpoint), { method: "PUT", ...(ca ? { ca } : {}), headers: { authorization: `Bearer ${credential}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, res => {
@@ -215,7 +204,8 @@ export async function reconcileHostInventory(root) {
     });
     await locked(root, async () => {
         const current = await readState(root);
-        if (!current || current.endpoint !== state.endpoint || current.desired.host !== state.desired.host)
+        const active = await readHostInventoryConnection(root);
+        if (!active || active.generation !== connection.generation || !current || current.connectionGeneration !== connection.generation || current.desired.host !== state.desired.host)
             return;
         if ((current.acknowledgement?.revision ?? 0) > state.desired.revision)
             return;

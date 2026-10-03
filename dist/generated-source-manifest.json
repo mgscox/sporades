@@ -39,6 +39,7 @@
       "src/cli/host-metrics.ts",
       "src/cli/host-request-builders.ts",
       "src/cli/host-telemetry-relay.ts",
+      "src/cli/host-telemetry-state.ts",
       "src/cli/hosted-capsule-contract.ts",
       "src/cli/hosted-telemetry-coverage.ts",
       "src/cli/inventory-contract.ts",
@@ -118,7 +119,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "f03d5d8a2dcb5792cab4129f7bfe04d3cc00331f19999613338da3b146575969"
+    "digest": "1fdada760c776406fe985b90c094c2f51dd25a0c64f8b117303d2c040d59d9ea"
   },
   "outputs": {
     "files": [
@@ -244,6 +245,10 @@
       "dist/cli/host-telemetry-relay.d.ts.map",
       "dist/cli/host-telemetry-relay.js",
       "dist/cli/host-telemetry-relay.js.map",
+      "dist/cli/host-telemetry-state.d.ts",
+      "dist/cli/host-telemetry-state.d.ts.map",
+      "dist/cli/host-telemetry-state.js",
+      "dist/cli/host-telemetry-state.js.map",
       "dist/cli/hosted-capsule-contract.d.ts",
       "dist/cli/hosted-capsule-contract.d.ts.map",
       "dist/cli/hosted-capsule-contract.js",
@@ -522,6 +527,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "4be5d99818756578b93091dc5cd274a3c4ffcf883857ba070b653fe41f808273"
+    "digest": "015b3162b58e6f8230ce2a9e36feb61dd768936492cc11a2e8e815d6093bcf0e"
   }
 }

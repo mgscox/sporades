@@ -4,6 +4,7 @@ export type InventoryCapsule = {
     state: "registered" | "released" | "running" | "stopped" | "failed" | "deleted" | "opted-out";
     changedAt: string;
     release: string | null;
+    /** Canonical origin plus up to 20 registered aliases (21 targets total). */
     targets: string[];
 };
 export type HostInventory = {
