@@ -407,3 +407,19 @@ test('repeated sender probes retain verified TLS evidence without keepalive list
     assert.equal(result.checks.tls.state, 'passed');
   }
 });
+
+test('migration rejects malformed saved endpoints before returning or using embedded secret material', async t => {
+  const f = await fixture(t);
+  const tls = await f.tls('invalid-saved-endpoint');
+  const endpoint = await f.listen(createServer(tls, (req, res) => res.writeHead(401).end()));
+  await f.saveLegacy('https://old.example/', tls.cert);
+  const filename = path.join(f.telemetry, 'connection.json');
+  const descriptor = JSON.parse(await readFile(filename, 'utf8'));
+  descriptor.endpoint = 'https://operator:private-endpoint-secret@old.example/?token=private-query-secret';
+  await writeFile(filename, JSON.stringify(descriptor));
+  const { migrateHostTelemetryRelay } = await import('../dist/cli/host-telemetry-relay.js');
+  await assert.rejects(migrateHostTelemetryRelay(f.root, 'fake-network', { endpoint, credential: 'new-ingestion-token', inventoryCredential: newToken, inventoryHost: scope, caPem: tls.cert.toString() }, scope, 'operator:query-password'), error => {
+    assert.doesNotMatch(error.message + error.hint, /private-endpoint-secret|private-query-secret/);
+    return /Invalid Host Telemetry connection/.test(error.message);
+  });
+});

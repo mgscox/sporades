@@ -379,6 +379,8 @@ export async function migrateHostTelemetryRelay(remoteRoot: string, network: str
   const connection = validateHostRelayConnection(input);
   const previous = await withHostTelemetryLock(remoteRoot, () => readConnectionRecord(remoteRoot));
   if (!previous || !inventoryHost(previous.inventoryHost)) throw helperError("Host Telemetry has no resolved inventory binding.", "Connect and register the Host before migrating it.");
+  validateHostRelayConnection({ endpoint: previous.endpoint, credential: "saved-binding-validation" });
+  if (typeof previous.network !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(previous.network)) invalid();
   if (connection.inventoryHost && connection.inventoryHost !== previous.inventoryHost) throw helperError("Host inventory identity cannot change.", "Use the persisted exact Host identity at the destination.");
   const expectedBinding = createHash("sha256").update(JSON.stringify(previous)).digest("hex");
   const destination = await probeTelemetryDestination(connection);
