@@ -1222,8 +1222,8 @@ They never read the admission generation. Reserved exact paths and prefixes
 covering them are rejected during policy validation, even in disabled rules or
 rules with additional conditions. Aliases and other methods enter admission.
 
-This slice supports method, exact/prefix pathname, header and query-key
-conditions. Every supported condition must match; their order inside a rule does
+HTTP admission supports method, exact/prefix pathname, header, query-key and
+trusted Hosted address/CIDR conditions. Every supported condition must match; their order inside a rule does
 not affect the outcome. A missing trusted address or ambiguous exact-header duplicate is indeterminate:
 a nonmatching condition skips the rule, otherwise it fails closed. A matching quota action also
 fails closed until quota enforcement ships. Evaluation stops at the first match;
