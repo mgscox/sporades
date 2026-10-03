@@ -133593,11 +133593,17 @@ async function createPostgresDatabaseAdapter(options) {
           return this.all(...params).then((rows) => rows[0] ?? null);
         },
         run(...params) {
-          return run2(() => rawQuery(sql2, params).then((result) => {
-            const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
-            recordLiveQueryStatementWrite(sql2, written);
-            return written;
-          }));
+          return run2(async () => {
+            try {
+              const result = await rawQuery(sql2, params);
+              const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
+              recordLiveQueryStatementWrite(sql2, written);
+              return written;
+            } catch (error) {
+              recordLiveQueryStatementWrite(sql2);
+              throw error;
+            }
+          });
         },
         columns() {
           return run2(() => rawQuery(
@@ -133673,10 +133679,15 @@ async function createPostgresDatabaseAdapter(options) {
               return postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null;
             },
             run: async (...params) => {
-              const result = await query(statement, params);
-              const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
-              recordLiveQueryStatementWrite(statement, written, transactionDirtyTables);
-              return written;
+              try {
+                const result = await query(statement, params);
+                const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
+                recordLiveQueryStatementWrite(statement, written, transactionDirtyTables);
+                return written;
+              } catch (error) {
+                recordLiveQueryStatementWrite(statement, void 0, transactionDirtyTables);
+                throw error;
+              }
             },
             columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field) => ({ name: normalization.columnName(field.name) }))
           })

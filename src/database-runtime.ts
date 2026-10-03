@@ -2187,11 +2187,20 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
           return this.all(...params).then((rows: any[]) => rows[0] ?? null);
         },
         run(...params: string[]) {
-          return run(() => rawQuery(sql, params).then((result) => {
-            const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any };
-            recordLiveQueryStatementWrite(sql, written);
-            return written;
-          }));
+          return run(async () => {
+            try {
+              const result = await rawQuery(sql, params);
+              const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any };
+              recordLiveQueryStatementWrite(sql, written);
+              return written;
+            } catch (error) {
+              // A batch can COMMIT before a later statement rejects. No affected-row
+              // count is trustworthy on failure; record after settlement so an
+              // intervening refresh cannot consume the committed write's marker.
+              recordLiveQueryStatementWrite(sql);
+              throw error;
+            }
+          });
         },
         columns() {
           return run(() => rawQuery(
@@ -2274,10 +2283,15 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
               return postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null;
             },
             run: async (...params: any[]) => {
-              const result = await query(statement, params);
-              const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any };
-              recordLiveQueryStatementWrite(statement, written, transactionDirtyTables);
-              return written;
+              try {
+                const result = await query(statement, params);
+                const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any };
+                recordLiveQueryStatementWrite(statement, written, transactionDirtyTables);
+                return written;
+              } catch (error) {
+                recordLiveQueryStatementWrite(statement, undefined, transactionDirtyTables);
+                throw error;
+              }
             },
             columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field: any) => ({ name: normalization.columnName(field.name) })),
           }),

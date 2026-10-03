@@ -83,6 +83,29 @@ export const CONFORMANCE_SURFACE = {
       }
     },
   }, {
+    name: "rejected Postgres prepared writes retain invalidation after an earlier commit",
+    async run(adapter) {
+      if (adapter.engine !== "postgres") return;
+      const reads = await subscriptions(adapter);
+      takeLiveQueryDirtyTables();
+      await assert.rejects(adapter.prepare(`BEGIN; UPDATE "refresh_todos" SET "text" = 'committed-before-error'; COMMIT; SELECT 1/0`).run(), /division by zero/);
+      assert.equal((await adapter.selectAppRowById({ name: "refresh_todos" }, "refresh_todos")).text, "committed-before-error");
+      assert.deepEqual(refreshed(reads), [true, true], "a later rejection cannot suppress committed writes");
+
+      const resource = { table: "refresh_todos", id: "refresh_todos" };
+      await adapter.withResourceTransaction(() => undefined, undefined, resource);
+      takeLiveQueryDirtyTables();
+      await adapter.withResourceTransaction(async (transaction) => {
+        assert.equal((await transaction.prepare('UPDATE "refresh_todos" SET "text" = ? WHERE "id" = ?').run("absent", "missing")).changes, 0);
+      }, undefined, resource);
+      assert.deepEqual(refreshed(reads), [false, false], "successful resource zero-row writes still refresh none");
+      await assert.rejects(adapter.withResourceTransaction(async (transaction) => {
+        await transaction.prepare(`UPDATE "refresh_todos" SET "text" = 'resource-before-error'; COMMIT; SELECT 1/0`).run();
+      }, undefined, resource), { code: "RESOURCE_STORAGE_ERROR" });
+      assert.equal((await adapter.selectAppRowById({ name: "refresh_todos" }, "refresh_todos")).text, "resource-before-error");
+      assert.deepEqual(refreshed(reads), [true, true], "dedicated writes publish conservative invalidation at settlement");
+    },
+  }, {
     name: "transaction and snapshot reads retain their subscription context; rollback never loses writes",
     async run(adapter) {
       const reads = await subscriptions(adapter);

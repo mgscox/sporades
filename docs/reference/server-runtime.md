@@ -225,7 +225,9 @@ the notification for the committed writes. Recognized single-table statements th
 report zero changed rows do not refresh subscriptions. Multi-statement and
 unparseable writes conservatively refresh every subscription even if their final
 result reports zero rows: earlier statements or a data-modifying CTE may have
-committed writes. libsql resource transactions remain unsupported.
+committed writes. Rejected Postgres prepared writes also retain conservative
+invalidation: a batch can commit a write before a later statement rejects.
+The original error still propagates. libsql resource transactions remain unsupported.
 
 ### Change Data With Mutations
 

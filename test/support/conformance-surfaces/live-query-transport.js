@@ -144,14 +144,14 @@ export const CONFORMANCE_SURFACE = {
         }
         if (adapter.engine === "postgres") {
           const statements = [
-            `UPDATE "transport_todos" SET "text" = 'batch-committed'; UPDATE "transport_notes" SET "text" = 'absent' WHERE "id" = 'missing'`,
-            `WITH changed AS (UPDATE "transport_todos" SET "text" = 'cte-committed' RETURNING "id") UPDATE "transport_notes" SET "text" = 'absent' WHERE "id" = 'missing'`,
+            { expected: "batch-committed", sql: `UPDATE "transport_todos" SET "text" = 'batch-committed'; UPDATE "transport_notes" SET "text" = 'absent' WHERE "id" = 'missing'` },
+            { expected: "cte-committed", sql: `WITH changed AS (UPDATE "transport_todos" SET "text" = 'cte-committed' RETURNING "id") UPDATE "transport_notes" SET "text" = 'absent' WHERE "id" = 'missing'` },
+            { expected: "committed-before-error", rejects: true, sql: `BEGIN; UPDATE "transport_todos" SET "text" = 'committed-before-error'; COMMIT; SELECT 1/0` },
           ];
-          for (const [index, sql] of statements.entries()) {
-            const expected = index === 0 ? "batch-committed" : "cte-committed";
+          for (const { expected, sql, rejects } of statements) {
             takeLiveQueryDirtyTables();
-            const result = await database.adapter.prepare(sql).run();
-            assert.equal(result.changes, 0);
+            if (rejects) await assert.rejects(database.adapter.prepare(sql).run(), /division by zero/);
+            else assert.equal((await database.adapter.prepare(sql).run()).changes, 0);
             assert.equal((await database.adapter.prepare('SELECT "text" FROM "transport_todos"').get()).text, expected);
             const delivered = Promise.withResolvers();
             const onResult = (event) => {
@@ -162,10 +162,10 @@ export const CONFORMANCE_SURFACE = {
             let timeout;
             try {
               // Job completion must deliver committed writes even when the final
-              // command reports zero rows for a batch or data-modifying CTE.
+              // command reports zero rows or rejects after an earlier COMMIT.
               database.__notifyJobStateQueries();
               const value = await Promise.race([delivered.promise, new Promise((_, reject) => {
-                timeout = setTimeout(() => reject(new Error(`Zero-result statement left subscription stale: ${expected}`)), 1000);
+                timeout = setTimeout(() => reject(new Error(`Prepared statement left subscription stale: ${expected}`)), 1000);
               })]);
               assert.equal(value.error, null);
             } finally {

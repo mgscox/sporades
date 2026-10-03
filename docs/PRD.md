@@ -469,6 +469,8 @@ tables and failed query runs retain the full-refresh fallback. Transaction write
 are tracked conservatively, including writes that later roll back. Dedicated
 Postgres resource transactions publish their changed tables after settlement,
 so a concurrent refresh cannot consume the eventual commit's notification.
+Rejected Postgres prepared writes retain conservative invalidation because an
+earlier statement may have committed before a later statement rejects.
 
 React and Preact clients can adapt those same primitives with `createHooks`:
 
