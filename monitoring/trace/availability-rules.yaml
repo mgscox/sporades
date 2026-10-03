@@ -1,0 +1,68 @@
+# Prometheus is the sole rule evaluator. No Grafana duplicate rules.
+groups:
+  - name: sporades-availability
+    interval: 15s
+    rules:
+      - alert: SporadesProbeFailure
+        expr: (probe_success{job="capsule-probes"} == 0) and on (host, service_name, target) (up{job="capsule-probes"} == 1) and on (host, service_name) (sporades_expected_capsule == 1)
+        for: 60s
+        labels: { severity: critical, category: probe }
+        annotations:
+          summary: 'Public application probe failed for {{ $labels.service_name }}'
+          target: '{{ $labels.target }}'
+          window: 'Sustained failure for 60 seconds; inspect the last 15 minutes.'
+          dashboard: '__MONITORING_PUBLIC_URL__/grafana/d/sporades-api?var-service={{ $labels.service_name }}&from=now-15m&to=now'
+      - alert: SporadesProbeScrapeFailure
+        expr: (up{job="capsule-probes"} == 0) and on (host, service_name) (sporades_expected_capsule == 1)
+        for: 60s
+        labels: { severity: warning, category: scrape }
+        annotations:
+          summary: 'Blackbox scrape failed; application availability is unknown'
+          target: '{{ $labels.target }}'
+          window: 'Scrape failure for 60 seconds.'
+          dashboard: '__MONITORING_PUBLIC_URL__/alertmanager/'
+      - alert: SporadesCapsuleTelemetryAbsent
+        expr: (sporades_expected_capsule == 1 and on (host, service_name) (time() - sporades_capsule_expected_since_seconds >= 120)) unless on (service_name) count by (service_name) (count_over_time(process_uptime_seconds[2m]))
+        for: 0s
+        labels: { severity: critical, category: telemetry }
+        annotations:
+          summary: 'Expected telemetry absent for {{ $labels.service_name }}'
+          target: '{{ $labels.service_name }} on {{ $labels.host }}'
+          window: 'No runtime uptime sample in the last two minutes; new targets may need a controlled restart.'
+          dashboard: '__MONITORING_PUBLIC_URL__/grafana/d/sporades-resources?var-service={{ $labels.service_name }}&from=now-15m&to=now'
+      - alert: SporadesHostTelemetryAbsent
+        expr: (sporades_expected_host == 1 and on (host) (time() - sporades_host_expected_since_seconds >= 120)) unless on (host) count by (host) (count_over_time(sporades_host_relay_contact[2m]))
+        for: 0s
+        labels: { severity: critical, category: telemetry }
+        annotations:
+          summary: 'Expected Host relay telemetry absent for {{ $labels.host }}'
+          target: '{{ $labels.host }}'
+          window: 'No Host contact sample in the last two minutes. Central expectations remain active.'
+          dashboard: '__MONITORING_PUBLIC_URL__/grafana/d/sporades-host?var-host={{ $labels.host }}&from=now-15m&to=now'
+      - alert: SporadesLocalReadinessFailure
+        expr: (sporades_capsule_local_ready == 0) and on (host, service_name) (sporades_expected_capsule == 1)
+        for: 60s
+        labels: { severity: critical, category: readiness }
+        annotations:
+          summary: 'Host-local readiness failed for {{ $labels.service_name }}'
+          target: '{{ $labels.service_name }} on {{ $labels.host }}'
+          window: 'Protected local readiness failed for 60 seconds; no readiness details are exported.'
+          dashboard: '__MONITORING_PUBLIC_URL__/grafana/d/sporades-resources?var-service={{ $labels.service_name }}&from=now-15m&to=now'
+      - alert: SporadesInventoryStale
+        expr: (time() - sporades_inventory_acknowledged_seconds > 180) and on (host) (sporades_expected_host == 1)
+        for: 0s
+        labels: { severity: warning, category: inventory }
+        annotations:
+          summary: 'Acknowledged inventory stale for {{ $labels.host }}'
+          target: '{{ $labels.host }}'
+          window: 'No inventory acknowledgement for three minutes; pending intentional changes may not have arrived.'
+          dashboard: '__MONITORING_PUBLIC_URL__/alertmanager/'
+      - alert: SporadesAvailabilitySourceFailure
+        expr: up{job=~"availability-inventory|blackbox|alertmanager"} == 0
+        for: 60s
+        labels: { severity: critical, category: scrape }
+        annotations:
+          summary: 'Availability monitoring component scrape failed'
+          target: '{{ $labels.job }}'
+          window: 'Scrape failure for 60 seconds; probe or inventory results may be stale.'
+          dashboard: '__MONITORING_PUBLIC_URL__/alertmanager/'

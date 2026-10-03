@@ -52,7 +52,16 @@ export function inspectEnvironment(source) {
   const bind = entries.get('TRACE_BIND') ?? defaults.TRACE_BIND;
   if (!['tls', 'proxy'].includes(mode)) throw new Error('TRACE_TLS_MODE must be tls or proxy');
   if (mode === 'proxy' && !['127.0.0.1', '::1'].includes(bind)) throw new Error('TRACE_BIND must be loopback in proxy mode');
-  return { missing: [...owned.filter(key => entries.has(key) && !entries.get(key)),
+  for (const key of ['ALERT_WEBHOOK_URL', 'MONITORING_PUBLIC_URL']) {
+    const value = entries.get(key);
+    if (!value) continue;
+    let url; try { url = new URL(value); } catch { throw new Error(`Invalid ${key}`); }
+    if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname))) || url.username || url.password || url.hash || /[\x00-\x20\x7f]/.test(value)) throw new Error(`Invalid ${key}`);
+    if (key === 'MONITORING_PUBLIC_URL' && (url.search || url.pathname !== '/' || !/^(?:[a-z0-9.-]+|\[[a-f0-9:]+\])$/i.test(url.hostname))) throw new Error(`Invalid ${key}`);
+  }
+  if (entries.get('ALERT_WEBHOOK_TOKEN') && /[\x00-\x20\x7f]/.test(entries.get('ALERT_WEBHOOK_TOKEN'))) throw new Error('Invalid ALERT_WEBHOOK_TOKEN');
+  return { notificationDelivery: entries.get('ALERT_WEBHOOK_URL') ? 'unverified' : 'disabled', missing: [...owned.filter(key => entries.has(key) && !entries.get(key)),
+    ...(entries.get('ALERT_WEBHOOK_URL') && !entries.get('MONITORING_PUBLIC_URL') ? ['MONITORING_PUBLIC_URL'] : []),
     ...(mode === 'tls' ? ['TRACE_CERT_FILE', 'TRACE_KEY_FILE'].filter(key => !entries.get(key)) : [])] };
 }
 
@@ -73,7 +82,7 @@ export async function setupEnvironment(path) {
     entries.set('GRAFANA_ROOT_URL', value);
   }
   for (const key of owned) if (!entries.has(key)) { const value = randomBytes(32).toString('hex'); additions.push(`${key}=${value}`); entries.set(key, value); }
-  const { missing } = inspectEnvironment(`${source}${source && !source.endsWith('\n') ? '\n' : ''}${additions.join('\n')}`);
+  const { missing, notificationDelivery } = inspectEnvironment(`${source}${source && !source.endsWith('\n') ? '\n' : ''}${additions.join('\n')}`);
   if (additions.length) {
     await writeFile(path, `${source}${source && !source.endsWith('\n') ? '\n' : ''}${additions.join('\n')}\n`, { mode: 0o600 });
   }
@@ -95,12 +104,33 @@ export async function setupEnvironment(path) {
   await writeFile(grafanaSecretPath, `${entries.get('GRAFANA_ADMIN_PASSWORD')}\n`, { mode: 0o600 });
   await chmod(grafanaSecretPath, 0o600);
   if (identity.transferOwnership) await chown(grafanaSecretPath, identity.uid, identity.gid);
+  const blackboxDir = join(privateDir, 'blackbox');
+  await mkdir(blackboxDir, { recursive: true, mode: 0o700 });
+  await chmod(blackboxDir, 0o700);
+  if (identity.transferOwnership) await chown(blackboxDir, identity.uid, identity.gid);
+  try { await readFile(join(blackboxDir, 'blackbox.yaml')); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    await writeFile(join(blackboxDir, 'blackbox.yaml'), await readFile(new URL('./blackbox.yaml', import.meta.url)), { mode: 0o644 });
+  }
+  const notificationPath = join(privateDir, 'alertmanager.yaml');
+  const webhook = entries.get('ALERT_WEBHOOK_URL');
+  const notifications = `route:\n  receiver: operator\n  group_by: [alertname, host, service_name]\n  group_wait: 5s\n  group_interval: 15s\n  repeat_interval: 4h\nreceivers:\n  - name: operator\n${webhook ? `    webhook_configs:\n      - url: ${JSON.stringify(webhook)}\n        send_resolved: true\n        max_alerts: 100\n${entries.get('ALERT_WEBHOOK_TOKEN') ? `        http_config:\n          authorization:\n            type: Bearer\n            credentials: ${JSON.stringify(entries.get('ALERT_WEBHOOK_TOKEN'))}\n` : ''}` : ''}`;
+  await writeFile(notificationPath, notifications, { mode: 0o600 });
+  await chmod(notificationPath, 0o600);
+  if (identity.transferOwnership) await chown(notificationPath, identity.uid, identity.gid);
+  const rules = await readFile(new URL('./availability-rules.yaml', import.meta.url), 'utf8');
+  const publicUrl = (entries.get('MONITORING_PUBLIC_URL') ?? 'http://127.0.0.1:8443').replace(/\/$/, '');
+  const rulesPath = join(privateDir, 'availability-rules.yaml');
+  await writeFile(rulesPath, rules.replaceAll('__MONITORING_PUBLIC_URL__', publicUrl), { mode: 0o600 });
+  await chmod(rulesPath, 0o644);
+  if (identity.transferOwnership) await chown(rulesPath, identity.uid, identity.gid);
   const composeKeys = ['TRACE_TLS_MODE', 'TRACE_BIND', 'TRACE_PORT', 'TRACE_CERT_FILE', 'TRACE_KEY_FILE', 'TRACE_RETENTION', 'METRIC_RETENTION', 'METRIC_DISK_CAP', 'GRAFANA_ROOT_URL'];
   const composePath = join(dirname(path), '.compose.env');
   const quote = value => `'${String(value ?? '').replaceAll("'", "\\'")}'`;
   await writeFile(composePath, `${composeKeys.map(key => `${key}=${quote(entries.get(key))}`).join('\n')}\nTRACE_RUN_UID=${identity.uid}\nTRACE_RUN_GID=${identity.gid}\n`, { mode: 0o600 });
   await chmod(composePath, 0o600);
-  return { missing };
+  return { missing, notificationDelivery };
 }
 
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {

@@ -26,6 +26,7 @@
       "src/cli/doctor.ts",
       "src/cli/github-autodeploy-workflow.ts",
       "src/cli/host-autostart.ts",
+      "src/cli/host-availability.ts",
       "src/cli/host-domain-aliases.ts",
       "src/cli/host-helper-archive.ts",
       "src/cli/host-helper-config.ts",
@@ -120,7 +121,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "c6c1c5ba286293e95f5191c9f30260ca2e62f9c1332c1753b983f4e68eef26de"
+    "digest": "afc31a4a60fc773f4f042e6ae4e2aee2f36c0bc446021154fa3e16409877256d"
   },
   "outputs": {
     "files": [
@@ -194,6 +195,10 @@
       "dist/cli/host-autostart.d.ts.map",
       "dist/cli/host-autostart.js",
       "dist/cli/host-autostart.js.map",
+      "dist/cli/host-availability.d.ts",
+      "dist/cli/host-availability.d.ts.map",
+      "dist/cli/host-availability.js",
+      "dist/cli/host-availability.js.map",
       "dist/cli/host-domain-aliases.d.ts",
       "dist/cli/host-domain-aliases.d.ts.map",
       "dist/cli/host-domain-aliases.js",
@@ -532,6 +537,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "88a1c5debe451f664c393eb4adaee1aa09f3168d60f3a2ce1e375dd5966133f5"
+    "digest": "7f0a163754d90c2f0fedfb26bb87f72830f565f999cc82b4736e33a2a0b2f46a"
   }
 }

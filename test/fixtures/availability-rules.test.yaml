@@ -1,0 +1,100 @@
+rule_files:
+  - ../../monitoring/trace/availability-rules.yaml
+evaluation_interval: 15s
+tests:
+  - name: sustained application failure starts at sixty seconds and recovers
+    interval: 15s
+    input_series:
+      - series: 'up{job="capsule-probes",host="host-one",service_name="apps.example/demo",target="https://demo.apps.example/"}'
+        values: '1+0x6'
+      - series: 'probe_success{job="capsule-probes",host="host-one",service_name="apps.example/demo",target="https://demo.apps.example/"}'
+        values: '0 0 0 0 0 1 1'
+      - series: 'sporades_expected_capsule{host="host-one",service_name="apps.example/demo"}'
+        values: '1+0x6'
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: SporadesProbeFailure
+        exp_alerts: []
+      - eval_time: 60s
+        alertname: SporadesProbeFailure
+        exp_alerts:
+          - exp_labels:
+              job: capsule-probes
+              host: host-one
+              service_name: apps.example/demo
+              target: https://demo.apps.example/
+              severity: critical
+              category: probe
+            exp_annotations:
+              summary: Public application probe failed for apps.example/demo
+              target: https://demo.apps.example/
+              window: Sustained failure for 60 seconds; inspect the last 15 minutes.
+              dashboard: __MONITORING_PUBLIC_URL__/grafana/d/sporades-api?var-service=apps.example/demo&from=now-15m&to=now
+      - eval_time: 90s
+        alertname: SporadesProbeFailure
+        exp_alerts: []
+  - name: missing runtime uses central expectation and a two minute grace
+    interval: 15s
+    input_series:
+      - series: 'sporades_expected_capsule{host="host-one",service_name="apps.example/demo"}'
+        values: '1+0x10'
+      - series: 'sporades_capsule_expected_since_seconds{host="host-one",service_name="apps.example/demo"}'
+        values: '0+0x10'
+      - series: 'process_uptime_seconds{service_name="apps.example/demo"}'
+        values: '1 stale _ _ _ _ _ _ _ _ _'
+    alert_rule_test:
+      - eval_time: 105s
+        alertname: SporadesCapsuleTelemetryAbsent
+        exp_alerts: []
+      - eval_time: 120s
+        alertname: SporadesCapsuleTelemetryAbsent
+        exp_alerts:
+          - exp_labels:
+              host: host-one
+              service_name: apps.example/demo
+              severity: critical
+              category: telemetry
+            exp_annotations:
+              summary: Expected telemetry absent for apps.example/demo
+              target: apps.example/demo on host-one
+              window: No runtime uptime sample in the last two minutes; new targets may need a controlled restart.
+              dashboard: __MONITORING_PUBLIC_URL__/grafana/d/sporades-resources?var-service=apps.example/demo&from=now-15m&to=now
+  - name: acknowledged intentional stop removes runtime absence expectation
+    interval: 15s
+    input_series:
+      - series: 'sporades_expected_capsule{host="host-one",service_name="apps.example/demo"}'
+        values: '1 1 1 1 1 1 0 0 0 0'
+      - series: 'sporades_capsule_expected_since_seconds{host="host-one",service_name="apps.example/demo"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 135s
+        alertname: SporadesCapsuleTelemetryAbsent
+        exp_alerts: []
+  - name: exporter scrape failure is not an application probe result
+    interval: 15s
+    input_series:
+      - series: 'probe_success{job="capsule-probes",host="host-one",service_name="apps.example/demo",target="https://demo.apps.example/"}'
+        values: '0+0x6'
+      - series: 'up{job="capsule-probes",host="host-one",service_name="apps.example/demo",target="https://demo.apps.example/"}'
+        values: '0+0x6'
+      - series: 'sporades_expected_capsule{host="host-one",service_name="apps.example/demo"}'
+        values: '1+0x6'
+    alert_rule_test:
+      - eval_time: 60s
+        alertname: SporadesProbeFailure
+        exp_alerts: []
+      - eval_time: 60s
+        alertname: SporadesProbeScrapeFailure
+        exp_alerts:
+          - exp_labels:
+              job: capsule-probes
+              host: host-one
+              service_name: apps.example/demo
+              target: https://demo.apps.example/
+              severity: warning
+              category: scrape
+            exp_annotations:
+              summary: Blackbox scrape failed; application availability is unknown
+              target: https://demo.apps.example/
+              window: Scrape failure for 60 seconds.
+              dashboard: __MONITORING_PUBLIC_URL__/alertmanager/

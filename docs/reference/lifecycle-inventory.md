@@ -5,7 +5,7 @@ deploy, start/restart/rollback, stop, unregister/delete, opt-out and registered
 address changes. The authoritative Host registry supplies each snapshot;
 Capsule operations make no monitoring HTTP request. A separate systemd timer
 reconciles every 60 seconds after outages/reboots without the workstation.
-Probe scheduling and absence-alert delivery remain ticket #120.
+Prometheus uses acknowledged inventory for [availability probes and alerts](./availability-alerts.md).
 
 ## Authority and installation
 

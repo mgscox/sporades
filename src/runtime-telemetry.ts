@@ -406,7 +406,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       };
     },
     run(request: IncomingMessage, response: ServerResponse, endpoints: readonly EndpointLike[], handle: () => unknown) {
-      if (closing) return handle();
+      if (closing || (request.method === "GET" && (request.url === "/__sporades/probe" || request.url?.startsWith("/__sporades/probe?")))) return handle();
       const method = safeMethod(request.method);
       let route = resolveTelemetryRoute(request, endpoints);
       if (!seenRoutes.has(route)) {

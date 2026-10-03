@@ -30,6 +30,45 @@ services:
     mem_limit: 64m
     pids_limit: 32
 
+  alerts-init:
+    image: busybox:1.37.0
+    command: ["chown", "${TRACE_RUN_UID:?run setup.mjs}:${TRACE_RUN_GID:?run setup.mjs}", "/alertmanager"]
+    volumes:
+      - alerts:/alertmanager
+    restart: "no"
+    mem_limit: 64m
+    pids_limit: 32
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    user: "${TRACE_RUN_UID:?run setup.mjs}:${TRACE_RUN_GID:?run setup.mjs}"
+    command: ["--config.file=/etc/alertmanager/alertmanager.yaml", "--storage.path=/alertmanager", "--web.route-prefix=/alertmanager", "--cluster.listen-address="]
+    restart: unless-stopped
+    read_only: true
+    volumes:
+      - ./.private/alertmanager.yaml:/etc/alertmanager/alertmanager.yaml:ro
+      - alerts:/alertmanager
+    depends_on:
+      alerts-init:
+        condition: service_completed_successfully
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    logging: { options: { max-size: "10m", max-file: "3" } }
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.28.0
+    user: "${TRACE_RUN_UID:?run setup.mjs}:${TRACE_RUN_GID:?run setup.mjs}"
+    command: ["--config.file=/etc/blackbox/blackbox.yaml"]
+    restart: unless-stopped
+    read_only: true
+    volumes:
+      - ./.private/blackbox:/etc/blackbox:ro
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    logging: { options: { max-size: "10m", max-file: "3" } }
+
   gateway:
     build:
       context: .
@@ -48,6 +87,7 @@ services:
       - ./certs:/certs:ro
       - ./.private/credentials.json:/run/secrets/trace-credentials.json:ro
       - inventory:/inventory
+      - ./.private/blackbox:/blackbox
     depends_on:
       inventory-init:
         condition: service_completed_successfully
@@ -104,6 +144,7 @@ services:
     restart: unless-stopped
     read_only: true
     volumes:
+      - ./.private/availability-rules.yaml:/etc/prometheus/availability-rules.yaml:ro
       - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
       - metrics:/prometheus
     mem_limit: 1g
@@ -147,3 +188,4 @@ volumes:
   metrics:
   grafana:
   inventory:
+  alerts:

@@ -1,4 +1,4 @@
-import { mkdir, lstat, readFile, open, rename, rm } from 'node:fs/promises';
+import { mkdir, lstat, readFile, readdir, open, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { validateInventory, inventoryHost } from './inventory-contract.mjs';
@@ -27,7 +27,7 @@ export function createInventoryStore(directory) {
     const details = await lstat(directory);
     if (!details.isDirectory() || details.isSymbolicLink() || (details.mode & 0o077)) throw new Error('Unsafe inventory storage.');
   };
-  const read = async host => {
+  const read = async (host, expectations = false) => {
     if (!inventoryHost(host)) throw new Error('Invalid inventory identity.');
     await prepare();
     let text;
@@ -41,7 +41,7 @@ export function createInventoryStore(directory) {
     const stored = JSON.parse(text);
     const inventory = canonicalInventory(stored.inventory);
     if (inventory.host !== host || typeof stored.acknowledgedAt !== 'string' || !Number.isFinite(Date.parse(stored.acknowledgedAt))) throw new Error('Invalid stored inventory.');
-    return { inventory, acknowledgedAt: stored.acknowledgedAt };
+    return { inventory, acknowledgedAt: stored.acknowledgedAt, ...(expectations ? { expectationSince: stored.expectationSince ?? {} } : {}) };
   };
   const write = async (filename, value) => {
     const temporary = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
@@ -55,6 +55,20 @@ export function createInventoryStore(directory) {
     } finally { await rm(temporary, { force: true }); }
   };
   return {
+    async list() {
+      await prepare();
+      const results = [];
+      for (const name of await readdir(directory)) {
+        if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+        const details = await lstat(join(directory, name));
+        if (!details.isFile() || details.isSymbolicLink() || (details.mode & 0o077) || details.size > 1024 * 1024 + 8192) throw new Error('Unsafe stored inventory.');
+        const stored = JSON.parse(await readFile(join(directory, name), 'utf8'));
+        if (!inventoryHost(stored.inventory?.host) || filenameFor(stored.inventory.host) !== join(directory, name)) throw new Error('Invalid stored inventory.');
+        const value = await exclusive(stored.inventory.host, () => read(stored.inventory.host, true));
+        if (value) results.push(value);
+      }
+      return results;
+    },
     read: host => exclusive(host, () => read(host)),
     async ready() {
       try {
@@ -68,7 +82,7 @@ export function createInventoryStore(directory) {
     update(value) {
       const inventory = canonicalInventory(value);
       return exclusive(inventory.host, async () => {
-        const previous = await read(inventory.host);
+        const previous = await read(inventory.host, true);
         if (previous && (inventory.revision < previous.inventory.revision || (inventory.revision === previous.inventory.revision && JSON.stringify(inventory) !== JSON.stringify(previous.inventory)))) {
           return { status: 409, data: null };
         }
@@ -76,7 +90,11 @@ export function createInventoryStore(directory) {
         // A sender must explicitly retain deleted identities as tombstones.
         if (previous && previous.inventory.capsules.some(item => !inventory.capsules.some(next => next.id === item.id))) return { status: 409, data: null };
         const acknowledgedAt = new Date().toISOString();
-        await write(filenameFor(inventory.host), { inventory, acknowledgedAt });
+        const expectationSince = {};
+        for (const capsule of inventory.capsules) {
+          if (['running', 'failed'].includes(capsule.state)) expectationSince[capsule.id] = previous?.expectationSince?.[capsule.id] ?? acknowledgedAt;
+        }
+        await write(filenameFor(inventory.host), { inventory, acknowledgedAt, expectationSince });
         return { status: 200, data: { revision: inventory.revision, acknowledgedAt } };
       });
     },

@@ -4,8 +4,8 @@ import { cp, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commandError } from './cli-support.js';
-const STACK_SCHEMA = 2;
-const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'setup.mjs', 'smoke.mjs'];
+const STACK_SCHEMA = 3;
+const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'availability.mjs', 'availability-rules.yaml', 'blackbox.yaml', 'blackbox-config.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'setup.mjs', 'smoke.mjs'];
 function prerequisite() {
     if (!['arm64', 'x64'].includes(process.arch) || !['linux', 'darwin'].includes(process.platform)) {
         throw commandError('Unsupported monitoring stack architecture.', 'Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.');
@@ -90,9 +90,10 @@ export async function runMonitoringStack(action, directory, packageRoot) {
         created.push('stack-manifest.json');
     }
     let missing = [];
+    let notificationDelivery = "disabled";
     if (action === 'init') {
         const setup = await import(pathToFileURL(path.join(source, 'setup.mjs')).href);
-        missing = (await setup.setupEnvironment(path.join(target, '.env'))).missing;
+        ({ missing, notificationDelivery } = await setup.setupEnvironment(path.join(target, '.env')));
     }
     else {
         const setup = await import(pathToFileURL(path.join(source, 'setup.mjs')).href);
@@ -100,10 +101,10 @@ export async function runMonitoringStack(action, directory, packageRoot) {
         if (!env)
             missing = ['.env'];
         else
-            missing = setup.inspectEnvironment(await readFile(path.join(target, '.env'), 'utf8')).missing;
+            ({ missing, notificationDelivery } = setup.inspectEnvironment(await readFile(path.join(target, '.env'), 'utf8')));
     }
     return {
-        path: target, schemaVersion: STACK_SCHEMA, packageVersion: version, created, overrides, missingAssets, versionDifference, missing,
+        path: target, schemaVersion: STACK_SCHEMA, packageVersion: version, created, overrides, missingAssets, versionDifference, missing, notificationDelivery,
         nextSteps: ['Review .env and fill missing settings', 'Run `node setup.mjs` after editing .env', 'Run `docker compose --env-file .compose.env up -d --build` from the stack directory', 'Run `node smoke.mjs send` to verify stored traces and metrics', 'Open /grafana/d/sporades-api or /grafana/d/sporades-resources through the protected gateway'],
     };
 }

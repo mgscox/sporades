@@ -1,0 +1,9 @@
+{
+  "verifiedAt": "2026-10-03T05:08:03.585Z",
+  "project": "barbara120-729f19aa",
+  "topology": "single Docker Desktop Linux VM; not separate-VM acceptance",
+  "probeNotificationMs": 99086,
+  "realWebhookFiringAndRecovery": true,
+  "runtimeTelemetryAbsence": true,
+  "acknowledgedStopRemovedExpectation": true
+}

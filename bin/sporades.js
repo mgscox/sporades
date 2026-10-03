@@ -123864,6 +123864,17 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
 }
 async function routeRuntimeHealth(database, request, response) {
   const target = requestTarget({ url: String(request.url), method: request.method });
+  if (request.method === "GET" && target.pathname === "/__sporades/probe") {
+    const nonce = request.headers["x-sporades-probe-nonce"] ?? new URL(String(request.url), "http://localhost").searchParams.get("nonce");
+    if (typeof nonce !== "string" || !/^[a-f0-9]{16,64}$/.test(nonce)) {
+      writeNotFound(response);
+      return true;
+    }
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", pragma: "no-cache", vary: "X-Sporades-Probe-Nonce" });
+    response.end(`sporades-application-probe-v1:${nonce}
+`);
+    return true;
+  }
   if (request.method !== "GET" || target.pathname !== "/__sporades/health/runtime") {
     return false;
   }
@@ -128796,7 +128807,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       };
     },
     run(request, response, endpoints, handle) {
-      if (closing) return handle();
+      if (closing || request.method === "GET" && (request.url === "/__sporades/probe" || request.url?.startsWith("/__sporades/probe?"))) return handle();
       const method = safeMethod(request.method);
       let route = resolveTelemetryRoute(request, endpoints);
       if (!seenRoutes.has(route)) {
@@ -146041,8 +146052,8 @@ import { createHash as createHash14 } from "node:crypto";
 import { cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
 import path17 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
-var STACK_SCHEMA = 2;
-var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "inventory-contract.mjs", "inventory-store.mjs", "inventory.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "setup.mjs", "smoke.mjs"];
+var STACK_SCHEMA = 3;
+var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "inventory-contract.mjs", "inventory-store.mjs", "inventory.mjs", "availability.mjs", "availability-rules.yaml", "blackbox.yaml", "blackbox-config.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "setup.mjs", "smoke.mjs"];
 function prerequisite() {
   if (!["arm64", "x64"].includes(process.arch) || !["linux", "darwin"].includes(process.platform)) {
     throw commandError("Unsupported monitoring stack architecture.", "Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.");
@@ -146116,14 +146127,15 @@ async function runMonitoringStack(action, directory, packageRoot) {
     created.push("stack-manifest.json");
   }
   let missing = [];
+  let notificationDelivery = "disabled";
   if (action === "init") {
     const setup = await import(pathToFileURL4(path17.join(source, "setup.mjs")).href);
-    missing = (await setup.setupEnvironment(path17.join(target, ".env"))).missing;
+    ({ missing, notificationDelivery } = await setup.setupEnvironment(path17.join(target, ".env")));
   } else {
     const setup = await import(pathToFileURL4(path17.join(source, "setup.mjs")).href);
     const env = await existingFile(path17.join(target, ".env"));
     if (!env) missing = [".env"];
-    else missing = setup.inspectEnvironment(await readFile10(path17.join(target, ".env"), "utf8")).missing;
+    else ({ missing, notificationDelivery } = setup.inspectEnvironment(await readFile10(path17.join(target, ".env"), "utf8")));
   }
   return {
     path: target,
@@ -146134,6 +146146,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
     missingAssets,
     versionDifference,
     missing,
+    notificationDelivery,
     nextSteps: ["Review .env and fill missing settings", "Run `node setup.mjs` after editing .env", "Run `docker compose --env-file .compose.env up -d --build` from the stack directory", "Run `node smoke.mjs send` to verify stored traces and metrics", "Open /grafana/d/sporades-api or /grafana/d/sporades-resources through the protected gateway"]
   };
 }

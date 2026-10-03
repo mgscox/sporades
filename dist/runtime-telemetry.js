@@ -411,7 +411,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             };
         },
         run(request, response, endpoints, handle) {
-            if (closing)
+            if (closing || (request.method === "GET" && (request.url === "/__sporades/probe" || request.url?.startsWith("/__sporades/probe?"))))
                 return handle();
             const method = safeMethod(request.method);
             let route = resolveTelemetryRoute(request, endpoints);

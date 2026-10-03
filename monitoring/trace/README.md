@@ -1,6 +1,6 @@
 # Standalone monitoring stack
 
-This directory runs authenticated OTLP/HTTP traces, independent API metrics, and periodic process resource and pressure metrics for enabled Capsules. Jaeger remains at the protected gateway root; Grafana provisions **Sporades Capsule API** at `/grafana/d/sporades-api` and **Sporades Capsule Resources** at `/grafana/d/sporades-resources`. The stack is independent of a Sporades Host and can run on a separate VM. Container/Host collectors, alert routing, and Host relay are separate increments.
+This directory runs authenticated OTLP/HTTP traces, independent API metrics, and periodic process resource and pressure metrics for enabled Capsules. Jaeger remains at the protected gateway root; Grafana provisions **Sporades Capsule API** at `/grafana/d/sporades-api` and **Sporades Capsule Resources** at `/grafana/d/sporades-resources`. The stack is independent of a Sporades Host and can run on a separate VM. Pinned Blackbox exporter and Alertmanager provide inventory-driven availability checks and webhook firing/recovery delivery. Host resource collection and relay configuration remain Host-owned.
 
 ## Requirements and images
 
@@ -71,7 +71,7 @@ opt-out and address changes queue registry-owned snapshots automatically. The
 Host timer retries every 60 seconds without a workstation. Status includes pending,
 stale, acknowledged revision/time and whether the reconciler is installed.
 Stopped/deleted/opted-out states remove active probe expectations; missing senders
-never remove central expectations. This service does not schedule probes or alerts.
+never remove central expectations. Prometheus discovers independent public probes from this stored inventory and owns availability rule evaluation; see the availability policy below.
 
 `PUT /v1/inventory/<host>` accepts only that scope's credential and validated
 schemaVersion-1 snapshots; `GET` exports only that scope. Stale or conflicting
@@ -116,3 +116,26 @@ queries). These examples assume the default 15-second export interval; increase
 the window to include at least two exports for slower profiles. Metrics remain available when trace sampling is zero. Missing export
 is not a zero backlog; inspect the existing telemetry failure diagnostics and
 use the CLI Job inspection surface for retained history.
+
+## Availability notifications
+
+Schema 3 adds private Blackbox exporter 0.28.0 and Alertmanager 0.34.1. Set
+`ALERT_WEBHOOK_URL`, optional `ALERT_WEBHOOK_TOKEN`, and `MONITORING_PUBLIC_URL` in
+the operator `.env`, run `node setup.mjs`, and recreate affected services. Without
+a webhook, notification delivery is disabled. Verify a real firing and recovery
+in your selected channel; configuration validation alone is insufficient.
+Prometheus owns rules; the gateway's authenticated `/alertmanager/` offers groups
+and expiring silences. Back up the `alerts` volume and protected `.private` files.
+
+Running/failed inventory targets are active; acknowledged stops/deletions/opt-outs
+remove expectations. Sender loss never does. Public application probes require
+HTTP 200, the runtime probe marker, no-store and no redirect. Fresh nonce headers must match the response exactly; scrape targets stay stable
+and nonces are excluded from labels. Host-local protected readiness emits booleans only
+through the relay. Probe failures start at 60 seconds; missing runtime/Host data
+starts at two minutes; inventory staleness is a separate three-minute warning.
+The Monitoring health endpoint stays minimal and has no outbound watchdog.
+
+See `docs/reference/availability-alerts.md` in the matching package source for
+channel configuration, grouping/silencing, upgrade, failure distinctions and
+isolated acceptance. Apply asset overrides deliberately when upgrading schema 2;
+stack generation preserves existing files and secrets.
