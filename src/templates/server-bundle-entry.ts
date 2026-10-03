@@ -185,7 +185,7 @@ try {
 const telemetry = jobTelemetryLifecycle!;
 if (admissionPolicyRuntime) {
   database.admissionPolicy = admissionPolicyRuntime;
-  admissionLog = health => database.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+  admissionLog = health => database.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: { state: health.state, digest: health.digest } });
   admissionLog(admissionPolicyRuntime.health());
 }
 database.log.emit({

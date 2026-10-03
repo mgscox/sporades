@@ -13,9 +13,11 @@
       "src/access-keys-runtime.ts",
       "src/acl-runtime.ts",
       "src/admission-policy.ts",
+      "src/admission-rate-limit.ts",
       "src/auth-admission.ts",
       "src/auth-runtime.ts",
       "src/base-image.ts",
+      "src/bounded-fixed-window.ts",
       "src/build-diagnostics.ts",
       "src/bundle-pipeline.ts",
       "src/capsule-services.ts",
@@ -123,7 +125,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "e6757b361f0625b5585c8b2e14b26d14f8b12d0cc7073d659b2097be52504a2e"
+    "digest": "afd175ca45f2487b1f1b3a7e0197887bf3fb160959114ca90df5ae9a732647bf"
   },
   "outputs": {
     "files": [
@@ -145,6 +147,10 @@
       "dist/admission-policy.d.ts.map",
       "dist/admission-policy.js",
       "dist/admission-policy.js.map",
+      "dist/admission-rate-limit.d.ts",
+      "dist/admission-rate-limit.d.ts.map",
+      "dist/admission-rate-limit.js",
+      "dist/admission-rate-limit.js.map",
       "dist/auth-admission.d.ts",
       "dist/auth-admission.d.ts.map",
       "dist/auth-admission.js",
@@ -157,6 +163,10 @@
       "dist/base-image.d.ts.map",
       "dist/base-image.js",
       "dist/base-image.js.map",
+      "dist/bounded-fixed-window.d.ts",
+      "dist/bounded-fixed-window.d.ts.map",
+      "dist/bounded-fixed-window.js",
+      "dist/bounded-fixed-window.js.map",
       "dist/build-diagnostics.d.ts",
       "dist/build-diagnostics.d.ts.map",
       "dist/build-diagnostics.js",
@@ -547,6 +557,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "46918304e611825a16b680583bf83fd2b996eab209ed8f9f142556b70f9d6426"
+    "digest": "caba1bc4d5a096581cbf9c5b40dc124315029373b71374ac46e382da9f25d701"
   }
 }
