@@ -1421,7 +1421,11 @@ export function Json<Value extends JsonValue = JsonValue>(): FieldBuilder<Value>
 /** Reference field storing the row id of another table. */
 export function Reference(targetTable: string): ReferenceFieldBuilder;
 
-/** Explicit private-File Bearer admission; omitted read scopes leave policy to ownership and File ACL rules. */
+/**
+ * Explicit private-File Bearer admission; omitted read scopes leave policy to ownership and File ACL rules.
+ * Enabled HTTP telemetry times existing credential/admission and File operations with bounded names
+ * and outcomes only. Credentials, grants, actor identifiers and File metadata are never child-span attributes.
+ */
 export type CapsuleFileAccessKeyPolicy = { read: { scopes?: readonly string[] } };
 
 /** Deployer-owned v1 request-admission JSON; publication does not yet enforce traffic. */

@@ -320,10 +320,63 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             activeRequests.add(1, activeLabels);
             const span = tracer.startSpan(`${method} ${route}`, { kind: SpanKind.SERVER, attributes: { "http.request.method": method, "http.route": route } }, validatedRemoteParent(request));
             let ended = false;
+            let operationBudget = 32;
+            const activeOperations = new Set();
+            const operation = (name, callback, resultOutcome) => {
+                if (ended || !span.isRecording() || operationBudget === 0)
+                    return callback();
+                operationBudget--;
+                const child = tracer.startSpan(name, { kind: SpanKind.INTERNAL }, trace.setSpan(ROOT_CONTEXT, span));
+                let completed = false;
+                const finish = (outcome) => {
+                    if (completed)
+                        return;
+                    completed = true;
+                    activeOperations.delete(finish);
+                    child.setAttribute("sporades.operation.outcome", outcome);
+                    if (outcome !== "success")
+                        child.setStatus({ code: SpanStatusCode.ERROR });
+                    child.end();
+                };
+                activeOperations.add(finish);
+                const succeeded = (result) => {
+                    let outcome = "success";
+                    try {
+                        outcome = resultOutcome?.(result) ?? "success";
+                    }
+                    catch { /* Observability cannot change results. */ }
+                    finish(["success", "denied", "error", "cancelled"].includes(outcome) ? outcome : "error");
+                    return result;
+                };
+                const failed = (error) => {
+                    let outcome = "error";
+                    // Never record exception text, stack, cause, arbitrary codes or actor/resource data.
+                    try {
+                        const code = error?.code;
+                        if (["UNAUTHENTICATED", "FORBIDDEN", "RATE_LIMITED"].includes(code))
+                            outcome = "denied";
+                        else if (code === "ABORT_ERR" || error?.name === "AbortError")
+                            outcome = "cancelled";
+                    }
+                    catch { /* Even hostile exception getters stay opaque. */ }
+                    finish(outcome);
+                    throw error;
+                };
+                try {
+                    const result = callback();
+                    return (result && typeof result.then === "function"
+                        ? Promise.resolve(result).then(succeeded, failed) : succeeded(result));
+                }
+                catch (error) {
+                    return failed(error);
+                }
+            };
             const end = (outcome) => {
                 if (ended)
                     return;
                 ended = true;
+                for (const finish of activeOperations)
+                    finish(outcome === "error" ? "error" : "cancelled");
                 const status = outcome === "abort" && !response.headersSent ? null
                     : outcome === "error" && !response.headersSent ? 500
                         : Number.isInteger(response.statusCode) && response.statusCode >= 100 && response.statusCode <= 599 ? response.statusCode : 500;
@@ -344,7 +397,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             response.once("error", () => end("error"));
             request.once("aborted", () => end("abort"));
             try {
-                const result = runtimeRequestScope.run({ requestId: randomUUID(), span, tracer, isOpen: () => !ended && !closing }, handle);
+                const result = runtimeRequestScope.run({ requestId: randomUUID(), span, operation, tracer, isOpen: () => !ended && !closing }, handle);
                 if (result && typeof result.then === "function") {
                     return Promise.resolve(result).catch((error) => { end("error"); throw error; });
                 }
