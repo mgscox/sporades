@@ -468,3 +468,100 @@ verify them against live main, and record fresh evidence without unnecessary
 source changes. GitHub reported `MERGEABLE` / `CLEAN` on `c7e8a131` after the
 full run. No real Host or external provider operation was performed;
 separate-VM acceptance remains the documented operator follow-up.
+
+## Round-six Docker publication-gap fix
+
+The final implementation in `a4d6e73a` includes main `b274551d`. Its completed
+full suite passed **2,984 tests: 2,772 passed, 212 skipped, zero failures or
+cancellations**, in **1,271.8 seconds**. All new registry regressions, retained
+Host lock/fencing assertions and real-transport Journey reconnect assertions
+passed. The documented independent #190/#208 exclusion policy remains; these
+cases were enabled and passed, without exclusions or isolated retries.
+`integrated-full-suite.log` has SHA-256
+`bc193a4ac1688bb1dacb22464b250b4298806fb3726ceb89d6f1ef18af8b0158`.
+
+[Poirot's round-six report](https://github.com/mgscox/sporades/pull/203#issuecomment-5971729397)
+found transient `ENOENT` during atomic publication on the macOS Docker directory
+mount. `open()` was outside the reader's retry handling. A test-first gateway
+regression reproduced unrelated ingestion returning 503 instead of 200 during
+a simulated 250ms current-path gap. `enoent-red.log` preserves this failure,
+SHA-256 `98c99c2e847279199b90c61aa5e376935f0138460669987067f78c2fb65a64a1`.
+
+The reader now permits eight current-path attempts with delays of 20, 40, 80,
+160, 250, 250 and 250ms: at most 1.05 seconds of backoff. Each attempt rechecks
+the protected directory and opens the current path. Unlinked descriptors are
+closed before retrying; no previous snapshot becomes fallback authority.
+Persistent absence still fails closed. Malformed content, unsafe permissions
+and symlinks are not treated as publication gaps. The tests cover unrelated
+ingestion through rotate/commit/revoke, one missing open during post-upload
+retired-token denial, inventory revocation after a longer final-read gap,
+bounded persistent absence after a successful request, and malformed/insecure/
+symlinked recovered paths. All **eight** sender tests passed.
+
+The disposable real monitoring verifier now uses asynchronous CLI publication
+and four continuous unrelated-sender ingestion lanes during 30 rotate/commit
+cycles and revocation. It consumes each response, counts transport and HTTP
+failures directly, and performs no HTTP retries in this traffic phase. Stored
+Jaeger traces, Prometheus metrics, inventory acknowledgements, exact scope,
+retired/revoked denial, restart and environment-preservation assertions remain.
+Docker Desktop `29.8.1` used the directory mount in the generated Compose stack
+on loopback port 5283, project `sporades-dennis-203-r6-8d71`.
+
+| Head | Trial | Rotate/commit cycles | Unrelated HTTP 200 | Other responses | Maximum request ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `57f57d21` | 1 | 30 | 7,125 | 0 | 50 |
+| `57f57d21` | 2 | 30 | 7,365 | 0 | 80 |
+| `57f57d21` | 3 | 30 | 6,304 | 0 | 91 |
+| `a4d6e73a` | integrated | 30 | 5,348 | 0 | 76 |
+
+All four trials passed: **26,142 unrelated requests, all HTTP 200**, across 244
+atomic publications including four revocations. Logs are
+`.sporades/round6-evidence/docker-acceptance-{1,2,3}.log` and
+`integrated-docker-acceptance.log`; the latter has SHA-256
+`002e809ad2f990ab78225f8accdaa86c9343a1f45dc76825ea193ff25fc1ebea`.
+Private-CA Docker acceptance passed both before and after main integration:
+one pass and one optional legacy-CLI prerequisite skip per run. Both stack
+starts and the private-CA fixtures removed only their owned containers, network
+and volumes; no task-owned stack containers remain.
+
+All commands used `SPORADES_CONFIG_DIR="$PWD/.sporades/round6-config"`, with
+`COPYFILE_DISABLE=1` for tests. Build, typecheck and generated parity passed
+before and after integration. Packed stack tests verified the current sender
+module and README bytes. A regenerated local Monitoring release archive matched
+both source files. The retry fix changes no public API signature. Main's API
+type changes are carried by regenerated API documentation. Integrated focused
+sender/admission/package checks passed **24 tests**, all **eight** focused Host
+checks passed, and docs passed **53 tests** plus VitePress build.
+
+```sh
+npm run build
+npm run typecheck
+node scripts/check-generated-bin.mjs
+node --test --test-concurrency=1 test/sender-credentials.test.js test/http-admission.test.js test/monitoring-stack-cli.test.js
+node --test --test-name-pattern='Host helper (marker wait|cleanup releases)|descriptor-fences sealed-env key creation|serializes stale health repair against route removal|revalidates trust immediately before (apply and rollback|remove and restore)' test/host.test.js
+SPORADES_REAL_TELEMETRY_CA_CONTAINER=1 node --test --test-concurrency=1 test/telemetry-container-ca.acceptance.test.js
+node scripts/verify-sender-credentials.mjs .sporades/round6-stack http://127.0.0.1:5283 sporades-dennis-203-r6-8d71
+npm run monitoring:release-asset -- .sporades/round6-evidence/monitoring-release.tar.gz
+npm run docs:check
+npm test
+```
+
+Playwright checked the updated recovery reference at 1440px and 390px on port
+5203, including section navigation and keyboard focus. No horizontal overflow;
+only the existing favicon 404 appeared. Screenshots are
+`.sporades/output/playwright/pr203-r6-desktop.png` and `pr203-r6-mobile.png`.
+The owned browser and docs server stopped.
+
+The earlier full run on `57f57d21` also exited zero: 2,977 tests, 2,766 passed,
+211 skipped, no failures/cancellations, in 1,255.0 seconds. Its SHA-256 is
+`6fd82e79a6899365f36de24aa8a3944da35c9e391d2bd2406e9bd01e299ccf15`.
+Main advanced during that run. Merge `a4d6e73a` resolved only the generated
+manifest conflict through regeneration, retained the Host fixtures and reader
+fix unchanged, and was followed by the final integrated checks above. A fresh
+fetch after the final run confirmed main remains `b274551d` and is an ancestor.
+
+Assumptions: use finite backoff for asynchronous Docker mount propagation and
+revalidate current protected state rather than retaining retired authority.
+The same bounded read path serves initial and post-upload authorization.
+No real Host or external provider operation was performed. Separate-VM
+operator acceptance remains the documented follow-up; no release was published.
