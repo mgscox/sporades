@@ -1,0 +1,511 @@
+{
+  "uid": "sporades-pipeline",
+  "title": "Sporades Telemetry Pipeline",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "tags": [
+    "sporades",
+    "telemetry"
+  ],
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Pipeline scrape availability",
+      "description": "Missing scrape is unknown. A zero means a measured failed scrape.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=~\"sporades-pipeline-.*\"}",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Capsule collection age",
+      "description": "Age of source collection, including buffered/replayed samples. Missing series is unknown; compare expected Capsule inventory.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - sporades_telemetry_collection_time_seconds",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Capsule last successful export age",
+      "description": "An SDK success means downstream acceptance, not stored delivery. No sample until the first successful export.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - sporades_telemetry_export_last_success_seconds",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Capsule trace queue occupancy and capacity",
+      "description": "128 waiting spans per SDK. In-flight export is additional. Sampling skips are not counted as drops.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{__name__=~\"otel_sdk_processor_span_queue_(size|capacity)\"}",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Capsule dropped and failed spans",
+      "description": "queue_full counts saturation drops; Error counts spans in failed exports. Samples themselves can be lost during outages.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(otel_sdk_processor_span_processed_total{error_type=~\"queue_full|Error\"}[5m])",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Capsule export failures",
+      "description": "Bounded traces/metrics labels; cumulative failures can be observed after reconnect.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(sporades_telemetry_export_failure_count_total[5m])",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Collector and relay queue fraction",
+      "description": "Default queues cap serialized bytes at 16 MiB per exporter and signal. No zero fill for missing telemetry.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "otelcol_exporter_queue_size / otelcol_exporter_queue_capacity",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Collector and relay rejected telemetry",
+      "description": "Full queue or failed storage admission rejects data. Loss may also occur before the collector.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(otelcol_exporter_enqueue_failed_spans_total[5m]) or rate(otelcol_exporter_enqueue_failed_metric_points_total[5m])",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Collector and relay failed sends",
+      "description": "Retries can count repeated failures of the same batch. This is pressure, not a unique lost item count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(otelcol_exporter_send_failed_spans_total[5m]) or rate(otelcol_exporter_send_failed_metric_points_total[5m])",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Gateway in-flight ingestion and capacity",
+      "description": "32 concurrent authenticated uploads/exports; overflow is rejected immediately.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{__name__=~\"sporades_gateway_ingest_(in_flight|capacity)\"}",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Gateway failures and admission rejections",
+      "description": "Private scrape remains available while downstream ingestion fails.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(sporades_gateway_ingest_failures_total[5m]) or rate(sporades_gateway_ingest_rejected_total[5m])",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Collector resident memory",
+      "description": "Compose collector hard limit 256 MiB; relay 192 MiB. File-storage mmap and compaction consume memory.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "otelcol_process_memory_rss_bytes",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Prometheus storage pressure",
+      "description": "Retention block cap is 8 GB by default; WAL/head and compaction require extra space. Monitor filesystem free space separately with Host resources.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "prometheus_tsdb_storage_blocks_bytes",
+          "legendFormat": "{{job}} {{exporter}} {{signal}} {{service_name}} {{instance}} {{error_type}} {{__name__}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ]
+}
