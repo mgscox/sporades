@@ -363,7 +363,9 @@ events; removal includes the complete last state. Unsubscribe stops delivery.
 Consent belongs to the page runtime, not a Journey session. An ordinary
 transport reconnect automatically re-enables with the retained narrowed policy,
 including restoration of the same page runtime from the browser Back/Forward
-cache after fresh authentication confirms the consenting identity. A
+cache after fresh authentication confirms the consenting identity. Publications
+wait for that connection's consent acknowledgement. If the connection closes
+while waiting, the operation returns `TRANSPORT_CLOSED` and is not replayed. A
 new transport connection always gets a new server-owned Journey session
 on its first accepted publication. Explicit disablement, an authentication
 transition, or page reload/replacement clears consent. Apps that want a durable

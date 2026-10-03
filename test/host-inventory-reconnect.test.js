@@ -125,3 +125,64 @@ test('inventory status stays opaque and pending when protected transport authori
   assert.equal(status.failure, 'snapshot-unavailable');
   assert.equal(status.acknowledgedRevision, null);
 });
+
+test('named sender rotation reconnects a durable Host outbox over verified HTTPS and revocation leaves it pending', async t => {
+  const f = await fixture(t);
+  const { setupEnvironment, parseEnvironment } = await import('../monitoring/trace/setup.mjs');
+  const { manageSenderCredentials } = await import('../monitoring/trace/sender-credentials.mjs');
+  const stack = path.join(f.root, 'monitoring');
+  await mkdir(stack);
+  const envPath = path.join(stack, '.env');
+  await writeFile(envPath, 'TRACE_TLS_MODE=proxy\nOPERATOR_SETTING=preserved\n');
+  await setupEnvironment(envPath);
+  const before = await readFile(envPath, 'utf8');
+  const senderDirectory = path.join(stack, '.private/senders');
+  const tls = await f.tls('sender-lifecycle');
+  const central = createGateway({ senderDirectory, inventoryDirectory: path.join(stack, 'inventory') }, tls);
+  const endpoint = await f.listen(central);
+  const change = (action, options = {}) => manageSenderCredentials(senderDirectory, action, { sender: 'named-host', ...options });
+  const connectExport = async filename => {
+    const out = path.join(f.root, filename);
+    await change('export', { out });
+    const env = parseEnvironment(await readFile(out, 'utf8'));
+    await connectHostTelemetryRelay(f.root, 'fake-network', {
+      endpoint, credential: env.get('TRACE_INGEST_TOKEN'), inventoryCredential: env.get('HOST_INVENTORY_TOKEN'),
+      inventoryHost: scope, caPem: tls.cert.toString(),
+    });
+    return env;
+  };
+  await change('issue', { host: scope });
+  const first = await connectExport('first.env');
+  assert.equal((await reconcileHostInventory(f.root)).pending, false);
+  const initial = await hostInventoryStatus(f.root);
+  assert.equal(initial.acknowledgedRevision, initial.desiredRevision);
+  const sealed = path.join(f.root, 'hosts', scope, 'capsules/notes/.env.sporades.server');
+  await mkdir(path.dirname(sealed), { recursive: true });
+  await writeFile(sealed, 'opaque sealed Capsule Server env');
+  const staged = await change('rotate');
+  // A saved pending generation does not prevent the old durable connection from reconciling.
+  assert.equal((await reconcileHostInventory(f.root)).pending, false);
+  const next = await connectExport('next.env');
+  assert.notEqual(next.get('HOST_INVENTORY_TOKEN'), first.get('HOST_INVENTORY_TOKEN'));
+  assert.equal((await hostInventoryStatus(f.root)).pending, true, 'reconnect requires acknowledgement of the new protected connection');
+  assert.equal((await reconcileHostInventory(f.root)).pending, false);
+  await change('commit', { generation: staged.senders[0].pendingGeneration });
+  assert.equal((await reconcileHostInventory(f.root)).pending, false);
+  await change('revoke');
+  // A later authoritative lifecycle change must remain pending after denial.
+  const registryFile = path.join(f.root, 'hosts', scope, 'registry/capsules/notes.json');
+  const recorded = JSON.parse(await readFile(registryFile, 'utf8'));
+  await writeFile(registryFile, JSON.stringify({ ...recorded, status: 'stopped', updatedAt: new Date().toISOString() }));
+  // Separate invocations reread the protected saved connection, simulating sender restart.
+  const denied = await reconcileHostInventory(f.root);
+  assert.equal(denied.pending, true);
+  assert.equal(denied.failure, 'auth');
+  assert.equal((await reconcileHostInventory(f.root)).pending, true);
+  assert.equal(await readFile(envPath, 'utf8'), before);
+  assert.equal(await readFile(sealed, 'utf8'), 'opaque sealed Capsule Server env');
+  const status = JSON.stringify(await hostInventoryStatus(f.root));
+  for (const pair of [first, next]) {
+    assert(!status.includes(pair.get('HOST_INVENTORY_TOKEN')));
+    assert(!status.includes(pair.get('TRACE_INGEST_TOKEN')));
+  }
+});

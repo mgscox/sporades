@@ -13,4 +13,19 @@ export declare function runMonitoringStack(action: 'init' | 'validate', director
     missing: string[];
     nextSteps: string[];
 }>;
+/** Redacted result of an operator-local sender credential command. */
+export interface SenderCredentialResult {
+    schemaVersion: 1;
+    revision: number;
+    changed: boolean;
+    legacyIngestEnabled: boolean;
+    legacyInventoryDisabled: string[];
+    senders: {
+        name: string;
+        host: string | null;
+        state: 'applied' | 'pending' | 'revoked';
+        generation: number;
+        pendingGeneration: number | null;
+    }[];
+}
 //# sourceMappingURL=monitoring-stack.d.ts.map

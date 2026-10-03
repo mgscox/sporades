@@ -11,3 +11,6 @@ export type {
 } from "../../dist/cli/inventory-contract.js";
 
 export type { TelemetryProfile } from "../../dist/cli/telemetry-profile.js";
+
+/** CLI sender results never contain ingestion or inventory secret values. */
+export type { SenderCredentialResult } from "../../dist/cli/monitoring-stack.js";

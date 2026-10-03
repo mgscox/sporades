@@ -774,6 +774,7 @@ function createConnection() {
   let latestAuthSocket = null;
   let journeyConsentOptions = null;
   let journeyEnabledUserId = null;
+  let journeyRestoration = null;
   let journeyCapture = null;
   let journeyCaptureTeardown = null;
   const journeySubscriptions = new Map();
@@ -853,6 +854,8 @@ function createConnection() {
     let openedAt = null;
     let receivedMessage = false;
     socket = openedSocket;
+    let finishJourneyRestoration;
+    journeyRestoration = { socket: openedSocket, promise: new Promise((resolve) => { finishJourneyRestoration = resolve; }) };
     openedSocket.addEventListener("open", () => {
       openedAt = Date.now();
       retryInFlight = false;
@@ -861,12 +864,12 @@ function createConnection() {
       const consentUserId = journeyEnabledUserId;
       const stillOwnsConsent = () => !pageRetired && socket === openedSocket && journeyConsentOptions === consent
         && journeyEnabledUserId === consentUserId && latestAuthUserId === consentUserId;
-      request("auth.get").then((confirmation) => {
-        if (!consent || confirmation.error || !stillOwnsConsent()) return;
-        request("journey.enable", { options: consent }).then((result) => {
-          if (!result.error && result.data?.capture && stillOwnsConsent()) startJourneyCapture(result.data.capture);
+      request("auth.get").then((result) => {
+        if (!consent || result.error || !stillOwnsConsent()) return;
+        return request("journey.enable", { options: consent }).then((enabled) => {
+          if (!enabled.error && enabled.data?.capture && stillOwnsConsent()) startJourneyCapture(enabled.data.capture);
         });
-      });
+      }).finally(finishJourneyRestoration);
       for (const subscription of journeySubscriptions.values()) send({ id: subscription.id, type: "journey.subscribe", resume: subscription.started });
       for (const subscription of subscriptions.values()) {
         send({
@@ -932,6 +935,7 @@ function createConnection() {
       }
     });
     openedSocket.addEventListener("close", async () => {
+      finishJourneyRestoration();
       for (const [id, entry] of pending) {
         if (entry.socket !== openedSocket) continue;
         entry.resolve({
@@ -1071,17 +1075,22 @@ function createConnection() {
     const outboundMessage = currentSessionToken
       ? { ...message, sessionToken: currentSessionToken }
       : message;
+    const transmit = () => {
+      const restoration = journeyRestoration;
+      if (message.type === "journey.set" && restoration?.socket === activeSocket) {
+        // Opening the transport precedes authentication and restored consent.
+        // Bind publication to this socket; a close must never replay it elsewhere.
+        restoration.promise.then(() => {
+          if (!pageRetired && socket === activeSocket && activeSocket.readyState === WebSocket.OPEN
+            && pending.has(message.id)) activeSocket.send(JSON.stringify(outboundMessage));
+        });
+      } else activeSocket.send(JSON.stringify(outboundMessage));
+    };
     if (activeSocket.readyState === WebSocket.OPEN) {
-      activeSocket.send(JSON.stringify(outboundMessage));
+      transmit();
       return;
     }
-    activeSocket.addEventListener(
-      "open",
-      () => {
-        activeSocket.send(JSON.stringify(outboundMessage));
-      },
-      { once: true },
-    );
+    activeSocket.addEventListener("open", transmit, { once: true });
   }
 
   function sendIfOpen(message) {
