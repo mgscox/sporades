@@ -7489,8 +7489,14 @@ test("sporades host helper serializes stale health repair against route removal"
         host: { alias: "personal", domain, scheme: "http", remoteRoot },
         capsule: { subname: "team-notes" },
       };
-      const healthPromise = runHostHelper(healthRequest, { cwd: dir, env: docker.env });
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      // A startup sleep cannot establish which helper owns the route lock.
+      const proofMarker = path.join(dir, "health-retains-route-lock");
+      const healthPromise = runHostHelper(healthRequest, { cwd: dir, env: {
+        ...docker.env,
+        SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER: proofMarker,
+        SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "200",
+      } });
+      await waitForFileText(proofMarker, text => text === "route-lock-proof-retained\n");
       const unregisterPromise = runHostHelper(
         {
           action: "capsule.unregister",
