@@ -114,3 +114,20 @@ Watch immediate reload behavior on the deployment filesystem during publication.
 Migrate each legacy inventory mapping independently and disable shared legacy
 ingestion only after all of its users have adopted named credentials. These real
 Host/separate-VM steps were not run under this task's local-only safety boundary.
+
+## Main integration follow-up
+
+Merged `origin/main` at `4473caea` into the existing issue branch in `3655204d`.
+The only conflicts were `dist/cli/sporades.js.map` and
+`dist/generated-source-manifest.json`; `npm run build` regenerated them from the
+merged source. No manual runtime or credential changes were needed. Main's
+runtime telemetry, server runtime, Bundle entry and dashboard remain identical
+to main; the sender registry, gateway, public contracts and focused credential
+fixtures remain identical to the pre-merge branch. The CLI retains both sender
+commands and main's WebSocket telemetry/reload integration.
+
+Build, generated-artifact checks, typecheck and docs checks passed. The combined
+sender/Host reconnect and WebSocket Bundle checks passed all 19 tests. The full
+`COPYFILE_DISABLE=1 SPORADES_CONFIG_DIR="$PWD/.sporades/issue-127-config" npm test`
+run passed 2,940 tests: 2,733 passed, 207 skipped, zero failures/cancellations
+(1,287.7 seconds). Its local log is `.sporades/issue-127-merge-full-test.log`.
