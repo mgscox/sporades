@@ -2656,6 +2656,10 @@ test("generated Bundle applies compound non-address admission before middleware 
       const denied = await fetch(booted.baseUrl + target,{headers:{"X-Admission":"blocked"}});
       assert.equal(denied.status,403); assert.equal(denied.headers.get("cache-control"),"no-store"); assert.equal(await denied.text(),"Forbidden\n");
     }
+    for (const target of ["/%", "ftp://example.test/probe/status", "http:///example.test/probe/status", "http:////example.test/probe/status", "/probe/status?flag=%FF"]) {
+      const response = await rawHttpResponse(booted.baseUrl,target);
+      assert.match(response,/^HTTP\/1\.1 403 /,target); assert.match(response,/cache-control: no-store/i); assert.ok(response.endsWith("Forbidden\n"),target);
+    }
     await assert.rejects(readFile(path.join(root,"app-called")),{code:"ENOENT"});
     const admitted = await fetch(booted.baseUrl + "/probe/status?flag=unchanged",{headers:{"x-admission":"different"}});
     assert.equal(admitted.status,202); assert.equal(await readFile(path.join(root,"app-called"),"utf8"),"called\n");

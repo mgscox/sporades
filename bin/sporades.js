@@ -123524,6 +123524,10 @@ function routeHttpAdmission(database, request, response, target) {
     const parsed = target ?? requestTarget(request);
     const raw = request.url ?? "/";
     if (raw.includes("#")) throw new Error("Invalid admission target.");
+    if (parsed.form === "absolute") {
+      const authority = raw.slice(raw.indexOf("://") + 3).split(/[/?#]/, 1)[0];
+      if (!authority || /\s/.test(authority)) throw new Error("Invalid admission authority.");
+    }
     const queryStart = raw.indexOf("?");
     if (!matchHttpAdmissionRule(generation, {
       method: request.method ?? "",

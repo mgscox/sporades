@@ -260,7 +260,7 @@ test('query keys decode once, plus is space, repeated keys are presence, and mal
 
 test('malformed request targets have opaque denial even for nonmatching rules', async () => {
   await serve({ admissionPolicy: { current: () => generation([rule('unrelated', '/unrelated')]) } }, async (base, calls) => {
-    for (const path of ['/admin#fragment', '/admin?key=%', '/admin?key=%FF', 'ftp://example.test/admin', 'http://user:pass@example.test/admin']) {
+    for (const path of ['/admin#fragment', '/admin?key=%', '/admin?key=%FF', 'ftp://example.test/admin', 'http://user:pass@example.test/admin', 'http:///example.test/admin', 'http:////example.test/admin']) {
       const response = await rawResponse(base, path); assert.equal(response.status, 403, path); assert.equal(response.body, 'Forbidden\n');
     }
     assert.equal(calls(), 0);

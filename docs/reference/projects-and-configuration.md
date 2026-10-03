@@ -1185,7 +1185,9 @@ Admission canonicalization is explicit and does not change the original request:
   letters. HTTP extension method tokens remain valid requests but do not match
   an unrelated method condition. `OPTIONS *` has pathname `*` and no query keys.
 - Origin-form and HTTP(S) absolute-form targets use the raw pathname (absolute
-  authority is not a matching or identity input). Path percent escapes decode
+  authority is not a matching or identity input). An empty or whitespace-bearing
+  absolute authority is rejected, including forms the URL parser could repair
+  such as `http:///example.test/admin`. Path percent escapes decode
   exactly once as strict UTF-8, then `.` and `..` segments normalize, including
   encoded dots. A final dot segment preserves the resulting trailing slash;
   parents above root stay at root. Case, Unicode, trailing and repeated slashes

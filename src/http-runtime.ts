@@ -214,6 +214,10 @@ export function routeHttpAdmission(
     const raw = request.url ?? "/";
     // HTTP request targets have no fragment. Do not let URL silently strip or repair input.
     if (raw.includes("#")) throw new Error("Invalid admission target.");
+    if (parsed.form === "absolute") {
+      const authority = raw.slice(raw.indexOf("://") + 3).split(/[/?#]/, 1)[0];
+      if (!authority || /\s/.test(authority)) throw new Error("Invalid admission authority.");
+    }
     const queryStart = raw.indexOf("?");
     if (!matchHttpAdmissionRule(generation, {
       method: request.method ?? "",

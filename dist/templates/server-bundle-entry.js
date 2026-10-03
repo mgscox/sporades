@@ -183,6 +183,8 @@ const server = createServer(async (request, response) => telemetry.run(request, 
             return;
         }
         if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
+            if (routeHttpAdmission(database, request, response))
+                return;
             writeInvalidHttpRequestTarget(database, request, response);
             return;
         }
