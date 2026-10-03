@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { RuntimeWebSocketTelemetry } from "./runtime-telemetry.js";
 import { PathOrFileDescriptor } from "node:fs";
 import { Duplex } from "stream";
 export * from "./inspection-sql.js";
@@ -166,6 +167,7 @@ export declare function runClientAccessKeyOperation(database: LooseRecord, auth:
 }>;
 export declare function createWebSocketHub(getDatabase: () => any, trustedRefresh?: TrustedRefreshTransport | null, options?: {
     heartbeatMs?: number;
+    telemetry?: RuntimeWebSocketTelemetry;
 }): {
     createConnectionToken(currentToken?: string): string;
     accept(request: IncomingMessage, socket: Duplex): Promise<void>;
