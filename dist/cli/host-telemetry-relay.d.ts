@@ -1,5 +1,6 @@
 import { type HostMetrics } from "./host-metrics.js";
 export type HostRelayConnection = {
+    tracePropagationOrigins?: string[];
     endpoint: string;
     credential: string;
     inventoryCredential?: string;
@@ -22,6 +23,7 @@ export declare function readHostTelemetryConnection(remoteRoot: string): Promise
     caConfigured: boolean;
     connectedAt: string;
     inventoryHost?: string;
+    tracePropagationOrigins?: string[];
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
 } | null>;
@@ -42,6 +44,7 @@ export declare function statusHostTelemetryRelay(remoteRoot: string): Promise<{
     network?: string | undefined;
     caConfigured?: boolean | undefined;
     connectedAt?: string | undefined;
+    tracePropagationOrigins?: string[] | undefined;
     resources: {
         configured: boolean;
         enabled: boolean;
@@ -70,6 +73,7 @@ export declare function connectHostTelemetryRelay(remoteRoot: string, network: s
     network?: string | undefined;
     caConfigured?: boolean | undefined;
     connectedAt?: string | undefined;
+    tracePropagationOrigins?: string[] | undefined;
     resources: {
         configured: boolean;
         enabled: boolean;
@@ -98,6 +102,7 @@ export declare function reconcileHostTelemetryRelay(remoteRoot: string, host?: s
     network?: string | undefined;
     caConfigured?: boolean | undefined;
     connectedAt?: string | undefined;
+    tracePropagationOrigins?: string[] | undefined;
     resources: {
         configured: boolean;
         enabled: boolean;

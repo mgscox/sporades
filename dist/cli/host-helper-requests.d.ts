@@ -55,6 +55,7 @@ export type HostHelperRequestBase = JsonObject & {
     verification?: HostHelperVerification;
     accessKeys?: JsonObject;
     telemetry?: {
+        tracePropagationOrigins?: string[];
         endpoint: string;
         credential: string;
         inventoryCredential?: string;
