@@ -102317,7 +102317,20 @@ function traceRuntimeOperation(operation, callback, outcome) {
   return run2 ? run2(operation, callback, outcome) : callback();
 }
 function withoutRuntimeRequestIdentity(callback) {
-  return runtimeRequestScope.exit(callback);
+  return runtimeRequestScope.exit(() => runtimeJobScope.exit(callback));
+}
+var runtimeJobScope = new AsyncLocalStorage();
+function captureJobTraceContext() {
+  try {
+    const job = runtimeJobScope.getStore();
+    const request = runtimeRequestScope.getStore();
+    const span = job?.isOpen() ? job.span : request?.isOpen?.() ? request.span : void 0;
+    const context2 = span?.spanContext();
+    if (!context2 || !/^[0-9a-f]{32}$/.test(context2.traceId) || /^0+$/.test(context2.traceId) || !/^[0-9a-f]{16}$/.test(context2.spanId) || /^0+$/.test(context2.spanId)) return null;
+    return `00-${context2.traceId}-${context2.spanId}-${context2.traceFlags & 1 ? "01" : "00"}`;
+  } catch {
+    return null;
+  }
 }
 
 // src/user-preferences-runtime.ts
@@ -106187,7 +106200,7 @@ async function ensureJobStorage(sqlite) {
   await sqlite.exec(
     sql2("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
   );
-  for (const [name2, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name2, type);
+  for (const [name2, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"], ["enqueueTraceContext", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name2, type);
   await sqlite.exec(sql2(
     "CREATE INDEX IF NOT EXISTS [sporades_jobs_stripe_payload_retention] ON [sporades_jobs]([handler], [status], [payloadRetentionUntil], [id])"
   ));
@@ -128492,7 +128505,8 @@ function createProfileExporters(traceOptions, metricOptions) {
   }
 }
 function createHttpRequestTelemetry(config, onDiagnostic) {
-  if (!config) return { run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID9() }, handle), shutdown: async () => {
+  if (!config) return { bindJobQueue: (_database) => {
+  }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID9() }, handle), shutdown: async () => {
   } };
   if (config.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1e3)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
@@ -128579,6 +128593,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     resource,
     readers: [metricReader],
     views: [
+      { instrumentName: "sporades.job.execution.duration", aggregationCardinalityLimit: 1024, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300] } } },
+      { instrumentName: "sporades.job.retry.count", aggregationCardinalityLimit: 129 },
+      { instrumentName: "sporades.job.failure.count", aggregationCardinalityLimit: 129 },
       { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
       { instrumentName: "http.server.active_requests", aggregationCardinalityLimit: 128 },
       { instrumentName: "http.server.request.duration", aggregationCardinalityLimit: 512, aggregation: { type: import_sdk_metrics.AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [5e-3, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } }
@@ -128686,8 +128703,98 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     spanProcessors: [processor]
   });
   const tracer = provider.getTracer("sporades-runtime-http", "1");
+  const jobMeter = meterProvider.getMeter("sporades-runtime-jobs", "1");
+  const jobDuration = jobMeter.createHistogram("sporades.job.execution.duration", { unit: "s" });
+  const jobRetries = jobMeter.createCounter("sporades.job.retry.count", { unit: "1" });
+  const jobFailures = jobMeter.createCounter("sporades.job.failure.count", { unit: "1" });
+  const queueDepth = jobMeter.createObservableGauge("sporades.job.queue.depth", { unit: "1" });
+  const queueAge = jobMeter.createObservableGauge("sporades.job.queue.oldest_pending_age", { unit: "s" });
   let closing = false;
+  let jobQueueDatabase;
+  let reading = false;
+  const seenJobNames = /* @__PURE__ */ new Set();
+  jobMeter.addBatchObservableCallback(async (result) => {
+    const database = jobQueueDatabase;
+    if (!database || reading || closing || database.__jobStopped) return;
+    reading = true;
+    try {
+      const row = await withoutRuntimeRequestIdentity(() => database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT COUNT(*) AS [depth], MIN([createdAt]) AS [oldest] FROM [sporades_jobs] WHERE [status] IN ('queued', 'delayed')"
+      )).get());
+      if (closing || database.__jobStopped || jobQueueDatabase !== database) return;
+      const depth2 = Number(row?.depth);
+      const oldest = row?.oldest == null ? null : Date.parse(row.oldest);
+      if (!Number.isSafeInteger(depth2) || depth2 < 0 || depth2 > 0 && (oldest === null || !Number.isFinite(oldest))) return;
+      result.observe(queueDepth, depth2);
+      result.observe(queueAge, oldest === null ? 0 : Math.max(0, (database.clock.now().getTime() - oldest) / 1e3));
+    } catch {
+    } finally {
+      reading = false;
+    }
+  }, [queueDepth, queueAge]);
   return {
+    /** Internal generated-runtime seam. Only declared names can become labels. */
+    bindJobQueue(database) {
+      const names = /* @__PURE__ */ new Set();
+      for (const job of database.jobs ?? []) {
+        if (names.size >= 128) break;
+        if (typeof job.name === "string" && /^[A-Za-z_][A-Za-z0-9_.-]{0,79}$/.test(job.name) && (seenJobNames.has(job.name) || seenJobNames.size < 128)) {
+          names.add(job.name);
+          seenJobNames.add(job.name);
+        }
+      }
+      jobQueueDatabase = database;
+      const transition = (name2, outcome) => {
+        try {
+          const labels = { "sporades.job.handler": typeof name2 === "string" && names.has(name2) ? name2 : "__other" };
+          if (outcome === "retry") jobRetries.add(1, labels);
+          jobFailures.add(1, labels);
+        } catch {
+        }
+      };
+      database.__jobTelemetry = {
+        transition,
+        start(row) {
+          if (closing) return void 0;
+          const handler = names.has(row.handler) ? row.handler : "__other";
+          const started = process.hrtime.bigint();
+          const labels = { "sporades.job.handler": handler };
+          let span;
+          try {
+            const value = row.enqueueTraceContext;
+            const match = typeof value === "string" && value.length === 55 ? /^00-([a-f0-9]{32})-([a-f0-9]{16})-(00|01)$/.exec(value) : null;
+            const link2 = match && !/^0+$/.test(match[1]) && !/^0+$/.test(match[2]) ? { traceId: match[1], spanId: match[2], traceFlags: match[3] === "01" ? TraceFlags.SAMPLED : TraceFlags.NONE, isRemote: true } : void 0;
+            span = tracer.startSpan(`job ${handler}`, {
+              kind: SpanKind.CONSUMER,
+              attributes: { "sporades.job.handler": handler, "sporades.job.attempt": Number(row.attempts) + 1 },
+              ...link2 ? { links: [{ context: link2 }] } : {}
+            }, ROOT_CONTEXT);
+          } catch {
+          }
+          let ended = false;
+          return {
+            run(handle) {
+              return withoutRuntimeRequestIdentity(() => span ? runtimeJobScope.run({ span, isOpen: () => !ended && !closing }, handle) : handle());
+            },
+            end(outcome) {
+              if (ended) return;
+              ended = true;
+              try {
+                jobDuration.record(Number(process.hrtime.bigint() - started) / 1e9, { ...labels, "sporades.job.outcome": outcome });
+                if (outcome === "failed" || outcome === "retry") transition(handler, outcome);
+              } catch {
+              }
+              try {
+                span?.setAttribute("sporades.job.outcome", outcome);
+                if (outcome === "failed" || outcome === "retry") span?.setStatus({ code: SpanStatusCode.ERROR });
+                span?.end();
+              } catch {
+              }
+            }
+          };
+        }
+      };
+    },
     run(request, response, endpoints, handle) {
       if (closing) return handle();
       const method = safeMethod(request.method);
@@ -135495,6 +135602,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   await sqlite.ensureFileStorage();
   await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
   await sqlite.ensureLogStorage();
+  options?.onJobQueueReady?.(database);
   if (!options?.runtimeActionOnly) {
     await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
   }
@@ -136152,9 +136260,10 @@ async function recoverExpiredJobLeases(database) {
       const ownership2 = jobClaimOwnership(row.claimToken);
       const leasePredicate = row.leaseExpiresAt === null ? "[leaseExpiresAt] IS NULL" : "[leaseExpiresAt] = ?";
       const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
-      await database.adapter.prepare(sql2(
+      const changed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership2.predicate
       )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership2.params);
+      if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "failed");
       continue;
     }
     if (!isCanonicalJobTimestamp(row.leaseExpiresAt)) {
@@ -136162,17 +136271,19 @@ async function recoverExpiredJobLeases(database) {
       const ownership2 = jobClaimOwnership(row.claimToken);
       const leasePredicate = row.leaseExpiresAt === null ? "[leaseExpiresAt] IS NULL" : "[leaseExpiresAt] = ?";
       const leaseParams = row.leaseExpiresAt === null ? [] : [row.leaseExpiresAt];
-      await database.adapter.prepare(sql2(
+      const changed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND " + leasePredicate + " AND " + ownership2.predicate
       )).run(JSON.stringify(failure), recoveredIso, row.id, ...leaseParams, ...ownership2.params);
+      if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "failed");
       continue;
     }
     const provenanceFailure = invalidStoredJobFailure(row, recoveredAt);
     if (["JOB_ACTOR_SNAPSHOT_INVALID", "JOB_CREDENTIAL_INVALID"].includes(provenanceFailure?.code)) {
       const ownership2 = jobClaimOwnership(row.claimToken);
-      await database.adapter.prepare(sql2(
+      const changed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership2.predicate
       )).run(JSON.stringify(provenanceFailure), recoveredIso, row.id, row.leaseExpiresAt, ...ownership2.params);
+      if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "failed");
       continue;
     }
     const leaseExpiresAt = Date.parse(row.leaseExpiresAt);
@@ -136189,9 +136300,10 @@ async function recoverExpiredJobLeases(database) {
     const retryAvailableAt = retryEligible ? jobTimestampAfter(recoveredAt, retry.delayMs) : null;
     const retryLeaseExpiresAt = retryAvailableAt === null ? null : jobTimestampAfter(new Date(retryAvailableAt), RUNTIME_CLAIM_LEASE_MS);
     if (retryAvailableAt !== null && retryLeaseExpiresAt !== null) {
-      await database.adapter.prepare(sql2(
+      const changed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [leaseExpiresAt] = ? AND " + ownership.predicate
       )).run(retryAvailableAt, JSON.stringify(history), row.id, row.leaseExpiresAt, ...ownership.params);
+      if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "retry");
     } else {
       const failure = storedFailure ?? (retry === null || retryEligible ? invalidJobRetryPolicyFailure() : { code: "JOB_LEASE_EXPIRED", message: "Job lease expired." });
       const teamBillingReplacementScheduled = await database.adapter.withTransaction(async (transaction) => {
@@ -136228,9 +136340,10 @@ async function recoverExpiredJobLeases(database) {
             replacementScheduled = erasureSettlement?.replacementScheduled === true;
           }
         }
-        return replacementScheduled;
+        return { replacementScheduled, changed: Number(settled?.changes ?? 0) === 1 };
       });
-      if (teamBillingReplacementScheduled && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
+      if (teamBillingReplacementScheduled.changed) database.__jobTelemetry?.transition(row.handler, "failed");
+      if (teamBillingReplacementScheduled.replacementScheduled && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
     }
   }
   return earliestFutureLeaseAt;
@@ -136379,9 +136492,11 @@ function jobRetryHorizonFits(firstAttempt, retry, attemptCount, allowShortFinalS
 }
 async function failInvalidQueuedJob(database, row, failure) {
   const sql2 = database.adapter.dialect.sql;
-  return await database.adapter.prepare(sql2(
+  const changed = await database.adapter.prepare(sql2(
     "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')"
   )).run(JSON.stringify(failure), database.clock.now().toISOString(), row.id, row.status, row.availableAt, row.retryJson);
+  if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "failed");
+  return changed;
 }
 async function recoverInvalidRetainedJobState(database) {
   const recoveredAt = database.clock.now();
@@ -136394,9 +136509,10 @@ async function recoverInvalidRetainedJobState(database) {
   for (const row of rows) {
     const failure = invalidStoredJobFailure(row, recoveredAt);
     if (!failure) continue;
-    await database.adapter.prepare(sql2(
+    const changed = await database.adapter.prepare(sql2(
       "UPDATE [sporades_jobs] SET [status]='failed', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=? AND [availableAt]=? AND COALESCE([retryJson], '') = COALESCE(?, '')"
     )).run(JSON.stringify(failure), failedAt, row.id, row.status, row.availableAt, row.retryJson);
+    if (Number(changed?.changes ?? 0) === 1) database.__jobTelemetry?.transition(row.handler, "failed");
   }
 }
 function jobClaimOwnership(claimToken) {
@@ -139947,7 +140063,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
   await jobAdapter.prepare(
     jobAdapter.dialect.sql(
-      "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL)"
+      "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor], [enqueueTraceContext]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL, ?)"
     )
   ).run(
     randomUUID12(),
@@ -139960,7 +140076,8 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
     jobAvailableAt,
     idempotencyKey,
     now2,
-    JSON.stringify(normalizeJobRetry(retry))
+    JSON.stringify(normalizeJobRetry(retry)),
+    captureJobTraceContext()
   );
   if (!deferDispatch) deferOrScheduleJobDispatch(database, queueDatabase);
 }
@@ -140847,11 +140964,12 @@ function createCurrentUserJobApi(database, contextGetter) {
       const provenanceContext = context2.__jobParentContext?.credential ? context2.__jobParentContext : context2;
       const authSnapshotJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(captureJobAuthSnapshot(provenanceContext.auth));
       const credentialJson = scheduleProvenance || !provenanceContext?.credential ? null : JSON.stringify(canonicalJobCredentialProvenance(provenanceContext.credential));
-      const row = { id: id2, handler: handlerName, enqueuedByUserId: context2.__jobEnqueuedBy ?? context2.auth.userId, actorUserId: context2.auth.userId, actorProvider: jobActorProvider(context2.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now2 ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now2, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
+      const enqueueTraceContext = captureJobTraceContext();
+      const row = { enqueueTraceContext, id: id2, handler: handlerName, enqueuedByUserId: context2.__jobEnqueuedBy ?? context2.auth.userId, actorUserId: context2.auth.userId, actorProvider: jobActorProvider(context2.auth), authSnapshotJson, credentialJson, payload: payloadJson, status: availableAt > now2 ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now2, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       try {
         const result = await jobAdapter.prepare(jobAdapter.dialect.sql(
-          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)" + (idempotencyKey ? " ON CONFLICT DO NOTHING" : "")
-        )).run(id2, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now2, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+          "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [authSnapshotJson], [credentialJson], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor], [enqueueTraceContext]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)" + (idempotencyKey ? " ON CONFLICT DO NOTHING" : "")
+        )).run(id2, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.authSnapshotJson, row.credentialJson, payloadJson, row.status, availableAt, idempotencyKey ?? null, now2, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor, enqueueTraceContext);
         if (idempotencyKey && Number(result?.changes ?? 0) === 0) {
           const existing = await jobAdapter.prepare(jobAdapter.dialect.sql("SELECT * FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?")).get(handlerName, context2.auth.userId, idempotencyKey);
           if (existing) {
@@ -141135,6 +141253,8 @@ async function runCurrentUserJobWorker(database) {
       const abortController = new AbortController();
       database.__jobAbortControllers.set(row.id, { claimToken, controller: abortController });
       let handlerStarted = false;
+      const attemptTelemetry = database.__jobTelemetry?.start(row);
+      let telemetryOutcome = "claim_lost";
       try {
         const jobPayload = JSON.parse(row.payload);
         const claimedState = await database.adapter.prepare(sql2(
@@ -141155,7 +141275,7 @@ async function runCurrentUserJobWorker(database) {
             database.__runtimeJobAttempts.set(privilegedCtx, Number(row.attempts) + 1);
             const releaseResources = bindOrdinaryJobResourceContext(database, privilegedCtx, { id: row.id, claimToken, leaseExpiresAt }, true);
             try {
-              return await handler.handler(privilegedCtx, jobPayload);
+              return await (attemptTelemetry ? attemptTelemetry.run(() => handler.handler(privilegedCtx, jobPayload)) : handler.handler(privilegedCtx, jobPayload));
             } finally {
               releaseResources();
               database.__runtimeJobAttempts.delete(privilegedCtx);
@@ -141178,7 +141298,7 @@ async function runCurrentUserJobWorker(database) {
           let handlerFailed = false;
           const releaseResources = bindOrdinaryJobResourceContext(database, context2, { id: row.id, claimToken, leaseExpiresAt });
           try {
-            result = await handler.handler(context2, jobPayload);
+            result = await (attemptTelemetry ? attemptTelemetry.run(() => handler.handler(context2, jobPayload)) : handler.handler(context2, jobPayload));
           } catch (error) {
             handlerFailed = true;
             throw error;
@@ -141204,6 +141324,7 @@ async function runCurrentUserJobWorker(database) {
         )).run(resultJson, completedAt, JSON.stringify(history), payloadRetentionUntil, row.id, claimToken) : await database.adapter.prepare(sql2(
           "UPDATE [sporades_jobs] SET [status] = 'succeeded', [result] = ?, [completedAt] = ?, [leaseExpiresAt] = NULL, [claimToken] = NULL, [attemptHistory] = ? WHERE [id] = ? AND [status] = 'running' AND [claimToken] = ?"
         )).run(resultJson, completedAt, JSON.stringify(history), row.id, claimToken);
+        if (Number(settled?.changes ?? 0) === 1) telemetryOutcome = "succeeded";
         if (Number(settled?.changes ?? 0) === 0) {
           const cancellation = await database.adapter.prepare(sql2(
             "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=?"
@@ -141212,9 +141333,10 @@ async function runCurrentUserJobWorker(database) {
             const cancelledAt = database.clock.now().toISOString();
             const cancellationHistory = JSON.parse(row.attemptHistory || "[]");
             cancellationHistory.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "cancelled", code: "ABORTED", completedAt: cancelledAt });
-            await database.adapter.prepare(sql2(
+            const cancelled = await database.adapter.prepare(sql2(
               "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=? AND [cancelRequestedAt] IS NOT NULL"
             )).run(JSON.stringify({ code: "ABORTED", message: "Job aborted." }), cancelledAt, JSON.stringify(cancellationHistory), row.id, claimToken);
+            if (Number(cancelled?.changes ?? 0) === 1) telemetryOutcome = "cancelled";
           }
         }
         if (row.handler === STRIPE_EVENT_JOB && Number(settled?.changes ?? 0) === 1 && typeof payloadRetentionUntil === "string" && isCanonicalJobTimestamp(payloadRetentionUntil)) {
@@ -141228,7 +141350,10 @@ async function runCurrentUserJobWorker(database) {
         const runtimeError = error?.cause ?? error;
         if (row.handler === STRIPE_EVENT_JOB && runtimeError?.[atomicStripeFenceContention] === true) {
           const contention = await deferAtomicStripeFenceContention(database, row.id, claimToken);
-          if (contention === "deferred") continue;
+          if (contention === "deferred") {
+            telemetryOutcome = "deferred";
+            continue;
+          }
           if (contention === "cancelled") {
             abortController.abort();
             error = atomicStripeAbortError();
@@ -141253,20 +141378,26 @@ async function runCurrentUserJobWorker(database) {
         const failure = retryPolicyInvalid ? invalidJobRetryPolicyFailure() : handlerFailure;
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
         if (cancelled) {
-          await database.adapter.prepare(sql2(
+          const changed = await database.adapter.prepare(sql2(
             "UPDATE [sporades_jobs] SET [status]='cancelled', [failure]=?, [failedAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=?"
           )).run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id, claimToken);
+          if (Number(changed?.changes ?? 0) === 1) telemetryOutcome = "cancelled";
         } else if (retryAvailableAt !== null) {
           const changed = await database.adapter.prepare(sql2(
             "UPDATE [sporades_jobs] SET [status]='delayed', [availableAt]=?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id]=? AND [status]='running' AND [claimToken]=?"
           )).run(retryAvailableAt, JSON.stringify(history), row.id, claimToken);
-          if (Number(changed?.changes ?? 0) === 1) scheduleJobWorkerWake(database, retry.delayMs + 1);
+          if (Number(changed?.changes ?? 0) === 1) {
+            telemetryOutcome = "retry";
+            scheduleJobWorkerWake(database, retry.delayMs + 1);
+          }
         } else {
-          await database.adapter.prepare(sql2(
+          const changed = await database.adapter.prepare(sql2(
             "UPDATE [sporades_jobs] SET [status] = 'failed', [failure] = ?, [failedAt] = ?, [leaseExpiresAt]=NULL, [claimToken]=NULL, [attemptHistory]=? WHERE [id] = ? AND [status]='running' AND [claimToken]=?"
           )).run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id, claimToken);
+          if (Number(changed?.changes ?? 0) === 1) telemetryOutcome = "failed";
         }
       } finally {
+        attemptTelemetry?.end(telemetryOutcome);
         const activeClaim = database.__jobAbortControllers?.get(row.id);
         if (activeClaim?.claimToken === claimToken) database.__jobAbortControllers.delete(row.id);
         database.__notifyJobStateQueries?.();
@@ -150099,28 +150230,32 @@ async function startDevSession(options) {
   const actionBundlePath = path20.join(options.projectDir, ".sporades", "build", ".dev-actions", actionBundleId, "server.mjs");
   const sessionFilePath = path20.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path20.join(options.projectDir, ".sporades", "data.db");
-  const runtime = await createDevRuntime({
-    projectDir: options.projectDir,
-    databasePath,
-    serverSource: bundle.serverRuntime.source,
-    serverEnv: bundle.serverRuntime.env,
-    serviceEnv: capsuleServiceEnv,
-    capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-    config: withRuntimeSecuritySession(config, session),
-    runtimeProbeToken: inspectionToken
-  });
-  let telemetry;
-  const emitTelemetryDiagnostic = (diagnostic) => runtime.database.log.emit({
+  let runtime;
+  const emitTelemetryDiagnostic = (diagnostic) => runtime?.database.log.emit({
     category: "platform",
     event: diagnostic.event,
     level: diagnostic.event === "telemetry.export.failed" ? "warn" : "info",
     message: diagnostic.event === "telemetry.export.failed" ? "Telemetry export failed" : "Telemetry export recovered",
     data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null
   });
+  let telemetry;
   try {
-    telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
+    runtime = await createDevRuntime({
+      projectDir: options.projectDir,
+      databasePath,
+      serverSource: bundle.serverRuntime.source,
+      serverEnv: bundle.serverRuntime.env,
+      serviceEnv: capsuleServiceEnv,
+      capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
+      config: withRuntimeSecuritySession(config, session),
+      runtimeProbeToken: inspectionToken,
+      onJobQueueReady(queueDatabase) {
+        telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
+        telemetry.bindJobQueue(queueDatabase);
+      }
+    });
   } catch (error) {
-    await runtime.shutdown();
+    await telemetry?.shutdown();
     throw error;
   }
   await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
@@ -150386,7 +150521,8 @@ async function startDevSession(options) {
           bundle.serverRuntime.env,
           runtimeServiceEnv,
           bundle.serverRuntime.capsuleModuleSource,
-          withRuntimeSecuritySession(config, session)
+          withRuntimeSecuritySession(config, session),
+          telemetry
         );
         websocketHub.disconnectAll();
         runtime.database.log.emit({
@@ -150405,6 +150541,7 @@ async function startDevSession(options) {
           fatal: errorData
         });
       } catch (restartError) {
+        telemetry.bindJobQueue(runtime.database);
         const details = errorDetails(restartError);
         runtime.database.log.emit({
           category: "platform",
@@ -150488,8 +150625,10 @@ async function startDevSession(options) {
             rebuild.serverRuntime.env,
             nextCapsuleServiceEnv,
             rebuild.serverRuntime.capsuleModuleSource,
-            withRuntimeSecuritySession(nextConfig, session)
+            withRuntimeSecuritySession(nextConfig, session),
+            nextTelemetry ?? telemetry
           ).catch(async (error) => {
+            telemetry.bindJobQueue(runtime.database);
             await nextTelemetry?.shutdown();
             throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
           });
@@ -150778,6 +150917,7 @@ async function createDevRuntime(options) {
       await importCapsuleDefinition(options.capsuleModuleSource),
       {
         serviceEnv: options.serviceEnv,
+        onJobQueueReady: options.onJobQueueReady,
         createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
         createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config)
       }
@@ -150799,7 +150939,7 @@ async function createDevRuntime(options) {
     get database() {
       return database;
     },
-    async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
+    async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config, jobTelemetry) {
       const nextPath = resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
       const changed = nextPath !== admissionPath;
       let nextAdmission = admissionPolicy;
@@ -150818,6 +150958,7 @@ async function createDevRuntime(options) {
           await importCapsuleDefinition(capsuleModuleSource),
           {
             serviceEnv,
+            onJobQueueReady: (queueDatabase) => jobTelemetry.bindJobQueue(queueDatabase),
             createStripeCallbackEndpoint: await stripeCallbackFactory(config),
             createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config)
           }

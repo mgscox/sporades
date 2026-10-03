@@ -11524,6 +11524,7 @@ test("sporades db dump returns structured table data from the running dev sessio
                 "credentialJson",
                 "payloadRetentionUntil",
                 "payloadRedactedAt",
+                "enqueueTraceContext",
               ],
               rows: [],
             },

@@ -1001,7 +1001,7 @@ export async function ensureJobStorage(sqlite: LooseRecord) {
   // alone, and this definition is sent verbatim to whichever engine is configured, so the probe
   // made every Capsule boot on a Postgres Capsule service fail with `syntax error at or near
   // "PRAGMA"` before the Job queue existed.
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"], ["enqueueTraceContext", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
   await sqlite.exec(sql(
     "CREATE INDEX IF NOT EXISTS [sporades_jobs_stripe_payload_retention] " +
     "ON [sporades_jobs]([handler], [status], [payloadRetentionUntil], [id])",

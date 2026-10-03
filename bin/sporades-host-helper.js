@@ -27006,6 +27006,7 @@ function validatePublicTreeFileSet(files) {
 // src/runtime-request-context.ts
 import { AsyncLocalStorage } from "node:async_hooks";
 var runtimeRequestScope = new AsyncLocalStorage();
+var runtimeJobScope = new AsyncLocalStorage();
 
 // src/resource-runtime.ts
 var RESOURCE_ADAPTER_SUPPORT = Object.freeze({

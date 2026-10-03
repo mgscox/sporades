@@ -4,6 +4,12 @@ Durable background work, Schedule declarations, runtime behavior, and CLI inspec
 
 [Back to the feature reference index](../guide/reference.md).
 
+With an operator Telemetry profile enabled, the runtime automatically exports
+[Job attempt traces and queue metrics](projects-and-configuration.md#background-job-traces-and-queue-metrics).
+Attempts use fresh root spans linked to the original enqueue; retries preserve
+that link and child Jobs link to their enqueuing attempt. This adds no execution
+authority or scheduling guarantee.
+
 ## Current-user Jobs
 
 Declare durable server-only work with `job()` and enqueue it from a trusted

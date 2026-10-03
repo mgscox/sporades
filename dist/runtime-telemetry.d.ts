@@ -35,6 +35,7 @@ export declare function activeRuntimeLogIdentity(): {
     spanId: string | null;
 } | undefined;
 export declare function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>): {
+    bindJobQueue: (_database: any) => void;
     run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => unknown;
     shutdown: () => Promise<void>;
 };
