@@ -15592,7 +15592,7 @@ test("sporades dev runs todo queries and mutations over WebSocket", async () => 
   });
 });
 
-test("Dev admission policy fails cold startup and retains last-known-good state across hot updates and rebuilds", async () => {
+test("Dev admission policy enforces denial across hot failures, rebuilds, removal and active-policy restart", async () => {
   await withTempDir(async dir => {
     const created = await runCli(["create","admission-dev","--no-install","--no-git","--json"],{cwd:dir}); assert.equal(created.code,0,created.stderr);
     const projectDir = path.join(dir,"admission-dev"); await installFakeReact(projectDir);
@@ -15600,7 +15600,7 @@ test("Dev admission policy fails cold startup and retains last-known-good state 
     await writeFile(path.join(projectDir,"server","index.ts"),`import { capsule, endpoint } from "sporades/server";
 export default capsule({ name: "admission-dev", endpoints: {
   blocked: endpoint({method:"GET",path:"/blocked"}, () => { globalThis.process.getBuiltinModule("node:fs").appendFileSync("app-called","called\\n"); return {status:202,body:"application"}; }),
-  allowed: endpoint({method:"GET",path:"/allowed"}, ctx => ({status:201,body:ctx.request.path})),
+  allowed: endpoint({method:"POST",path:"/allowed"}, ctx => ({status:201,headers:{"x-application":"unchanged"},body:{method:ctx.request.method,path:ctx.request.path,query:ctx.request.query.source,header:ctx.request.headers["x-source"],body:ctx.request.body}})),
 } });`);
     const policyPath = path.join(projectDir,"policy.json"); await writeFile(policyPath,"{");
     let child = startCli(["dev","--json"],{cwd:projectDir}); let exited = new Promise(resolve=>child.once("exit",resolve));
@@ -15609,20 +15609,52 @@ export default capsule({ name: "admission-dev", endpoints: {
     const json = (id, exact = "/blocked") => JSON.stringify({version:1,rules:[{id,enabled:true,conditions:[{kind:"pathname",exact}],action:{kind:"deny"}}]}); await writeFile(policyPath,json("seed"));
     child = startCli(["dev","--json"],{cwd:projectDir}); exited = new Promise(resolve=>child.once("exit",resolve));
     try {
-      const started = await waitForJsonLine(child); assert.equal(started.ok,true,JSON.stringify(started));
-      const session = JSON.parse(await readFile(path.join(projectDir,".sporades","dev-session.json"),"utf8"));
+      let started = await waitForJsonLine(child); assert.equal(started.ok,true,JSON.stringify(started));
+      let session = JSON.parse(await readFile(path.join(projectDir,".sporades","dev-session.json"),"utf8"));
       const health = async () => (await (await fetch(`${started.data.url}/__sporades/health/runtime`,{headers:{"x-sporades-host-probe":session.inspectionToken}})).json()).data.runtime.admissionPolicy;
+      const denied = async () => {
+        const response = await fetch(`${started.data.url}/blocked?private=opaque`);
+        assert.equal(response.status,403); assert.equal(response.headers.get("cache-control"),"no-store"); assert.equal(response.headers.get("content-length"),"10"); assert.deepEqual(Buffer.from(await response.arrayBuffer()),Buffer.from("Forbidden\n"));
+        await assert.rejects(readFile(path.join(projectDir,"app-called")),{code:"ENOENT"});
+      };
+      const allowed = async () => {
+        const response = await fetch(`${started.data.url}/allowed?source=unchanged`,{method:"POST",headers:{"x-source":"original","content-type":"application/json"},body:JSON.stringify({text:"untouched bytes"})});
+        assert.equal(response.status,201); assert.equal(response.headers.get("x-application"),"unchanged");
+        assert.deepEqual(await response.json(),{method:"POST",path:"/allowed",query:"unchanged",header:"original",body:{text:"untouched bytes"}});
+      };
+      const restart = async () => {
+        child.kill("SIGTERM"); await exited;
+        child = startCli(["dev","--json"],{cwd:projectDir}); exited = new Promise(resolve=>child.once("exit",resolve));
+        started = await waitForJsonLine(child); assert.equal(started.ok,true,JSON.stringify(started));
+        session = JSON.parse(await readFile(path.join(projectDir,".sporades","dev-session.json"),"utf8"));
+      };
       const initial = await health(); assert.equal(initial.state,"healthy");
-      const denied = await fetch(`${started.data.url}/blocked?private=opaque`); assert.equal(denied.status,403); assert.equal(denied.headers.get("cache-control"),"no-store"); assert.equal(await denied.text(),"Forbidden\n"); await assert.rejects(readFile(path.join(projectDir,"app-called")),{code:"ENOENT"});
-      assert.equal((await fetch(`${started.data.url}/allowed`)).status,201);
+      await denied(); await allowed();
       assert.equal((await fetch(`${started.data.url}/__sporades/connection-token`,{headers:{"x-sporades-connection-token-request":"1"}})).status,200);
       const wait = async predicate => {const deadline=Date.now()+9000;while(Date.now()<deadline){if(await predicate())return;await new Promise(resolve=>setTimeout(resolve,100));}assert.fail("policy failed to converge");};
       await writeFile(policyPath,"{"); await wait(async()=> (await health()).state==="degraded"); assert.equal((await health()).digest,initial.digest);
+      await denied(); await allowed();
       const rebuilt = waitForJsonEvent(child,event=>event.ok&&event.data?.event==="rebuild"&&event.data?.status==="success");
       await writeFile(path.join(projectDir,"server","index.ts"),(await readFile(path.join(projectDir,"server","index.ts"),"utf8"))+"\n// rebuild while policy is degraded\n");
-      await rebuilt; assert.equal((await health()).digest,initial.digest); assert.equal((await fetch(`${started.data.url}/blocked`)).status,403);
+      await rebuilt; assert.equal((await health()).digest,initial.digest); await denied(); await allowed();
       await writeFile(policyPath,json("updated", "/other")); await wait(async()=> (await health()).state==="healthy" && (await health()).digest!==initial.digest);
       const admitted = await fetch(`${started.data.url}/blocked`); assert.equal(admitted.status,202); assert.equal(await admitted.text(),"application"); assert.equal(await readFile(path.join(projectDir,"app-called"),"utf8"),"called\n");
+      await rm(path.join(projectDir,"app-called"));
+      const replacementDigest = (await health()).digest;
+      await writeFile(policyPath,json("restart-active"));
+      await wait(async()=> (await health()).state==="healthy" && (await health()).digest!==replacementDigest);
+      await denied(); await allowed();
+      const activeDigest = (await health()).digest;
+      await restart(); assert.equal((await health()).state,"healthy"); assert.equal((await health()).digest,activeDigest);
+      await denied(); await allowed();
+      // The durable marker written by authorized policy removal, not a missing file.
+      await writeFile(policyPath,'{"sporadesAdmissionPublication":1,"removed":true}\n');
+      await wait(async()=> (await health()).state==="disabled"); assert.equal((await health()).digest,null);
+      const removed = await fetch(`${started.data.url}/blocked`); assert.equal(removed.status,202); assert.equal(await removed.text(),"application"); assert.equal(await readFile(path.join(projectDir,"app-called"),"utf8"),"called\n");
+      await rm(path.join(projectDir,"app-called")); await allowed();
+      await restart(); assert.equal((await health()).state,"disabled"); assert.equal((await health()).digest,null);
+      const removedRestart = await fetch(`${started.data.url}/blocked`); assert.equal(removedRestart.status,202); assert.equal(await removedRestart.text(),"application"); assert.equal(await readFile(path.join(projectDir,"app-called"),"utf8"),"called\n");
+      await allowed();
     } finally { if(child.exitCode===null) child.kill("SIGTERM"); await exited; }
   });
 });
