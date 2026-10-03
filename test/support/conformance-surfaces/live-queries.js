@@ -66,7 +66,7 @@ export const CONFORMANCE_SURFACE = {
     async run(adapter) {
       const reads = await subscriptions(adapter);
       takeLiveQueryDirtyTables();
-      const zero = await adapter.prepare("UPDATE refresh_audits SET text = ? WHERE id = ?").run("absent", "missing");
+      const zero = await adapter.prepare("UPDATE refresh_audits SET \"text\" = ? WHERE \"id\" = ?").run("absent", "missing");
       assert.equal(zero.changes, 0);
       assert.deepEqual(refreshed(reads), [true, true], "unclassified statements retain full invalidation even with zero rows");
       if (adapter.engine !== "postgres") return; // These statement forms are Postgres-specific.
