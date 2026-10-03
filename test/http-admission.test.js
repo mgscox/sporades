@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { parseAdmissionPolicy, matchHttpAdmissionRule, canonicalAdmissionPathname } from '../dist/admission-policy.js';
 import { routeHttpAdmission, routeConnectionToken, routeRuntimeHealth } from '../dist/http-runtime.js';
+import { createAdmissionRateLimiter } from '../dist/admission-rate-limit.js';
 
 const rule = (id, exact, enabled = true) => ({ id, enabled, conditions: [{ kind: 'pathname', exact }], action: { kind: 'deny' } });
 const generation = rules => parseAdmissionPolicy(Buffer.from(JSON.stringify({ version: 1, rules })));
@@ -12,6 +13,64 @@ const probeToken = 'a'.repeat(64);
 const addressToken = createHash('sha256').update('sporades-client-address\0').update(probeToken).digest('hex');
 const hostedHeaders = address => ({ 'x-sporades-client-address': address, 'x-sporades-client-address-token': addressToken });
 const addressRule = value => ({ id: 'address', enabled: true, conditions: [{ kind: 'pathname', exact: '/blocked' }, { kind: 'address', value }], action: { kind: 'deny' } });
+
+test('real HTTP quotas preserve under-quota body streams and return opaque 429/HEAD without application work', async () => {
+  let now = 0;
+  const active = generation([{ ...rule('private-quota', '/limited'), action: { kind: 'rate-limit', limit: 1, windowMs: 2000 } }]);
+  const runtime = { current: () => active, rateLimiter: createAdmissionRateLimiter({ now: () => now }) };
+  await serve({ securitySession: 'hosted', runtimeProbeToken: probeToken, admissionPolicy: runtime }, async (base, calls) => {
+    const first = await fetch(base + '/limited?secret=untouched', { method: 'POST', headers: { ...hostedHeaders('192.0.2.1'), 'x-original': 'retained' }, body: 'original body bytes' });
+    assert.equal(first.status, 201);
+    assert.deepEqual(await first.json(), { url: '/limited?secret=untouched', header: 'retained', body: 'original body bytes' });
+    now = 999;
+    for (const method of ['POST', 'HEAD']) {
+      const response = await fetch(base + '/limited?secret=opaque', { method, headers: hostedHeaders('::ffff:192.0.2.1'), ...(method === 'POST' ? { body: 'never read' } : {}) });
+      assert.equal(response.status, 429); assert.equal(response.headers.get('retry-after'), '2');
+      assert.equal(response.headers.get('cache-control'), 'no-store'); assert.equal(response.headers.get('content-length'), '18');
+      assert.equal(await response.text(), method === 'HEAD' ? '' : 'Too Many Requests\n');
+    }
+    assert.equal(calls(), 1);
+    now = 2000;
+    assert.equal((await fetch(base + '/limited', { headers: hostedHeaders('192.0.2.1') })).status, 201);
+    assert.equal(calls(), 2);
+  }, async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.writeHead(201, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ url: request.url, header: request.headers['x-original'], body: Buffer.concat(chunks).toString() }));
+  });
+});
+
+test('compound canonical conditions select quotas without counting nonmatches or evaluating later rules', async () => {
+  const active = generation([
+    { id: 'compound-quota', enabled: true, conditions: [
+      { kind: 'method', value: 'POST' }, { kind: 'pathname', prefix: '/limited' },
+      { kind: 'header', name: 'x-plan', value: 'blue' }, { kind: 'query-key', name: 'tenant' },
+    ], action: { kind: 'rate-limit', limit: 1, windowMs: 2000 } },
+    rule('later-deny', '/limited/admin'),
+  ]);
+  const limiter = createAdmissionRateLimiter({ now: () => 0 });
+  await serve({ securitySession: 'hosted', runtimeProbeToken: probeToken, admissionPolicy: { current: () => active, rateLimiter: limiter } }, async (base, calls) => {
+    const headers = { ...hostedHeaders('192.0.2.1'), 'x-plan': 'blue' };
+    for (const [url, method, fields] of [
+      ['/limited/child?tenant=1', 'GET', headers],
+      ['/administrator?tenant=1', 'POST', headers],
+      ['/limited/child?tenant=1', 'POST', { ...headers, 'x-plan': 'red' }],
+      ['/limited/child?other=1', 'POST', headers],
+    ]) assert.equal((await fetch(base + url, { method, headers: fields })).status, 201);
+    assert.equal(limiter.stats().buckets, 0);
+    // Encoded dot segments, raw header casing, OWS and query-key decoding share the compound matcher.
+    const options = { method: 'POST', headers: { ...hostedHeaders('192.0.2.1'), 'X-Plan': ' blue ' } };
+    assert.equal((await fetch(base + '/limited/%2e/admin?%74enant=1', options)).status, 201);
+    const denied = await fetch(base + '/limited/admin?tenant=1', options);
+    assert.equal(denied.status, 429);
+    assert.equal(denied.headers.get('retry-after'), '2');
+    assert.equal(denied.headers.get('cache-control'), 'no-store');
+    assert.equal(await denied.text(), 'Too Many Requests\n');
+    assert.equal(calls(), 5);
+    assert.equal((await fetch(base + '/limited/admin?tenant=1', { method: 'POST', headers: { ...hostedHeaders('192.0.2.2'), 'x-plan': 'blue' } })).status, 201);
+    assert.equal(calls(), 6);
+  });
+});
 
 test('Hosted address denial matches exact IPv4, canonical IPv6 and CIDRs at the authenticated Host boundary', async () => {
   for (const [value, matched, unmatched] of [

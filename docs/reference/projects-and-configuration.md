@@ -1256,12 +1256,14 @@ covering them are rejected during policy validation, even in disabled rules or
 rules with additional conditions. Aliases and other methods enter admission.
 
 HTTP admission supports method, exact/prefix pathname, header, query-key and
-trusted Hosted address/CIDR conditions. Every supported condition must match; their order inside a rule does
-not affect the outcome. A missing trusted address or ambiguous exact-header duplicate is indeterminate:
-a nonmatching condition skips the rule, otherwise it fails closed. A matching quota action also
-fails closed until quota enforcement ships. Evaluation stops at the first match;
-traffic denied earlier never reaches a later rule or action. WebSocket upgrades
-are a subsequent slice.
+trusted Hosted address/CIDR conditions. Every supported condition must match;
+their order inside a rule does not affect the outcome. A missing trusted address
+or ambiguous exact-header duplicate is indeterminate:
+a nonmatching condition skips the rule, otherwise it fails closed. Evaluation
+stops at the first match; a matching deny returns the opaque denial, while a
+matching quota action applies its bounded fixed-window counter. Traffic denied
+earlier never reaches a later rule or action. WebSocket upgrades are a subsequent
+slice.
 
 Without a policy declaration, the admission gate returns synchronously before
 parsing or touching request/response objects, reading bodies, or emitting logs.
@@ -1293,7 +1295,7 @@ credentials, cookies, Host/routing and internal/proxy address fields: `host`,
 `true-client-ip`, `x-real-ip`, and names beginning `proxy-`, `x-forwarded-`,
 `x-sporades-` or `cf-`. These fields cannot supply public matching or authenticated
 identity shortcuts. Header/query matches grant no identity or application
-permissions. Quota enforcement is a subsequent slice.
+permissions.
 
 Address conditions match one canonical IPv4 or IPv6 literal, or a CIDR network.
 IPv6 is normalized to lowercase with the first longest zero run compressed.
@@ -1336,9 +1338,46 @@ receives the same opaque `403`, `Forbidden\n` bytes and `Cache-Control: no-store
 as a matched denial. It does not fall back to a public forwarding header or the
 runtime socket's proxy address. Dev (including Public Dev) and local Container
 sessions always have no trusted address, even if supplied with internal headers;
-potentially applicable address rules therefore fail closed there. Disabled rules
+potentially applicable address rules and quotas fail closed there. Disabled rules
 are skipped and unrelated rules continue to operate normally.
 
+A matching `rate-limit` action counts each request in a fixed window keyed by
+`(stable rule ID, canonical trusted client address)`. Under quota, the first
+matching rule admits the request; later rules are not evaluated. An earlier deny
+therefore never consumes a later quota. Quotas always require trusted identity,
+even without an address condition. Missing identity takes the opaque `403` path
+above, without creating a bucket or falling back to public forwarding headers.
+
+For example, `"action": { "kind": "rate-limit", "limit": 20, "windowMs": 10000 }`
+allows twenty matching requests per client in a ten-second local window. The
+first counted request starts the window using monotonic elapsed time, independent
+of wall-clock changes. At exactly `startedAt + windowMs`, the next request starts
+a fresh window. Over-quota matches count with a saturated counter, without
+extending the window. They return an opaque `429`, exactly `Too Many Requests\n`
+(18 UTF-8 bytes), `Cache-Control: no-store`, and integer `Retry-After` seconds
+rounded up from the remaining window time. HEAD omits body bytes. No Capsule
+request code runs; no rule ID, address or policy digest appears in the response.
+Fixed windows permit a boundary burst: up to twice the quota can arrive around a
+window boundary (the remaining quota immediately before, then a fresh quota after).
+
+Each runtime caps the combined table at **10,000 buckets across all rules**.
+Expired windows are pruned during counting. At capacity, insertion evicts the
+least recently counted bucket; ties follow deterministic Map insertion order.
+Denied matches refresh recency. Capacity evictions increment `rateLimit.evictions`
+in authenticated runtime health; expiry and policy invalidation do not. Bucket
+keys and counters are bounded by the validated rule ID, canonical IP and quota
+bounds. An evicted identity gets a fresh window on its next match: address churn
+can weaken quotas at capacity. Monitor aggregate eviction counts and size quotas
+with that tradeoff in mind. No raw addresses or rule IDs enter these diagnostics.
+
+Hot reload preserves buckets only for still-enabled stable IDs with unchanged
+`limit` and `windowMs`; matcher/order edits preserve compatible buckets. Changing
+an ID or either parameter, disabling/removing a rule, or removing the policy
+clears affected buckets before the new generation becomes active, even with no
+intervening request. Invalid hot updates retain both policy and buckets.
+**v1 is in-memory and per-process**, rather than a global or distributed quota.
+Process restart resets all buckets; replicas and separate Capsule processes have
+independent quotas. It is a fixed-window counter, not a token bucket.
 
 Bounds are 65,536 UTF-8 bytes, nesting depth 8 (root depth 0), 128 rules,
 16 conditions per rule, and 1,024 UTF-8 bytes per match string. An empty rule array
@@ -1374,8 +1413,9 @@ Startup loads before Capsule code and app traffic. Invalid configured startup
 fails; hot failures retain the complete immutable last-known-good generation.
 The runtime polls every two seconds and swaps complete generations atomically,
 meeting the ten-second update target under normal scheduling. The Host-authenticated
-runtime-health response adds `data.runtime.admissionPolicy` with only `state`
-(`healthy`, `degraded`, `disabled`) and active SHA-256 `digest` or `null`.
-Platform reload events report the same fields on load, degradation and recovery.
+runtime-health response adds `data.runtime.admissionPolicy` with `state`
+(`healthy`, `degraded`, `disabled`), active SHA-256 `digest` or `null`, and
+`rateLimit: { buckets, maxBuckets, evictions }` aggregate local quota diagnostics.
+Platform reload events report only state and digest on load, degradation and recovery.
 They contain no rule or match values. No declaration adds no loader, policy
 fields or policy logs. See [the authority ADR](../adr/0054-request-admission-policy-is-deployer-owned.md).

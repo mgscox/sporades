@@ -27,7 +27,7 @@ export type InterpretedHttpRequestTarget = {
     url: URL;
 };
 export declare function interpretHttpRequestTarget(target: unknown, method: unknown): InterpretedHttpRequestTarget | null;
-/** Canonical HTTP admission, before Capsule routing; genuine controls dispatch first. */
+/** Canonical HTTP admission and trusted-client quotas; genuine controls dispatch first. */
 export declare function routeHttpAdmission(database: LooseRecord, request: Pick<IncomingMessage, "url" | "method" | "rawHeaders" | "headers">, response: Pick<ServerResponse, "writeHead" | "end">, target?: InterpretedHttpRequestTarget): boolean;
 export declare function requestTarget(request: Pick<IncomingMessage, "url" | "method">): InterpretedHttpRequestTarget;
 export declare function writeInvalidHttpRequestTarget(database: LooseRecord, request: IncomingMessage, response: Pick<ServerResponse, "writeHead" | "end">): void;

@@ -1,8 +1,8 @@
-/** Deployer-owned JSON policy. HTTP conditions use AND and ordered first-match denial.
+/** Deployer-owned JSON policy. HTTP conditions use AND and ordered first-match denial/quotas.
  * Methods are uppercase ASCII; paths decode once and normalize dot segments, prefixes follow segment boundaries.
  * Header names are lowercase non-sensitive tokens; values have no outer whitespace. Presence accepts duplicates;
  * exact values require one raw occurrence (ambiguous duplicates fail closed). Query keys decode once, case-sensitively.
- * Missing trusted address identity is indeterminate; quota actions remain reserved and fail closed. */
+ * Missing trusted address identity is indeterminate; fixed-window quotas require trusted Hosted identity. */
 export type AdmissionCondition =
   | { kind: "method"; value: string }
   | { kind: "pathname"; exact: string } | { kind: "pathname"; prefix: string }
@@ -12,8 +12,14 @@ export type AdmissionCondition =
   | { kind: "address"; value: string }
   | { kind: "header"; name: string; value?: string }
   | { kind: "query-key"; name: string };
+/** Rate limits use monotonic, per-process windows keyed by stable rule ID and trusted address.
+ * Matching requests count, including over-quota requests; restart resets buckets.
+ * Compatible IDs/parameters survive reload. Missing identity fails closed with 403. */
 export type AdmissionAction = { kind: "deny" } | { kind: "rate-limit"; limit: number; windowMs: number };
 export type AdmissionPolicy = { version: 1; rules: readonly { id: string; enabled: boolean; conditions: readonly AdmissionCondition[]; action: AdmissionAction }[] };
 export type AdmissionGeneration = Readonly<{ digest: string; policy: AdmissionPolicy }>;
-export type AdmissionHealth = Readonly<{ state: "healthy" | "degraded" | "disabled"; digest: string | null }>;
+export type AdmissionHealth = Readonly<{ state: "healthy" | "degraded" | "disabled"; digest: string | null;
+  /** Aggregate local quota diagnostics; no rule IDs or client addresses. */
+  rateLimit?: Readonly<{ buckets: number; maxBuckets: number; evictions: number }>;
+}>;
 export type AdmissionPolicyConfig = { path: string };

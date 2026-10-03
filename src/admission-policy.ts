@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { validClientAddressNetwork, clientAddressMatches } from "./client-address.js";
+import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
 import { readDeployFile, resolveDeployFiles, preservedDeployFilePath, type BuiltDeployFile } from "./deploy-files.js";
@@ -182,7 +183,8 @@ export async function publishAdmissionPolicy(root: string, relative: string, byt
     await rename(path.join(anchored, temporary), target); await handle.sync();
   } finally { await output?.close(); await rm(path.join(anchored, temporary), { force: true }); await handle.close(); }
 }
-export async function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth) => void) {
+export async function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth) => void, limiterOptions: Parameters<typeof createAdmissionRateLimiter>[0] = {}) {
+  const rateLimiter = createAdmissionRateLimiter(limiterOptions);
   let active: AdmissionGeneration | null = null;
   let health: AdmissionHealth = Object.freeze({ state: "disabled", digest: null });
   let closed = false;
@@ -196,6 +198,7 @@ export async function openAdmissionPolicy(root: string, relative: string, onHeal
     try {
       const bytes = await readDeployFile(root, relative, ADMISSION_LIMITS.bytes);
       const next = bytes.equals(REMOVED) ? null : parseAdmissionPolicy(bytes);
+      rateLimiter.reconcile(next);
       active = next; report(next ? "healthy" : "disabled");
     } catch { report("degraded"); if (cold) throw new Error("Configured admission policy could not be loaded."); }
   }
@@ -206,5 +209,7 @@ export async function openAdmissionPolicy(root: string, relative: string, onHeal
     return pending;
   };
   const timer = setInterval(() => { void reload(); }, ADMISSION_LIMITS.reloadMs); timer.unref();
-  return Object.freeze({ current: () => active, health: () => health, reload, close: async () => { closed = true; clearInterval(timer); await pending; } });
+  return Object.freeze({ current: () => active, rateLimiter,
+    health: (): AdmissionHealth => Object.freeze({ ...health, rateLimit: rateLimiter.stats() }),
+    reload, close: async () => { closed = true; clearInterval(timer); await pending; } });
 }

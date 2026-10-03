@@ -2624,7 +2624,8 @@ test("a generated Bundle enforces admission before Capsule middleware while cont
     const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:CAPSULE_SOURCE, serverModuleSource: await bundleServerCapsuleModule({ serverSource: CAPSULE_SOURCE.replace('if (ctx.kind !== "endpoint") return ctx;', 'if (ctx.kind !== "endpoint") return ctx; globalThis.process.getBuiltinModule("node:fs").appendFileSync("app-called", "called\\n");'), serverSourcePath: path.join(process.cwd(), "server", "index.ts") })});
     await writePublicTree(root,"plain bytes"); booted = await bootBundle({source,dir:root});
     const health = async () => (await (await fetch(`${booted.baseUrl}/__sporades/health/runtime`,{headers:{"x-sporades-host-probe":"a".repeat(64)}})).json()).data.runtime.admissionPolicy;
-    const initial = await health(); assert.equal(initial.state,"healthy"); assert.deepEqual(Object.keys(initial),["state","digest"]);
+    const initial = await health(); assert.equal(initial.state,"healthy"); assert.deepEqual(Object.keys(initial),["state","digest","rateLimit"]);
+    assert.deepEqual(initial.rateLimit,{buckets:0,maxBuckets:10000,evictions:0});
     const denied = await fetch(`${booted.baseUrl}/probe/status?private=opaque`);
     assert.equal(denied.status,403); assert.equal(denied.headers.get("cache-control"),"no-store"); assert.equal(denied.headers.get("content-length"),"10"); assert.equal(await denied.text(),"Forbidden\n");
     await assert.rejects(readFile(path.join(root,"app-called")),{code:"ENOENT"});

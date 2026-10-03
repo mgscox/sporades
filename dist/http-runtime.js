@@ -107,6 +107,7 @@ import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
 import { matchHttpAdmissionRule } from "./admission-policy.js";
 import { trustedClientAddress } from "./client-address.js";
+import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
 import { accessKeyAuthenticationError, emitAccessKeyAdmittedAudit, recordAccessKeyUsage, resolveAccessKeyCredential, } from "./access-keys-runtime.js";
 import { checkRuntimeFileStorage, completePendingFileUpload, contentTypeForFile, fileRowForActor, } from "./file-storage-runtime.js";
 import { checkClamavRuntime } from "./file-ingress-runtime.js";
@@ -157,7 +158,8 @@ export function interpretHttpRequestTarget(target, method) {
         return null;
     }
 }
-/** Canonical HTTP admission, before Capsule routing; genuine controls dispatch first. */
+const admissionLimiters = new WeakMap();
+/** Canonical HTTP admission and trusted-client quotas; genuine controls dispatch first. */
 export function routeHttpAdmission(database, request, response, target) {
     const runtime = database.admissionPolicy;
     if (!runtime)
@@ -165,6 +167,12 @@ export function routeHttpAdmission(database, request, response, target) {
     try {
         // Snapshot once: a request sees one complete validated immutable generation.
         const generation = runtime.current();
+        let limiter = runtime.rateLimiter ?? admissionLimiters.get(runtime);
+        if (!limiter) {
+            limiter = createAdmissionRateLimiter();
+            admissionLimiters.set(runtime, limiter);
+        }
+        limiter.reconcile(generation);
         if (!generation || generation.policy.rules.length === 0)
             return false;
         const parsed = target ?? requestTarget(request);
@@ -178,15 +186,29 @@ export function routeHttpAdmission(database, request, response, target) {
                 throw new Error("Invalid admission authority.");
         }
         const queryStart = raw.indexOf("?");
-        if (!matchHttpAdmissionRule(generation, {
+        const address = trustedClientAddress(database, request);
+        const rule = matchHttpAdmissionRule(generation, {
             method: request.method ?? "",
             pathname: parsed.pathname,
             query: queryStart === -1 ? "" : raw.slice(queryStart + 1),
             rawHeaders: request.rawHeaders,
-            trustedAddress: trustedClientAddress(database, request),
-        }))
+            trustedAddress: address,
+        });
+        if (!rule)
             return false;
-        // This slice implements deny. Future actions cannot silently admit traffic.
+        if (rule.action.kind === "rate-limit") {
+            if (!address)
+                throw new Error("Missing trusted admission address.");
+            const retryAfter = limiter.consume(rule.id, address, rule.action.limit, rule.action.windowMs);
+            if (!retryAfter)
+                return false;
+            response.writeHead(429, {
+                "cache-control": "no-store", "retry-after": String(retryAfter),
+                "content-type": "text/plain; charset=utf-8", "content-length": "18", connection: "close",
+            });
+            response.end("Too Many Requests\n");
+            return true;
+        }
     }
     catch { /* Malformed or unsupported admission input has the same opaque denial. */ }
     response.writeHead(403, {
