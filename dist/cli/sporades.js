@@ -371,6 +371,10 @@ async function runTelemetryProfileCommand(args) {
                 input.dashboard = readFlagValue(rest, ++index, arg);
                 continue;
             }
+            if (arg === "--trace-propagation-origin") {
+                (input.tracePropagationOrigins ??= []).push(readFlagValue(rest, ++index, arg));
+                continue;
+            }
             if (arg === "--credential-env") {
                 input.credentialEnv = readFlagValue(rest, ++index, arg);
                 continue;
@@ -404,6 +408,7 @@ async function runTelemetryProfileCommand(args) {
     }
     if (operation === "add") {
         const profile = {
+            ...(input.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: input.tracePropagationOrigins } : {}),
             endpoint: input.endpoint,
             ...(input.dashboard ? { dashboard: input.dashboard } : {}),
             tls: { mode: input.loopback ? "loopback" : "verified", ...(input.caFile ? { caFile: input.caFile } : {}) },
@@ -3605,7 +3610,7 @@ async function manageHost(options) {
                 const inventoryCredential = profile.inventoryCredentialEnv ? process.env[profile.inventoryCredentialEnv] : undefined;
                 if (profile.inventoryCredentialEnv && !inventoryCredential)
                     throw commandError("Telemetry inventory credential is unavailable.", "Set the inventory credential environment reference before connecting.");
-                telemetry = { endpoint: profile.endpoint, credential, ...(inventoryCredential ? { inventoryCredential } : {}), ...(profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}), ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
+                telemetry = { ...(profile.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}), endpoint: profile.endpoint, credential, ...(inventoryCredential ? { inventoryCredential } : {}), ...(profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}), ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
             }
             const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
             if (options.json)

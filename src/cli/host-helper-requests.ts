@@ -97,7 +97,7 @@ export type HostHelperRequestBase = JsonObject & {
   lines?: number;
   verification?: HostHelperVerification;
   accessKeys?: JsonObject;
-  telemetry?: { endpoint: string; credential: string; inventoryCredential?: string; inventoryHost?: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
+  telemetry?: { tracePropagationOrigins?: string[]; endpoint: string; credential: string; inventoryCredential?: string; inventoryHost?: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
 };
 
 export type HostRegistrationOptions = JsonObject & {

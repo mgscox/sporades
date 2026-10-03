@@ -5,6 +5,7 @@ export function hostedTelemetryConfig(connection, capsule) {
     if (connection.internalEndpoint !== "http://sporades-telemetry:4318/")
         throw new Error("Invalid Host Telemetry relay endpoint.");
     return {
+        ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}),
         endpoint: connection.internalEndpoint,
         tls: { mode: "loopback" },
         serviceName: `${capsule.domain}/${capsule.subname}`,

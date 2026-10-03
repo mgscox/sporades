@@ -82,6 +82,7 @@
       "src/public-tree.ts",
       "src/resource-runtime.ts",
       "src/runtime-errors.ts",
+      "src/runtime-fetch-telemetry.ts",
       "src/runtime-log-policy.ts",
       "src/runtime-request-context.ts",
       "src/runtime-restart-policy.ts",
@@ -104,6 +105,7 @@
       "src/team-billing-runtime.ts",
       "src/team-billing-subscription-semantics.ts",
       "src/teams-runtime.ts",
+      "src/telemetry-propagation-policy.ts",
       "src/templates/client-runtime-template.ts",
       "src/templates/scaffold-template.ts",
       "src/templates/server-bundle-entry.ts",
@@ -120,7 +122,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "e6729eee9527be8374e97d193c1467a7e91ebacfad316cc8e4fd77f95d40b844"
+    "digest": "f55e646e07a3a3a0e6db005af40771eaa59c1cc7d50383c94825cc76023291b7"
   },
   "outputs": {
     "files": [
@@ -418,6 +420,10 @@
       "dist/runtime-errors.d.ts.map",
       "dist/runtime-errors.js",
       "dist/runtime-errors.js.map",
+      "dist/runtime-fetch-telemetry.d.ts",
+      "dist/runtime-fetch-telemetry.d.ts.map",
+      "dist/runtime-fetch-telemetry.js",
+      "dist/runtime-fetch-telemetry.js.map",
       "dist/runtime-log-policy.d.ts",
       "dist/runtime-log-policy.d.ts.map",
       "dist/runtime-log-policy.js",
@@ -510,6 +516,10 @@
       "dist/teams-runtime.d.ts.map",
       "dist/teams-runtime.js",
       "dist/teams-runtime.js.map",
+      "dist/telemetry-propagation-policy.d.ts",
+      "dist/telemetry-propagation-policy.d.ts.map",
+      "dist/telemetry-propagation-policy.js",
+      "dist/telemetry-propagation-policy.js.map",
       "dist/templates/client-runtime-template.d.ts",
       "dist/templates/client-runtime-template.d.ts.map",
       "dist/templates/client-runtime-template.js",
@@ -532,6 +542,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "3996cf58593ef62858270ae82165ae2593c3d415873e3189835d9dcbd6504d60"
+    "digest": "93bd7424c5538a93f84006ba954bc93b4f399e6ff5415c2a753334487c906a8f"
   }
 }

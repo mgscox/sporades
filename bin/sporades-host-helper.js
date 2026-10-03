@@ -42869,6 +42869,29 @@ var clamavRefreshIntervalMs = 60 * 60 * 1e3;
 var clamavRefreshRetryMs = 15 * 60 * 1e3;
 var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 
+// src/runtime-fetch-telemetry.ts
+var fetchStateKey = Symbol.for("sporades.runtime.fetch-telemetry.v1");
+var nativeAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get;
+var nativeReason = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "reason").get;
+var nativeExceptionName = Object.getOwnPropertyDescriptor(DOMException.prototype, "name").get;
+
+// src/telemetry-propagation-policy.ts
+function validateTracePropagationOrigins(value) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value) || value.length > 32) throw new Error("Invalid trace propagation origins.");
+  return [...new Set(value.map((entry) => {
+    if (typeof entry !== "string" || entry.length > 2048 || !/^https?:\/\/[^/?#]+\/?$/i.test(entry) || /[\s\\*]/.test(entry)) throw new Error("Invalid trace propagation origins.");
+    let url;
+    try {
+      url = new URL(entry);
+    } catch {
+      throw new Error("Invalid trace propagation origins.");
+    }
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.hostname.includes("*") || url.username || url.password || url.pathname !== "/" || url.search || url.hash || entry.includes("?") || entry.includes("#")) throw new Error("Invalid trace propagation origins.");
+    return url.origin;
+  }))];
+}
+
 // src/runtime-telemetry.ts
 var processInstanceId = randomUUID3();
 function activeRuntimeLogIdentity() {
@@ -43993,7 +44016,7 @@ function invalid3() {
 function validateHostRelayConnection(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid3();
   const input = value;
-  if (Object.keys(input).some((key) => !["endpoint", "credential", "inventoryCredential", "inventoryHost", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs"].includes(key))) invalid3();
+  if (Object.keys(input).some((key) => !["endpoint", "credential", "inventoryCredential", "inventoryHost", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs", "tracePropagationOrigins"].includes(key))) invalid3();
   if (typeof input.endpoint !== "string" || input.endpoint.length > 2048) invalid3();
   let url;
   try {
@@ -44008,6 +44031,13 @@ function validateHostRelayConnection(value) {
   if (input.caPem !== void 0 && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----"))) invalid3();
   if (input.metricsIntervalMs !== void 0 && (!Number.isSafeInteger(input.metricsIntervalMs) || input.metricsIntervalMs < 5e3 || input.metricsIntervalMs > 3e5)) invalid3();
   if (input.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || input.eventLoopDelayResolutionMs < 10 || input.eventLoopDelayResolutionMs > 1e3)) invalid3();
+  if (input.tracePropagationOrigins !== void 0) {
+    try {
+      input.tracePropagationOrigins = validateTracePropagationOrigins(input.tracePropagationOrigins);
+    } catch {
+      invalid3();
+    }
+  }
   return input;
 }
 function renderHostRelayCollectorConfig(options) {
@@ -44127,13 +44157,20 @@ async function readConnectionRecord(remoteRoot) {
   if (value.schemaVersion !== 1 || typeof value.endpoint !== "string" || typeof value.network !== "string" || value.internalEndpoint !== `http://${RELAY_ALIAS}:4318/`) {
     throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
   }
+  if (value.tracePropagationOrigins !== void 0) {
+    try {
+      value.tracePropagationOrigins = validateTracePropagationOrigins(value.tracePropagationOrigins);
+    } catch {
+      invalid3();
+    }
+  }
   return value;
 }
 async function readHostTelemetryConnection(remoteRoot) {
   const record = await readConnectionRecord(remoteRoot);
   if (!record) return null;
-  const { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost: inventoryHost2, metricsIntervalMs, eventLoopDelayResolutionMs } = record;
-  const value = { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost: inventoryHost2, metricsIntervalMs, eventLoopDelayResolutionMs };
+  const { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost: inventoryHost2, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs } = record;
+  const value = { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost: inventoryHost2, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs };
   return value;
 }
 async function readHostInventoryConnection(remoteRoot) {
@@ -44169,7 +44206,7 @@ async function statusHostTelemetryRelay(remoteRoot) {
     relayReady: Boolean(connection && relay?.State?.Running === true),
     capsuleCoverage: "not-configured",
     backendVerification: "unavailable",
-    ...connection ? { endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} } : {}
+    ...connection ? { ...connection.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}, endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} } : {}
   };
 }
 async function connectHostTelemetryRelay(remoteRoot, network, input, host) {
@@ -44186,7 +44223,7 @@ async function connectHostTelemetryRelay(remoteRoot, network, input, host) {
     const previousConfig = previous ? await readProtected(files.config) : null;
     const previousCredential = previous ? await readProtected(files.credential) : null;
     const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-    const descriptor = { inventory: { generation: randomBytes2(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...connection.caPem ? { caPem: connection.caPem } : {} }, schemaVersion: 1, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: (/* @__PURE__ */ new Date()).toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} };
+    const descriptor = { inventory: { generation: randomBytes2(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...connection.caPem ? { caPem: connection.caPem } : {} }, schemaVersion: 1, ...connection.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: (/* @__PURE__ */ new Date()).toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} };
     await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 420);
     await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}
 `, 384);
@@ -44625,6 +44662,7 @@ function hostedTelemetryConfig(connection, capsule) {
   if (!connection || capsule.telemetry?.disabled === true) return null;
   if (connection.internalEndpoint !== "http://sporades-telemetry:4318/") throw new Error("Invalid Host Telemetry relay endpoint.");
   return {
+    ...connection.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {},
     endpoint: connection.internalEndpoint,
     tls: { mode: "loopback" },
     serviceName: `${capsule.domain}/${capsule.subname}`,
