@@ -1,6 +1,8 @@
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
+import type { RuntimeWebSocketOperation, RuntimeWebSocketTelemetry, WebSocketOperationOutcome } from "./runtime-telemetry.js";
+import { withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
 import { WithImplicitCoercion } from "buffer";
 import { BinaryLike, KeyObject } from "node:crypto";
 // `createHmac` left this line with the S3 signing path in batch 6: `s3Hmac` was its only remaining
@@ -5144,11 +5146,12 @@ export async function runClientAccessKeyOperation(database: LooseRecord, auth: L
 // seconds. Ping well inside that window so idle pages keep their socket; a
 // ping still unanswered at the next heartbeat marks the peer gone.
 const WEBSOCKET_HEARTBEAT_MS = 30_000;
+const untracedWebSocketOperation: RuntimeWebSocketOperation = { run: withoutRuntimeRequestIdentity, end: () => {} };
 
 export function createWebSocketHub(
   getDatabase: () => any,
   trustedRefresh: TrustedRefreshTransport | null = null,
-  options: { heartbeatMs?: number } = {},
+  options: { heartbeatMs?: number; telemetry?: RuntimeWebSocketTelemetry } = {},
 ) {
   const heartbeatMs = options.heartbeatMs ?? WEBSOCKET_HEARTBEAT_MS;
   const clients = new Set<any>();
@@ -5159,6 +5162,28 @@ export function createWebSocketHub(
   const maxConnectionTokens = 4_096;
   let journeyExpiryTimer: any = null;
   let journeyDisableRequests = 0;
+  const queryOperations = new WeakMap<object, RuntimeWebSocketOperation>();
+
+  function operationOutcome(error: any): WebSocketOperationOutcome {
+    if (!error) return "success";
+    return ["UNAUTHENTICATED", "FORBIDDEN", "DENIED", "REAUTHENTICATION_REQUIRED"].includes(error.code) ? "denied" : "error";
+  }
+
+  function startOperation(client: LooseRecord, type: "query" | "mutation", name: unknown, traceparent?: unknown): RuntimeWebSocketOperation {
+    if (!options.telemetry || client.socket.destroyed || client.closing) return untracedWebSocketOperation;
+    const database = getDatabase();
+    const declared = (type === "query" ? database.queries : database.mutations)?.some((handler: LooseRecord) => handler.name === name)
+      || (type === "query" && (name === "ctx.env" || database.schema?.tables?.some((table: LooseRecord) => table.name === name)))
+      || (type === "mutation" && typeof name === "string" && (resolveTableForAddMutation(database.schema, name) || resolveTableForUpdateMutation(database.schema, name)));
+    let operation: RuntimeWebSocketOperation;
+    try { operation = options.telemetry.startOperation(type, name, Boolean(declared), traceparent); }
+    catch { return untracedWebSocketOperation; }
+    client.telemetryOperations.add(operation);
+    return { run: operation.run, end(outcome) {
+      client.telemetryOperations.delete(operation);
+      try { operation.end(outcome); } catch { /* Instrumentation cannot change dispatch. */ }
+    } };
+  }
 
   return {
     createConnectionToken(currentToken?: string) {
@@ -5227,8 +5252,11 @@ export function createWebSocketHub(
         lastFrameAt: Date.now(),
         pingSentAt: null,
         heartbeat: null,
+        telemetryOperations: options.telemetry ? new Set<RuntimeWebSocketOperation>() : null,
       };
       clients.add(client);
+      let connectionClosed: (() => void) | undefined;
+      try { connectionClosed = options.telemetry?.connectionOpened(); } catch {}
       const unanswered = () => client.pingSentAt !== null && client.lastFrameAt < client.pingSentAt;
       client.heartbeat = setInterval(() => {
         if (client.closing || socket.destroyed) return;
@@ -5248,7 +5276,17 @@ export function createWebSocketHub(
         client.buffer = Buffer.concat([client.buffer, chunk]);
         drainWebSocketFrames(client, (message: any) => enqueueClientMessage(client, message));
       });
+      let removed = false;
       const removeClient = () => {
+        if (removed) return;
+        removed = true;
+        try { connectionClosed?.(); } catch {}
+        if (client.telemetryOperations) {
+          for (const operation of client.telemetryOperations) {
+            try { operation.end("cancelled"); } catch {}
+          }
+          client.telemetryOperations.clear();
+        }
         clearInterval(client.heartbeat);
         clients.delete(client);
         trustedRefresh?.disconnected(client.id);
@@ -5256,6 +5294,7 @@ export function createWebSocketHub(
         client.journeySubscriptions.clear();
         client.journey = null;
       };
+      client.remove = removeClient;
       socket.on("close", removeClient);
       socket.on("error", removeClient);
     },
@@ -5263,8 +5302,10 @@ export function createWebSocketHub(
       if (journeyExpiryTimer !== null) getDatabase().clock.clearTimer(journeyExpiryTimer);
       journeyExpiryTimer = null;
       for (const client of clients) {
-        trustedRefresh?.disconnected(client.id);
         closeWebSocketClient(client);
+        // Settle accounting before final export; socket close/error callbacks
+        // can arrive after shutdown has already collected its metrics.
+        client.remove();
       }
       clients.clear();
       journeys.clear();
@@ -5689,6 +5730,7 @@ export function createWebSocketHub(
 
     if (message.type === "query.subscribe") {
       const queryName = message.query ?? message.name;
+      const operation = startOperation(client, "query", queryName, message.traceparent);
       const validId = (typeof message.id === "string" && message.id.length > 0) || (typeof message.id === "number" && Number.isFinite(message.id));
       if (!validId || typeof queryName !== "string" || queryName.length === 0) {
         sendJson(client, {
@@ -5700,6 +5742,7 @@ export function createWebSocketHub(
             hint: "Use a string or numeric subscription ID and a non-empty query name.",
           },
         });
+        operation.end("error");
         return;
       }
       let args;
@@ -5713,6 +5756,7 @@ export function createWebSocketHub(
           data: null,
           error: invalidQueryArgumentsError(),
         });
+        operation.end("error");
         return;
       }
       if (!message.query && args.length > 0) {
@@ -5723,12 +5767,15 @@ export function createWebSocketHub(
           data: null,
           error: invalidQueryArgumentsError(),
         });
+        operation.end("error");
         return;
       }
       const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
+      const previous = client.subscriptions.get(message.id);
+      if (previous) queryOperations.get(previous)?.end("cancelled");
       client.subscriptions.set(message.id, subscription);
       database.__notifyJobStateQueries = refreshQueries;
-      void sendQueryResult(client, subscription, (error: any) => sendUnhandledMessageError(client, rawMessage, error));
+      void sendQueryResult(client, subscription, (error: any) => sendUnhandledMessageError(client, rawMessage, error), operation);
       return;
     }
 
@@ -5748,6 +5795,8 @@ export function createWebSocketHub(
         });
         return;
       }
+      const subscription = client.subscriptions.get(subscriptionId);
+      if (subscription) queryOperations.get(subscription)?.end("cancelled");
       const removed = client.subscriptions.delete(subscriptionId);
       sendJson(client, {
         id: message.id ?? null,
@@ -6161,14 +6210,19 @@ export function createWebSocketHub(
 
     if (message.type === "mutation.run") {
       const mutationName = message.mutation ?? message.name;
-      const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
-        sessionToken: client.session.token,
+      const operation = startOperation(client, "mutation", mutationName, message.traceparent);
+      return operation.run(async () => {
+        try {
+          const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
+            sessionToken: client.session.token,
+          });
+          sendJson(client, formatMutationResult(message, mutationName, result));
+          if (result.ok && mutationResultsWithWrites.has(result)) {
+            setTimeout(refreshQueries, 0);
+          }
+          operation.end(operationOutcome(result.error));
+        } catch (error) { operation.end(operationOutcome(error)); throw error; }
       });
-      sendJson(client, formatMutationResult(message, mutationName, result));
-      if (result.ok && mutationResultsWithWrites.has(result)) {
-        setTimeout(refreshQueries, 0);
-      }
-      return;
     }
 
     if (message.type === "app.send") {
@@ -6252,34 +6306,42 @@ export function createWebSocketHub(
     });
   }
 
-  async function sendQueryResult(client: LooseRecord, subscription: LooseRecord, onError: (error: any) => void) {
-    const generation = (subscription.generation ?? 0) + 1;
-    subscription.generation = generation;
-    try {
-      const database = getDatabase();
-      const readTables = new Set<string>();
-      const result: any = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
-        sessionToken: client.session.token,
-      }));
-      // A failed run may not have read what a successful one would, so it re-runs on every refresh.
-      if (subscription.generation === generation) subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
-      const data =
-        subscription.style === "direct"
-          ? (result.data ?? result.rows)
-          : { rows: result.data ?? result.rows };
-      if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
-      sendJson(client, {
-        id: subscription.id,
-        type: "query.result",
-        query: subscription.name,
-        data,
-        error: result.error,
-      });
-    } catch (error) {
-      if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
-      subscription.readTables = null;
-      try { onError(error); } catch { /* A closed transport already owns cleanup. */ }
-    }
+  async function sendQueryResult(client: LooseRecord, subscription: LooseRecord, onError: (error: any) => void, operation = startOperation(client, "query", subscription.name)) {
+    queryOperations.get(subscription)?.end("cancelled");
+    queryOperations.set(subscription, operation);
+    return operation.run(async () => {
+      const generation = (subscription.generation ?? 0) + 1;
+      subscription.generation = generation;
+      try {
+        const database = getDatabase();
+        const readTables = new Set<string>();
+        const result: any = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
+          sessionToken: client.session.token,
+        }));
+        // A failed run may not have read what a successful one would, so it re-runs on every refresh.
+        if (subscription.generation === generation) subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
+        const data =
+          subscription.style === "direct"
+            ? (result.data ?? result.rows)
+            : { rows: result.data ?? result.rows };
+        if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) { operation.end("cancelled"); return; }
+        sendJson(client, {
+          id: subscription.id,
+          type: "query.result",
+          query: subscription.name,
+          data,
+          error: result.error,
+        });
+        operation.end(operationOutcome(result.error));
+      } catch (error) {
+        operation.end(operationOutcome(error));
+        if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
+        subscription.readTables = null;
+        try { onError(error); } catch { /* A closed transport already owns cleanup. */ }
+      } finally {
+        if (queryOperations.get(subscription) === operation) queryOperations.delete(subscription);
+      }
+    });
   }
 
   function refreshQueries() {

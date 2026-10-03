@@ -66,6 +66,13 @@ they appear in structured log data. Request method and path may be recorded, but
 raw request bodies are not logged by default. Each log event is capped to a
 bounded payload size, with oversized structured data marked as truncated.
 
+HTTP failure logging is best effort: malformed request targets and log sink
+failures cannot prevent the HTTP error response or restart the runtime. The
+`http.request.failed` event records a path capped at 1,024 characters, with
+control characters replaced and URL credentials, query strings, and fragments
+omitted. Repeated leading slashes such as `//` remain literal route paths;
+invalid targets such as `/%` receive a 400 response.
+
 Within one HTTP request, `request.id` is a stable runtime UUID across async
 log calls, including when telemetry export is disabled. An explicitly supplied
 request ID and existing correlation data remain intact. With telemetry enabled,

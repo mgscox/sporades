@@ -84,8 +84,7 @@ export function activeRuntimeLogIdentity(): { requestId: string; traceId: string
   return { requestId: scope.requestId, traceId, spanId };
 }
 
-function validatedRemoteParent(request: IncomingMessage) {
-  const value = request.headers.traceparent;
+function validatedRemoteParentValue(value: unknown) {
   if (typeof value !== "string" || value.length !== 55) return ROOT_CONTEXT;
   const match = /^00-([a-f0-9]{32})-([a-f0-9]{16})-(00|01)$/.exec(value);
   if (!match || /^0+$/.test(match[1]) || /^0+$/.test(match[2])) return ROOT_CONTEXT;
@@ -96,6 +95,29 @@ function validatedRemoteParent(request: IncomingMessage) {
     isRemote: true,
   });
 }
+
+function validatedRemoteParent(request: IncomingMessage) {
+  return validatedRemoteParentValue(request.headers.traceparent);
+}
+
+export type WebSocketOperationOutcome = "success" | "denied" | "error" | "cancelled";
+export type RuntimeWebSocketOperation = {
+  run<T>(handle: () => T): T;
+  end(outcome: WebSocketOperationOutcome): void;
+};
+export type RuntimeWebSocketTelemetry = {
+  connectionOpened(): () => void;
+  startOperation(type: "query" | "mutation", name: unknown, declared: boolean, traceparent?: unknown): RuntimeWebSocketOperation;
+};
+
+const disabledWebSocketOperation: RuntimeWebSocketOperation = {
+  run: withoutRuntimeRequestIdentity,
+  end: () => {},
+};
+const disabledWebSocketTelemetry: RuntimeWebSocketTelemetry = {
+  connectionOpened: () => () => {},
+  startOperation: () => disabledWebSocketOperation,
+};
 
 function exportFailureReason(error: unknown): Extract<TelemetryExportDiagnostic, { event: "telemetry.export.failed" }>["reason"] {
   const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
@@ -125,7 +147,7 @@ function createProfileExporters(traceOptions: ConstructorParameters<typeof OTLPT
 }
 
 export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | null, onDiagnostic?: (diagnostic: TelemetryExportDiagnostic) => void | Promise<void>) {
-  if (!config) return { bindJobQueue: (_database: any) => {}, run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => runtimeRequestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => {} };
+  if (!config) return { websocket: disabledWebSocketTelemetry, bindJobQueue: (_database: any) => {}, run: (_request: IncomingMessage, _response: ServerResponse, _endpoints: readonly EndpointLike[], handle: () => unknown) => runtimeRequestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => {} };
   if (config.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1000)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
   const url = new URL(config.endpoint);
   const endpoint = new URL("/v1/traces", url).toString();
@@ -204,12 +226,20 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
       { instrumentName: "http.server.request.count", aggregationCardinalityLimit: 512 },
       { instrumentName: "http.server.active_requests", aggregationCardinalityLimit: 128 },
       { instrumentName: "http.server.request.duration", aggregationCardinalityLimit: 512, aggregation: { type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } },
+      { instrumentName: "sporades.websocket.operation.count", aggregationCardinalityLimit: 1024 },
+      { instrumentName: "sporades.websocket.operation.duration", aggregationCardinalityLimit: 1024, aggregation: { type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] } } },
     ],
   });
   const meter = meterProvider.getMeter("sporades-runtime-http", "1");
   const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
   const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
   const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
+  const websocketMeter = meterProvider.getMeter("sporades-runtime-websocket", "1");
+  const websocketCount = websocketMeter.createCounter("sporades.websocket.operation.count", { unit: "1" });
+  const websocketDuration = websocketMeter.createHistogram("sporades.websocket.operation.duration", { unit: "s" });
+  let connectionCount = 0;
+  websocketMeter.createObservableGauge("sporades.websocket.active_connections", { unit: "1" })
+    .addCallback(result => result.observe(connectionCount));
   const processMeter = meterProvider.getMeter("sporades-runtime-process", "1");
   const gcKinds = new Map([
     [performanceConstants.NODE_PERFORMANCE_GC_MAJOR, "major"],
@@ -314,13 +344,54 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     spanProcessors: [processor],
   });
   const tracer = provider.getTracer("sporades-runtime-http", "1");
+  const websocketTracer = provider.getTracer("sporades-runtime-websocket", "1");
+  const websocketNames = new Set<string>();
+  const websocketEnds = new Set<(outcome: WebSocketOperationOutcome) => void>();
+  let closing = false;
+  const websocket: RuntimeWebSocketTelemetry = {
+    connectionOpened() {
+      if (closing) return () => {};
+      connectionCount++;
+      let closed = false;
+      return () => { if (!closed) { closed = true; connectionCount--; } };
+    },
+    startOperation(type, rawName, declared, traceparent) {
+      if (closing) return disabledWebSocketOperation;
+      let name = declared && typeof rawName === "string" && /^[a-zA-Z_][a-zA-Z0-9_.:-]{0,79}$/.test(rawName) ? rawName : "__unknown";
+      if (!websocketNames.has(name)) {
+        if (websocketNames.size < 64) websocketNames.add(name);
+        else name = "__other";
+      }
+      const labels = { "sporades.websocket.operation.type": type, "sporades.websocket.operation.name": name };
+      const started = process.hrtime.bigint();
+      let span: Span | undefined;
+      try { span = websocketTracer.startSpan(`websocket.${type}`, { kind: SpanKind.SERVER, attributes: labels }, validatedRemoteParentValue(traceparent)); }
+      catch { /* Metrics and business work remain independent of trace creation. */ }
+      let ended = false;
+      const end = (outcome: WebSocketOperationOutcome) => {
+        if (ended) return;
+        ended = true;
+        websocketEnds.delete(end);
+        const terminalLabels = { ...labels, "sporades.websocket.outcome": outcome };
+        try { websocketCount.add(1, terminalLabels); } catch {}
+        try { websocketDuration.record(Number(process.hrtime.bigint() - started) / 1e9, terminalLabels); } catch {}
+        try {
+          span?.setAttribute("sporades.websocket.outcome", outcome);
+          if (outcome !== "success") span?.setStatus({ code: SpanStatusCode.ERROR });
+          span?.end();
+        } catch { /* Telemetry cannot change operation settlement. */ }
+      };
+      websocketEnds.add(end);
+      const scope = { requestId: randomUUID(), span, tracer: websocketTracer, isOpen: () => !ended && !closing };
+      return { run: handle => runtimeRequestScope.run(scope, handle), end };
+    },
+  };
   const jobMeter = meterProvider.getMeter("sporades-runtime-jobs", "1");
   const jobDuration = jobMeter.createHistogram("sporades.job.execution.duration", { unit: "s" });
   const jobRetries = jobMeter.createCounter("sporades.job.retry.count", { unit: "1" });
   const jobFailures = jobMeter.createCounter("sporades.job.failure.count", { unit: "1" });
   const queueDepth = jobMeter.createObservableGauge("sporades.job.queue.depth", { unit: "1" });
   const queueAge = jobMeter.createObservableGauge("sporades.job.queue.oldest_pending_age", { unit: "s" });
-  let closing = false;
   let jobQueueDatabase: any;
   let reading = false;
   const seenJobNames = new Set<string>();
@@ -344,6 +415,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     finally { reading = false; }
   }, [queueDepth, queueAge]);
   return {
+    websocket,
     /** Internal generated-runtime seam. Only declared names can become labels. */
     bindJobQueue(database: any) {
       const names = new Set<string>();
@@ -490,6 +562,7 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     },
     async shutdown() {
       if (closing) return;
+      for (const end of websocketEnds) end("cancelled");
       closing = true;
       gcObserver.disconnect();
       delayMonitorStoppedAt = performance.now();
