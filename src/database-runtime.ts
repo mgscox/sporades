@@ -176,6 +176,7 @@ import { normalizeDateValue } from "./stored-value-coding.js";
 import { createUserPreferencesTables } from "./user-preferences-runtime.js";
 import { createTeamTables } from "./teams-runtime.js";
 import { createTeamBillingTables } from "./team-billing-runtime.js";
+import { createDatabaseTelemetry, databaseTelemetry, withDatabaseSpan } from "./database-telemetry.js";
 
 // Synchronous access to two Node builtins without an import — see the header, and ADR-0042. `process`
 // is a global in both places this module runs: `dist/database-runtime.js` loaded as an ES module, and
@@ -194,7 +195,7 @@ type RuntimeEnv = Record<string, string | undefined>;
 // A connection can queue SQL statements, but it cannot safely interleave the BEGIN/work/COMMIT
 // sequences of two callers. Adapters backed by one connection use this gate for every transaction
 // mode, preserving the transaction boundary that the runtime has already chosen (ADR-0026).
-function createConnectionTransactionGate() {
+function createConnectionTransactionGate(engine: "sqlite" | "postgres" | "libsql") {
   const AsyncLocalStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
   const transactionOwnership = new AsyncLocalStorage();
   const transactionOwner = Object.freeze({});
@@ -271,7 +272,12 @@ function createConnectionTransactionGate() {
 
   const whenIdle = async () => await transactionTail.catch(() => {});
 
-  return { runOperation, runTransaction, whenIdle, isBusy: () => transactionWaiters > 0 };
+  return {
+    runOperation,
+    runTransaction: <Value>(operation: () => Value, options: { signal?: AbortSignal } = {}) =>
+      withDatabaseSpan(engine, "TRANSACTION", undefined, () => runTransaction(operation, options)),
+    whenIdle, isBusy: () => transactionWaiters > 0,
+  };
 }
 
 async function rejectNestedTransactionScope(): Promise<never> {
@@ -302,7 +308,8 @@ function createTransactionScopedAdapter(adapter: LooseRecord, operations: LooseR
       "Do not retain ctx.db operations after the trusted handler has completed.",
     );
   };
-  const operationOwner = typeof operations.exec === "function" ? operations : adapter;
+  const suppliedOperations = typeof operations.exec === "function" ? operations : adapter;
+  const operationOwner = (owner as any)[databaseTelemetry]?.operations(suppliedOperations) ?? suppliedOperations;
   const exec = operationOwner.exec;
   const prepare = operationOwner.prepare;
   const guardedOperations = {
@@ -1571,6 +1578,7 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
     // unawaited `exec("BEGIN")` leaves the enclosing `try`/`catch` unable to see an asynchronous
     // rejection, and the COMMIT fires before the migration it is meant to enclose has finished.
     migrateAppSchema(schema: LooseRecord) {
+      (this as any)[databaseTelemetry]?.registerTables(schema);
       return this.withTransaction((transaction: LooseRecord) => migrateAppSchemaInTransaction(transaction, schema));
     },
     createAppTable(table: { name: any; }, tableName = table.name) {
@@ -1769,7 +1777,8 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
   let resourceConnectionQuarantined = false;
   let resourceConnectionDisposed = false;
   const dialect = sqliteDatabaseDialect();
-  const connectionGate = createConnectionTransactionGate();
+  const connectionGate = createConnectionTransactionGate("sqlite");
+  const telemetry = createDatabaseTelemetry("sqlite");
   const runDirectly = (operation: () => any) => operation();
   const discardUncertainResourceConnection = () => {
     // A COMMIT acknowledgement can be lost after SQLite has durably decided.
@@ -1790,7 +1799,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       if (resourceConnectionQuarantined) throw resourceError("RESOURCE_COMMIT_UNKNOWN");
       return operation();
     };
-    return {
+    return telemetry.operations({
     exec(sql: string) {
       return run(() => useConnection(() => {
         const result = connection.exec(sql);
@@ -1820,7 +1829,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         },
       };
     },
-  };
+  });
   };
 
   // SQLite is an engine like the others now, not the thing the others borrow from: what it supplies
@@ -1961,6 +1970,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
   if (!options.readOnly) {
     adapter.exec("PRAGMA journal_mode = WAL");
   }
+  Object.defineProperty(adapter, databaseTelemetry, { value: telemetry });
   return adapter;
 }
 
@@ -1976,7 +1986,8 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
   let client = await createPostgresConnection(url);
   let needsReconnect = false;
   let reconnecting: Promise<void> | undefined;
-  const connectionGate = createConnectionTransactionGate();
+  const connectionGate = createConnectionTransactionGate("postgres");
+  const telemetry = createDatabaseTelemetry("postgres");
   const runDirectly = (operation: () => any) => operation();
   let closed = false;
   const dialect = postgresDatabaseDialect();
@@ -2158,7 +2169,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     return await client.query(postgresInterpolate(sql, params));
   };
 
-  const createOperations = (run: (operation: () => any) => any) => ({
+  const createOperations = (run: (operation: () => any) => any) => telemetry.operations({
     exec(sql: string) {
       return run(() => rawQuery(sql).then((): undefined => undefined));
     },
@@ -2358,6 +2369,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     },
   };
 
+  Object.defineProperty(adapter, databaseTelemetry, { value: telemetry });
   return adapter;
 }
 
@@ -2901,7 +2913,8 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
   const authToken = typeof options === "object" ? options.authToken : null;
   let closed = false;
   const activeTransactions = new Set<any>();
-  const connectionGate = createConnectionTransactionGate();
+  const connectionGate = createConnectionTransactionGate("libsql");
+  const telemetry = createDatabaseTelemetry("libsql");
   const runDirectly = (operation: () => any) => operation();
 
   // libSQL speaks SQLite's SQL, so it takes SQLite's dialect. That is a statement about the two
@@ -2912,7 +2925,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
   // where node:sqlite hands back JavaScript directly.
   const normalization = libsqlRowNormalization();
 
-  const createOperations = (transaction: any = null, run: (operation: () => any) => any = runDirectly) => ({
+  const createOperations = (transaction: any = null, run: (operation: () => any) => any = runDirectly) => telemetry.operations({
     exec(sql: string) {
       assertLibsqlOpen(closed);
       const request = libsqlHasMultipleStatements(sql)
@@ -3039,6 +3052,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     },
   };
 
+  Object.defineProperty(adapter, databaseTelemetry, { value: telemetry });
   return adapter;
 }
 

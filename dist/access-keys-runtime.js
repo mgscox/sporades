@@ -1,3 +1,4 @@
+import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { accessKeyGrantsSatisfyScopes, scopeGrantMatches } from "./auth-admission.js";
 import { ACCESS_KEY_CLIENT_ADDRESS_HEADER, ACCESS_KEY_GRANT_BYTE_LIMIT, ACCESS_KEY_GRANT_LIMIT, ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT, } from "./access-key-contract.js";
 import { chainMaybePromise } from "./maybe-promise.js";
@@ -423,6 +424,9 @@ export function readAccessKeyAuthorization(request) {
     return { token: matched[1], selector: matched[2], verifier: matched[3] };
 }
 export async function resolveAccessKeyCredential(database, request, sessionToken) {
+    return traceRuntimeOperation("sporades.auth.access_key.resolve", () => resolveAccessKeyCredentialOperation(database, request, sessionToken), result => result ? "success" : "denied");
+}
+async function resolveAccessKeyCredentialOperation(database, request, sessionToken) {
     const source = accessKeySourceBucket(database, request);
     assertAccessKeyFailureLimit(database, "source", source, 30, 60_000);
     let parsed;

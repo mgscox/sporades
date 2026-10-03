@@ -64,6 +64,7 @@
 // `import … from "node:crypto"` and esbuild renames one side. That is the defect batch 2 shipped
 // with `randomUUID`, recorded in ADR-0041, and the guard in
 // `test/server-bundle-free-bindings.test.js` refuses it by name.
+import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { commandError } from "./runtime-errors.js";
 // Batch 5. The one name this domain needs from the user-preferences module, and the reason that
 // module was made its own batch and run early: `migrateAnonymousPreferences` is what kept the seven
@@ -155,6 +156,9 @@ export function readEndpointSessionToken(headers, query) {
     return headers["x-sporades-session-token"] ?? null;
 }
 export function requireUserAuth(context, options = {}) {
+    return traceRuntimeOperation("sporades.auth.admit", () => requireUserAuthOperation(context, options));
+}
+function requireUserAuthOperation(context, options = {}) {
     const linked = normalizeRequireUserAuthOptions(options).linked;
     const auth = context?.auth;
     if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
@@ -2285,6 +2289,9 @@ export async function refreshSessionOnAdapter(sqlite, token) {
     return expiresAt;
 }
 export async function resolveAnonymousSession(database, sessionToken) {
+    return traceRuntimeOperation("sporades.auth.session.resolve", () => resolveAnonymousSessionOperation(database, sessionToken));
+}
+async function resolveAnonymousSessionOperation(database, sessionToken) {
     if (sessionToken) {
         const existing = await database.adapter.readAuthSessionWithUser(sessionToken);
         if (existing) {

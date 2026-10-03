@@ -104,6 +104,7 @@
 // appear in it. `Buffer` and `URL` are globals.
 
 import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
+import { traceRuntimeOperation } from "./runtime-request-context.js";
 import type { HelperError } from "./runtime-errors.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
@@ -621,7 +622,7 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
       (Array.isArray(request.rawHeaders) && request.rawHeaders.some((name, index) => index % 2 === 0 && String(name).toLowerCase() === "authorization"));
     let admittedWithAccessKey = false;
     try {
-      let auth;
+      let auth: LooseRecord;
       let credential;
       if (accessKeyPolicy && hasAuthorization) {
         const admission = await resolveAccessKeyCredential(database, request, token ?? null);
@@ -629,16 +630,18 @@ export async function handleFileHttpRoute(database: LooseRecord, request: Incomi
         auth = admission.auth;
         credential = admission.credential;
         admittedWithAccessKey = true;
-        if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
-          const error: any = commandError("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
-          error.sporadesAuthDenialLogData = {
-            requirement: "file-access-key-scopes",
-            handler: { kind: "file", path: target.pathname },
-            actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
-          };
-          error.sporadesAccessKeyFailure = "forbidden";
-          throw error;
-        }
+        traceRuntimeOperation("sporades.auth.admit", () => {
+          if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
+            const error: any = commandError("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
+            error.sporadesAuthDenialLogData = {
+              requirement: "file-access-key-scopes",
+              handler: { kind: "file", path: target.pathname },
+              actor: { userId: auth.userId, provider: auth.provider, isAuthenticated: true, isGuest: false },
+            };
+            error.sporadesAccessKeyFailure = "forbidden";
+            throw error;
+          }
+        });
         emitAccessKeyAdmittedAudit(database, { kind: "file", auth, credential }, admission.record);
         await recordAccessKeyUsage(database, admission);
       } else {
@@ -769,7 +772,7 @@ function writeNotFound(response: { writeHead: (arg0: number, arg1: { "content-ty
 
 async function sendFileHttpResponse(database: LooseRecord, response: any, row: LooseRecord, options: { accessKey?: boolean } = {}) {
   try {
-    const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
+    const bytes = await traceRuntimeOperation("sporades.file.read", () => database.fileStorage.readFileVersion({ fileId: row.id, version: row.version }));
     response.writeHead(200, {
       "content-type": contentTypeForFile(row.type),
       "cache-control": options.accessKey ? "private, no-store" : "private, max-age=31536000, immutable",
@@ -837,7 +840,7 @@ async function sendEndpointFileAttachmentResponse(database: LooseRecord, respons
       writeOpaqueAttachmentDenial(response);
       return;
     }
-    const stream = await database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version });
+    const stream = await traceRuntimeOperation("sporades.file.stream", () => database.fileStorage.openFileVersionStream({ fileId: row.id, version: row.version }));
     response.removeHeader?.("access-control-allow-origin");
     response.removeHeader?.("access-control-allow-credentials");
     response.removeHeader?.("access-control-expose-headers");

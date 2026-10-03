@@ -54,6 +54,7 @@
       "src/client-toolchain.ts",
       "src/client.ts",
       "src/database-runtime.ts",
+      "src/database-telemetry.ts",
       "src/deploy-files.ts",
       "src/dev-clamav-sidecar.ts",
       "src/email-events-config.ts",
@@ -119,7 +120,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "770cbe6d0fc3862c359297cde47a2b5ba58cc42f26d8035e8e43c936e09594f8"
+    "digest": "2292f64af145e31519855e6bf64a9b0fe2b57a1bd5535d571fdbfaf41618416d"
   },
   "outputs": {
     "files": [
@@ -305,6 +306,10 @@
       "dist/database-runtime.d.ts.map",
       "dist/database-runtime.js",
       "dist/database-runtime.js.map",
+      "dist/database-telemetry.d.ts",
+      "dist/database-telemetry.d.ts.map",
+      "dist/database-telemetry.js",
+      "dist/database-telemetry.js.map",
       "dist/deploy-files.d.ts",
       "dist/deploy-files.d.ts.map",
       "dist/deploy-files.js",
@@ -527,6 +532,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "73965dde14d74b922f17c21de8527cc8de2fee2b5ec0ab77fad3a927948ce3f4"
+    "digest": "cd599f88efef9f43a41198de1d1b7317cf76f40e157dc55cc1c5a0e6c03ffa0f"
   }
 }

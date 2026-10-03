@@ -280,7 +280,11 @@ The following work is intentionally deferred:
   an exact Host-scoped interface, durable outbox and independent periodic worker.
   Central acknowledgements survive sender outages; manual import/export is recovery
   only. Probe scheduling and absence-alert delivery remain separate work.
-  Host OS pressure and Caddy Prometheus collection are available through the Host relay; external container-resource collection is out of scope, and operation spans remain deferred under
+  Host OS pressure and Caddy Prometheus collection are available through the Host relay.
+  Internal Database adapter statement and transaction spans explain database time
+  within sampled HTTP requests for SQLite, PostgreSQL and libSQL, with bounded
+  metadata and no SQL, parameters, rows or exception details. External
+  container-resource collection is out of scope; other operation spans remain deferred under
   [automatic monitoring issue #107](https://github.com/mgscox/sporades/issues/107).
   Centralized JSON logging remains deferred in
   `.scratch/post-v2-platform-hardening-and-ops/issues/05-centralize-json-server-logging.md`.
