@@ -651,6 +651,15 @@ packages the Host-encrypted envelope for the Hosted Capsule release.
 
 ## Verification checklist
 
+Bootstrap installs the independent lifecycle-inventory timer through the common
+Host installation path. Configure exact Host authority on the Monitoring server,
+set a Telemetry profile's `--inventory-credential-env` reference, and connect the
+Host to activate automatic reconciliation. Verify `inventory.pending` becomes
+false and `inventory.reconcilerInstalled` is true in `host telemetry status --json`.
+Existing connections require helper upgrade and reconnect to assign the stable
+inventory identity. See [lifecycle inventory](../reference/lifecycle-inventory.md)
+for protected configuration, readiness dependencies, outage recovery and removal.
+
 - `ssh "$SPORADES_SSH_TARGET" "node --version"` returns Node.js `>=22.13 <23` or `>=24`.
 - `ssh "$SPORADES_SSH_TARGET" "docker --version && caddy version"` succeeds.
 - `ssh "$SPORADES_SSH_TARGET" "fail2ban-client status sshd"` succeeds.

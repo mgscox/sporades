@@ -2,6 +2,10 @@
 
 Logs, database inspection, Container sessions, Hosted Capsules, Doctor, workflows, and troubleshooting.
 
+Connected Hosts automatically synchronize [lifecycle inventory](./lifecycle-inventory.md)
+with durable pending state and exact Host-scoped recovery. Probe scheduling and
+absence-alert delivery remain separate work.
+
 [Back to the feature reference index](../guide/reference.md).
 
 ## Inspect Logs and Data

@@ -5,8 +5,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commandError } from './cli-support.js';
 
-const STACK_SCHEMA = 1;
-const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'setup.mjs', 'smoke.mjs'];
+const STACK_SCHEMA = 2;
+const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'setup.mjs', 'smoke.mjs'];
 
 function prerequisite() {
   if (!['arm64', 'x64'].includes(process.arch) || !['linux', 'darwin'].includes(process.platform)) {

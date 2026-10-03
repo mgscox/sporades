@@ -7,6 +7,8 @@ export type TelemetryProfile = {
         caFile?: string;
     };
     credentialEnv?: string;
+    inventoryCredentialEnv?: string;
+    inventoryHost?: string;
     metricsIntervalMs?: number;
     eventLoopDelayResolutionMs?: number;
 };

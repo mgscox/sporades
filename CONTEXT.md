@@ -516,6 +516,17 @@ _Avoid_: public adapter hook, SQL profiler, application instrumentation API
 Connecting a Host to the shared relay selects telemetry for all current and future Hosted Capsules by default. The Host registry stores each Capsule's explicit opt-out. Every start, restart, push and rollback resolves the Host connection and opt-out into a Host-owned launch descriptor. The protected runtime health probe confirms the running configuration; a saved setting alone does not prove instrumentation. Dev and local Container sessions keep their separate opt-in selection.
 _Avoid_: project-owned Hosted telemetry policy, per-Capsule relay
 
+### Lifecycle inventory
+
+The Host registry supplies versioned expected Capsule identities, lifecycle states
+and bare application probe origins to a Host-scoped authenticated Monitoring
+interface. A protected Host outbox and independent systemd timer reconcile after
+outages/reboots without workstation involvement or monitoring HTTP on Capsule
+operation paths. Central acknowledgements persist independently of sender contact;
+stopped/deleted/opted-out states change expectations, while disappearance does not.
+Manual import/export is recovery only. Probe scheduling and alert delivery remain
+separate work. See `docs/reference/lifecycle-inventory.md`.
+
 **sporades.json**:
 The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, enabled auth providers (or legacy auth mode), security and scheduling policy, optional payment configuration, deploy port, optional dev port override.
 _Avoid_: config file (too generic — it's the specific project config)
