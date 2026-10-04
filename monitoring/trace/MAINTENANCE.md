@@ -95,6 +95,11 @@ Copy or encrypt the completed backup using your normal protected backup
 procedure. Never put the backup under the stack directory. Its checksums provide
 integrity checking, not authenticity.
 
+A restore reinstates authentication and expected-target state from backup time.
+Keep the restored gateway private until you reapply any later credential
+revocations, reconcile current Host desired state, and verify both allowed and
+denied credentials. Snapshot checksums do not authenticate an untrusted archive.
+
 ## Restore drill
 
 Restore requires a fresh, empty target directory. Choose a unique Compose

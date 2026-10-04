@@ -67,6 +67,11 @@ an existing destination. Failed work cleans its unpublished `.partial-*` path;
 a crash can leave a protected partial path to inspect and remove only after
 confirming it is task-owned and inactive.
 
+A restore reinstates authentication and expected-target state from backup time.
+Keep the restored gateway private until you reapply any later credential
+revocations, reconcile current Host desired state, and verify both allowed and
+denied credentials. Snapshot checksums do not authenticate an untrusted archive.
+
 ## Restore procedure
 
 Restore needs a fresh empty target. It validates checksums and archive members,

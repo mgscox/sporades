@@ -29,16 +29,19 @@ test('installed CLI cold backup restores queryable history and exact inventory i
   });
   const initialized = cli(['init', '--dir', original]);
   assert.equal(initialized.status, 0, initialized.stdout + initialized.stderr);
-  const sender = action => command(process.execPath, [bin, 'monitoring', 'sender', action, '--dir', original, '--sender', 'retained-sender', ...(action === 'issue' ? ['--host', 'retained-host'] : []), '--json']);
+  const sender = (action, name = 'retained-sender', host = 'retained-host') => command(process.execPath, [bin, 'monitoring', 'sender', action, '--dir', original, '--sender', name, ...(action === 'issue' ? ['--host', host] : []), '--json']);
   assert.equal(sender('issue').status, 0);
-  const exportSender = async filename => {
+  const exportSender = async (filename, name = 'retained-sender') => {
     const out = path.join(temp, filename);
-    assert.equal(command(process.execPath, [bin, 'monitoring', 'sender', 'export', '--dir', original, '--sender', 'retained-sender', '--out', out, '--json']).status, 0);
+    assert.equal(command(process.execPath, [bin, 'monitoring', 'sender', 'export', '--dir', original, '--sender', name, '--out', out, '--json']).status, 0);
     return parseEnvironment(await readFile(out, 'utf8'));
   };
   const activeSender = await exportSender('active-sender.env');
   assert.equal(sender('rotate').status, 0);
   const pendingSender = await exportSender('pending-sender.env');
+  assert.equal(sender('issue', 'revoked-sender', 'revoked-host').status, 0);
+  const revokedSender = await exportSender('revoked-sender.env', 'revoked-sender');
+  assert.equal(sender('revoke', 'revoked-sender', 'revoked-host').status, 0);
   const inventoryToken = randomBytes(24).toString('hex');
   const environment = (await readFile(path.join(original, '.env'), 'utf8')).replace('TRACE_TLS_MODE=tls', 'TRACE_TLS_MODE=proxy').replace('TRACE_PORT=8443', 'TRACE_PORT=5680') + `INVENTORY_HOSTS='{"restore-host":"${inventoryToken}"}'\nOPERATOR_LITERAL=keep:$VALUE # exact\n`;
   await writeFile(path.join(original, '.env'), environment);
@@ -115,6 +118,7 @@ test('installed CLI cold backup restores queryable history and exact inventory i
     assert.equal((await fetch(origin + '/v1/inventory/restore-host', { headers: { authorization: 'Bearer ' + handoff.get('HOST_INVENTORY_TOKEN') } })).status, 403, 'retained inventory credentials cannot cross Host scopes');
   }
   assert.equal((await fetch(origin + '/api/traces/'  + traceId, { headers: { authorization: basic } })).status, 200);
+  assert.equal((await fetch(origin + '/v1/metrics', { method: 'POST', headers: { authorization: 'Bearer ' + revokedSender.get('TRACE_INGEST_TOKEN'), 'content-type': 'application/json' }, body: '{}' })).status, 401, 'snapshot revocation remains enforced');
   const central = await fetch(origin + '/v1/inventory/restore-host', { headers: { authorization: 'Bearer ' + inventoryToken } });
   assert.deepEqual((await central.json()).data.inventory, inventory);
   assert.equal(JSON.parse(compose(restored, metricQuery, prefix + '-restored').stdout).data.result[0].value[1], '130');
