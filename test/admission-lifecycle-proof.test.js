@@ -4,11 +4,25 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { lifecycleOwnership, removeOwnedDockerContainer, assertGenerationObservation } from './support/admission-lifecycle-proof.js';
+import { lifecycleOwnership, removeOwnedDockerContainer, assertGenerationObservation, lifecycleDockerNetworkArgs, lifecycleDockerEndpoint } from './support/admission-lifecycle-proof.js';
 
 const repo = path.resolve(new URL('..', import.meta.url).pathname);
 const scratch = path.join(repo, '.sporades/issue-73/cleanup-tests');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test('runner probes address sibling DNS while workstation probes retain loopback publication', async () => {
+  const network='sporades-proof-network-cccccccccccc';
+  const name='sporades-lifecycle-container-aaaaaaaaaaaa';
+  const calls=[];
+  const command=async args=>{calls.push(args);return '127.0.0.1:53129\n';};
+  assert.deepEqual(lifecycleDockerNetworkArgs(network),['--network',network]);
+  assert.equal(await lifecycleDockerEndpoint(command,name,network),`http://${name}:5688`,
+    'tools-container probes must not address the daemon host publication through their own loopback');
+  assert.equal(await lifecycleDockerEndpoint(command,name), 'http://127.0.0.1:53129');
+  assert.deepEqual(calls,[['port',name,'5688/tcp'],['port',name,'5688/tcp']]);
+  assert.throws(()=>lifecycleDockerNetworkArgs('bridge'),/owned per-run proof network/);
+  await assert.rejects(lifecycleDockerEndpoint(async()=> '0.0.0.0:53129',name,network),/loopback-only/);
+});
 
 async function fakeStartup(t, removal, signal) {
   await mkdir(scratch, {recursive:true});
@@ -41,6 +55,7 @@ else if(args[0]==='run') {
   const child = spawn(process.execPath, ['test/admission-lifecycle.acceptance.test.js'], {
     cwd:repo, env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,
       DOCKER_HOST:'unix:///fake-proof.sock',SPORADES_CONFIG_DIR:path.join(root,'config'),
+      SPORADES_ADMISSION_PROOF_NETWORK:'sporades-proof-network-cccccccccccc',
       SPORADES_ADMISSION_DRIVER_CHECK:'0',SPORADES_REAL_ADMISSION_LIFECYCLE:'1',SPORADES_ADMISSION_PROOF_ROOT:proof},
     stdio:['ignore','pipe','pipe'],
   });
@@ -62,6 +77,8 @@ else if(args[0]==='run') {
   for(const call of calls.filter(call=>call.args[0]==='run')) {
     const name=call.args[call.args.indexOf('--name')+1];
     assert.ok(call.ownership.some(owner=>owner.name===name&&!owner.removed), 'launch preceded durable ownership');
+    assert.equal(call.args[call.args.indexOf('--network')+1],'sporades-proof-network-cccccccccccc','Capsule must join the runner bridge');
+    assert.equal(call.args[call.args.indexOf('-p')+1],'127.0.0.1::5688','host publication must remain loopback-only');
   }
   for(const report of reports) {
     assert.equal(report.cleanup.length,1,output);
@@ -131,7 +148,7 @@ test('journal failure cannot stop removal of later owners or poison future write
   assert.deepEqual(JSON.parse(await readFile(journal,'utf8')),owners.snapshot());
 });
 
-async function fakeOuterCleanup(t, { signal, runnerRemoval = 'success', childRemoval = 'fail', lateChild = false, interruptAt = 'startup' } = {}) {
+async function fakeOuterCleanup(t, { signal, runnerRemoval = 'success', childRemoval = 'fail', networkRemoval = 'success', lateChild = false, interruptAt = 'startup' } = {}) {
   await mkdir(scratch,{recursive:true}); const root=await mkdtemp(path.join(scratch,'runner-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
   const bin=path.join(root,'bin'); await mkdir(bin); await writeFile(path.join(bin,'package.json'),'{"type":"commonjs"}');
@@ -156,6 +173,15 @@ const createChild=source=>{
 };
 if(args[0]==='context') process.stdout.write('unix:///fake-proof.sock\\n');
 else if(args[0]==='info') process.stdout.write('fake-only\\n');
+else if(args[0]==='network'&&args[1]==='create') {
+  const evidence=${JSON.stringify(path.join(root,'evidence'))};
+  const run=fs.readdirSync(evidence)[0];
+  const owner=JSON.parse(fs.readFileSync(path.join(evidence,run,'ownership.json'),'utf8')).find(owner=>owner.kind==='network'&&owner.name===args.at(-1));
+  fs.appendFileSync(${JSON.stringify(events)},JSON.stringify(['network-journal',owner])+'\\n');
+  if(!owner||owner.removed) {process.stderr.write('network creation preceded ownership');process.exitCode=1;}
+} else if(args[0]==='network'&&args[1]==='rm') {
+  if(${JSON.stringify(networkRemoval)}==='fail') {process.stderr.write('fake network removal failed\\n');process.exitCode=1;}
+}
 else if(args[0]==='run') {
   const source=args[args.indexOf('--workdir')+1];
   fs.writeFileSync(stateFile,JSON.stringify({source,removals:0}));
@@ -203,6 +229,15 @@ else if(args[0]==='run') {
   const stage=runner.stage;
   t.after(()=>rm(stage,{recursive:true,force:true}));
   const calls=(await readFile(events,'utf8')).trim().split('\n').map(JSON.parse);
+  const network=report.cleanup.find(item=>item.kind==='network');
+  assert.ok(network,'owned bridge was not reported');
+  assert.equal(network.name,report.network.name);
+  const creation=calls.find(args=>args[0]==='network'&&args[1]==='create');
+  assert.deepEqual(creation,['network','create','--driver','bridge',network.name]);
+  assert.equal(calls.find(args=>args[0]==='network-journal')[1].removed,false,'network creation must follow its journal');
+  const launch=calls.find(args=>args[0]==='run');
+  assert.equal(launch[launch.indexOf('--network')+1],network.name,'runner must join the Capsule bridge');
+  assert.ok(launch.includes(`SPORADES_ADMISSION_PROOF_NETWORK=${network.name}`),'fixtures must receive the same network');
   const removals=calls.filter(args=>args[0]==='rm'&&args.at(-1)===runner.name);
   assert.equal(removals.length,runnerRemoval==='success'?1:2,'writer must not be retried after the inventory');
   if(runnerRemoval==='retry') assert.ok(report.cleanup.some(item=>item.name==='sporades-lifecycle-container-aaaaaaaaaaaa'),'late child was omitted from recovery');
@@ -215,6 +250,8 @@ else if(args[0]==='run') {
     assert.equal(runner.removed,false);
     assert.ok(runner.attempts.every(attempt=>!attempt.removed&&/fake runner removal failed/.test(attempt.error)));
     assert.equal(calls.some(args=>['inspect','rm'].includes(args[0])&&args.at(-1)==='sporades-lifecycle-container-aaaaaaaaaaaa'),false,'uncertain writer must block child recovery');
+    assert.equal(network.removed,false); assert.deepEqual(network.attempts,[]);
+    assert.equal(calls.some(args=>args[0]==='network'&&args[1]==='rm'),false,'uncertain writer must retain its network');
     await readFile(path.join(stage,'source/.sporades/issue-73/lifecycle-fake/fixture-marker'));
     return;
   }
@@ -233,19 +270,33 @@ else if(args[0]==='run') {
     await readFile(path.join(stage,'source/.sporades/issue-73/lifecycle-fake/fixture-marker'));
     assert.equal(owner.removed,false); assert.equal(owner.attempts.length,2);
     assert.ok(owner.attempts.every(attempt=>!attempt.removed&&/fake Capsule removal failed/.test(attempt.error)));
+    assert.equal(network.removed,false); assert.deepEqual(network.attempts,[]);
+    assert.equal(calls.some(args=>args[0]==='network'&&args[1]==='rm'),false,'failed Capsule cleanup must retain its network');
   } else {
     assert.equal(owner.removed,true); assert.equal(owner.attempts.length,1);
-    assert.equal(report.retainedStage,undefined);
-    assert.equal(report.status,signal?'interrupted':'incomplete');
-    await assert.rejects(readdir(stage),error=>error.code==='ENOENT','complete recovery should permit stage deletion');
+    const networkRemovalStart=calls.findIndex(args=>args[0]==='network'&&args[1]==='rm');
+    assert.ok(networkRemovalStart>calls.findLastIndex(args=>args[0]==='rm'&&args.at(-1)===owner.name),'network removal must follow all container removals');
+    if(networkRemoval==='fail') {
+      assert.equal(network.removed,false); assert.equal(network.attempts.length,2);
+      assert.ok(network.attempts.every(attempt=>!attempt.removed&&/fake network removal failed/.test(attempt.error)));
+      assert.equal(report.status,'cleanup-failed'); assert.equal(report.retainedStage,stage);
+      await readdir(stage);
+    } else {
+      assert.equal(network.removed,true);
+      assert.equal(report.retainedStage,undefined);
+      assert.equal(report.status,signal?'interrupted':'incomplete');
+      await assert.rejects(readdir(stage),error=>error.code==='ENOENT','complete recovery should permit stage deletion');
+    }
   }
-  assert.ok(report.cleanup.filter(item=>item.name!==owner.name).every(item=>item.removed));
+  assert.ok(report.cleanup.filter(item=>![owner.name,network.name].includes(item.name)).every(item=>item.removed));
 }
 
 for (const signal of [undefined, 'SIGTERM']) test(`outer runner retains child ownership after ${signal || 'failed startup'}`, {timeout:30000}, t => fakeOuterCleanup(t,{signal}));
 for (const runnerRemoval of ['retry','fail']) for (const signal of [undefined,'SIGTERM'])
   test(`runner ${runnerRemoval} removal ${signal || 'without interruption'} inventories late ownership only after termination`, {timeout:30000},
     t => fakeOuterCleanup(t,{runnerRemoval,signal,childRemoval:'success',lateChild:true,interruptAt:'removal'}));
+test('failed owned-network removal retains recovery stage after runner and child termination', {timeout:30000},
+  t=>fakeOuterCleanup(t,{childRemoval:'success',networkRemoval:'fail'}));
 
 test('native runner interruption reaches the fixture owner and stops its child', {timeout:30000}, async t => {
   await mkdir(scratch,{recursive:true}); const root=await mkdtemp(path.join(scratch,'native-'));

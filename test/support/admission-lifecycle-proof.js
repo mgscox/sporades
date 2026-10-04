@@ -71,6 +71,21 @@ export async function removeOwnedDockerContainer(command, name) {
   }
 }
 
+export function lifecycleDockerNetworkArgs(network) {
+  if (!network) return [];
+  assert.match(network, /^sporades-proof-network-[a-f0-9]{12}$/, 'Expected the owned per-run proof network');
+  return ['--network', network];
+}
+
+export async function lifecycleDockerEndpoint(command, name, network) {
+  lifecycleDockerNetworkArgs(network);
+  const published = (await command(['port', name, '5688/tcp'])).trim();
+  assert.match(published, /^127\.0\.0\.1:\d+$/, 'Fixture publication must remain loopback-only');
+  // A tools container's loopback is not the Docker daemon host's loopback.
+  // Docker DNS resolves sibling Capsule names on the shared user-defined bridge.
+  return network ? `http://${name}:5688` : `http://${published}`;
+}
+
 export function assertGenerationObservation(generations, observation, probe, response) {
   const deniedGroup = generations.get(observation.digest);
   assert.ok(deniedGroup, 'decision used an unknown/partial generation');

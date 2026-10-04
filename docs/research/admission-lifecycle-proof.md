@@ -30,8 +30,11 @@ hardened Container and Hosted processes. Hosted publication uses the shipped Hos
 helper against a disposable seeded registry. The runner's administrative
 container receives the Docker socket; application containers never receive it.
 No SSH, Host profile, cloud service, Cloudflare or Appwrite account is required.
-It publishes no fixed workstation port; application ports bind only to loopback
-and use internal port 5688. Each run removes only its own named resources.
+The tools runner and Capsule fixtures join one uniquely named user-defined
+bridge. Runner probes use each Capsule's Docker DNS name and internal port 5688,
+not the runner's loopback. It publishes no fixed workstation port; application
+host ports still bind only to `127.0.0.1`. Direct workstation fixture runs use
+those loopback publications. Each run removes only its own named resources.
 
 Each invocation keeps reports and logs in its own
 `.sporades/issue-73/evidence/run-<id>/` directory, printed as `evidenceRoot` in
@@ -50,7 +53,9 @@ the report marks the scan `blocked-runner-termination`, reports `cleanup-failed`
 and retains the validation copy; later image cleanup cannot permit its deletion.
 After confirmed termination, the report records every inventoried child and its
 removal or recovery requirement. Unresolved child cleanup also retains the copy
-even if tools/image removal succeeds. Resource names, attempt history and
+even if tools/image removal succeeds. The bridge is journaled before creation
+and removed only after confirmed runner and child removal; unresolved owners or
+network removal retain the bridge ownership and validation copy. Resource names, attempt history and
 retained paths are reported for manual recovery. SIGKILL or machine failure cannot
 run cleanup: inspect the per-run and fixture `ownership.json` journals and remove
 only the recorded resources before deleting their fixtures. The Docker runner tests committed files, so commit changes

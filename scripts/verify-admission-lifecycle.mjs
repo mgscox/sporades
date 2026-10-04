@@ -21,6 +21,7 @@ await Promise.all([evidenceRoot, config].map(dir => mkdir(dir, {recursive:true})
 const container = `sporades-proof-runner-${id}`;
 const toolsImage = `sporades-proof-tools-${id}`;
 const baseImage = `sporades-proof-base-${id}`;
+const network = `sporades-proof-network-${id}`;
 const report = { mode: driver ? 'native-driver-check' : 'isolated-local-docker', status: 'incomplete',
   commit: (await exec('git', ['rev-parse', 'HEAD'], {cwd:repo})).stdout.trim(),
   manifestDigest: createHash('sha256').update(await readFile(path.join(repo, 'dist/generated-source-manifest.json'))).digest('hex'),
@@ -70,12 +71,13 @@ async function run(command, args, options = {}) {
   } finally { clearTimeout(timer); activeChild = undefined; }
 }
 async function removeDocker(kind, name) {
-  try { await exec('docker', kind === 'container' ? ['inspect',name] : ['image','inspect',name], {timeout:15000}); }
+  try { await exec('docker', kind === 'container' ? ['inspect',name] : [kind,'inspect',name], {timeout:15000}); }
   catch (error) {
-    if (error.code === 1 && /No such (image|object|container)/i.test(error.stderr || '')) return;
+    if (error.code === 1 && (/No such (image|object|container|network)/i.test(error.stderr || '') ||
+      (kind === 'network' && /network .* not found/i.test(error.stderr || '')))) return;
     throw error;
   }
-  await exec('docker', [kind === 'container' ? 'rm' : 'image', ...(kind === 'container' ? ['-f'] : ['rm']), name], {timeout:15000});
+  await exec('docker', kind === 'container' ? ['rm','-f',name] : [kind,'rm',name], {timeout:15000});
 }
 try {
   if (driver) {
@@ -108,6 +110,9 @@ try {
     await ownership.register('image', toolsImage, () => removeDocker('image', toolsImage), {stage});
     await run('docker', ['build', '--tag', toolsImage, buildContext]);
     await ownership.register('image', baseImage, () => removeDocker('image', baseImage), {stage});
+    await ownership.register('network', network, () => removeDocker('network', network), {stage});
+    report.network = {name:network,driver:'bridge',probeAddress:'capsule-dns',hostPublication:'loopback'};
+    await run('docker', ['network', 'create', '--driver', 'bridge', network]);
     stopRunner = await ownership.register('container', container, () => removeDocker('container', container), {stage});
     const program = `
 set -eu
@@ -119,9 +124,10 @@ SPORADES_REAL_ADMISSION_LIFECYCLE=1 SPORADES_ADMISSION_PROOF_BASE_IMAGE='${baseI
     const mountedSocket = process.platform === 'darwin' ? '/var/run/docker.sock' : socket;
     const {stat} = await import('node:fs/promises');
     const socketGroup = process.platform === 'darwin' ? 0 : (await stat(socket)).gid;
-    await run('docker', ['run', '--init', '--name', container, '--user', `${process.getuid()}:${process.getgid()}`, '--group-add', String(socketGroup),
+    await run('docker', ['run', '--init', '--name', container, '--network', network, '--user', `${process.getuid()}:${process.getgid()}`, '--group-add', String(socketGroup),
       '--volume', `${mountedSocket}:/var/run/docker.sock`, '--volume', `${source}:${source}`, '--workdir', source,
       '--env', 'DOCKER_HOST=unix:///var/run/docker.sock', '--env', `NPM_CONFIG_CACHE=${source}/.npm-cache`,
+      '--env', `SPORADES_ADMISSION_PROOF_NETWORK=${network}`,
       '--env', `SPORADES_CONFIG_DIR=${source}/.sporades/config`, toolsImage, 'sh', '-c', program], {timeout:900000});
     for (const session of ['container','hosted']) await writeFile(path.join(evidenceRoot, `lifecycle-${session}-docker.json`),
       await readFile(path.join(source, `.sporades/issue-73/evidence/lifecycle-${session}-docker.json`)));
@@ -188,7 +194,15 @@ SPORADES_REAL_ADMISSION_LIFECYCLE=1 SPORADES_ADMISSION_PROOF_BASE_IMAGE='${baseI
   }
   // Never retry the writer after the inventory. An uncertain writer stays owned
   // for manual recovery; a confirmed one already has its removal receipt.
-  report.cleanup.push(...await ownership.cleanup(2, record => !stopRunner || record.name !== container));
+  await ownership.cleanup(2, record => record.kind !== 'network' && (!stopRunner || record.name !== container));
+  // The shared bridge stays owned while any attached writer/child is uncertain.
+  // Never disconnect a failed owner or remove its recovery network prematurely.
+  const networkSafe = runnerTerminated && !childCleanupFailed &&
+    !ownership.snapshot().some(record => record.kind === 'container' && !record.removed);
+  if (networkSafe) await ownership.cleanup(2, record => record.kind === 'network');
+  else if (ownership.snapshot().some(record => record.kind === 'network' && !record.removed))
+    report.pending.push('Owned proof network recovery after confirmed runner and child removal');
+  report.cleanup.push(...ownership.snapshot());
   if (childCleanupFailed || report.cleanup.some(item => !item.removed || item.journalErrors?.length)) {
     process.exitCode = 1;
     report.status = 'cleanup-failed';

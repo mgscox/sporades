@@ -14,7 +14,7 @@ import { ADMISSION_LIMITS, publishAdmissionPolicy, parseAdmissionPolicy } from '
 import { preservedDeployFilePath } from '../dist/deploy-files.js';
 import { baseImageMetadata, baseImageRuntimeUser } from '../dist/base-image.js';
 import { clientAddressBoundaryToken } from '../dist/client-address.js';
-import { lifecycleOwnership, removeOwnedDockerContainer, assertGenerationObservation } from './support/admission-lifecycle-proof.js';
+import { lifecycleOwnership, removeOwnedDockerContainer, assertGenerationObservation, lifecycleDockerNetworkArgs, lifecycleDockerEndpoint } from './support/admission-lifecycle-proof.js';
 
 // Native mode validates the scenario driver and generated runtime. It deliberately
 // makes no claim about deployed mounts, Docker hardening or the Caddy boundary.
@@ -30,6 +30,7 @@ const proofRoot = path.resolve(process.env.SPORADES_ADMISSION_PROOF_ROOT || path
 assert.ok(proofRoot.startsWith(repo + path.sep), 'Lifecycle proof files must remain inside the worktree');
 const probe = 'c'.repeat(64); // disposable synthetic Host capability, never a profile credential
 const image = process.env.SPORADES_ADMISSION_PROOF_BASE_IMAGE || baseImageMetadata().image;
+const network = process.env.SPORADES_ADMISSION_PROOF_NETWORK;
 const token = clientAddressBoundaryToken(probe);
 const bytes = rules => Buffer.from(JSON.stringify({ version: 1, rules }));
 const deny = (id, target) => ({ id, enabled: true, conditions: [{ kind: 'pathname', exact: target }], action: { kind: 'deny' } });
@@ -185,12 +186,13 @@ async function fixture(root, session, ownership, declared = true) {
       }, 'generated driver runtime did not listen');
     } else {
       launchArgs = ['run', '-d', '--name', name, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+        ...lifecycleDockerNetworkArgs(network),
         '--user', baseImageRuntimeUser(), '--memory', '256m', '--pids-limit', '100', '--tmpfs', '/tmp:rw,nosuid,nodev,noexec',
         '-p', '127.0.0.1::5688', '-v', `${serverFile}:/app/server.mjs:ro`, '-v', `${publicDir}:/app/public:ro`,
         '-v', `${data}:/app/data:rw`, '-v', `${storage}:/run/sporades-admission:ro`, '-w', '/app',
         ...Object.entries(env).flatMap(([key, value]) => ['-e', `${key}=${value}`]), image];
       await command(launchArgs);
-      base = 'http://' + (await command(['port', name, '5688/tcp'])).trim();
+      base = await lifecycleDockerEndpoint(command, name, network);
     }
   }
   async function logs() {
@@ -300,6 +302,7 @@ for (const session of ['container', 'hosted']) test(`generated ${session} admiss
   if (native) evidence.pending.push('Docker read-only mount, hardening, authorized Host helper publication and invalid deployed cold start');
   try {
     runtime = await fixture(path.join(root, 'runtime'), session, ownership);
+    evidence.measurements.probeAddress = runtime.base;
     evidence.bundleDigest = runtime.artifactDigest;
     evidence.baseImage = image;
     if (!native) evidence.baseImageId = (await runtime.command(['inspect', '--format', '{{.Image}}', runtime.name])).trim();
