@@ -116,6 +116,31 @@ Neither width had horizontal overflow. The only console error was the existing
 favicon 404. Screenshots are local `docs-desktop.png` and `docs-mobile.png` in the
 evidence directory. The owned browser and docs listener were stopped.
 
+## Round 1 diagnostic correction — 2026-10-04
+
+The follow-up to QA at `a124fbf9` separates authenticated HTTP success from OTLP
+body acceptance. Through the shipped HTTPS gateway, a valid sender receiving
+HTTP 200 with `rejectedSpans: 1` now reports authentication passed and OTLP
+acceptance failed. Malformed acceptance bodies also retain authentication evidence;
+401/403 remain authentication failures. The Host-stage regression and gateway
+regression both failed before the fix and passed after regeneration.
+
+`npm run build`, `npm run typecheck`, the focused three-file run (**21 passed,
+zero failures/skips**), and `npm run docs:check` (**53 passed** plus VitePress build)
+passed. Completed `npm test` passed **3,012 tests: 2,798 passed, 214 skipped, zero
+failed/cancelled**, exit 0, in 1,292.746 seconds. The full run used the same
+documented worktree-only fixture normalizer above, worktree-local configuration,
+and `COPYFILE_DISABLE=1`. Its log SHA-256 is
+`c6b5652c24b147749647cdb7d5712a08867224296322be963238457e94f55d92`.
+The shipped Host helper SHA-256 is
+`56400c1491c540384ecf6f52bd5b458c46594a55d97a237135e627bb133321aa`.
+
+Playwright checked the updated reference at 1440px and 390px on reserved port
+5218, including section navigation, visible keyboard focus and no page overflow.
+The corrected page had no console errors. The browser and owned listener were
+stopped. This follow-up used local HTTPS with an in-memory Collector response;
+it did not repeat the previous real Docker drill or run any real Host operations.
+
 ## Pending real separate-VM acceptance
 
 This PR remains **draft** because the desk's safety contract prohibits commands
@@ -126,3 +151,21 @@ storage, production metric/trace visibility and continued saved configuration
 after workstation disconnection and Host restart. Use the
 [operator drill](../reference/telemetry-diagnostics.md#rollback-and-acceptance).
 Local HTTPS, Docker backend storage and fake relay tests do not satisfy that gate.
+
+The round 1 QA report at `a124fbf9` confirms this gate is still unverified. Keep
+the PR draft until an authorized operator attaches a redacted acceptance record
+pinned to the tested commit, installed CLI/helper artifact hashes, distinct Host
+and Monitoring VM identities, and UTC observation times. Include the following
+evidence; a passing local test is not a substitute for any row.
+
+| Drill | Required operator evidence |
+| --- | --- |
+| Migration | Host-origin preflight and post-activation stage results; the saved replacement binding; a new destination inventory revision with a current acknowledgement and `pending: false`; exact recent relay trace lookup and independent production trace/metric queries. |
+| Failed destination | Separate TLS, credential and storage failure results showing `activation: not-applied`, the previous saved binding preserved, and continued production delivery to the old server. |
+| Interruption and recovery | Interrupted activation, reconcile/automatic recovery and applied-migration rollback results; the restored binding, fresh inventory acknowledgement and continued production delivery. |
+| Host restart and workstation disconnection | Timestamped evidence that the workstation is disconnected and the Host has restarted; subsequent saved-binding diagnostics, fresh inventory and production trace/metric visibility without workstation-dependent services. |
+| Retained history | Exact historical trace and metric queries on the previous server before and after migration/recovery, showing retained storage. |
+| Old expectations | The previous inventory snapshot and a later operator-authorized retirement revision with opted-out identities/empty targets, or a documented transition silence followed by retirement; preserved history and a rollback expectation-restoration record. |
+
+Desk safety prohibits obtaining this real infrastructure evidence here. No
+separate-VM success or passing release acceptance is claimed by this follow-up.

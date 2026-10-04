@@ -352,6 +352,7 @@ test('sender stages distinguish TLS denial, partial OTLP rejection and malformed
   await f.saveLegacy(endpoint, foreign.cert);
   const partial = await checkHostTelemetryDelivery(f.root);
   assert.equal(partial.checks.tls.state, 'passed');
+  assert.equal(partial.checks.authentication.state, 'passed');
   assert.equal(partial.checks.otlpAcceptance.state, 'failed');
   assert.equal(partial.stage, 'partial-rejection');
   assert.doesNotMatch(JSON.stringify(partial), /private-backend-detail/);
@@ -359,6 +360,50 @@ test('sender stages distinguish TLS denial, partial OTLP rejection and malformed
   const malformed = await checkHostTelemetryDelivery(f.root);
   assert.equal(malformed.checks.configuration.state, 'failed');
   assert.equal(malformed.backendStorage, 'verification-unavailable');
+});
+
+test('authenticated gateway responses prove authentication independently of OTLP acceptance', async t => {
+  const f = await fixture(t);
+  const tls = await f.tls('authentication');
+  const { createServer: createHttpServer } = await import('node:http');
+  const { probeTelemetryDestination } = await import('../dist/cli/telemetry-diagnostics.js');
+  let body = '{"partialSuccess":{"rejectedSpans":1,"errorMessage":"private-backend-detail"}}';
+  const collector = createHttpServer(async (req, res) => {
+    for await (const part of req) {}
+    res.writeHead(200, { 'content-type': 'application/json' }).end(body);
+  });
+  collector.listen(0, '127.0.0.1'); await once(collector, 'listening');
+  t.after(async () => { collector.closeAllConnections(); await new Promise(resolve => collector.close(resolve)); });
+  const endpoint = await f.listen(createGateway({ ingestToken: 'valid-sender-token', collectorUrl: `http://127.0.0.1:${collector.address().port}` }, tls));
+  const connection = { endpoint, credential: 'valid-sender-token', caPem: tls.cert.toString() };
+  for (const [responseBody, stage, accepted] of [
+    [body, 'partial-rejection', false],
+    ['private-malformed-body{', 'invalid-acceptance', false],
+    ['{}', 'accepted', true],
+  ]) {
+    body = responseBody;
+    const result = await probeTelemetryDestination(connection);
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.checks.tls, { state: 'passed' });
+    assert.deepEqual(result.checks.authentication, { state: 'passed' });
+    assert.equal(result.checks.otlpAcceptance.state, accepted ? 'passed' : 'failed');
+    assert.equal(result.accepted, accepted);
+    assert.equal(result.stage, stage);
+    assert.doesNotMatch(JSON.stringify(result), /valid-sender-token|private-backend-detail|private-malformed-body/);
+  }
+  const denied = await probeTelemetryDestination({ ...connection, credential: 'wrong-sender-token' });
+  assert.equal(denied.statusCode, 401);
+  assert.deepEqual(denied.checks.authentication, { state: 'failed', reason: 'auth' });
+  assert.deepEqual(denied.checks.otlpAcceptance, { state: 'failed', reason: 'auth' });
+  assert.equal(denied.accepted, false);
+  assert.equal(denied.stage, 'auth');
+  const forbiddenEndpoint = await f.listen(createServer(tls, (req, res) => res.writeHead(403).end()));
+  const forbidden = await probeTelemetryDestination({ ...connection, endpoint: forbiddenEndpoint });
+  assert.equal(forbidden.statusCode, 403);
+  assert.deepEqual(forbidden.checks.authentication, { state: 'failed', reason: 'auth' });
+  assert.deepEqual(forbidden.checks.otlpAcceptance, { state: 'failed', reason: 'auth' });
+  assert.equal(forbidden.accepted, false);
+  assert.equal(forbidden.stage, 'auth');
 });
 
 test('a binding changed during verification cannot be overwritten by a stale migration', async t => {

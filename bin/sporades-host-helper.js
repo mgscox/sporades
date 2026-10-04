@@ -26378,7 +26378,8 @@ async function probeTelemetryDestination(connection) {
   const response = await exchange(connection, "/v1/traces", `Bearer ${connection.credential}`, probe.body);
   let accepted = false;
   let reason = response.failure ?? "destination";
-  if (response.status && response.status >= 200 && response.status < 300) {
+  const successfulResponse = response.status !== void 0 && response.status >= 200 && response.status < 300;
+  if (successfulResponse) {
     try {
       const data2 = JSON.parse(response.body || "{}");
       if (!data2 || typeof data2 !== "object" || Array.isArray(data2)) throw new Error();
@@ -26388,7 +26389,7 @@ async function probeTelemetryDestination(connection) {
       reason = "invalid-acceptance";
     }
   }
-  const auth = response.status === 401 || response.status === 403 ? failed("auth") : accepted ? passed() : unavailable("not-proven");
+  const auth = response.status === 401 || response.status === 403 ? failed("auth") : successfulResponse ? passed() : unavailable("not-proven");
   const stage = auth.state === "failed" ? "auth" : accepted ? "accepted" : reason;
   return { traceId: probe.traceId, accepted, stage, ...response.status ? { statusCode: response.status } : {}, checks: { dns: response.dns, tls: response.tls, authentication: auth, otlpAcceptance: accepted ? passed() : failed(stage) } };
 }

@@ -33,11 +33,15 @@ The structured result has `origin: "host"` and a `checks` object. Each check use
 | `agentReadiness` | The owned relay container is running and has no pending activation. This is process readiness; receiver acceptance is a separate check. |
 | `dns` | Sender-side name lookup, or a literal address without DNS. |
 | `tls` | Sender-side verified TLS handshake with the saved CA. Verification is never disabled. |
-| `authentication` | Destination accepted the sender credential, or explicitly returned 401/403. Other failures cannot prove authentication. |
+| `authentication` | The authenticated destination returned HTTP 2xx, independently of OTLP body acceptance, or explicitly denied the credential with 401/403. Other responses and transport failures cannot prove authentication. |
 | `otlpAcceptance` | Direct diagnostic trace accepted without a partial rejection. |
 | `relayAcceptance` | A different trace accepted through the Host-private relay receiver. Missing tools/images, rejection or receiver failure cannot prove acceptance. |
 | `backendQuery` | An operator query finds that exact relay trace in Jaeger. |
 | `recentIngestion` | That relay trace has a recent diagnostic span timestamp, within two minutes with five seconds of clock tolerance. |
+
+An authenticated HTTP 200 with rejected spans reports `authentication: passed`
+and `otlpAcceptance: failed`. A malformed OTLP response body also leaves
+authentication passed while OTLP acceptance fails; neither proves stored data.
 
 `backendStorage: "verified-relay-trace"` requires both query visibility and recent
 relay ingestion. Direct and relay trace IDs differ, so direct destination success

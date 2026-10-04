@@ -69,7 +69,8 @@ export async function probeTelemetryDestination(connection: HostRelayConnection)
   const response = await exchange(connection, "/v1/traces", `Bearer ${connection.credential}`, probe.body);
   let accepted = false;
   let reason = response.failure ?? "destination";
-  if (response.status && response.status >= 200 && response.status < 300) {
+  const successfulResponse = response.status !== undefined && response.status >= 200 && response.status < 300;
+  if (successfulResponse) {
     try {
       const data = JSON.parse(response.body || "{}");
       if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error();
@@ -77,7 +78,9 @@ export async function probeTelemetryDestination(connection: HostRelayConnection)
       if (!accepted) reason = "partial-rejection";
     } catch { reason = "invalid-acceptance"; }
   }
-  const auth = response.status === 401 || response.status === 403 ? failed("auth") : accepted ? passed() : unavailable("not-proven");
+  // The authenticated gateway's HTTP success proves credential acceptance even
+  // when the Collector rejects spans or returns an invalid OTLP response body.
+  const auth = response.status === 401 || response.status === 403 ? failed("auth") : successfulResponse ? passed() : unavailable("not-proven");
   const stage = auth.state === "failed" ? "auth" : accepted ? "accepted" : reason;
   return { traceId: probe.traceId, accepted, stage, ...(response.status ? { statusCode: response.status } : {}), checks: { dns: response.dns, tls: response.tls, authentication: auth, otlpAcceptance: accepted ? passed() : failed(stage) } };
 }
