@@ -1,5 +1,40 @@
 # Monitoring maintenance verification — #130
 
+## PR #213 round 1 fixes
+
+Reverified locally on 2026-10-04 after fixing disabled export recovery, failed
+reconnect recovery and concurrent operator edits during upgrade/rollback.
+Disabled reconciliation now retries owned relay/exporter shutdown without
+removing credentials or the acknowledgement-gated inventory worker. Failed
+reconnect restores a previously disabled connection's stopped state.
+Maintenance snapshots planning inputs and checks them again before publication.
+
+The focused run passed 35 tests, including simulated interruption after durable
+disable intent, forced Caddy/relay/exporter shutdown failures, failed reconnect,
+and validation-time edits to README, environment files, Collector configuration,
+Compose overrides and private configuration during both upgrade and rollback.
+The opt-in maintenance Docker run passed 20 tests with no skips, including one
+installed-package cold backup/restore acceptance test with retained history and
+credentials. Docker Desktop used Engine 29.8.1 and Compose 5.5.1 on macOS arm64,
+with Node 24.19.0. All Sporades commands used worktree-local configuration.
+
+Build, generated-bin verification, typecheck and documentation checks passed
+(53 documentation tests plus the documentation build). The full `npm test`
+passed: 3,039 tests, 2,824 passed, 215 optional skips, zero failures/cancellations,
+exit 0. The previously reported Todo WebSocket timeout passed in this full run.
+Optional PostgreSQL checks remained skipped. Release archive inspection matched
+all 28 schema-4 asset hashes, excluded private files, and confirmed the updated
+maintenance guide. Playwright verified the updated guide at 1440px and 390px,
+with no horizontal overflow or page console errors; the preview server stopped.
+
+This follow-up used local Docker and fake Host Docker/Caddy/systemd seams with
+verified local HTTPS inventory. It did not repeat the earlier supported-VM drill
+below or contact a real Host. An operator should still verify interrupted
+shutdown and failed reconnect on a disposable supported Host, including stopped
+owned agents, retained credentials, inventory acknowledgement and reboot.
+
+## Original implementation verification
+
 Verified on 2026-10-04 using the installed Sporades 0.9.31 package, a disposable
 Monitoring Compose stack, and a clean Ubuntu VM on the existing Tower LAN
 hypervisor. No production Host, Capsule data, cloud account, provider operation,
