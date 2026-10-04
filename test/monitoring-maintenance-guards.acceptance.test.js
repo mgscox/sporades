@@ -72,12 +72,18 @@ else {const r=cp.spawnSync(${JSON.stringify(f.realDocker)},a,{stdio:'inherit'});
     await new Promise(r => setTimeout(r, 50));
   }
   const wrapperPid = Number(await readFile(marker, 'utf8'));
-  t.after(() => { try { process.kill(wrapperPid, 'SIGKILL'); } catch {} });
+  let wrapperStopped = false;
+  const stopWrapper = () => {
+    if (wrapperStopped) return;
+    wrapperStopped = true;
+    try { process.kill(wrapperPid, 'SIGKILL'); } catch {}
+  };
+  t.after(stopWrapper);
   const second = path.join(f.temp, 'second'); await mkdir(second);
   const result = f.cli(['restore', '--dir', second, '--backup', f.backup]);
   assert.equal(result.status, 1, 'different directories sharing backend names must not both extract');
   const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
-  process.kill(wrapperPid, 'SIGKILL');
+  stopWrapper();
   // SIGKILL closes the owner's pipe; daemon guards remove themselves on EOF.
   let retry;
   for (let i = 0; i < 40; i++) {

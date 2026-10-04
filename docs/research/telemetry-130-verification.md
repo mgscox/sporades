@@ -1,5 +1,51 @@
 # Monitoring maintenance verification — #130
 
+## PR #213 round 2 fixes
+
+Reverified locally on 2026-10-04 after fixing concurrent restore volume ownership,
+non-root Linux archive ownership, and effective backend configuration validation.
+Restore holds daemon-wide per-volume container-name guards, rechecks the exact
+snapshot owner after creation and immediately before extraction, and releases
+guards on process exit. Root tar writes pre-created operator-owned mode-0600
+files while retaining numeric backend metadata. Upgrade/rollback validate
+Compose-selected configuration bind files and Jaeger environment; unsupported
+invocation overrides fail before generated-file publication.
+
+The foreign-volume regression failed against the pre-fix installed CLI, which
+reported success. Effective mount/command/environment/entrypoint probes likewise
+failed before the fix, and the pre-created private archive regression failed.
+Fixed real-Docker probes preserve unrelated sentinel bytes after races both
+following volume listing and immediately before extraction. Competing restores
+from different target directories are rejected, including when both use the
+same snapshot, and SIGKILL releases their guards for retry. Real Compose selects
+malformed operator Jaeger/Prometheus files and maintenance refuses publication.
+
+Linux acceptance runs the installed CLI as UID 10001 against a Linux named-volume
+filesystem, avoiding macOS bind-mount identity translation. All backup archives
+remain operator-owned and mode 0600, can be chmodded by that UID, and retain
+archived UID/GID 23456:34567. The task-owned runner, image and volumes are removed.
+This is Linux container filesystem/identity evidence, not a new clean-VM drill.
+Docker Desktop used Engine 29.8.1, Compose 5.5.1 and Node 24.19.0 on macOS arm64.
+Workstation and Linux runner commands used isolated `SPORADES_CONFIG_DIR` paths.
+
+The branch integrates current main; its generated-manifest conflict was resolved
+by regenerating artifacts. The pre-integration full-suite run was intentionally
+cancelled and is not counted as a passing run. Integrated build/generated-bin checks, typecheck and documentation checks
+passed (53 documentation tests plus the build). The combined Docker-enabled
+maintenance, installed-CLI and Host regression run passed 48 tests with zero
+skips, failures or cancellations. The full integrated `npm test` exited 0: 3,085 tests, 2,863 passed, 222
+optional skips, zero failures or cancellations (1,373.65s). The wrapper cleanup
+was then verified to kill its task-owned process only once; the real-Docker
+competing-restore/SIGKILL test passed separately again.
+
+Playwright followed Operations to the updated guide at 1440x1000 and 390x844,
+opened the mobile page menu and followed Restore. Both widths had no horizontal
+overflow; the correct maintenance route had zero console errors/warnings. The
+preview server and browser were stopped. Release archive inspection matched all
+28 schema-4 hashes, included the updated guide and excluded private/env files.
+No real Host, cloud provisioning, live provider, publication, tag or release
+operation was performed; prior VM and operator-drill limits still apply.
+
 ## PR #213 round 1 fixes
 
 Reverified locally on 2026-10-04 after fixing disabled export recovery, failed
