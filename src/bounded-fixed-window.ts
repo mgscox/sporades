@@ -4,7 +4,7 @@ type Bucket = { count: number; startedAt: number; lastSeenAt: number; windowMs: 
 
 /** Internal local fixed windows with deterministic least-recently-recorded eviction. */
 export function createBoundedFixedWindow(options: {
-  now?: () => number; maxBuckets?: number; idleMs?: number; expireWindows?: boolean;
+  now?: () => number; maxBuckets?: number; idleMs?: number; expireWindows?: boolean; onEviction?: () => void;
 } = {}) {
   const now = options.now ?? (() => performance.now());
   const maxBuckets = options.maxBuckets ?? 10_000;
@@ -33,7 +33,8 @@ export function createBoundedFixedWindow(options: {
     }
     while (buckets.size > maxBuckets) {
       buckets.delete(buckets.keys().next().value!);
-      evictions++;
+      evictions = Math.min(Number.MAX_SAFE_INTEGER, evictions + 1);
+      try { options.onEviction?.(); } catch { /* Diagnostics never alter quotas. */ }
     }
     return { count: bucket.count, remainingSeconds: Math.ceil((windowMs - (elapsed - bucket.startedAt)) / 1000) };
   }

@@ -1529,3 +1529,15 @@ the runtime remains available after both 403 and 429 upgrade denials.
 Nonmatching upgrades preserve the existing handshake. See the
 [configuration reference](reference/projects-and-configuration.md#request-admission-policy-publication)
 and [ADR-0054](adr/0054-request-admission-policy-is-deployer-owned.md).
+
+Admission evidence uses versioned fixed aggregate counters for HTTP/WebSocket
+evaluation, admitted/403/429 outcomes, reload failures/recoveries and limiter
+capacity evictions. Decimal unsigned 64-bit counters expose saturation instead
+of rounding or wrapping. Decision logs attempt at most twenty samples per
+monotonic minute, retaining at most twenty rule/outcome keys across policy churn;
+load failures and recoveries always emit redacted events. Existing doctor,
+authenticated runtime health and Hosted Capsule stats expose active digest,
+degraded last-known-good state and totals without raw client addresses, request
+values, query strings, credentials, bodies or proxy headers. No-policy sessions
+retain their existing inspection shape. See the configuration reference for
+counter semantics, sampling bounds and unavailable inspection behavior.

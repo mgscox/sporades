@@ -2,6 +2,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { validClientAddressNetwork, clientAddressMatches } from "./client-address.js";
 import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
+import { createAdmissionEvidence } from "./admission-evidence.js";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
 import { readDeployFile, resolveDeployFiles, preservedDeployFilePath } from "./deploy-files.js";
@@ -266,18 +267,19 @@ export async function publishAdmissionPolicy(root, relative, bytes) {
     }
 }
 export async function openAdmissionPolicy(root, relative, onHealth, limiterOptions = {}) {
-    const rateLimiter = createAdmissionRateLimiter(limiterOptions);
+    const evidence = createAdmissionEvidence(limiterOptions.now);
+    const rateLimiter = createAdmissionRateLimiter({ ...limiterOptions, onEviction: () => evidence.count("limiterEvictions") });
     let active = null;
     let health = Object.freeze({ state: "disabled", digest: null });
     let closed = false;
     let pending = null;
-    function report(state) {
+    function report(state, event) {
         const next = Object.freeze({ state, digest: active?.digest ?? null });
-        if (next.state === health.state && next.digest === health.digest)
+        if (event === "loaded" && next.state === health.state && next.digest === health.digest)
             return;
         health = next;
         try {
-            onHealth?.(health);
+            onHealth?.(Object.freeze({ ...health, evidence: evidence.snapshot() }), event);
         }
         catch { /* Diagnostics never break reload. */ }
     }
@@ -286,11 +288,15 @@ export async function openAdmissionPolicy(root, relative, onHealth, limiterOptio
             const bytes = await readDeployFile(root, relative, ADMISSION_LIMITS.bytes);
             const next = bytes.equals(REMOVED) ? null : parseAdmissionPolicy(bytes);
             rateLimiter.reconcile(next);
+            const recovered = health.state === "degraded";
+            if (recovered)
+                evidence.count("reloadRecoveries");
             active = next;
-            report(next ? "healthy" : "disabled");
+            report(next ? "healthy" : "disabled", recovered ? "recovery" : "loaded");
         }
         catch {
-            report("degraded");
+            evidence.count("reloadFailures");
+            report("degraded", "failure");
             if (cold)
                 throw new Error("Configured admission policy could not be loaded.");
         }
@@ -305,8 +311,8 @@ export async function openAdmissionPolicy(root, relative, onHealth, limiterOptio
     };
     const timer = setInterval(() => { void reload(); }, ADMISSION_LIMITS.reloadMs);
     timer.unref();
-    return Object.freeze({ current: () => active, rateLimiter,
-        health: () => Object.freeze({ ...health, rateLimit: rateLimiter.stats() }),
+    return Object.freeze({ current: () => active, rateLimiter, evidence,
+        health: () => Object.freeze({ ...health, rateLimit: rateLimiter.stats(), evidence: evidence.snapshot() }),
         reload, close: async () => { closed = true; clearInterval(timer); await pending; } });
 }
 //# sourceMappingURL=admission-policy.js.map

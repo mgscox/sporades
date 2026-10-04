@@ -601,6 +601,14 @@ owns the surface, including `sporades security`, `sporades env`, `sporades
 deploy ssh`, `sporades host health`, `sporades host stats`, `sporades host
 logs`, and `sporades host ssh`.
 
+For a declared request-admission policy, Dev, Public Dev, Container and Hosted
+doctor checks include active digest, reload health and v1 aggregate counters.
+Degraded reload retains the last-known-good generation and produces a warning.
+Hosted Capsule `host stats <subname>` also exposes the protected evidence under
+`data.admissionPolicy`; unavailable evidence is `null` and does not discard
+resource stats. No-policy inspection retains its existing shape. See
+[admission evidence bounds and redaction](projects-and-configuration.md#request-admission-policy-publication).
+
 Doctor output avoids secrets. It may include fingerprints, counts, paths, and
 structured state, but it must not print private keys, full Server env values, or
 full SSH public-key material.
