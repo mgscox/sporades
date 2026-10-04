@@ -1,5 +1,60 @@
 # Monitoring maintenance verification — #130
 
+## PR #213 round 3 journal recovery fix
+
+Reverified locally on 2026-10-04 at runtime commit `3256f830`, with main through
+`7753267c`. Both main changes were retained; generated map/manifest conflicts
+were resolved by rebuilding. The earlier pre-integration full-suite run was
+cancelled and is not counted as a pass.
+
+Publication now durably records original bytes and original/intended hashes,
+permissions and numeric owners before replacing generated files. Recovery checks
+every journalled file before restoring any. Post-interruption operator edits,
+deletions or permission/owner changes refuse recovery with redacted preservation
+and reconciliation guidance. Files and journal remain intact across repeated
+refusals. Restoration publishes original metadata atomically, allowing another
+interruption during recovery to be retried. Legacy journals without intended
+hashes only retire when every file already matches the original bytes; otherwise
+recovery refuses instead of inferring ownership of a replacement.
+
+The shipped-CLI SIGKILL regressions interrupt immediately after collector.yaml
+publication, then edit collector.yaml or README.md, change permissions or delete
+the file. Retry refuses and preserves every journalled file and the exact journal.
+An unmodified retry and a second SIGKILL during restoration also recover. Against
+QA's original `236d4969` CLI, all four preservation subcases failed as expected,
+while ordinary recovery passed. The separate legacy-journal override regression
+also failed against the original CLI.
+
+Validation:
+
+- Build, generated-bin verification and combined-head typecheck passed.
+- Focused maintenance tests: 33 passed, zero failures/skips.
+- Docker-enabled maintenance, installed-package CLI and Host regressions:
+  58 passed, zero failures/skips/cancellations on the unmodified rerun. An earlier
+  run had 57 passes and a rollback status-1 failure in cold-restore acceptance;
+  an isolated diagnostic rerun passed, followed by the complete clean rerun.
+  The initial rollback failure was not reproduced or attributed to a code cause;
+  no source/test changes were made between those Docker runs.
+- Full combined-head `npm test`: 3,104 tests, 2,880 passed, 224 optional skips,
+  zero failures/cancellations, exit 0 (1,401.72 seconds).
+- Documentation checks: 53 passed plus successful documentation build.
+  Playwright followed the guide navigation and checked recovery text at 1280px
+  and 390px; no horizontal overflow or application console errors (favicon 404
+  only). Browser and port-5218 preview server stopped.
+- Release archive: schema 4, all 28 asset hashes matched, updated maintenance
+  guide present, private/env files excluded. Whitespace checks passed.
+
+All Sporades commands used worktree-local configuration. Docker Desktop used
+Engine 29.8.1, Compose 5.5.1 and Node 24.19.0 on macOS arm64; task-owned resources
+were removed. No real Host, SSH, cloud provisioning, live provider, publication,
+tag or release operation was performed. Prior VM evidence was not repeated;
+the disposable-Host shutdown/reconnect/removal, worker cleanup and reboot drills
+remain manager acceptance steps. Operators must keep services stopped, save
+conflicting overrides separately, reconcile the original generation before retry,
+and reapply saved overrides after recovery; journals must not be deleted to bypass
+refusal. Validation logs and browser captures remain in the ignored worktree-local
+`.sporades/pr213-round3/` evidence directory.
+
 ## PR #213 round 2 fixes
 
 Reverified locally on 2026-10-04 after fixing concurrent restore volume ownership,
