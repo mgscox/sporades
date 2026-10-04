@@ -92,34 +92,52 @@ stress guards, not universal production guarantees. Docker additionally imposes
 a 256 MiB container memory limit. Exact request totals, twenty retained sampling
 keys and fixed unsigned-64-bit counters are checked separately.
 
-Docker proof could not start: `docker info` timed out at 12 seconds, and the
-local socket's `_ping` also timed out. The isolated runner records
-`docker-prerequisite-failed`, with no resources created. A separate native Host
-helper attempt rejected the external volume's group-writable ancestor
-(`/Volumes/M2_2TB`, mode 0775). Neither the shared daemon nor that ancestor's
-permissions were changed. The isolated Linux runner gives helper-owned paths a
-controlled trust chain, but that runner is still unexecuted.
+The shared Docker daemon timed out during previous attempts; those
+`docker-prerequisite-failed` reports created no resources and remain failed
+attempts. An isolated local Lima Linux engine subsequently ran the committed
+runner at `e4341b75`, evidence `run-894798673fb8`, with exit 0 and
+`runtime-boundary-passed` in the outer report and both session reports. Capsule
+probes reached Docker DNS addresses on the private bridge. All five mounted
+policy mutation attempts failed in both sessions, with unchanged policy bytes;
+invalid configured cold starts exited before listening. Add/change/recovery and
+removal activated in 1.04–2.05 seconds. Concurrent traffic recorded 368 Container
+and 408 Hosted fixture decisions across four distinguishable generations. Both
+2,048-request hostile loads reconciled exact counters within the documented
+bounds. Every recorded owner was removed, runner termination was confirmed,
+and the authoritative journal scan completed before stage deletion.
+
+The engine used only a worktree mount, a local Unix socket and public downloads;
+no provider credentials or actual Host server were used. The shared daemon and
+external-volume permissions were unchanged. A previous native Host helper
+attempt rejected the group-writable external-volume ancestor; the successful
+Linux runner exercised the helper within its controlled trust chain. The local
+Hosted fixture still uses a synthetic trusted-identity capability. It does not
+prove actual Host deployment, Caddy publication or socket-derived identity.
+Subsequent reports remain authoritative for the current checkout.
 
 ## Acceptance matrix
 
 | Boundary | Automated scenario | Remaining deployed evidence |
 | --- | --- | --- |
-| Add/change/removal without redeploy | Timed atomic publisher operations; original Bundle digest and PID/container ID retained | Docker run; Container CLI publication and actual Hosted deployment/route path |
-| Concurrent atomic replacement | Opposite probe groups must admit/deny HTTP and upgrades according to each request's captured digest; union, empty and split generations fail; handler markers equal admitted HTTP totals | Docker and actual Caddy traffic; retain per-request digest/outcome witnesses |
-| Last-known-good and recovery | Truncated and oversized hot files degrade health, retain digest/enforcement, recover, and reconcile failure/recovery event totals | Docker and existing doctor/Hosted stats inspection |
-| Invalid configured cold start | Docker relaunch must exit 1 before listening or `runtime.started` | Unexecuted Docker test; direct HTTP/upgrade refusal and actual Host unavailable route |
+| Add/change/removal without redeploy | Timed atomic publisher operations; original Bundle digest and PID/container ID retained | Container CLI publication and actual Hosted deployment/route path |
+| Concurrent atomic replacement | Opposite probe groups must admit/deny HTTP and upgrades according to each request's captured digest; union, empty and split generations fail; handler markers equal admitted HTTP totals | Actual Caddy traffic; retain per-request digest/outcome witnesses |
+| Last-known-good and recovery | Truncated and oversized hot files degrade health, retain digest/enforcement, recover, and reconcile failure/recovery event totals | Existing doctor/Hosted stats inspection on an actual Host |
+| Invalid configured cold start | Docker relaunch must exit 1 before listening or `runtime.started` | Actual Host unavailable route and direct HTTP/upgrade refusal |
 | HTTP and WebSocket outcomes | Opaque 403/429, content length, no-store, Retry-After, shared HTTP/upgrade quota, expiry and successful query reply | Real Caddy upgrade and handler-entry observations |
 | Trusted identity | Forged capabilities rejected; Container rejects even a valid Hosted capability; Hosted synthetic address/CIDR and quota seam | Actual Caddy socket derivation, header stripping, direct-loopback denial |
-| Runtime policy ownership | Capsule endpoint attempts write, truncate, rename, unlink and replacement; Docker asserts failure and unchanged bytes | Unexecuted mounted-policy test |
-| Hostile bounds | Invalid UTF-8/depth/size/rule/condition/text candidates cannot replace file; raw hostile HTTP, exact counters, sampling, bucket eviction, RSS/log guards | Sustained Docker run and operator resource observation |
+| Runtime policy ownership | Capsule endpoint attempts write, truncate, rename, unlink and replacement; Docker asserts failure and unchanged bytes | Actual Host helper-owned mounted path |
+| Hostile bounds | Invalid UTF-8/depth/size/rule/condition/text candidates cannot replace file; raw hostile HTTP, exact counters, sampling, bucket eviction, RSS/log guards | Sustained actual Host load and operator resource observation |
 | No-policy compatibility | Separate undeclared Bundle vs removed policy: exact bytes/status/content type, endpoint/static order, streamed POST, WebSocket query, no new counters/logs and gate budget | File response streaming, deployed baseline logs/route parity and cold restart |
 | Provider independence | Local runner needs Docker, Node/npm and public package/image downloads only | Complete mandatory Caddy/Host path without provider credentials |
 | Operator security scope | Shipped reference explains limited OWASP contributions and unsupported signature inspection | Human reconcile claims with final deployed observations |
 
 ## Human completion steps
 
-1. Restore or provide a disposable local Linux Docker environment. Run the Docker
-   runner from the committed PR and retain its exit code, `docker-report.json`,
+1. Reproduce the local Docker merge gate using a healthy local Unix engine.
+   If using a Linux VM, mount the checkout at the same absolute path used on the
+   client: the daemon resolves sibling Capsule bind sources. Select its socket
+   with `DOCKER_HOST=unix:///path/to/docker.sock`; leave shared contexts alone.
+   Run the Docker runner from the committed PR and retain its exit code, `docker-report.json`,
    both session reports and log. Require `runtime-boundary-passed`, all scenario
    assertions and successful cleanup. A daemon timeout, skip or driver pass does
    not satisfy this step.
