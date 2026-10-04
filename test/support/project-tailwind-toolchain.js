@@ -1,10 +1,10 @@
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const TAILWIND_TOOLCHAIN_PACKAGES = [
   "@esbuild", "@jridgewell", "@rollup", "@tailwindcss", "@types",
   "detect-libc", "enhanced-resolve", "esbuild", "fdir", "fsevents",
-  "graceful-fs", "jiti", "lightningcss", "lightningcss-darwin-arm64", "magic-string", "nanoid",
+  "graceful-fs", "jiti", "lightningcss", "magic-string", "nanoid",
   "picocolors", "picomatch", "postcss", "rollup", "source-map-js",
   "tailwindcss", "tapable", "tinyglobby", "vite",
 ];
@@ -12,7 +12,9 @@ const TAILWIND_TOOLCHAIN_PACKAGES = [
 export async function installProjectTailwindToolchain(projectDir, repoRoot) {
   const nodeModules = path.join(projectDir, "node_modules");
   await mkdir(nodeModules, { recursive: true });
-  await Promise.all(TAILWIND_TOOLCHAIN_PACKAGES.map(async (packageName) => {
+  // Keep the fixture usable on the platform running the suite, including Docker.
+  const nativePackages = (await readdir(path.join(repoRoot, "node_modules"))).filter(name => name.startsWith("lightningcss-"));
+  await Promise.all([...TAILWIND_TOOLCHAIN_PACKAGES, ...nativePackages].map(async (packageName) => {
     try {
       await cp(path.join(repoRoot, "node_modules", packageName), path.join(nodeModules, packageName), { recursive: true });
     } catch (error) {

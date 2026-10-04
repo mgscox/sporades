@@ -2,7 +2,13 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 rule_files:
+  - /etc/prometheus/availability-rules.yaml
   - /etc/prometheus/pipeline-rules.yaml
+alerting:
+  alertmanagers:
+    - path_prefix: /alertmanager
+      static_configs:
+        - targets: [alertmanager:9093]
 storage:
   tsdb:
     # Concurrent consumers can replay older buffered samples after fresh ones.
@@ -12,6 +18,34 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: [localhost:9090]
+  - job_name: availability-inventory
+    static_configs:
+      - targets: [gateway:9091]
+  - job_name: blackbox
+    static_configs:
+      - targets: [blackbox:9115]
+  - job_name: alertmanager
+    metrics_path: /alertmanager/metrics
+    static_configs:
+      - targets: [alertmanager:9093]
+  - job_name: capsule-probes
+    metrics_path: /probe
+    scrape_timeout: 7s
+    params:
+      module: [sporades_application]
+    http_sd_configs:
+      - url: http://gateway:9091/targets
+        refresh_interval: 15s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: __param_target
   - job_name: sporades-pipeline-collector
     scrape_timeout: 3s
     sample_limit: 2000

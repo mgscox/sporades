@@ -1,0 +1,24 @@
+{
+  "source": "https://github.com/mgscox/sporades/pull/204#issuecomment-5980802931",
+  "testedHead": "6348f20e070d3490c1a7edfd6dfd513ba87ff7e6",
+  "initialRun": {
+    "project": "barbara120-31e979ac",
+    "result": "failed",
+    "stage": "pinned promtool preflight; before stack launch",
+    "exitCode": 1,
+    "originalDiagnostic": "WARNING: no file match pattern ../../monitoring/trace/availability-rules.yaml",
+    "confirmingPathCheck": "ls: ../../monitoring/trace/availability-rules.yaml: Permission denied",
+    "classification": "QA source-mount permissions: mode-0700 source root blocked non-root traversal; not a PR probe or notification defect"
+  },
+  "unchangedRetry": {
+    "project": "barbara120-f4aa511a",
+    "result": "passed",
+    "probeNotificationMs": 92291.329137,
+    "recovery": true,
+    "absenceAndAcknowledgedStop": true,
+    "actualTopology": "single Linux Docker host on Tower; not separate-VM acceptance",
+    "originalEvidenceTopologyLabel": "single Docker Desktop Linux VM; not separate-VM acceptance",
+    "note": "Original evidence had an inaccurate topology label. This summary corrects the interpretation without rewriting the original."
+  },
+  "originalLogs": "Read from QA evidence and retained locally in logs/pr-204-round-9/qa-docker-first-failed.log and qa-docker-pathcheck.log"
+}

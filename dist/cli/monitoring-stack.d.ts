@@ -14,6 +14,7 @@ export declare function runMonitoringStack(action: 'init' | 'validate', director
         schema: number | null;
     } | null;
     missing: string[];
+    notificationDelivery: string;
     nextSteps: string[];
 }>;
 /** Redacted result of an operator-local sender credential command. */

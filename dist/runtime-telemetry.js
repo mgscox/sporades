@@ -201,7 +201,9 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
         exportTimeoutMillis: 800,
     });
     const resource = resourceFromAttributes({
-        "service.name": config.serviceName.slice(0, 80),
+        // Inventory and Host readiness use the full identity. Truncating it can
+        // both lose healthy targets and merge unrelated Capsules with a shared prefix.
+        "service.name": config.serviceName,
         "service.instance.id": processInstanceId,
         "deployment.environment.name": config.environment ?? "unknown",
     });
@@ -528,7 +530,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             };
         },
         run(request, response, endpoints, handle) {
-            if (closing)
+            if (closing || (request.method === "GET" && (request.url === "/__sporades/probe" || request.url?.startsWith("/__sporades/probe?"))))
                 return handle();
             const method = safeMethod(request.method);
             let route = resolveTelemetryRoute(request, endpoints);

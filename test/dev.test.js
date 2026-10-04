@@ -11901,9 +11901,12 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started));
       const socket = await openSocket(started.data.url);
+      // Mutation results and query refreshes can arrive in one socket turn.
+      // Keep both even while the test is asserting the first response.
+      const messages = captureSocketMessages(socket);
       try {
         socket.send(JSON.stringify({ id: "query-1", type: "query.subscribe", query: "todos" }));
-        assert.deepEqual(await readSocketMessage(socket), {
+        assert.deepEqual(await messages.next(message => message.id === "query-1"), {
           id: "query-1",
           type: "query.result",
           query: "todos",
@@ -11912,7 +11915,7 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
         });
 
         socket.send(JSON.stringify({ id: "mutation-1", type: "mutation.run", mutation: "addTodo", args: ["Buy milk"] }));
-        assert.deepEqual(await readSocketMessage(socket), {
+        assert.deepEqual(await messages.next(message => message.id === "mutation-1"), {
           id: "mutation-1",
           type: "mutation.result",
           mutation: "addTodo",
@@ -11920,7 +11923,7 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
           error: null,
         });
 
-        const refreshed = await readSocketMessage(socket);
+        const refreshed = await messages.next(message => message.id === "query-1");
         assert.equal(refreshed.id, "query-1");
         assert.equal(refreshed.type, "query.result");
         assert.equal(refreshed.query, "todos");
@@ -11939,6 +11942,7 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
         assert.equal(todosTable.rows[0].text, "Buy milk");
         assert.equal(todosTable.rows[0].done, 0);
       } finally {
+        messages.dispose();
         socket.close();
       }
     } finally {
@@ -11946,6 +11950,19 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
       await new Promise((resolve) => child.once("exit", resolve));
     }
   });
+});
+
+test("todo message capture retains a same-turn mutation result and query refresh", async () => {
+  const socket = new EventTarget();
+  const messages = captureSocketMessages(socket);
+  const result = { id: "mutation-1", type: "mutation.result", data: null, error: null };
+  const refresh = { id: "query-1", type: "query.result", data: [{ text: "Buy milk" }], error: null };
+  try {
+    socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(result) }));
+    socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(refresh) }));
+    assert.deepEqual(await messages.next(message => message.id === "mutation-1"), result);
+    assert.deepEqual(await messages.next(message => message.id === "query-1"), refresh);
+  } finally { messages.dispose(); }
 });
 
 test("query unsubscribe is connection-owned, idempotent, validated, and prevents accumulated mutation refreshes", async () => {
@@ -15770,4 +15787,100 @@ export default capsule({ name: "admission-dev", endpoints: {
       await allowed();
     } finally { if(child.exitCode===null) child.kill("SIGTERM"); await exited; }
   });
+});
+
+test("installed Dev and generated Bundle preserve public availability probe parity", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(path.join(repoRoot, ".sporades", "probe-parity-"));
+  const configDir = path.join(root, "config");
+  const env = { SPORADES_CONFIG_DIR: configDir, COPYFILE_DISABLE: "1" };
+  const received = [];
+  const collector = createServer(async (request, response) => {
+    let body = "";
+    for await (const bytes of request) body += bytes;
+    received.push({ path: request.url, body: JSON.parse(body) });
+    response.writeHead(200).end("{}");
+  });
+  let child;
+  const stop = async () => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise(resolve => child.once("exit", resolve));
+    child.kill("SIGTERM");
+    const deadline = setTimeout(() => child.kill("SIGKILL"), 4000);
+    try { await exited; } finally { clearTimeout(deadline); }
+  };
+  try {
+    await new Promise(resolve => collector.listen(0, "127.0.0.1", resolve));
+    const endpoint = `http://127.0.0.1:${collector.address().port}`;
+    const created = await runCli(["create", "probe-app", "--template", "blank", "--framework", "vanilla", "--no-install", "--no-git"], { cwd: root, env });
+    assert.equal(created.code, 0, created.stderr);
+    const project = path.join(root, "probe-app");
+    const { tarballPath } = await packCandidateInto(root);
+    const installed = await installPackedCandidate(project, tarballPath);
+    const serverSource = `import { capsule, endpoint } from 'sporades/server'; export default capsule({ name: 'probe-parity', endpoints: { work: endpoint({ method: 'GET', path: '/work' }, async () => ({ status: 200, body: 'work' })) } });`;
+    await writeFile(path.join(project, "server", "index.ts"), serverSource);
+    await mkdir(configDir, { recursive: true });
+    await writeFile(path.join(configDir, "telemetry.json"), JSON.stringify({ schemaVersion: 1, profiles: { probe: { endpoint, tls: { mode: "loopback" }, metricsIntervalMs: 5000 } } }));
+    const config = JSON.parse(await readFile(path.join(project, "sporades.json"), "utf8"));
+    config.name = "probe-parity"; config.dev.port = 0; config.telemetry = { profile: "probe" };
+    await writeFile(path.join(project, "sporades.json"), JSON.stringify(config));
+    const { bundleServerCapsuleModule } = await import("../dist/bundle-pipeline.js");
+    const { createServerBundleModuleSource } = await import("../dist/templates/server-bundle-module-graph.js");
+    const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(project, "server", "index.ts") });
+    const bundleDir = path.join(root, "bundle"); await mkdir(bundleDir);
+    const bundlePath = path.join(bundleDir, "server.mjs");
+    await writeFile(bundlePath, await createServerBundleModuleSource({ config: { name: "probe-parity", __sporadesTelemetry: { endpoint, tls: { mode: "loopback" }, serviceName: "probe-parity", metricsIntervalMs: 1000 } }, serverEnv: {}, serverSource, serverModuleSource,
+      epilogue: 'process.stdout.write(JSON.stringify({ data: { event: "started", url: "http://127.0.0.1:" + server.address().port } }) + "\\n");',
+    }));
+    const nonce = "abcdef1234567890";
+    const cases = [
+      ["/__sporades/probe", { "x-sporades-probe-nonce": nonce }, 200],
+      [`/__sporades/probe?nonce=${nonce}`, {}, 200],
+      [`/__sporades/probe?nonce=${"f".repeat(64)}`, {}, 200],
+      ["/__sporades/probe", {}, 404],
+      ["/__sporades/probe?nonce=bad", {}, 404],
+      [`/__sporades/probe?nonce=${"f".repeat(15)}`, {}, 404],
+      [`/__sporades/probe?nonce=${"f".repeat(65)}`, {}, 404],
+      ["/__sporades/probe", { "x-sporades-probe-nonce": "ABCDEF1234567890" }, 404],
+      [`/__sporades/probe?nonce=${nonce}`, { "x-sporades-probe-nonce": "bad" }, 404],
+      ["/__sporades/health/runtime", {}, 404],
+      ["/__sporades/health/runtime", { "x-sporades-host-probe": "b".repeat(64) }, 404],
+    ];
+    for (const mode of ["Dev", "Bundle"]) {
+      child = mode === "Dev" ? startCliFrom(installed.cliPath, ["dev", "--json"], { cwd: project, env })
+        : spawn(process.execPath, [bundlePath], { cwd: bundleDir, env: { ...process.env, ...env, PORT: "0", SPORADES_RUNTIME_PROBE_TOKEN: "a".repeat(64) }, stdio: ["ignore", "pipe", "pipe"] });
+      let startup = "";
+      const captureStartup = chunk => { startup += chunk; };
+      child.stdout.on("data", captureStartup);
+      let started;
+      try { started = await waitForJsonEvent(child, event => event.data?.event === "started"); }
+      catch (error) {
+        const diagnostics = startup.split("\n").flatMap(line => { try { const event = JSON.parse(line); return event.error?.message ? [event.error.message] : []; } catch { return []; } });
+        throw new Error(`${mode} startup failed: ${diagnostics.join("; ")}`, { cause: error });
+      } finally { child.stdout.off("data", captureStartup); }
+      for (const [route, headers, status] of cases) {
+        const response = await fetch(started.data.url + route, { headers });
+        assert.equal(response.status, status, `${mode}: ${route}`);
+        const body = await response.text();
+        if (status === 200) {
+          assert.equal(response.headers.get("cache-control"), "no-store");
+          assert.equal(response.headers.get("pragma"), "no-cache");
+          assert.equal(response.headers.get("vary"), "X-Sporades-Probe-Nonce");
+          const expectedNonce = headers["x-sporades-probe-nonce"] ?? new URL(route, "http://localhost").searchParams.get("nonce");
+          assert.equal(body, `sporades-application-probe-v1:${expectedNonce}\n`);
+        } else assert.equal(body, "Not found", `${mode} denial stays opaque`);
+      }
+      assert.equal((await fetch(started.data.url + "/work")).status, 200);
+      await stop();
+    }
+    const spans = received.flatMap(batch => batch.body.resourceSpans ?? []).flatMap(resource => resource.scopeSpans ?? []).flatMap(scope => scope.spans ?? []);
+    assert.equal(spans.filter(span => span.name === "GET /work").length, 2, "both runtimes export ordinary application requests");
+    assert(!spans.some(span => span.name === "GET /__unknown" || span.name.includes("/__sporades/probe")), "valid and invalid probe GETs never export request spans");
+    const counts = received.flatMap(batch => batch.body.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []).filter(metric => metric.name === "http.server.request.count");
+    assert(counts.some(metric => metric.sum.dataPoints.some(point => point.attributes.some(attr => attr.key === "http.route" && attr.value.stringValue === "/work"))));
+    assert(!counts.some(metric => metric.sum.dataPoints.some(point => point.attributes.some(attr => attr.key === "http.route" && ["/__unknown", "/__sporades/probe"].includes(attr.value.stringValue)))), "probe GETs never enter request metrics");
+    assert(!JSON.stringify(received).includes(nonce), "probe nonces never enter exported telemetry");
+  } finally {
+    await stop(); collector.closeAllConnections(); await new Promise(resolve => collector.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
 });

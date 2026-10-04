@@ -1,0 +1,24 @@
+{
+  "verifiedAt": "2026-10-03T05:01:04.939Z",
+  "topology": "two task-owned Ubuntu KVM VMs on Tower private NAT",
+  "hostVM": "barbara120-8528-host",
+  "monitoringVM": "barbara120-8528-monitor",
+  "docker": "29.0.0",
+  "compose": "2.40.3",
+  "node": "24.13.0",
+  "verifiedRelayTLS": true,
+  "hostOwnedReadinessBoolean": true,
+  "probeNotificationMs": 87262,
+  "realWebhookFiringAndRecovery": true,
+  "finiteBlockedLoopMs": 100000,
+  "missingHostRetainedExpectation": true,
+  "hostAbsenceAlert": true,
+  "acknowledgedStopRemovedExpectation": true,
+  "alertContext": {
+    "dashboard": "https://192.168.122.100:5691/grafana/d/sporades-api?var-service=apps.example/demo&from=now-15m&to=now",
+    "summary": "Public application probe failed for apps.example/demo",
+    "target": "http://demo.apps.example/",
+    "window": "Sustained failure for 60 seconds; inspect the last 15 minutes."
+  },
+  "resourcesRemoved": true
+}

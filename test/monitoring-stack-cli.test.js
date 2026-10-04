@@ -46,12 +46,13 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert.equal(first.status, 0, first.stderr || first.stdout);
   const result = JSON.parse(first.stdout);
   assert.equal(result.ok, true);
+  assert.equal(result.data.notificationDelivery, 'disabled');
   assert.equal(result.data.path, target);
   assert.deepEqual(result.data.missingAssets, []);
   const gatewaySource = await readFile(join(root, 'monitoring', 'trace', 'gateway.mjs'), 'utf8');
   assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', 'gateway.mjs'), 'utf8'), gatewaySource);
   assert.equal(await readFile(join(target, 'gateway.mjs'), 'utf8'), gatewaySource);
-  for (const name of ['smoke.mjs', 'README.md', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'sender-credentials.mjs', 'pipeline-dashboard.json', 'pipeline-rules.yaml', 'collector-persistent.yaml', 'compose.queue.yaml', 'OUTAGES.md', 'MAINTENANCE.md']) {
+  for (const name of ['smoke.mjs', 'README.md', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'availability.mjs', 'availability-rules.yaml', 'blackbox.yaml', 'blackbox-config.mjs', 'sender-credentials.mjs', 'pipeline-dashboard.json', 'pipeline-rules.yaml', 'collector-persistent.yaml', 'compose.queue.yaml', 'OUTAGES.md', 'MAINTENANCE.md']) {
     const source = await readFile(join(root, 'monitoring', 'trace', name), 'utf8');
     assert.equal(await readFile(join(install, 'package', 'monitoring', 'trace', name), 'utf8'), source);
     assert.equal(await readFile(join(target, name), 'utf8'), source);
@@ -67,7 +68,10 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert.equal((await stat(handoff)).mode & 0o777, 0o600);
   assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /prom\/prometheus:v3\.13\.3[\s\S]*grafana\/grafana:13\.2\.2/);
   assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /\.\/pipeline-rules\.yaml:\/etc\/prometheus\/pipeline-rules\.yaml:ro/);
-  assert.match(await readFile(join(target, 'prometheus.yaml'), 'utf8'), /rule_files:\s*\n\s*- \/etc\/prometheus\/pipeline-rules\.yaml/);
+  const prometheus = await readFile(join(target, 'prometheus.yaml'), 'utf8');
+  const ruleFiles = prometheus.match(/rule_files:\n((?:[ \t]+.*\n)+)/)?.[1] ?? '';
+  assert.match(ruleFiles, /^\s*- \/etc\/prometheus\/pipeline-rules\.yaml$/m);
+  assert.match(ruleFiles, /^\s*- \/etc\/prometheus\/availability-rules\.yaml$/m);
   const api = JSON.parse(await readFile(join(target, 'api-dashboard.json'), 'utf8'));
   assert.equal(api.title, 'Sporades Capsule API');
   assert.equal(api.templating.list.find(variable => variable.name === 'metric_window')?.current.value, '12m');

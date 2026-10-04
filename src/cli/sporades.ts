@@ -2479,8 +2479,7 @@ async function startDevSession(options: LooseRecord) {
         return;
       }
 
-      if (request.method === "GET" && requestPath === "/__sporades/health/runtime") {
-        await routeRuntimeHealth(runtime.database, request as any, response);
+      if (await routeRuntimeHealth(runtime.database, request as any, response)) {
         return;
       }
       if (routeHttpAdmission(runtime.database, request, response, target)) {

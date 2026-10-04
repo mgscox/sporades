@@ -1,5 +1,6 @@
 /** Narrow lifecycle inventory wire contract, also shipped in the monitoring stack. */
 export type InventoryCapsule = {
+    /** Full Hosted domain/subname, also exported verbatim as service.name (up to 317 characters). */
     id: string;
     state: "registered" | "released" | "running" | "stopped" | "failed" | "deleted" | "opted-out";
     changedAt: string;

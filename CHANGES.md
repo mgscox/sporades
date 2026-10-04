@@ -6,6 +6,7 @@ Changes since v0.9.30.
 
 ### 🚀 Features
 
+- Notify operators about inventory-driven Capsule availability and missing telemetry, with independent application probes, grouped alerts, recovery messages, and timed silences (#120).
 - Expose bounded telemetry pipeline queues, losses and freshness, provision recovery diagnostics and optional quota-limited persistent Collector queues, and add isolated monitoring outage drills (#129).
 - Enforce trusted Hosted address/CIDR admission with authenticated proxy identity, mapped IPv6 normalization, and fail-closed missing identity in Dev and local Container sessions (#69).
 
