@@ -9,7 +9,7 @@ endpoint; there is no outbound watchdog or required uptime provider.
 
 ## Configure a notification channel
 
-Generate a fresh schema-3 stack with `sporades monitoring stack init --dir <path>`.
+Generate a fresh schema-4 stack with `sporades monitoring stack init --dir <path>`.
 Existing stack files and operator `.env` additions are preserved: back up the
 stack, review reported overrides/version differences, and apply the new Compose,
 gateway, discovery, Blackbox and Prometheus assets deliberately during an upgrade.

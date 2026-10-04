@@ -68,7 +68,10 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert.equal((await stat(handoff)).mode & 0o777, 0o600);
   assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /prom\/prometheus:v3\.13\.3[\s\S]*grafana\/grafana:13\.2\.2/);
   assert.match(await readFile(join(target, 'compose.yaml'), 'utf8'), /\.\/pipeline-rules\.yaml:\/etc\/prometheus\/pipeline-rules\.yaml:ro/);
-  assert.match(await readFile(join(target, 'prometheus.yaml'), 'utf8'), /rule_files:\s*\n\s*- \/etc\/prometheus\/pipeline-rules\.yaml/);
+  const prometheus = await readFile(join(target, 'prometheus.yaml'), 'utf8');
+  const ruleFiles = prometheus.match(/rule_files:\n((?:[ \t]+.*\n)+)/)?.[1] ?? '';
+  assert.match(ruleFiles, /^\s*- \/etc\/prometheus\/pipeline-rules\.yaml$/m);
+  assert.match(ruleFiles, /^\s*- \/etc\/prometheus\/availability-rules\.yaml$/m);
   const api = JSON.parse(await readFile(join(target, 'api-dashboard.json'), 'utf8'));
   assert.equal(api.title, 'Sporades Capsule API');
   assert.equal(api.templating.list.find(variable => variable.name === 'metric_window')?.current.value, '12m');
