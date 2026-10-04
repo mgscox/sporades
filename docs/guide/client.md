@@ -17,6 +17,12 @@ eight supported choices and their scaffolded reactivity model.
 
 ## Project public files
 
+New scaffolds declare an empty data-URL favicon (`<link rel="icon" href="data:," />`)
+in their user-owned `index.html` to avoid the browser's implicit `/favicon.ico`
+request. To use your own icon, add `public/favicon.ico` and replace the link's
+`href` with `/favicon.ico`. Both esbuild and Vite preserve this declaration in
+Dev and generated releases.
+
 Place explicitly public files in the optional project `public/` directory.
 `public/favicon.ico`, `public/sitemap.xml`, and `public/robots.txt` are served at
 `/favicon.ico`, `/sitemap.xml`, and `/robots.txt`; nested files retain their paths

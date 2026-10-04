@@ -16,6 +16,7 @@ export declare function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv
         }[] | undefined;
         htmlBody?: any;
         textBody?: any;
+        autoSubmitted?: any;
         subject: any;
         replyTo?: {
             name?: any;

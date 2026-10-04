@@ -5220,6 +5220,8 @@ test("sporades dev keeps the old Runtime active when service-env state cannot be
       const legacyServerBefore = await readFile(legacyServerPath, "utf8");
       const legacyClientBefore = await readFile(legacyClientPath, "utf8");
 
+      // Observe before triggering writes: the watcher can report failure while a write yields.
+      const failedEvent = waitForJsonEvent(child, (event) => !event.ok && event.data.event === "rebuild");
       const envStatePath = path.join(projectDir, ".sporades", "dev-database-env.json");
       await rm(envStatePath, { force: true });
       await mkdir(envStatePath);
@@ -5235,7 +5237,7 @@ test("sporades dev keeps the old Runtime active when service-env state cannot be
       const clientSource = await readFile(clientPath, "utf8");
       await writeFile(clientPath, clientSource.replace("Blank Sporades Capsule", "Premature Env State Capsule"));
 
-      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data.event === "rebuild");
+      const failed = await failedEvent;
       assert.deepEqual(failed.data.build, { phase: "runtime", framework: "react", toolchain: "esbuild" });
       assert.equal((await fetch(`${started.data.url}/version`)).status, 404);
       assert.equal(await (await fetch(`${started.data.url}/client.js`)).text(), beforeClient);

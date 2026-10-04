@@ -500,6 +500,11 @@ entry as a write-free preflight error and never rewrites the source shell.
 
 ## Project public files
 
+Scaffolded `index.html` declares an empty data-URL favicon (`href="data:,"`),
+avoiding an implicit request for `/favicon.ico`. Replace that icon link with
+`href="/favicon.ico"` and add `public/favicon.ico` to supply your own icon.
+The declaration is preserved in both esbuild and Vite release HTML.
+
 The optional project `public/` directory is merged by the Bundle pipeline for
 both esbuild and Vite; no configuration setting is required. Regular files keep
 their relative names and bytes: `public/favicon.ico`, `public/sitemap.xml`, and

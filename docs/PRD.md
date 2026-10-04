@@ -219,8 +219,9 @@ The repository currently includes:
   management, immutable grants, one-time secret disclosure, atomic rotation and
   retirement, Credential provenance through durable Jobs, and metadata-only
   Privileged/operator inspection and revocation through a running Capsule.
-- Server-only SMTP mail through `ctx.mail.send(...)`, with one portable
-  `sporades.json` contract for Dev sessions, local Container sessions, and
+- Server-only SMTP mail through `ctx.mail.send(...)`, including an optional
+  validated `autoSubmitted` field for the standard automated-message header,
+  with one portable `sporades.json` contract for Dev sessions, local Container sessions, and
   Hosted Capsules; validated Postmark, Mailgun, Mailjet, SMTP2GO, and generic SMTP
   extensions; bounded transport timeouts; clean shutdown; and secret-safe
   structured delivery diagnostics.

@@ -173,6 +173,7 @@ test("sporades create writes a runnable React blank scaffold by default", async 
     assert.match(clientEntry, /Blank Sporades Capsule/);
     assert.doesNotMatch(clientEntry, /createHooks|useQuery|useMutation|useAuth|files|messages|todo/i);
     assert.match(await readFile(path.join(projectDir, "index.html"), "utf8"), /src="\/client\.js"/);
+    assert.match(await readFile(path.join(projectDir, "index.html"), "utf8"), /<link rel="icon" href="data:,"\s*\/>/);
 
     const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
     assert.match(agents, /Template: blank/);
