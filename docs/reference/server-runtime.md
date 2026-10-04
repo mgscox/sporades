@@ -228,12 +228,23 @@ be at most 65,536 UTF-8 bytes. Runtime-owned queries, implicit table queries,
 and legacy rows subscriptions remain argument-free.
 
 Subscribed queries re-run after a mutation that writes and after a Job
-finishes. On SQLite, the runtime re-runs only the subscriptions whose last run
+finishes. On SQLite, Postgres and libsql, the runtime re-runs only the subscriptions whose last run
 read a table written since the previous refresh; a statement whose table it
 cannot identify re-runs every subscription, and a subscription whose last run
 failed re-runs on every refresh. A query result that depends on the
 clock or other state outside the database therefore does not update on
-unrelated writes. Postgres and libsql Capsules still re-run every subscription.
+unrelated writes. Transaction statements are tracked too; rolled-back writes
+may cause an extra refresh. Dedicated Postgres resource transactions retain their
+changed tables until settlement and then publish them, including on rollback or
+an unknown commit outcome. A concurrent refresh before commit cannot consume
+the notification for the committed writes. Recognized single-table statements that
+report zero changed rows do not refresh subscriptions. Multi-statement and
+unparseable writes conservatively refresh every subscription even if their final
+result reports zero rows: earlier statements or a data-modifying CTE may have
+committed writes. Rejected Postgres and libsql prepared writes also retain
+conservative invalidation: a batch can commit before a later statement rejects,
+or a remote write can commit before its HTTP acknowledgement is lost.
+The original error still propagates. libsql resource transactions remain unsupported.
 
 ### Change Data With Mutations
 

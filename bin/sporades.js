@@ -131266,13 +131266,21 @@ var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracke
 var LIVE_QUERY_ANY_TABLE = "*";
 var liveQueryReads = new AsyncLocalStorage2();
 var dirtyTables = /* @__PURE__ */ new Set();
+var writeGeneration = 0;
+function recordTableWrite(table, tables) {
+  tables.add(table);
+  if (tables === dirtyTables && !liveQueryReads.getStore()) writeGeneration++;
+}
+function liveQueryWriteGeneration() {
+  return writeGeneration;
+}
 var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
 var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
 var writeTablePattern = new RegExp(
   String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
   "i"
 );
-var nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT)\b/i;
+var nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT|LOCK\s+TABLE)\b/i;
 function trackLiveQueryReads(tables, run2) {
   return liveQueryReads.run(tables, run2);
 }
@@ -131289,12 +131297,20 @@ function recordLiveQueryStatementRead(sql2) {
 function recordLiveQueryTableRead(table) {
   liveQueryReads.getStore()?.add(table);
 }
-function recordLiveQueryStatementWrite(sql2, result) {
-  if (result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
+function recordLiveQueryStatementWrite(sql2, result, tables = dirtyTables) {
   const text3 = String(sql2);
+  const terminator = text3.indexOf(";");
+  if (terminator !== -1 && /\S/.test(text3.slice(terminator + 1))) {
+    recordTableWrite(LIVE_QUERY_ANY_TABLE, tables);
+    return;
+  }
   if (nonWritingStatementPattern.test(text3)) return;
   const match = writeTablePattern.exec(text3);
-  dirtyTables.add(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE);
+  if (match && result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
+  recordTableWrite(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE, tables);
+}
+function publishLiveQueryDirtyTables(tables) {
+  for (const table of tables) recordTableWrite(table, dirtyTables);
 }
 function takeLiveQueryDirtyTables() {
   const taken = dirtyTables;
@@ -133732,9 +133748,8 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     return telemetry.operations({
       exec(sql2) {
         return run2(() => useConnection(() => {
-          const result = connection.exec(sql2);
           recordLiveQueryStatementWrite(sql2);
-          return result;
+          return connection.exec(sql2);
         }));
       },
       prepare(sql2) {
@@ -133788,9 +133803,8 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         let commitIssued = false;
         const operations = {
           exec: (sql2) => {
-            const result = dedicated.exec(sql2);
             recordLiveQueryStatementWrite(sql2);
-            return result;
+            return dedicated.exec(sql2);
           },
           prepare: (sql2) => {
             const statement = dedicated.prepare(sql2);
@@ -134091,22 +134105,33 @@ async function createPostgresDatabaseAdapter(options) {
   };
   const createOperations = (run2) => telemetry.operations({
     exec(sql2) {
-      return run2(() => rawQuery(sql2).then(() => void 0));
+      return run2(() => {
+        recordLiveQueryStatementWrite(sql2);
+        return rawQuery(sql2).then(() => void 0);
+      });
     },
     prepare(sql2) {
       assertOpen();
       return {
         all(...params) {
+          recordLiveQueryStatementRead(sql2);
           return run2(() => rawQuery(sql2, params).then((result) => postgresRowsFromResult(normalization, result)));
         },
         get(...params) {
           return this.all(...params).then((rows) => rows[0] ?? null);
         },
         run(...params) {
-          return run2(() => rawQuery(sql2, params).then((result) => ({
-            changes: Number(result.rowCount ?? 0),
-            lastInsertRowid: void 0
-          })));
+          return run2(async () => {
+            try {
+              const result = await rawQuery(sql2, params);
+              const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
+              recordLiveQueryStatementWrite(sql2, written);
+              return written;
+            } catch (error) {
+              recordLiveQueryStatementWrite(sql2);
+              throw error;
+            }
+          });
         },
         columns() {
           return run2(() => rawQuery(
@@ -134120,6 +134145,7 @@ async function createPostgresDatabaseAdapter(options) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "postgres",
+    [liveQueryTablesTracked]: true,
     [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
     [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
     [resourceConsumptionMechanics]: function() {
@@ -134143,6 +134169,7 @@ async function createPostgresDatabaseAdapter(options) {
       let dedicated;
       let begun = false;
       let commitIssued = false;
+      const transactionDirtyTables = /* @__PURE__ */ new Set();
       try {
         try {
           if (!this[resourceSchemaPublished]) await ensureResourceSchemaPublished(signal);
@@ -134167,14 +134194,28 @@ async function createPostgresDatabaseAdapter(options) {
         };
         const operations = {
           exec: async (statement) => {
+            recordLiveQueryStatementWrite(statement, void 0, transactionDirtyTables);
             await query(statement);
           },
           prepare: (statement) => ({
-            all: async (...params) => postgresRowsFromResult(normalization, await query(statement, params)),
-            get: async (...params) => postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null,
+            all: async (...params) => {
+              recordLiveQueryStatementRead(statement);
+              return postgresRowsFromResult(normalization, await query(statement, params));
+            },
+            get: async (...params) => {
+              recordLiveQueryStatementRead(statement);
+              return postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null;
+            },
             run: async (...params) => {
-              const result = await query(statement, params);
-              return { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
+              try {
+                const result = await query(statement, params);
+                const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
+                recordLiveQueryStatementWrite(statement, written, transactionDirtyTables);
+                return written;
+              } catch (error) {
+                recordLiveQueryStatementWrite(statement, void 0, transactionDirtyTables);
+                throw error;
+              }
             },
             columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field) => ({ name: normalization.columnName(field.name) }))
           })
@@ -134221,6 +134262,7 @@ async function createPostgresDatabaseAdapter(options) {
       } finally {
         if (dedicated) await dedicated.close().catch(() => {
         });
+        publishLiveQueryDirtyTables(transactionDirtyTables);
       }
     },
     // Postgres has no way to ask a statement for its result shape without running something,
@@ -134792,15 +134834,20 @@ async function createLibsqlDatabaseAdapter(options) {
     exec(sql2) {
       assertLibsqlOpen(closed);
       const request = libsqlHasMultipleStatements(sql2) ? { type: "sequence", sql: sql2 } : { type: "execute", stmt: { sql: sql2 } };
-      return run2(() => {
+      return run2(async () => {
         assertLibsqlOpen(closed);
-        return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then(() => void 0);
+        try {
+          await libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction });
+        } finally {
+          recordLiveQueryStatementWrite(sql2);
+        }
       });
     },
     prepare(sql2) {
       assertLibsqlOpen(closed);
       return {
         all(...params) {
+          recordLiveQueryStatementRead(sql2);
           return run2(() => {
             assertLibsqlOpen(closed);
             return libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params, close: !transaction }).then(
@@ -134812,12 +134859,20 @@ async function createLibsqlDatabaseAdapter(options) {
           return this.all(...params).then((rows) => rows[0] ?? null);
         },
         run(...params) {
-          return run2(() => {
+          return run2(async () => {
             assertLibsqlOpen(closed);
-            return libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params, close: !transaction }).then((result) => ({
-              changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
-              lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === void 0 ? void 0 : BigInt(result.last_insert_rowid)
-            }));
+            try {
+              const result = await libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params, close: !transaction });
+              const written = {
+                changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
+                lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === void 0 ? void 0 : BigInt(result.last_insert_rowid)
+              };
+              recordLiveQueryStatementWrite(sql2, written);
+              return written;
+            } catch (error) {
+              recordLiveQueryStatementWrite(sql2);
+              throw error;
+            }
           });
         },
         columns() {
@@ -134833,6 +134888,7 @@ async function createLibsqlDatabaseAdapter(options) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(null, connectionGate.runOperation),
     engine: "libsql",
+    [liveQueryTablesTracked]: true,
     dialect,
     normalization,
     // No behavioural method body lives here either, for the reasons ADR-0037 records and the
@@ -139519,6 +139575,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
   let journeyExpiryTimer = null;
   let journeyDisableRequests = 0;
   const queryOperations = /* @__PURE__ */ new WeakMap();
+  const queryRefreshes = /* @__PURE__ */ new WeakMap();
+  let dispatchedWriteGeneration = liveQueryWriteGeneration();
   function operationOutcome(error) {
     if (!error) return "success";
     return ["UNAUTHENTICATED", "FORBIDDEN", "DENIED", "REAUTHENTICATION_REQUIRED"].includes(error.code) ? "denied" : "error";
@@ -139637,6 +139695,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       const removeClient = () => {
         if (removed) return;
         removed = true;
+        for (const subscription of client.subscriptions.values()) cancelQueryRefresh(subscription);
         try {
           connectionClosed?.();
         } catch {
@@ -140110,10 +140169,10 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       }
       const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
       const previous = client.subscriptions.get(message.id);
-      if (previous) queryOperations.get(previous)?.end("cancelled");
+      if (previous) cancelQueryRefresh(previous);
       client.subscriptions.set(message.id, subscription);
       database.__notifyJobStateQueries = refreshQueries;
-      void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
+      void runSubscriptionQueries(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
       return;
     }
     if (message.type === "query.unsubscribe") {
@@ -140132,7 +140191,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         return;
       }
       const subscription = client.subscriptions.get(subscriptionId);
-      if (subscription) queryOperations.get(subscription)?.end("cancelled");
+      if (subscription) cancelQueryRefresh(subscription);
       const removed = client.subscriptions.delete(subscriptionId);
       sendJson(client, {
         id: message.id ?? null,
@@ -140648,17 +140707,57 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     });
   }
   function refreshQueries() {
+    dispatchedWriteGeneration = liveQueryWriteGeneration();
     const dirty = takeLiveQueryDirtyTables();
     const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
-    for (const subscribedClient of clients) {
-      for (const subscription of subscribedClient.subscriptions.values()) {
-        if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty)) continue;
-        void sendQueryResult(
-          subscribedClient,
-          subscription,
-          (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error)
-        );
+    for (const client of clients) {
+      if (client.closing || client.socket.destroyed) continue;
+      for (const subscription of client.subscriptions.values()) {
+        const running = queryRefreshes.get(subscription);
+        if (running) {
+          running.pending = true;
+          running.unscoped ||= !scoped;
+          for (const table of dirty) running.dirty.add(table);
+        } else if (!scoped || liveQueryNeedsRefresh(subscription.readTables, dirty)) {
+          void runSubscriptionQueries(
+            client,
+            subscription,
+            (error) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error)
+          );
+        }
       }
+    }
+  }
+  function cancelQueryRefresh(subscription) {
+    const running = queryRefreshes.get(subscription);
+    if (running) {
+      running.cancelled = true;
+      running.dirty.clear();
+      running.pending = false;
+    }
+    queryRefreshes.delete(subscription);
+    queryOperations.get(subscription)?.end("cancelled");
+    queryOperations.delete(subscription);
+  }
+  async function runSubscriptionQueries(client, subscription, onError, operation) {
+    const running = { pending: false, unscoped: false, dirty: /* @__PURE__ */ new Set(), cancelled: false };
+    queryRefreshes.set(subscription, running);
+    try {
+      do {
+        running.pending = false;
+        running.unscoped = false;
+        running.dirty.clear();
+        const generation = liveQueryWriteGeneration();
+        const initialRun = operation !== void 0;
+        await sendQueryResult(client, subscription, onError, operation);
+        operation = void 0;
+        if (running.cancelled || client.closing || client.socket.destroyed || !clients.has(client) || client.subscriptions.get(subscription.id) !== subscription) break;
+        const latestGeneration = liveQueryWriteGeneration();
+        if (!initialRun && latestGeneration !== generation && latestGeneration !== dispatchedWriteGeneration) refreshQueries();
+        if (!running.pending || !running.unscoped && !liveQueryNeedsRefresh(subscription.readTables, running.dirty)) break;
+      } while (true);
+    } finally {
+      if (queryRefreshes.get(subscription) === running) queryRefreshes.delete(subscription);
     }
   }
   async function sendAuthResult(client, id2) {
@@ -142437,7 +142536,7 @@ export class App extends Component {
   componentDidMount() { this.session.componentDidMount(); this.todos.componentDidMount(); }
   componentWillUnmount() { this.todos.componentWillUnmount(); this.session.componentWillUnmount(); }
   async submit(event: Event) { event.preventDefault(); const value = this.text.trim(); if (!value) return; const result = await this.addTodo.run(value); if (!result.error) { this.text = ""; this.forceUpdate(); } }
-  render() { const query = this.todos.state; const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return <main className="shell"><header><img className="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>{!this.session.isAuthenticated() ? providers.map(([provider]) => <button key={provider} type="button" onClick={() => auth.signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>) : null}<form onSubmit={(event) => this.submit(event)}><input aria-label="Todo" value={this.text} onInput={(event) => { this.text = (event.currentTarget as HTMLInputElement).value; this.forceUpdate(); }} /><button disabled={this.addTodo.state.loading || !this.text.trim()}>Add</button></form>{query.loading ? <p>Loading\u2026</p> : query.error ? <p role="alert">{query.error.message}</p> : <ul>{(query.data ?? []).map((todo) => <li key={todo.id}>{todo.text}</li>)}</ul>}</main>; }
+  render() { const query = this.todos.state; const providers = Object.entries(this.session.state.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable); return <main className="shell"><header><img className="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>{!this.session.isAuthenticated() ? providers.map(([provider]) => <button key={provider} type="button" onClick={() => auth.signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>) : null}<form onSubmit={(event) => this.submit(event)}><input aria-label="Todo" value={this.text} onInput={(event) => { this.text = (event.currentTarget as HTMLInputElement).value; this.forceUpdate(); }} /><button disabled={this.addTodo.state.loading || !this.text.trim()}>Add</button></form>{query.loading ? <p>Loading\u2026</p> : query.error ? <p role="alert">{query.error.message}</p> : <ul>{(query.data ?? []).map((todo) => <li key={todo.id}>{todo.text}</li>)}</ul>}</main>; }
 }
 export function mountInfernoApp(target: Element) { render(<App />, target); }
 mountInfernoApp(document.getElementById("app")!);
@@ -142455,7 +142554,7 @@ export class App extends Component { session=authAdapter(this);entries=queryAdap
 componentDidMount(){this.session.componentDidMount();this.entries.componentDidMount();} componentWillUnmount(){this.entries.componentWillUnmount();this.session.componentWillUnmount();}
 async signIn(provider:string){this.notice="";const r=await auth.signIn(provider);if(r.error)this.notice=r.error.message;this.forceUpdate();} async signOut(){this.notice="";const r=await auth.signOut();if(r.error)this.notice=r.error.message;this.forceUpdate();}
 async submit(e:Event){e.preventDefault();const value=this.body.trim();if(!value||value.length>maxLength)return;const r=await this.sign.run(value);if(!r.error)this.body="";this.forceUpdate();}
-render(){const remaining=maxLength-this.body.length,providers=Object.entries(this.session.state.providers).filter(([,state])=>state.enabled&&state.configured&&state.runtimeAvailable);return <main className="shell"><header><div><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div><span>{this.session.state.auth?.displayName??"Anonymous"}</span>{this.session.isAuthenticated()?<button type="button" onClick={()=>this.signOut()}>Sign out</button>:providers.map(([provider])=><button key={provider} type="button" onClick={()=>this.signIn(provider)}>Sign in with {provider[0].toUpperCase()+provider.slice(1)}</button>)}{this.notice?<p role="alert">{this.notice}</p>:null}</div></header><form onSubmit={(e)=>this.submit(e)}><textarea value={this.body} maxLength={maxLength} onInput={(e)=>{this.body=(e.currentTarget as HTMLTextAreaElement).value;this.forceUpdate();}}/><span>{remaining} characters left</span><button disabled={!this.body.trim()||this.sign.state.loading}>Sign guestbook</button>{this.sign.state.error?<p role="alert">{this.sign.state.error.message}</p>:null}</form><section>{(this.entries.state.data??[]).map(entry=><article key={entry.id}><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></article>)}</section></main>}}
+render(){const remaining=maxLength-this.body.length,providers=Object.entries(this.session.state.providers).filter(([provider,state])=>["google","microsoft","apple","facebook"].includes(provider)&&state.enabled&&state.configured&&state.runtimeAvailable);return <main className="shell"><header><div><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div><span>{this.session.state.auth?.displayName??"Anonymous"}</span>{this.session.isAuthenticated()?<button type="button" onClick={()=>this.signOut()}>Sign out</button>:providers.map(([provider])=><button key={provider} type="button" onClick={()=>this.signIn(provider)}>Sign in with {provider[0].toUpperCase()+provider.slice(1)}</button>)}{this.notice?<p role="alert">{this.notice}</p>:null}</div></header><form onSubmit={(e)=>this.submit(e)}><textarea value={this.body} maxLength={maxLength} onInput={(e)=>{this.body=(e.currentTarget as HTMLTextAreaElement).value;this.forceUpdate();}}/><span>{remaining} characters left</span><button disabled={!this.body.trim()||this.sign.state.loading}>Sign guestbook</button>{this.sign.state.error?<p role="alert">{this.sign.state.error.message}</p>:null}</form><section>{(this.entries.state.data??[]).map(entry=><article key={entry.id}><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></article>)}</section></main>}}
 export function mountInfernoApp(target:Element){render(<App/>,target);} mountInfernoApp(document.getElementById("app")!);
 `;
 }
@@ -142473,7 +142572,7 @@ async signIn(provider:string){this.message="";const r=await auth.signIn(provider
 async requireMutation(mutation:any,...args:any[]){const result=await mutation.run(...args);if(result.error)throw new Error(result.error.message);return result;}
 async submit(e:Event){e.preventDefault();if(!this.selected)return;this.message="Uploading...";this.forceUpdate();try{const file=await files.upload(this.selected);const shouldPublish=!this.session.isAuthenticated()||this.publish;const publicUrl=shouldPublish?await files.publicUrl(file.id,{noExpiry:true}):null;const r=await this.record.run({title:this.title,file,isPublic:shouldPublish,publicUrl});if(r.error){this.message=r.error.message;return;}this.title="";this.selected=null;this.publish=false;this.message=shouldPublish?"Photo added to the public gallery.":"Photo saved privately.";}catch(error){this.message=error instanceof Error?error.message:"Upload failed.";}finally{this.forceUpdate();}}
 async makePublic(photo:Photo){this.message="";try{const url=await files.publicUrl(photo.fileId,{noExpiry:true});await this.requireMutation(this.setImage,photo.id,url.url);await this.requireMutation(this.setPublicId,photo.id,url.id);await this.requireMutation(this.setPublic,photo.id,true);}catch(error){this.message=error instanceof Error?error.message:"Could not publish photo.";}this.forceUpdate();}async makePrivate(photo:Photo){this.message="";try{if(photo.publicUrlId)await files.revokePublicUrl(photo.publicUrlId);await this.requireMutation(this.setPublic,photo.id,false);await this.requireMutation(this.setImage,photo.id,"");await this.requireMutation(this.setPublicId,photo.id,"");}catch(error){this.message=error instanceof Error?error.message:"Could not hide photo.";}this.forceUpdate();}
-render(){const signedIn=this.session.isAuthenticated(),providers=Object.entries(this.session.state.providers).filter(([,state])=>state.enabled&&state.configured&&state.runtimeAvailable),gallery=this.publicPhotos.state.data??[],mine=signedIn?this.personalPhotos.state.data??[]:[];return <main className="shell"><header><div><p>Sporades Storage</p><h1>Photo Library</h1></div>{signedIn?<button onClick={()=>this.signOut()}>Sign out</button>:providers.map(([provider])=><button key={provider} onClick={()=>this.signIn(provider)}>Sign in with {provider[0].toUpperCase()+provider.slice(1)}</button>)}</header><form onSubmit={(e)=>this.submit(e)}><input value={this.title} placeholder="Caption" onInput={(e)=>{this.title=(e.currentTarget as HTMLInputElement).value;this.forceUpdate();}}/><input type="file" accept="image/*" onChange={(e)=>{this.selected=(e.currentTarget as HTMLInputElement).files?.[0]??null;this.forceUpdate();}}/><label><input type="checkbox" checked={!signedIn||this.publish} disabled={!signedIn} onChange={(e)=>{this.publish=(e.currentTarget as HTMLInputElement).checked;this.forceUpdate();}}/>{signedIn?"Publish to gallery":"Anonymous uploads are public"}</label><button disabled={!this.selected||this.record.state.loading}>Upload photo</button>{this.message?<p role="status">{this.message}</p>:null}</form><h2>Public gallery</h2><section>{gallery.map(p=><article key={p.id}><img src={p.imageUrl} alt={p.title}/><strong>{p.title}</strong><span>{p.ownerName}</span></article>)}</section>{signedIn?<section><h2>My library</h2>{mine.map(p=><article key={p.id}><strong>{p.title}</strong><span>{p.status}</span>{p.isPublic?<button onClick={()=>this.makePrivate(p)}>Make private</button>:<button onClick={()=>this.makePublic(p)}>Make public</button>}</article>)}</section>:null}</main>}}
+render(){const signedIn=this.session.isAuthenticated(),providers=Object.entries(this.session.state.providers).filter(([provider,state])=>["google","microsoft","apple","facebook"].includes(provider)&&state.enabled&&state.configured&&state.runtimeAvailable),gallery=this.publicPhotos.state.data??[],mine=signedIn?this.personalPhotos.state.data??[]:[];return <main className="shell"><header><div><p>Sporades Storage</p><h1>Photo Library</h1></div>{signedIn?<button onClick={()=>this.signOut()}>Sign out</button>:providers.map(([provider])=><button key={provider} onClick={()=>this.signIn(provider)}>Sign in with {provider[0].toUpperCase()+provider.slice(1)}</button>)}</header><form onSubmit={(e)=>this.submit(e)}><input value={this.title} placeholder="Caption" onInput={(e)=>{this.title=(e.currentTarget as HTMLInputElement).value;this.forceUpdate();}}/><input type="file" accept="image/*" onChange={(e)=>{this.selected=(e.currentTarget as HTMLInputElement).files?.[0]??null;this.forceUpdate();}}/><label><input type="checkbox" checked={!signedIn||this.publish} disabled={!signedIn} onChange={(e)=>{this.publish=(e.currentTarget as HTMLInputElement).checked;this.forceUpdate();}}/>{signedIn?"Publish to gallery":"Anonymous uploads are public"}</label><button disabled={!this.selected||this.record.state.loading}>Upload photo</button>{this.message?<p role="status">{this.message}</p>:null}</form><h2>Public gallery</h2><section>{gallery.map(p=><article key={p.id}><img src={p.imageUrl} alt={p.title}/><strong>{p.title}</strong><span>{p.ownerName}</span></article>)}</section>{signedIn?<section><h2>My library</h2>{mine.map(p=><article key={p.id}><strong>{p.title}</strong><span>{p.status}</span>{p.isPublic?<button onClick={()=>this.makePrivate(p)}>Make private</button>:<button onClick={()=>this.makePublic(p)}>Make public</button>}</article>)}</section>:null}</main>}}
 export function mountInfernoApp(target:Element){render(<App/>,target);} mountInfernoApp(document.getElementById("app")!);
 `;
 }
@@ -142557,7 +142656,7 @@ class SporadesApp extends LitElement {
   text = "";
   static styles = css\`:host{display:block;max-width:42rem;margin:3rem auto;font-family:system-ui,sans-serif;color:#15211d}header,form{display:flex;gap:.75rem;align-items:center}.mark{width:2rem;height:2rem}li{margin-block:.5rem}\`;
   async submit(event: SubmitEvent) { event.preventDefault(); const value = this.text.trim(); if (!value) return; const result = await this.addTodo.run(value); if (!result.error) { this.text = ""; this.requestUpdate(); } }
-  render() { const query = this.todos.state; const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return html\`<main><header><img class="mark" src=\${mark} alt=""><h1>Sporades Todos</h1></header>\${!this.session.isAuthenticated() ? providers.map(([provider]) => html\`<button @click=\${() => auth.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`) : null}<form @submit=\${(event: SubmitEvent) => this.submit(event)}><input aria-label="Todo" .value=\${this.text} @input=\${(event: InputEvent) => { this.text = (event.currentTarget as HTMLInputElement).value; }}><button ?disabled=\${this.addTodo.state.loading}>Add</button></form>\${query.loading ? html\`<p>Loading\u2026</p>\` : query.error ? html\`<p role="alert">\${query.error.message}</p>\` : html\`<ul>\${(query.data ?? []).map((todo) => html\`<li>\${todo.text}</li>\`)}</ul>\`}</main>\`; }
+  render() { const query = this.todos.state; const providers = Object.entries(this.session.state.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable); return html\`<main><header><img class="mark" src=\${mark} alt=""><h1>Sporades Todos</h1></header>\${!this.session.isAuthenticated() ? providers.map(([provider]) => html\`<button @click=\${() => auth.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`) : null}<form @submit=\${(event: SubmitEvent) => this.submit(event)}><input aria-label="Todo" .value=\${this.text} @input=\${(event: InputEvent) => { this.text = (event.currentTarget as HTMLInputElement).value; }}><button ?disabled=\${this.addTodo.state.loading}>Add</button></form>\${query.loading ? html\`<p>Loading\u2026</p>\` : query.error ? html\`<p role="alert">\${query.error.message}</p>\` : html\`<ul>\${(query.data ?? []).map((todo) => html\`<li>\${todo.text}</li>\`)}</ul>\`}</main>\`; }
 }
 customElements.define("sporades-app", SporadesApp);
 `;
@@ -142576,7 +142675,7 @@ class SporadesApp extends LitElement {
   async signIn(provider: string) { this.authError = ""; const result = await auth.signIn(provider); if (result.error) this.authError = result.error.message; this.requestUpdate(); }
   async signOut() { this.authError = ""; const result = await auth.signOut(); if (result.error) this.authError = result.error.message; this.requestUpdate(); }
   async submit(event: SubmitEvent) { event.preventDefault(); const message = this.body.trim(); if (!message || message.length > this.maxLength) return; const result = await this.sign.run(message); if (!result.error) this.body = ""; this.requestUpdate(); }
-  render() { const entries = this.entries.state; const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return html\`<main><section class="intro"><div><img class="mark" src=\${mark} alt=""><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth"><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span>\${this.session.isAuthenticated() ? html\`<button @click=\${() => this.signOut()}>Sign out</button>\` : providers.map(([provider]) => html\`<button @click=\${() => this.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`)}\${this.authError ? html\`<p class="error">\${this.authError}</p>\` : null}</div></section><form @submit=\${(event: SubmitEvent) => this.submit(event)}><textarea .value=\${this.body} maxlength=\${this.maxLength} @input=\${(event: InputEvent) => { this.body = (event.currentTarget as HTMLTextAreaElement).value; this.requestUpdate(); }}></textarea><div class="row"><span>\${this.maxLength - this.body.length} characters left</span><button ?disabled=\${!this.body.trim() || this.sign.state.loading}>Sign guestbook</button></div>\${this.sign.state.error ? html\`<p class="error">\${this.sign.state.error.message}</p>\` : null}</form>\${entries.loading ? html\`<p>Loading\u2026</p>\` : entries.error ? html\`<p role="alert" class="error">\${entries.error.message}</p>\` : html\`<section class="entries">\${(entries.data ?? []).map((entry) => html\`<article><strong>\${entry.authorName}</strong><time>\${new Date(entry.createdAt).toLocaleString()}</time><p>\${entry.body}</p></article>\`)}</section>\`}</main>\`; }
+  render() { const entries = this.entries.state; const providers = Object.entries(this.session.state.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable); return html\`<main><section class="intro"><div><img class="mark" src=\${mark} alt=""><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth"><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span>\${this.session.isAuthenticated() ? html\`<button @click=\${() => this.signOut()}>Sign out</button>\` : providers.map(([provider]) => html\`<button @click=\${() => this.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`)}\${this.authError ? html\`<p class="error">\${this.authError}</p>\` : null}</div></section><form @submit=\${(event: SubmitEvent) => this.submit(event)}><textarea .value=\${this.body} maxlength=\${this.maxLength} @input=\${(event: InputEvent) => { this.body = (event.currentTarget as HTMLTextAreaElement).value; this.requestUpdate(); }}></textarea><div class="row"><span>\${this.maxLength - this.body.length} characters left</span><button ?disabled=\${!this.body.trim() || this.sign.state.loading}>Sign guestbook</button></div>\${this.sign.state.error ? html\`<p class="error">\${this.sign.state.error.message}</p>\` : null}</form>\${entries.loading ? html\`<p>Loading\u2026</p>\` : entries.error ? html\`<p role="alert" class="error">\${entries.error.message}</p>\` : html\`<section class="entries">\${(entries.data ?? []).map((entry) => html\`<article><strong>\${entry.authorName}</strong><time>\${new Date(entry.createdAt).toLocaleString()}</time><p>\${entry.body}</p></article>\`)}</section>\`}</main>\`; }
 }
 customElements.define("sporades-app", SporadesApp);
 `;
@@ -142600,7 +142699,7 @@ class SporadesApp extends LitElement {
   async makePublic(photo: any) { try { const publicUrl = await files.publicUrl(photo.fileId, { noExpiry: true }); await this.requireMutation(this.updatePhotoImageUrl, photo.id, publicUrl.url); await this.requireMutation(this.updatePhotoPublicUrlId, photo.id, publicUrl.id); await this.requireMutation(this.updatePhotoIsPublic, photo.id, true); } catch (error) { this.message = error instanceof Error ? error.message : "Could not publish photo."; } this.requestUpdate(); }
   async makePrivate(photo: any) { try { if (photo.publicUrlId) await files.revokePublicUrl(photo.publicUrlId); await this.requireMutation(this.updatePhotoIsPublic, photo.id, false); await this.requireMutation(this.updatePhotoImageUrl, photo.id, ""); await this.requireMutation(this.updatePhotoPublicUrlId, photo.id, ""); } catch (error) { this.message = error instanceof Error ? error.message : "Could not hide photo."; } this.requestUpdate(); }
   renderPhoto(photo: any) { return html\`<article><img src=\${photo.imageUrl} alt=\${photo.title}><strong>\${photo.title}</strong><span>\${photo.ownerName}</span></article>\`; }
-  render() { const signedIn = this.session.isAuthenticated(); const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return html\`<main><header><div><img class="mark" src=\${mark} alt=""><h1>Photo Library</h1></div><div><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span>\${signedIn ? html\`<button @click=\${() => this.signOut()}>Sign out</button>\` : providers.map(([provider]) => html\`<button @click=\${() => this.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`)}</div></header><form @submit=\${(event: SubmitEvent) => this.submit(event)}><input placeholder="Caption" .value=\${this.title} @input=\${(event: InputEvent) => this.title = (event.currentTarget as HTMLInputElement).value}><input type="file" accept="image/*" @change=\${(event: Event) => { this.selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; this.requestUpdate(); }}><label><input type="checkbox" .checked=\${!signedIn || this.publish} ?disabled=\${!signedIn} @change=\${(event: Event) => { this.publish = (event.currentTarget as HTMLInputElement).checked; this.requestUpdate(); }}>\${signedIn ? "Publish to gallery" : "Anonymous uploads are public"}</label><button ?disabled=\${!this.selectedFile || this.recordPhoto.state.loading}>Upload photo</button>\${this.message ? html\`<p role="status">\${this.message}</p>\` : null}</form><section><h2>Public gallery</h2><div class="grid">\${(this.publicPhotos.state.data ?? []).map((photo) => this.renderPhoto(photo))}</div></section>\${signedIn ? html\`<section><h2>My library</h2>\${(this.personalPhotos.state.data ?? []).map((photo) => html\`<article class="library"><strong>\${photo.title}</strong><span>\${photo.status}</span><button @click=\${() => photo.isPublic ? this.makePrivate(photo) : this.makePublic(photo)}>\${photo.isPublic ? "Make private" : "Make public"}</button></article>\`)}</section>\` : null}</main>\`; }
+  render() { const signedIn = this.session.isAuthenticated(); const providers = Object.entries(this.session.state.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable); return html\`<main><header><div><img class="mark" src=\${mark} alt=""><h1>Photo Library</h1></div><div><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span>\${signedIn ? html\`<button @click=\${() => this.signOut()}>Sign out</button>\` : providers.map(([provider]) => html\`<button @click=\${() => this.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`)}</div></header><form @submit=\${(event: SubmitEvent) => this.submit(event)}><input placeholder="Caption" .value=\${this.title} @input=\${(event: InputEvent) => this.title = (event.currentTarget as HTMLInputElement).value}><input type="file" accept="image/*" @change=\${(event: Event) => { this.selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; this.requestUpdate(); }}><label><input type="checkbox" .checked=\${!signedIn || this.publish} ?disabled=\${!signedIn} @change=\${(event: Event) => { this.publish = (event.currentTarget as HTMLInputElement).checked; this.requestUpdate(); }}>\${signedIn ? "Publish to gallery" : "Anonymous uploads are public"}</label><button ?disabled=\${!this.selectedFile || this.recordPhoto.state.loading}>Upload photo</button>\${this.message ? html\`<p role="status">\${this.message}</p>\` : null}</form><section><h2>Public gallery</h2><div class="grid">\${(this.publicPhotos.state.data ?? []).map((photo) => this.renderPhoto(photo))}</div></section>\${signedIn ? html\`<section><h2>My library</h2>\${(this.personalPhotos.state.data ?? []).map((photo) => html\`<article class="library"><strong>\${photo.title}</strong><span>\${photo.status}</span><button @click=\${() => photo.isPublic ? this.makePrivate(photo) : this.makePublic(photo)}>\${photo.isPublic ? "Make private" : "Make public"}</button></article>\`)}</section>\` : null}</main>\`; }
 }
 customElements.define("sporades-app", SporadesApp);
 `;
@@ -142727,7 +142826,7 @@ export default function App() {
   const todos = createQuery<Todo[]>("todos");
   const addTodo = createMutation("addTodo");
   const [text, setText] = createSignal("");
-  const providers = () => Object.entries(session.state().providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  const providers = () => Object.entries(session.state().providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable);
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -142780,7 +142879,7 @@ export default function App() {
   }
   return <main class="shell">
     <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div>
-      <div class="auth-panel"><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={!session.isAuthenticated()} fallback={<button class="secondary" type="button" onClick={signOut}>Sign out</button>}><For each={Object.entries(session.state().providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)}>{([provider]) => <button type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>}</For></Show><Show when={authError()}><p class="error">{authError()}</p></Show></div></section>
+      <div class="auth-panel"><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={!session.isAuthenticated()} fallback={<button class="secondary" type="button" onClick={signOut}>Sign out</button>}><For each={Object.entries(session.state().providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable)}>{([provider]) => <button type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>}</For></Show><Show when={authError()}><p class="error">{authError()}</p></Show></div></section>
     <form onSubmit={submit}><textarea value={body()} maxLength={maxLength} placeholder="Write something kind, sharp, or strangely memorable." onInput={(event) => setBody(event.currentTarget.value)} /><div class="row"><span>{maxLength - body().length} characters left</span><button type="submit" disabled={!body().trim() || sign.state().loading}>Sign guestbook</button></div><Show when={sign.state().error}><p class="error">{sign.state().error?.message}</p></Show></form>
     <Show when={!entries().loading} fallback={<p>Loading\u2026</p>}><Show when={!entries().error} fallback={<p class="error" role="alert">{entries().error?.message}</p>}><section class="entries"><For each={entries().data ?? []}>{(entry) => <article><Show when={entry.authorPicture} fallback={<span class="badge">{initials(entry.authorName)}</span>}><img src={entry.authorPicture} alt="" /></Show><div><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></div></article>}</For></section></Show></Show>
   </main>;
@@ -142798,7 +142897,7 @@ export default function App() {
   const publicPhotos = createQuery<any[]>("publicPhotos"), personalPhotos = createQuery<any[]>("personalPhotos");
   const recordPhoto = createMutation("recordPhoto"), updatePhotoIsPublic = createMutation("updatePhotoIsPublic"), updatePhotoImageUrl = createMutation("updatePhotoImageUrl"), updatePhotoPublicUrlId = createMutation("updatePhotoPublicUrlId");
   const [title, setTitle] = createSignal(""), [selectedFile, setSelectedFile] = createSignal<File | null>(null), [publish, setPublish] = createSignal(false), [message, setMessage] = createSignal("");
-  const providers = () => Object.entries(session.state().providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  const providers = () => Object.entries(session.state().providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable);
   async function signIn(provider: string) { setMessage(""); const result = await auth.signIn(provider); if (result.error) setMessage(result.error.message); }
   async function signOut() { setMessage(""); const result = await auth.signOut(); if (result.error) setMessage(result.error.message); }
   async function requireMutation(mutation: any, ...args: any[]) { const result = await mutation.run(...args); if (result.error) throw result.error; return result; }
@@ -142937,7 +143036,7 @@ function svelteTodoAppTemplate() {
 
 <main>
   <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>
-  {#if !$session.isAuthenticated()}{#each Object.entries($session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable) as [provider]}<button type="button" onclick={() => auth.signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>{/each}{/if}
+  {#if !$session.isAuthenticated()}{#each Object.entries($session.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable) as [provider]}<button type="button" onclick={() => auth.signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>{/each}{/if}
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}><input bind:value={text} aria-label="Todo" /><button disabled={$addTodo.loading}>Add</button></form>
   {#if $todos.loading}<p>Loading\u2026</p>{:else if $todos.error}<p role="alert">{$todos.error.message}</p>{:else}<ul>{#each $todos.data ?? [] as todo (todo.id)}<li>{todo.text}</li>{/each}</ul>{/if}
 </main>
@@ -142968,7 +143067,7 @@ function svelteGuestbookAppTemplate() {
 </script>
 
 <main class="shell">
-  <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth-panel"><span>{$session.auth?.displayName ?? "Anonymous"}</span>{#if !$session.isAuthenticated()}{#each Object.entries($session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable) as [provider]}<button type="button" onclick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>{/each}{:else}<button class="secondary" type="button" onclick={signOut}>Sign out</button>{/if}{#if authError}<p class="error">{authError}</p>{/if}</div></section>
+  <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth-panel"><span>{$session.auth?.displayName ?? "Anonymous"}</span>{#if !$session.isAuthenticated()}{#each Object.entries($session.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable) as [provider]}<button type="button" onclick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>{/each}{:else}<button class="secondary" type="button" onclick={signOut}>Sign out</button>{/if}{#if authError}<p class="error">{authError}</p>{/if}</div></section>
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}><textarea bind:value={body} maxlength={maxLength} placeholder="Write something kind, sharp, or strangely memorable."></textarea><div class="row"><span>{maxLength - body.length} characters left</span><button disabled={!body.trim() || $sign.loading}>Sign guestbook</button></div>{#if $sign.error}<p class="error">{$sign.error.message}</p>{/if}</form>
   {#if $entries.loading}<p>Loading\u2026</p>{:else if $entries.error}<p class="error" role="alert">{$entries.error.message}</p>{:else}<section class="entries">{#each $entries.data ?? [] as entry (entry.id)}<article><span class="badge">{entry.authorPicture ? "" : initials(entry.authorName)}</span>{#if entry.authorPicture}<img src={entry.authorPicture} alt="" />{/if}<div><strong>{entry.authorName}</strong><time datetime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></div></article>{/each}</section>{/if}
 </main>
@@ -142986,7 +143085,7 @@ function sveltePhotoLibraryAppTemplate() {
   const publicPhotos = queryStore("publicPhotos"); const personalPhotos = queryStore("personalPhotos");
   const recordPhoto = mutationStore("recordPhoto"); const updatePhotoIsPublic = mutationStore("updatePhotoIsPublic"); const updatePhotoImageUrl = mutationStore("updatePhotoImageUrl"); const updatePhotoPublicUrlId = mutationStore("updatePhotoPublicUrlId");
   let title = "", selectedFile: File | null = null, publish = false, message = "";
-  $: availableProviders = Object.entries($session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  $: availableProviders = Object.entries($session.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable);
   async function signIn(provider: string) { message = ""; const result = await auth.signIn(provider); if (result.error) message = result.error.message; }
   async function signOut() { message = ""; const result = await auth.signOut(); if (result.error) message = result.error.message; }
   async function requireMutation(store: any,...args: any[]){const result=await store.run(...args);if(result.error)throw result.error;return result;}
@@ -143120,7 +143219,7 @@ async function submit() {
 <template>
   <main>
     <header><img class="mark" src="./sporades-mark.svg" alt="" /><h1>Sporades Todos</h1></header>
-    <template v-if="!session.isAuthenticated()"><button v-for="[provider] in Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)" :key="provider" type="button" @click="auth.signIn(provider)">Sign in with {{ provider[0].toUpperCase() + provider.slice(1) }}</button></template>
+    <template v-if="!session.isAuthenticated()"><button v-for="[provider] in Object.entries(session.providers).filter(([provider, state]) => ['google', 'microsoft', 'apple', 'facebook'].includes(provider) && state.enabled && state.configured && state.runtimeAvailable)" :key="provider" type="button" @click="auth.signIn(provider)">Sign in with {{ provider[0].toUpperCase() + provider.slice(1) }}</button></template>
     <form @submit.prevent="submit"><input v-model="text" aria-label="Todo" /><button :disabled="addTodo.loading">Add</button></form>
     <p v-if="todos.loading">Loading\u2026</p>
     <p v-else-if="todos.error" role="alert">{{ todos.error.message }}</p>
@@ -143180,7 +143279,7 @@ function initials(name: string) {
       <div><img class="mark" src="./sporades-mark.svg" alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div>
       <div class="auth-panel">
         <span>{{ session.auth?.displayName ?? "Anonymous" }}</span>
-        <template v-if="!session.isAuthenticated()"><button v-for="[provider] in Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)" :key="provider" type="button" @click="signIn(provider)">Sign in with {{ provider[0].toUpperCase() + provider.slice(1) }}</button></template>
+        <template v-if="!session.isAuthenticated()"><button v-for="[provider] in Object.entries(session.providers).filter(([provider, state]) => ['google', 'microsoft', 'apple', 'facebook'].includes(provider) && state.enabled && state.configured && state.runtimeAvailable)" :key="provider" type="button" @click="signIn(provider)">Sign in with {{ provider[0].toUpperCase() + provider.slice(1) }}</button></template>
         <button v-else class="secondary-button" type="button" @click="signOut">Sign out</button>
         <p v-if="authError" class="error">{{ authError }}</p>
       </div>
@@ -143237,7 +143336,7 @@ const title = ref("");
 const selectedFile = ref<File | null>(null);
 const publish = ref(false);
 const message = ref("");
-const availableProviders = computed(() => Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable));
+const availableProviders = computed(() => Object.entries(session.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable));
 
 function selectFile(event: Event) { selectedFile.value = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; }
 async function signIn(provider: string) { message.value = ""; const result = await auth.signIn(provider); if (result.error) message.value = result.error.message; }
@@ -144598,7 +144697,7 @@ function App() {
     <main>
       <h1>Sporades Todos</h1>
       {!session.isAuthenticated() ? Object.entries(session.providers)
-        .filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)
+        .filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable)
         .map(([provider]) => (
           <button key={provider} type="button" onClick={() => auth.signIn(provider)}>
             Sign in with {provider[0].toUpperCase() + provider.slice(1)}
@@ -144644,7 +144743,7 @@ function App() {
     <main>
       <h1>Sporades Todos</h1>
       {!session.isAuthenticated() ? Object.entries(session.providers)
-        .filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)
+        .filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable)
         .map(([provider]) => (
           <button key={provider} type="button" onClick={() => auth.signIn(provider)}>
             Sign in with {provider[0].toUpperCase() + provider.slice(1)}
@@ -144690,7 +144789,7 @@ function App() {
   const [body, setBody] = useState("");
   const [authError, setAuthError] = useState("");
   const remaining = maxLength - body.length;
-  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  const availableProviders = Object.entries(session.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable);
 
   async function signIn(provider: string) {
     setAuthError("");
@@ -144822,7 +144921,7 @@ function App() {
   const [body, setBody] = useState("");
   const [authError, setAuthError] = useState("");
   const remaining = maxLength - body.length;
-  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  const availableProviders = Object.entries(session.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable);
 
   async function signIn(provider: string) {
     setAuthError("");
@@ -144960,7 +145059,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [publish, setPublish] = useState(false);
   const [message, setMessage] = useState("");
-  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  const availableProviders = Object.entries(session.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable);
 
   async function signIn(provider: string) {
     setMessage("");
@@ -145162,7 +145261,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [publish, setPublish] = useState(false);
   const [message, setMessage] = useState("");
-  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  const availableProviders = Object.entries(session.providers).filter(([provider, state]) => ["google", "microsoft", "apple", "facebook"].includes(provider) && state.enabled && state.configured && state.runtimeAvailable);
 
   async function signIn(provider: string) {
     setMessage("");

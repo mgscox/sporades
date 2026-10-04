@@ -20,7 +20,7 @@ import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js"
 import { createMailRuntime } from "./mail-runtime.js";
 import { ensureNotificationIntentStorage, notificationIntentStorageExists, startNotificationIntentWorker, stopNotificationIntentWorker } from "./notification-intent-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
-import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
+import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, liveQueryWriteGeneration, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
 import { sqlWithoutTrailingTerminator, validateReadOnlyInspectionSql } from "./inspection-sql.js";
 import { isInternalLogIndexMetadataRow, targetsInternalLogIndexTable } from "./log-index-guard.js";
 import { HelperError, assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
@@ -5164,6 +5164,8 @@ export function createWebSocketHub(
   let journeyExpiryTimer: any = null;
   let journeyDisableRequests = 0;
   const queryOperations = new WeakMap<object, RuntimeWebSocketOperation>();
+  const queryRefreshes = new WeakMap<object, { pending: boolean; unscoped: boolean; dirty: Set<string>; cancelled: boolean }>();
+  let dispatchedWriteGeneration = liveQueryWriteGeneration();
 
   function operationOutcome(error: any): WebSocketOperationOutcome {
     if (!error) return "success";
@@ -5281,6 +5283,7 @@ export function createWebSocketHub(
       const removeClient = () => {
         if (removed) return;
         removed = true;
+        for (const subscription of client.subscriptions.values()) cancelQueryRefresh(subscription);
         try { connectionClosed?.(); } catch {}
         if (client.telemetryOperations) {
           for (const operation of client.telemetryOperations) {
@@ -5773,10 +5776,10 @@ export function createWebSocketHub(
       }
       const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
       const previous = client.subscriptions.get(message.id);
-      if (previous) queryOperations.get(previous)?.end("cancelled");
+      if (previous) cancelQueryRefresh(previous);
       client.subscriptions.set(message.id, subscription);
       database.__notifyJobStateQueries = refreshQueries;
-      void sendQueryResult(client, subscription, (error: any) => sendUnhandledMessageError(client, rawMessage, error), operation);
+      void runSubscriptionQueries(client, subscription, (error: any) => sendUnhandledMessageError(client, rawMessage, error), operation);
       return;
     }
 
@@ -5797,7 +5800,7 @@ export function createWebSocketHub(
         return;
       }
       const subscription = client.subscriptions.get(subscriptionId);
-      if (subscription) queryOperations.get(subscription)?.end("cancelled");
+      if (subscription) cancelQueryRefresh(subscription);
       const removed = client.subscriptions.delete(subscriptionId);
       sendJson(client, {
         id: message.id ?? null,
@@ -6346,20 +6349,64 @@ export function createWebSocketHub(
   }
 
   function refreshQueries() {
-    // Scope the refresh to subscriptions that read a table written since the last refresh. An
-    // empty window means an earlier refresh already covered those writes. Adapters that do not
-    // report their statements keep refreshing every subscription (#105).
+    dispatchedWriteGeneration = liveQueryWriteGeneration();
     const dirty = takeLiveQueryDirtyTables();
     const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
-    for (const subscribedClient of clients) {
-      for (const subscription of subscribedClient.subscriptions.values()) {
-        if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty)) continue;
-        void sendQueryResult(
-          subscribedClient,
-          subscription,
-          (error: any) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error),
-        );
+    for (const client of clients) {
+      if (client.closing || client.socket.destroyed) continue;
+      for (const subscription of client.subscriptions.values()) {
+        const running = queryRefreshes.get(subscription);
+        if (running) {
+          // The in-flight run can discover new dependencies. Keep the whole
+          // window, then filter against its completed read set before rerunning.
+          running.pending = true;
+          running.unscoped ||= !scoped;
+          for (const table of dirty) running.dirty.add(table);
+        } else if (!scoped || liveQueryNeedsRefresh(subscription.readTables, dirty)) {
+          void runSubscriptionQueries(client, subscription,
+            (error: any) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error));
+        }
       }
+    }
+  }
+
+  function cancelQueryRefresh(subscription: LooseRecord) {
+    const running = queryRefreshes.get(subscription);
+    if (running) {
+      running.cancelled = true;
+      running.dirty.clear();
+      running.pending = false;
+    }
+    queryRefreshes.delete(subscription);
+    queryOperations.get(subscription)?.end("cancelled");
+    queryOperations.delete(subscription);
+  }
+
+  async function runSubscriptionQueries(client: LooseRecord, subscription: LooseRecord, onError: (error: any) => void, operation?: RuntimeWebSocketOperation) {
+    const running = { pending: false, unscoped: false, dirty: new Set<string>(), cancelled: false };
+    queryRefreshes.set(subscription, running);
+    try {
+      do {
+        running.pending = false;
+        running.unscoped = false;
+        running.dirty.clear();
+        const generation = liveQueryWriteGeneration();
+        const initialRun = operation !== undefined;
+        await sendQueryResult(client, subscription, onError, operation);
+        operation = undefined;
+        if (running.cancelled || client.closing || client.socket.destroyed || !clients.has(client)
+          || client.subscriptions.get(subscription.id) !== subscription) break;
+        // Publish writes that landed mid-query to every subscription without
+        // awaiting other readers. Busy readers retain their own pending window.
+        // A window already dispatched by another reader must not be sent twice.
+        const latestGeneration = liveQueryWriteGeneration();
+        // Initial subscriptions are not completion refreshes. They still retain
+        // explicitly dispatched writes, without initiating new refresh windows.
+        if (!initialRun && latestGeneration !== generation && latestGeneration !== dispatchedWriteGeneration) refreshQueries();
+        if (!running.pending || (!running.unscoped && !liveQueryNeedsRefresh(subscription.readTables, running.dirty))) break;
+      } while (true);
+    } finally {
+      if (queryRefreshes.get(subscription) === running) queryRefreshes.delete(subscription);
     }
   }
 

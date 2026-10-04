@@ -5,6 +5,14 @@ Microsoft OpenID Connect, Sign in with Apple, or Facebook Login links an
 authentication method to that identity so existing
 Capsule data follows the user.
 
+Anonymous access is automatic guest provisioning, not an interactive sign-in
+action. The todo, guestbook, and photo-library scaffolds offer sign-in buttons
+only for enabled, configured, runtime-available Google, Microsoft, Apple, and
+Facebook providers. Their default guest sessions need no sign-in button.
+Email authentication requires a Capsule-owned credential form calling
+`auth.signIn("email", { email, password })`; these demonstration buttons do not
+provide that form. Campfire's explicit email fixture flow is separate.
+
 Follow the [auth workflows](../reference/client-auth-and-preferences.md#auth-workflows) to inspect
 configuration, configure Google, Microsoft, Apple, or Facebook sign-in, use email auth,
 [reset and change email passwords](../reference/client-auth-and-preferences.md#reset-or-change-an-email-password),

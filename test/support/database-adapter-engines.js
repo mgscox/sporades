@@ -12,7 +12,8 @@ import { withFakeLibsqlService } from "./libsql-http-service.js";
 const POSTGRES_TEST_URL_VARIABLE = "SPORADES_POSTGRES_TEST_URL";
 const DEDICATED_POSTGRES_TEST_DATABASE = {
   host: "127.0.0.1",
-  port: "55432",
+  // Parallel worktrees can dedicate their own loopback port without sharing storage.
+  port: process.env.SPORADES_POSTGRES_TEST_PORT ?? "55432",
   database: "sporades_w17",
 };
 
