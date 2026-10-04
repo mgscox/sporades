@@ -2,7 +2,7 @@ import { createBoundedFixedWindow } from "./bounded-fixed-window.js";
 import type { AdmissionGeneration } from "./types/admission-policy.js";
 
 /** One quota table per runtime, bounded across all rules and trusted addresses. */
-export function createAdmissionRateLimiter(options: { now?: () => number; maxBuckets?: number } = {}) {
+export function createAdmissionRateLimiter(options: { now?: () => number; maxBuckets?: number; onEviction?: () => void } = {}) {
   const windows = createBoundedFixedWindow({ ...options, idleMs: 86_400_000, expireWindows: true });
   let digest: string | null | undefined;
   let parameters = new Map<string, string>();

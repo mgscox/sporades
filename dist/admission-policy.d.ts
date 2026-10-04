@@ -1,4 +1,5 @@
 import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
+import { createAdmissionEvidence } from "./admission-evidence.js";
 import { type BuiltDeployFile } from "./deploy-files.js";
 export declare const ADMISSION_LIMITS: Readonly<{
     bytes: 65536;
@@ -33,7 +34,11 @@ export declare function resolveAdmissionPolicy(value: unknown, files?: unknown):
 export declare function admissionStorageRoot(preservedRoot: string): string;
 export declare function buildAdmissionPolicy(projectDir: string, value: unknown, files?: unknown): Promise<BuiltDeployFile[]>;
 export declare function publishAdmissionPolicy(root: string, relative: string, bytes: Buffer | null): Promise<void>;
-export declare function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth) => void, limiterOptions?: Parameters<typeof createAdmissionRateLimiter>[0]): Promise<Readonly<{
+export type AdmissionReloadEvent = "loaded" | "failure" | "recovery";
+export declare function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth, event: AdmissionReloadEvent) => void, options?: Parameters<typeof createAdmissionRateLimiter>[0] & {
+    evidence?: ReturnType<typeof createAdmissionEvidence>;
+    deferActivation?: boolean;
+}): Promise<Readonly<{
     current: () => Readonly<{
         digest: string;
         policy: import("../src/types/admission-policy.js").AdmissionPolicy;
@@ -47,7 +52,13 @@ export declare function openAdmissionPolicy(root: string, relative: string, onHe
             evictions: number;
         }>;
     }>;
+    evidence: Readonly<{
+        count: (name: "denied" | "evaluated" | "admitted" | "rateLimited" | "reloadFailures" | "reloadRecoveries" | "limiterEvictions" | "decisionsEmitted" | "decisionsSuppressed") => void;
+        decision: (value: import("./admission-evidence.js").AdmissionDecision, emit?: (value: import("./admission-evidence.js").AdmissionDecision) => void) => void;
+        snapshot: () => import("../src/types/admission-policy.js").AdmissionEvidence;
+    }>;
     health: () => AdmissionHealth;
+    activate: (previousHealth?: AdmissionHealth) => void;
     reload: () => Promise<void>;
     close: () => Promise<void>;
 }>>;

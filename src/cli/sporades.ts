@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { validateQueryCredential } from "./telemetry-diagnostics.js";
-import { openAdmissionPolicy, type AdmissionHealth, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
+import { openAdmissionPolicy, type AdmissionHealth, type AdmissionReloadEvent, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
+import { createAdmissionEvidence } from "../admission-evidence.js";
 import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
@@ -3137,12 +3138,16 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     clamavSidecar = attached.sidecar; return attached.attached;
   };
   let database: any;
-  const reportAdmissionHealth = (health: AdmissionHealth) => {
-    try { database?.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health }); }
+  const reportAdmissionHealth = (health: AdmissionHealth, event: AdmissionReloadEvent = "loaded") => {
+    try {
+      if (database) database.log.emit({ category: "platform", event: `admission.policy.${event}`, level: event === "failure" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+      else if (event === "failure" || event === "recovery") process.stderr.write(JSON.stringify({ event: `admission.policy.${event}`, data: health }) + "\n");
+    }
     catch { /* Policy diagnostics never interrupt runtime work. */ }
   };
   let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
-  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
+  const admissionEvidence = createAdmissionEvidence();
+  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth, { evidence: admissionEvidence }) : null;
   try {
   database = await openDevDatabase(
     options.databasePath,
@@ -3177,9 +3182,9 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
       let nextAdmission = admissionPolicy;
       if (changed) {
         nextAdmission = null;
-        nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, health => {
-          if (nextAdmission && nextAdmission === admissionPolicy) reportAdmissionHealth(health);
-        }) : null;
+        nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health, event) => {
+          if (event === "failure" || event === "recovery" || (nextAdmission && nextAdmission === admissionPolicy)) reportAdmissionHealth(health, event);
+        }, { evidence: admissionEvidence, deferActivation: true }) : null;
       }
       try {
       const nextDatabase: any = await openDevDatabase(
@@ -3211,7 +3216,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
       admissionPath = nextPath; admissionPolicy = nextAdmission;
       if (changed) {
         await previousAdmission?.close();
-        if (admissionPolicy) reportAdmissionHealth(admissionPolicy.health());
+        admissionPolicy?.activate(previousAdmission?.health());
       }
       clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
       } catch (error) { if (changed && nextAdmission !== admissionPolicy) await nextAdmission?.close(); throw error; }

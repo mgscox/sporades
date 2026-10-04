@@ -29,7 +29,7 @@ export type InterpretedHttpRequestTarget = {
 };
 export declare function interpretHttpRequestTarget(target: unknown, method: unknown): InterpretedHttpRequestTarget | null;
 /** Canonical HTTP admission and trusted-client quotas; genuine controls dispatch first. */
-export declare function routeHttpAdmission(database: LooseRecord, request: Pick<IncomingMessage, "url" | "method" | "rawHeaders" | "headers">, response: Pick<ServerResponse, "writeHead" | "end">, target?: InterpretedHttpRequestTarget): boolean;
+export declare function routeHttpAdmission(database: LooseRecord, request: Pick<IncomingMessage, "url" | "method" | "rawHeaders" | "headers">, response: Pick<ServerResponse, "writeHead" | "end">, target?: InterpretedHttpRequestTarget, transport?: "http" | "websocket"): boolean;
 export declare function requestTarget(request: Pick<IncomingMessage, "url" | "method">): InterpretedHttpRequestTarget;
 /** Apply HTTP admission before any upgrade, including unsupported Capsule paths. */
 export declare function routeWebSocketAdmission(database: LooseRecord, request: IncomingMessage, socket: Duplex): boolean;

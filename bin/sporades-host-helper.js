@@ -27745,6 +27745,28 @@ function clientAddressBoundaryToken(probeToken) {
   return createHash("sha256").update("sporades-client-address\0").update(probeToken).digest("hex");
 }
 
+// src/admission-evidence.ts
+var ADMISSION_EVIDENCE_LIMITS = Object.freeze({ windowMs: 6e4, decisionsPerWindow: 20, sampleKeys: 20, counterMax: "18446744073709551615" });
+var counterMax = BigInt(ADMISSION_EVIDENCE_LIMITS.counterMax);
+var counterNames = ["evaluated", "admitted", "denied", "rateLimited", "reloadFailures", "reloadRecoveries", "limiterEvictions", "decisionsEmitted", "decisionsSuppressed"];
+function inspectAdmissionHealth(value) {
+  if (!value || !["healthy", "degraded", "disabled"].includes(value.state) || !(value.digest === null || typeof value.digest === "string" && /^[a-f0-9]{64}$/.test(value.digest))) return null;
+  const health = { state: value.state, digest: value.digest };
+  const rate = value.rateLimit;
+  if (rate && [rate.buckets, rate.maxBuckets, rate.evictions].every((item) => Number.isSafeInteger(item) && item >= 0) && rate.buckets <= rate.maxBuckets) health.rateLimit = Object.freeze({ buckets: rate.buckets, maxBuckets: rate.maxBuckets, evictions: rate.evictions });
+  const evidence = value.evidence;
+  if (evidence?.version === 1 && typeof evidence.saturated === "boolean" && counterNames.every((name2) => typeof evidence.counters?.[name2] === "string" && /^(0|[1-9][0-9]{0,19})$/.test(evidence.counters[name2]) && BigInt(evidence.counters[name2]) <= counterMax)) {
+    const retainedKeys = evidence.sampling?.retainedKeys;
+    if (Number.isInteger(retainedKeys) && retainedKeys >= 0 && retainedKeys <= ADMISSION_EVIDENCE_LIMITS.sampleKeys) health.evidence = Object.freeze({
+      version: 1,
+      saturated: evidence.saturated,
+      counters: Object.freeze(Object.fromEntries(counterNames.map((name2) => [name2, evidence.counters[name2]]))),
+      sampling: Object.freeze({ ...ADMISSION_EVIDENCE_LIMITS, retainedKeys })
+    });
+  }
+  return Object.freeze(health);
+}
+
 // src/admission-policy.ts
 import { constants as constants2 } from "node:fs";
 import { lstat as lstat2, open as open2, rename as rename2, rm as rm2 } from "node:fs/promises";
@@ -28236,6 +28258,19 @@ async function publishAdmissionPolicy(root, relative, bytes) {
     await handle.close();
   }
 }
+
+// src/cli/admission-inspection.ts
+var ADMISSION_INSPECTION_SCRIPT = String.raw`const admissionInspection = true;
+try {
+  const response = await fetch("http://127.0.0.1:4000/__sporades/health/runtime", {
+    headers: { "x-sporades-host-probe": process.env.SPORADES_RUNTIME_PROBE_TOKEN || "" }, signal: AbortSignal.timeout(1000), redirect: "error"
+  });
+  const reader = response.body.getReader(); const chunks = []; let bytes = 0;
+  while (true) { const chunk = await reader.read(); if (chunk.done) break; bytes += chunk.value.length;
+    if (bytes > 65536) { await reader.cancel(); throw new Error(); } chunks.push(Buffer.from(chunk.value)); }
+  const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  process.stdout.write(JSON.stringify({ admissionPolicy: body?.data?.runtime?.admissionPolicy ?? null }));
+} catch { process.stdout.write(JSON.stringify({ admissionPolicy: null })); }`;
 
 // src/cli/host-domain-aliases.ts
 init_cli_support();
@@ -48067,6 +48102,16 @@ async function statsCapsule(request2) {
     lifecycle: readCapsuleLifecycle(request2, registryRecord, stats.container.name, true),
     raw
   };
+  if (resolveDeployFiles(registryRecord.currentRelease?.source?.deployFiles, true).some((file) => file.update === "admission")) {
+    const probe = runDocker(["exec", stats.container.name, "node", "--input-type=module", "--eval", ADMISSION_INSPECTION_SCRIPT], { maxBuffer: 128 * 1024, timeoutMs: 1500 });
+    data2.admissionPolicy = null;
+    if (probe.ok) {
+      try {
+        data2.admissionPolicy = inspectAdmissionHealth(JSON.parse(probe.stdout).admissionPolicy);
+      } catch {
+      }
+    }
+  }
   writeEnvelope({ ok: true, data: data2, error: null });
 }
 async function inspectCapsuleSsh(request2) {
@@ -48764,6 +48809,7 @@ function normaliseRuntimeHealthBody(body) {
   const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean" && validBounds && (fileInspection === void 0 || typeof fileInspection?.ok === "boolean");
   const safe = {
     ready: ready === true,
+    ...inspectAdmissionHealth(body?.data?.runtime?.admissionPolicy) ? { admissionPolicy: inspectAdmissionHealth(body.data.runtime.admissionPolicy) } : {},
     ...validBounds && hasFileMaxSizeBytes ? { fileMaxSizeBytes, httpMaxBodyBytes } : {},
     checks: {
       sqlite: { ok: sqlite?.ok === true },

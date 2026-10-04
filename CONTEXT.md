@@ -119,6 +119,15 @@ and aggregate protected health diagnostics. Compatible reloads retain buckets;
 process restart resets them. v1 quotas are per-process and allow boundary bursts.
 _Avoid_: token bucket, global quota, distributed limiter
 
+**Request-admission evidence**:
+Process-owned versioned aggregate counters and sampled redacted decision events
+for admission, reload health and quota eviction. Authenticated runtime health,
+doctor and Hosted Capsule stats expose active digest and last-known-good health.
+Fixed unsigned 64-bit totals and a twenty-event monotonic-minute sample budget
+keep hostile traffic from growing retained state or log volume. Evidence never
+contains request values or client addresses.
+_Avoid_: firewall dashboard, match explanation, per-client metrics
+
 ## Server runtime
 
 **sporades/server**:

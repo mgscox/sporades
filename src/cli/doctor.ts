@@ -2,6 +2,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { connect } from "node:net";
 import path from "node:path";
+import { inspectAdmissionHealth } from "../admission-evidence.js";
+import { ADMISSION_INSPECTION_SCRIPT, readAdmissionInspection } from "./admission-inspection.js";
 
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
@@ -59,9 +61,12 @@ export async function runDoctorChecks(options: LooseRecord) {
   if (options.session) {
     if (options.session === "dev" || options.session === "public-dev") {
       checks.push(...await devSessionChecks(options));
+      if (project.config.admissionPolicy) checks.push(await localAdmissionCheck(options));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "container") {
       checks.push(...await localContainerChecks(options));
+      const binding = await readOptionalJsonFile(path.join(options.projectDir, ".sporades", "binding.json"));
+      if (project.config.admissionPolicy || (Array.isArray(binding?.deployFiles) && binding.deployFiles.some((file: LooseRecord) => file.update === "admission"))) checks.push(await localAdmissionCheck(options));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "hosted") {
       checks.push(...await hostedCapsuleDoctorChecks(options));
@@ -404,6 +409,9 @@ async function hostedCapsuleDoctorChecks(options: LooseRecord) {
   }
   checks.push(hostedReleaseCheck(capsule, commands));
   checks.push(hostedRuntimeHealthCheck(runtimeHealth, commands));
+  if (Object.hasOwn(runtimeHealth.data?.runtime ?? {}, "admissionPolicy") || Object.hasOwn(capsuleStats.data ?? {}, "admissionPolicy")) {
+    checks.push(admissionCheck("hosted", runtimeHealth.data?.runtime?.admissionPolicy ?? capsuleStats.data?.admissionPolicy));
+  }
   checks.push(hostedStatsCheck(hostStats, capsuleStats, commands));
   checks.push(hostedSealedServerEnvCheck(capsule, commands));
   checks.push(hostedSshStateCheck(ssh, commands));
@@ -860,6 +868,34 @@ async function devSessionChecks(options: LooseRecord) {
       },
     },
   ];
+}
+
+function admissionCheck(scope: string, value: unknown) {
+  const health = inspectAdmissionHealth(value);
+  const healthy = health?.evidence && health.state !== "degraded";
+  return { id: `doctor.${scope}.admission-policy`, title: "Request admission evidence", scope,
+    status: healthy ? "pass" : "warn", severity: healthy ? "info" : "warning",
+    message: !health ? "Admission evidence is unavailable." : health.state === "degraded" ? "Admission reload is degraded; the last-known-good admission state remains in effect." : !health.evidence ? "Admission policy state is available, but v1 counters are unavailable." : "Admission policy and bounded counters are available.",
+    details: health, ...(healthy ? {} : { hint: health && !health.evidence ? "Upgrade the Capsule runtime to expose v1 admission evidence, then retry doctor." : "Check the policy publication and runtime reload events, then retry doctor." }) };
+}
+
+async function localAdmissionCheck(options: LooseRecord) {
+  let health = null;
+  if (options.session === "container") {
+    const binding = await readOptionalJsonFile(path.join(options.projectDir, ".sporades", "binding.json"));
+    if (binding?.containerId) {
+      const probe = spawnSync("docker", ["exec", binding.containerId, "node", "--input-type=module", "--eval", ADMISSION_INSPECTION_SCRIPT], { cwd: options.projectDir, encoding: "utf8", timeout: 1500, maxBuffer: 128 * 1024 });
+      if (probe.status === 0) { try { health = inspectAdmissionHealth(JSON.parse(probe.stdout).admissionPolicy); } catch { /* Opaque inspection failure. */ } }
+    }
+  } else {
+    const session = await readOptionalJsonFile(path.join(options.projectDir, ".sporades", "dev-session.json"));
+    if (Number.isInteger(session?.port) && session.port > 0 && session.port <= 65535 && /^[a-f0-9]{64}$/.test(session?.inspectionToken)) {
+      try {
+        health = await readAdmissionInspection(await fetch(`http://127.0.0.1:${session.port}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": session.inspectionToken }, signal: AbortSignal.timeout(1500), redirect: "error" }));
+      } catch { /* Opaque inspection failure. */ }
+    }
+  }
+  return admissionCheck(options.session === "public-dev" ? "dev" : options.session, health);
 }
 
 async function localContainerChecks(options: LooseRecord) {
@@ -1499,6 +1535,13 @@ export function renderDoctorHumanOutput(data: LooseRecord) {
     lines.push("", severity.toUpperCase());
     for (const check of checks) {
       lines.push(`- [${check.status}] ${check.title}: ${check.message}`);
+      if (/^doctor\.(dev|container|hosted)\.admission-policy$/.test(check.id)) {
+        const health = inspectAdmissionHealth(check.details);
+        if (health) {
+          lines.push(`  policy: ${health.state}; digest: ${health.digest ?? "none"}`);
+          if (health.evidence) lines.push(`  counters (v1): ${JSON.stringify(health.evidence.counters)}; saturated: ${health.evidence.saturated}`);
+        }
+      }
       if (typeof check.hint === "string" && check.hint.trim()) {
         lines.push(`  hint: ${check.hint}`);
       }

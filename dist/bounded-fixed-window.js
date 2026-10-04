@@ -31,7 +31,11 @@ export function createBoundedFixedWindow(options = {}) {
         }
         while (buckets.size > maxBuckets) {
             buckets.delete(buckets.keys().next().value);
-            evictions++;
+            evictions = Math.min(Number.MAX_SAFE_INTEGER, evictions + 1);
+            try {
+                options.onEviction?.();
+            }
+            catch { /* Diagnostics never alter quotas. */ }
         }
         return { count: bucket.count, remainingSeconds: Math.ceil((windowMs - (elapsed - bucket.startedAt)) / 1000) };
     }

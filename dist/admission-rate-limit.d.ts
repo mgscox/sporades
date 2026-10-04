@@ -3,6 +3,7 @@ import type { AdmissionGeneration } from "./types/admission-policy.js";
 export declare function createAdmissionRateLimiter(options?: {
     now?: () => number;
     maxBuckets?: number;
+    onEviction?: () => void;
 }): Readonly<{
     reconcile: (generation: AdmissionGeneration | null) => void;
     consume: (id: string, address: string, limit: number, windowMs: number) => number;

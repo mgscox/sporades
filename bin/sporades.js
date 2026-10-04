@@ -80522,7 +80522,11 @@ function createBoundedFixedWindow(options = {}) {
     }
     while (buckets.size > maxBuckets) {
       buckets.delete(buckets.keys().next().value);
-      evictions++;
+      evictions = Math.min(Number.MAX_SAFE_INTEGER, evictions + 1);
+      try {
+        options.onEviction?.();
+      } catch {
+      }
     }
     return { count: bucket.count, remainingSeconds: Math.ceil((windowMs - (elapsed - bucket.startedAt)) / 1e3) };
   }
@@ -80561,6 +80565,68 @@ function createAdmissionRateLimiter(options = {}) {
     return counted.count <= limit ? 0 : counted.remainingSeconds;
   }
   return Object.freeze({ reconcile, consume, stats: windows.stats });
+}
+
+// src/admission-evidence.ts
+import { performance as performance3 } from "node:perf_hooks";
+var ADMISSION_EVIDENCE_LIMITS = Object.freeze({ windowMs: 6e4, decisionsPerWindow: 20, sampleKeys: 20, counterMax: "18446744073709551615" });
+var counterMax = BigInt(ADMISSION_EVIDENCE_LIMITS.counterMax);
+var counterNames = ["evaluated", "admitted", "denied", "rateLimited", "reloadFailures", "reloadRecoveries", "limiterEvictions", "decisionsEmitted", "decisionsSuppressed"];
+function createAdmissionEvidence(now2 = () => performance3.now()) {
+  const counters = Object.fromEntries(counterNames.map((name2) => [name2, 0n]));
+  let saturated = false;
+  let startedAt = now2();
+  const samples = /* @__PURE__ */ new Set();
+  function count(name2) {
+    if (counters[name2] === counterMax) saturated = true;
+    else counters[name2]++;
+  }
+  function decision(value, emit) {
+    count("evaluated");
+    count(value.outcome === "rate-limited" ? "rateLimited" : value.outcome);
+    const elapsed = now2();
+    if (elapsed - startedAt >= ADMISSION_EVIDENCE_LIMITS.windowMs) {
+      startedAt = elapsed;
+      samples.clear();
+    }
+    const key = `${value.ruleId ?? ""}:${value.outcome}`;
+    if (!emit || samples.size >= ADMISSION_EVIDENCE_LIMITS.decisionsPerWindow || samples.has(key)) {
+      count("decisionsSuppressed");
+      return;
+    }
+    samples.add(key);
+    count("decisionsEmitted");
+    try {
+      emit(value);
+    } catch {
+    }
+  }
+  function snapshot() {
+    return Object.freeze({
+      version: 1,
+      counters: Object.freeze(Object.fromEntries(counterNames.map((name2) => [name2, String(counters[name2])]))),
+      saturated,
+      sampling: Object.freeze({ ...ADMISSION_EVIDENCE_LIMITS, retainedKeys: samples.size })
+    });
+  }
+  return Object.freeze({ count, decision, snapshot });
+}
+function inspectAdmissionHealth(value) {
+  if (!value || !["healthy", "degraded", "disabled"].includes(value.state) || !(value.digest === null || typeof value.digest === "string" && /^[a-f0-9]{64}$/.test(value.digest))) return null;
+  const health = { state: value.state, digest: value.digest };
+  const rate = value.rateLimit;
+  if (rate && [rate.buckets, rate.maxBuckets, rate.evictions].every((item) => Number.isSafeInteger(item) && item >= 0) && rate.buckets <= rate.maxBuckets) health.rateLimit = Object.freeze({ buckets: rate.buckets, maxBuckets: rate.maxBuckets, evictions: rate.evictions });
+  const evidence = value.evidence;
+  if (evidence?.version === 1 && typeof evidence.saturated === "boolean" && counterNames.every((name2) => typeof evidence.counters?.[name2] === "string" && /^(0|[1-9][0-9]{0,19})$/.test(evidence.counters[name2]) && BigInt(evidence.counters[name2]) <= counterMax)) {
+    const retainedKeys = evidence.sampling?.retainedKeys;
+    if (Number.isInteger(retainedKeys) && retainedKeys >= 0 && retainedKeys <= ADMISSION_EVIDENCE_LIMITS.sampleKeys) health.evidence = Object.freeze({
+      version: 1,
+      saturated: evidence.saturated,
+      counters: Object.freeze(Object.fromEntries(counterNames.map((name2) => [name2, evidence.counters[name2]]))),
+      sampling: Object.freeze({ ...ADMISSION_EVIDENCE_LIMITS, retainedKeys })
+    });
+  }
+  return Object.freeze(health);
 }
 
 // src/admission-policy.ts
@@ -81145,20 +81211,36 @@ async function publishAdmissionPolicy(root, relative, bytes) {
     await handle.close();
   }
 }
-async function openAdmissionPolicy(root, relative, onHealth, limiterOptions = {}) {
-  const rateLimiter = createAdmissionRateLimiter(limiterOptions);
+async function openAdmissionPolicy(root, relative, onHealth, options = {}) {
+  const { evidence = createAdmissionEvidence(options.now), deferActivation = false, ...limiterOptions } = options;
+  const rateLimiter = createAdmissionRateLimiter({ ...limiterOptions, onEviction: () => evidence.count("limiterEvictions") });
   let active = null;
   let health = Object.freeze({ state: "disabled", digest: null });
+  let activated = !deferActivation;
+  let recoveryPending = false;
   let closed = false;
   let pending = null;
-  function report(state) {
+  function report(state, event, force = false) {
     const next = Object.freeze({ state, digest: active?.digest ?? null });
-    if (next.state === health.state && next.digest === health.digest) return;
+    if (!force && event === "loaded" && next.state === health.state && next.digest === health.digest) return;
     health = next;
+    if (!activated && event !== "failure") return;
     try {
-      onHealth?.(health);
+      onHealth?.(Object.freeze({ ...health, evidence: evidence.snapshot() }), event);
     } catch {
     }
+  }
+  function recover2(state = health.state) {
+    if (!activated || !recoveryPending || state === "degraded") return false;
+    recoveryPending = false;
+    evidence.count("reloadRecoveries");
+    return true;
+  }
+  function activate(previousHealth) {
+    if (activated) return;
+    recoveryPending ||= previousHealth?.state === "degraded";
+    activated = true;
+    report(health.state, recover2() ? "recovery" : "loaded", true);
   }
   async function load(cold) {
     try {
@@ -81166,9 +81248,12 @@ async function openAdmissionPolicy(root, relative, onHealth, limiterOptions = {}
       const next = bytes.equals(REMOVED) ? null : parseAdmissionPolicy(bytes);
       rateLimiter.reconcile(next);
       active = next;
-      report(next ? "healthy" : "disabled");
+      const state = next ? "healthy" : "disabled";
+      report(state, recover2(state) ? "recovery" : "loaded");
     } catch {
-      report("degraded");
+      recoveryPending = true;
+      evidence.count("reloadFailures");
+      report("degraded", "failure");
       if (cold) throw new Error("Configured admission policy could not be loaded.");
     }
   }
@@ -81187,7 +81272,9 @@ async function openAdmissionPolicy(root, relative, onHealth, limiterOptions = {}
   return Object.freeze({
     current: () => active,
     rateLimiter,
-    health: () => Object.freeze({ ...health, rateLimit: rateLimiter.stats() }),
+    evidence,
+    health: () => Object.freeze({ ...health, rateLimit: rateLimiter.stats(), evidence: evidence.snapshot() }),
+    activate,
     reload,
     close: async () => {
       closed = true;
@@ -123691,18 +123778,39 @@ function interpretHttpRequestTarget(target, method) {
   }
 }
 var admissionLimiters = /* @__PURE__ */ new WeakMap();
-function routeHttpAdmission(database, request, response, target) {
+function routeHttpAdmission(database, request, response, target, transport = "http") {
   const runtime = database.admissionPolicy;
   if (!runtime) return false;
+  const generation2 = runtime.current();
+  if (!generation2) return false;
+  let rule = null;
+  let routeClass = "invalid";
+  let recorded = false;
+  const record = (outcome) => {
+    if (recorded) return;
+    recorded = true;
+    runtime.evidence?.decision({
+      digest: generation2.digest,
+      ruleId: rule?.id ?? null,
+      action: rule?.action.kind ?? null,
+      outcome,
+      transport,
+      routeClass,
+      sessionKind: ["dev", "public-dev", "container", "hosted"].includes(database.securitySession) ? database.securitySession : "dev"
+    }, database.log?.emit ? (data2) => database.log.emit({ category: "platform", event: "admission.decision", level: "info", message: "Request admission decision sample", data: data2 }) : void 0);
+  };
   try {
-    const generation2 = runtime.current();
     let limiter = runtime.rateLimiter ?? admissionLimiters.get(runtime);
     if (!limiter) {
       limiter = createAdmissionRateLimiter();
       admissionLimiters.set(runtime, limiter);
     }
     limiter.reconcile(generation2);
-    if (!generation2 || generation2.policy.rules.length === 0) return false;
+    if (generation2.policy.rules.length === 0) {
+      routeClass = "ordinary";
+      record("admitted");
+      return false;
+    }
     const parsed = target ?? requestTarget(request);
     const raw = request.url ?? "/";
     if (raw.includes("#")) throw new Error("Invalid admission target.");
@@ -123712,18 +123820,26 @@ function routeHttpAdmission(database, request, response, target) {
     }
     const queryStart = raw.indexOf("?");
     const address = trustedClientAddress(database, request);
-    const rule = matchHttpAdmissionRule(generation2, {
+    routeClass = parsed.pathname === "/__sporades/ws" ? "capsule-transport" : "ordinary";
+    rule = matchHttpAdmissionRule(generation2, {
       method: request.method ?? "",
       pathname: parsed.pathname,
       query: queryStart === -1 ? "" : raw.slice(queryStart + 1),
       rawHeaders: request.rawHeaders,
       trustedAddress: address
     });
-    if (!rule) return false;
+    if (!rule) {
+      record("admitted");
+      return false;
+    }
     if (rule.action.kind === "rate-limit") {
       if (!address) throw new Error("Missing trusted admission address.");
       const retryAfter = limiter.consume(rule.id, address, rule.action.limit, rule.action.windowMs);
-      if (!retryAfter) return false;
+      if (!retryAfter) {
+        record("admitted");
+        return false;
+      }
+      record("rate-limited");
       response.writeHead(429, {
         "cache-control": "no-store",
         "retry-after": String(retryAfter),
@@ -123736,6 +123852,7 @@ function routeHttpAdmission(database, request, response, target) {
     }
   } catch {
   }
+  record("denied");
   response.writeHead(403, {
     "cache-control": "no-store",
     "content-type": "text/plain; charset=utf-8",
@@ -123768,7 +123885,7 @@ function routeWebSocketAdmission(database, request, socket) {
   };
   response.on("error", closeConnection);
   prepareHttpSecurity(database, request, response, () => true);
-  if (!routeHttpAdmission(database, request, response, target ?? void 0)) return false;
+  if (!routeHttpAdmission(database, request, response, target ?? void 0, "websocket")) return false;
   socket.on("error", closeConnection);
   socket.once("close", () => response.destroy());
   response.once("finish", () => {
@@ -128790,7 +128907,7 @@ var import_sdk_trace_base = __toESM(require_index_shim(), 1);
 import { randomUUID as randomUUID9 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
-import { constants as performanceConstants, monitorEventLoopDelay, performance as performance3, PerformanceObserver } from "node:perf_hooks";
+import { constants as performanceConstants, monitorEventLoopDelay, performance as performance4, PerformanceObserver } from "node:perf_hooks";
 
 // src/runtime-fetch-telemetry.ts
 init_esm();
@@ -129196,9 +129313,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
   const delayResolutionMs = config.eventLoopDelayResolutionMs ?? 20;
   const loopDelay = monitorEventLoopDelay({ resolution: delayResolutionMs });
   loopDelay.enable();
-  let lastDelayResetAt = performance3.now();
+  let lastDelayResetAt = performance4.now();
   let delayMonitorStoppedAt;
-  let previousElu = performance3.eventLoopUtilization();
+  let previousElu = performance4.eventLoopUtilization();
   const cpuTime = processMeter.createObservableCounter("process.cpu.time", { unit: "s" });
   const rss = processMeter.createObservableGauge("process.memory.rss", { unit: "By" });
   const heapUsed = processMeter.createObservableGauge("process.memory.heap.used", { unit: "By" });
@@ -129232,7 +129349,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       result.observe(gcDuration, total.durationSeconds, { kind });
     }
     const rawMaxMs = loopDelay.count > 0 ? loopDelay.max / 1e6 : 0;
-    const elapsedMs = Math.max(0, (delayMonitorStoppedAt ?? performance3.now()) - lastDelayResetAt);
+    const elapsedMs = Math.max(0, (delayMonitorStoppedAt ?? performance4.now()) - lastDelayResetAt);
     const unrecordedMaxLowerBoundMs = Math.max(0, (elapsedMs - loopDelay.count * rawMaxMs) / 2 - delayResolutionMs);
     if (loopDelay.count > 0 || unrecordedMaxLowerBoundMs > 0) {
       result.observe(delayMax, Math.max(0, rawMaxMs - delayResolutionMs, unrecordedMaxLowerBoundMs));
@@ -129242,9 +129359,9 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       result.observe(delayP99, Math.max(0, loopDelay.percentile(99) / 1e6 - delayResolutionMs));
     }
     loopDelay.reset();
-    lastDelayResetAt = delayMonitorStoppedAt ?? performance3.now();
-    const currentElu = performance3.eventLoopUtilization();
-    const intervalElu = performance3.eventLoopUtilization(previousElu);
+    lastDelayResetAt = delayMonitorStoppedAt ?? performance4.now();
+    const currentElu = performance4.eventLoopUtilization();
+    const intervalElu = performance4.eventLoopUtilization(previousElu);
     previousElu = currentElu;
     if (Number.isFinite(intervalElu.utilization) && intervalElu.active + intervalElu.idle > 0) result.observe(loopUtilization, intervalElu.utilization);
   }, [cpuTime, rss, heapUsed, heapAllocated, heapLimit, external, arrayBuffers, uptime, gcCount, gcDuration, delayMax, delayMean, delayP99, loopUtilization]);
@@ -129523,7 +129640,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       closing = true;
       releaseFetch();
       gcObserver.disconnect();
-      delayMonitorStoppedAt = performance3.now();
+      delayMonitorStoppedAt = performance4.now();
       loopDelay.disable();
       let timer;
       shutdownPromise = Promise.race([
@@ -147648,6 +147765,40 @@ import { lstat as lstat12, readFile as readFile13, realpath as realpath5 } from 
 import { connect } from "node:net";
 import path20 from "node:path";
 
+// src/cli/admission-inspection.ts
+var ADMISSION_INSPECTION_SCRIPT = String.raw`const admissionInspection = true;
+try {
+  const response = await fetch("http://127.0.0.1:4000/__sporades/health/runtime", {
+    headers: { "x-sporades-host-probe": process.env.SPORADES_RUNTIME_PROBE_TOKEN || "" }, signal: AbortSignal.timeout(1000), redirect: "error"
+  });
+  const reader = response.body.getReader(); const chunks = []; let bytes = 0;
+  while (true) { const chunk = await reader.read(); if (chunk.done) break; bytes += chunk.value.length;
+    if (bytes > 65536) { await reader.cancel(); throw new Error(); } chunks.push(Buffer.from(chunk.value)); }
+  const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  process.stdout.write(JSON.stringify({ admissionPolicy: body?.data?.runtime?.admissionPolicy ?? null }));
+} catch { process.stdout.write(JSON.stringify({ admissionPolicy: null })); }`;
+async function readAdmissionInspection(response) {
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const chunks = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.length;
+      if (bytes > 65536) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(Buffer.from(chunk.value));
+    }
+    return inspectAdmissionHealth(JSON.parse(Buffer.concat(chunks).toString("utf8"))?.data?.runtime?.admissionPolicy);
+  } catch {
+    return null;
+  }
+}
+
 // src/cli/project-config.ts
 import { createHash as createHash17 } from "node:crypto";
 import { chmod as chmod3, mkdir as mkdir10, readFile as readFile12, writeFile as writeFile9 } from "node:fs/promises";
@@ -148127,9 +148278,12 @@ async function runDoctorChecks(options) {
   if (options.session) {
     if (options.session === "dev" || options.session === "public-dev") {
       checks.push(...await devSessionChecks(options));
+      if (project.config.admissionPolicy) checks.push(await localAdmissionCheck(options));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "container") {
       checks.push(...await localContainerChecks(options));
+      const binding = await readOptionalJsonFile(path20.join(options.projectDir, ".sporades", "binding.json"));
+      if (project.config.admissionPolicy || Array.isArray(binding?.deployFiles) && binding.deployFiles.some((file) => file.update === "admission")) checks.push(await localAdmissionCheck(options));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "hosted") {
       checks.push(...await hostedCapsuleDoctorChecks(options));
@@ -148421,6 +148575,9 @@ async function hostedCapsuleDoctorChecks(options) {
   }
   checks.push(hostedReleaseCheck(capsule, commands));
   checks.push(hostedRuntimeHealthCheck(runtimeHealth, commands));
+  if (Object.hasOwn(runtimeHealth.data?.runtime ?? {}, "admissionPolicy") || Object.hasOwn(capsuleStats.data ?? {}, "admissionPolicy")) {
+    checks.push(admissionCheck("hosted", runtimeHealth.data?.runtime?.admissionPolicy ?? capsuleStats.data?.admissionPolicy));
+  }
   checks.push(hostedStatsCheck(hostStats, capsuleStats, commands));
   checks.push(hostedSealedServerEnvCheck(capsule, commands));
   checks.push(hostedSshStateCheck(ssh, commands));
@@ -148831,6 +148988,44 @@ async function devSessionChecks(options) {
       }
     }
   ];
+}
+function admissionCheck(scope, value) {
+  const health = inspectAdmissionHealth(value);
+  const healthy = health?.evidence && health.state !== "degraded";
+  return {
+    id: `doctor.${scope}.admission-policy`,
+    title: "Request admission evidence",
+    scope,
+    status: healthy ? "pass" : "warn",
+    severity: healthy ? "info" : "warning",
+    message: !health ? "Admission evidence is unavailable." : health.state === "degraded" ? "Admission reload is degraded; the last-known-good admission state remains in effect." : !health.evidence ? "Admission policy state is available, but v1 counters are unavailable." : "Admission policy and bounded counters are available.",
+    details: health,
+    ...healthy ? {} : { hint: health && !health.evidence ? "Upgrade the Capsule runtime to expose v1 admission evidence, then retry doctor." : "Check the policy publication and runtime reload events, then retry doctor." }
+  };
+}
+async function localAdmissionCheck(options) {
+  let health = null;
+  if (options.session === "container") {
+    const binding = await readOptionalJsonFile(path20.join(options.projectDir, ".sporades", "binding.json"));
+    if (binding?.containerId) {
+      const probe = spawnSync3("docker", ["exec", binding.containerId, "node", "--input-type=module", "--eval", ADMISSION_INSPECTION_SCRIPT], { cwd: options.projectDir, encoding: "utf8", timeout: 1500, maxBuffer: 128 * 1024 });
+      if (probe.status === 0) {
+        try {
+          health = inspectAdmissionHealth(JSON.parse(probe.stdout).admissionPolicy);
+        } catch {
+        }
+      }
+    }
+  } else {
+    const session = await readOptionalJsonFile(path20.join(options.projectDir, ".sporades", "dev-session.json"));
+    if (Number.isInteger(session?.port) && session.port > 0 && session.port <= 65535 && /^[a-f0-9]{64}$/.test(session?.inspectionToken)) {
+      try {
+        health = await readAdmissionInspection(await fetch(`http://127.0.0.1:${session.port}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": session.inspectionToken }, signal: AbortSignal.timeout(1500), redirect: "error" }));
+      } catch {
+      }
+    }
+  }
+  return admissionCheck(options.session === "public-dev" ? "dev" : options.session, health);
 }
 async function localContainerChecks(options) {
   const bindingPath = path20.join(options.projectDir, ".sporades", "binding.json");
@@ -149399,6 +149594,13 @@ function renderDoctorHumanOutput(data2) {
     lines.push("", severity.toUpperCase());
     for (const check of checks) {
       lines.push(`- [${check.status}] ${check.title}: ${check.message}`);
+      if (/^doctor\.(dev|container|hosted)\.admission-policy$/.test(check.id)) {
+        const health = inspectAdmissionHealth(check.details);
+        if (health) {
+          lines.push(`  policy: ${health.state}; digest: ${health.digest ?? "none"}`);
+          if (health.evidence) lines.push(`  counters (v1): ${JSON.stringify(health.evidence.counters)}; saturated: ${health.evidence.saturated}`);
+        }
+      }
       if (typeof check.hint === "string" && check.hint.trim()) {
         lines.push(`  hint: ${check.hint}`);
       }
@@ -152412,14 +152614,16 @@ async function createDevRuntime(options) {
     return attached.attached;
   };
   let database;
-  const reportAdmissionHealth = (health) => {
+  const reportAdmissionHealth = (health, event = "loaded") => {
     try {
-      database?.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+      if (database) database.log.emit({ category: "platform", event: `admission.policy.${event}`, level: event === "failure" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+      else if (event === "failure" || event === "recovery") process.stderr.write(JSON.stringify({ event: `admission.policy.${event}`, data: health }) + "\n");
     } catch {
     }
   };
   let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
-  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
+  const admissionEvidence = createAdmissionEvidence();
+  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth, { evidence: admissionEvidence }) : null;
   try {
     database = await openDevDatabase(
       options.databasePath,
@@ -152457,9 +152661,9 @@ async function createDevRuntime(options) {
       let nextAdmission = admissionPolicy;
       if (changed) {
         nextAdmission = null;
-        nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health) => {
-          if (nextAdmission && nextAdmission === admissionPolicy) reportAdmissionHealth(health);
-        }) : null;
+        nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health, event) => {
+          if (event === "failure" || event === "recovery" || nextAdmission && nextAdmission === admissionPolicy) reportAdmissionHealth(health, event);
+        }, { evidence: admissionEvidence, deferActivation: true }) : null;
       }
       try {
         const nextDatabase = await openDevDatabase(
@@ -152492,7 +152696,7 @@ async function createDevRuntime(options) {
         admissionPolicy = nextAdmission;
         if (changed) {
           await previousAdmission?.close();
-          if (admissionPolicy) reportAdmissionHealth(admissionPolicy.health());
+          admissionPolicy?.activate(previousAdmission?.health());
         }
         clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
       } catch (error) {
