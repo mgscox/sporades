@@ -45,6 +45,35 @@ test('upgrade tracks generated assets, preserves overrides and literal credentia
   assert.equal(JSON.parse(cli(['rollback', '--dir', stack]).stdout).data.changed, false);
 });
 
+test('upgrade and rollback refuse operator edits made during candidate validation', async t => {
+  for (const action of ['upgrade', 'rollback']) {
+    for (const asset of ['README.md', '.env', '.compose.env', 'collector.yaml', 'compose.override.yaml', '.private/operator.json']) {
+      await t.test(`${action}: ${asset}`, async t => {
+        const { dir, stack, cli } = await fixture(t);
+        const manifestFile = path.join(stack, 'stack-manifest.json');
+        const manifest = JSON.parse(await readFile(manifestFile));
+        const { createHash } = await import('node:crypto');
+        await writeFile(path.join(stack, 'README.md'), 'previous documentation\n');
+        manifest.assets['README.md'] = createHash('sha256').update('previous documentation\n').digest('hex');
+        await writeFile(manifestFile, JSON.stringify(manifest));
+        if (action === 'rollback') assert.equal(cli(['upgrade', '--dir', stack]).status, 0);
+        const before = await readFile(manifestFile);
+        const readme = await readFile(path.join(stack, 'README.md'));
+        const docker = path.join(dir, 'bin/docker');
+        const script = await readFile(docker, 'utf8');
+        await writeFile(docker, script.replace('case "$*" in', `if [ "$1" = run ]; then mkdir -p "$(dirname "$EDIT_FILE")"; printf '%s\\n' 'concurrent operator edit' >> "$EDIT_FILE"; fi\ncase "$*" in`));
+        const target = path.join(stack, asset);
+        const result = cli([action, '--dir', stack], { EDIT_FILE: target });
+        assert.equal(result.status, 1, result.stdout + result.stderr);
+        assert.match(await readFile(target, 'utf8'), /concurrent operator edit/);
+        assert.deepEqual(await readFile(manifestFile), before, 'manifest must not be published');
+        if (asset !== 'README.md') assert.deepEqual(await readFile(path.join(stack, 'README.md')), readme);
+        await assert.rejects(readFile(path.join(stack, '.maintenance/journal.json')), { code: 'ENOENT' });
+      });
+    }
+  }
+});
+
 test('maintenance rejects running writers and opaque invalid configuration before replacements', async t => {
   const { stack, cli } = await fixture(t);
   const before = await readFile(path.join(stack, 'stack-manifest.json'), 'utf8');

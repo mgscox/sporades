@@ -146950,6 +146950,9 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
     if (action !== "restore") stopped(dir);
     await recover(dir, stateDir);
     if (action === "backup" || action === "restore") return await storageMaintenance(action, dir, packageRoot, options.backup);
+    const excluded = /* @__PURE__ */ new Set([".maintenance", "backups", "data"]);
+    const inputs = await hashes(dir, "", excluded);
+    const inputMetadata = await metadata(dir, excluded);
     await validateEnvironment(dir, packageRoot);
     const overrides2 = [];
     const next = {};
@@ -146999,13 +147002,15 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
     const candidate = path18.join(stateDir, "candidate");
     await rm9(candidate, { recursive: true, force: true });
     await mkdir9(candidate, { mode: 448 });
-    await copyTree(dir, candidate, /* @__PURE__ */ new Set([".maintenance", "backups", "data"]));
+    await copyTree(dir, candidate, excluded);
+    if (!same(inputs, await hashes(candidate))) fail2();
     for (const [name2, bytes] of Object.entries(next)) {
       if (bytes === null) await rm9(path18.join(candidate, name2), { force: true });
       else await atomic(path18.join(candidate, name2), Buffer.from(bytes, "base64"), 420);
     }
     compose(candidate, ["config", "--quiet"]);
     await validateComponents(candidate, packageRoot);
+    if (!same(inputs, await hashes(dir, "", excluded)) || !same(inputMetadata, await metadata(dir, excluded))) fail2();
     await apply(dir, stateDir, next, action !== "rollback");
     await rm9(candidate, { recursive: true, force: true });
     return { path: dir, action, changed: true, overrides: overrides2 };
@@ -147015,6 +147020,9 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
   } finally {
     lock?.close();
   }
+}
+function same(a2, b) {
+  return JSON.stringify(Object.entries(a2).sort(([x2], [y]) => x2.localeCompare(y))) === JSON.stringify(Object.entries(b).sort(([x2], [y]) => x2.localeCompare(y)));
 }
 async function copyTree(source, target, exclude = /* @__PURE__ */ new Set()) {
   for (const entry of await readdir5(source, { withFileTypes: true })) {
@@ -147118,7 +147126,6 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
         await chmod2(path18.join(stage, `${key}.tar`), 384);
       }
       const files = await hashes(stage);
-      const same = (a2, b) => JSON.stringify(Object.entries(a2).sort(([x2], [y]) => x2.localeCompare(y))) === JSON.stringify(Object.entries(b).sort(([x2], [y]) => x2.localeCompare(y)));
       if (!same(beforeFiles, await hashes(path18.join(stage, "config"))) || !same(beforeFiles, await hashes(dir, "", excluded)) || !same(configMetadata, await metadata(dir, excluded)) || await exists(path18.join(dir, ".private/senders/.lock"))) fail2();
       await atomic(path18.join(stage, "backup-manifest.json"), JSON.stringify({ schemaVersion: 1, stack, volumes: Object.keys(names2), files, configMetadata }));
       await rename8(stage, location);

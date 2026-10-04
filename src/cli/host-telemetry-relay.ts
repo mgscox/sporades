@@ -208,7 +208,10 @@ export async function connectHostTelemetryRelay(remoteRoot: string, network: str
         await atomicWrite(files.config, previousConfig, 0o644);
         await atomicWrite(files.credential, previousCredential, 0o600);
         if (previousCa) await atomicWrite(files.ca, previousCa, 0o644);
-        try { await startRelay(files, previous.network, previous.caConfigured); }
+        try {
+          if (previous.exportsDisabled) await stopHostTelemetryExports(remoteRoot, host ?? previous.inventoryHost);
+          else await startRelay(files, previous.network, previous.caConfigured);
+        }
         catch { throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile."); }
       } else {
         await rm(files.config, { force: true });
@@ -242,7 +245,7 @@ export async function reconcileHostTelemetryRelay(remoteRoot: string, host?: str
   if (!connection) throw helperError("Host Telemetry is not connected.", "Run `sporades host telemetry connect` first.");
   if (connection.exportsDisabled) {
     if (operation === "enable") throw helperError("Host exports are disabled.", "Reconnect deliberately to enable monitoring.");
-    if (host && (operation === "disable" || operation === "remove")) await configureHostMetrics(remoteRoot, host, operation);
+    await stopHostTelemetryExports(remoteRoot, host ?? connection.inventoryHost, operation === "remove" ? "remove" : "disable");
     return statusHostTelemetryRelay(remoteRoot);
   }
   const files = paths(remoteRoot);
@@ -303,6 +306,14 @@ export async function checkHostTelemetryDelivery(remoteRoot: string) {
   return { ...result, origin: "host", traceId, relayReady, relayAccepted, backendStorage: "verification-unavailable", capsuleCoverage: "not-configured" };
 }
 
+async function stopHostTelemetryExports(remoteRoot: string, host?: string, operation: "disable" | "remove" = "disable") {
+  // Stop delivery even if Caddy validation or exporter shutdown fails. Retry
+  // converges the remaining resources without removing inventory authority.
+  if (inspectRelay() && !docker(["stop", RELAY_NAME]).ok) throw helperError("Host relay could not be stopped.", "Retry exports-disable; disabled launch policy and credentials are retained.");
+  const identity = host ?? (await readHostMetrics(remoteRoot))?.host;
+  if (identity) await configureHostMetrics(remoteRoot, identity, operation);
+}
+
 /** Durable opt-out keeps inventory authority and credentials for acknowledgement/recovery. */
 export async function disableHostTelemetryExports(remoteRoot: string, host: string) {
   await withHostTelemetryLock(remoteRoot, async () => {
@@ -310,8 +321,7 @@ export async function disableHostTelemetryExports(remoteRoot: string, host: stri
     if (!record) throw helperError("Host Telemetry is not connected.", "Connect before changing export policy.");
     await atomicWrite(paths(remoteRoot).descriptor, JSON.stringify({ ...record, exportsDisabled: true }) + "\n", 0o600);
   });
-  await configureHostMetrics(remoteRoot, host, "disable");
-  if (inspectRelay() && !docker(["stop", RELAY_NAME]).ok) throw helperError("Host relay could not be stopped.", "Retry exports-disable; disabled launch policy and credentials are retained.");
+  await stopHostTelemetryExports(remoteRoot, host);
   return statusHostTelemetryRelay(remoteRoot);
 }
 /** Caller must first acknowledge the exact disabled inventory revision. */

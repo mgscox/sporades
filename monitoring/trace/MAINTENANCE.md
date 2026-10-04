@@ -46,6 +46,11 @@ stack files only, validates the resulting Compose configuration before
 publishing, and reports operator-edited overrides it preserves. It does not
 start services.
 
+Upgrade and rollback retain the replacement assets and effective configuration
+used for planning. An operator edit during validation causes maintenance to
+fail before publication, preserving the edit. Finish editing and retry so the
+updated configuration is planned and validated together.
+
 ```sh
 COMPOSE_PROJECT_NAME=sporades-monitoring-prod sporades monitoring stack upgrade --dir /srv/sporades-monitoring
 ```
@@ -143,6 +148,12 @@ This central policy opts all current and future Hosted Capsules out of resource
 and trace export without overwriting each Capsule's own opt-out. Existing
 Capsules need their normal restart before already-running SDK instrumentation
 reflects the disabled setting.
+
+Failed or interrupted shutdown retains the disabled intent. Retry
+`sporades host telemetry reconcile` to stop the owned relay and resource
+exporter, repairing any reported Caddy or Docker failure first. Credentials and
+the inventory reconciler remain available for acknowledgement. Failed reconnect
+preserves the previous connection's disabled export policy.
 
 ```sh
 sporades host telemetry exports-disable --host personal --json

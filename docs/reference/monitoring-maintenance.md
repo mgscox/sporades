@@ -23,6 +23,11 @@ For a stack manifest created before generated asset hashes were recorded,
 release directory. The baseline manifest's package version and schema must
 match. Do not substitute a similar or untrusted directory.
 
+Upgrade and rollback retain a snapshot of replacement assets and effective
+configuration before validation. Edits made during validation cause maintenance
+to fail before publication, preserving the operator's changes. Finish those
+edits, then retry so the updated configuration is planned and validated together.
+
 Maintenance requires stopped services. Use the same unique
 `COMPOSE_PROJECT_NAME` for `backup`, `restore`, `up`, `stop`, restart, and any
 `down` operation; the project name selects the persistent volumes. For example:
@@ -117,6 +122,12 @@ sporades host telemetry remove-agents --host personal --json
 current and future Hosted Capsules out of telemetry/resource exports. It does
 not replace per-Capsule opt-out state. Existing running Capsules reflect the
 disabled instrumentation after their normal restart.
+
+If shutdown fails or is interrupted, the disabled intent remains durable.
+Retry `sporades host telemetry reconcile` to stop the owned relay and resource
+exporter; repair any reported Caddy or Docker failure and retry again. Credentials
+and the inventory reconciler remain available for acknowledgement. A failed
+reconnect preserves the previous connection's disabled export policy.
 
 `remove-agents` requires a fresh exact inventory acknowledgement for the
 disabled snapshot. Inventory outage, stale state, or rejected acknowledgement

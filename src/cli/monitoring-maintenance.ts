@@ -91,6 +91,9 @@ export async function runMonitoringMaintenance(action: MonitoringMaintenanceActi
     if (action !== 'restore') stopped(dir);
     await recover(dir, stateDir);
     if (action === 'backup' || action === 'restore') return await storageMaintenance(action, dir, packageRoot, options.backup);
+    const excluded = new Set(['.maintenance', 'backups', 'data']);
+    const inputs = await hashes(dir, '', excluded);
+    const inputMetadata = await metadata(dir, excluded);
     await validateEnvironment(dir, packageRoot);
     const overrides: string[] = [];
     const next: Record<string, string | null> = {};
@@ -136,15 +139,23 @@ export async function runMonitoringMaintenance(action: MonitoringMaintenanceActi
     // Validate effective Compose privately before replacing any generated asset.
     const candidate = path.join(stateDir, 'candidate');
     await rm(candidate, { recursive: true, force: true }); await mkdir(candidate, { mode: 0o700 });
-    await copyTree(dir, candidate, new Set(['.maintenance', 'backups', 'data']));
+    await copyTree(dir, candidate, excluded);
+    // Planning and validation must use the same configuration generation.
+    if (!same(inputs, await hashes(candidate))) fail();
     for (const [name, bytes] of Object.entries(next)) { if (bytes === null) await rm(path.join(candidate, name), { force: true }); else await atomic(path.join(candidate, name), Buffer.from(bytes, 'base64'), 0o644); }
     compose(candidate, ['config', '--quiet']);
     await validateComponents(candidate, packageRoot);
+    // The maintenance lock excludes CLI peers, not operator edits. Refuse
+    // publication if any replacement asset or effective input changed.
+    if (!same(inputs, await hashes(dir, '', excluded)) || !same(inputMetadata, await metadata(dir, excluded))) fail();
     await apply(dir, stateDir, next, action !== 'rollback');
     await rm(candidate, { recursive: true, force: true });
     return { path: dir, action, changed: true, overrides };
   } catch (error) { if (error instanceof Error && error.message === 'Monitoring maintenance could not complete.') throw error; return fail(); }
   finally { lock?.close(); }
+}
+function same(a: object, b: object) {
+  return JSON.stringify(Object.entries(a).sort(([x], [y]) => x.localeCompare(y))) === JSON.stringify(Object.entries(b).sort(([x], [y]) => x.localeCompare(y)));
 }
 async function copyTree(source: string, target: string, exclude = new Set<string>()) {
   for (const entry of await readdir(source, { withFileTypes: true })) {
@@ -232,7 +243,6 @@ async function storageMaintenance(action: 'backup' | 'restore', dir: string, pac
         await chmod(path.join(stage, `${key}.tar`), 0o600);
       }
       const files = await hashes(stage);
-      const same = (a: object, b: object) => JSON.stringify(Object.entries(a).sort(([x],[y]) => x.localeCompare(y))) === JSON.stringify(Object.entries(b).sort(([x],[y]) => x.localeCompare(y)));
       if (!same(beforeFiles, await hashes(path.join(stage, 'config'))) || !same(beforeFiles, await hashes(dir, '', excluded)) || !same(configMetadata, await metadata(dir, excluded)) || await exists(path.join(dir, '.private/senders/.lock'))) fail();
       await atomic(path.join(stage, 'backup-manifest.json'), JSON.stringify({ schemaVersion: 1, stack, volumes: Object.keys(names), files, configMetadata }));
       await rename(stage, location);
