@@ -2,7 +2,7 @@
   "uid": "sporades-pipeline",
   "title": "Sporades Telemetry Pipeline",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 3,
   "refresh": "15s",
   "tags": [
     "sporades",
@@ -506,6 +506,156 @@
           "mode": "multi"
         }
       }
+    },
+    {
+      "id": 100,
+      "type": "timeseries",
+      "title": "Monitoring backend free disk",
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sporades_monitoring_storage_available_bytes",
+          "legendFormat": "{{backend}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Backing filesystem of read-only Prometheus/Jaeger volume mounts. Shared filesystem values are not additive. A missing stat is unknown, not zero capacity."
+    },
+    {
+      "id": 101,
+      "type": "timeseries",
+      "title": "Monitoring backend free fraction",
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sporades_monitoring_storage_available_bytes / sporades_monitoring_storage_size_bytes",
+          "legendFormat": "{{backend}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Backing filesystem of read-only Prometheus/Jaeger volume mounts. Shared filesystem values are not additive. A missing stat is unknown, not zero capacity."
+    },
+    {
+      "id": 102,
+      "type": "timeseries",
+      "title": "Monitoring backend disk stat health",
+      "gridPos": {
+        "x": 0,
+        "y": 72,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sporades_monitoring_storage_stat_ok",
+          "legendFormat": "{{backend}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unavailable / unsupported"
+        }
+      },
+      "description": "Backing filesystem of read-only Prometheus/Jaeger volume mounts. Shared filesystem values are not additive. A missing stat is unknown, not zero capacity."
     }
-  ]
+  ],
+  "links": [
+    {
+      "title": "Fleet",
+      "type": "link",
+      "url": "/grafana/d/sporades-fleet",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Capsule API",
+      "type": "link",
+      "url": "/grafana/d/sporades-api",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Capsule resources",
+      "type": "link",
+      "url": "/grafana/d/sporades-resources",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Host pressure",
+      "type": "link",
+      "url": "/grafana/d/sporades-hosts",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Caddy",
+      "type": "link",
+      "url": "/grafana/d/sporades-caddy",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Monitoring pipeline",
+      "type": "link",
+      "url": "/grafana/d/sporades-pipeline",
+      "keepTime": true,
+      "includeVars": true
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Acknowledged lifecycle / deployment",
+        "enable": true,
+        "iconColor": "#5794F2",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sporades-prometheus"
+        },
+        "expr": "(max by(host,service_name,state)(sporades_capsule_lifecycle_changed_seconds) <= time()) and (max by(host,service_name,state)(sporades_capsule_lifecycle_changed_seconds) > time() - 120)",
+        "useValueForTime": true,
+        "titleFormat": "{{service_name}}: {{state}}",
+        "textFormat": "Host {{host}} acknowledged lifecycle/deployment change. Timestamp comes from inventory changedAt; not a Docker event or restart counter.",
+        "tagKeys": "host,state",
+        "step": "30s"
+      }
+    ]
+  }
 }

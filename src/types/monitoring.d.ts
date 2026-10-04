@@ -45,3 +45,37 @@ export type {
   MonitoringMaintenanceAction,
   MonitoringMaintenanceResult,
 } from "../../dist/cli/monitoring-maintenance.js";
+
+/** Monitoring stack operator .env contract, not a Capsule authoring API.
+ * ALERT_POLICY_JSON is a strict bounded JSON object; absent keys retain shipped
+ * starting thresholds. Prometheus alone owns evaluation. Policies do not change
+ * Host lifecycle, restart behavior, runtime exports or notification credentials.
+ * Exact streamRoutes are excluded from independent-histogram latency rules;
+ * expectedJobServices exempt only the process-pressure candidate warning.
+ * See shipped monitoring/trace/performance-policy.md for defaults and bounds. */
+export interface MonitoringAlertPolicy {
+  hostCpuBusyRatio?: number;
+  hostCpuWaitRatio?: number;
+  hostCpuForSeconds?: number;
+  memoryAvailableRatio?: number;
+  memoryForSeconds?: number;
+  memoryCriticalRatio?: number;
+  memoryCriticalForSeconds?: number;
+  swapPagesPerSecond?: number;
+  ioPressureRatio?: number;
+  pressureForSeconds?: number;
+  diskFreeRatio?: number;
+  diskFreeBytes?: number;
+  inodeFreeRatio?: number;
+  diskForSeconds?: number;
+  apiErrorRatio?: number;
+  apiMinRequests?: number;
+  apiBudgetSeconds?: number;
+  apiLatencyForSeconds?: number;
+  processCpuCores?: number;
+  eventLoopDelayMs?: number;
+  processForSeconds?: number;
+  routeBudgets?: Array<{ service: string; route: string; seconds: number }>;
+  streamRoutes?: string[];
+  expectedJobServices?: string[];
+}

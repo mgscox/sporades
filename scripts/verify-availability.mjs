@@ -59,6 +59,7 @@ try {
   assert.equal((await fetch('http://127.0.0.1:5692/__sporades/health/runtime')).status, 404);
   await put(inventory);
   await compose('exec', '-T', 'prometheus', 'promtool', 'check', 'rules', '/etc/prometheus/availability-rules.yaml');
+  await compose('exec', '-T', 'prometheus', 'promtool', 'check', 'rules', '/etc/prometheus/performance-rules.yaml');
   await compose('exec', '-T', 'alertmanager', 'amtool', 'check-config', '/etc/alertmanager/alertmanager.yaml');
   const query = async expression => JSON.parse(await compose('exec', '-T', 'gateway', 'node', '--input-type=module', '-e', `console.log(await(await fetch('http://prometheus:9090/api/v1/query?query='+encodeURIComponent(${JSON.stringify(expression)}))).text())`)).data.result;
   await until(async () => (await query('probe_success{job="capsule-probes"}')).some(item => item.value[1] === '1'));

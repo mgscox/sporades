@@ -1,0 +1,108 @@
+{
+  "topology": "local native Prometheus 3.13.3 + Alertmanager 0.34.1 + generated Node Bundle",
+  "policy": "API errors use starting 5-minute/100-request/5% policy",
+  "firing": {
+    "receiver": "operator",
+    "status": "firing",
+    "alerts": [
+      {
+        "status": "firing",
+        "labels": {
+          "alertname": "SporadesApiErrors",
+          "category": "api",
+          "deployment_environment_name": "hosted",
+          "service_name": "apps.example/drill",
+          "severity": "warning"
+        },
+        "annotations": {
+          "action": "Inspect errors and deployments. Quiet services use independent probes rather than error percentages.",
+          "dashboard": "http://127.0.0.1:50042/grafana/d/sporades-api?var-service=apps.example/drill&var-environment=hosted&from=now-30m&to=now",
+          "fleet": "http://127.0.0.1:50042/grafana/d/sporades-fleet?from=now-30m&to=now",
+          "summary": "Sustained API 5xx for apps.example/drill",
+          "window": "Inspect the last 30 minutes; sustained window 0s."
+        },
+        "startsAt": "2026-10-04T17:26:58.522Z",
+        "endsAt": "0001-01-01T00:00:00Z",
+        "generatorURL": "http://127.0.0.1:50042/graph?g0.expr=%28%28sum+by+%28service_name%2C+deployment_environment_name%29+%28increase%28http_server_request_count_total%7Bhttp_response_status_code%3D%225xx%22%7D%5B5m%5D%29%29%29+%2F+%28sum+by+%28service_name%2C+deployment_environment_name%29+%28increase%28http_server_request_count_total%5B5m%5D%29%29%29+%3E+0.05%29+and+%28sum+by+%28service_name%2C+deployment_environment_name%29+%28increase%28http_server_request_count_total%5B5m%5D%29%29+%3E%3D+100%29+and+on+%28service_name%29+%28max+by+%28service_name%29+%28sporades_expected_capsule%29+%3D%3D+1%29&g0.tab=1",
+        "fingerprint": "ae8cfd6cd0e90072"
+      }
+    ],
+    "notification_reason": "first notification",
+    "groupLabels": {
+      "alertname": "SporadesApiErrors",
+      "service_name": "apps.example/drill"
+    },
+    "commonLabels": {
+      "alertname": "SporadesApiErrors",
+      "category": "api",
+      "deployment_environment_name": "hosted",
+      "service_name": "apps.example/drill",
+      "severity": "warning"
+    },
+    "commonAnnotations": {
+      "action": "Inspect errors and deployments. Quiet services use independent probes rather than error percentages.",
+      "dashboard": "http://127.0.0.1:50042/grafana/d/sporades-api?var-service=apps.example/drill&var-environment=hosted&from=now-30m&to=now",
+      "fleet": "http://127.0.0.1:50042/grafana/d/sporades-fleet?from=now-30m&to=now",
+      "summary": "Sustained API 5xx for apps.example/drill",
+      "window": "Inspect the last 30 minutes; sustained window 0s."
+    },
+    "routeLabels": {},
+    "externalURL": "http://127.0.0.1:50043",
+    "version": "4",
+    "groupKey": "{}:{alertname=\"SporadesApiErrors\", service_name=\"apps.example/drill\"}",
+    "truncatedAlerts": 0,
+    "receivedAt": "2026-10-04T17:27:03.542Z"
+  },
+  "resolved": {
+    "receiver": "operator",
+    "status": "resolved",
+    "alerts": [
+      {
+        "status": "resolved",
+        "labels": {
+          "alertname": "SporadesApiErrors",
+          "category": "api",
+          "deployment_environment_name": "hosted",
+          "service_name": "apps.example/drill",
+          "severity": "warning"
+        },
+        "annotations": {
+          "action": "Inspect errors and deployments. Quiet services use independent probes rather than error percentages.",
+          "dashboard": "http://127.0.0.1:50042/grafana/d/sporades-api?var-service=apps.example/drill&var-environment=hosted&from=now-30m&to=now",
+          "fleet": "http://127.0.0.1:50042/grafana/d/sporades-fleet?from=now-30m&to=now",
+          "summary": "Sustained API 5xx for apps.example/drill",
+          "window": "Inspect the last 30 minutes; sustained window 0s."
+        },
+        "startsAt": "2026-10-04T17:26:58.522Z",
+        "endsAt": "2026-10-04T17:27:13.522Z",
+        "generatorURL": "http://127.0.0.1:50042/graph?g0.expr=%28%28sum+by+%28service_name%2C+deployment_environment_name%29+%28increase%28http_server_request_count_total%7Bhttp_response_status_code%3D%225xx%22%7D%5B5m%5D%29%29%29+%2F+%28sum+by+%28service_name%2C+deployment_environment_name%29+%28increase%28http_server_request_count_total%5B5m%5D%29%29%29+%3E+0.05%29+and+%28sum+by+%28service_name%2C+deployment_environment_name%29+%28increase%28http_server_request_count_total%5B5m%5D%29%29+%3E%3D+100%29+and+on+%28service_name%29+%28max+by+%28service_name%29+%28sporades_expected_capsule%29+%3D%3D+1%29&g0.tab=1",
+        "fingerprint": "ae8cfd6cd0e90072"
+      }
+    ],
+    "notification_reason": "all alerts resolved",
+    "groupLabels": {
+      "alertname": "SporadesApiErrors",
+      "service_name": "apps.example/drill"
+    },
+    "commonLabels": {
+      "alertname": "SporadesApiErrors",
+      "category": "api",
+      "deployment_environment_name": "hosted",
+      "service_name": "apps.example/drill",
+      "severity": "warning"
+    },
+    "commonAnnotations": {
+      "action": "Inspect errors and deployments. Quiet services use independent probes rather than error percentages.",
+      "dashboard": "http://127.0.0.1:50042/grafana/d/sporades-api?var-service=apps.example/drill&var-environment=hosted&from=now-30m&to=now",
+      "fleet": "http://127.0.0.1:50042/grafana/d/sporades-fleet?from=now-30m&to=now",
+      "summary": "Sustained API 5xx for apps.example/drill",
+      "window": "Inspect the last 30 minutes; sustained window 0s."
+    },
+    "routeLabels": {},
+    "externalURL": "http://127.0.0.1:50043",
+    "version": "4",
+    "groupKey": "{}:{alertname=\"SporadesApiErrors\", service_name=\"apps.example/drill\"}",
+    "truncatedAlerts": 0,
+    "receivedAt": "2026-10-04T17:27:18.543Z"
+  }
+}

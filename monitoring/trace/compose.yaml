@@ -89,6 +89,8 @@ services:
       - ./.private/senders:/run/senders:ro
       - inventory:/inventory
       - ./.private/blackbox:/blackbox
+      - metrics:/storage/metrics:ro
+      - traces:/storage/traces:ro
     depends_on:
       inventory-init:
         condition: service_completed_successfully
@@ -146,6 +148,7 @@ services:
     restart: unless-stopped
     read_only: true
     volumes:
+      - ./.private/performance-rules.yaml:/etc/prometheus/performance-rules.yaml:ro
       - ./.private/availability-rules.yaml:/etc/prometheus/availability-rules.yaml:ro
       - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
       - ./pipeline-rules.yaml:/etc/prometheus/pipeline-rules.yaml:ro
@@ -172,6 +175,7 @@ services:
       - ./.private/grafana-admin-password:/run/secrets/grafana-admin-password:ro
       - ./grafana-datasource.yaml:/etc/grafana/provisioning/datasources/sporades.yaml:ro
       - ./grafana-dashboard-provider.yaml:/etc/grafana/provisioning/dashboards/sporades.yaml:ro
+      - ./fleet-dashboard.json:/var/lib/grafana/provisioned/fleet-dashboard.json:ro
       - ./api-dashboard.json:/var/lib/grafana/provisioned/api-dashboard.json:ro
       - ./resource-dashboard.json:/var/lib/grafana/provisioned/resource-dashboard.json:ro
       - ./host-dashboard.json:/var/lib/grafana/provisioned/host-dashboard.json:ro

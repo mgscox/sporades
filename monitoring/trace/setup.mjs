@@ -4,6 +4,7 @@ import { realpathSync } from 'node:fs';
 import { chmod, chown, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseAlertPolicy, performanceRules } from './performance-policy.mjs';
 import { initializeSenderRegistry } from './sender-credentials.mjs';
 import { validateInventoryCredentials } from './inventory-contract.mjs';
 
@@ -47,6 +48,7 @@ export function parseEnvironment(source) {
 export function inspectEnvironment(source) {
   const entries = parseEnvironment(source);
   rejectPlaceholderCredentials(entries);
+  parseAlertPolicy(entries.get('ALERT_POLICY_JSON'));
   try { validateInventoryCredentials(JSON.parse(entries.get('INVENTORY_HOSTS') ?? '{}')); }
   catch { throw new Error('Invalid INVENTORY_HOSTS: use unique scoped tokens keyed by exact Host identity.'); }
   const mode = entries.get('TRACE_TLS_MODE') ?? defaults.TRACE_TLS_MODE;
@@ -117,7 +119,7 @@ export async function setupEnvironment(path) {
   }
   const notificationPath = join(privateDir, 'alertmanager.yaml');
   const webhook = entries.get('ALERT_WEBHOOK_URL');
-  const notifications = `route:\n  receiver: operator\n  group_by: [alertname, host, service_name]\n  group_wait: 5s\n  group_interval: 15s\n  repeat_interval: 4h\nreceivers:\n  - name: operator\n${webhook ? `    webhook_configs:\n      - url: ${JSON.stringify(webhook)}\n        send_resolved: true\n        max_alerts: 100\n${entries.get('ALERT_WEBHOOK_TOKEN') ? `        http_config:\n          authorization:\n            type: Bearer\n            credentials: ${JSON.stringify(entries.get('ALERT_WEBHOOK_TOKEN'))}\n` : ''}` : ''}`;
+  const notifications = `route:\n  receiver: operator\n  group_by: [alertname, host, sporades_host, service_name]\n  group_wait: 5s\n  group_interval: 15s\n  repeat_interval: 4h\nreceivers:\n  - name: operator\n${webhook ? `    webhook_configs:\n      - url: ${JSON.stringify(webhook)}\n        send_resolved: true\n        max_alerts: 100\n${entries.get('ALERT_WEBHOOK_TOKEN') ? `        http_config:\n          authorization:\n            type: Bearer\n            credentials: ${JSON.stringify(entries.get('ALERT_WEBHOOK_TOKEN'))}\n` : ''}` : ''}`;
   await writeFile(notificationPath, notifications, { mode: 0o600 });
   await chmod(notificationPath, 0o600);
   if (identity.transferOwnership) await chown(notificationPath, identity.uid, identity.gid);
@@ -127,6 +129,10 @@ export async function setupEnvironment(path) {
   await writeFile(rulesPath, rules.replaceAll('__MONITORING_PUBLIC_URL__', publicUrl), { mode: 0o600 });
   await chmod(rulesPath, 0o644);
   if (identity.transferOwnership) await chown(rulesPath, identity.uid, identity.gid);
+  const performancePath = join(privateDir, 'performance-rules.yaml');
+  await writeFile(performancePath, JSON.stringify(performanceRules(parseAlertPolicy(entries.get('ALERT_POLICY_JSON')), publicUrl), null, 2) + '\n', { mode: 0o600 });
+  await chmod(performancePath, 0o644);
+  if (identity.transferOwnership) await chown(performancePath, identity.uid, identity.gid);
   const composeKeys = ['TRACE_TLS_MODE', 'TRACE_BIND', 'TRACE_PORT', 'TRACE_CERT_FILE', 'TRACE_KEY_FILE', 'TRACE_RETENTION', 'METRIC_RETENTION', 'METRIC_DISK_CAP', 'GRAFANA_ROOT_URL'];
   const composePath = join(dirname(path), '.compose.env');
   const quote = value => `'${String(value ?? '').replaceAll("'", "\\'")}'`;

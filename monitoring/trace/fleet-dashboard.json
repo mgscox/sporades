@@ -1,0 +1,501 @@
+{
+  "uid": "sporades-fleet",
+  "title": "Sporades Fleet",
+  "schemaVersion": 39,
+  "version": 4,
+  "tags": [
+    "sporades",
+    "telemetry"
+  ],
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "description": "Acknowledged inventory, source health and active warnings. Stops/deletions/opt-outs are deliberate lifecycle states; missing data is not healthy idle.",
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Acknowledged Capsule lifecycle",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(host,service_name,state)(sporades_inventory_state)",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Unavailable / unsupported"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "service_name"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Capsule API",
+                    "url": "/grafana/d/sporades-api?var-service=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  },
+                  {
+                    "title": "Capsule resources",
+                    "url": "/grafana/d/sporades-resources?var-service=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Host pressure",
+                    "url": "/grafana/d/sporades-hosts?var-host=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Latest acknowledged lifecycle state. Click a Capsule or Host identity to investigate.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Expected Capsules and telemetry presence",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(host,service_name)(sporades_expected_capsule) unless on(service_name) count by(service_name)(count_over_time(process_uptime_seconds[2m]))",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Unavailable / unsupported"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "service_name"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Capsule API",
+                    "url": "/grafana/d/sporades-api?var-service=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  },
+                  {
+                    "title": "Capsule resources",
+                    "url": "/grafana/d/sporades-resources?var-service=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Host pressure",
+                    "url": "/grafana/d/sporades-hosts?var-host=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Expected targets without runtime uptime in the last two minutes. Check alerts for the startup grace and pending changes.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Inventory acknowledgement age",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - max by(host)(sporades_inventory_acknowledged_seconds)",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Unavailable / unsupported",
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "service_name"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Capsule API",
+                    "url": "/grafana/d/sporades-api?var-service=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  },
+                  {
+                    "title": "Capsule resources",
+                    "url": "/grafana/d/sporades-resources?var-service=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Host pressure",
+                    "url": "/grafana/d/sporades-hosts?var-host=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Seconds since acknowledgement. Stale or pending intentional lifecycle changes may still page until acknowledged.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Firing alerts",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ALERTS{alertstate=\"firing\"}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Unavailable / unsupported"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "service_name"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Capsule API",
+                    "url": "/grafana/d/sporades-api?var-service=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  },
+                  {
+                    "title": "Capsule resources",
+                    "url": "/grafana/d/sporades-resources?var-service=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Host pressure",
+                    "url": "/grafana/d/sporades-hosts?var-host=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Prometheus is the only evaluator; silence and route notifications through Alertmanager.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Latest lifecycle/deployment timestamp",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sporades-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(host,service_name,state)(sporades_capsule_lifecycle_changed_seconds) * 1000",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Unavailable / unsupported",
+          "unit": "dateTimeAsIso"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "service_name"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Capsule API",
+                    "url": "/grafana/d/sporades-api?var-service=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  },
+                  {
+                    "title": "Capsule resources",
+                    "url": "/grafana/d/sporades-resources?var-service=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Host pressure",
+                    "url": "/grafana/d/sporades-hosts?var-host=${__value.raw:percentencode}&from=${__from}&to=${__to}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Unix seconds from Host inventory changedAt. Release values and arbitrary metadata are not metric labels. Display converts Unix seconds to milliseconds.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "renameByName": {}
+          }
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "title": "Fleet",
+      "type": "link",
+      "url": "/grafana/d/sporades-fleet",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Capsule API",
+      "type": "link",
+      "url": "/grafana/d/sporades-api",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Capsule resources",
+      "type": "link",
+      "url": "/grafana/d/sporades-resources",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Host pressure",
+      "type": "link",
+      "url": "/grafana/d/sporades-hosts",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Caddy",
+      "type": "link",
+      "url": "/grafana/d/sporades-caddy",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Monitoring pipeline",
+      "type": "link",
+      "url": "/grafana/d/sporades-pipeline",
+      "keepTime": true,
+      "includeVars": true
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Acknowledged lifecycle / deployment",
+        "enable": true,
+        "iconColor": "#5794F2",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sporades-prometheus"
+        },
+        "expr": "(max by(host,service_name,state)(sporades_capsule_lifecycle_changed_seconds) <= time()) and (max by(host,service_name,state)(sporades_capsule_lifecycle_changed_seconds) > time() - 120)",
+        "useValueForTime": true,
+        "titleFormat": "{{service_name}}: {{state}}",
+        "textFormat": "Host {{host}} acknowledged lifecycle/deployment change. Timestamp comes from inventory changedAt; not a Docker event or restart counter.",
+        "tagKeys": "host,state",
+        "step": "30s"
+      }
+    ]
+  }
+}

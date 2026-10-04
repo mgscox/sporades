@@ -3,7 +3,7 @@
   "title": "Sporades Host Pressure",
   "description": "Host capacity and Linux pressure; unavailable PSI never means healthy zero.",
   "schemaVersion": 41,
-  "version": 1,
+  "version": 3,
   "refresh": "15s",
   "time": {
     "from": "now-30m",
@@ -38,21 +38,46 @@
   },
   "links": [
     {
+      "title": "Fleet",
+      "type": "link",
+      "url": "/grafana/d/sporades-fleet",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Capsule API",
+      "type": "link",
+      "url": "/grafana/d/sporades-api",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Capsule resources",
+      "type": "link",
+      "url": "/grafana/d/sporades-resources",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
       "title": "Host pressure",
       "type": "link",
       "url": "/grafana/d/sporades-hosts",
+      "keepTime": true,
       "includeVars": true
     },
     {
       "title": "Caddy",
       "type": "link",
       "url": "/grafana/d/sporades-caddy",
+      "keepTime": true,
       "includeVars": true
     },
     {
-      "title": "Capsule runtime",
+      "title": "Monitoring pipeline",
       "type": "link",
-      "url": "/grafana/d/sporades-resources"
+      "url": "/grafana/d/sporades-pipeline",
+      "keepTime": true,
+      "includeVars": true
     }
   ],
   "panels": [
@@ -722,5 +747,24 @@
         }
       }
     }
-  ]
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Acknowledged lifecycle / deployment",
+        "enable": true,
+        "iconColor": "#5794F2",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sporades-prometheus"
+        },
+        "expr": "(max by(host,service_name,state)(sporades_capsule_lifecycle_changed_seconds{host=~`${host:regex}`}) <= time()) and (max by(host,service_name,state)(sporades_capsule_lifecycle_changed_seconds{host=~`${host:regex}`}) > time() - 120)",
+        "useValueForTime": true,
+        "titleFormat": "{{service_name}}: {{state}}",
+        "textFormat": "Host {{host}} acknowledged lifecycle/deployment change. Timestamp comes from inventory changedAt; not a Docker event or restart counter.",
+        "tagKeys": "host,state",
+        "step": "30s"
+      }
+    ]
+  }
 }

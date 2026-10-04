@@ -291,7 +291,7 @@ if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
     senderDirectory: '/run/senders',
   }, tls);
   gateway.listen(8443, '0.0.0.0');
-  const availability = createAvailabilityServer({ inventoryDirectory: '/inventory', blackboxDirectory: '/blackbox', blackboxReloadUrl: 'http://blackbox:9115/-/reload' }).listen(9091, '0.0.0.0');
+  const availability = createAvailabilityServer({ storagePaths: { metrics: '/storage/metrics', traces: '/storage/traces' }, inventoryDirectory: '/inventory', blackboxDirectory: '/blackbox', blackboxReloadUrl: 'http://blackbox:9115/-/reload' }).listen(9091, '0.0.0.0');
   const metrics = createGatewayMetrics(gateway).listen(8889, '0.0.0.0');
   process.once('SIGTERM', () => {
     const deadline = setTimeout(() => { gateway.closeAllConnections(); metrics.closeAllConnections(); availability.closeAllConnections(); process.exit(0); }, 2000);

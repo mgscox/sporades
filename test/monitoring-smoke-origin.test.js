@@ -10,7 +10,7 @@ import { createGateway } from '../monitoring/trace/gateway.mjs';
 async function fixture(t, tls = false) {
   const directory = await mkdtemp(join(tmpdir(), 'sporades-smoke-origin-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  await Promise.all(['smoke.mjs', 'setup.mjs', 'inventory-contract.mjs', 'sender-credentials.mjs'].map(name =>
+  await Promise.all(['smoke.mjs', 'setup.mjs', 'performance-policy.mjs', 'inventory-contract.mjs', 'sender-credentials.mjs'].map(name =>
     copyFile(new URL(`../monitoring/trace/${name}`, import.meta.url), join(directory, name))));
   const cert = join(directory, 'cert.pem');
   const key = join(directory, 'key.pem');
