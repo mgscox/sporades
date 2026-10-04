@@ -108,7 +108,7 @@ import { traceRuntimeOperation } from "./runtime-request-context.js";
 import type { HelperError } from "./runtime-errors.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
-import { matchExactAdmissionRule } from "./admission-policy.js";
+import { matchHttpAdmissionRule } from "./admission-policy.js";
 import { trustedClientAddress } from "./client-address.js";
 import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
 import {
@@ -200,10 +200,10 @@ export function interpretHttpRequestTarget(target: unknown, method: unknown): In
 }
 
 const admissionLimiters = new WeakMap<object, ReturnType<typeof createAdmissionRateLimiter>>();
-/** Exact-path and trusted-address HTTP admission; genuine controls dispatch first. */
+/** Canonical HTTP admission and trusted-client quotas; genuine controls dispatch first. */
 export function routeHttpAdmission(
   database: LooseRecord,
-  request: Pick<IncomingMessage, "url" | "method"> & Partial<Pick<IncomingMessage, "headers" | "rawHeaders">>,
+  request: Pick<IncomingMessage, "url" | "method" | "rawHeaders" | "headers">,
   response: Pick<ServerResponse, "writeHead" | "end">,
   target?: InterpretedHttpRequestTarget,
 ) {
@@ -217,13 +217,22 @@ export function routeHttpAdmission(
     limiter.reconcile(generation);
     if (!generation || generation.policy.rules.length === 0) return false;
     const parsed = target ?? requestTarget(request);
-    // Decode once after URL dot-segment normalization. Encoded separators and
-    // double encodings are ambiguous across app/static routes and fail closed.
-    if (/[\\]|%2f|%5c/i.test(parsed.pathname)) throw new Error("Invalid admission pathname.");
-    const pathname = parsed.form === "asterisk" ? "*" : decodeURIComponent(parsed.url.pathname);
-    if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(pathname)) throw new Error("Invalid admission pathname.");
+    const raw = request.url ?? "/";
+    // HTTP request targets have no fragment. Do not let URL silently strip or repair input.
+    if (raw.includes("#")) throw new Error("Invalid admission target.");
+    if (parsed.form === "absolute") {
+      const authority = raw.slice(raw.indexOf("://") + 3).split(/[/?#]/, 1)[0];
+      if (!authority || /\s/.test(authority)) throw new Error("Invalid admission authority.");
+    }
+    const queryStart = raw.indexOf("?");
     const address = trustedClientAddress(database, request);
-    const rule = matchExactAdmissionRule(generation, pathname, address);
+    const rule = matchHttpAdmissionRule(generation, {
+      method: request.method ?? "",
+      pathname: parsed.pathname,
+      query: queryStart === -1 ? "" : raw.slice(queryStart + 1),
+      rawHeaders: request.rawHeaders,
+      trustedAddress: address,
+    });
     if (!rule) return false;
     if (rule.action.kind === "rate-limit") {
       if (!address) throw new Error("Missing trusted admission address.");

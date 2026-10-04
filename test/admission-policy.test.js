@@ -114,3 +114,17 @@ test('publication grants runtime read access even with a restrictive operator um
   finally { process.umask(previous); }
   assert.equal((await stat(target)).mode & 0o777,0o444);
 }));
+
+test('non-address generations reject security-sensitive headers and noncanonical policy values', () => {
+  for (const name of ['host', 'connection', 'proxy-authorization', 'proxy-connection', 'authorization', 'cookie', 'set-cookie', 'forwarded', 'via', 'true-client-ip', 'x-real-ip', 'x-forwarded-for', 'cf-connecting-ip', 'x-sporades-host-probe', 'x-sporades-client-address']) {
+    const p = policy(); p.rules[0].conditions = [{ kind: 'header', name }];
+    assert.throws(() => parseAdmissionPolicy(Buffer.from(JSON.stringify(p))), /Invalid admission policy/, name);
+  }
+  for (const condition of [{ kind: 'header', name: 'x-mode', value: ' outer' }, { kind: 'header', name: 'x-mode', value: 'outer ' },
+    { kind: 'pathname', prefix: '/a/../admin' }, { kind: 'pathname', exact: '/a b' }]) {
+    const p = policy(); p.rules[0].conditions = [condition];
+    assert.throws(() => parseAdmissionPolicy(Buffer.from(JSON.stringify(p))), /Invalid admission policy/);
+  }
+  const p = policy(); p.rules[0].conditions = [{ kind: 'method', value: 'POST' }, { kind: 'pathname', prefix: '/admin/' }, { kind: 'header', name: 'x-mode', value: '' }, { kind: 'query-key', name: 'some key' }];
+  assert.equal(parseAdmissionPolicy(Buffer.from(JSON.stringify(p))).policy.rules[0].conditions.length, 4);
+});

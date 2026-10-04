@@ -20,7 +20,7 @@ function fixture(rules, bounds) {
   function request(address = '192.0.2.1', url = '/limited', supplied = headers(address)) {
     const result = { status: 201, headers: {}, body: 'app bytes', calls: 0 };
     const response = { writeHead: (status, fields) => { result.status = status; result.headers = fields; }, end: body => { result.body = body; } };
-    if (!routeHttpAdmission(database, { url, method: 'POST', headers: supplied }, response)) result.calls++;
+    if (!routeHttpAdmission(database, { url, method: 'POST', headers: supplied, rawHeaders: Object.entries(supplied).flat() }, response)) result.calls++;
     return result;
   }
   return { request, limiter, database, time: value => { now = value; }, reload: rules => { active = rules === null ? null : generation(rules); limiter.reconcile(active); } };

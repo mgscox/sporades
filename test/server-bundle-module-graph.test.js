@@ -2641,6 +2641,34 @@ test("a generated Bundle enforces admission before Capsule middleware while cont
   } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
 });
 
+test("generated Bundle applies compound non-address admission before middleware and preserves unmatched requests", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-admission-compound-")); let booted;
+  try {
+    const policy = {version:1,rules:[{id:"compound",enabled:true,conditions:[
+      {kind:"method",value:"GET"},{kind:"pathname",prefix:"/probe"},
+      {kind:"header",name:"x-admission",value:"blocked"},{kind:"query-key",name:"flag"}
+    ],action:{kind:"deny"}}]};
+    await writeFile(path.join(root,"policy.json"),JSON.stringify(policy));
+    const app = CAPSULE_SOURCE.replace('if (ctx.kind !== "endpoint") return ctx;', 'if (ctx.kind !== "endpoint") return ctx; globalThis.process.getBuiltinModule("node:fs").appendFileSync("app-called", "called\\n");');
+    const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:app,
+      serverModuleSource:await bundleServerCapsuleModule({serverSource:app,serverSourcePath:path.join(process.cwd(),"server","index.ts")})});
+    await writePublicTree(root,"plain bytes"); booted = await bootBundle({source,dir:root});
+    for (const target of ["/probe/status?flag=one&flag=two", "/%70robe/status?%66lag"]) {
+      const denied = await fetch(booted.baseUrl + target,{headers:{"X-Admission":"blocked"}});
+      assert.equal(denied.status,403); assert.equal(denied.headers.get("cache-control"),"no-store"); assert.equal(await denied.text(),"Forbidden\n");
+    }
+    for (const target of ["/%", "ftp://example.test/probe/status", "http:///example.test/probe/status", "http:////example.test/probe/status", "/probe/status?flag=%FF"]) {
+      const response = await rawHttpResponse(booted.baseUrl,target);
+      assert.match(response,/^HTTP\/1\.1 403 /,target); assert.match(response,/cache-control: no-store/i); assert.ok(response.endsWith("Forbidden\n"),target);
+    }
+    await assert.rejects(readFile(path.join(root,"app-called")),{code:"ENOENT"});
+    const admitted = await fetch(booted.baseUrl + "/probe/status?flag=unchanged",{headers:{"x-admission":"different"}});
+    assert.equal(admitted.status,202); assert.equal(await readFile(path.join(root,"app-called"),"utf8"),"called\n");
+    const token = await fetch(booted.baseUrl + "/__sporades/connection-token",{headers:{"x-sporades-connection-token-request":"1"}});
+    assert.equal(token.status,200);
+  } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
+});
+
 test("generated Hosted, Dev and Container Bundles require Host identity for address rules and never expose the boundary capability", async () => {
   const { createHash } = await import('node:crypto');
   const token = createHash('sha256').update('sporades-client-address\0').update('a'.repeat(64)).digest('hex');
