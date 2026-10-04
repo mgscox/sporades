@@ -7,7 +7,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { deflateSync, inflateSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
@@ -39,24 +39,13 @@ function breakJpegComponent(bytes) { const output = Buffer.from(bytes); const at
 function pngChunks(bytes) { const chunks = []; for (let offset = 8; offset < bytes.length;) { const length = bytes.readUInt32BE(offset); const type = bytes.subarray(offset + 4, offset + 8).toString("ascii"); chunks.push({ type, data: bytes.subarray(offset + 8, offset + 8 + length) }); offset += 12 + length; } return chunks; }
 function rebuildPng(chunks) { return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), ...chunks.map(({ type, data }) => pngChunk(type, data))]); }
 function minimalPdf() { const objects = ["1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n", "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n", "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R>>\nendobj\n", "4 0 obj\n<</Length 0>>\nstream\n\nendstream\nendobj\n"]; let body = "%PDF-1.4\n"; const offsets = [0]; for (const object of objects) { offsets.push(Buffer.byteLength(body)); body += object; } const xref = Buffer.byteLength(body); body += `xref\n0 5\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<</Size 5 /Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`; return Buffer.from(body); }
-function freshPdfDeadlineProbe(timeouts, wallClockMode) {
-  const moduleUrl = new URL("../dist/file-ingress-runtime.js", import.meta.url).href;
-  const script = `import { validatePdfIngress } from ${JSON.stringify(moduleUrl)};
-const bytes = Buffer.from(${JSON.stringify(minimalPdf().toString("base64"))}, "base64");
-const actualWallNow = Date.now;
-const wallOrigin = actualWallNow();
-let wallReads = 0;
-Date.now = ${wallClockMode === "frozen" ? "() => wallOrigin" : wallClockMode === "backward" ? "() => wallOrigin - (++wallReads * 1_000_000_000)" : "() => wallOrigin + (++wallReads * 1_000_000_000)"};
-let expiredHooks = 0;
-const startedAt = performance.now();
-const timeouts = ${JSON.stringify(timeouts)};
-const results = await Promise.all(timeouts.map((timeoutMs) => validatePdfIngress(bytes, { timeoutMs, beforeOperatorList() { expiredHooks += 1; } })));
-const elapsedMs = performance.now() - startedAt;
-let retryHooks = 0;
-const retry = await validatePdfIngress(bytes, { timeoutMs: 2000, beforeOperatorList() { retryHooks += 1; } });
-console.log(JSON.stringify({ results, expiredHooks, elapsedMs, retry, retryHooks }));`;
-  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
-  assert.equal(result.status, 0, result.stderr);
+function freshPdfDeadlineProbe(timeouts, wallClock, expiryMode) {
+  const probePath = fileURLToPath(new URL("./support/pdf-deadline-probe.mjs", import.meta.url));
+  const input = { bytes: minimalPdf().toString("base64"), timeouts, wallClock, expiryMode };
+  // A stuck child must not hang the full suite. This watchdog bounds fixture
+  // failure only; the 1/2000 ms inspection deadlines use the controlled clock.
+  const result = spawnSync(process.execPath, [probePath, JSON.stringify(input)], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, timeout: 60_000 });
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
   return JSON.parse(result.stdout.trim().split("\n").at(-1));
 }
 function compactTrailerPdf(suffix = "") { return Buffer.from(minimalPdf().toString("latin1").replace("<</Size 5 /Root 1 0 R>>", `<</Size 5/Root 1 0 R${suffix}>>`), "latin1"); }
@@ -244,13 +233,18 @@ test("PDF inspection fail-closes expired fresh and concurrent lazy loads before 
     { wallClock: "forward", timeouts: [1, 2000, 1, 2000, 2000, 1, 2000, 1] },
   ];
   for (const { wallClock, timeouts } of cases) {
-    const probe = freshPdfDeadlineProbe(timeouts, wallClock);
-    const expected = timeouts.map((timeoutMs) => timeoutMs > 1);
-    assert.deepEqual(probe.results, expected, `${wallClock} wall clock with ${timeouts.length} concurrent lazy loads`);
-    assert.equal(probe.expiredHooks, expected.filter(Boolean).length, `${wallClock} wall clock let expired work reach the operator hook`);
-    assert.ok(probe.elapsedMs < 2_000, `${wallClock} wall clock prevented a bounded result: ${probe.elapsedMs}ms`);
-    assert.equal(probe.retry, true, `normal retry failed after ${wallClock} wall clock lazy load`);
-    assert.equal(probe.retryHooks, 1, `normal retry did not reach its operator hook after ${wallClock} wall clock lazy load`);
+    for (const expiryMode of ["timer", "checkpoint"]) {
+      const probe = freshPdfDeadlineProbe(timeouts, wallClock, expiryMode);
+      const expected = timeouts.map((timeoutMs) => timeoutMs > 1);
+      const label = `${wallClock} wall clock, ${expiryMode} expiry`;
+      assert.equal(probe.importHooks, timeouts.length, `${label}: all requests reached the lazy-load boundary before expiry`);
+      assert.equal(probe.lazyImports, 1, `${label}: concurrent requests share one cold module load`);
+      assert.deepEqual(probe.results, expected, `${label} with ${timeouts.length} concurrent lazy loads`);
+      assert.equal(probe.expiredHooks, expected.filter(Boolean).length, `${label} let expired work reach the operator hook`);
+      if (expiryMode === "timer") assert.deepEqual(probe.expiredBeforeRelease, timeouts.filter(timeout => timeout === 1).map(() => false), `${label}: expiry settles before the module is released`);
+      assert.equal(probe.retry, true, `normal retry failed after ${label} lazy load`);
+      assert.equal(probe.retryHooks, 1, `normal retry did not reach its operator hook after ${label} lazy load`);
+    }
   }
 });
 
