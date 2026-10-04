@@ -1,5 +1,6 @@
 import type { RuntimeTelemetryConfig } from "../runtime-telemetry.js";
 type Connection = {
+    exportsDisabled?: boolean;
     tracePropagationOrigins?: string[];
     internalEndpoint: string;
     metricsIntervalMs?: number;

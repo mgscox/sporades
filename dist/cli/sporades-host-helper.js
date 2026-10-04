@@ -21,8 +21,8 @@ import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { CLIENT_ADDRESS_TOKEN_HEADER, clientAddressBoundaryToken } from "../client-address.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-config.js";
-import { checkHostTelemetryDelivery, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
-import { queueHostInventory, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
+import { disableHostTelemetryExports, removeHostTelemetryAgents, checkHostTelemetryDelivery, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
+import { queueHostInventory, removeHostInventoryWorker, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
@@ -481,6 +481,8 @@ function managedRouteMutationLockIdentity(request) {
                     bootstrapTrust,
                 };
             }
+        case "host.telemetry.exports-disable":
+        case "host.telemetry.remove-agents":
         case "host.telemetry.connect":
         case "host.telemetry.resources-enable":
         case "host.telemetry.resources-disable":
@@ -765,7 +767,7 @@ async function setCapsuleTelemetryDisabled(request, disabled) {
 }
 async function inspectHostedTelemetryCoverage(request, record, connection) {
     const serviceName = `${request.host.domain}/${record.subname}`;
-    const desired = Boolean(connection) && record.telemetry?.disabled !== true;
+    const desired = Boolean(connection && !connection.exportsDisabled) && record.telemetry?.disabled !== true;
     const expectedConfig = hostedTelemetryConfig(connection, { domain: request.host.domain, subname: record.subname, telemetry: record.telemetry });
     const expectedHash = createHash("sha256").update(JSON.stringify(expectedConfig)).digest("hex");
     const name = createHostedContainerName(request.host.domain, record.subname);
@@ -806,7 +808,7 @@ async function main(request) {
         await dispatchMain(request);
     }
     finally {
-        const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.reconcile", "host.telemetry.enable", "host.telemetry.disable"];
+        const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.reconcile", "host.telemetry.exports-disable", "host.telemetry.enable", "host.telemetry.disable"];
         if (mutations.includes(request.action)) {
             try {
                 if (await queueHostInventory(request.host.remoteRoot))
@@ -830,19 +832,32 @@ async function dispatchMain(request) {
         validateCanonicalHostRouteRoot(request);
         if (request.action === "host.telemetry.connect" || request.action === "host.telemetry.reconcile")
             await installHostInventoryWorker(request.host.remoteRoot);
-        const data = request.action === "host.telemetry.inventory-export" ? { inventory: await exportHostInventory(request.host.remoteRoot) }
-            : request.action === "host.telemetry.inventory-reconcile" ? await reconcileHostInventory(request.host.remoteRoot)
-                : capsuleOperation
-                    ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable")
-                    : request.action === "host.telemetry.connect"
-                        ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain))
-                        : ["host.telemetry.reconcile", "host.telemetry.resources-enable", "host.telemetry.resources-disable", "host.telemetry.resources-remove"].includes(request.action)
-                            ? await hostTelemetryStatusWithCoverage(request, await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain, request.action === "host.telemetry.reconcile" ? "reconcile" : request.action.slice("host.telemetry.resources-".length)))
-                            : request.action === "host.telemetry.status"
-                                ? await hostTelemetryStatusWithCoverage(request)
-                                : request.action === "host.telemetry.check"
-                                    ? await checkHostTelemetryDelivery(request.host.remoteRoot)
-                                    : null;
+        if (request.action === "host.telemetry.remove-agents") {
+            const connection = await readHostTelemetryConnection(request.host.remoteRoot);
+            if (!connection?.exportsDisabled)
+                throw helperError("Host exports are still enabled.", "Run exports-disable first.");
+            const inventory = await reconcileHostInventory(request.host.remoteRoot);
+            if (!inventory.host || inventory.pending || inventory.failure || inventory.acknowledgedRevision !== inventory.desiredRevision)
+                throw helperError("Deliberate removal is not acknowledged.", "Restore inventory connectivity/authority and retry remove-agents. Credentials and the reconciler are retained.");
+            const agents = await removeHostTelemetryAgents(request.host.remoteRoot, request.host.domain);
+            await removeHostInventoryWorker(request.host.remoteRoot);
+            writeEnvelope({ ok: true, data: { ...agents, inventory, agentsRemoved: true }, error: null });
+            return;
+        }
+        const data = request.action === "host.telemetry.exports-disable" ? await hostTelemetryStatusWithCoverage(request, await disableHostTelemetryExports(request.host.remoteRoot, request.host.domain))
+            : request.action === "host.telemetry.inventory-export" ? { inventory: await exportHostInventory(request.host.remoteRoot) }
+                : request.action === "host.telemetry.inventory-reconcile" ? await reconcileHostInventory(request.host.remoteRoot)
+                    : capsuleOperation
+                        ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable")
+                        : request.action === "host.telemetry.connect"
+                            ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain))
+                            : ["host.telemetry.reconcile", "host.telemetry.resources-enable", "host.telemetry.resources-disable", "host.telemetry.resources-remove"].includes(request.action)
+                                ? await hostTelemetryStatusWithCoverage(request, await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain, request.action === "host.telemetry.reconcile" ? "reconcile" : request.action.slice("host.telemetry.resources-".length)))
+                                : request.action === "host.telemetry.status"
+                                    ? await hostTelemetryStatusWithCoverage(request)
+                                    : request.action === "host.telemetry.check"
+                                        ? await checkHostTelemetryDelivery(request.host.remoteRoot)
+                                        : null;
         if (!data)
             throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, check, enable, or disable.");
         writeEnvelope({ ok: true, data, error: null });

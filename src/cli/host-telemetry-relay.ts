@@ -125,6 +125,7 @@ async function readConnectionRecord(remoteRoot: string) {
   if (value.schemaVersion !== 1 || typeof value.endpoint !== "string" || typeof value.network !== "string" || value.internalEndpoint !== `http://${RELAY_ALIAS}:4318/`) {
     throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
   }
+  if (value.exportsDisabled !== undefined && typeof value.exportsDisabled !== "boolean") invalid();
   if (value.tracePropagationOrigins !== undefined) {
     try { value.tracePropagationOrigins = validateTracePropagationOrigins(value.tracePropagationOrigins); } catch { invalid(); }
   }
@@ -134,9 +135,9 @@ async function readConnectionRecord(remoteRoot: string) {
 export async function readHostTelemetryConnection(remoteRoot: string) {
   const record = await readConnectionRecord(remoteRoot);
   if (!record) return null;
-  const { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs } = record;
-  const value = { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs };
-  return value as { schemaVersion: 1; endpoint: string; network: string; internalEndpoint: string; caConfigured: boolean; connectedAt: string; inventoryHost?: string; tracePropagationOrigins?: string[]; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
+  const { exportsDisabled, schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs } = record;
+  const value = { exportsDisabled, schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs };
+  return value as { exportsDisabled?: boolean; schemaVersion: 1; endpoint: string; network: string; internalEndpoint: string; caConfigured: boolean; connectedAt: string; inventoryHost?: string; tracePropagationOrigins?: string[]; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
 }
 
 export type HostInventoryConnection = { generation: string; endpoint: string; host: string; credential: string; caPem?: string };
@@ -173,8 +174,9 @@ export async function statusHostTelemetryRelay(remoteRoot: string) {
   const relay = inspectRelay();
   return {
     resources: await hostMetricsStatus(remoteRoot),
+    exportsDisabled: connection?.exportsDisabled === true,
     connected: Boolean(connection),
-    relayReady: Boolean(connection && relay?.State?.Running === true),
+    relayReady: Boolean(connection && !connection.exportsDisabled && relay?.State?.Running === true),
     capsuleCoverage: "not-configured",
     backendVerification: "unavailable",
     ...(connection ? { ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) } : {}),
@@ -206,7 +208,10 @@ export async function connectHostTelemetryRelay(remoteRoot: string, network: str
         await atomicWrite(files.config, previousConfig, 0o644);
         await atomicWrite(files.credential, previousCredential, 0o600);
         if (previousCa) await atomicWrite(files.ca, previousCa, 0o644);
-        try { await startRelay(files, previous.network, previous.caConfigured); }
+        try {
+          if (previous.exportsDisabled) await stopHostTelemetryExports(remoteRoot, host ?? previous.inventoryHost);
+          else await startRelay(files, previous.network, previous.caConfigured);
+        }
         catch { throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile."); }
       } else {
         await rm(files.config, { force: true });
@@ -238,6 +243,11 @@ async function startRelay(files: ReturnType<typeof paths>, network: string, caCo
 export async function reconcileHostTelemetryRelay(remoteRoot: string, host?: string, operation: "reconcile" | "enable" | "disable" | "remove" = "reconcile") {
   const connection = await readHostTelemetryConnection(remoteRoot);
   if (!connection) throw helperError("Host Telemetry is not connected.", "Run `sporades host telemetry connect` first.");
+  if (connection.exportsDisabled) {
+    if (operation === "enable") throw helperError("Host exports are disabled.", "Reconnect deliberately to enable monitoring.");
+    await stopHostTelemetryExports(remoteRoot, host ?? connection.inventoryHost, operation === "remove" ? "remove" : "disable");
+    return statusHostTelemetryRelay(remoteRoot);
+  }
   const files = paths(remoteRoot);
   if (!await readProtected(files.config) || !await readProtected(files.credential) || (connection.caConfigured && !await readProtected(files.ca))) {
     throw helperError("Host Telemetry configuration is incomplete.", "Reconnect the relay with a verified Telemetry profile.");
@@ -294,4 +304,33 @@ export async function checkHostTelemetryDelivery(remoteRoot: string) {
     relayAccepted = relay.ok && ["200", "202"].includes(relay.stdout);
   }
   return { ...result, origin: "host", traceId, relayReady, relayAccepted, backendStorage: "verification-unavailable", capsuleCoverage: "not-configured" };
+}
+
+async function stopHostTelemetryExports(remoteRoot: string, host?: string, operation: "disable" | "remove" = "disable") {
+  // Stop delivery even if Caddy validation or exporter shutdown fails. Retry
+  // converges the remaining resources without removing inventory authority.
+  if (inspectRelay() && !docker(["stop", RELAY_NAME]).ok) throw helperError("Host relay could not be stopped.", "Retry exports-disable; disabled launch policy and credentials are retained.");
+  const identity = host ?? (await readHostMetrics(remoteRoot))?.host;
+  if (identity) await configureHostMetrics(remoteRoot, identity, operation);
+}
+
+/** Durable opt-out keeps inventory authority and credentials for acknowledgement/recovery. */
+export async function disableHostTelemetryExports(remoteRoot: string, host: string) {
+  await withHostTelemetryLock(remoteRoot, async () => {
+    const record = await readConnectionRecord(remoteRoot);
+    if (!record) throw helperError("Host Telemetry is not connected.", "Connect before changing export policy.");
+    await atomicWrite(paths(remoteRoot).descriptor, JSON.stringify({ ...record, exportsDisabled: true }) + "\n", 0o600);
+  });
+  await stopHostTelemetryExports(remoteRoot, host);
+  return statusHostTelemetryRelay(remoteRoot);
+}
+/** Caller must first acknowledge the exact disabled inventory revision. */
+export async function removeHostTelemetryAgents(remoteRoot: string, host: string) {
+  if (!(await readHostTelemetryConnection(remoteRoot))?.exportsDisabled) throw helperError("Host exports are still enabled.", "Run exports-disable and reconcile inventory before remove-agents.");
+  const { reconcileHostInventory } = await import("./host-inventory.js");
+  const inventory = await reconcileHostInventory(remoteRoot);
+  if (!inventory.host || inventory.pending || inventory.failure || inventory.acknowledgedRevision !== inventory.desiredRevision) throw helperError("Deliberate removal is not acknowledged.", "Restore inventory connectivity/authority and retry remove-agents. Credentials and the reconciler are retained.");
+  await configureHostMetrics(remoteRoot, host, "remove");
+  if (inspectRelay() && !docker(["rm", "-f", RELAY_NAME]).ok) throw helperError("Host relay could not be removed.", "Retry remove-agents; protected credentials and Capsule data are retained.");
+  return statusHostTelemetryRelay(remoteRoot);
 }

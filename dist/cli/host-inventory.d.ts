@@ -44,5 +44,9 @@ export declare function installHostInventoryWorker(root: string): Promise<{
     intervalSeconds: number;
     reason?: undefined;
 }>;
+/** Remove only the exact generated timer/service; retain protected outbox and secrets. */
+export declare function removeHostInventoryWorker(root: string): Promise<{
+    removed: boolean;
+}>;
 export {};
 //# sourceMappingURL=host-inventory.d.ts.map
