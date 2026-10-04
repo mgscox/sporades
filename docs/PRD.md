@@ -464,8 +464,27 @@ authState.unsubscribe();
 ```
 
 Subscriptions immediately deliver their latest complete state, resubscribe
-after reconnect, and may be unsubscribed more than once safely. React and
-Preact clients can adapt those same primitives with `createHooks`:
+after reconnect, and may be unsubscribed more than once safely.
+
+SQLite, Postgres and libsql refresh subscribed queries only when a writing
+mutation or completed Job changed a table their last run read. Unknown statement
+tables and failed query runs retain the full-refresh fallback. Transaction writes
+are tracked conservatively, including writes that later roll back. Dedicated
+Postgres resource transactions publish their changed tables after settlement,
+so a concurrent refresh cannot consume the eventual commit's notification.
+Rejected Postgres and libsql prepared writes retain conservative invalidation:
+an earlier statement may have committed before a later statement rejects, or a
+remote write may have committed before its HTTP acknowledgement is lost.
+Libsql `exec()` publishes conservative invalidation after HTTP settlement, including
+rejection. Writes arriving during an in-flight subscription refresh trigger a
+follow-up refresh of their readers after that refresh completes.
+Refreshes coalesce per subscription and retain its pending table invalidations;
+a held reader cannot block other subscriptions. Unsubscribe, replacement and
+disconnect discard that reader's pending refresh work immediately.
+Query diagnostic writes remain in the completion window without recursively
+triggering more refreshes of failed queries.
+
+React and Preact clients can adapt those same primitives with `createHooks`:
 
 Declared Custom queries may take JSON-compatible positional arguments after
 the listener (or after the query name for framework adapters). The arguments

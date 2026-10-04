@@ -1378,7 +1378,17 @@ export function emailEvent<Handler extends EmailEventHandler>(handler: Handler):
 export function stripeEvent<Handler extends StripeEventHandler>(handler: Handler): StripeEventDefinition<Handler>;
 /** Opt into one runtime-serialized, transaction-owned Stripe consequence per Job attempt, shared with any declared Team Billing platform consequence for the verified Event. */
 export function stripeEvent<Handler extends AtomicStripeEventHandler>(options: { consequence: "atomic" }, handler: Handler): AtomicStripeEventDefinition<Handler>;
-/** Define a named query for subscribed client reads. */
+/**
+ * Define a named query for subscribed client reads. SQLite, Postgres and libsql refresh
+ * subscriptions when a table read by their last run changes. Unknown tables retain a
+ * full refresh; values derived from clocks or external state do not refresh on unrelated writes.
+ * Only recognized single-table writes may skip refresh when they report zero changed rows;
+ * batches and unknown statements retain full refresh even with a zero-row final result.
+ * Rejected Postgres and libsql prepared writes retain conservative refresh when writes may have committed,
+ * including errors after a batch COMMIT or a lost remote acknowledgement.
+ * Dedicated Postgres resource writes publish invalidation after
+ * transaction settlement, even if another refresh ran before commit.
+ */
 export function query<const Args extends readonly JsonValue[] = readonly JsonValue[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,
 ): QueryDefinition<(ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>>;
