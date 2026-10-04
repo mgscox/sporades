@@ -1262,8 +1262,20 @@ or ambiguous exact-header duplicate is indeterminate:
 a nonmatching condition skips the rule, otherwise it fails closed. Evaluation
 stops at the first match; a matching deny returns the opaque denial, while a
 matching quota action applies its bounded fixed-window counter. Traffic denied
-earlier never reaches a later rule or action. WebSocket upgrades are a subsequent
-slice.
+earlier never reaches a later rule or action.
+
+WebSocket upgrades use the same gate before any protocol switch in Dev, Container
+and Hosted runtimes. The request's actual HTTP method, canonical pathname, raw
+public headers, query keys and Host-authenticated address select one complete
+generation, exactly as for ordinary HTTP. `/__sporades/ws` is Capsule traffic;
+it has no blanket exemption. A matching deny returns the same opaque HTTP 403
+and never sends `101 Switching Protocols`. Quotas share their per-process buckets
+with ordinary HTTP and return the same opaque 429 and Retry-After. Nonmatching
+upgrades retain existing connection-token, Origin and application transport checks.
+Unsupported Capsule upgrade targets also enter admission before rejection.
+Reserved GET control targets have no WebSocket transport: the runtime closes them
+without reading policy or consuming quota buckets. They do not become alternate
+Capsule upgrade endpoints.
 
 Without a policy declaration, the admission gate returns synchronously before
 parsing or touching request/response objects, reading bodies, or emitting logs.

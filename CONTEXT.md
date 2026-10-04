@@ -666,7 +666,11 @@ Host controls bypass admission; reserved targets fail generation validation. Add
 requires one canonical validated IP and the Host-owned boundary capability; public forwarding
 headers never independently grant authority. Missing identity fails closed for potentially
 applicable address rules. Dev and local Container have no trusted identity, while other rules
-continue to operate. IPv4-mapped IPv6 normalizes to IPv4. Quotas and WebSocket upgrades remain subsequent slices. Generic writable `deploy.files` authority
+continue to operate. IPv4-mapped IPv6 normalizes to IPv4. WebSocket upgrades use
+the same complete generation before protocol switching, including `/__sporades/ws`
+Capsule traffic; denial stays an opaque HTTP response. HTTP and upgrades share
+per-process quota buckets. Reserved GET controls have no WebSocket transport and
+never consult policy or count quotas. Generic writable `deploy.files` authority
 never applies. See ADR-0054.
 
 ### Sender credentials

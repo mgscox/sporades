@@ -69,6 +69,7 @@ import {
   routeConnectionToken,
   routeEndpoint,
   routeHttpAdmission,
+  routeWebSocketAdmission,
   routeRuntimeHealth,
   writeInvalidHttpRequestTarget,
   routeSporadesAuth,
@@ -2619,6 +2620,7 @@ async function startDevSession(options: LooseRecord) {
     }
   }));
   server.on("upgrade", (request, socket) => {
+    if (routeWebSocketAdmission(runtime.database, request, socket)) return;
     const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
     if (!target) {
       socket.destroy();
