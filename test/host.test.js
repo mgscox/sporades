@@ -3919,6 +3919,9 @@ test("sporades host helper registers Hosted Capsules with registry state and una
 
 test("sporades host helper rotates a Hosted Capsule sealed-env key and cleans only unreferenced keys", async () => {
   await withTempDir(async (dir) => {
+    // This key-retention fixture has no runtime container. Keep its state probe
+    // independent of whichever Docker engine happens to be on the workstation.
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUNNING_STATUS: "1" } });
     const remoteRoot = path.join(dir, "remote-root");
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     const dataDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "data");
@@ -3961,7 +3964,7 @@ test("sporades host helper rotates a Hosted Capsule sealed-env key and cleans on
         host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
         capsule: { subname: "team-notes" },
       },
-      { cwd: dir },
+      { cwd: dir, env: docker.env },
     );
 
     assert.equal(rotate.code, 0, rotate.stderr);
