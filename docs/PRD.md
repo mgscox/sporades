@@ -219,8 +219,9 @@ The repository currently includes:
   management, immutable grants, one-time secret disclosure, atomic rotation and
   retirement, Credential provenance through durable Jobs, and metadata-only
   Privileged/operator inspection and revocation through a running Capsule.
-- Server-only SMTP mail through `ctx.mail.send(...)`, with one portable
-  `sporades.json` contract for Dev sessions, local Container sessions, and
+- Server-only SMTP mail through `ctx.mail.send(...)`, including an optional
+  validated `autoSubmitted` field for the standard automated-message header,
+  with one portable `sporades.json` contract for Dev sessions, local Container sessions, and
   Hosted Capsules; validated Postmark, Mailgun, Mailjet, SMTP2GO, and generic SMTP
   extensions; bounded transport timeouts; clean shutdown; and secret-safe
   structured delivery diagnostics.
@@ -277,6 +278,9 @@ The following work is intentionally deferred:
   transport and Host-owned Hosted Capsule activation are available; each Host
   connection enables its Capsules by default with per-Capsule opt-out, and
   running Capsules need a controlled restart before coverage is confirmed.
+  Native global fetch calls within active HTTP requests have CLIENT spans through
+  response headers, with exact operator-approved origin propagation restricted to
+  caller-selected manual/error redirects.
   Connected Hosts automatically synchronize versioned lifecycle inventory through
   an exact Host-scoped interface, durable outbox and independent periodic worker.
   Central acknowledgements survive sender outages; manual import/export is recovery
@@ -461,8 +465,27 @@ authState.unsubscribe();
 ```
 
 Subscriptions immediately deliver their latest complete state, resubscribe
-after reconnect, and may be unsubscribed more than once safely. React and
-Preact clients can adapt those same primitives with `createHooks`:
+after reconnect, and may be unsubscribed more than once safely.
+
+SQLite, Postgres and libsql refresh subscribed queries only when a writing
+mutation or completed Job changed a table their last run read. Unknown statement
+tables and failed query runs retain the full-refresh fallback. Transaction writes
+are tracked conservatively, including writes that later roll back. Dedicated
+Postgres resource transactions publish their changed tables after settlement,
+so a concurrent refresh cannot consume the eventual commit's notification.
+Rejected Postgres and libsql prepared writes retain conservative invalidation:
+an earlier statement may have committed before a later statement rejects, or a
+remote write may have committed before its HTTP acknowledgement is lost.
+Libsql `exec()` publishes conservative invalidation after HTTP settlement, including
+rejection. Writes arriving during an in-flight subscription refresh trigger a
+follow-up refresh of their readers after that refresh completes.
+Refreshes coalesce per subscription and retain its pending table invalidations;
+a held reader cannot block other subscriptions. Unsubscribe, replacement and
+disconnect discard that reader's pending refresh work immediately.
+Query diagnostic writes remain in the completion window without recursively
+triggering more refreshes of failed queries.
+
+React and Preact clients can adapt those same primitives with `createHooks`:
 
 Declared Custom queries may take JSON-compatible positional arguments after
 the listener (or after the query name for framework adapters). The arguments
@@ -1480,12 +1503,42 @@ publication and explicit removal are atomic and survive redeploy and restart.
 Startup rejects invalid configured policy before app traffic. Bounded immutable
 generations reload within ten seconds under normal scheduling; hot failures
 retain the last-known-good generation and report redacted digest/health.
-HTTP admission enforces enabled exact-path deny rules before Capsule request code,
+HTTP admission enforces enabled method, exact/segment-prefix pathname, canonical
+header, query-key and trusted Hosted address/CIDR deny rules with AND semantics before Capsule request code,
 with ordered first-match semantics, disabled-rule skipping, constant ten-byte opaque
 403 responses and no-store caching. Genuine authenticated control routes remain
 outside admission and reserved targeting fails generation validation. No declared
 policy leaves requests untouched; the incremental gate budget is a warmed median
-below one microsecond per call. Remaining matchers, quotas and WebSocket upgrades
-are subsequent slices. See the
+below one microsecond per call. Address identity requires the Host's per-runtime
+capability and one validated canonical IPv4/IPv6 value; public forwarding headers
+never independently grant authority. Cloudflare-origin identity retains the
+existing Cloudflare-source gate. Missing identity fails closed for potentially
+applicable enabled address rules; Dev and local Container ignore internal identity
+headers while non-address rules continue to operate. IPv4-mapped IPv6 normalizes
+to IPv4, with mapped CIDRs restricted to prefixes 96–128. Fixed-window quotas count
+matching requests by stable rule ID and trusted address
+using monotonic elapsed time, returning opaque 429/no-store with rounded-up
+Retry-After over quota. The combined per-process table caps at 10,000 buckets with
+deterministic LRU eviction and aggregate protected health diagnostics. Compatible
+IDs/parameters retain buckets across hot reload; restart resets state. Boundary
+bursts and independent process quotas are documented. WebSocket upgrades apply
+the same complete generation before protocol switching, including the Capsule
+transport at `/__sporades/ws`, with ordinary opaque HTTP denial and shared quota
+buckets. Reserved GET controls have no WebSocket transport and bypass policy and
+quota counting. Client resets while a denial is written close only that connection;
+the runtime remains available after both 403 and 429 upgrade denials.
+Nonmatching upgrades preserve the existing handshake. See the
 [configuration reference](reference/projects-and-configuration.md#request-admission-policy-publication)
 and [ADR-0054](adr/0054-request-admission-policy-is-deployer-owned.md).
+
+Admission evidence uses versioned fixed aggregate counters for HTTP/WebSocket
+evaluation, admitted/403/429 outcomes, reload failures/recoveries and limiter
+capacity evictions. Decimal unsigned 64-bit counters expose saturation instead
+of rounding or wrapping. Decision logs attempt at most twenty samples per
+monotonic minute, retaining at most twenty rule/outcome keys across policy churn;
+load failures and recoveries always emit redacted events. Existing doctor,
+authenticated runtime health and Hosted Capsule stats expose active digest,
+degraded last-known-good state and totals without raw client addresses, request
+values, query strings, credentials, bodies or proxy headers. No-policy sessions
+retain their existing inspection shape. See the configuration reference for
+counter semantics, sampling bounds and unavailable inspection behavior.

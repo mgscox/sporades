@@ -5,7 +5,8 @@ import { request as httpsRequest } from 'node:https';
 import { createServer as createTlsServer } from 'node:https';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, rm, rename, stat, copyFile, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, rename, stat, copyFile, chmod, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
 import { createGateway } from '../monitoring/trace/gateway.mjs';
@@ -21,9 +22,9 @@ const config = { ingestToken: 'ingestion-only-token', uiUser: 'operator', uiPass
 const capsule = (state = 'running') => ({ id: `${scope}/notes`, state, changedAt: '2026-10-02T00:00:00.000Z', release: 'release-1', targets: ['https://notes.apps.example/'] });
 const inventory = (revision, state = 'running') => ({ schemaVersion: 1, host: scope, revision, capsules: [{ ...capsule(state), ...(state === 'stopped' ? { targets: [] } : {}) }] });
 async function fixture(t) {
-  const base = path.resolve('.sporades/inventory-tests');
-  await mkdir(base, { recursive: true });
-  const dir = await mkdtemp(path.join(base, 'case-'));
+  // Shipped mutation helpers require non-writable, non-symlink ancestors. A
+  // checkout may live on a group-writable volume, so use the canonical temp root.
+  const dir = await mkdtemp(path.join(await realpath(tmpdir()), 'sporades-inventory-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -211,7 +212,12 @@ test('Host outbox catches up after TLS outage, helper restarts, lifecycle change
   let record = { domain: scope, subname: 'notes', hostedUrl: 'https://notes.apps.example', status: 'registered', aliasDomains: Array.from({ length: 20 }, (_, i) => `alias-${i}.example`), updatedAt: '2026-10-02T00:00:00.000Z', currentRelease: null };
   const persist = async () => { const temporary = recordPath + '.tmp'; await writeFile(temporary, JSON.stringify(record)); await rename(temporary, recordPath); };
   await persist();
-  const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(dir, 'config'), SPORADES_TEST_FLOCK_PATH: path.resolve('test/support/exec-flock.py') };
+  const fakeBin = path.join(dir, 'fake-bin');
+  await mkdir(fakeBin);
+  await writeFile(path.join(fakeBin, 'docker'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const configDirectory = path.resolve('.sporades/inventory-tests-config', path.basename(dir));
+  t.after(() => rm(configDirectory, { recursive: true, force: true }));
+  const env = { ...process.env, PATH: fakeBin + path.delimiter + process.env.PATH, SPORADES_CONFIG_DIR: configDirectory, SPORADES_TEST_FLOCK_PATH: path.resolve('test/support/exec-flock.py') };
   const worker = () => runHelper(['--reconcile-inventory', Buffer.from(hostRoot).toString('base64url')], env);
   const first = await worker();
   assert.equal(first.data.pending, false);
@@ -239,7 +245,7 @@ test('Host outbox catches up after TLS outage, helper restarts, lifecycle change
   assert.equal((await sendTls(port, cert, 'PUT', token, inventory(1))).status, 409);
   // Exercise the shipped mutation dispatch rather than just changing a fixture.
   const disabled = await runHelper([], env, { action: 'host.telemetry.disable', host: { alias: 'local-fake', domain: scope, remoteRoot: hostRoot, scheme: 'https' }, capsule: { subname: 'notes' } });
-  assert.equal(disabled.ok, true);
+  assert.equal(disabled.ok, true, JSON.stringify(disabled));
   assert.equal(JSON.parse(await readFile(path.join(telemetry, 'inventory.json'), 'utf8')).desired.capsules[0].state, 'opted-out');
   await worker();
   record = { ...record, status: 'stopped', updatedAt: '2026-10-02T00:03:00.000Z' }; await persist(); await worker();
@@ -252,7 +258,7 @@ test('Host outbox catches up after TLS outage, helper restarts, lifecycle change
   // Exercise the packaged recovery utility with the same TLS/scope/version rules.
   const recoveryDirectory = path.join(dir, 'recovery');
   await mkdir(recoveryDirectory);
-  for (const name of ['inventory.mjs', 'inventory-contract.mjs', 'setup.mjs']) await copyFile(path.join('monitoring/trace', name), path.join(recoveryDirectory, name));
+  for (const name of ['inventory.mjs', 'inventory-contract.mjs', 'sender-credentials.mjs', 'setup.mjs']) await copyFile(path.join('monitoring/trace', name), path.join(recoveryDirectory, name));
   await writeFile(path.join(recoveryDirectory, '.env'), `INVENTORY_HOSTS='${JSON.stringify({ [scope]: token })}'\n`, { mode: 0o600 });
   const recovery = async (operation, filename) => {
     const child = spawn(process.execPath, [path.join(recoveryDirectory, 'inventory.mjs'), operation, `https://127.0.0.1:${port}`, scope, filename, certPath], { stdio: ['ignore', 'pipe', 'pipe'] });

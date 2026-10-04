@@ -10,6 +10,7 @@ export declare const runtimeRequestScope: AsyncLocalStorage<{
     operation?: RuntimeOperationRunner;
     tracer?: Tracer;
     isOpen?: () => boolean;
+    outboundFetch?: (original: typeof fetch, input: Parameters<typeof fetch>[0], init?: RequestInit) => ReturnType<typeof fetch>;
 }>;
 /** Internal runtime boundary: no request/exporter means the original callback alone runs. */
 export declare function traceRuntimeOperation<T>(operation: RuntimeOperation, callback: () => T, outcome?: (result: Awaited<T>) => RuntimeOperationOutcome): T;

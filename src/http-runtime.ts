@@ -100,15 +100,19 @@
 //
 // `checkRuntimeSqlite` is exported for a test rather than for a caller, as it was before the move.
 //
-// This module reaches no Node builtin, so ADR-0042's `process.getBuiltinModule` accessor does not
-// appear in it. `Buffer` and `URL` are globals.
+// Upgrade denials use Node's ServerResponse to retain ordinary HTTP serialization and headers.
+// Static builtin imports are supported by the module graph (ADR-0042's constraint has expired).
 
-import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
+import { ServerResponse, type IncomingHttpHeaders, type IncomingMessage, type OutgoingHttpHeaders } from "node:http";
+import type { Duplex } from "node:stream";
+import type { Socket } from "node:net";
 import { traceRuntimeOperation } from "./runtime-request-context.js";
 import type { HelperError } from "./runtime-errors.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
-import { matchExactAdmissionRule } from "./admission-policy.js";
+import { matchHttpAdmissionRule } from "./admission-policy.js";
+import { trustedClientAddress } from "./client-address.js";
+import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
 import {
   accessKeyAuthenticationError, emitAccessKeyAdmittedAudit,
   recordAccessKeyUsage, resolveAccessKeyCredential,
@@ -197,28 +201,69 @@ export function interpretHttpRequestTarget(target: unknown, method: unknown): In
   }
 }
 
-/** Exact-path HTTP admission, before Capsule routing; genuine controls dispatch first. */
+const admissionLimiters = new WeakMap<object, ReturnType<typeof createAdmissionRateLimiter>>();
+/** Canonical HTTP admission and trusted-client quotas; genuine controls dispatch first. */
 export function routeHttpAdmission(
   database: LooseRecord,
-  request: Pick<IncomingMessage, "url" | "method">,
+  request: Pick<IncomingMessage, "url" | "method" | "rawHeaders" | "headers">,
   response: Pick<ServerResponse, "writeHead" | "end">,
   target?: InterpretedHttpRequestTarget,
+  transport: "http" | "websocket" = "http",
 ) {
   const runtime = database.admissionPolicy;
   if (!runtime) return false;
+  const generation = runtime.current();
+  if (!generation) return false;
+  let rule: ReturnType<typeof matchHttpAdmissionRule> = null;
+  let routeClass: "ordinary" | "capsule-transport" | "invalid" = "invalid";
+  let recorded = false;
+  const record = (outcome: "admitted" | "denied" | "rate-limited") => {
+    if (recorded) return;
+    recorded = true;
+    runtime.evidence?.decision({ digest: generation.digest, ruleId: rule?.id ?? null, action: rule?.action.kind ?? null,
+      outcome, transport, routeClass,
+      sessionKind: ["dev", "public-dev", "container", "hosted"].includes(database.securitySession) ? database.securitySession : "dev",
+    }, database.log?.emit ? (data: any) => database.log.emit({ category: "platform", event: "admission.decision", level: "info", message: "Request admission decision sample", data }) : undefined);
+  };
   try {
     // Snapshot once: a request sees one complete validated immutable generation.
-    const generation = runtime.current();
-    if (!generation || generation.policy.rules.length === 0) return false;
+    let limiter = runtime.rateLimiter ?? admissionLimiters.get(runtime);
+    if (!limiter) { limiter = createAdmissionRateLimiter(); admissionLimiters.set(runtime, limiter); }
+    limiter.reconcile(generation);
+    if (generation.policy.rules.length === 0) { routeClass = "ordinary"; record("admitted"); return false; }
     const parsed = target ?? requestTarget(request);
-    // Decode once after URL dot-segment normalization. Encoded separators and
-    // double encodings are ambiguous across app/static routes and fail closed.
-    if (/[\\]|%2f|%5c/i.test(parsed.pathname)) throw new Error("Invalid admission pathname.");
-    const pathname = parsed.form === "asterisk" ? "*" : decodeURIComponent(parsed.url.pathname);
-    if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(pathname)) throw new Error("Invalid admission pathname.");
-    if (!matchExactAdmissionRule(generation, pathname)) return false;
-    // This slice implements deny. Future actions cannot silently admit traffic.
+    const raw = request.url ?? "/";
+    // HTTP request targets have no fragment. Do not let URL silently strip or repair input.
+    if (raw.includes("#")) throw new Error("Invalid admission target.");
+    if (parsed.form === "absolute") {
+      const authority = raw.slice(raw.indexOf("://") + 3).split(/[/?#]/, 1)[0];
+      if (!authority || /\s/.test(authority)) throw new Error("Invalid admission authority.");
+    }
+    const queryStart = raw.indexOf("?");
+    const address = trustedClientAddress(database, request);
+    routeClass = parsed.pathname === "/__sporades/ws" ? "capsule-transport" : "ordinary";
+    rule = matchHttpAdmissionRule(generation, {
+      method: request.method ?? "",
+      pathname: parsed.pathname,
+      query: queryStart === -1 ? "" : raw.slice(queryStart + 1),
+      rawHeaders: request.rawHeaders,
+      trustedAddress: address,
+    });
+    if (!rule) { record("admitted"); return false; }
+    if (rule.action.kind === "rate-limit") {
+      if (!address) throw new Error("Missing trusted admission address.");
+      const retryAfter = limiter.consume(rule.id, address, rule.action.limit, rule.action.windowMs);
+      if (!retryAfter) { record("admitted"); return false; }
+      record("rate-limited");
+      response.writeHead(429, {
+        "cache-control": "no-store", "retry-after": String(retryAfter),
+        "content-type": "text/plain; charset=utf-8", "content-length": "18", connection: "close",
+      });
+      response.end("Too Many Requests\n");
+      return true;
+    }
   } catch { /* Malformed or unsupported admission input has the same opaque denial. */ }
+  record("denied");
   response.writeHead(403, {
     "cache-control": "no-store",
     "content-type": "text/plain; charset=utf-8",
@@ -237,6 +282,38 @@ export function requestTarget(request: Pick<IncomingMessage, "url" | "method">) 
     throw error;
   }
   return target;
+}
+
+/** Apply HTTP admission before any upgrade, including unsupported Capsule paths. */
+export function routeWebSocketAdmission(database: LooseRecord, request: IncomingMessage, socket: Duplex) {
+  const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+  // These GET targets belong exclusively to the existing control dispatch. They have
+  // no WebSocket transport; reject without reading a generation or counting quotas.
+  if (request.method === "GET" && (target?.pathname === "/__sporades/health/runtime" || target?.pathname === "/__sporades/connection-token")) {
+    socket.destroy();
+    return true;
+  }
+  if (!database.admissionPolicy) return false;
+  const response = new ServerResponse(request);
+  // An upgrade socket no longer has the HTTP server's ordinary error handling.
+  // Buffering a denial can race a client reset; own both error surfaces before
+  // end() or assignSocket() can flush, and keep failures local to this connection.
+  const closeConnection = () => { response.destroy(); socket.destroy(); };
+  response.on("error", closeConnection);
+  // Install the ordinary response headers, but never auto-answer upgrade preflight.
+  prepareHttpSecurity(database, request, response, () => true);
+  if (!routeHttpAdmission(database, request, response, target ?? undefined, "websocket")) return false;
+  // Denial is buffered until admission completes. No response owns an accepted socket.
+  socket.on("error", closeConnection);
+  socket.once("close", () => response.destroy());
+  response.once("finish", () => { if (!socket.destroyed) socket.end(); });
+  if (socket.destroyed || !socket.writable || socket.writableEnded) {
+    closeConnection();
+    return true;
+  }
+  try { response.assignSocket(socket as Socket); }
+  catch { closeConnection(); }
+  return true;
 }
 
 function boundedRequestTargetPath(target: unknown) {

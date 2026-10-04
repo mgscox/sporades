@@ -8,13 +8,16 @@ Tables, queries, mutations, authorization, Server env, mail, middleware, actors,
 
 A deployer-owned `admissionPolicy.path` can deny one canonical exact HTTP pathname
 before Capsule auth, File routes, endpoint middleware/handlers or public assets.
-The first matching enabled rule decides. A denial returns an opaque `403` with
+Exact-path and trusted Hosted address/CIDR rules support denial and per-process
+fixed-window quotas. The first matching enabled rule decides. A denial returns
+an opaque `403` with
 `Cache-Control: no-store` and constant `Forbidden\n` bytes; the request invokes no
 Capsule code. Genuine authenticated runtime-health and connection-token controls
 stay outside admission, and policy validation rejects their reserved targets.
 
 See the [policy contract](projects-and-configuration.md#request-admission-policy-publication)
-for canonicalization, hot generations, the current exact-path-only scope and the
+for trusted identity, opaque `429`/`Retry-After`, bounded eviction diagnostics,
+compatible reloads, canonicalization, hot generations and the
 measured no-policy latency budget. No declaration preserves existing routing.
 
 ## Building the Server Side
@@ -225,12 +228,23 @@ be at most 65,536 UTF-8 bytes. Runtime-owned queries, implicit table queries,
 and legacy rows subscriptions remain argument-free.
 
 Subscribed queries re-run after a mutation that writes and after a Job
-finishes. On SQLite, the runtime re-runs only the subscriptions whose last run
+finishes. On SQLite, Postgres and libsql, the runtime re-runs only the subscriptions whose last run
 read a table written since the previous refresh; a statement whose table it
 cannot identify re-runs every subscription, and a subscription whose last run
 failed re-runs on every refresh. A query result that depends on the
 clock or other state outside the database therefore does not update on
-unrelated writes. Postgres and libsql Capsules still re-run every subscription.
+unrelated writes. Transaction statements are tracked too; rolled-back writes
+may cause an extra refresh. Dedicated Postgres resource transactions retain their
+changed tables until settlement and then publish them, including on rollback or
+an unknown commit outcome. A concurrent refresh before commit cannot consume
+the notification for the committed writes. Recognized single-table statements that
+report zero changed rows do not refresh subscriptions. Multi-statement and
+unparseable writes conservatively refresh every subscription even if their final
+result reports zero rows: earlier statements or a data-modifying CTE may have
+committed writes. Rejected Postgres and libsql prepared writes also retain
+conservative invalidation: a batch can commit before a later statement rejects,
+or a remote write can commit before its HTTP acknowledgement is lost.
+The original error still propagates. libsql resource transactions remain unsupported.
 
 ### Change Data With Mutations
 
@@ -834,7 +848,12 @@ inspection omits the payload and does not expose raw provider history.
 
 `ctx.mail.send(...)` accepts one provider-independent message with `to`,
 optional `cc`, `bcc`, `from`, and `replyTo`, plus `subject`, `textBody` and/or
-`htmlBody`, and an optional validated `provider` object. It returns a stable
+`htmlBody`, an optional `autoSubmitted: "no" | "auto-generated" | "auto-replied"`,
+and an optional validated `provider` object. `autoSubmitted` emits exactly one
+standard `Auto-Submitted` header for every SMTP vendor; omission emits none.
+Invalid values and attempts to supply the standard header through
+`provider.headers` fail before transport handoff. See
+[automated responses](../guide/mail.md#automated-responses). It returns a stable
 `{ messageId, accepted, rejected }` result. Delivery is partial by recipient:
 an address the server rejects at RCPT is returned in `rejected` while the
 message still reaches every address in `accepted`. The call fails only when no

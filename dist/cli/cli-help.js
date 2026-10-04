@@ -130,13 +130,23 @@ Options:
   --json              Write JSON output
   --help, -h          Show this help
 `,
-    monitoring: `Usage: sporades monitoring stack <init|validate> [options]
+    monitoring: `Usage: sporades monitoring stack <init|validate|upgrade|rollback|backup|restore> [options]
+       sporades monitoring sender <issue|rotate|commit|cancel|revoke|export|status|legacy-revoke> [options]
 
 Generate or inspect the versioned trace stack from an installed Sporades package.
 Initialization creates a reviewable directory; it does not start services.
+Sender operations run locally on the Monitoring server; results contain no secrets.
+Rotation stages a second generation; commit retires the old one after sender verification.
 
 Options:
   --dir <path>        Target stack directory (default: current directory)
+  --backup <path>     Protected cold snapshot directory (backup/restore)
+  --baseline <path>   Trusted prior release assets for a schema-3 upgrade
+  --sender <name>     Named sender for lifecycle operations (optional for status)
+  --host <identity>   Exact inventory Host scope (issue or legacy-revoke only)
+  --out <path>        New mode-0600 credential handoff file (export only)
+  --generation <n>    Verified pending generation to activate (commit only)
+  --ingest            Disable shared legacy ingestion (legacy-revoke only)
   --json              Write { ok, data, error } JSON output
   --help, -h          Show this help
 `,
@@ -153,6 +163,7 @@ Options for profile add:
   --inventory-credential-env <KEY>  Exact Host-scoped lifecycle inventory token
   --inventory-host <id>   Stable inventory identity (default: first connected domain)
   --metrics-interval-ms <N>  Metrics export period, 5000-300000 ms (default 15000)
+  --trace-propagation-origin <origin>  Approve exact fetch origin (repeatable, max 32)
   --event-loop-delay-resolution-ms <N>  Delay timer precision, 10-1000 ms (default 20)
   --ca-file <path>        Absolute private CA certificate path for verified TLS
   --loopback              Permit a local HTTP collector for development
@@ -194,9 +205,11 @@ Profile commands:
   bootstrap           Provision the remote Host server
   upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
-  telemetry connect|reconcile|status|check
+  telemetry connect|migrate|reconcile|status|check
   telemetry inventory-export|inventory-reconcile
                       Manage the shared Host Telemetry relay
+  telemetry exports-disable|remove-agents
+                       Disable exports; remove agents after inventory acknowledgement
   telemetry resources-enable|resources-disable|resources-remove
                      Manage Host OS and Caddy collection independently of Capsules
   telemetry enable|disable <subname>
@@ -232,7 +245,9 @@ Other commands:
 
 Options:
   --host <alias>      Host profile alias
-  --profile <name>    Verified HTTPS Telemetry profile for host telemetry connect
+  --profile <name>    Verified HTTPS Telemetry profile for connect or migrate
+  --query-credential-env <name>
+                      Ephemeral operator user:password for check or migrate
   --server <target>   SSH target for host add
   --domain <domain>   Hosted domain for host add
   --alias-domain <hostname>

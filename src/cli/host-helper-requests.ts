@@ -39,11 +39,12 @@ export type HostHelperAction =
   | "host.logs"
   | "host.version"
   | "host.bootstrap"
+  | "host.telemetry.migrate"
   | "host.telemetry.connect"
   | "host.telemetry.reconcile"
   | "host.telemetry.status"
   | "host.telemetry.check"
-  | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile"
+  | "host.telemetry.exports-disable" | "host.telemetry.remove-agents" | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile"
   | "host.telemetry.enable"
   | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable";
 
@@ -97,7 +98,8 @@ export type HostHelperRequestBase = JsonObject & {
   lines?: number;
   verification?: HostHelperVerification;
   accessKeys?: JsonObject;
-  telemetry?: { endpoint: string; credential: string; inventoryCredential?: string; inventoryHost?: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
+  diagnostics?: { queryCredential: string };
+  telemetry?: { tracePropagationOrigins?: string[]; endpoint: string; credential: string; inventoryCredential?: string; inventoryHost?: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
 };
 
 export type HostRegistrationOptions = JsonObject & {
@@ -193,8 +195,8 @@ export type HostLogsRequest = HostHelperRequestBase & {
 };
 export type HostCapsuleListRequest = HostHelperRequestBase & { action: "capsule.list" };
 export type HostVersionRequest = HostHelperRequestBase & { action: "host.version" };
-export type HostTelemetryRequest = HostHelperRequestBase & { action: "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check"
-  | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable" };
+export type HostTelemetryRequest = HostHelperRequestBase & { action: "host.telemetry.connect" | "host.telemetry.migrate" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check"
+  | "host.telemetry.exports-disable" | "host.telemetry.remove-agents" | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable" };
 export type HostJobsInspectRequest = HostHelperRequestBase & { action: "jobs.inspect"; capsule: HostHelperCapsuleTarget };
 export type HostSchedulesInspectRequest = HostHelperRequestBase & { action: "schedules.inspect"; capsule: HostHelperCapsuleTarget };
 export type HostAccessKeyRequest = HostHelperRequestBase & {

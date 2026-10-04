@@ -964,6 +964,67 @@ test("Inferno Vite fails closed when project-owned Inferno compiler packages are
   });
 });
 
+test("installed CLI ships OAuth-only sign-in selection across every demo framework", async () => {
+  await withTempDir(async (dir) => {
+    const { tarballPath } = await packCandidateInto(dir);
+    const installed = await installPackedCandidateCli(dir, tarballPath);
+    for (const framework of ["react", "preact", "inferno", "lit", "solid", "svelte", "vue"]) {
+      for (const template of ["todo", "guestbook", "photo-library"]) {
+        const name = `${framework}-${template}-signin`;
+        const created = await runCliFrom(installed.cliPath, ["create", name, "--framework", framework, "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+        assert.equal(created.code, 0, created.stderr || created.stdout);
+        const entry = { vue: "App.vue", svelte: "App.svelte", solid: "App.tsx", lit: "index.ts" }[framework] ?? "index.tsx";
+        const source = await readFile(path.join(dir, name, "client", entry), "utf8");
+        if (framework === "vue") {
+          const { parse, compileScript } = await import("@vue/compiler-sfc");
+          const parsed = parse(source);
+          assert.deepEqual(parsed.errors, [], `${framework}/${template}`);
+          compileScript(parsed.descriptor, { id: name, inlineTemplate: true });
+        }
+        // Parity contract for shipped templates; mounted controls are tested below.
+        const compact = source.replace(/\s+/g, "").replace(/'/g, '"');
+        assert.match(compact, /\["google","microsoft","apple","facebook"\]\.includes\(provider\)&&state\.enabled&&state\.configured&&state\.runtimeAvailable/, `${framework}/${template}`);
+        assert.doesNotMatch(compact, /\.filter\(\(\[,state\]\)=>state\.enabled/, `${framework}/${template}`);
+      }
+    }
+  });
+});
+
+test("generated demo controls offer only available OAuth actions and preserve guest state", async () => {
+  for (const template of ["todo", "guestbook", "photo-library"]) await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, `signin-${template}`, template);
+    const available = { enabled: true, configured: true, runtimeAvailable: true };
+    const guest = { userId: "guest", provider: "anonymous", isGuest: true, isAuthenticated: false };
+    const providers = {
+      anonymous: available, email: available, google: available, facebook: available, futureProvider: available,
+      microsoft: { ...available, configured: false }, apple: { ...available, runtimeAvailable: false },
+    };
+    const session = litSource({ auth: guest, providers, error: null, loading: false });
+    const calls = [];
+    const harness = await mountInfernoTemplate(projectDir, {
+      session, auth: authStub({ async signIn(...args) { calls.push(args); return { data: null, error: null }; } }),
+      queries: Object.fromEntries(["todos", "entries", "publicPhotos", "personalPhotos"].map(name => [name, litSource({ data: [], error: null, loading: false })])),
+      mutations: Object.fromEntries(["addTodo", "sign", "recordPhoto", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"].map(name => [name, { async run() { return { data: null, error: null }; } }])),
+      files: {},
+    });
+    const controls = () => [...harness.window.document.querySelectorAll("button")].filter(button => button.textContent.startsWith("Sign in with"));
+    try {
+      assert.deepEqual(controls().map(button => button.textContent), ["Sign in with Google", "Sign in with Facebook"], template);
+      controls()[0].click(); await harness.settle();
+      assert.deepEqual(calls, [["google"]]);
+      session.publish({ auth: guest, providers: { ...providers, google: { ...available, enabled: false } }, error: null, loading: false });
+      await harness.settle();
+      assert.deepEqual(controls().map(button => button.textContent), ["Sign in with Facebook"]);
+      session.publish({ auth: { ...guest, provider: "facebook", isGuest: false, isAuthenticated: true }, providers, error: null, loading: false });
+      await harness.settle();
+      assert.deepEqual(controls(), []);
+      session.publish({ auth: guest, providers: { anonymous: available, email: available }, error: null, loading: false });
+      await harness.settle();
+      assert.deepEqual(controls(), []);
+    } finally { await harness.unmount(); }
+  });
+});
+
 test("real Inferno todo renders, mutates, and reconnects native component lifecycle", async () => {
   await withTempDir(async (dir) => {
     const projectDir = await createInfernoTemplate(dir, "inferno-todo-behavior", "todo");
@@ -2817,9 +2878,13 @@ test("sporades dev preserves unusual request targets across HTTP and WebSocket a
       assert.equal(started.ok, true, JSON.stringify(started.error));
       const session = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
       assert.match(session.inspectionToken, /^[a-f0-9]{64}$/);
-      for (const [target, method, expectedStatus] of [["//", "GET", 404], ["//unrelated.example/", "GET", 404], ["///", "GET", 404], ["/%", "GET", 400], ["/?query=%", "GET", 200], ["http://unrelated.example\\path", "GET", 400], ["http://unrelated.example/", "GET", 200], ["*", "OPTIONS", 404], ["*", "GET", 400]]) {
+      for (const [target, method, expectedStatus] of [["//", "GET", 404], ["//unrelated.example/", "GET", 404], ["///", "GET", 404], ["/%", "GET", 400], ["ftp://example.test/admin", "GET", 400], ["http://user:secret@example.test/admin", "GET", 400], ["http://example.test:bad/admin", "GET", 400], ["/?query=%", "GET", 200], ["http://unrelated.example\\path", "GET", 400], ["http://unrelated.example/", "GET", 200], ["*", "OPTIONS", 404], ["*", "GET", 400]]) {
         const response = await rawHttpResponse(started.data.url, target, { method, headers: { host: "wrong.example" } });
         assert.match(response, new RegExp(`^HTTP/1\\.1 ${expectedStatus} `), `${target}: ${response}`);
+        if (["/%", "ftp://example.test/admin", "http://user:secret@example.test/admin", "http://example.test:bad/admin"].includes(target)) {
+          assert.match(response, /\r\nBad request\r\n/);
+          assert.doesNotMatch(response, /\r\ncache-control: no-store\r\n/i);
+        }
         if (target === "*") assert.match(response, /x-content-type-options: nosniff/i, response);
         assert.equal((await fetch(`${started.data.url}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": session.inspectionToken } })).status, 200);
       }
@@ -5155,6 +5220,8 @@ test("sporades dev keeps the old Runtime active when service-env state cannot be
       const legacyServerBefore = await readFile(legacyServerPath, "utf8");
       const legacyClientBefore = await readFile(legacyClientPath, "utf8");
 
+      // Observe before triggering writes: the watcher can report failure while a write yields.
+      const failedEvent = waitForJsonEvent(child, (event) => !event.ok && event.data.event === "rebuild");
       const envStatePath = path.join(projectDir, ".sporades", "dev-database-env.json");
       await rm(envStatePath, { force: true });
       await mkdir(envStatePath);
@@ -5170,7 +5237,7 @@ test("sporades dev keeps the old Runtime active when service-env state cannot be
       const clientSource = await readFile(clientPath, "utf8");
       await writeFile(clientPath, clientSource.replace("Blank Sporades Capsule", "Premature Env State Capsule"));
 
-      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data.event === "rebuild");
+      const failed = await failedEvent;
       assert.deepEqual(failed.data.build, { phase: "runtime", framework: "react", toolchain: "esbuild" });
       assert.equal((await fetch(`${started.data.url}/version`)).status, 404);
       assert.equal(await (await fetch(`${started.data.url}/client.js`)).text(), beforeClient);
@@ -15605,6 +15672,52 @@ test("sporades dev runs todo queries and mutations over WebSocket", async () => 
       socket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("Dev admission denies malformed raw targets before application execution and fallback failure logging", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "malformed-admission", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "malformed-admission");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.admissionPolicy = { path: "policy.json" };
+    await writeFile(configPath, JSON.stringify(config));
+    await writeFile(path.join(projectDir, "policy.json"), JSON.stringify({
+      version: 1,
+      rules: [{ id: "unrelated", enabled: true, conditions: [{ kind: "pathname", exact: "/blocked" }], action: { kind: "deny" } }],
+    }));
+    await writeFile(path.join(projectDir, "server", "index.ts"), `import { capsule, endpoint } from "sporades/server";
+export default capsule({ name: "malformed-admission", middleware: [(ctx) => {
+  globalThis.process.getBuiltinModule("node:fs").appendFileSync("app-called", "called\\n");
+  return ctx;
+}], endpoints: { admin: endpoint({ method: "GET", path: "/admin" }, () => ({ status: 200, body: "application" })) } });`);
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      assert.equal(await (await fetch(`${started.data.url}/admin`)).text(), "application");
+      assert.equal(await readFile(path.join(projectDir, "app-called"), "utf8"), "called\n");
+      await rm(path.join(projectDir, "app-called"));
+      for (const target of ["/%", "ftp://example.test/admin", "http://user:secret@example.test/admin", "http://example.test:bad/admin"]) {
+        const response = await rawHttpResponse(started.data.url, target);
+        assert.match(response, /^HTTP\/1\.1 403 Forbidden\r\n/, response);
+        assert.match(response, /\r\ncache-control: no-store\r\n/i, response);
+        assert.match(response, /\r\ncontent-length: 10\r\n/i, response);
+        assert.deepEqual(Buffer.from(response.slice(response.indexOf("\r\n\r\n") + 4)), Buffer.from("Forbidden\n"));
+        await assert.rejects(readFile(path.join(projectDir, "app-called")), { code: "ENOENT" });
+      }
+      const logs = await runCli(["logs", "--json"], { cwd: projectDir });
+      assert.equal(logs.code, 0, logs.stderr);
+      assert.equal(JSON.parse(logs.stdout).data.entries.some((entry) => entry.event === "http.request.failed"), false, logs.stdout);
+    } finally {
+      if (child.exitCode === null) child.kill("SIGTERM");
+      await exited;
     }
   });
 });

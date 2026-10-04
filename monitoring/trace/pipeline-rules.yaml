@@ -1,0 +1,35 @@
+groups:
+  - name: sporades-pipeline
+    rules:
+      - alert: SporadesPipelineScrapeMissing
+        expr: up{job=~"sporades-pipeline-.*"} == 0 or absent(up{job="sporades-pipeline-collector"}) or absent(up{job="sporades-pipeline-gateway"})
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: Monitoring pipeline diagnostics are unavailable
+      - alert: SporadesPipelineQueuePressure
+        expr: otelcol_exporter_queue_size / otelcol_exporter_queue_capacity > 0.8
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: Telemetry queue is above 80 percent capacity
+      - alert: SporadesPipelineLoss
+        expr: increase(otelcol_exporter_enqueue_failed_spans_total[5m]) > 0 or increase(otelcol_exporter_enqueue_failed_metric_points_total[5m]) > 0 or increase(sporades_gateway_ingest_rejected_total[5m]) > 0 or increase(otel_sdk_processor_span_processed_total{error_type="queue_full"}[5m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: Telemetry was shed from a bounded pipeline
+      - alert: SporadesPipelineExportFailure
+        expr: rate(otelcol_exporter_send_failed_spans_total[5m]) > 0 or rate(otelcol_exporter_send_failed_metric_points_total[5m]) > 0 or rate(sporades_gateway_ingest_failures_total[5m]) > 0 or rate(sporades_telemetry_export_failure_count_total[5m]) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: Telemetry backend exports are failing
+      - alert: SporadesPipelineSourceStale
+        # Retain observed sources past the five-minute instant-selector lookback.
+        # A replacement process refreshes the same target; preserve all stable
+        # target/replica labels while dropping only process-lifetime identifiers.
+        # The newest collection wins even when older batches are replayed.
+        expr: time() - max without (instance, service_instance_id) (max_over_time(sporades_telemetry_collection_time_seconds[24h])) > 900
+        labels: { severity: warning }
+        annotations:
+          summary: The latest observed Capsule source collection is over 15 minutes old

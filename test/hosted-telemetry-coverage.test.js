@@ -9,6 +9,7 @@ test('Host connection enables Capsules by default with a canonical identity', ()
   assert.deepEqual(hostedTelemetryConfig(connection, capsule), { endpoint: connection.internalEndpoint, tls: { mode: 'loopback' }, serviceName: 'capsules.example/alpha', environment: 'hosted', metricsIntervalMs: 10000 });
   assert.equal(hostedTelemetryConfig(connection, { ...capsule, telemetry: { disabled: true } }), null);
   assert.equal(hostedTelemetryConfig(null, capsule), null);
+  assert.deepEqual(hostedTelemetryConfig({ ...connection, tracePropagationOrigins: ['https://dependency.example'] }, capsule).tracePropagationOrigins, ['https://dependency.example']);
 });
 
 test('coverage distinguishes desired settings from live runtime proof', () => {
@@ -20,4 +21,9 @@ test('coverage distinguishes desired settings from live runtime proof', () => {
   assert.equal(hostedTelemetryCoverage(true, true, { supported: true, enabled: true, serviceName: 'other' }, 'capsules.example/alpha').state, 'pending-restart');
   assert.equal(hostedTelemetryCoverage(false, true, { supported: true, enabled: true }).state, 'pending-restart');
   assert.equal(hostedTelemetryCoverage(true, true, { supported: true, enabled: true, serviceName: 'capsules.example/alpha', configHash: 'old' }, 'capsules.example/alpha', 'new').state, 'pending-restart');
+});
+
+test('Host export disable overrides future Capsule opt-ins without changing per-Capsule policy', () => {
+  assert.equal(hostedTelemetryConfig({ ...connection, exportsDisabled: true }, capsule), null);
+  assert.equal(hostedTelemetryConfig({ ...connection, exportsDisabled: true }, { ...capsule, telemetry: { disabled: false } }), null);
 });

@@ -86,6 +86,7 @@ services:
     volumes:
       - ./certs:/certs:ro
       - ./.private/credentials.json:/run/secrets/trace-credentials.json:ro
+      - ./.private/senders:/run/senders:ro
       - inventory:/inventory
       - ./.private/blackbox:/blackbox
     depends_on:
@@ -111,6 +112,7 @@ services:
     read_only: true
     volumes:
       - ./collector.yaml:/etc/otelcol/config.yaml:ro
+    stop_grace_period: 5s
     mem_limit: 256m
     cpus: 1.0
     pids_limit: 128
@@ -146,6 +148,7 @@ services:
     volumes:
       - ./.private/availability-rules.yaml:/etc/prometheus/availability-rules.yaml:ro
       - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./pipeline-rules.yaml:/etc/prometheus/pipeline-rules.yaml:ro
       - metrics:/prometheus
     mem_limit: 1g
     cpus: 2.0
@@ -173,6 +176,7 @@ services:
       - ./resource-dashboard.json:/var/lib/grafana/provisioned/resource-dashboard.json:ro
       - ./host-dashboard.json:/var/lib/grafana/provisioned/host-dashboard.json:ro
       - ./caddy-dashboard.json:/var/lib/grafana/provisioned/caddy-dashboard.json:ro
+      - ./pipeline-dashboard.json:/var/lib/grafana/provisioned/pipeline-dashboard.json:ro
     depends_on:
       prometheus:
         condition: service_started

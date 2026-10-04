@@ -476,6 +476,8 @@ export type MailSendInput = {
   subject: string;
   textBody?: string;
   htmlBody?: string;
+  /** Emits one standard Auto-Submitted header; omitted messages emit none. */
+  autoSubmitted?: "no" | "auto-generated" | "auto-replied";
   provider?: JsonObject;
 };
 
@@ -1259,6 +1261,8 @@ export type ScheduleDefinition = {
  * esbuild and Vite, preserving paths and bytes as unauthenticated assets. XML
  * uses application/xml; charset=utf-8. Dev observes public changes; failed
  * candidates retain the last successful tree and rollback restores release bytes.
+ * Scaffold HTML declares an empty data-URL favicon; replace its icon href with
+ * /favicon.ico and add public/favicon.ico to supply a custom icon.
  * Public paths cannot collide with generated output or reserved __sporades routes,
  * including conservative case and Unicode aliases such as client.jſ/client.js.
  * The generated server serves Vite-style content-hashed `/assets/` files with
@@ -1378,7 +1382,17 @@ export function emailEvent<Handler extends EmailEventHandler>(handler: Handler):
 export function stripeEvent<Handler extends StripeEventHandler>(handler: Handler): StripeEventDefinition<Handler>;
 /** Opt into one runtime-serialized, transaction-owned Stripe consequence per Job attempt, shared with any declared Team Billing platform consequence for the verified Event. */
 export function stripeEvent<Handler extends AtomicStripeEventHandler>(options: { consequence: "atomic" }, handler: Handler): AtomicStripeEventDefinition<Handler>;
-/** Define a named query for subscribed client reads. */
+/**
+ * Define a named query for subscribed client reads. SQLite, Postgres and libsql refresh
+ * subscriptions when a table read by their last run changes. Unknown tables retain a
+ * full refresh; values derived from clocks or external state do not refresh on unrelated writes.
+ * Only recognized single-table writes may skip refresh when they report zero changed rows;
+ * batches and unknown statements retain full refresh even with a zero-row final result.
+ * Rejected Postgres and libsql prepared writes retain conservative refresh when writes may have committed,
+ * including errors after a batch COMMIT or a lost remote acknowledgement.
+ * Dedicated Postgres resource writes publish invalidation after
+ * transaction settlement, even if another refresh ran before commit.
+ */
 export function query<const Args extends readonly JsonValue[] = readonly JsonValue[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,
 ): QueryDefinition<(ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>>;
@@ -1395,6 +1409,8 @@ export function message<Handler extends (...args: any[]) => any>(handler: AuthGu
  * Declare a named server-only Job handler in `capsule({ jobs })` for durable work.
  * Enabled operator telemetry automatically traces each attempt with a causal
  * enqueue link and independent queue metrics; no tracing API is required.
+ * Monitoring failures do not block Job work. Telemetry queues/exports are
+ * bounded and best effort; durable Jobs retain their existing retry semantics.
  */
 export function job<Payload extends JsonValue, Result extends JsonValue>(
   handler: (ctx: JobHandlerContext, payload: Payload) => MaybePromise<Result>,
@@ -1432,5 +1448,7 @@ export function Reference(targetTable: string): ReferenceFieldBuilder;
  */
 export type CapsuleFileAccessKeyPolicy = { read: { scopes?: readonly string[] } };
 
-/** Deployer-owned v1 request-admission JSON; HTTP exact-path deny precedes Capsule code. */
-export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionPolicyConfig } from "./admission-policy.js";
+/** Deployer-owned v1 request-admission JSON; HTTP and WebSocket upgrades (including /__sporades/ws)
+ * share complete generations, canonical conditions, trusted Hosted identity and per-process quotas before Capsule code or protocol switching.
+ * Client resets during opaque 403/429 upgrade denials close only the affected connection. */
+export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "./admission-policy.js";

@@ -4,6 +4,12 @@ This directory runs authenticated OTLP/HTTP traces, independent HTTP/WebSocket o
 
 ## Requirements and images
 
+The **Sporades Telemetry Pipeline** dashboard is provisioned at
+`/grafana/d/sporades-pipeline`. See [OUTAGES.md](OUTAGES.md) for memory/queue/disk
+budgets, missing-data interpretation, finite retries, optional persistent queues
+and isolated recovery drills. Schema 3 adds private diagnostics and provisioning;
+existing operator files remain preserved on init/validate.
+
 Use Linux `amd64` or `arm64`, Docker Engine 29.x and Docker Compose 2.40.3 or later (Compose 5.5.1 is also tested), Node.js 22.13+ for setup and smoke scripts, and local disk for retention. Image tags are fixed: OpenTelemetry Collector contrib `0.138.0`, Jaeger `2.21.0`, Prometheus `3.13.3` LTS, Grafana `13.2.2`, BusyBox `1.37.0`, Blackbox exporter `0.28.0`, Alertmanager `0.34.1`, and gateway base Node `24.13.0-alpine3.23`. The Prometheus LTS and Grafana release were checked against their [official download](https://prometheus.io/download/) and [official release](https://grafana.com/grafana/download/) pages on 2026-09-27; Grafana `12.2.0` was avoided because it predates the [CVE-2026-33382 fix](https://grafana.com/security/security-advisories/cve-2026-33382/). Check newer patches during upgrades.
 
 Named `traces`, `metrics`, `grafana`, `inventory`, and `alerts` volumes persist Jaeger Badger, Prometheus TSDB, Grafana, acknowledged inventory, and Alertmanager state. Jaeger retains spans three days by default (`TRACE_RETENTION=72h`). Prometheus starts at 14 days (`METRIC_RETENTION=14d`) and 8 GB of retained blocks (`METRIC_DISK_CAP=8GB`), whichever limit comes first. Reserve **at least 10 GB of local disk for metrics**: the 8 GB setting leaves 20% nominal room, but WAL/head and compaction can briefly exceed the retention target. Monitor free space and size the Host from measured series and sample rates. Prometheus initially scrapes its own health metrics every 15 seconds; Capsule metrics export every 15 seconds by default. Edit `prometheus.yaml` for the scrape interval and use the Telemetry profile's `--metrics-interval-ms` for Capsule export. Prometheus, Grafana, Collector, and Jaeger have no published ports; only the gateway publishes one. Services have bounded memory, CPU, process, queue, request, and log settings.
@@ -12,7 +18,7 @@ For sizing, record real peak request rate, active series (`prometheus_tsdb_head_
 
 ## Configure and start
 
-From an installed Sporades CLI, run `sporades monitoring stack init --dir '/srv/sporades traces'` to generate this directory, then `sporades monitoring stack validate --dir '/srv/sporades traces'` to inspect missing settings and version differences. Both commands support `--json` with the standard `{ ok, data, error }` envelope. Initialization requires a running Docker Engine 29.x, Docker Compose 2.40.3 or later, and a supported amd64/arm64 host (macOS with Docker Desktop is supported for local testing). It copies packaged assets only when absent, leaves `.env`, Compose overrides, and data untouched, and never starts services. A `stack-manifest.json` records the package and schema version for a new empty directory. An existing directory without a manifest is reported as having unknown provenance and is not stamped with the current version. A later package version is reported for review, while local files remain in place. For upgrades, compare preserved files with the new versioned release asset before applying pinned configuration changes. Do not place an operator `.env` in a release asset.
+From an installed Sporades CLI, run `sporades monitoring stack init --dir '/srv/sporades traces'` to generate this directory, then `sporades monitoring stack validate --dir '/srv/sporades traces'` to inspect missing settings and version differences. Both commands support `--json` with the standard `{ ok, data, error }` envelope. Initialization requires a running Docker Engine 29.x, Docker Compose 2.40.3 or later, and a supported amd64/arm64 host (macOS with Docker Desktop is supported for local testing). It copies packaged assets only when absent, leaves `.env`, Compose overrides, and data untouched, and never starts services. A `stack-manifest.json` records the package and schema version for a new empty directory. An existing directory without a manifest is reported as having unknown provenance and is not stamped with the current version. A later package version is reported for review, while local files remain in place. For supported upgrades, rollback, cold backup/fresh restore and independent Host agent removal, follow [MAINTENANCE.md](./MAINTENANCE.md). Schema 4 records hashes of generated assets so upgrades preserve operator edits; schema 3 requires a matching trusted prior-release baseline. Do not place an operator `.env` in a release asset.
 
 From this directory, run `node setup.mjs` as the user who owns the stack directory. It creates `.env` with mode `0600` if absent and generates only missing `TRACE_INGEST_TOKEN`, `TRACE_UI_PASSWORD`, and `GRAFANA_ADMIN_PASSWORD`. Existing values, unknown keys, and operator comments stay literal and unchanged. The example leaves stack-owned credentials unset and certificate paths commented, so copying `.env.example` to `.env` safely generates those credentials on setup and reports the two external certificate keys as missing. Explicit `REPLACE_WITH_GENERATED_SECRET` or empty owned credentials are rejected by setup before private files are written; validation rejects the placeholder by key name without showing its value. Setup reports missing external setting names, never their values. It writes `.private/credentials.json` for the three gateway credentials and `.private/grafana-admin-password` for Grafana; both are mode `0600`, while `.private/` is `0700`. Credentials are mounted as files, never interpolated through Compose. `.compose.env` contains only settings Compose needs, including retention, the Grafana root URL, and the non-root service UID/GID. A root Linux installer transfers only derived private credential files to UID 1000. Grafana's persistent volume is initialized for the same non-root identity. Use `.compose.env` with `--env-file`; do not print resolved Compose configuration because it can contain operator paths. Unquoted `.env` values are literal after `=`; single-quoted values can escape an apostrophe with `\'`, and double-quoted values use JSON escapes. Run setup after every `.env` edit. Keep `.env`, `.private/`, `.compose.env`, `certs/`, and private backups off Git.
 
@@ -131,7 +137,7 @@ use the CLI Job inspection surface for retained history.
 
 ## Availability notifications
 
-Schema 3 adds private Blackbox exporter 0.28.0 and Alertmanager 0.34.1. Set
+Schema 4 includes private Blackbox exporter 0.28.0 and Alertmanager 0.34.1. Set
 `ALERT_WEBHOOK_URL`, optional `ALERT_WEBHOOK_TOKEN`, and `MONITORING_PUBLIC_URL` in
 the operator `.env`, run `node setup.mjs`, and recreate affected services. Without
 a webhook, notification delivery is disabled. Verify a real firing and recovery
@@ -154,3 +160,40 @@ See `docs/reference/availability-alerts.md` in the matching package source for
 channel configuration, grouping/silencing, upgrade, failure distinctions and
 isolated acceptance. Apply asset overrides deliberately when upgrading schema 2;
 stack generation preserves existing files and secrets.
+
+## Per-sender credentials and rotation
+
+Use `sporades monitoring sender issue|export|rotate|commit|cancel|revoke|status`
+locally on the Monitoring server. A named sender has unique ingestion authority;
+`issue --host <identity>` also grants a separate exact Host inventory capability.
+The protected `.private/senders/registry.json` survives setup and restart; the
+gateway reloads it through a read-only directory mount. Rotation stages an overlap,
+then `commit --generation <n>` retires the old tokens after actual sender verification.
+Transient missing paths during Docker directory-mount publication are reopened
+with at most eight attempts and 1.05 seconds of increasing backoff. Every attempt
+validates the current protected path; there is no cached-credential fallback.
+Persistent absence, malformed content, symlinks and insecure permissions fail closed.
+`export --out <new-file>` writes a mode-0600 handoff without printing secrets.
+No sender bearer credential authorizes dashboard/query access or remote administration.
+
+See the [sender lifecycle reference](https://github.com/mgscox/sporades/blob/main/docs/reference/sender-credentials.md)
+for complete issue/connect, interrupted rotation, cancellation, revocation, legacy
+migration, permissions, backup, upgrade and redacted result contracts. Existing
+`.env` ingestion and inventory values remain compatible until explicit
+`sender legacy-revoke --ingest` or `--host <identity>`; migrate all users of a
+shared ingestion token before disabling it. Routine credential commands never
+rewrite `.env` or Capsule Sealed Server env. Inventory recovery `inventory.mjs`
+also accepts `HOST_INVENTORY_TOKEN` in its process environment for named senders.
+
+## Sender diagnostics and migration
+
+The existing dashboard operator Basic credential can perform
+`GET /v1/diagnostics/traces/<32-lowercase-hex-id>`. This fixed diagnostic lookup
+returns only exact probe visibility and freshness booleans. Ingestion and inventory
+bearer credentials are denied; no raw trace or arbitrary backend query is returned.
+Use `host telemetry check --query-credential-env <name>` from the installed CLI.
+Use `host telemetry migrate --profile <destination> --query-credential-env <name>`
+for Host-origin verified activation and fresh inventory registration. Keep the old
+profile for rollback and explicitly retire stale expectations at the previous
+server; historical data is untouched. See the
+[operator reference](https://github.com/mgscox/sporades/blob/main/docs/reference/telemetry-diagnostics.md).

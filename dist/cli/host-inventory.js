@@ -63,7 +63,7 @@ async function atomicWrite(file, content) {
         await rm(temporary, { force: true });
     }
 }
-async function registrySnapshot(root, previous) {
+async function registrySnapshot(root, previous, exportsDisabled = false) {
     const capsules = [];
     const hostsDirectory = path.join(root, "hosts");
     for (const dir of [root, hostsDirectory]) {
@@ -103,7 +103,7 @@ async function registrySnapshot(root, previous) {
             }
             if (record.domain !== domain.name || `${record.subname}.json` !== file.name || (record.remoteCapsuleId && record.remoteCapsuleId !== `${domain.name}/${record.subname}`))
                 throw new Error("Invalid registry identity.");
-            const state = record.status === "unregistered" ? "deleted" : record.telemetry?.disabled === true ? "opted-out" : record.status;
+            const state = record.status === "unregistered" ? "deleted" : (exportsDisabled || record.telemetry?.disabled === true) ? "opted-out" : record.status;
             const disabled = ["deleted", "stopped", "opted-out"].includes(state);
             const url = new URL(record.hostedUrl);
             if (url.hostname !== `${record.subname}.${domain.name}`)
@@ -127,7 +127,7 @@ async function queueLocked(root, connection) {
     const previous = await readState(root);
     if (previous && previous.desired.host !== connection.host)
         throw new Error("Inventory Host identity cannot change.");
-    const desired = validateInventory({ schemaVersion: 1, host: connection.host, revision: previous?.desired.revision ?? 1, capsules: await registrySnapshot(root, previous?.desired.capsules ?? []) });
+    const desired = validateInventory({ schemaVersion: 1, host: connection.host, revision: previous?.desired.revision ?? 1, capsules: await registrySnapshot(root, previous?.desired.capsules ?? [], (await readHostTelemetryConnection(root))?.exportsDisabled === true) });
     const sameGeneration = previous?.connectionGeneration === connection.generation;
     const changed = !previous || JSON.stringify(desired) !== JSON.stringify(previous.desired) || !sameGeneration;
     if (changed && previous)
@@ -261,5 +261,38 @@ export async function installHostInventoryWorker(root) {
         if (spawnSync("systemctl", args, { timeout: 10_000, stdio: "ignore" }).status !== 0)
             throw new Error("Inventory worker installation failed.");
     return { installed: true, unit: `${unit}.timer`, intervalSeconds: 60 };
+}
+/** Remove only the exact generated timer/service; retain protected outbox and secrets. */
+export async function removeHostInventoryWorker(root) {
+    directory(root);
+    const unit = inventoryUnit(root);
+    const files = ["timer", "service"].map(kind => path.join("/etc/systemd/system", `${unit}.${kind}`));
+    const present = [];
+    for (const file of files) {
+        try {
+            const st = await lstat(file);
+            if (!st.isFile() || st.isSymbolicLink() || st.uid !== 0 || st.mode & 0o022 || !(await readFile(file, "utf8")).startsWith("# Managed by Sporades: lifecycle inventory\n"))
+                throw new Error("Inventory worker is not owned.");
+            present.push(file);
+        }
+        catch (e) {
+            if (e.code !== "ENOENT")
+                throw e;
+        }
+    }
+    if (present.length) {
+        const commands = [
+            ...(present.includes(files[0]) ? [["disable", "--now", `${unit}.timer`]] : []),
+            ...(present.includes(files[1]) ? [["stop", `${unit}.service`]] : []),
+        ];
+        for (const args of commands)
+            if (spawnSync("systemctl", args, { stdio: "ignore", timeout: 10_000 }).status !== 0)
+                throw new Error("Inventory worker removal failed.");
+        for (const file of present)
+            await rm(file);
+        if (spawnSync("systemctl", ["daemon-reload"], { stdio: "ignore", timeout: 10_000 }).status !== 0)
+            throw new Error("Inventory worker removal failed.");
+    }
+    return { removed: true };
 }
 //# sourceMappingURL=host-inventory.js.map

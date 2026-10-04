@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { openAdmissionPolicy, type AdmissionHealth, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
+import { validateQueryCredential } from "./telemetry-diagnostics.js";
+import { openAdmissionPolicy, type AdmissionHealth, type AdmissionReloadEvent, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
+import { createAdmissionEvidence } from "../admission-evidence.js";
 import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
@@ -68,6 +70,7 @@ import {
   routeConnectionToken,
   routeEndpoint,
   routeHttpAdmission,
+  routeWebSocketAdmission,
   routeRuntimeHealth,
   writeInvalidHttpRequestTarget,
   routeSporadesAuth,
@@ -102,6 +105,7 @@ import {
   createHostUnregisterRequest,
 } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
+import { runMonitoringMaintenance, type MonitoringMaintenanceAction } from "./monitoring-maintenance.js";
 import { runMonitoringStack } from "./monitoring-stack.js";
 import { changeTelemetryProfile, readTelemetryProfiles, resolveLocalTelemetryConfig, toContainerTelemetryConfig, type TelemetryProfile } from "./telemetry-profile.js";
 import { createHttpRequestTelemetry } from "../runtime-telemetry.js";
@@ -276,16 +280,31 @@ async function main() {
 
     case "monitoring": {
       if (isHelp) { printHelp('monitoring'); return; }
-      if (args[0] !== 'stack' || !['init', 'validate'].includes(args[1] ?? '')) {
-        throw commandError('Unknown monitoring operation.', 'Use `sporades monitoring stack init|validate --dir <path>`.');
+      if (args[0] === 'sender') {
+        await runMonitoringSenderCommand(args);
+        return;
+      }
+      if (args[0] !== 'stack' || !['init', 'validate', 'upgrade', 'rollback', 'backup', 'restore'].includes(args[1] ?? '')) {
+        throw commandError('Unknown monitoring operation.', 'Use `sporades monitoring stack init|validate|upgrade|rollback|backup|restore --dir <path>`.');
       }
       let directory = process.cwd();
+      let backup: string | undefined;
+      let baseline: string | undefined;
       let json = false;
       for (let index = 2; index < args.length; index++) {
         if (args[index] === '--dir') directory = readFlagValue(args, ++index, '--dir');
+        else if (args[index] === '--backup') backup = readFlagValue(args, ++index, '--backup');
+        else if (args[index] === '--baseline') baseline = readFlagValue(args, ++index, '--baseline');
         else if (args[index] === '--json') json = true;
         else throw commandError('Unknown monitoring option.', 'Use `--dir <path>` and optional `--json`.');
       }
+      if (!['init', 'validate'].includes(args[1])) {
+        const data = await runMonitoringMaintenance(args[1] as MonitoringMaintenanceAction, directory, resolveSporadesPackageRoot(), { backup, baseline });
+        if (json) writeResult({ ok: true, data, error: null });
+        else process.stdout.write(`Monitoring stack ${args[1]}: ${data.path}\n`);
+        return;
+      }
+      if (backup || baseline) throw commandError('Unexpected maintenance option.', 'Use --backup for backup/restore and --baseline for legacy upgrades.');
       const data = await runMonitoringStack(args[1] as 'init' | 'validate', directory, resolveSporadesPackageRoot());
       if (json) writeResult({ ok: true, data, error: null });
       else {
@@ -492,6 +511,42 @@ function isLocalTemplateReference(value: string) {
   return path.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
 }
 
+async function runMonitoringSenderCommand(args: string[]) {
+  const action = args[1];
+  if (!['issue', 'rotate', 'commit', 'cancel', 'revoke', 'export', 'status', 'legacy-revoke'].includes(action ?? '')) {
+    throw commandError('Unknown sender operation.', 'Run `sporades monitoring --help`.');
+  }
+  let directory = process.cwd();
+  let json = false;
+  const options: { sender?: string; host?: string; out?: string; generation?: number; ingest?: boolean } = {};
+  for (let index = 2; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--dir') directory = readFlagValue(args, ++index, arg);
+    else if (arg === '--sender') options.sender = readFlagValue(args, ++index, arg);
+    else if (arg === '--host' && ['issue', 'legacy-revoke'].includes(action)) options.host = readFlagValue(args, ++index, arg);
+    else if (arg === '--out' && action === 'export') options.out = readFlagValue(args, ++index, arg);
+    else if (arg === '--generation' && action === 'commit') options.generation = Number(readFlagValue(args, ++index, arg));
+    else if (arg === '--ingest' && action === 'legacy-revoke') options.ingest = true;
+    else if (arg === '--json') json = true;
+    else throw commandError('Unknown sender option.', 'Run `sporades monitoring --help`.');
+  }
+  if (action === 'legacy-revoke' && (options.sender || (!!options.host === !!options.ingest))) {
+    throw commandError('Choose one legacy capability.', 'Use exactly one of --host or --ingest without --sender.');
+  }
+  const source = path.join(resolveSporadesPackageRoot(), 'monitoring', 'trace');
+  const lifecycle = await import(pathToFileURL(path.join(source, 'sender-credentials.mjs')).href);
+  const setup = await import(pathToFileURL(path.join(source, 'setup.mjs')).href);
+  let data;
+  try {
+    data = await lifecycle.manageSenderCredentials(path.join(path.resolve(directory), '.private', 'senders'), action, options, setup.gatewayRunIdentity());
+  } catch (error) {
+    // Registry parsing and OS errors must never echo stored secret bytes.
+    throw commandError('Sender credential operation failed.', error instanceof Error && !('code' in error) ? error.message : 'Initialize the stack and inspect protected file permissions and output paths.');
+  }
+  if (json) writeResult({ ok: true, data, error: null });
+  else process.stdout.write(JSON.stringify(data, null, 2) + "\n");
+}
+
 async function runTelemetryProfileCommand(args: string[]) {
   if (args[0] !== "profile" || !["add", "list", "show", "remove"].includes(args[1] ?? "")) {
     throw commandError("Unknown Telemetry operation.", "Use `sporades telemetry profile add|list|show|remove`.");
@@ -508,6 +563,7 @@ async function runTelemetryProfileCommand(args: string[]) {
     if (operation === "add") {
       if (arg === "--endpoint") { input.endpoint = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--dashboard") { input.dashboard = readFlagValue(rest, ++index, arg); continue; }
+      if (arg === "--trace-propagation-origin") { (input.tracePropagationOrigins ??= []).push(readFlagValue(rest, ++index, arg)); continue; }
       if (arg === "--credential-env") { input.credentialEnv = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--inventory-credential-env") { input.inventoryCredentialEnv = readFlagValue(rest, ++index, arg); continue; }
       if (arg === "--inventory-host") { input.inventoryHost = readFlagValue(rest, ++index, arg); continue; }
@@ -520,6 +576,7 @@ async function runTelemetryProfileCommand(args: string[]) {
   }
   if (operation === "add") {
     const profile: TelemetryProfile = {
+      ...(input.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: input.tracePropagationOrigins } : {}),
       endpoint: input.endpoint,
       ...(input.dashboard ? { dashboard: input.dashboard } : {}),
       tls: { mode: input.loopback ? "loopback" : "verified", ...(input.caFile ? { caFile: input.caFile } : {}) },
@@ -1225,6 +1282,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   let dryRun = false;
   let force = false;
   let telemetryProfileName: string | null = null;
+  let queryCredentialEnv: string | null = null;
   const positional = [];
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -1237,6 +1295,10 @@ function parseHostArgs(args: string[]): LooseRecord {
 
       case "--host":
         hostAlias = readFlagValue(rest, ++index, "--host");
+        break;
+
+      case "--query-credential-env":
+        queryCredentialEnv = readFlagValue(rest, ++index, "--query-credential-env");
         break;
 
       case "--profile":
@@ -1314,18 +1376,21 @@ function parseHostArgs(args: string[]): LooseRecord {
     }
   }
 
+  if (queryCredentialEnv && subcommand !== "telemetry") throw commandError("Unexpected operator query credential.", "Use host telemetry check or migrate.");
   switch (subcommand) {
     case "telemetry": {
       const [operation, ...extra] = positional;
-      if (!operation || !["connect", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
+      if (!operation || !["connect", "migrate", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove", "exports-disable", "remove-agents"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
         throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
       }
       if ((operation === "enable" || operation === "disable") && extra.length !== 1) throw commandError("Missing Capsule subname.", `Use \`sporades host telemetry ${operation} <subname> --host <alias>\`.`);
       if (extra.length) validateCapsuleSubname(extra[0]);
-      if (operation === "connect" && !telemetryProfileName) throw commandError("Missing Telemetry profile.", "Pass `--profile <name>` with a verified HTTPS destination.");
-      if (operation !== "connect" && telemetryProfileName) throw commandError("Unexpected Telemetry profile.", "Use `--profile` only with `sporades host telemetry connect`.");
+      if (["connect", "migrate"].includes(operation) && !telemetryProfileName) throw commandError("Missing Telemetry profile.", "Pass `--profile <name>` with a verified HTTPS destination.");
+      if (!["connect", "migrate"].includes(operation) && telemetryProfileName) throw commandError("Unexpected Telemetry profile.", "Use `--profile` only with `sporades host telemetry connect`.");
       if (hostAlias) validateHostAlias(hostAlias);
-      return { subcommand, operation, subname: extra[0], telemetryProfileName, hostAlias, json, projectDir: process.cwd() };
+      if (queryCredentialEnv && !["check", "migrate"].includes(operation)) throw commandError("Unexpected operator query credential.", "Use --query-credential-env only with host telemetry check or migrate.");
+      if (queryCredentialEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(queryCredentialEnv)) throw commandError("Invalid query credential environment reference.", "Use an environment variable name.");
+      return { subcommand, operation, subname: extra[0], telemetryProfileName, queryCredentialEnv, hostAlias, json, projectDir: process.cwd() };
     }
     case "add": {
       const [alias, ...extra] = positional;
@@ -2404,6 +2469,7 @@ async function startDevSession(options: LooseRecord) {
       }
       const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
       if (!target) {
+        if (routeHttpAdmission(runtime.database, request, response)) return;
         writeInvalidHttpRequestTarget(runtime.database, request, response);
         return;
       }
@@ -2567,6 +2633,7 @@ async function startDevSession(options: LooseRecord) {
     }
   }));
   server.on("upgrade", (request, socket) => {
+    if (routeWebSocketAdmission(runtime.database, request, socket)) return;
     const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
     if (!target) {
       socket.destroy();
@@ -3071,12 +3138,16 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     clamavSidecar = attached.sidecar; return attached.attached;
   };
   let database: any;
-  const reportAdmissionHealth = (health: AdmissionHealth) => {
-    try { database?.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health }); }
+  const reportAdmissionHealth = (health: AdmissionHealth, event: AdmissionReloadEvent = "loaded") => {
+    try {
+      if (database) database.log.emit({ category: "platform", event: `admission.policy.${event}`, level: event === "failure" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+      else if (event === "failure" || event === "recovery") process.stderr.write(JSON.stringify({ event: `admission.policy.${event}`, data: health }) + "\n");
+    }
     catch { /* Policy diagnostics never interrupt runtime work. */ }
   };
   let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
-  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
+  const admissionEvidence = createAdmissionEvidence();
+  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth, { evidence: admissionEvidence }) : null;
   try {
   database = await openDevDatabase(
     options.databasePath,
@@ -3111,9 +3182,9 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
       let nextAdmission = admissionPolicy;
       if (changed) {
         nextAdmission = null;
-        nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, health => {
-          if (nextAdmission && nextAdmission === admissionPolicy) reportAdmissionHealth(health);
-        }) : null;
+        nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health, event) => {
+          if (event === "failure" || event === "recovery" || (nextAdmission && nextAdmission === admissionPolicy)) reportAdmissionHealth(health, event);
+        }, { evidence: admissionEvidence, deferActivation: true }) : null;
       }
       try {
       const nextDatabase: any = await openDevDatabase(
@@ -3145,7 +3216,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
       admissionPath = nextPath; admissionPolicy = nextAdmission;
       if (changed) {
         await previousAdmission?.close();
-        if (admissionPolicy) reportAdmissionHealth(admissionPolicy.health());
+        admissionPolicy?.activate(previousAdmission?.health());
       }
       clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
       } catch (error) { if (changed && nextAdmission !== admissionPolicy) await nextAdmission?.close(); throw error; }
@@ -3891,7 +3962,7 @@ async function manageHost(options: LooseRecord) {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
       let telemetry: LooseRecord | undefined;
-      if (options.operation === "connect") {
+      if (["connect", "migrate"].includes(options.operation)) {
         const profiles = await readTelemetryProfiles();
         const profile = Object.hasOwn(profiles, options.telemetryProfileName) ? profiles[options.telemetryProfileName] : undefined;
         if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before connecting the Host.");
@@ -3908,9 +3979,12 @@ async function manageHost(options: LooseRecord) {
         }
         const inventoryCredential = profile.inventoryCredentialEnv ? process.env[profile.inventoryCredentialEnv] : undefined;
         if (profile.inventoryCredentialEnv && !inventoryCredential) throw commandError("Telemetry inventory credential is unavailable.", "Set the inventory credential environment reference before connecting.");
-        telemetry = { endpoint: profile.endpoint, credential, ...(inventoryCredential ? { inventoryCredential } : {}), ...(profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}), ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
+        telemetry = { ...(profile.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}), endpoint: profile.endpoint, credential, ...(inventoryCredential ? { inventoryCredential } : {}), ...(profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}), ...(caPem ? { caPem } : {}), ...(profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}), ...(profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {}) };
       }
-      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, projectDir: options.projectDir });
+      const queryCredential = options.queryCredentialEnv ? process.env[options.queryCredentialEnv] : undefined;
+      if (options.queryCredentialEnv && !queryCredential) throw commandError("Operator query credential is unavailable.", "Set the referenced environment variable to the Monitoring operator user:password.");
+      validateQueryCredential(queryCredential);
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, diagnostics: queryCredential ? { queryCredential } : undefined, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);
       else if (!result.ok) throw commandError(result.error.message, result.error.hint);
       else process.stdout.write(`${JSON.stringify(result.data, null, 2)}\n`);
@@ -6012,6 +6086,7 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
   if (options.telemetry) {
     request.telemetry = options.telemetry;
   }
+  if (options.diagnostics) request.diagnostics = options.diagnostics;
   if (options.registration) {
     request.registration = options.registration;
   }

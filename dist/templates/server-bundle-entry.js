@@ -20,7 +20,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
-import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, inspectRuntimeJobs, inspectRuntimeSchedules, interpretHttpRequestTarget, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeHttpAdmission, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, writeInvalidHttpRequestTarget, } from "../server-runtime-source.js";
+import { createRuntimeInspectionAdapter, createWebSocketHub, handleFileHttpRoute, injectPageConnectionToken, isDocumentNavigationRequest, inspectRuntimeJobs, inspectRuntimeSchedules, interpretHttpRequestTarget, openDevDatabase, prepareHttpSecurity, runRuntimeAccessKeyOperatorAction, routeConnectionToken, routeEndpoint, routeHttpAdmission, routeWebSocketAdmission, routeRuntimeHealth, routeSporadesAuth, shutdownAndCloseDatabase, shutdownHttpServerAndRuntime, writeUnhandledHttpError, writeInvalidHttpRequestTarget, } from "../server-runtime-source.js";
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
@@ -56,7 +56,12 @@ const admissionPath = sporadesAction ? null : admissionLaunchPath !== undefined
     : resolveAdmissionPolicy(sporadesConfig.admissionPolicy, sporadesConfig.deploy?.files);
 const admissionDeployed = ["container", "hosted"].includes(process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession);
 let admissionLog;
-const admissionPolicyRuntime = admissionPath ? await openAdmissionPolicy(admissionDeployed ? "/run/sporades-admission" : process.cwd(), admissionDeployed ? path.basename(preservedDeployFilePath("/run/sporades-admission", admissionPath)) : admissionPath, health => admissionLog?.(health)) : null;
+const admissionPolicyRuntime = admissionPath ? await openAdmissionPolicy(admissionDeployed ? "/run/sporades-admission" : process.cwd(), admissionDeployed ? path.basename(preservedDeployFilePath("/run/sporades-admission", admissionPath)) : admissionPath, (health, event) => {
+    if (admissionLog)
+        admissionLog(health, event);
+    else if (event === "failure" || event === "recovery")
+        process.stderr.write(JSON.stringify({ event: `admission.policy.${event}`, data: health }) + "\n");
+}) : null;
 const sporadesCapsuleModule = sporadesAction ? null : await import(sporadesCapsuleModuleUrl);
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
@@ -158,8 +163,8 @@ catch (error) {
 const telemetry = jobTelemetryLifecycle;
 if (admissionPolicyRuntime) {
     database.admissionPolicy = admissionPolicyRuntime;
-    admissionLog = health => database.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
-    admissionLog(admissionPolicyRuntime.health());
+    admissionLog = (health, event) => database.log.emit({ category: "platform", event: `admission.policy.${event}`, level: event === "failure" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+    admissionLog(admissionPolicyRuntime.health(), "loaded");
 }
 database.log.emit({
     category: "platform",
@@ -183,6 +188,8 @@ const server = createServer(async (request, response) => telemetry.run(request, 
             return;
         }
         if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
+            if (routeHttpAdmission(database, request, response))
+                return;
             writeInvalidHttpRequestTarget(database, request, response);
             return;
         }
@@ -215,6 +222,8 @@ const server = createServer(async (request, response) => telemetry.run(request, 
     }
 }));
 server.on("upgrade", (request, socket) => {
+    if (routeWebSocketAdmission(database, request, socket))
+        return;
     const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
     if (!target) {
         socket.destroy();

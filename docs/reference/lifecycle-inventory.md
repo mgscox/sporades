@@ -16,6 +16,12 @@ to the inventory. Use distinct scopes for separate Host roots and never share
 one scope between senders. Hosts sharing a Hosted domain must select distinct
 `--inventory-host` values; reconnect cannot change an established identity. Capsule identity is `(host, domain/subname)`.
 
+Prefer [named sender credentials](./sender-credentials.md) for independently
+rotatable and revocable ingestion plus a separate exact Host inventory capability.
+The legacy map below remains available for existing installations and recovery.
+Named credentials can be passed to `inventory.mjs` as `HOST_INVENTORY_TOKEN` in
+its process environment; recovery uses the same exact Host authority.
+
 On the Monitoring server, add an exact scope map to the operator-owned `.env`:
 
 ```dotenv

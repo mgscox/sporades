@@ -97,6 +97,47 @@ important notifications, enqueue a durable Job, send from its handler, and use
 an application-level idempotency key or delivery record. Job execution and SMTP
 delivery are at least once rather than exactly once.
 
+### Automated responses
+
+Set the optional top-level `autoSubmitted` field to emit exactly one standard
+`Auto-Submitted` header with any SMTP vendor, including SMTP2GO. For a refusal
+notification sent from a durable Job:
+
+```ts
+await ctx.mail.send({
+  to: payload.email,
+  from: "Support <support@example.com>",
+  subject: "This ticket is closed",
+  textBody: "Please open a new ticket.",
+  autoSubmitted: "auto-replied",
+  provider: {
+    headers: {
+      "X-Sporades-Correlation-Id": payload.notificationIntentId
+    }
+  }
+});
+```
+
+The supported values follow [RFC 3834](https://www.rfc-editor.org/rfc/rfc3834.html#section-5):
+
+- `"auto-replied"` identifies an automatic response to an incoming message.
+- `"auto-generated"` identifies an automatically generated message that is not a reply.
+- `"no"` explicitly identifies a message that was not automatically submitted.
+
+Omitting the field (or passing `undefined`) emits no `Auto-Submitted` header and
+preserves existing message behavior. Values must match exactly; extensions,
+parameters, whitespace, arrays, and control characters are rejected with
+`INVALID_MAIL_MESSAGE` before SMTP handoff. The field must be an enumerable own
+data property; inherited, hidden, or accessor properties are rejected.
+`provider.headers` cannot supply this standard header in any casing, so it
+cannot duplicate or override the runtime-owned value. Custom correlation
+headers continue to work under the existing provider validation rules.
+
+This header lets cooperating responders avoid reply loops. It does not change
+Job retry or SMTP delivery guarantees; retain persisted notification intents
+and application delivery state. Inbound mailbox routing and responder decisions
+remain the Capsule's responsibility.
+
 ### Durable mail with Jobs
 
 This pattern returns promptly from the mutation and retains one Job identity

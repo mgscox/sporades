@@ -7,3 +7,5 @@
 !availability.mjs
 !blackbox-config.mjs
 !blackbox.yaml
+
+!sender-credentials.mjs

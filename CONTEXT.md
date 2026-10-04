@@ -111,6 +111,23 @@ One placed fragment instance. Browser discovery exposes only its configured name
 and an idempotent dismissal operation through an opaque snapshot handle. The
 Capsule owns the readiness decision; Sporades never dismisses automatically.
 
+**Request-admission quota**:
+A deployer-owned `rate-limit` rule that counts a canonical trusted Hosted client
+address under a stable rule ID in a monotonic fixed window before Capsule code.
+Its combined local table is bounded to 10,000 buckets with deterministic eviction
+and aggregate protected health diagnostics. Compatible reloads retain buckets;
+process restart resets them. v1 quotas are per-process and allow boundary bursts.
+_Avoid_: token bucket, global quota, distributed limiter
+
+**Request-admission evidence**:
+Process-owned versioned aggregate counters and sampled redacted decision events
+for admission, reload health and quota eviction. Authenticated runtime health,
+doctor and Hosted Capsule stats expose active digest and last-known-good health.
+Fixed unsigned 64-bit totals and a twenty-event monotonic-minute sample budget
+keep hostile traffic from growing retained state or log volume. Evidence never
+contains request values or client addresses.
+_Avoid_: firewall dashboard, match explanation, per-client metrics
+
 ## Server runtime
 
 **sporades/server**:
@@ -504,6 +521,7 @@ _Avoid_: audit log, security log, admin log
 
 **Telemetry profile**:
 A named, operator-owned OTLP/HTTP monitoring connection separate from a Host profile. It contains a destination, TLS trust reference and optional ingestion credential environment reference, never a secret value. Dev selects an explicit session profile before an explicit project binding; absent both, no telemetry is exported.
+Native global fetch calls within an active HTTP request have bounded CLIENT spans through response headers. The optional operator-owned `tracePropagationOrigins` list approves at most 32 exact HTTP/HTTPS origins; validated traceparent injection additionally requires caller-selected manual/error redirect mode. The default list is empty. This policy travels with local Container and Host-owned Hosted launch descriptors; it is separate from the export destination and is not a Capsule public API. URLs, headers, bodies, exception text and private identifiers are not exported. Imported fetch clients, node:http/https, response-body streaming and background operations are outside this slice.
 Local Container sessions resolve their selection at deploy and carry the non-secret resolved descriptor (or explicit disabled value) in Docker's saved launch environment. CLI Dev builds embed no telemetry selection in their server Bundle, so a Dev rebuild cannot alter a current Container's destination, trust path or enablement on restart. Credential values remain in the Container environment, separate from the descriptor; the Container launch values take precedence over Capsule Server env. For a Container bound by an older CLI without a descriptor version, Dev and Host push preserve the existing mounted `.sporades/build/server.mjs` as found. Dev actions use a private Bundle owned by the Dev session, and Host push archives its fresh candidate Bundle. The binding cannot reveal an older implicit telemetry selection, so these commands do not infer or change it; they cannot restore settings if an earlier build already overwrote the mounted file. Redeploying that Container with the current CLI installs a launch-owned descriptor. A direct programmatic `createBundle` call with a selected `telemetryProfile` can embed telemetry config for a directly run Bundle without a Container launch descriptor; CLI-generated Bundles contain no telemetry selection.
 Private Dev action Bundles are created only after the session starts listening. Each records process identity before containing Server env bytes; a later Dev start removes only Bundles whose recorded owner is known to have exited. Ownership-ambiguous directories from older CLI runs are retained and require manual inspection after confirming no Dev session still owns them.
 _Avoid_: Host profile, Capsule secret, app telemetry endpoint
@@ -512,12 +530,16 @@ _Avoid_: Host profile, Capsule secret, app telemetry endpoint
 An internal Database adapter statement or transaction timing interval within a sampled HTTP request or WebSocket operation. SQLite, PostgreSQL and libSQL share the instrumentation boundary. Bounded engine, operation and declared table labels explain database time without SQL text, parameters, rows, connection credentials or exception details. Transaction spans include acquisition wait and callback work; their child statement intervals overlap rather than add to that duration. Telemetry changes no Database adapter authoring, ACL, retry, rollback or transaction ownership contract.
 _Avoid_: public adapter hook, SQL profiler, application instrumentation API
 
+**Telemetry pipeline**:
+The bounded best-effort path from Capsule SDK through the Host relay and authenticated Monitoring gateway to metric/trace storage. Queue capacity, failed sends, saturation loss and source freshness are operator signals; downstream acceptance is not a delivery guarantee. Missing diagnostics are unknown. Telemetry queues are volatile by default; optional persistent Collector queues require a separate quota-limited filesystem. Inventory's durable outbox is independent of telemetry queues. Business work never waits for Monitoring, and SDK shutdown flush has a 1500 ms bound. See `monitoring/trace/OUTAGES.md`.
+_Avoid_: guaranteed delivery, unbounded spool, healthy missing data
+
 **WebSocket operation span**:
 An internal SERVER span for one query or mutation execution, including live-query refreshes, with independent operation counts, duration histograms and an accepted-connection gauge. Each execution owns isolated context and completes on success, denial, error or cancellation; refreshes use new roots. A socket and its subscription never own a lifetime trace. Names are runtime-declared and bounded; payloads, credentials, user identities and baggage are excluded. Telemetry changes no authorization, subscription, transaction or reconnection semantics.
 _Avoid_: socket-lifetime trace, browser tracing SDK, subscription span
 
 **Hosted Telemetry coverage**:
-Connecting a Host to the shared relay selects telemetry for all current and future Hosted Capsules by default. The Host registry stores each Capsule's explicit opt-out. Every start, restart, push and rollback resolves the Host connection and opt-out into a Host-owned launch descriptor. The protected runtime health probe confirms the running configuration; a saved setting alone does not prove instrumentation. Dev and local Container sessions keep their separate opt-in selection.
+Connecting a Host to the shared relay selects telemetry for all current and future Hosted Capsules by default. The Host registry stores each Capsule's explicit opt-out. Every start, restart, push and rollback resolves the Host connection and opt-out into a Host-owned launch descriptor. The protected runtime health probe confirms the running configuration; a saved setting alone does not prove instrumentation. Dev and local Container sessions keep their separate opt-in selection. Host `telemetry exports-disable` persists an operator-owned pause for current and future Hosted Capsules without changing individual opt-outs, connection credentials or inventory authority. Deliberate opt-out snapshots reconcile centrally before `remove-agents` removes owned relay/resource agents and the inventory worker. Existing Capsules use ordinary restarts to retire their SDK instrumentation; monitoring maintenance never deletes Capsule data or backend history.
 _Avoid_: project-owned Hosted telemetry policy, per-Capsule relay
 
 ### Lifecycle inventory
@@ -646,8 +668,36 @@ storage, mounted read-only at `/run/sporades-admission`. Authorized CLI/Host
 publication replaces it atomically; explicit removal uses a durable marker.
 The runtime loads a bounded deeply frozen generation before app startup, polls
 every two seconds, and keeps the last-known-good generation on hot failure.
-Reload health and digest expose no match values. HTTP requests now enforce enabled exact-path deny rules before Capsule request code,
+Reload health and digest expose no match values. HTTP requests enforce enabled method, exact/segment-prefix pathname, canonical header, query-key and trusted Hosted address/CIDR
+conditions with AND semantics before Capsule request code,
 with ordered first-match semantics and constant opaque 403 responses. Genuine authenticated
-Host controls bypass admission; reserved targets fail generation validation. Other matchers,
-quotas and WebSocket upgrades remain subsequent slices. Generic writable `deploy.files` authority
+Host controls bypass admission; reserved targets fail generation validation. Address identity
+requires one canonical validated IP and the Host-owned boundary capability; public forwarding
+headers never independently grant authority. Missing identity fails closed for potentially
+applicable address rules. Dev and local Container have no trusted identity, while other rules
+continue to operate. IPv4-mapped IPv6 normalizes to IPv4. WebSocket upgrades use
+the same complete generation before protocol switching, including `/__sporades/ws`
+Capsule traffic; denial stays an opaque HTTP response. HTTP and upgrades share
+per-process quota buckets. Reserved GET controls have no WebSocket transport and
+never consult policy or count quotas. Generic writable `deploy.files` authority
 never applies. See ADR-0054.
+
+### Sender credentials
+
+Operator-local Monitoring stack credentials give a named Host or workstation
+unique ingestion authority and, for a Host, a separate exact lifecycle inventory
+capability. Protected generations support staged rotation, explicit verified
+commit, cancellation and revocation without changing Capsule Sealed Server env.
+They grant no dashboard/query or remote administration authority. The gateway
+reloads atomic registry snapshots; operator `.env` and legacy connections remain
+intact until explicitly migrated. See `docs/reference/sender-credentials.md`.
+
+Host-origin diagnostics separate saved configuration, relay process readiness,
+DNS/TLS/authentication, direct OTLP acceptance, relay receiver acceptance and exact
+recent relay trace visibility. Operator query authority is ephemeral and independent
+of ingestion/inventory; fixed diagnostic lookup returns booleans only. Verified
+migration reuses profile resolution and inventory generations, fences stale
+preflight, journals activation with rollback/recovery, and reports fresh inventory
+and pending Capsule coverage. Old history and old-server expectations remain
+operator-owned; no VM or historical database migration is automatic. See
+[diagnostics and migration](docs/reference/telemetry-diagnostics.md).

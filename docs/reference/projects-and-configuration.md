@@ -6,6 +6,11 @@ Capsule creation, project layout, configuration, security policy, database servi
 
 ## Runtime telemetry
 
+[Sender credential lifecycle](./sender-credentials.md) documents operator-local
+issue, protected export, staged rotation/commit, revocation and legacy migration.
+These credentials belong to the Monitoring connection, outside Capsule Sealed
+Server env; profiles retain only environment references.
+
 The operator registers a named Telemetry profile separately from a Host profile:
 
 ```sh
@@ -53,6 +58,34 @@ The selected profile alone sets the OTLP destination, authorization and TLS
 trust. Sporades sends uncompressed OTLP/HTTP with cumulative metrics for its
 monitoring stack; ambient `OTEL_EXPORTER_OTLP_*` settings from other tooling do
 not alter these exports. For a private CA, select the profile's `--ca-file`.
+
+Telemetry exports are best effort and bounded independently of business work.
+The SDK exports `otel.sdk.processor.span.queue.size` and `.capacity` (128
+waiting spans) and `.processed` with bounded `error.type` values `queue_full`
+and `Error` for saturation and failed export loss. `sporades.telemetry.export.failure.count`
+counts failed attempts by `signal=traces|metrics`; `.in_flight` measures active
+exports, and `.last_success` records Unix seconds of the last downstream
+acceptance, with no sample until the first success. `sporades.telemetry.collection.time`
+records source collection time in Unix seconds for detecting stale buffered
+samples. These metrics share the existing resource identity and export path;
+diagnostic samples can themselves be lost. Missing data is unknown, and export
+acceptance does not prove storage delivery. The provisioned **Sporades Telemetry
+Pipeline** dashboard and [outage runbook](https://github.com/mgscox/sporades/blob/main/monitoring/trace/OUTAGES.md)
+describe finite retry/flush budgets, loss and optional quota-limited persistent
+Collector queues. The source-stale warning uses the newest collection time in a
+bounded 24-hour history per logical target, so a disconnected target can warn
+after 15 minutes even after its instant series disappears. It drops only the
+process-lifetime `instance` and `service_instance_id` labels: fresh collection
+from a replacement clears the retired process warning, including after repeated
+restarts or older batch replay. All remaining labels, including service,
+environment and any stable replica labels, remain independent. Hosted service
+names use `domain/subname`; processes sharing all remaining labels are one
+target, so independently monitored replicas need distinct stable target labels
+or service names. Never-observed targets and targets outside that history
+remain unknown.
+No Capsule instrumentation API or additional profile setting
+is required. SIGTERM flush stays within 1500 ms and repeated shutdown joins the
+same bounded operation.
 
 Dev selection order is `sporades dev --telemetry <name>`, then the explicit project
 binding below, then no export. A Container session uses `sporades deploy
@@ -296,6 +329,72 @@ unreachable collector does not block Capsule requests. Check the Container's
 platform log and monitoring stack readiness/storage separately when tracing is
 missing.
 
+### Outbound HTTP time
+
+An enabled Telemetry profile also creates one `CLIENT` span for each native
+global `fetch` call made while an HTTP request is active. No application
+instrumentation import is required. Overlapping calls remain children of their
+own `SERVER` span. The span measures time until response headers arrive,
+including connection setup and the dependency's wait. Reading or streaming the
+response body remains the caller's responsibility and is outside this span.
+HTTP status 400 and above records `failure`; rejected calls record
+`network_error`, `timeout` (a native `TimeoutError` DOMException, as produced by
+`AbortSignal.timeout`) or `cancelled`. Caller-owned reason properties are never
+evaluated to classify a rejection; a custom `name: 'TimeoutError'` remains cancellation.
+If a signal becomes unsupported while a call is pending, telemetry records
+`network_error` without inspecting its cancellation state.
+Rejections retain the original error object. Telemetry does not add retries,
+deadlines or redirects, and a blocked exporter does not delay dependency calls.
+
+Span names are `HTTP <method>`. Attributes contain only a bounded method,
+response status when available, and `sporades.http.outcome`. No destination,
+path, raw query, headers, body, exception text or private identifier is exported.
+Exporter calls, work outside an active HTTP request, and runtime-owned background
+tasks are excluded. This slice does not instrument `node:http`/`node:https`,
+imported fetch implementations, a fetch reference captured before telemetry
+startup, WebSocket operations or Jobs. It supplies no public instrumentation API.
+Do not layer another fetch instrumentation package over this owned wrapper.
+The original global fetch is restored when the last telemetry owner shuts down.
+Instrumentation supports native string/URL/Request inputs and ordinary data
+`RequestInit` dictionaries (including frozen or inherited data fields). Accessor
+or Proxy options, subclasses, custom coercion, custom dispatchers, custom header iterators,
+unsupported or accessor-modified signals, and composite `AbortSignal.any` signals are
+delegated directly to native fetch without spans or injected context. Evaluating
+those options ahead of fetch could change redirect or rejection behavior.
+
+Propagation defaults to off. An operator may repeat
+`--trace-propagation-origin <origin>` when adding a profile:
+
+```sh
+sporades telemetry profile add dependencies --endpoint https://monitor.example --credential-env TRACE_INGEST_TOKEN --trace-propagation-origin https://dependency.example
+```
+
+The profile's optional `tracePropagationOrigins` array holds at most 32 exact
+HTTP/HTTPS origins. Scheme, normalized hostname and port must match; wildcards,
+credentials, paths, queries and fragments are rejected. This approval is separate
+from the OTLP export destination and is never inferred from incoming headers or
+Capsule project configuration. Local Container launch descriptors retain it;
+`host telemetry connect` persists it in the Host-owned connection and subsequent
+Hosted launch descriptors. Reconnect and restart existing Capsules to change it;
+runtime coverage reports the usual pending restart until the descriptor matches.
+
+Sporades adds a validated `traceparent` identifying the client span only when the
+destination is approved **and the caller selected `redirect: 'manual'` or
+`redirect: 'error'`** (including on a `Request` input). Default/follow redirects
+are traced but receive no injected context, preventing cross-origin redirect
+leaks without changing fetch semantics. No incoming baggage or trace state is
+copied. Caller-authored headers remain the caller's responsibility. Each new
+manual redirect fetch is checked independently against the approval list.
+
+Focused packaged ESM tests run without runtime package resolution on Node 22.13,
+Node 24, and the exact `ghcr.io/sporades/sporades-base:0.2.0-node22-alpine`
+image. Run `SPORADES_FETCH_DOCKER=1 node --test
+test/telemetry-fetch-bundle.test.js` to include the Docker matrix; it uses only
+disposable containers and prints the tested image digests. Runtime behavior and
+outage/redirect/privacy tests are in `test/telemetry-fetch.test.js`; native rejection
+identity, getter-evaluation parity and classification regressions are in
+`test/telemetry-fetch-rejection.test.js`.
+
 ## Create a Capsule
 
 ```sh
@@ -400,6 +499,11 @@ Vue source shell uses `/client/index.ts`. Sporades reports a mismatched source
 entry as a write-free preflight error and never rewrites the source shell.
 
 ## Project public files
+
+Scaffolded `index.html` declares an empty data-URL favicon (`href="data:,"`),
+avoiding an implicit request for `/favicon.ico`. Replace that icon link with
+`href="/favicon.ico"` and add `public/favicon.ico` to supply your own icon.
+The declaration is preserved in both esbuild and Vite release HTML.
 
 The optional project `public/` directory is merged by the Bundle pipeline for
 both esbuild and Vite; no configuration setting is required. Regular files keep
@@ -1100,7 +1204,7 @@ Example v1 policy:
 }
 ```
 
-Dev, Container and Hosted HTTP runtimes enforce enabled exact-path `deny` rules
+Dev, Container and Hosted HTTP runtimes enforce enabled non-address `deny` rules
 before Capsule auth, File routes, endpoint middleware/handlers and public assets.
 Each request snapshots one immutable generation. Disabled rules are skipped;
 conditions are ANDed, and the first matching rule decides. A nonmatching request
@@ -1113,11 +1217,42 @@ application body. HTTP HEAD responses omit body bytes as required by HTTP while
 retaining the same status and content length. CORS preflights are also admitted
 before their automatic response. No Capsule request code runs on denial.
 
-For admission, the pathname excludes the query, normalizes URL dot segments and
-decodes percent escapes once. Case, trailing slashes and repeated slashes remain
-distinct. Encoded separators, backslashes, invalid UTF-8, decoded controls and
-remaining percent escapes fail closed while a nonempty policy is active. This
-canonical value is used only for matching; the original request is not rewritten.
+Admission canonicalization is explicit and does not change the original request:
+
+- Methods compare after ASCII uppercase normalization; policy values are uppercase
+  letters. HTTP extension method tokens remain valid requests but do not match
+  an unrelated method condition. `OPTIONS *` has pathname `*` and no query keys.
+- Origin-form and HTTP(S) absolute-form targets use the raw pathname (absolute
+  authority is not a matching or identity input). An empty or whitespace-bearing
+  absolute authority is rejected, including forms the URL parser could repair
+  such as `http:///example.test/admin`. Path percent escapes decode
+  exactly once as strict UTF-8, then `.` and `..` segments normalize, including
+  encoded dots. A final dot segment preserves the resulting trailing slash;
+  parents above root stay at root. Case, Unicode, trailing and repeated slashes
+  remain distinct. `/admin` matches exact `/admin`, while prefix `/admin` matches
+  `/admin`, `/admin/` and `/admin/child`, never `/administrator`. Prefix `/admin/`
+  requires that trailing slash. Unicode is compared without Unicode normalization.
+- Raw backslashes, whitespace/control bytes, encoded slash/backslash, malformed
+  percent escapes, invalid UTF-8, decoded controls and remaining `%HH` path
+  escapes fail closed while a nonempty policy is active. Thus `%252e` never
+  receives a second decoding pass. Query and fragment bytes are never pathname
+  inputs; literal fragments are invalid HTTP request targets and fail closed.
+- Header names compare case-insensitively to lowercase policy names. Values trim
+  only leading/trailing ASCII space and tab (HTTP OWS); interior whitespace and
+  value casing stay exact. Policy exact values must already have no outer OWS.
+  Presence includes an empty value and repeated occurrences. Exact-value
+  matching requires **one raw header occurrence**; duplicates are indeterminate
+  and fail closed unless another condition rules out that rule. Values are
+  never split on commas or compared using Node's joined/discarded header map.
+- Query keys use form decoding once: percent-encoded UTF-8 and `+` as space.
+  Key casing is exact; repeated keys mean presence, regardless of their values,
+  and empty `&` components are ignored. Encoded `&` or `=` inside a key remains
+  part of the key. `%256bey` is the literal key `%6bey`, not `key`. Invalid escapes,
+  UTF-8 or decoded controls anywhere in the query, including values, fail closed;
+  the URL parser's replacement-character repair is never matching policy.
+
+Invalid targets and malformed canonicalization return the same opaque denial,
+even when a rule would otherwise not match. No policy retains existing behavior.
 
 Genuine GET runtime-health and connection-token controls dispatch before
 admission, with their existing Host probe and same-origin token-request checks.
@@ -1125,11 +1260,27 @@ They never read the admission generation. Reserved exact paths and prefixes
 covering them are rejected during policy validation, even in disabled rules or
 rules with additional conditions. Aliases and other methods enter admission.
 
-This enforcement slice supports exact pathname conditions and `deny` only.
-The schema below reserves later matchers and quotas: if an enabled rule cannot
-be ruled out by a nonmatching exact pathname but has an unsupported condition,
-the request receives the same opaque denial. A matching quota action also fails
-closed until quota enforcement ships. WebSocket upgrades are a subsequent slice.
+HTTP admission supports method, exact/prefix pathname, header, query-key and
+trusted Hosted address/CIDR conditions. Every supported condition must match;
+their order inside a rule does not affect the outcome. A missing trusted address
+or ambiguous exact-header duplicate is indeterminate:
+a nonmatching condition skips the rule, otherwise it fails closed. Evaluation
+stops at the first match; a matching deny returns the opaque denial, while a
+matching quota action applies its bounded fixed-window counter. Traffic denied
+earlier never reaches a later rule or action.
+
+WebSocket upgrades use the same gate before any protocol switch in Dev, Container
+and Hosted runtimes. The request's actual HTTP method, canonical pathname, raw
+public headers, query keys and Host-authenticated address select one complete
+generation, exactly as for ordinary HTTP. `/__sporades/ws` is Capsule traffic;
+it has no blanket exemption. A matching deny returns the same opaque HTTP 403
+and never sends `101 Switching Protocols`. Quotas share their per-process buckets
+with ordinary HTTP and return the same opaque 429 and Retry-After. Nonmatching
+upgrades retain existing connection-token, Origin and application transport checks.
+Unsupported Capsule upgrade targets also enter admission before rejection.
+Reserved GET control targets have no WebSocket transport: the runtime closes them
+without reading policy or consuming quota buckets. They do not become alternate
+Capsule upgrade endpoints.
 
 Without a policy declaration, the admission gate returns synchronously before
 parsing or touching request/response objects, reading bodies, or emitting logs.
@@ -1154,9 +1305,96 @@ AND conditions. The closed v1 vocabulary is:
 
 Unknown fields, versions, match kinds and actions fail validation. Paths must be
 absolute canonical pathnames, without percent escapes, backslashes, query or
-fragment components or dot-segment normalization. Prefix matching is reserved for a subsequent slice. Rules cannot name the runtime-health or
+fragment components, raw whitespace or dot segments that require normalization. Rules cannot name the runtime-health or
 connection-token controls, or a prefix covering them. Header matching excludes
-credentials, cookies and internal/proxy address headers. Address provenance, the remaining matchers and quota enforcement are subsequent slices.
+credentials, cookies, Host/routing and internal/proxy address fields: `host`,
+`connection`, `authorization`, `cookie`, `set-cookie`, `forwarded`, `via`,
+`true-client-ip`, `x-real-ip`, and names beginning `proxy-`, `x-forwarded-`,
+`x-sporades-` or `cf-`. These fields cannot supply public matching or authenticated
+identity shortcuts. Header/query matches grant no identity or application
+permissions.
+
+Address conditions match one canonical IPv4 or IPv6 literal, or a CIDR network.
+IPv6 is normalized to lowercase with the first longest zero run compressed.
+IPv4-mapped IPv6 (`::ffff:192.0.2.1` or `::ffff:c000:201`) is the same identity as
+`192.0.2.1`, and matches IPv4 networks. Mapped CIDRs must use prefixes 96–128,
+which normalize to IPv4 prefixes 0–32; shorter mapped prefixes are rejected.
+Other IPv6 networks never match normalized IPv4 identities, including `::/0`.
+Network host bits are masked during matching. Prefix lengths must be decimal,
+without signs or leading zeros, in 0–32 for IPv4 or 0–128 for IPv6. Malformed
+addresses, multiple slashes, zones, ports, brackets, whitespace and lists fail
+generation validation, including in disabled rules.
+
+Only Hosted mode can supply trusted client identity. The Host's Caddy route
+replaces caller-supplied `x-sporades-client-address` and
+`x-sporades-client-address-token` values. Automatic TLS routes use the connection
+peer, never `Forwarded`, `X-Forwarded-For` or `CF-Connecting-IP`. In
+`cloudflare-origin` mode the existing Cloudflare IPv4/IPv6 source allowlist rejects
+other peers before forwarding `CF-Connecting-IP`. This uses the ordinary free
+Cloudflare proxy and requires no paid account feature. Duplicate Cloudflare
+headers become a list and cannot supply identity.
+
+The Host/runtime boundary validates and canonicalizes exactly one address before
+admission. It requires a per-runtime capability derived separately from the
+Host-owned readiness token; Hosted mode or a private header name alone grants no
+authority. Missing/invalid capability, duplicate headers, absent address, or an
+invalid address yields no trusted identity. The capability is omitted from
+Capsule endpoint request headers and never emitted by admission diagnostics.
+Changing the Host readiness credential revokes older address capabilities;
+ordinary restarts retain the existing Host credential. Upgrade the Host helper
+and regenerated Capsules together and recreate their managed routes; an older
+route without the capability cannot provide trusted identity. Existing
+loopback-only published ports and managed route ownership remain required;
+public callers must not reach a Capsule origin around Caddy. The capability also
+prevents an unauthenticated caller reaching the origin from forging identity.
+Access-key source limiting uses this same canonical authenticated identity.
+
+An enabled address-dependent rule is evaluated after any condition mismatch has
+been ruled out. If it might apply and trusted identity is absent, the request
+receives the same opaque `403`, `Forbidden\n` bytes and `Cache-Control: no-store`
+as a matched denial. It does not fall back to a public forwarding header or the
+runtime socket's proxy address. Dev (including Public Dev) and local Container
+sessions always have no trusted address, even if supplied with internal headers;
+potentially applicable address rules and quotas fail closed there. Disabled rules
+are skipped and unrelated rules continue to operate normally.
+
+A matching `rate-limit` action counts each request in a fixed window keyed by
+`(stable rule ID, canonical trusted client address)`. Under quota, the first
+matching rule admits the request; later rules are not evaluated. An earlier deny
+therefore never consumes a later quota. Quotas always require trusted identity,
+even without an address condition. Missing identity takes the opaque `403` path
+above, without creating a bucket or falling back to public forwarding headers.
+
+For example, `"action": { "kind": "rate-limit", "limit": 20, "windowMs": 10000 }`
+allows twenty matching requests per client in a ten-second local window. The
+first counted request starts the window using monotonic elapsed time, independent
+of wall-clock changes. At exactly `startedAt + windowMs`, the next request starts
+a fresh window. Over-quota matches count with a saturated counter, without
+extending the window. They return an opaque `429`, exactly `Too Many Requests\n`
+(18 UTF-8 bytes), `Cache-Control: no-store`, and integer `Retry-After` seconds
+rounded up from the remaining window time. HEAD omits body bytes. No Capsule
+request code runs; no rule ID, address or policy digest appears in the response.
+Fixed windows permit a boundary burst: up to twice the quota can arrive around a
+window boundary (the remaining quota immediately before, then a fresh quota after).
+
+Each runtime caps the combined table at **10,000 buckets across all rules**.
+Expired windows are pruned during counting. At capacity, insertion evicts the
+least recently counted bucket; ties follow deterministic Map insertion order.
+Denied matches refresh recency. Capacity evictions increment `rateLimit.evictions`
+in authenticated runtime health; expiry and policy invalidation do not. Bucket
+keys and counters are bounded by the validated rule ID, canonical IP and quota
+bounds. An evicted identity gets a fresh window on its next match: address churn
+can weaken quotas at capacity. Monitor aggregate eviction counts and size quotas
+with that tradeoff in mind. No raw addresses or rule IDs enter these diagnostics.
+
+Hot reload preserves buckets only for still-enabled stable IDs with unchanged
+`limit` and `windowMs`; matcher/order edits preserve compatible buckets. Changing
+an ID or either parameter, disabling/removing a rule, or removing the policy
+clears affected buckets before the new generation becomes active, even with no
+intervening request. Invalid hot updates retain both policy and buckets.
+**v1 is in-memory and per-process**, rather than a global or distributed quota.
+Process restart resets all buckets; replicas and separate Capsule processes have
+independent quotas. It is a fixed-window counter, not a token bucket.
 
 Bounds are 65,536 UTF-8 bytes, nesting depth 8 (root depth 0), 128 rules,
 16 conditions per rule, and 1,024 UTF-8 bytes per match string. An empty rule array
@@ -1192,8 +1430,65 @@ Startup loads before Capsule code and app traffic. Invalid configured startup
 fails; hot failures retain the complete immutable last-known-good generation.
 The runtime polls every two seconds and swaps complete generations atomically,
 meeting the ten-second update target under normal scheduling. The Host-authenticated
-runtime-health response adds `data.runtime.admissionPolicy` with only `state`
-(`healthy`, `degraded`, `disabled`) and active SHA-256 `digest` or `null`.
-Platform reload events report the same fields on load, degradation and recovery.
-They contain no rule or match values. No declaration adds no loader, policy
-fields or policy logs. See [the authority ADR](../adr/0054-request-admission-policy-is-deployer-owned.md).
+runtime-health response adds `data.runtime.admissionPolicy` with `state`
+(`healthy`, `degraded`, `disabled`), active SHA-256 `digest` or `null`, and
+`rateLimit: { buckets, maxBuckets, evictions }` aggregate local quota diagnostics.
+It also adds `evidence.version: 1` with fixed aggregate `counters`: `evaluated`,
+`admitted`, `denied` (opaque 403), `rateLimited` (opaque 429), `reloadFailures`,
+`reloadRecoveries`, `limiterEvictions`, `decisionsEmitted` and
+`decisionsSuppressed`. Counters are unsigned 64-bit **decimal strings**, exact
+through `18446744073709551615`; reaching the ceiling retains that value and a
+subsequent increment sets `saturated: true`. They never wrap or silently lose
+precision. Totals and sampling reset on process restart, survive hot policy
+changes and explicit removal, and have no per-client or per-rule dimensions.
+Within one Dev process, runtime replacement, policy-path changes and disabling
+then re-enabling `admissionPolicy` retain all totals and the current sample budget.
+Replacing a degraded Dev policy at a new path records one recovery when the
+replacement runtime becomes active. Rejected policy or Capsule candidates retain
+the active policy's degradation and do not consume that recovery.
+While disabled, inspection omits policy fields and requests do not count;
+re-enabling exposes the retained evidence with the newly loaded policy digest.
+Each evaluated active generation, including an empty policy, has exactly one
+admitted/denied/rate-limited outcome. Removal disables evaluation; genuine
+reserved GET controls never count. HTTP and pre-switch WebSocket admission
+use the same accounting and quota buckets. Limiter eviction counts capacity
+evictions, excluding ordinary window expiry and reload reconciliation.
+
+Platform `admission.decision` events are sampled: at most **20 attempts per
+60,000 monotonic milliseconds**, and at most one per stable rule ID/outcome pair
+in that window. A process retains at most **20 sample keys**, even across
+generation churn; address, route, headers and query values never form a sample
+key. Suppression increments its exact aggregate total without allocating a log
+event. Sink failures cannot alter decisions and still consume the sample budget.
+Samples contain only the validated rule ID or `null`, action or `null`, closed
+outcome, active digest, session kind (`dev`, `public-dev`, `container`, `hosted`),
+transport (`http`, `websocket`) and route class (`ordinary`, `capsule-transport`,
+`invalid`). Route class never contains a pathname. No address fingerprint is
+emitted in v1; client addresses and all match values are omitted entirely.
+
+`admission.policy.loaded`, `admission.policy.failure` and
+`admission.policy.recovery` events carry redacted health/digest/counters.
+Every failed load attempt and recovery bypass decision sampling, including a
+cold failure and hot failure/recovery during slow Capsule initialization before
+the runtime logger exists (redacted stderr JSON). Concurrent
+reload calls coalesce into one load; normal polling is once per two seconds.
+A hot failure retains the complete last-known-good digest while reporting
+`degraded` (or retains the disabled state after explicit removal). Successful load or explicit removal after degradation increments
+`reloadRecoveries` and emits recovery.
+
+`sporades doctor --session dev|public-dev|container|hosted --json` reports the
+active snapshot under the corresponding `doctor.<session>.admission-policy`
+check (`public-dev` uses `dev`). Degradation, unavailable inspection or a legacy
+runtime without v1 counters is a warning;
+`--strict` makes warnings fail. Text doctor includes digest and totals too.
+`sporades host stats <subname> --json` adds `data.admissionPolicy` for a Capsule
+whose release declares policy storage, using an authenticated probe inside the
+bound container; `null` means evidence could not be read and resource stats
+remain available. Hosted health carries the snapshot in `data.runtime`.
+Operator surfaces allowlist fields and validate bounded strings/counters even
+when a runtime supplies extra fields. They expose no raw addresses, matched
+header/query values, raw query strings, credentials, bodies or proxy headers.
+These are read-only extensions of existing commands, with no new dashboard,
+public evidence route or Capsule API. No declaration adds no loader, policy
+fields, inspection check or policy logs. See
+[the authority ADR](../adr/0054-request-admission-policy-is-deployer-owned.md).

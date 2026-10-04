@@ -39,12 +39,39 @@ polls the exact file every two seconds. Reads, JSON size, nesting, rules and
 conditions are bounded. A complete deeply frozen generation swaps by one reference
 assignment. Invalid cold configuration aborts startup. Invalid hot updates retain
 the last-known-good generation and expose degraded health; successful recovery
-emits a health transition. Only digest and health appear in the protected readiness
-response and platform reload events. Issue #66 established this lifecycle independently of enforcement. Issue #67 now
+emits a health transition. Only digest, health and aggregate local quota
+diagnostics appear in the protected
+readiness response; platform reload events contain only digest and health.
+Issue #66 established this lifecycle independently of enforcement. Issue #67 now
 consumes one generation snapshot before HTTP Capsule routing to enforce exact-path
 denials. Genuine authenticated controls bypass admission; reserved targets fail
-validation. The remaining matchers, quota enforcement and WebSocket upgrades are
-later slices.
+validation. Issue #68 completes non-address AND matching: methods, exact/segment-prefix
+paths, canonical public headers and query-key presence. Canonicalization is pinned
+in the [configuration reference](../reference/projects-and-configuration.md#request-admission-policy-publication).
+Issue #69 adds exact/CIDR address conditions using only canonical
+Host-authenticated identity in Hosted mode. Caddy replaces incoming internal
+identity and supplies a per-runtime capability derived from the existing
+Host-owned readiness token with a distinct domain. The runtime validates one
+address and rejects duplicate/list/invalid input; forwarding headers never
+independently grant identity. Cloudflare identity retains the existing peer
+allowlist boundary. Missing identity denies potentially applicable enabled
+address rules, including in Dev and local Container sessions. Mapped IPv6
+normalizes to IPv4; mapped network prefixes below 96 are rejected. The capability
+is filtered from Capsule endpoint headers. Issue #71 adds bounded per-process
+fixed-window quotas by stable rule ID and
+trusted address. Monotonic elapsed time defines windows; over quota returns
+opaque 429/no-store and rounded-up Retry-After. A combined 10,000-bucket table
+evicts least-recently-counted buckets deterministically and exposes only aggregate
+capacity eviction counts in protected health. Compatible IDs/parameters retain
+state across reload; disabling/removal/parameter changes clear affected state,
+and process restart resets it. Boundary bursts and independent replica quotas
+are deliberate v1 limits. Missing identity takes the existing opaque 403 path.
+Issue #70 applies the same generation snapshot and trusted request attributes to
+WebSocket upgrades before protocol switching, including `/__sporades/ws` Capsule
+traffic. Denials return the ordinary opaque pre-switch HTTP response; quotas share
+HTTP buckets. Nonmatching requests retain handshake and application transport
+behavior. Reserved GET controls have no WebSocket transport and are rejected
+without consulting policy or counting quota buckets.
 
 ## Consequences
 

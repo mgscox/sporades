@@ -1,4 +1,5 @@
-import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
+import { ServerResponse, type IncomingHttpHeaders, type IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 export type RuntimeSecurityPolicy = {
@@ -27,9 +28,11 @@ export type InterpretedHttpRequestTarget = {
     url: URL;
 };
 export declare function interpretHttpRequestTarget(target: unknown, method: unknown): InterpretedHttpRequestTarget | null;
-/** Exact-path HTTP admission, before Capsule routing; genuine controls dispatch first. */
-export declare function routeHttpAdmission(database: LooseRecord, request: Pick<IncomingMessage, "url" | "method">, response: Pick<ServerResponse, "writeHead" | "end">, target?: InterpretedHttpRequestTarget): boolean;
+/** Canonical HTTP admission and trusted-client quotas; genuine controls dispatch first. */
+export declare function routeHttpAdmission(database: LooseRecord, request: Pick<IncomingMessage, "url" | "method" | "rawHeaders" | "headers">, response: Pick<ServerResponse, "writeHead" | "end">, target?: InterpretedHttpRequestTarget, transport?: "http" | "websocket"): boolean;
 export declare function requestTarget(request: Pick<IncomingMessage, "url" | "method">): InterpretedHttpRequestTarget;
+/** Apply HTTP admission before any upgrade, including unsupported Capsule paths. */
+export declare function routeWebSocketAdmission(database: LooseRecord, request: IncomingMessage, socket: Duplex): boolean;
 export declare function writeInvalidHttpRequestTarget(database: LooseRecord, request: IncomingMessage, response: Pick<ServerResponse, "writeHead" | "end">): void;
 export declare function readJsonRequest(request: IncomingMessage, limitSource?: LooseRecord | number | null): Promise<LooseRecord>;
 export declare function readLimitedRequestBody(request: any, limitSource?: LooseRecord | number | null): Promise<Buffer<ArrayBuffer>>;

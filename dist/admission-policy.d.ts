@@ -1,3 +1,5 @@
+import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
+import { createAdmissionEvidence } from "./admission-evidence.js";
 import { type BuiltDeployFile } from "./deploy-files.js";
 export declare const ADMISSION_LIMITS: Readonly<{
     bytes: 65536;
@@ -10,8 +12,19 @@ export declare const ADMISSION_LIMITS: Readonly<{
 export type { AdmissionCondition, AdmissionAction, AdmissionPolicy, AdmissionGeneration, AdmissionHealth } from "../src/types/admission-policy.js";
 import type { AdmissionGeneration, AdmissionHealth } from "../src/types/admission-policy.js";
 export declare function parseAdmissionPolicy(bytes: Buffer): AdmissionGeneration;
-/** First-match exact-path slice. An indeterminate condition must never grant admission. */
-export declare function matchExactAdmissionRule(generation: AdmissionGeneration, pathname: string): {
+/** Admission uses the raw pathname, with explicit decode-once and dot-segment rules. */
+export declare function canonicalAdmissionPathname(raw: string): string;
+/** Trusted HTTP boundary input; rawHeaders preserves duplicates discarded by Node's headers map. */
+export type AdmissionHttpInput = {
+    method: string;
+    pathname: string;
+    query: string;
+    rawHeaders: readonly string[];
+    /** Canonical identity authenticated by the Host boundary, never a public header. */
+    trustedAddress?: string | null;
+};
+/** Ordered AND evaluation. Unsupported conditions are indeterminate, never permission to admit. */
+export declare function matchHttpAdmissionRule(generation: AdmissionGeneration, input: AdmissionHttpInput): {
     id: string;
     enabled: boolean;
     conditions: readonly import("../src/types/admission-policy.js").AdmissionCondition[];
@@ -21,15 +34,31 @@ export declare function resolveAdmissionPolicy(value: unknown, files?: unknown):
 export declare function admissionStorageRoot(preservedRoot: string): string;
 export declare function buildAdmissionPolicy(projectDir: string, value: unknown, files?: unknown): Promise<BuiltDeployFile[]>;
 export declare function publishAdmissionPolicy(root: string, relative: string, bytes: Buffer | null): Promise<void>;
-export declare function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth) => void): Promise<Readonly<{
+export type AdmissionReloadEvent = "loaded" | "failure" | "recovery";
+export declare function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth, event: AdmissionReloadEvent) => void, options?: Parameters<typeof createAdmissionRateLimiter>[0] & {
+    evidence?: ReturnType<typeof createAdmissionEvidence>;
+    deferActivation?: boolean;
+}): Promise<Readonly<{
     current: () => Readonly<{
         digest: string;
         policy: import("../src/types/admission-policy.js").AdmissionPolicy;
     }> | null;
-    health: () => Readonly<{
-        state: "healthy" | "degraded" | "disabled";
-        digest: string | null;
+    rateLimiter: Readonly<{
+        reconcile: (generation: AdmissionGeneration | null) => void;
+        consume: (id: string, address: string, limit: number, windowMs: number) => number;
+        stats: () => Readonly<{
+            buckets: number;
+            maxBuckets: number;
+            evictions: number;
+        }>;
     }>;
+    evidence: Readonly<{
+        count: (name: "denied" | "evaluated" | "admitted" | "rateLimited" | "reloadFailures" | "reloadRecoveries" | "limiterEvictions" | "decisionsEmitted" | "decisionsSuppressed") => void;
+        decision: (value: import("./admission-evidence.js").AdmissionDecision, emit?: (value: import("./admission-evidence.js").AdmissionDecision) => void) => void;
+        snapshot: () => import("../src/types/admission-policy.js").AdmissionEvidence;
+    }>;
+    health: () => AdmissionHealth;
+    activate: (previousHealth?: AdmissionHealth) => void;
     reload: () => Promise<void>;
     close: () => Promise<void>;
 }>>;

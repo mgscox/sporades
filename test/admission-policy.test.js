@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { routeHttpAdmission } from '../dist/http-runtime.js';
 import { test } from 'node:test';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, rename } from 'node:fs/promises';
 import path from 'node:path';
@@ -41,8 +42,10 @@ test('hot failures retain a complete immutable generation; explicit removal and 
     await rm(path.join(root, 'policy.json')); await runtime.reload(); assert.equal(runtime.current(), old);
     await writeFile(path.join(root, 'next.json'), JSON.stringify(policy('new'))); await rename(path.join(root, 'next.json'),path.join(root, 'policy.json'));
     await runtime.reload(); assert.equal(runtime.health().state, 'healthy'); assert.equal(runtime.current().policy.rules[0].id,'new'); assert.equal(old.policy.rules[0].id,'block-path');
-    assert.deepEqual(events.map(event => event.state), ['healthy','degraded','healthy']);
-    assert.deepEqual(Object.keys(runtime.health()), ['state','digest']);
+    assert.deepEqual(events.map(event => event.state), ['healthy','degraded','degraded','healthy']);
+    assert.deepEqual(Object.keys(runtime.health()), ['state','digest','rateLimit','evidence']);
+    assert.equal(runtime.health().evidence.counters.reloadFailures, '2');
+    assert.equal(runtime.health().evidence.counters.reloadRecoveries, '1');
   } finally { await runtime.close(); }
   await assert.rejects(openAdmissionPolicy(root,'missing.json'), /could not be loaded/);
   await writeFile(path.join(root,'policy.json'),'{'); await assert.rejects(openAdmissionPolicy(root,'policy.json'), /could not be loaded/);
@@ -54,7 +57,11 @@ test('authorized removal disables policy and survives restart; invalid publicati
   try {
     await assert.rejects(publishAdmissionPolicy(root, relative, Buffer.from('{}')), /Invalid admission policy/);
     await publishAdmissionPolicy(root,relative,null); await runtime.reload();
-    assert.equal(runtime.current(),null); assert.deepEqual(runtime.health(),{state:'disabled',digest:null});
+    assert.equal(runtime.current(),null); assert.deepEqual({...runtime.health(), evidence:undefined},{state:'disabled',digest:null,rateLimit:{buckets:0,maxBuckets:10000,evictions:0},evidence:undefined});
+    assert.equal(runtime.health().evidence.version,1);
+    const before = runtime.health().evidence;
+    assert.equal(routeHttpAdmission({ admissionPolicy: runtime, log: { emit: () => assert.fail('removed policy must not log') } }, {}, { writeHead: () => assert.fail('removed policy must not respond'), end: () => assert.fail('removed policy must not respond') }), false);
+    assert.deepEqual(runtime.health().evidence, before);
     const restarted = await openAdmissionPolicy(root,stored); await restarted.close();
     await publishAdmissionPolicy(root,relative,Buffer.from(JSON.stringify(policy()))); await runtime.reload(); assert.equal(runtime.health().state,'healthy');
   } finally { await runtime.close(); }
@@ -114,3 +121,17 @@ test('publication grants runtime read access even with a restrictive operator um
   finally { process.umask(previous); }
   assert.equal((await stat(target)).mode & 0o777,0o444);
 }));
+
+test('non-address generations reject security-sensitive headers and noncanonical policy values', () => {
+  for (const name of ['host', 'connection', 'proxy-authorization', 'proxy-connection', 'authorization', 'cookie', 'set-cookie', 'forwarded', 'via', 'true-client-ip', 'x-real-ip', 'x-forwarded-for', 'cf-connecting-ip', 'x-sporades-host-probe', 'x-sporades-client-address']) {
+    const p = policy(); p.rules[0].conditions = [{ kind: 'header', name }];
+    assert.throws(() => parseAdmissionPolicy(Buffer.from(JSON.stringify(p))), /Invalid admission policy/, name);
+  }
+  for (const condition of [{ kind: 'header', name: 'x-mode', value: ' outer' }, { kind: 'header', name: 'x-mode', value: 'outer ' },
+    { kind: 'pathname', prefix: '/a/../admin' }, { kind: 'pathname', exact: '/a b' }]) {
+    const p = policy(); p.rules[0].conditions = [condition];
+    assert.throws(() => parseAdmissionPolicy(Buffer.from(JSON.stringify(p))), /Invalid admission policy/);
+  }
+  const p = policy(); p.rules[0].conditions = [{ kind: 'method', value: 'POST' }, { kind: 'pathname', prefix: '/admin/' }, { kind: 'header', name: 'x-mode', value: '' }, { kind: 'query-key', name: 'some key' }];
+  assert.equal(parseAdmissionPolicy(Buffer.from(JSON.stringify(p))).policy.rules[0].conditions.length, 4);
+});

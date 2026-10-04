@@ -1,5 +1,6 @@
 import type { RuntimeTelemetryConfig } from "../runtime-telemetry.js";
 export type TelemetryProfile = {
+    tracePropagationOrigins?: string[];
     endpoint: string;
     dashboard?: string;
     tls: {

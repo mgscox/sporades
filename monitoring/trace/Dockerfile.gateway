@@ -3,6 +3,6 @@ WORKDIR /app
 COPY blackbox-config.mjs blackbox.yaml /app/
 COPY availability.mjs /app/availability.mjs
 COPY gateway.mjs /app/gateway.mjs
-COPY inventory-contract.mjs inventory-store.mjs inventory.mjs /app/
+COPY sender-credentials.mjs inventory-contract.mjs inventory-store.mjs inventory.mjs /app/
 USER node
 CMD ["node", "/app/gateway.mjs"]

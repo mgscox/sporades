@@ -1,13 +1,14 @@
 import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { accessKeyGrantsSatisfyScopes, scopeGrantMatches } from "./auth-admission.js";
 import {
-  ACCESS_KEY_CLIENT_ADDRESS_HEADER,
   ACCESS_KEY_GRANT_BYTE_LIMIT,
   ACCESS_KEY_GRANT_LIMIT,
   ACCESS_KEY_GRANTS_JSON_BYTE_LIMIT,
 } from "./access-key-contract.js";
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
+import { trustedClientAddress } from "./client-address.js";
+import { createBoundedFixedWindow } from "./bounded-fixed-window.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -842,46 +843,27 @@ function accessKeySelectorFingerprint(selector: string) {
 }
 
 function accessKeySourceBucket(database: LooseRecord, request: LooseRecord) {
-  const forwarded = database.securitySession === "hosted"
-    ? request?.headers?.[ACCESS_KEY_CLIENT_ADDRESS_HEADER]
-    : null;
-  const trustedClientAddress = typeof forwarded === "string"
-    && forwarded.length > 0
-    && Buffer.byteLength(forwarded, "utf8") <= 128
-    && !/[,\s\u0000-\u001f\u007f]/.test(forwarded)
-    ? forwarded
-    : null;
   return accessKeyCrypto().createHash("sha256")
     .update("sporades-access-key-source-limit\0")
-    .update(trustedClientAddress ?? String(request?.socket?.remoteAddress ?? "unknown"))
+    .update(trustedClientAddress(database, request) ?? String(request?.socket?.remoteAddress ?? "unknown"))
     .digest("hex");
 }
 
 function accessKeyLimiter(database: LooseRecord, kind: string) {
   const root = database.__rootDatabase ?? database;
-  root.__accessKeyFailureLimiters ??= { source: new Map(), selector: new Map() };
+  root.__accessKeyFailureLimiters ??= {
+    source: createBoundedFixedWindow({ now: () => root.clock.now().getTime() }),
+    selector: createBoundedFixedWindow({ now: () => root.clock.now().getTime() }),
+  };
   return root.__accessKeyFailureLimiters[kind];
 }
 
 function assertAccessKeyFailureLimit(database: LooseRecord, kind: string, key: string, limit: number, windowMs: number) {
-  const state = accessKeyLimiter(database, kind).get(key);
-  const now = database.clock.now().getTime();
-  if (state && now - state.startedAt < windowMs && state.count >= limit) throw accessKeyAuthenticationError("rate-limited", true);
+  if (accessKeyLimiter(database, kind).retryAfter(key, limit, windowMs)) throw accessKeyAuthenticationError("rate-limited", true);
 }
 
 function recordAccessKeyFailure(database: LooseRecord, kind: string, key: string, windowMs: number) {
-  const limiter = accessKeyLimiter(database, kind);
-  const now = database.clock.now().getTime();
-  const previous = limiter.get(key);
-  const state = !previous || now - previous.startedAt >= windowMs
-    ? { count: 1, startedAt: now, lastSeenAt: now }
-    : { count: previous.count + 1, startedAt: previous.startedAt, lastSeenAt: now };
-  limiter.delete(key);
-  limiter.set(key, state);
-  for (const [candidate, candidateState] of limiter) {
-    if (now - candidateState.lastSeenAt > 15 * 60_000 || limiter.size > 10_000) limiter.delete(candidate);
-    else break;
-  }
+  accessKeyLimiter(database, kind).record(key, windowMs);
 }
 
 function clearAccessKeyFailure(database: LooseRecord, kind: string, key: string) {

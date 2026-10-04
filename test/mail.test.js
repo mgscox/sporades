@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import * as tls from "node:tls";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 import { validateMailConfig } from "../dist/cli/project-config.js";
 // `buildSmtpMessage`, `createMailTransport` and `connectSmtpSocket` are imported by name rather than
@@ -346,6 +349,78 @@ test("SMTP2GO-shaped configuration reaches the generic SMTP transport", async ()
   assert.equal(capturedSmtp.auth.method, "LOGIN");
   assert.match(capturedMessages[0], /\r\nX-Smtp2go-Campaign: onboarding\r\n/);
   assert.match(capturedMessages[0], /\r\nX-Smtp2go-Tag: welcome  cohort\r\nX-Smtp2go-Tag: trial\r\n/);
+});
+
+test("ctx.mail emits one portable Auto-Submitted header only when explicitly selected", async () => {
+  const received = [];
+  await withDatabase(smtp2goConfig, {
+    mutations: {
+      send: mutation((ctx, autoSubmitted) => ctx.mail.send({
+        to: "to@example.com", subject: "Automated refusal", textBody: "Ticket is closed.",
+        autoSubmitted,
+        provider: { headers: { "X-Sporades-Correlation-Id": "intent-206" } },
+      })),
+    },
+  }, {
+    mailTransportFactory: () => ({
+      async send(message) {
+        received.push(buildSmtpMessage({ ...message, messageId: "<auto-submitted@test>" }));
+        return { messageId: "<auto-submitted@test>", accepted: ["to@example.com"], rejected: [] };
+      },
+      close() {},
+    }),
+  }, async (database) => {
+    for (const value of ["no", "auto-generated", "auto-replied", undefined]) {
+      assert.equal((await runMutation(database, user, "send", [value])).ok, true);
+    }
+  });
+  for (const [index, value] of ["no", "auto-generated", "auto-replied"].entries()) {
+    assert.equal(readMimeHeader(received[index], "Auto-Submitted"), value);
+    assert.equal((received[index].match(/^Auto-Submitted:/gmi) ?? []).length, 1);
+    assert.equal((received[index].match(/^X-Sporades-Correlation-Id:/gmi) ?? []).length, 1);
+  }
+  assert.doesNotMatch(received[3], /^Auto-Submitted:/mi);
+});
+
+test("Auto-Submitted rejects unsafe values and header overrides before transport without executing accessors", async () => {
+  let sends = 0;
+  let getterCalls = 0;
+  const base = { to: "to@example.com", subject: "Refusal", textBody: "Closed." };
+  const cases = [
+    ...[null, true, 1, {}, [], ["auto-replied", "auto-replied"], "", "AUTO-REPLIED",
+      " auto-replied", "auto-replied ", "auto-replied; reason=closed", "auto-replied\r\nBcc: attacker@example.com",
+      "auto-replied\n", "auto-replied\r", "auto-replied\0"].map(autoSubmitted => ({ ...base, autoSubmitted })),
+    Object.defineProperty({ ...base }, "autoSubmitted", {
+      enumerable: true, get() { getterCalls++; return "auto-replied"; },
+    }),
+    Object.defineProperty({ ...base }, "autoSubmitted", { value: "auto-replied" }),
+    Object.assign(Object.create({ autoSubmitted: "auto-replied" }), base),
+    ...[
+      { "Auto-Submitted": "auto-replied" },
+      { "auto-submitted": "auto-replied" },
+      { "Auto-Submitted": "auto-replied", "AUTO-SUBMITTED": "auto-generated" },
+      { "X-Trace": "one", "x-trace": "two" },
+      { From: "attacker@example.com" }, { "Content-Type": "text/plain" },
+      { "Message-ID": "<override@test>" }, { "X-SMTP-Host": "attacker.example.com" },
+    ].map(headers => ({ ...base, autoSubmitted: "auto-replied", provider: { headers } })),
+    { ...base, autoSubmitted: "auto-replied", provider: { host: "attacker.example.com" } },
+  ];
+  await withDatabase(smtp2goConfig, {
+    mutations: { send: mutation((ctx, index) => ctx.mail.send(cases[index])) },
+  }, {
+    mailTransportFactory: () => ({
+      async send() { sends++; return { messageId: "<unexpected@test>", accepted: [], rejected: [] }; },
+      close() {},
+    }),
+  }, async database => {
+    for (let index = 0; index < cases.length; index++) {
+      const result = await runMutation(database, user, "send", [index]);
+      assert.equal(result.ok, false, `case ${index} must fail before transport`);
+      assert.match(result.error.code, /^(INVALID_MAIL_MESSAGE|UNSUPPORTED_MAIL_PROVIDER_FIELD)$/);
+    }
+  });
+  assert.equal(sends, 0);
+  assert.equal(getterCalls, 0);
 });
 
 test("generic provider headers reject unsafe names, values, fields, and descriptor tricks before transport", async () => {
@@ -1393,6 +1468,109 @@ test("generated Server Bundles carry the generic mail runtime helpers", async ()
     assert.equal(checked.status, 0, checked.stderr);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a packaged built-Capsule Job sends Auto-Submitted and correlation once over local SMTP", { timeout: 60_000 }, async () => {
+  const run = promisify(execFile);
+  await mkdir(path.resolve(".scratch"), { recursive: true });
+  const root = await mkdtemp(path.resolve(".scratch/mail-job-206-"));
+  const smtp = await startTestSmtpServer();
+  let child;
+  try {
+    const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, "config"), COPYFILE_DISABLE: "1" };
+    const packed = await run("npm", ["pack", "--ignore-scripts", "--pack-destination", root, "--silent"], { env });
+    await run("tar", ["-xzf", path.join(root, packed.stdout.trim()), "-C", root], { env });
+    const shipped = path.join(root, "package");
+    const { bundleServerCapsuleModule } = await import(pathToFileURL(path.join(shipped, "dist/bundle-pipeline.js")));
+    const { createServerBundleModuleSource: build } = await import(pathToFileURL(path.join(shipped, "dist/templates/server-bundle-module-graph.js")));
+    const typesPath = path.join(root, "mail-types.mts");
+    await writeFile(typesPath, `import type { MailSendInput } from './package/src/types/server.d.ts';
+const message: MailSendInput = { to: 'to@example.com', subject: 'Closed', textBody: 'Closed', autoSubmitted: 'auto-replied' };
+message.autoSubmitted = 'no';
+message.autoSubmitted = 'auto-generated';
+// @ts-expect-error unsupported automatic-message value
+message.autoSubmitted = 'automatic';
+// @ts-expect-error arbitrary standard headers are not a message field
+message.headers = { 'Auto-Submitted': 'auto-replied' };
+`);
+    await run(process.execPath, [path.resolve("node_modules/typescript/bin/tsc"), "--noEmit", "--skipLibCheck", "--module", "NodeNext", "--target", "ES2022", typesPath], { env });
+    const serverSource = `import { capsule, endpoint, job } from 'sporades/server';
+export default capsule({ name: 'mail-job-206', jobs: {
+  refuse: job((ctx, payload) => ctx.mail.send({
+    to: 'recipient@example.com', from: 'Refusals <refusals@example.com>',
+    subject: 'Ticket closed', textBody: 'This ticket is closed.',
+    ...(payload.automated ? { autoSubmitted: 'auto-replied' } : {}),
+    provider: { headers: { 'X-Sporades-Correlation-Id': payload.correlation } }
+  }))
+}, endpoints: {
+  enqueue: endpoint({ method: 'POST', path: '/enqueue' }, async ctx => ({ status: 200, body:
+    await ctx.privileged.run({ operation: 'test.enqueue', targetResourceKind: 'job-queue' }, p =>
+      p.jobs.enqueue('refuse', { automated: ctx.request.query.automated === 'true', correlation: ctx.request.query.correlation }, { retry: { maxAttempts: 1 } })) })),
+  state: endpoint({ method: 'GET', path: '/state' }, async ctx => ({ status: 200, body:
+    await ctx.privileged.run({ operation: 'test.inspect', targetResourceKind: 'job-queue' }, p => p.jobs.get(ctx.request.query.id)) }))
+} });`;
+    const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(root, "server/index.ts") });
+    await writeFile(path.join(root, "server.mjs"), await build({
+      config: { name: "mail-job-206", mail: { smtp: {
+        vendor: "smtp2go", host: "127.0.0.1", port: smtp.port,
+        tls: { mode: "disabled" }, auth: { method: "none" }, defaultFrom: "default@example.com",
+      } } },
+      serverEnv: {}, serverSource, serverModuleSource,
+      epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");',
+    }));
+    let stdout = "", stderr = "";
+    child = spawn(process.execPath, [path.join(root, "server.mjs")], { cwd: root, env: { ...env, PORT: "0" }, stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    const waitFor = async probe => {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        assert.equal(child.exitCode, null, stderr);
+        const result = await probe();
+        if (result) return result;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      assert.fail(`Capsule did not reach expected state: ${stderr}`);
+    };
+    const port = await waitFor(() => stdout.split("\n").map(line => {
+      try { return JSON.parse(line).listening; } catch { return null; }
+    }).find(Number.isInteger));
+    const origin = `http://127.0.0.1:${port}`;
+    for (const automated of [true, false]) {
+      const response = await fetch(`${origin}/enqueue?automated=${automated}&correlation=intent-${automated}`, { method: "POST" });
+      assert.equal(response.status, 200);
+      const queued = await response.json();
+      assert.equal(typeof queued.id, "string");
+      const settled = await waitFor(async () => {
+        const state = await (await fetch(`${origin}/state?id=${queued.id}`)).json();
+        assert.notEqual(state.status, "failed", JSON.stringify(state));
+        return state.status === "succeeded" ? state : null;
+      });
+      assert.equal(settled.attempts, 1);
+    }
+    assert.equal(smtp.messages.length, 2);
+    const [refusal, ordinary] = smtp.messages;
+    assert.equal((refusal.match(/^Auto-Submitted:/gmi) ?? []).length, 1);
+    assert.equal(readMimeHeader(refusal, "Auto-Submitted"), "auto-replied");
+    for (const [index, raw] of smtp.messages.entries()) {
+      assert.equal((raw.match(/^X-Sporades-Correlation-Id:/gmi) ?? []).length, 1);
+      assert.equal(readMimeHeader(raw, "X-Sporades-Correlation-Id"), `intent-${index === 0}`);
+      assert.equal(readMimeHeader(raw, "From"), '"Refusals" <refusals@example.com>');
+      assert.equal(readMimeHeader(raw, "Content-Type"), "text/plain; charset=utf-8");
+      assert.equal(Buffer.from(raw.split("\r\n\r\n")[1].replace(/\s/g, ""), "base64").toString(), "This ticket is closed.");
+    }
+    assert.doesNotMatch(ordinary, /^Auto-Submitted:/mi);
+    assert.equal(smtp.commands.filter(command => command === "DATA").length, 2);
+    assert.equal(smtp.commands.filter(command => command === "MAIL FROM:<refusals@example.com>").length, 2);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit");
+      child.kill("SIGTERM");
+      const timer = setTimeout(() => child.kill("SIGKILL"), 4000);
+      try { await exited; } finally { clearTimeout(timer); }
+    }
+    await smtp.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
 

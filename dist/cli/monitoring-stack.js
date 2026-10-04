@@ -4,9 +4,9 @@ import { cp, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commandError } from './cli-support.js';
-const STACK_SCHEMA = 3;
-const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'availability.mjs', 'availability-rules.yaml', 'blackbox.yaml', 'blackbox-config.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'setup.mjs', 'smoke.mjs'];
-function prerequisite() {
+export const STACK_SCHEMA = 4;
+export const ASSETS = ['.dockerignore', '.env.example', '.gitignore', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'sender-credentials.mjs', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'pipeline-dashboard.json', 'pipeline-rules.yaml', 'collector-persistent.yaml', 'compose.queue.yaml', 'OUTAGES.md', 'MAINTENANCE.md', 'setup.mjs', 'smoke.mjs', 'availability.mjs', 'availability-rules.yaml', 'blackbox.yaml', 'blackbox-config.mjs'];
+export function prerequisite() {
     if (!['arm64', 'x64'].includes(process.arch) || !['linux', 'darwin'].includes(process.platform)) {
         throw commandError('Unsupported monitoring stack architecture.', 'Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.');
     }
@@ -86,7 +86,7 @@ export async function runMonitoringStack(action, directory, packageRoot) {
         }
     }
     if (action === 'init' && !manifestStat && !preexistingContent) {
-        await writeFile(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version }, null, 2)}\n`, { flag: 'wx', mode: 0o644 });
+        await writeFile(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name) => [name, createHash('sha256').update(await readFile(path.join(source, name === '.gitignore' ? 'gitignore.template' : name))).digest('hex')]))) }, null, 2)}\n`, { flag: 'wx', mode: 0o644 });
         created.push('stack-manifest.json');
     }
     let missing = [];

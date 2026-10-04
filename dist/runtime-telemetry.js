@@ -6,10 +6,12 @@ import { ROOT_CONTEXT, SpanKind, SpanStatusCode, TraceFlags, trace } from "@open
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { AggregationTemporalityPreference, OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { AggregationType, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import { AggregationType, MeterProvider, PeriodicExportingMetricReader, createAllowListAttributesProcessor } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
 import { interpretHttpRequestTarget } from "./http-runtime.js";
 import { runtimeJobScope, runtimeRequestScope, withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
+import { installRuntimeFetchTelemetry, outboundFetchTelemetry } from "./runtime-fetch-telemetry.js";
+import { validateTracePropagationOrigins } from "./telemetry-propagation-policy.js";
 const builtinRoutes = [
     ["GET", "/__sporades/connection-token"],
     ["GET", "/__sporades/health/runtime"],
@@ -118,6 +120,7 @@ function createProfileExporters(traceOptions, metricOptions) {
 export function createHttpRequestTelemetry(config, onDiagnostic) {
     if (!config)
         return { websocket: disabledWebSocketTelemetry, bindJobQueue: (_database) => { }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID() }, handle), shutdown: async () => { } };
+    const propagationOrigins = new Set(validateTracePropagationOrigins(config.tracePropagationOrigins));
     if (config.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1000))
         throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
     const url = new URL(config.endpoint);
@@ -138,6 +141,11 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
         timeoutMillis: 600, concurrencyLimit: 1, httpAgentOptions: { ...httpAgentOptions, maxSockets: 1 },
     });
     const failedExports = { traces: false, metrics: false };
+    const pipeline = {
+        traces: { failures: 0, lastSuccess: 0, inFlight: 0 },
+        metrics: { failures: 0, lastSuccess: 0, inFlight: 0 },
+    };
+    const pipelineLabels = { traces: { signal: "traces" }, metrics: { signal: "metrics" } };
     const lastFailureLoggedAt = new Map();
     let reportedOutage = false;
     const emitDiagnostic = (diagnostic) => {
@@ -151,6 +159,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
     const observeExport = (signal, result) => {
         try {
             if (result.code === 0) {
+                pipeline[signal].lastSuccess = Date.now() / 1000;
                 const wasFailed = failedExports.traces || failedExports.metrics;
                 failedExports[signal] = false;
                 if (wasFailed && !failedExports.traces && !failedExports.metrics && reportedOutage) {
@@ -159,6 +168,7 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
                 }
             }
             else {
+                pipeline[signal].failures++;
                 failedExports[signal] = true;
                 const reason = exportFailureReason(result.error);
                 const now = Date.now();
@@ -173,7 +183,9 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
     };
     const observedMetricExporter = {
         export(metrics, callback) {
+            pipeline.metrics.inFlight++;
             metricExporter.export(metrics, (result) => {
+                pipeline.metrics.inFlight--;
                 observeExport("metrics", result);
                 callback(result);
             });
@@ -199,6 +211,9 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
         resource,
         readers: [metricReader],
         views: [
+            // One processor per runtime. Drop SDK-generated component sequence names
+            // and retain only the bounded success/queue_full/Error classification.
+            { instrumentName: "otel.sdk.processor.span.*", attributesProcessors: [createAllowListAttributesProcessor(["error.type"])] },
             { instrumentName: "sporades.job.execution.duration", aggregationCardinalityLimit: 1024, aggregation: { type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM, options: { boundaries: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300] } } },
             { instrumentName: "sporades.job.retry.count", aggregationCardinalityLimit: 129 },
             { instrumentName: "sporades.job.failure.count", aggregationCardinalityLimit: 129 },
@@ -210,6 +225,22 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
         ],
     });
     const meter = meterProvider.getMeter("sporades-runtime-http", "1");
+    const pipelineMeter = meterProvider.getMeter("sporades-runtime-pipeline", "1");
+    const exportFailures = pipelineMeter.createObservableCounter("sporades.telemetry.export.failure.count", { unit: "1" });
+    const exportSuccess = pipelineMeter.createObservableGauge("sporades.telemetry.export.last_success", { unit: "s" });
+    const exportInFlight = pipelineMeter.createObservableGauge("sporades.telemetry.export.in_flight", { unit: "1" });
+    const collectionTime = pipelineMeter.createObservableGauge("sporades.telemetry.collection.time", { unit: "s" });
+    pipelineMeter.addBatchObservableCallback(result => {
+        result.observe(collectionTime, Date.now() / 1000);
+        for (const signal of ["traces", "metrics"]) {
+            result.observe(exportFailures, pipeline[signal].failures, pipelineLabels[signal]);
+            result.observe(exportInFlight, pipeline[signal].inFlight, pipelineLabels[signal]);
+            // No sample before the first successful export: absence is unknown,
+            // rather than a timestamp of zero suggesting a measured healthy state.
+            if (pipeline[signal].lastSuccess)
+                result.observe(exportSuccess, pipeline[signal].lastSuccess, pipelineLabels[signal]);
+        }
+    }, [exportFailures, exportSuccess, exportInFlight, collectionTime]);
     const requestCount = meter.createCounter("http.server.request.count", { unit: "1" });
     const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "s" });
     const activeRequests = meter.createUpDownCounter("http.server.active_requests", { unit: "1" });
@@ -305,20 +336,26 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
     const seenRoutes = new Set();
     const observedExporter = {
         export(spans, callback) {
+            pipeline.traces.inFlight++;
             exporter.export(spans, (result) => {
+                pipeline.traces.inFlight--;
                 observeExport("traces", result);
-                callback(result);
+                // The SDK self-observation uses error.name as a label. Never forward
+                // arbitrary exporter details to that label or the SDK diagnostic log.
+                callback(result.code === 0 ? result : { code: result.code, error: new Error("Telemetry export failed") });
             });
         },
         forceFlush: () => exporter.forceFlush(),
         shutdown: () => exporter.shutdown(),
     };
-    const processor = new BatchSpanProcessor(observedExporter, {
+    const processorConfig = {
+        selfObsMeterProvider: meterProvider,
         maxQueueSize: 128,
         maxExportBatchSize: 32,
         scheduledDelayMillis: 500,
         exportTimeoutMillis: 800,
-    });
+    };
+    const processor = new BatchSpanProcessor(observedExporter, processorConfig);
     const provider = new BasicTracerProvider({
         resource,
         sampler: new TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
@@ -329,6 +366,8 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
     const websocketNames = new Set();
     const websocketEnds = new Set();
     let closing = false;
+    let shutdownPromise;
+    const releaseFetch = installRuntimeFetchTelemetry();
     const websocket = {
         connectionOpened() {
             if (closing)
@@ -583,7 +622,8 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
             response.once("error", () => end("error"));
             request.once("aborted", () => end("abort"));
             try {
-                const result = runtimeRequestScope.run({ requestId: randomUUID(), span, operation, tracer, isOpen: () => !ended && !closing }, handle);
+                const isOpen = () => !ended && !closing;
+                const result = runtimeRequestScope.run({ requestId: randomUUID(), span, operation, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
                 if (result && typeof result.then === "function") {
                     return Promise.resolve(result).catch((error) => { end("error"); throw error; });
                 }
@@ -594,16 +634,22 @@ export function createHttpRequestTelemetry(config, onDiagnostic) {
                 throw error;
             }
         },
-        async shutdown() {
-            if (closing)
-                return;
+        shutdown() {
+            if (shutdownPromise)
+                return shutdownPromise;
             for (const end of websocketEnds)
                 end("cancelled");
             closing = true;
+            releaseFetch();
             gcObserver.disconnect();
             delayMonitorStoppedAt = performance.now();
             loopDelay.disable();
-            await Promise.race([Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]), new Promise((resolve) => { const timer = setTimeout(resolve, 1_500); timer.unref(); })]);
+            let timer;
+            shutdownPromise = Promise.race([
+                Promise.allSettled([provider.shutdown(), meterProvider.shutdown()]).then(() => { }),
+                new Promise((resolve) => { timer = setTimeout(resolve, 1_500); timer.unref(); }),
+            ]).finally(() => clearTimeout(timer));
+            return shutdownPromise;
         },
     };
 }

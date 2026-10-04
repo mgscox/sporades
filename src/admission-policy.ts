@@ -1,6 +1,8 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { isIP } from "node:net";
+import { validClientAddressNetwork, clientAddressMatches } from "./client-address.js";
+import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
+import { createAdmissionEvidence } from "./admission-evidence.js";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
 import { readDeployFile, resolveDeployFiles, preservedDeployFilePath, type BuiltDeployFile } from "./deploy-files.js";
@@ -15,6 +17,9 @@ function object(value: any, keys: string[]) {
 function text(value: any): value is string { return typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= ADMISSION_LIMITS.textBytes && !/[\x00-\x1f\x7f]/.test(value); }
 function freeze<T>(value: T): T { if (value && typeof value === "object") { for (const child of Object.values(value)) freeze(child); Object.freeze(value); } return value; }
 function depth(value: unknown, level = 0) { if (level > ADMISSION_LIMITS.depth) invalid(); if (value && typeof value === "object") for (const child of Object.values(value)) depth(child, level + 1); }
+function isCanonicalPolicyPathname(target: string) {
+  try { return canonicalAdmissionPathname(target) === target; } catch { return false; }
+}
 const controls = ["/__sporades/health/runtime", "/__sporades/connection-token"];
 function condition(value: any) {
   object(value, ["kind", "value", "exact", "prefix", "name"]);
@@ -23,19 +28,18 @@ function condition(value: any) {
     case "pathname": {
       object(value, ["kind", "exact", "prefix"]);
       const target = value.exact ?? value.prefix;
-      if ((value.exact !== undefined) === (value.prefix !== undefined) || !text(target) || !target.startsWith("/") || target.startsWith("//") || /[\\?#%]/.test(target) || new URL(target, "http://localhost").pathname !== target) invalid();
+      if ((value.exact !== undefined) === (value.prefix !== undefined) || !text(target) || !target.startsWith("/") || target.startsWith("//") || /[\\?#%]/.test(target) || !isCanonicalPolicyPathname(target)) invalid();
       if (controls.some(control => value.exact === control || (value.prefix !== undefined && (control === target || control.startsWith(target.endsWith("/") ? target : `${target}/`))))) invalid();
       break;
     }
     case "address": {
       object(value, ["kind", "value"]); if (!text(value.value)) invalid();
-      const [address, prefix, extra] = value.value.split("/"); const family = isIP(address);
-      if (!family || extra !== undefined || (prefix !== undefined && (!/^(0|[1-9][0-9]{0,2})$/.test(prefix) || Number(prefix) > (family === 4 ? 32 : 128)))) invalid();
+      if (!validClientAddressNetwork(value.value)) invalid();
       break;
     }
     case "header":
       object(value, ["kind", "name", "value"]);
-      if (!text(value.name) || !/^[a-z0-9!#$&'*+.^_`|~-]+$/.test(value.name) || /^(authorization|proxy-authorization|cookie|set-cookie|forwarded|x-forwarded-.*|x-sporades-.*|cf-.*)$/.test(value.name) || (value.value !== undefined && (typeof value.value !== "string" || Buffer.byteLength(value.value) > ADMISSION_LIMITS.textBytes || /[\x00-\x1f\x7f]/.test(value.value)))) invalid();
+      if (!text(value.name) || !/^[a-z0-9!#$&'*+.^_`|~-]+$/.test(value.name) || /^(host|connection|proxy-.*|authorization|cookie|set-cookie|forwarded|via|true-client-ip|x-real-ip|x-forwarded-.*|x-sporades-.*|cf-.*)$/.test(value.name) || (value.value !== undefined && (typeof value.value !== "string" || Buffer.byteLength(value.value) > ADMISSION_LIMITS.textBytes || /[\x00-\x1f\x7f]/.test(value.value) || /^[ \t]|[ \t]$/.test(value.value)))) invalid();
       break;
     case "query-key": object(value, ["kind", "name"]); if (!text(value.name)) invalid(); break;
     default: invalid();
@@ -60,14 +64,80 @@ export function parseAdmissionPolicy(bytes: Buffer): AdmissionGeneration {
   }
   return freeze({ digest: createHash("sha256").update(bytes).digest("hex"), policy: value });
 }
-/** First-match exact-path slice. An indeterminate condition must never grant admission. */
-export function matchExactAdmissionRule(generation: AdmissionGeneration, pathname: string) {
+/** Admission uses the raw pathname, with explicit decode-once and dot-segment rules. */
+export function canonicalAdmissionPathname(raw: string): string {
+  if (raw === "*") return raw;
+  if (!raw.startsWith("/") || /[\\?#\x00-\x20\x7f]|%2f|%5c/i.test(raw)) throw new Error("Invalid admission pathname.");
+  const decoded = decodeURIComponent(raw);
+  if (/[\x00-\x1f\x7f]|%[0-9a-f]{2}/i.test(decoded)) throw new Error("Invalid admission pathname.");
+  const segments = decoded.slice(1).split("/");
+  const output: string[] = [];
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    if (segment === "." || segment === "..") {
+      if (segment === "..") output.pop();
+      if (index === segments.length - 1) output.push("");
+    } else output.push(segment);
+  }
+  return `/${output.join("/")}`;
+}
+function pathnameMatches(pathname: string, prefix: string) {
+  return pathname === prefix || pathname.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`);
+}
+/** Trusted HTTP boundary input; rawHeaders preserves duplicates discarded by Node's headers map. */
+export type AdmissionHttpInput = {
+  method: string;
+  pathname: string;
+  query: string;
+  rawHeaders: readonly string[];
+  /** Canonical identity authenticated by the Host boundary, never a public header. */
+  trustedAddress?: string | null;
+};
+/** Ordered AND evaluation. Unsupported conditions are indeterminate, never permission to admit. */
+export function matchHttpAdmissionRule(generation: AdmissionGeneration, input: AdmissionHttpInput) {
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(input.method)) throw new Error("Invalid admission method.");
+  const method = input.method.toUpperCase();
+  const pathname = canonicalAdmissionPathname(input.pathname);
+  // Validate even ignored query values: URLSearchParams would silently repair bad UTF-8/escapes.
+  const query = decodeURIComponent(input.query.replace(/\+/g, " "));
+  if (/[\x00-\x1f\x7f]/.test(query)) throw new Error("Invalid admission query.");
+  const queryKeys = new Set(input.query.split("&").filter(Boolean).map(part => decodeURIComponent(part.split("=", 1)[0].replace(/\+/g, " "))));
+  const headers = new Map<string, string[]>();
+  if (!Array.isArray(input.rawHeaders) || input.rawHeaders.length % 2) throw new Error("Invalid admission headers.");
+  for (let index = 0; index < input.rawHeaders.length; index += 2) {
+    const name = input.rawHeaders[index].toLowerCase();
+    const value = input.rawHeaders[index + 1].replace(/^[ \t]+|[ \t]+$/g, "");
+    if (!/^[a-z0-9!#$&'*+.^_`|~-]+$/.test(name) || /[\x00-\x08\x0a-\x1f\x7f]/.test(value)) throw new Error("Invalid admission headers.");
+    const values = headers.get(name);
+    if (values) values.push(value); else headers.set(name, [value]);
+  }
   for (const rule of generation.policy.rules) {
     if (!rule.enabled) continue;
-    if (rule.conditions.some(item => item.kind === "pathname" && "exact" in item && item.exact !== pathname)) continue;
-    if (rule.conditions.some(item => item.kind !== "pathname" || !("exact" in item))) {
-      throw new Error("Unsupported admission condition.");
+    let matches = true;
+    let indeterminate = false;
+    for (const item of rule.conditions) {
+      switch (item.kind) {
+        case "method": if (method !== item.value) matches = false; break;
+        case "pathname": if (!("exact" in item ? pathname === item.exact : pathnameMatches(pathname, item.prefix))) matches = false; break;
+        case "header": {
+          const values = headers.get(item.name);
+          if (!values) matches = false;
+          else if (item.value !== undefined) {
+            // Never match Node's joined/discarded representation as one caller-controlled value.
+            if (values.length !== 1) indeterminate = true;
+            else if (values[0] !== item.value) matches = false;
+          }
+          break;
+        }
+        case "query-key": if (!queryKeys.has(item.name)) matches = false; break;
+        case "address":
+          if (!input.trustedAddress) indeterminate = true;
+          else if (!clientAddressMatches(input.trustedAddress, item.value)) matches = false;
+          break;
+      }
     }
+    if (!matches) continue;
+    if (indeterminate) throw new Error("Indeterminate admission condition.");
     return rule;
   }
   return null;
@@ -114,22 +184,44 @@ export async function publishAdmissionPolicy(root: string, relative: string, byt
     await rename(path.join(anchored, temporary), target); await handle.sync();
   } finally { await output?.close(); await rm(path.join(anchored, temporary), { force: true }); await handle.close(); }
 }
-export async function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth) => void) {
+export type AdmissionReloadEvent = "loaded" | "failure" | "recovery";
+export async function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth, event: AdmissionReloadEvent) => void, options: Parameters<typeof createAdmissionRateLimiter>[0] & { evidence?: ReturnType<typeof createAdmissionEvidence>; deferActivation?: boolean } = {}) {
+  // A Dev session owns evidence across loader replacement. Quota state remains loader-owned.
+  const { evidence = createAdmissionEvidence(options.now), deferActivation = false, ...limiterOptions } = options;
+  const rateLimiter = createAdmissionRateLimiter({ ...limiterOptions, onEviction: () => evidence.count("limiterEvictions") });
   let active: AdmissionGeneration | null = null;
   let health: AdmissionHealth = Object.freeze({ state: "disabled", digest: null });
+  let activated = !deferActivation;
+  let recoveryPending = false;
   let closed = false;
   let pending: Promise<void> | null = null;
-  function report(state: AdmissionHealth["state"]) {
+  function report(state: AdmissionHealth["state"], event: AdmissionReloadEvent, force = false) {
     const next = Object.freeze({ state, digest: active?.digest ?? null });
-    if (next.state === health.state && next.digest === health.digest) return;
-    health = next; try { onHealth?.(health); } catch { /* Diagnostics never break reload. */ }
+    if (!force && event === "loaded" && next.state === health.state && next.digest === health.digest) return;
+    health = next;
+    // Rejected prepared loaders emit failures, but cannot consume the session's recovery.
+    if (!activated && event !== "failure") return;
+    try { onHealth?.(Object.freeze({ ...health, evidence: evidence.snapshot() }), event); } catch { /* Diagnostics never break reload. */ }
+  }
+  function recover(state = health.state) {
+    if (!activated || !recoveryPending || state === "degraded") return false;
+    recoveryPending = false; evidence.count("reloadRecoveries"); return true;
+  }
+  function activate(previousHealth?: AdmissionHealth) {
+    if (activated) return;
+    recoveryPending ||= previousHealth?.state === "degraded";
+    activated = true;
+    report(health.state, recover() ? "recovery" : "loaded", true);
   }
   async function load(cold: boolean) {
     try {
       const bytes = await readDeployFile(root, relative, ADMISSION_LIMITS.bytes);
       const next = bytes.equals(REMOVED) ? null : parseAdmissionPolicy(bytes);
-      active = next; report(next ? "healthy" : "disabled");
-    } catch { report("degraded"); if (cold) throw new Error("Configured admission policy could not be loaded."); }
+      rateLimiter.reconcile(next);
+      active = next;
+      const state = next ? "healthy" : "disabled";
+      report(state, recover(state) ? "recovery" : "loaded");
+    } catch { recoveryPending = true; evidence.count("reloadFailures"); report("degraded", "failure"); if (cold) throw new Error("Configured admission policy could not be loaded."); }
   }
   await load(true);
   const reload = () => {
@@ -138,5 +230,7 @@ export async function openAdmissionPolicy(root: string, relative: string, onHeal
     return pending;
   };
   const timer = setInterval(() => { void reload(); }, ADMISSION_LIMITS.reloadMs); timer.unref();
-  return Object.freeze({ current: () => active, health: () => health, reload, close: async () => { closed = true; clearInterval(timer); await pending; } });
+  return Object.freeze({ current: () => active, rateLimiter, evidence,
+    health: (): AdmissionHealth => Object.freeze({ ...health, rateLimit: rateLimiter.stats(), evidence: evidence.snapshot() }),
+    activate, reload, close: async () => { closed = true; clearInterval(timer); await pending; } });
 }

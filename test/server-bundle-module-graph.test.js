@@ -2613,6 +2613,8 @@ test("a generated Bundle refuses invalid configured policy before Capsule evalua
     await writeFile(path.join(root,"server.mjs"),source);
     const result = spawnSync(process.execPath,[path.join(root,"server.mjs")],{cwd:root,encoding:"utf8",timeout:5000,env:{...process.env,PORT:"5688"}});
     assert.equal(result.status,1,result.stderr); assert.match(result.stderr,/Configured admission policy could not be loaded/); assert.doesNotMatch(result.stderr,/CAPSULE_EVALUATED/);
+    const failure = result.stderr.split("\n").flatMap(line => { try { const event = JSON.parse(line); return event.event === "admission.policy.failure" ? [event] : []; } catch { return []; } });
+    assert.equal(failure.length,1); assert.equal(failure[0].data.evidence.counters.reloadFailures,"1"); assert.equal(failure[0].data.digest,null);
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 
@@ -2624,7 +2626,9 @@ test("a generated Bundle enforces admission before Capsule middleware while cont
     const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:CAPSULE_SOURCE, serverModuleSource: await bundleServerCapsuleModule({ serverSource: CAPSULE_SOURCE.replace('if (ctx.kind !== "endpoint") return ctx;', 'if (ctx.kind !== "endpoint") return ctx; globalThis.process.getBuiltinModule("node:fs").appendFileSync("app-called", "called\\n");'), serverSourcePath: path.join(process.cwd(), "server", "index.ts") })});
     await writePublicTree(root,"plain bytes"); booted = await bootBundle({source,dir:root});
     const health = async () => (await (await fetch(`${booted.baseUrl}/__sporades/health/runtime`,{headers:{"x-sporades-host-probe":"a".repeat(64)}})).json()).data.runtime.admissionPolicy;
-    const initial = await health(); assert.equal(initial.state,"healthy"); assert.deepEqual(Object.keys(initial),["state","digest"]);
+    const initial = await health(); assert.equal(initial.state,"healthy"); assert.deepEqual(Object.keys(initial),["state","digest","rateLimit","evidence"]);
+    assert.equal(initial.evidence.version,1); assert.equal(initial.evidence.counters.evaluated,"0");
+    assert.deepEqual(initial.rateLimit,{buckets:0,maxBuckets:10000,evictions:0});
     const denied = await fetch(`${booted.baseUrl}/probe/status?private=opaque`);
     assert.equal(denied.status,403); assert.equal(denied.headers.get("cache-control"),"no-store"); assert.equal(denied.headers.get("content-length"),"10"); assert.equal(await denied.text(),"Forbidden\n");
     await assert.rejects(readFile(path.join(root,"app-called")),{code:"ENOENT"});
@@ -2636,6 +2640,64 @@ test("a generated Bundle enforces admission before Capsule middleware while cont
     await wait(async()=> (await health()).state==="degraded"); assert.equal((await health()).digest,initial.digest); assert.equal((await fetch(`${booted.baseUrl}/probe/status`)).status,403);
     await writeFile(path.join(root,"policy.json"),json("replacement", "/different"));
     await wait(async()=> (await health()).state==="healthy" && (await health()).digest!==initial.digest);
+    const recovered = await health(); assert.ok(BigInt(recovered.evidence.counters.reloadFailures) >= 1n); assert.equal(recovered.evidence.counters.reloadRecoveries,"1");
+    assert.equal(recovered.evidence.counters.denied,"3");
     assert.equal((await fetch(`${booted.baseUrl}/probe/status?unchanged=yes`)).status,202); assert.equal(await readFile(path.join(root,"app-called"),"utf8"),"called\n");
   } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
+});
+
+test("generated Bundle applies compound non-address admission before middleware and preserves unmatched requests", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-admission-compound-")); let booted;
+  try {
+    const policy = {version:1,rules:[{id:"compound",enabled:true,conditions:[
+      {kind:"method",value:"GET"},{kind:"pathname",prefix:"/probe"},
+      {kind:"header",name:"x-admission",value:"blocked"},{kind:"query-key",name:"flag"}
+    ],action:{kind:"deny"}}]};
+    await writeFile(path.join(root,"policy.json"),JSON.stringify(policy));
+    const app = CAPSULE_SOURCE.replace('if (ctx.kind !== "endpoint") return ctx;', 'if (ctx.kind !== "endpoint") return ctx; globalThis.process.getBuiltinModule("node:fs").appendFileSync("app-called", "called\\n");');
+    const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:app,
+      serverModuleSource:await bundleServerCapsuleModule({serverSource:app,serverSourcePath:path.join(process.cwd(),"server","index.ts")})});
+    await writePublicTree(root,"plain bytes"); booted = await bootBundle({source,dir:root});
+    for (const target of ["/probe/status?flag=one&flag=two", "/%70robe/status?%66lag"]) {
+      const denied = await fetch(booted.baseUrl + target,{headers:{"X-Admission":"blocked"}});
+      assert.equal(denied.status,403); assert.equal(denied.headers.get("cache-control"),"no-store"); assert.equal(await denied.text(),"Forbidden\n");
+    }
+    for (const target of ["/%", "ftp://example.test/probe/status", "http:///example.test/probe/status", "http:////example.test/probe/status", "/probe/status?flag=%FF"]) {
+      const response = await rawHttpResponse(booted.baseUrl,target);
+      assert.match(response,/^HTTP\/1\.1 403 /,target); assert.match(response,/cache-control: no-store/i); assert.ok(response.endsWith("Forbidden\n"),target);
+    }
+    await assert.rejects(readFile(path.join(root,"app-called")),{code:"ENOENT"});
+    const admitted = await fetch(booted.baseUrl + "/probe/status?flag=unchanged",{headers:{"x-admission":"different"}});
+    assert.equal(admitted.status,202); assert.equal(await readFile(path.join(root,"app-called"),"utf8"),"called\n");
+    const token = await fetch(booted.baseUrl + "/__sporades/connection-token",{headers:{"x-sporades-connection-token-request":"1"}});
+    assert.equal(token.status,200);
+  } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
+});
+
+test("generated Hosted, Dev and Container Bundles require Host identity for address rules and never expose the boundary capability", async () => {
+  const { createHash } = await import('node:crypto');
+  const token = createHash('sha256').update('sporades-client-address\0').update('a'.repeat(64)).digest('hex');
+  for (const session of ['hosted', 'dev', 'container']) {
+    const root = await mkdtemp(path.join(tmpdir(), 'sporades-address-bundle-')); let booted;
+    try {
+      const app = `import { capsule, endpoint } from 'sporades/server'; export default capsule({name:'address-bundle',endpoints:{probe:endpoint({path:'/probe',method:'GET'},ctx=>({status:201,body:ctx.request.headers}))}});`;
+      await writeFile(path.join(root, 'policy.json'), JSON.stringify({version:1,rules:[{id:'address',enabled:true,conditions:[{kind:'pathname',exact:'/probe'},{kind:'address',value:'192.0.2.0/24'}],action:{kind:'deny'}}]}));
+      let source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:'policy.json'}}),serverEnv:{},serverSource:app,serverModuleSource:await bundleServerCapsuleModule({serverSource:app,serverSourcePath:path.join(root,'server','index.ts')})});
+      // Map the deployed read-only mount into this Node-only fixture; production keeps its fixed mount.
+      const { preservedDeployFilePath } = await import('../dist/deploy-files.js');
+      await writeFile(preservedDeployFilePath(root, 'policy.json'), await readFile(path.join(root, 'policy.json')));
+      source = source.replaceAll('/run/sporades-admission', root);
+      await writePublicTree(root, 'plain bytes');
+      booted = await bootBundle({source,dir:root,env:{SPORADES_SECURITY_SESSION:session}});
+      const headers = {'x-sporades-client-address':'198.51.100.10','x-sporades-client-address-token':token};
+      assert.equal((await fetch(booted.baseUrl + '/probe', {headers:{'x-sporades-client-address':'198.51.100.10'}})).status, 403);
+      const response = await fetch(booted.baseUrl + '/probe', {headers});
+      assert.equal(response.status, session === 'hosted' ? 201 : 403);
+      const text = await response.text();
+      assert.equal(text.includes(token), false, 'runtime capability must not reach Capsule request headers');
+      if (session === 'hosted') assert.equal(JSON.parse(text)['x-sporades-client-address-token'], undefined);
+      assert.equal((await fetch(booted.baseUrl + '/probe',{headers:{...headers,'x-sporades-client-address':'::ffff:192.0.2.1'}})).status,403);
+      assert.equal(booted.stderr.includes(token),false);
+    } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
+  }
 });

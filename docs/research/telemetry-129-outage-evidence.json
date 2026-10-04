@@ -1,0 +1,215 @@
+{
+  "project": "barbara129-182bee0ff9",
+  "versions": [
+    {
+      "ID": "sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
+      "ContainerName": "barbara129-182bee0ff9-grafana-init-1",
+      "Repository": "busybox",
+      "Tag": "1.37.0",
+      "Platform": "linux/arm64/v8",
+      "Size": 6141220,
+      "Created": "2024-09-26T21:31:42Z",
+      "LastTagTime": "2026-09-27T13:41:40.958263671Z"
+    },
+    {
+      "ID": "sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
+      "ContainerName": "barbara129-182bee0ff9-inventory-init-1",
+      "Repository": "busybox",
+      "Tag": "1.37.0",
+      "Platform": "linux/arm64/v8",
+      "Size": 6141220,
+      "Created": "2024-09-26T21:31:42Z",
+      "LastTagTime": "2026-09-27T13:41:40.958263671Z"
+    },
+    {
+      "ID": "sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
+      "ContainerName": "barbara129-182bee0ff9-storage-init-1",
+      "Repository": "busybox",
+      "Tag": "1.37.0",
+      "Platform": "linux/arm64/v8",
+      "Size": 6141220,
+      "Created": "2024-09-26T21:31:42Z",
+      "LastTagTime": "2026-09-27T13:41:40.958263671Z"
+    },
+    {
+      "ID": "sha256:7ebbecda14507f70fdc667f7c6d817869d8cd7f106b9bcc54b58ecd4be860cab",
+      "ContainerName": "barbara129-182bee0ff9-gateway-1",
+      "Repository": "barbara129-182bee0ff9-gateway",
+      "Tag": "latest",
+      "Platform": "linux/arm64",
+      "Size": 226281305,
+      "Created": "2026-10-03T09:02:01.217180173Z",
+      "LastTagTime": "2026-10-03T09:13:39.807949968Z"
+    },
+    {
+      "ID": "sha256:4a951ff0a9772f4fa8e9c7a326434370301b98b2b813933468dcb54aa6a6b5e5",
+      "ContainerName": "barbara129-182bee0ff9-relay-1",
+      "Repository": "otel/opentelemetry-collector-contrib",
+      "Tag": "0.138.0",
+      "Platform": "linux/arm64",
+      "Size": 400185420,
+      "Created": "2025-10-21T04:43:19.822996978Z",
+      "LastTagTime": "2026-09-27T13:40:34.306726293Z"
+    },
+    {
+      "ID": "sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0",
+      "ContainerName": "barbara129-182bee0ff9-grafana-1",
+      "Repository": "grafana/grafana",
+      "Tag": "13.2.2",
+      "Platform": "linux/arm64",
+      "Size": 1792185379,
+      "Created": "2026-09-14T13:01:48Z",
+      "LastTagTime": "2026-09-27T16:07:19.988739382Z"
+    },
+    {
+      "ID": "sha256:3d0ac795ff98aa04d1be04311d2dac6c25b4bfc8322dc02e53bc5b170c5018c3",
+      "ContainerName": "barbara129-182bee0ff9-jaeger-1",
+      "Repository": "cr.jaegertracing.io/jaegertracing/jaeger",
+      "Tag": "2.21.0",
+      "Platform": "linux/arm64",
+      "Size": 163559643,
+      "Created": "2026-09-15T04:24:14.592369156Z",
+      "LastTagTime": "2026-09-27T13:40:34.305441751Z"
+    },
+    {
+      "ID": "sha256:6976aa8a60fec930796ce5772b8d12da7a318a5daa8d40d69c5c7819a05eeed7",
+      "ContainerName": "barbara129-182bee0ff9-prometheus-1",
+      "Repository": "prom/prometheus",
+      "Tag": "v3.13.3",
+      "Platform": "linux/arm64",
+      "Size": 338818661,
+      "Created": "2026-09-07T12:19:42.46608114Z",
+      "LastTagTime": "2026-09-27T16:07:10.868481294Z"
+    },
+    {
+      "ID": "sha256:4a951ff0a9772f4fa8e9c7a326434370301b98b2b813933468dcb54aa6a6b5e5",
+      "ContainerName": "barbara129-182bee0ff9-collector-1",
+      "Repository": "otel/opentelemetry-collector-contrib",
+      "Tag": "0.138.0",
+      "Platform": "linux/arm64",
+      "Size": 400185420,
+      "Created": "2025-10-21T04:43:19.822996978Z",
+      "LastTagTime": "2026-09-27T13:40:34.306726293Z"
+    }
+  ],
+  "budgets": {
+    "quotaBytes": 134217728,
+    "queueBytes": 65536,
+    "retrySeconds": 10,
+    "collectorMemoryBytes": 268435456,
+    "relayMemoryBytes": 201326592
+  },
+  "phases": [
+    {
+      "name": "idle",
+      "at": "2026-10-03T09:13:44.944Z",
+      "collectorRss": 180281344,
+      "queueSize": 0,
+      "queueCapacity": 131072,
+      "enqueueFailures": 0,
+      "sendFailures": 0,
+      "gatewayRss": 73138176,
+      "sdkRss": null,
+      "diskKiB": 40
+    },
+    {
+      "name": "sdk-idle",
+      "at": "2026-10-03T09:13:45.766Z",
+      "collectorRss": 180375552,
+      "queueSize": 0,
+      "queueCapacity": 131072,
+      "enqueueFailures": 0,
+      "sendFailures": 0,
+      "gatewayRss": 73531392,
+      "sdkRss": 112181248,
+      "diskKiB": 40
+    },
+    {
+      "name": "backend-disconnected",
+      "at": "2026-10-03T09:13:58.121Z",
+      "collectorRss": 184918016,
+      "queueSize": 8666,
+      "queueCapacity": 131072,
+      "enqueueFailures": 0,
+      "sendFailures": 0,
+      "gatewayRss": 72077312,
+      "sdkRss": 64274432,
+      "diskKiB": 84
+    },
+    {
+      "name": "restart-recovered",
+      "at": "2026-10-03T09:14:01.991Z",
+      "collectorRss": 179929088,
+      "queueSize": 0,
+      "queueCapacity": 131072,
+      "enqueueFailures": 0,
+      "sendFailures": 0,
+      "gatewayRss": 73105408,
+      "sdkRss": 75382784,
+      "diskKiB": 108
+    },
+    {
+      "name": "saturated",
+      "at": "2026-10-03T09:14:06.119Z",
+      "collectorRss": 184725504,
+      "queueSize": 25933,
+      "queueCapacity": 131072,
+      "enqueueFailures": 256,
+      "sendFailures": 0,
+      "gatewayRss": 74485760,
+      "sdkRss": 69468160,
+      "diskKiB": 108
+    },
+    {
+      "name": "retry-expired",
+      "at": "2026-10-03T09:14:18.528Z",
+      "collectorRss": 189181952,
+      "queueSize": 51228,
+      "queueCapacity": 131072,
+      "enqueueFailures": 363,
+      "sendFailures": 43,
+      "gatewayRss": 75177984,
+      "sdkRss": 68272128,
+      "diskKiB": 176
+    },
+    {
+      "name": "fully-recovered",
+      "at": "2026-10-03T09:14:23.588Z",
+      "collectorRss": 189284352,
+      "queueSize": 0,
+      "queueCapacity": 131072,
+      "enqueueFailures": 363,
+      "sendFailures": 43,
+      "gatewayRss": 77078528,
+      "sdkRss": 70467584,
+      "diskKiB": 188
+    },
+    {
+      "name": "disk-full",
+      "at": "2026-10-03T09:14:41.406Z",
+      "diskKiB": 131072,
+      "collectorRss": null,
+      "queueSize": null,
+      "diagnostics": "unavailable: storage startup failed with ENOSPC"
+    },
+    {
+      "name": "disk-recovered",
+      "at": "2026-10-03T09:14:48.774Z",
+      "collectorRss": 179601408,
+      "queueSize": 0,
+      "queueCapacity": 131072,
+      "enqueueFailures": 0,
+      "sendFailures": 0,
+      "gatewayRss": 76541952,
+      "sdkRss": 65896448,
+      "diskKiB": 188
+    }
+  ],
+  "relaySlowExport": {
+    "rss": 196186112,
+    "queueSize": 64696,
+    "queueCapacity": 131072,
+    "sendFailures": 11
+  },
+  "shutdownMs": 40
+}

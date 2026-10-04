@@ -1,4 +1,4 @@
-import { openAdmissionPolicy, resolveAdmissionPolicy, type AdmissionHealth } from "../admission-policy.js";
+import { openAdmissionPolicy, resolveAdmissionPolicy, type AdmissionHealth, type AdmissionReloadEvent } from "../admission-policy.js";
 import { preservedDeployFilePath } from "../deploy-files.js";
 // The generated Capsule server bundle: the boot program a deployed Capsule runs, written as
 // ordinary imports so that esbuild resolves every name.
@@ -36,6 +36,7 @@ import {
   routeConnectionToken,
   routeEndpoint,
   routeHttpAdmission,
+  routeWebSocketAdmission,
   routeRuntimeHealth,
   routeSporadesAuth,
   shutdownAndCloseDatabase,
@@ -82,11 +83,14 @@ const admissionPath = sporadesAction ? null : admissionLaunchPath !== undefined
   ? (admissionLaunchPath ? resolveAdmissionPolicy({ path: admissionLaunchPath }) : null)
   : resolveAdmissionPolicy(sporadesConfig.admissionPolicy, sporadesConfig.deploy?.files);
 const admissionDeployed = ["container", "hosted"].includes(process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession);
-let admissionLog: ((health: AdmissionHealth) => void) | undefined;
+let admissionLog: ((health: AdmissionHealth, event: AdmissionReloadEvent) => void) | undefined;
 const admissionPolicyRuntime = admissionPath ? await openAdmissionPolicy(
   admissionDeployed ? "/run/sporades-admission" : process.cwd(),
   admissionDeployed ? path.basename(preservedDeployFilePath("/run/sporades-admission", admissionPath)) : admissionPath,
-  health => admissionLog?.(health),
+  (health, event) => {
+    if (admissionLog) admissionLog(health, event);
+    else if (event === "failure" || event === "recovery") process.stderr.write(JSON.stringify({ event: `admission.policy.${event}`, data: health }) + "\n");
+  },
 ) : null;
 const sporadesCapsuleModule = sporadesAction ? null : await import(sporadesCapsuleModuleUrl);
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
@@ -185,8 +189,8 @@ try {
 const telemetry = jobTelemetryLifecycle!;
 if (admissionPolicyRuntime) {
   database.admissionPolicy = admissionPolicyRuntime;
-  admissionLog = health => database.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
-  admissionLog(admissionPolicyRuntime.health());
+  admissionLog = (health, event) => database.log.emit({ category: "platform", event: `admission.policy.${event}`, level: event === "failure" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+  admissionLog(admissionPolicyRuntime.health(), "loaded");
 }
 database.log.emit({
   category: "platform",
@@ -211,6 +215,7 @@ const server = createServer(async (request, response) => telemetry.run(request, 
       return;
     }
     if (!interpretHttpRequestTarget(request.url ?? "/", request.method)) {
+      if (routeHttpAdmission(database, request, response)) return;
       writeInvalidHttpRequestTarget(database, request, response);
       return;
     }
@@ -251,6 +256,7 @@ const server = createServer(async (request, response) => telemetry.run(request, 
 }));
 
 server.on("upgrade", (request, socket) => {
+  if (routeWebSocketAdmission(database, request, socket)) return;
   const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
   if (!target) {
     socket.destroy();

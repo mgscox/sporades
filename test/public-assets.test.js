@@ -91,6 +91,25 @@ async function withGeneratedServer(project, bundle, fn) {
   } finally { runtime.kill('SIGTERM'); await once(runtime, 'exit'); }
 }
 
+for (const toolchain of ['esbuild', 'vite']) test(`scaffold favicon declaration survives Dev and generated ${toolchain} releases`, async () => {
+  await fixture(toolchain, async (project, config) => {
+    const assertIcon = async url => {
+      const response = await fetch(url);
+      assert.equal(response.status, 200);
+      assert.match(await response.text(), /<link rel="icon" href="data:,"\s*\/?\s*>/);
+    };
+    const child = spawn(process.execPath, [cli, 'dev', '--json'], { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const next = events(child);
+    try {
+      const started = await next(event => event.data?.event === 'started');
+      assert.equal(started.ok, true, JSON.stringify(started));
+      await assertIcon(started.data.url);
+    } finally { child.kill('SIGTERM'); await once(child, 'exit'); }
+    const bundle = await createBundle(project, config);
+    await withGeneratedServer(project, bundle, assertIcon);
+  });
+});
+
 for (const toolchain of ['esbuild', 'vite']) test(`Unicode public collisions preserve on-disk and generated-server ${toolchain} release bytes`, async () => {
   await fixture(toolchain, async (project, config) => {
     const active = await createBundle(project, config);
@@ -117,19 +136,23 @@ for (const toolchain of ['esbuild', 'vite']) test(`project public assets serve e
   await fixture(toolchain, async (project, config) => {
     await writeAssets(project);
     const htmlPath = path.join(project, 'index.html');
-    await writeFile(htmlPath, (await readFile(htmlPath, 'utf8')).replace('</head>', '<link rel="icon" href="/favicon.ico"><link rel="sitemap" href="/sitemap.xml"></head>'));
+    const scaffoldHtml = await readFile(htmlPath, 'utf8');
+    assert.match(scaffoldHtml, /<link rel="icon" href="data:,"\s*\/>/);
+    await writeFile(htmlPath, scaffoldHtml.replace('href="data:,"', 'href="/favicon.ico"').replace('</head>', '<link rel="sitemap" href="/sitemap.xml"></head>'));
     await writeFile(path.join(project, 'private.txt'), 'must not ship');
     const child = spawn(process.execPath, [cli, 'dev', '--json'], { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'] });
     const next = events(child);
     try {
       const started = await next(event => event.data?.event === 'started');
       assert.equal(started.ok, true, JSON.stringify(started));
+      assert.match(await (await fetch(started.data.url)).text(), /<link rel="icon" href="\/favicon\.ico"/);
       await assertAssets(started.data.url);
       assert.equal((await fetch(`${started.data.url}/private.txt`)).status, 404);
     } finally { child.kill('SIGTERM'); await once(child, 'exit'); }
 
     const bundle = await createBundle(project, config);
     await withGeneratedServer(project, bundle, async url => {
+      assert.match(await (await fetch(url)).text(), /<link rel="icon" href="\/favicon\.ico"/);
       await assertAssets(url);
       assert.equal((await fetch(`${url}/private.txt`)).status, 404);
     });

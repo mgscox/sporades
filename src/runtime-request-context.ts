@@ -11,7 +11,7 @@ export type RuntimeOperation =
 export type RuntimeOperationOutcome = "success" | "denied" | "error" | "cancelled";
 export type RuntimeOperationRunner = <T>(operation: RuntimeOperation, callback: () => T, outcome?: (result: Awaited<T>) => RuntimeOperationOutcome) => T;
 
-export const runtimeRequestScope = new AsyncLocalStorage<{ requestId: string; span?: Span; operation?: RuntimeOperationRunner; tracer?: Tracer; isOpen?: () => boolean }>();
+export const runtimeRequestScope = new AsyncLocalStorage<{ requestId: string; span?: Span; operation?: RuntimeOperationRunner; tracer?: Tracer; isOpen?: () => boolean; outboundFetch?: (original: typeof fetch, input: Parameters<typeof fetch>[0], init?: RequestInit) => ReturnType<typeof fetch> }>();
 
 /** Internal runtime boundary: no request/exporter means the original callback alone runs. */
 export function traceRuntimeOperation<T>(operation: RuntimeOperation, callback: () => T, outcome?: (result: Awaited<T>) => RuntimeOperationOutcome): T {

@@ -14,6 +14,7 @@ import { resolveAnonymousSession } from '../dist/auth-runtime.js';
 import { RESOURCE_ADAPTER_SUPPORT, resourceCanonicalJson, bindJobResources, bindOuterResources } from '../dist/resource-runtime.js';
 import { POSTGRES_SKIP_REASON, postgresTestUrl, resetPostgresSchema } from './support/database-adapter-engines.js';
 import { createPostgresDatabaseAdapter } from '../dist/server-runtime-source.js';
+import { takeLiveQueryDirtyTables } from '../dist/live-query-invalidation.js';
 
 const actor = { userId: 'actor', displayName: 'Actor', email: null, picture: null, isAuthenticated: false, isGuest: true, provider: 'anonymous' };
 const options = (input = { b: 2, a: 1 }) => ({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'operation', input });
@@ -1615,7 +1616,11 @@ test('Postgres Job reconciles a lost resource COMMIT acknowledgement through its
     let receiptForwarded = false; let commitForwarded = false;
     client.on('data', chunk => {
       if (dropNextCommit && isResourceReceiptInsert(chunk.toString('utf8'))) receiptForwarded = true;
-      if (dropNextCommit && receiptForwarded && chunk.includes(Buffer.from('COMMIT\0'))) commitForwarded = true;
+      if (dropNextCommit && receiptForwarded && chunk.includes(Buffer.from('COMMIT\0'))) {
+        // Another refresh may drain the window before the engine decides COMMIT.
+        takeLiveQueryDirtyTables();
+        commitForwarded = true;
+      }
       upstream.write(chunk);
     });
     upstream.on('data', chunk => {
@@ -1636,11 +1641,15 @@ test('Postgres Job reconciles a lost resource COMMIT acknowledgement through its
   try {
     await database.init();
     await database.adapter.prepare('INSERT INTO anchors (id,"createdAt","updatedAt",value) VALUES (?,?,?,?)').run('anchor', clock.now().toISOString(), clock.now().toISOString(), 'postgres');
+    await database.adapter.withResourceTransaction(() => undefined, undefined, { table: 'anchors', id: 'anchor' });
+    let completionDirty;
+    database.__notifyJobStateQueries = () => { completionDirty = takeLiveQueryDirtyTables(); };
     const first = await runMutation(database, actor, 'enqueue', []);
     assert.equal(first.ok, true);
     dropNextCommit = true;
     await runCurrentUserJobWorker(database);
     assert.equal(JSON.parse((await database.adapter.prepare('SELECT failure FROM sporades_jobs WHERE id=?').get(first.data.id)).failure).code, 'RESOURCE_COMMIT_UNKNOWN');
+    assert(completionDirty.has('writes'), 'an unknown COMMIT still publishes its transaction-owned writes');
     const replay = await runMutation(database, actor, 'enqueue', []);
     assert.equal(replay.ok, true);
     await runCurrentUserJobWorker(database);

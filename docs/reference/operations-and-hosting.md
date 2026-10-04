@@ -90,6 +90,9 @@ request and trace identities while background work runs.
 The bounded recent index preserves its transaction behavior and runtime
 sequence; the JSONL stream preserves append order.
 
+For cold Monitoring stack backup, restore, generated-file upgrade and Host
+agent removal procedures, see the [Monitoring maintenance reference](monitoring-maintenance.md).
+
 The JSONL log stream lives under the Runtime directory by default and is the
 primary durable stream for CLI tailing, Host collection, Docker stdout, and
 crash-adjacent debugging. SQLite stores only a bounded recent log index for
@@ -603,6 +606,14 @@ owns the surface, including `sporades security`, `sporades env`, `sporades
 deploy ssh`, `sporades host health`, `sporades host stats`, `sporades host
 logs`, and `sporades host ssh`.
 
+For a declared request-admission policy, Dev, Public Dev, Container and Hosted
+doctor checks include active digest, reload health and v1 aggregate counters.
+Degraded reload retains the last-known-good generation and produces a warning.
+Hosted Capsule `host stats <subname>` also exposes the protected evidence under
+`data.admissionPolicy`; unavailable evidence is `null` and does not discard
+resource stats. No-policy inspection retains its existing shape. See
+[admission evidence bounds and redaction](projects-and-configuration.md#request-admission-policy-publication).
+
 Doctor output avoids secrets. It may include fingerprints, counts, paths, and
 structured state, but it must not print private keys, full Server env values, or
 full SSH public-key material.
@@ -626,3 +637,10 @@ full SSH public-key material.
   <subname> --json`, then restart or push a fixed release. Automatic fallback
   only applies to `host push --verify --fallback-to-previous-release`, not to
   later runtime crashes.
+
+### Monitoring connection diagnosis and migration
+
+Use `host telemetry check` for Host-origin delivery stages and
+`host telemetry migrate --profile <destination>` for preflight-verified activation.
+See [Telemetry diagnostics and migration](./telemetry-diagnostics.md) for operator
+query authority, restart reports, inventory expectations and rollback.

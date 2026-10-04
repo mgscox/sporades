@@ -1322,6 +1322,112 @@ test("same-user reconnect restores consent and narrowed capture policy", async (
   } finally { delete globalThis.document; browser.cleanup(); }
 });
 
+test("Journey publication waits for consent restoration on each reconnect", { timeout: 10_000 }, async () => {
+  let enables = 0;
+  let releaseRestore;
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "journey.enable": async () => {
+      enables += 1;
+      if (enables > 1) await new Promise((resolve) => { releaseRestore = resolve; });
+      return { type: "journey.enable.result", data: { userId: anonymousAuth.userId,
+        capture: { navigation: false, focus: false, interactions: false } }, error: null };
+    },
+    "journey.set": async (message) => ({ type: "journey.set.result", data: { journey: message.state }, error: null }),
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+    for (let reconnect = 1; reconnect <= 2; reconnect += 1) {
+      browser.sockets.at(-1).readyState = 3;
+      browser.sockets.at(-1).emit("close", {});
+      const deadline = Date.now() + 3000;
+      while (!releaseRestore && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(typeof releaseRestore, "function", "restore reached the delayed consent acknowledgement");
+      const publication = runtime.journey.set({ status: `reconnect-${reconnect}` });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(browser.sent.filter(({ type }) => type === "journey.set").length, reconnect - 1,
+        "publication cannot overtake consent acknowledgement");
+      releaseRestore(); releaseRestore = null;
+      assert.equal((await publication).error, null);
+    }
+    assert.equal(browser.sent.filter(({ type }) => type === "journey.disable").length, 0);
+  } finally {
+    browser.emitWindow("pagehide", { persisted: false });
+    releaseRestore?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    browser.cleanup();
+  }
+});
+
+test("Journey publication from an earlier socket open listener waits for authentication", { timeout: 10_000 }, async () => {
+  let runtime;
+  let publication;
+  let releaseAuthentication;
+  let confirmations = 0;
+  const browser = installBrowserFakes(anonymousAuth, { onOpen() {
+    if (runtime) publication = runtime.journey.set({ status: "early-open" });
+  }, handlers: {
+    "auth.get": async () => {
+      if (++confirmations > 1) await new Promise((resolve) => { releaseAuthentication = resolve; });
+      return { type: "auth.result", data: { sessionToken: "session-token", auth: anonymousAuth, providers: {} }, error: null };
+    },
+    "journey.enable": async () => ({ type: "journey.enable.result", data: { userId: anonymousAuth.userId,
+      capture: { navigation: false, focus: false, interactions: false } }, error: null }),
+    "journey.set": async (message) => ({ type: "journey.set.result", data: { journey: message.state }, error: null }),
+  }});
+  try {
+    const imported = await importClientRuntime();
+    await imported.journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+    runtime = imported;
+    browser.sockets[0].readyState = 3; browser.sockets[0].emit("close", {});
+    const deadline = Date.now() + 3000;
+    while (!releaseAuthentication && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(typeof releaseAuthentication, "function");
+    assert.equal(browser.sent.filter(({ type }) => type === "journey.set").length, 0);
+    releaseAuthentication(); releaseAuthentication = null;
+    assert.equal((await publication).error, null);
+  } finally {
+    browser.emitWindow("pagehide", { persisted: false });
+    releaseAuthentication?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    browser.cleanup();
+  }
+});
+
+test("Journey publication awaiting reconnect consent is settled on close without replay", { timeout: 10_000 }, async () => {
+  let enables = 0;
+  let releaseRestore;
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "journey.enable": async () => {
+      if (++enables === 2) await new Promise((resolve) => { releaseRestore = resolve; });
+      return { type: "journey.enable.result", data: { userId: anonymousAuth.userId,
+        capture: { navigation: false, focus: false, interactions: false } }, error: null };
+    },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+    browser.sockets[0].readyState = 3; browser.sockets[0].emit("close", {});
+    const deadline = Date.now() + 3000;
+    while (!releaseRestore && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(typeof releaseRestore, "function");
+    const publication = runtime.journey.set({ status: "closed-before-consent" });
+    browser.sockets[1].readyState = 3; browser.sockets[1].emit("close", {});
+    assert.equal((await publication).error.code, "TRANSPORT_CLOSED");
+    releaseRestore(); releaseRestore = null;
+    const replacementDeadline = Date.now() + 3000;
+    while ((browser.sockets.length < 3 || enables < 3) && Date.now() < replacementDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(enables, 3, "a replacement connection restored consent");
+    assert.equal(browser.sent.filter(({ type }) => type === "journey.set").length, 0);
+  } finally {
+    browser.emitWindow("pagehide", { persisted: false });
+    releaseRestore?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    browser.cleanup();
+  }
+});
+
 function installBrowserFakes(auth, options = {}) {
   const storage = new Map();
   const sockets = [];
@@ -1380,6 +1486,7 @@ function installBrowserFakes(auth, options = {}) {
       if (options.autoOpen !== false) {
         queueMicrotask(() => {
           this.readyState = FakeWebSocket.OPEN;
+          options.onOpen?.();
           this.emit("open", {});
         });
       }

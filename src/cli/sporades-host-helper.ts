@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+import { validateQueryCredential } from "./telemetry-diagnostics.js";
 import { admissionStorageRoot, publishAdmissionPolicy, parseAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS } from "../admission-policy.js";
+import { inspectAdmissionHealth } from "../admission-evidence.js";
+import { ADMISSION_INSPECTION_SCRIPT } from "./admission-inspection.js";
 import { readDeployFile, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
@@ -55,10 +58,11 @@ import { CLI_VERSION } from "./cli-version.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "./access-key-operator-envelope.js";
 import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
+import { CLIENT_ADDRESS_TOKEN_HEADER, clientAddressBoundaryToken } from "../client-address.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
-import { checkHostTelemetryDelivery, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
-import { queueHostInventory, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
+import { disableHostTelemetryExports, removeHostTelemetryAgents, checkHostTelemetryDelivery, recoverHostTelemetryActivation, migrateHostTelemetryRelay, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
+import { queueHostInventory, removeHostInventoryWorker, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import {
@@ -181,6 +185,7 @@ async function runHostHelperEntry() {
   }
   if (process.argv[2] === "--reconcile-inventory") {
     const root = Buffer.from(process.argv[3] ?? "", "base64url").toString();
+    await recoverHostTelemetryActivation(root);
     writeEnvelope({ ok: true, data: await reconcileHostInventory(root), error: null });
     return;
   }
@@ -580,6 +585,9 @@ function managedRouteMutationLockIdentity(request: HostHelperRequest) {
         bootstrapTrust,
       };
       }
+    case "host.telemetry.migrate":
+    case "host.telemetry.exports-disable":
+    case "host.telemetry.remove-agents":
     case "host.telemetry.connect":
     case "host.telemetry.resources-enable":
     case "host.telemetry.resources-disable":
@@ -862,7 +870,7 @@ async function setCapsuleTelemetryDisabled(request: HostHelperRequest, disabled:
 
 async function inspectHostedTelemetryCoverage(request: HostHelperRequest, record: any, connection: Awaited<ReturnType<typeof readHostTelemetryConnection>>) {
   const serviceName = `${request.host.domain}/${record.subname}`;
-  const desired = Boolean(connection) && record.telemetry?.disabled !== true;
+  const desired = Boolean(connection && !connection.exportsDisabled) && record.telemetry?.disabled !== true;
   const expectedConfig = hostedTelemetryConfig(connection, { domain: request.host.domain, subname: record.subname, telemetry: record.telemetry });
   const expectedHash = createHash("sha256").update(JSON.stringify(expectedConfig)).digest("hex");
   const name = createHostedContainerName(request.host.domain, record.subname);
@@ -896,10 +904,20 @@ async function hostTelemetryStatusWithCoverage(request: HostHelperRequest, relay
   } };
 }
 
+async function migrateTelemetry(request: HostHelperRequest, queryCredential?: string) {
+  const result = await migrateHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain, queryCredential);
+  if (result.activation !== "applied") return result;
+  const worker = await installHostInventoryWorker(request.host.remoteRoot).catch(() => ({ installed: false, reason: "worker-installation-unavailable" }));
+  const inventory = await reconcileHostInventory(request.host.remoteRoot).catch(() => ({ pending: true, failure: "inventory-unavailable" }));
+  const verification = await checkHostTelemetryDelivery(request.host.remoteRoot, queryCredential).catch(() => ({ backendStorage: "verification-unavailable", reason: "diagnostics-unavailable" }));
+  const coverage = await hostTelemetryStatusWithCoverage(request).catch(() => ({ state: "unavailable" }));
+  return { ...result, worker, inventory, verification, coverage };
+}
+
 async function main(request: HostHelperRequest) {
   try { await dispatchMain(request); }
   finally {
-    const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.reconcile", "host.telemetry.enable", "host.telemetry.disable"];
+    const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.migrate", "host.telemetry.reconcile", "host.telemetry.exports-disable", "host.telemetry.enable", "host.telemetry.disable"];
     if (mutations.includes(request.action)) {
       try { if (await queueHostInventory(request.host.remoteRoot)) kickHostInventory(request.host.remoteRoot); }
       catch { process.stderr.write("Host inventory is pending; periodic reconciliation will retry.\n"); }
@@ -912,15 +930,30 @@ async function dispatchMain(request: HostHelperRequest) {
   hostHelperConfig = await loadHostHelperConfig(request);
   if (request.action.startsWith("host.telemetry.")) {
     const capsuleOperation = request.action === "host.telemetry.enable" || request.action === "host.telemetry.disable";
-    if (!request.host || typeof request.host.remoteRoot !== "string" || typeof request.host.domain !== "string" || typeof request.host.alias !== "string" || Boolean(request.capsule) !== capsuleOperation || (request.action !== "host.telemetry.connect" && request.telemetry)) {
+    if (!request.host || typeof request.host.remoteRoot !== "string" || typeof request.host.domain !== "string" || typeof request.host.alias !== "string" || Boolean(request.capsule) !== capsuleOperation || (!["host.telemetry.connect", "host.telemetry.migrate"].includes(request.action) && request.telemetry)) {
       throw helperError("Invalid Host Telemetry request.", "Upgrade the local CLI and Host helper together.");
     }
+    if (request.diagnostics !== undefined && (!["host.telemetry.check", "host.telemetry.migrate"].includes(request.action) || !request.diagnostics || Object.keys(request.diagnostics).some(key => key !== "queryCredential"))) throw helperError("Invalid diagnostic request.", "Use an operator query credential only for check or migrate.");
+    const queryCredential = validateQueryCredential(request.diagnostics?.queryCredential);
     validateCanonicalHostRouteRoot(request);
     if (request.action === "host.telemetry.connect" || request.action === "host.telemetry.reconcile") await installHostInventoryWorker(request.host.remoteRoot);
-    const data = request.action === "host.telemetry.inventory-export" ? { inventory: await exportHostInventory(request.host.remoteRoot) }
+    if (request.action === "host.telemetry.remove-agents") {
+      const connection = await readHostTelemetryConnection(request.host.remoteRoot);
+      if (!connection?.exportsDisabled) throw helperError("Host exports are still enabled.", "Run exports-disable first.");
+      const inventory = await reconcileHostInventory(request.host.remoteRoot);
+      if (!inventory.host || inventory.pending || inventory.failure || inventory.acknowledgedRevision !== inventory.desiredRevision) throw helperError("Deliberate removal is not acknowledged.", "Restore inventory connectivity/authority and retry remove-agents. Credentials and the reconciler are retained.");
+      const agents = await removeHostTelemetryAgents(request.host.remoteRoot, request.host.domain);
+      await removeHostInventoryWorker(request.host.remoteRoot);
+      writeEnvelope({ ok: true, data: { ...agents, inventory, agentsRemoved: true }, error: null });
+      return;
+    }
+    const data = request.action === "host.telemetry.exports-disable" ? await hostTelemetryStatusWithCoverage(request, await disableHostTelemetryExports(request.host.remoteRoot, request.host.domain))
+      : request.action === "host.telemetry.inventory-export" ? { inventory: await exportHostInventory(request.host.remoteRoot) }
       : request.action === "host.telemetry.inventory-reconcile" ? await reconcileHostInventory(request.host.remoteRoot)
       : capsuleOperation
       ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable")
+      : request.action === "host.telemetry.migrate"
+      ? await migrateTelemetry(request, queryCredential)
       : request.action === "host.telemetry.connect"
       ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain))
       : ["host.telemetry.reconcile", "host.telemetry.resources-enable", "host.telemetry.resources-disable", "host.telemetry.resources-remove"].includes(request.action)
@@ -928,9 +961,14 @@ async function dispatchMain(request: HostHelperRequest) {
       : request.action === "host.telemetry.status"
         ? await hostTelemetryStatusWithCoverage(request)
         : request.action === "host.telemetry.check"
-          ? await checkHostTelemetryDelivery(request.host.remoteRoot)
+          ? await checkHostTelemetryDelivery(request.host.remoteRoot, queryCredential)
           : null;
     if (!data) throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, check, enable, or disable.");
+    if (request.action === "host.telemetry.migrate" && "activation" in data && data.activation !== "applied") {
+      writeEnvelope({ ok: false, data, error: { message: "Monitoring destination verification failed; migration was not applied.", hint: "Inspect the reported destination, storage and inventory stages. The working binding is preserved." } });
+      process.exitCode = 1;
+      return;
+    }
     writeEnvelope({ ok: true, data, error: null });
     return;
   }
@@ -2889,6 +2927,13 @@ async function statsCapsule(request: HostHelperRequest) {
     lifecycle: readCapsuleLifecycle(request, registryRecord, stats.container.name, true),
     raw,
   };
+  if (resolveDeployFiles(registryRecord.currentRelease?.source?.deployFiles, true).some(file => file.update === "admission")) {
+    const probe = runDocker(["exec", stats.container.name, "node", "--input-type=module", "--eval", ADMISSION_INSPECTION_SCRIPT], { maxBuffer: 128 * 1024, timeoutMs: 1500 });
+    data.admissionPolicy = null;
+    if (probe.ok) {
+      try { data.admissionPolicy = inspectAdmissionHealth(JSON.parse(probe.stdout).admissionPolicy); } catch { /* Resource stats remain available when runtime evidence is unavailable. */ }
+    }
+  }
   writeEnvelope({ ok: true, data, error: null });
 }
 
@@ -3655,6 +3700,7 @@ function normaliseRuntimeHealthBody(body: any) {
     && (fileInspection === undefined || typeof fileInspection?.ok === "boolean");
   const safe = {
     ready: ready === true,
+    ...(inspectAdmissionHealth(body?.data?.runtime?.admissionPolicy) ? { admissionPolicy: inspectAdmissionHealth(body.data.runtime.admissionPolicy) } : {}),
     ...(validBounds && hasFileMaxSizeBytes ? { fileMaxSizeBytes, httpMaxBodyBytes } : {}),
     checks: {
       sqlite: { ok: sqlite?.ok === true },
@@ -5354,9 +5400,17 @@ function renderRunningRoute(route: HostedCapsuleRoute) {
     `    header_up ${ACCESS_KEY_CLIENT_ADDRESS_HEADER} ${cloudflareOrigin
       ? "{http.request.header.CF-Connecting-IP}"
       : "{http.request.remote.host}"}`,
+    ...(route.runtimeProbe?.token && /^[a-f0-9]{64}$/.test(route.runtimeProbe.token)
+      ? [`    header_up ${CLIENT_ADDRESS_TOKEN_HEADER} ${clientAddressBoundaryToken(route.runtimeProbe.token)}`] : []),
     "  }",
   ].join("\n");
-  const routeHandler = renderRunningRouteHandler(route, proxyLine);
+  // Separate request operations run before proxy operations. Deleting and setting
+  // the same field inside header_up would delete the newly set value in Caddy.
+  const routeHandler = [
+    `request_header -${ACCESS_KEY_CLIENT_ADDRESS_HEADER}`,
+    `request_header -${CLIENT_ADDRESS_TOKEN_HEADER}`,
+    renderRunningRouteHandler(route, proxyLine),
+  ].join("\n  ");
   const guardedHandler = cloudflareOrigin
     ? [
       `@sporadesUntrustedCloudflareSource not remote_ip ${CLOUDFLARE_ORIGIN_IP_RANGES.join(" ")}`,

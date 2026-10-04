@@ -160,6 +160,10 @@ const MIGRATED_RUNTIME_MODULES = [
   // Admission generations carry their bounded validator and the shared no-follow
   // deployment-file reader into the Bundle. Include their private helpers too.
   { file: "admission-policy.js", atLeast: 8, sentinel: "condition" },
+  { file: "client-address.js", atLeast: 4, sentinel: "parseAddress" },
+  { file: "bounded-fixed-window.js", atLeast: 0, sentinel: "createBoundedFixedWindow" },
+  { file: "admission-rate-limit.js", atLeast: 0, sentinel: "createAdmissionRateLimiter" },
+  { file: "admission-evidence.js", atLeast: 1, sentinel: "inspectAdmissionHealth" },
   { file: "deploy-files.js", atLeast: 15, sentinel: "readBoundedDeployFile" },
   // The monolith. `sendJsonWithCompletion` is the sentinel: the WebSocket transport's one write path
   // that reports when the frame actually reached the socket, which every subscription rebroadcast
@@ -495,6 +499,10 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     "team-billing-subscription-semantics.js",
     // HTTP trace lifecycle and bounded attributes, with no SQL or adapter semantics.
     "runtime-telemetry.js",
+    // Native fetch span lifecycle and exact operator propagation policy; no SQL,
+    // adapter primitives, dialect, or database normalization behavior.
+    "runtime-fetch-telemetry.js",
+    "telemetry-propagation-policy.js",
     // Shared HTTP AsyncLocalStorage identity and its runtime-owned detachment seam;
     // no SQL walker, dialect, emitted statement, or normalization behavior.
     "runtime-request-context.js",
@@ -1348,6 +1356,7 @@ const RUN_LEXER_CENSUS = {
   findMatchingParen: "lexes Capsule definition JavaScript, not SQL",
   splitTopLevelList: "lexes Capsule definition JavaScript, not SQL",
   interpretHttpRequestTarget: "parses HTTP request-target forms and preserves literal route paths, not SQL",
+  canonicalAdmissionPathname: "normalizes HTTP pathname dot segments and preserves literal slash boundaries, not SQL",
   // The nesting oracle, in two parts since the counter was extracted into a helper. Neither lexes a
   // quoted run — together they count block-comment depth and compare the end against the one
   // tokenizer's — and both are *required* to disagree with it, which is the opposite of the property
