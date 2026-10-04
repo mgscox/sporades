@@ -6,7 +6,7 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 
@@ -33,6 +33,20 @@ const hostHelperPath = path.join(repoRoot, "bin", "sporades-host-helper.js");
 const rootPackageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
 const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DDZjMa6q7iH+jF5bughycSLBOa/ test@example";
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
+
+// Host helper unit fixtures must never fall through to the workstation's engine.
+// Tests requiring Docker state prepend their explicit installFakeDocker fixture.
+const workstationPath = process.env.PATH;
+let unavailableDockerDirectory;
+before(async () => {
+  unavailableDockerDirectory = await mkdtemp(path.join(tmpdir(), "sporades-host-no-docker-"));
+  await writeFile(path.join(unavailableDockerDirectory, "docker"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  process.env.PATH = `${unavailableDockerDirectory}${path.delimiter}${workstationPath}`;
+});
+after(async () => {
+  process.env.PATH = workstationPath;
+  await rm(unavailableDockerDirectory, { recursive: true, force: true });
+});
 
 test("Hosted prerender warnings reach human and structured successful CLI output", async () => {
   await withTempDir(async (dir) => {
