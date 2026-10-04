@@ -539,7 +539,7 @@ An internal SERVER span for one query or mutation execution, including live-quer
 _Avoid_: socket-lifetime trace, browser tracing SDK, subscription span
 
 **Hosted Telemetry coverage**:
-Connecting a Host to the shared relay selects telemetry for all current and future Hosted Capsules by default. The Host registry stores each Capsule's explicit opt-out. Every start, restart, push and rollback resolves the Host connection and opt-out into a Host-owned launch descriptor. The protected runtime health probe confirms the running configuration; a saved setting alone does not prove instrumentation. Dev and local Container sessions keep their separate opt-in selection.
+Connecting a Host to the shared relay selects telemetry for all current and future Hosted Capsules by default. The Host registry stores each Capsule's explicit opt-out. Every start, restart, push and rollback resolves the Host connection and opt-out into a Host-owned launch descriptor. The protected runtime health probe confirms the running configuration; a saved setting alone does not prove instrumentation. Dev and local Container sessions keep their separate opt-in selection. Host `telemetry exports-disable` persists an operator-owned pause for current and future Hosted Capsules without changing individual opt-outs, connection credentials or inventory authority. Deliberate opt-out snapshots reconcile centrally before `remove-agents` removes owned relay/resource agents and the inventory worker. Existing Capsules use ordinary restarts to retire their SDK instrumentation; monitoring maintenance never deletes Capsule data or backend history.
 _Avoid_: project-owned Hosted telemetry policy, per-Capsule relay
 
 ### Lifecycle inventory

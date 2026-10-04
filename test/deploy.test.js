@@ -417,22 +417,10 @@ async function readOptional(file) {
   });
 }
 
-async function waitForPublicTreeCandidate(projectDir, excluded = new Set()) {
-  const treesDir = path.join(projectDir, ".sporades", "build", ".public-trees");
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    const entries = await readdir(treesDir, { withFileTypes: true }).catch(() => []);
-    const candidate = entries.find((entry) => entry.isDirectory() && !excluded.has(entry.name) && /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(entry.name));
-    if (candidate) return path.join(treesDir, candidate.name);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("Timed out waiting for a staged public-tree candidate.");
-}
-
 async function deployOwnedContainer(projectDir, dir, containerId = "container-old") {
   const docker = await installFakeDocker(path.join(dir, "owned-container"), containerId);
   const result = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
-  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.code, 0, result.stdout + result.stderr);
   return JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
 }
 
@@ -565,8 +553,7 @@ if (call.args[0] === "compose" && call.args.includes("up")) {
   process.exit(Number(process.env.FAKE_DOCKER_COMPOSE_UP_STATUS ?? "0"));
 }
 if (call.args[0] === "compose" && call.args.includes("ps")) {
-  const delayMs = Number(process.env.FAKE_DOCKER_COMPOSE_PS_DELAY_MS || "0");
-  if (delayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+  if (process.env.FAKE_DOCKER_COMPOSE_PS_HOOK) require(process.env.FAKE_DOCKER_COMPOSE_PS_HOOK);
   process.stdout.write(process.env.FAKE_DOCKER_COMPOSE_PS_OUTPUT + "\\n");
   process.exit(0);
 }
@@ -614,7 +601,7 @@ if (call.args[0] === "run") {
       FAKE_DOCKER_COMPOSE_UP_STATUS: String(options.composeUpStatus ?? 0),
       FAKE_DOCKER_COMPOSE_DOWN_STATUS: String(options.composeDownStatus ?? 0),
       FAKE_DOCKER_COMPOSE_PS_OUTPUT: options.composePsOutput ?? JSON.stringify({ State: "running", Health: "healthy" }),
-      FAKE_DOCKER_COMPOSE_PS_DELAY_MS: String(options.composePsDelayMs ?? 0),
+      FAKE_DOCKER_COMPOSE_PS_HOOK: options.composePsHook ?? "",
       FAKE_DOCKER_COMPOSE_PORT_OUTPUT: options.composePortOutput ?? "127.0.0.1:49161",
       FAKE_DOCKER_NETWORK_INSPECT_STATUS: String(options.networkInspectStatus ?? 0),
       FAKE_DOCKER_SPORADES_IMAGES: options.sporadesImages ?? "",
@@ -1816,7 +1803,10 @@ test("unsafe Container public output fails validation before replacing the runni
     assert.equal(created.code, 0, created.stderr);
     const projectDir = await realpath(path.join(dir, "unsafe-public-island"));
     await installFakeReact(projectDir);
-    await deployOwnedContainer(projectDir, dir);
+    const binding = await deployOwnedContainer(projectDir, dir);
+    const treesDir = path.join(projectDir, ".sporades", "build", ".public-trees");
+    const activeClientPath = path.join(treesDir, binding.clientRelease.publicTree, "client.js");
+    const activeClient = await readFile(activeClientPath);
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.services = { database: { kind: "database", engine: "libsql" } };
@@ -1825,13 +1815,30 @@ test("unsafe Container public output fails validation before replacing the runni
     await writeFile(outside, "unsafe replacement");
 
     await withFakeCapsuleService(async ({ port }) => {
-      const docker = await installFakeDocker(dir, "container-never-started", { composePortOutput: `127.0.0.1:${port}`, composePsDelayMs: 750 });
-      const existingTrees = new Set(await readdir(path.join(projectDir, ".sporades", "build", ".public-trees")));
-      const deploying = runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
-      const candidate = await waitForPublicTreeCandidate(projectDir, existingTrees);
-      await rm(path.join(candidate, "client.js"));
-      await symlink(outside, path.join(candidate, "client.js"));
-      const result = await deploying;
+      const existingTrees = await readdir(treesDir);
+      const hookPath = path.join(dir, "corrupt-public-tree.cjs");
+      const evidencePath = path.join(dir, "corrupted-public-tree.json");
+      // Services start after the Bundle pipeline stages its candidate, and before
+      // public-tree validation. Inject here in fake Docker so neither child
+      // startup speed nor a polling/sleep window controls when corruption occurs.
+      await writeFile(hookPath, `const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const treesDir = ${JSON.stringify(treesDir)};
+const excluded = new Set(${JSON.stringify(existingTrees)});
+if (!fs.existsSync(${JSON.stringify(evidencePath)})) {
+const candidates = fs.readdirSync(treesDir, { withFileTypes: true }).filter(entry => entry.isDirectory() && !excluded.has(entry.name));
+assert.equal(candidates.length, 1, "exactly one staged public-tree candidate must exist before service readiness");
+const candidate = path.join(treesDir, candidates[0].name);
+fs.unlinkSync(path.join(candidate, "client.js"));
+fs.symlinkSync(${JSON.stringify(outside)}, path.join(candidate, "client.js"));
+fs.writeFileSync(${JSON.stringify(evidencePath)}, JSON.stringify({ candidate }));
+}
+`);
+      const docker = await installFakeDocker(dir, "container-never-started", { composePortOutput: `127.0.0.1:${port}`, composePsHook: hookPath });
+      const result = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+      const { candidate } = JSON.parse(await readFile(evidencePath, "utf8"));
+      assert.equal(existingTrees.includes(path.basename(candidate)), false, "only the new candidate was corrupted");
       assert.equal(result.code, 1);
       const envelope = JSON.parse(result.stdout);
       assert.equal(envelope.error.message, "Container public tree validation failed.");
@@ -1845,6 +1852,8 @@ test("unsafe Container public output fails validation before replacing the runni
       const calls = await docker.calls();
       assert.equal(calls.some((call) => call.args[0] === "stop" || call.args[0] === "rm" || call.args[0] === "run"), false);
       assert.equal(JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8")).containerId, "container-old");
+      assert.deepEqual(await readFile(activeClientPath), activeClient, "the last successful public tree is retained");
+      await assert.rejects(stat(candidate), { code: "ENOENT" }, "the unsafe candidate is discarded");
     });
   });
 });

@@ -186,3 +186,115 @@ test('named sender rotation reconnects a durable Host outbox over verified HTTPS
     assert(!status.includes(pair.get('TRACE_INGEST_TOKEN')));
   }
 });
+
+async function shutdownFixture(t) {
+  const f = await fixture(t);
+  const tls = await f.tls('shutdown');
+  await f.saveLegacy('https://127.0.0.1:59999/', tls.cert);
+  await mkdir(path.join(f.root, 'caddy'));
+  await writeFile(path.join(f.root, 'caddy/Caddyfile'), '{\n admin off\n}\n# BEGIN Sporades Host metrics\nhttp://127.0.0.1:20190 { metrics /metrics }\n# END Sporades Host metrics\n');
+  await writeFile(path.join(f.telemetry, 'resources.json'), JSON.stringify({ host: scope, address: '127.0.0.1', enabled: true, psi: false }));
+  const stateFile = path.join(f.root, 'docker-state.json');
+  await writeFile(stateFile, JSON.stringify({ relay: true, exporter: true }));
+  const commands = path.join(f.root, 'commands');
+  const failFile = path.join(f.root, 'failure');
+  await writeFile(path.join(f.bin, 'docker'), `#!${process.execPath}
+import fs from 'node:fs';
+const args = process.argv.slice(2), stateFile = ${JSON.stringify(stateFile)};
+const state = JSON.parse(fs.readFileSync(stateFile));
+fs.appendFileSync(${JSON.stringify(commands)}, args.join(' ') + '\\n');
+const name = args.at(-1), relay = name === 'sporades-telemetry-relay';
+const key = relay ? 'relay' : 'exporter';
+const failure = fs.existsSync(${JSON.stringify(failFile)}) ? fs.readFileSync(${JSON.stringify(failFile)}, 'utf8') : '';
+if (args[0] === 'inspect') console.log(JSON.stringify({ State: { Running: state.relay }, Config: { Labels: { 'com.sporades.host-telemetry-relay': 'true' } } }));
+if (args[0] === 'container') console.log(JSON.stringify([{ State: { Running: state.exporter }, Config: { Labels: { 'com.sporades.host-metrics': 'true' } } }]));
+if (args[0] === 'stop') { if (failure === key) process.exit(1); state[key] = false; }
+if (args[0] === 'rm') state.relay = false;
+if (args[0] === 'run') { state.relay = true; fs.writeFileSync(stateFile, JSON.stringify(state)); if (failure === 'start') process.exit(1); }
+fs.writeFileSync(stateFile, JSON.stringify(state));
+`, { mode: 0o755 });
+  await writeFile(path.join(f.bin, 'caddy'), `#!/bin/sh\nif [ -f '${failFile}' ] && [ "$(cat '${failFile}')" = caddy ]; then exit 1; fi\n`, { mode: 0o755 });
+  await writeFile(path.join(f.bin, 'systemctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const disableIntent = async () => {
+    const file = path.join(f.telemetry, 'connection.json');
+    await writeFile(file, JSON.stringify({ ...JSON.parse(await readFile(file)), exportsDisabled: true }));
+  };
+  return { ...f, stateFile, commands, failFile, disableIntent, cert: tls.cert };
+}
+
+test('disabled reconciliation resumes interrupted shutdown and retries failed shutdown without losing authority', async t => {
+  const { disableHostTelemetryExports, reconcileHostTelemetryRelay, removeHostTelemetryAgents } = await import('../dist/cli/host-telemetry-relay.js');
+  for (const failure of ['interrupted', 'caddy', 'relay', 'exporter']) {
+    await t.test(failure, async t => {
+      const f = await shutdownFixture(t);
+      const credential = await readFile(path.join(f.telemetry, 'credential.env'));
+      if (failure === 'interrupted') await f.disableIntent();
+      else {
+        await writeFile(f.failFile, failure);
+        await assert.rejects(disableHostTelemetryExports(f.root, scope));
+        assert.equal((await readHostTelemetryConnection(f.root)).exportsDisabled, true);
+        await assert.rejects(reconcileHostTelemetryRelay(f.root), 'failed shutdown must not report successful reconciliation');
+        await rm(f.failFile);
+      }
+      await reconcileHostTelemetryRelay(f.root);
+      await reconcileHostTelemetryRelay(f.root, scope);
+      assert.deepEqual(JSON.parse(await readFile(f.stateFile)), { relay: false, exporter: false });
+      assert.doesNotMatch(await readFile(f.commands, 'utf8'), /run |rm -f|network connect/);
+      assert.deepEqual(await readFile(path.join(f.telemetry, 'credential.env')), credential);
+      await assert.rejects(removeHostTelemetryAgents(f.root, scope), /not acknowledged/);
+      assert.equal((await hostInventoryStatus(f.root)).pending, true);
+      assert.equal(JSON.parse(await readFile(path.join(f.root, 'hosts', scope, 'registry/capsules/notes.json'))).status, 'running');
+    });
+  }
+});
+
+test('failed reconnect restores a disabled connection without restarting its relay or exporter', async t => {
+  const f = await shutdownFixture(t);
+  const { disableHostTelemetryExports, reconcileHostTelemetryRelay } = await import('../dist/cli/host-telemetry-relay.js');
+  await disableHostTelemetryExports(f.root, scope);
+  const before = await Promise.all(['connection.json', 'credential.env', 'collector.yaml', 'ca.pem'].map(name => readFile(path.join(f.telemetry, name))));
+  await writeFile(f.commands, '');
+  await writeFile(f.failFile, 'start');
+  await assert.rejects(f.reconnect('https://127.0.0.1:59998/', f.cert), /failed to start/);
+  assert.deepEqual(await Promise.all(['connection.json', 'credential.env', 'collector.yaml', 'ca.pem'].map(name => readFile(path.join(f.telemetry, name)))), before);
+  assert.deepEqual(JSON.parse(await readFile(f.stateFile)), { relay: false, exporter: false });
+  assert.equal((await readFile(f.commands, 'utf8')).split('\n').filter(line => line.startsWith('run ')).length, 1, 'only the explicit reconnect candidate may start');
+  await reconcileHostTelemetryRelay(f.root, scope);
+  assert.deepEqual(JSON.parse(await readFile(f.stateFile)), { relay: false, exporter: false });
+});
+
+test('Host export disable reconciles deliberate opt-out; agent removal denies revoked authority and retains credentials', async t => {
+  const f = await fixture(t);
+  const { disableHostTelemetryExports, removeHostTelemetryAgents, reconcileHostTelemetryRelay } = await import('../dist/cli/host-telemetry-relay.js');
+  const tls = await f.tls('removal');
+  const central = createGateway({ inventoryDirectory: path.join(f.root, 'central'), inventoryHosts: { [scope]: oldToken } }, tls);
+  const endpoint = await f.listen(central);
+  await f.saveLegacy(endpoint, tls.cert);
+  await mkdir(path.join(f.root, 'caddy'));
+  await writeFile(path.join(f.root, 'caddy/Caddyfile'), '{\n admin off\n}\n');
+  const commands = path.join(f.root, 'commands');
+  await writeFile(path.join(f.bin, 'docker'), `#!/bin/sh\necho "$*" >> '${commands}'\nif [ "$1" = inspect ] && [ "$4" = sporades-telemetry-relay ]; then echo '{"State":{"Running":false},"Config":{"Labels":{"com.sporades.host-telemetry-relay":"true"}}}'; elif [ \"$1\" = container ] || [ \"$1\" = inspect ]; then exit 1; fi\n`, { mode: 0o755 });
+  assert.equal((await reconcileHostInventory(f.root)).pending, false);
+  const credentialBefore = await readFile(path.join(f.telemetry, 'credential.env'));
+  await assert.rejects(removeHostTelemetryAgents(f.root, scope), /still enabled/);
+  await disableHostTelemetryExports(f.root, scope);
+  assert.equal((await readHostTelemetryConnection(f.root)).exportsDisabled, true);
+  const result = await reconcileHostInventory(f.root);
+  assert.equal(result.pending, false);
+  const saved = JSON.parse(await readFile(path.join(f.telemetry, 'inventory.json')));
+  assert.equal(saved.desired.capsules[0].state, 'opted-out');
+  assert.deepEqual(saved.desired.capsules[0].targets, []);
+  // A ordinary reconcile must not resurrect either exporter or relay.
+  await writeFile(commands, '');
+  await reconcileHostTelemetryRelay(f.root, scope);
+  assert.doesNotMatch(await readFile(commands, 'utf8'), /run |network connect/);
+  // Revoked inventory authority cannot be mistaken for acknowledged deliberate removal.
+  await writeFile(path.join(f.telemetry, 'inventory-credential'), 'revoked-inventory-token\n', { mode: 0o600 });
+  await assert.rejects(removeHostTelemetryAgents(f.root, scope), /not acknowledged/);
+  assert.doesNotMatch(await readFile(commands, 'utf8'), /rm -f/);
+  await writeFile(path.join(f.telemetry, 'inventory-credential'), oldToken + '\n', { mode: 0o600 });
+  await removeHostTelemetryAgents(f.root, scope);
+  assert.match(await readFile(commands, 'utf8'), /rm -f sporades-telemetry-relay/);
+  assert.deepEqual(await readFile(path.join(f.telemetry, 'credential.env')), credentialBefore);
+  assert.equal(JSON.parse(await readFile(path.join(f.root, 'hosts', scope, 'registry/capsules/notes.json'))).status, 'running');
+});

@@ -88,6 +88,9 @@ request and trace identities while background work runs.
 The bounded recent index preserves its transaction behavior and runtime
 sequence; the JSONL stream preserves append order.
 
+For cold Monitoring stack backup, restore, generated-file upgrade and Host
+agent removal procedures, see the [Monitoring maintenance reference](monitoring-maintenance.md).
+
 The JSONL log stream lives under the Runtime directory by default and is the
 primary durable stream for CLI tailing, Host collection, Docker stdout, and
 crash-adjacent debugging. SQLite stores only a bounded recent log index for
