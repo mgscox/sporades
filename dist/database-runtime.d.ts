@@ -1,3 +1,4 @@
+import { liveQueryTablesTracked } from "./live-query-invalidation.js";
 import type { PathLike } from "node:fs";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
@@ -32,6 +33,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
     authToken: any;
 }): Promise<{
     engine: string;
+    [liveQueryTablesTracked]: boolean;
     dialect: LooseRecord;
     normalization: LooseRecord;
     withTransaction(fn: (transactionAdapter: LooseRecord) => any, options?: {
@@ -41,6 +43,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
     close(): Promise<void>;
 } | {
     engine: string;
+    [liveQueryTablesTracked]: boolean;
     dialect: LooseRecord;
     normalization: LooseRecord;
     withTransaction(fn: (transactionAdapter: LooseRecord) => any, options?: {

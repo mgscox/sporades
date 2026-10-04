@@ -131266,13 +131266,21 @@ var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracke
 var LIVE_QUERY_ANY_TABLE = "*";
 var liveQueryReads = new AsyncLocalStorage2();
 var dirtyTables = /* @__PURE__ */ new Set();
+var writeGeneration = 0;
+function recordTableWrite(table, tables) {
+  tables.add(table);
+  if (tables === dirtyTables && !liveQueryReads.getStore()) writeGeneration++;
+}
+function liveQueryWriteGeneration() {
+  return writeGeneration;
+}
 var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
 var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
 var writeTablePattern = new RegExp(
   String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
   "i"
 );
-var nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT)\b/i;
+var nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT|LOCK\s+TABLE)\b/i;
 function trackLiveQueryReads(tables, run2) {
   return liveQueryReads.run(tables, run2);
 }
@@ -131289,12 +131297,20 @@ function recordLiveQueryStatementRead(sql2) {
 function recordLiveQueryTableRead(table) {
   liveQueryReads.getStore()?.add(table);
 }
-function recordLiveQueryStatementWrite(sql2, result) {
-  if (result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
+function recordLiveQueryStatementWrite(sql2, result, tables = dirtyTables) {
   const text3 = String(sql2);
+  const terminator = text3.indexOf(";");
+  if (terminator !== -1 && /\S/.test(text3.slice(terminator + 1))) {
+    recordTableWrite(LIVE_QUERY_ANY_TABLE, tables);
+    return;
+  }
   if (nonWritingStatementPattern.test(text3)) return;
   const match = writeTablePattern.exec(text3);
-  dirtyTables.add(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE);
+  if (match && result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
+  recordTableWrite(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE, tables);
+}
+function publishLiveQueryDirtyTables(tables) {
+  for (const table of tables) recordTableWrite(table, dirtyTables);
 }
 function takeLiveQueryDirtyTables() {
   const taken = dirtyTables;
@@ -133732,9 +133748,8 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     return telemetry.operations({
       exec(sql2) {
         return run2(() => useConnection(() => {
-          const result = connection.exec(sql2);
           recordLiveQueryStatementWrite(sql2);
-          return result;
+          return connection.exec(sql2);
         }));
       },
       prepare(sql2) {
@@ -133788,9 +133803,8 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         let commitIssued = false;
         const operations = {
           exec: (sql2) => {
-            const result = dedicated.exec(sql2);
             recordLiveQueryStatementWrite(sql2);
-            return result;
+            return dedicated.exec(sql2);
           },
           prepare: (sql2) => {
             const statement = dedicated.prepare(sql2);
@@ -134091,22 +134105,33 @@ async function createPostgresDatabaseAdapter(options) {
   };
   const createOperations = (run2) => telemetry.operations({
     exec(sql2) {
-      return run2(() => rawQuery(sql2).then(() => void 0));
+      return run2(() => {
+        recordLiveQueryStatementWrite(sql2);
+        return rawQuery(sql2).then(() => void 0);
+      });
     },
     prepare(sql2) {
       assertOpen();
       return {
         all(...params) {
+          recordLiveQueryStatementRead(sql2);
           return run2(() => rawQuery(sql2, params).then((result) => postgresRowsFromResult(normalization, result)));
         },
         get(...params) {
           return this.all(...params).then((rows) => rows[0] ?? null);
         },
         run(...params) {
-          return run2(() => rawQuery(sql2, params).then((result) => ({
-            changes: Number(result.rowCount ?? 0),
-            lastInsertRowid: void 0
-          })));
+          return run2(async () => {
+            try {
+              const result = await rawQuery(sql2, params);
+              const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
+              recordLiveQueryStatementWrite(sql2, written);
+              return written;
+            } catch (error) {
+              recordLiveQueryStatementWrite(sql2);
+              throw error;
+            }
+          });
         },
         columns() {
           return run2(() => rawQuery(
@@ -134120,6 +134145,7 @@ async function createPostgresDatabaseAdapter(options) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "postgres",
+    [liveQueryTablesTracked]: true,
     [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
     [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
     [resourceConsumptionMechanics]: function() {
@@ -134143,6 +134169,7 @@ async function createPostgresDatabaseAdapter(options) {
       let dedicated;
       let begun = false;
       let commitIssued = false;
+      const transactionDirtyTables = /* @__PURE__ */ new Set();
       try {
         try {
           if (!this[resourceSchemaPublished]) await ensureResourceSchemaPublished(signal);
@@ -134167,14 +134194,28 @@ async function createPostgresDatabaseAdapter(options) {
         };
         const operations = {
           exec: async (statement) => {
+            recordLiveQueryStatementWrite(statement, void 0, transactionDirtyTables);
             await query(statement);
           },
           prepare: (statement) => ({
-            all: async (...params) => postgresRowsFromResult(normalization, await query(statement, params)),
-            get: async (...params) => postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null,
+            all: async (...params) => {
+              recordLiveQueryStatementRead(statement);
+              return postgresRowsFromResult(normalization, await query(statement, params));
+            },
+            get: async (...params) => {
+              recordLiveQueryStatementRead(statement);
+              return postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null;
+            },
             run: async (...params) => {
-              const result = await query(statement, params);
-              return { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
+              try {
+                const result = await query(statement, params);
+                const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: void 0 };
+                recordLiveQueryStatementWrite(statement, written, transactionDirtyTables);
+                return written;
+              } catch (error) {
+                recordLiveQueryStatementWrite(statement, void 0, transactionDirtyTables);
+                throw error;
+              }
             },
             columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field) => ({ name: normalization.columnName(field.name) }))
           })
@@ -134221,6 +134262,7 @@ async function createPostgresDatabaseAdapter(options) {
       } finally {
         if (dedicated) await dedicated.close().catch(() => {
         });
+        publishLiveQueryDirtyTables(transactionDirtyTables);
       }
     },
     // Postgres has no way to ask a statement for its result shape without running something,
@@ -134792,15 +134834,20 @@ async function createLibsqlDatabaseAdapter(options) {
     exec(sql2) {
       assertLibsqlOpen(closed);
       const request = libsqlHasMultipleStatements(sql2) ? { type: "sequence", sql: sql2 } : { type: "execute", stmt: { sql: sql2 } };
-      return run2(() => {
+      return run2(async () => {
         assertLibsqlOpen(closed);
-        return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then(() => void 0);
+        try {
+          await libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction });
+        } finally {
+          recordLiveQueryStatementWrite(sql2);
+        }
       });
     },
     prepare(sql2) {
       assertLibsqlOpen(closed);
       return {
         all(...params) {
+          recordLiveQueryStatementRead(sql2);
           return run2(() => {
             assertLibsqlOpen(closed);
             return libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params, close: !transaction }).then(
@@ -134812,12 +134859,20 @@ async function createLibsqlDatabaseAdapter(options) {
           return this.all(...params).then((rows) => rows[0] ?? null);
         },
         run(...params) {
-          return run2(() => {
+          return run2(async () => {
             assertLibsqlOpen(closed);
-            return libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params, close: !transaction }).then((result) => ({
-              changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
-              lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === void 0 ? void 0 : BigInt(result.last_insert_rowid)
-            }));
+            try {
+              const result = await libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params, close: !transaction });
+              const written = {
+                changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
+                lastInsertRowid: result.last_insert_rowid === null || result.last_insert_rowid === void 0 ? void 0 : BigInt(result.last_insert_rowid)
+              };
+              recordLiveQueryStatementWrite(sql2, written);
+              return written;
+            } catch (error) {
+              recordLiveQueryStatementWrite(sql2);
+              throw error;
+            }
           });
         },
         columns() {
@@ -134833,6 +134888,7 @@ async function createLibsqlDatabaseAdapter(options) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(null, connectionGate.runOperation),
     engine: "libsql",
+    [liveQueryTablesTracked]: true,
     dialect,
     normalization,
     // No behavioural method body lives here either, for the reasons ADR-0037 records and the
@@ -139519,6 +139575,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
   let journeyExpiryTimer = null;
   let journeyDisableRequests = 0;
   const queryOperations = /* @__PURE__ */ new WeakMap();
+  const queryRefreshes = /* @__PURE__ */ new WeakMap();
+  let dispatchedWriteGeneration = liveQueryWriteGeneration();
   function operationOutcome(error) {
     if (!error) return "success";
     return ["UNAUTHENTICATED", "FORBIDDEN", "DENIED", "REAUTHENTICATION_REQUIRED"].includes(error.code) ? "denied" : "error";
@@ -139637,6 +139695,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       const removeClient = () => {
         if (removed) return;
         removed = true;
+        for (const subscription of client.subscriptions.values()) cancelQueryRefresh(subscription);
         try {
           connectionClosed?.();
         } catch {
@@ -140110,10 +140169,10 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       }
       const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
       const previous = client.subscriptions.get(message.id);
-      if (previous) queryOperations.get(previous)?.end("cancelled");
+      if (previous) cancelQueryRefresh(previous);
       client.subscriptions.set(message.id, subscription);
       database.__notifyJobStateQueries = refreshQueries;
-      void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
+      void runSubscriptionQueries(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
       return;
     }
     if (message.type === "query.unsubscribe") {
@@ -140132,7 +140191,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         return;
       }
       const subscription = client.subscriptions.get(subscriptionId);
-      if (subscription) queryOperations.get(subscription)?.end("cancelled");
+      if (subscription) cancelQueryRefresh(subscription);
       const removed = client.subscriptions.delete(subscriptionId);
       sendJson(client, {
         id: message.id ?? null,
@@ -140648,17 +140707,57 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     });
   }
   function refreshQueries() {
+    dispatchedWriteGeneration = liveQueryWriteGeneration();
     const dirty = takeLiveQueryDirtyTables();
     const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
-    for (const subscribedClient of clients) {
-      for (const subscription of subscribedClient.subscriptions.values()) {
-        if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty)) continue;
-        void sendQueryResult(
-          subscribedClient,
-          subscription,
-          (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error)
-        );
+    for (const client of clients) {
+      if (client.closing || client.socket.destroyed) continue;
+      for (const subscription of client.subscriptions.values()) {
+        const running = queryRefreshes.get(subscription);
+        if (running) {
+          running.pending = true;
+          running.unscoped ||= !scoped;
+          for (const table of dirty) running.dirty.add(table);
+        } else if (!scoped || liveQueryNeedsRefresh(subscription.readTables, dirty)) {
+          void runSubscriptionQueries(
+            client,
+            subscription,
+            (error) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error)
+          );
+        }
       }
+    }
+  }
+  function cancelQueryRefresh(subscription) {
+    const running = queryRefreshes.get(subscription);
+    if (running) {
+      running.cancelled = true;
+      running.dirty.clear();
+      running.pending = false;
+    }
+    queryRefreshes.delete(subscription);
+    queryOperations.get(subscription)?.end("cancelled");
+    queryOperations.delete(subscription);
+  }
+  async function runSubscriptionQueries(client, subscription, onError, operation) {
+    const running = { pending: false, unscoped: false, dirty: /* @__PURE__ */ new Set(), cancelled: false };
+    queryRefreshes.set(subscription, running);
+    try {
+      do {
+        running.pending = false;
+        running.unscoped = false;
+        running.dirty.clear();
+        const generation = liveQueryWriteGeneration();
+        const initialRun = operation !== void 0;
+        await sendQueryResult(client, subscription, onError, operation);
+        operation = void 0;
+        if (running.cancelled || client.closing || client.socket.destroyed || !clients.has(client) || client.subscriptions.get(subscription.id) !== subscription) break;
+        const latestGeneration = liveQueryWriteGeneration();
+        if (!initialRun && latestGeneration !== generation && latestGeneration !== dispatchedWriteGeneration) refreshQueries();
+        if (!running.pending || !running.unscoped && !liveQueryNeedsRefresh(subscription.readTables, running.dirty)) break;
+      } while (true);
+    } finally {
+      if (queryRefreshes.get(subscription) === running) queryRefreshes.delete(subscription);
     }
   }
   async function sendAuthResult(client, id2) {

@@ -14,7 +14,7 @@ import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js"
 import { createMailRuntime } from "./mail-runtime.js";
 import { ensureNotificationIntentStorage, notificationIntentStorageExists, startNotificationIntentWorker, stopNotificationIntentWorker } from "./notification-intent-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
-import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
+import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, liveQueryWriteGeneration, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
 import { assertJsonCompatible, commandError, invalidReferenceError } from "./runtime-errors.js";
 import { PASSWORD_RESET_REQUEST_JOB, PASSWORD_RESET_THROTTLE_FIELD, EMAIL_SIGN_IN_FAILURE_LIMIT, EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES, EMAIL_SIGN_IN_THROTTLE_WINDOW_MS, PRIVILEGED_AUTH_USER_ID, authProvidersForClient, authStatus, capsuleIngressAuthUserId, confirmPasswordReset, createAuthDenialLogData, createEmailPasswordResetLink, currentEmailSignInThrottleState, emailAuthDisabledError, emitAuthDeniedLog, isReservedAuthUserId, mailNotConfiguredError, normalizeEmailCredentials, oauthProviderAdapter, prepareEmailPasswordResetDelivery, privilegedAuthUserId, readEndpointSessionToken, recordFailedEmailSignInAttempt, requireAuth, resolveAnonymousSession, serverAuthError, setEmailPassword, setOwnEmailPassword, verifyEmailPassword, verifyPasswordResetCode, } from "./auth-runtime.js";
 // Batch 5. `createWebSocketHub` calls the two email entry points and `routeSporadesAuth` calls
@@ -4908,6 +4908,8 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
     let journeyExpiryTimer = null;
     let journeyDisableRequests = 0;
     const queryOperations = new WeakMap();
+    const queryRefreshes = new WeakMap();
+    let dispatchedWriteGeneration = liveQueryWriteGeneration();
     function operationOutcome(error) {
         if (!error)
             return "success";
@@ -5036,6 +5038,8 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 if (removed)
                     return;
                 removed = true;
+                for (const subscription of client.subscriptions.values())
+                    cancelQueryRefresh(subscription);
                 try {
                     connectionClosed?.();
                 }
@@ -5536,10 +5540,10 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             const subscription = { id: message.id, name: queryName, args, style: message.query ? "direct" : "rows", generation: 0 };
             const previous = client.subscriptions.get(message.id);
             if (previous)
-                queryOperations.get(previous)?.end("cancelled");
+                cancelQueryRefresh(previous);
             client.subscriptions.set(message.id, subscription);
             database.__notifyJobStateQueries = refreshQueries;
-            void sendQueryResult(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
+            void runSubscriptionQueries(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
             return;
         }
         if (message.type === "query.unsubscribe") {
@@ -5560,7 +5564,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             }
             const subscription = client.subscriptions.get(subscriptionId);
             if (subscription)
-                queryOperations.get(subscription)?.end("cancelled");
+                cancelQueryRefresh(subscription);
             const removed = client.subscriptions.delete(subscriptionId);
             sendJson(client, {
                 id: message.id ?? null,
@@ -6136,17 +6140,69 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         });
     }
     function refreshQueries() {
-        // Scope the refresh to subscriptions that read a table written since the last refresh. An
-        // empty window means an earlier refresh already covered those writes. Adapters that do not
-        // report their statements keep refreshing every subscription (#105).
+        dispatchedWriteGeneration = liveQueryWriteGeneration();
         const dirty = takeLiveQueryDirtyTables();
         const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
-        for (const subscribedClient of clients) {
-            for (const subscription of subscribedClient.subscriptions.values()) {
-                if (scoped && !liveQueryNeedsRefresh(subscription.readTables, dirty))
-                    continue;
-                void sendQueryResult(subscribedClient, subscription, (error) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error));
+        for (const client of clients) {
+            if (client.closing || client.socket.destroyed)
+                continue;
+            for (const subscription of client.subscriptions.values()) {
+                const running = queryRefreshes.get(subscription);
+                if (running) {
+                    // The in-flight run can discover new dependencies. Keep the whole
+                    // window, then filter against its completed read set before rerunning.
+                    running.pending = true;
+                    running.unscoped ||= !scoped;
+                    for (const table of dirty)
+                        running.dirty.add(table);
+                }
+                else if (!scoped || liveQueryNeedsRefresh(subscription.readTables, dirty)) {
+                    void runSubscriptionQueries(client, subscription, (error) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error));
+                }
             }
+        }
+    }
+    function cancelQueryRefresh(subscription) {
+        const running = queryRefreshes.get(subscription);
+        if (running) {
+            running.cancelled = true;
+            running.dirty.clear();
+            running.pending = false;
+        }
+        queryRefreshes.delete(subscription);
+        queryOperations.get(subscription)?.end("cancelled");
+        queryOperations.delete(subscription);
+    }
+    async function runSubscriptionQueries(client, subscription, onError, operation) {
+        const running = { pending: false, unscoped: false, dirty: new Set(), cancelled: false };
+        queryRefreshes.set(subscription, running);
+        try {
+            do {
+                running.pending = false;
+                running.unscoped = false;
+                running.dirty.clear();
+                const generation = liveQueryWriteGeneration();
+                const initialRun = operation !== undefined;
+                await sendQueryResult(client, subscription, onError, operation);
+                operation = undefined;
+                if (running.cancelled || client.closing || client.socket.destroyed || !clients.has(client)
+                    || client.subscriptions.get(subscription.id) !== subscription)
+                    break;
+                // Publish writes that landed mid-query to every subscription without
+                // awaiting other readers. Busy readers retain their own pending window.
+                // A window already dispatched by another reader must not be sent twice.
+                const latestGeneration = liveQueryWriteGeneration();
+                // Initial subscriptions are not completion refreshes. They still retain
+                // explicitly dispatched writes, without initiating new refresh windows.
+                if (!initialRun && latestGeneration !== generation && latestGeneration !== dispatchedWriteGeneration)
+                    refreshQueries();
+                if (!running.pending || (!running.unscoped && !liveQueryNeedsRefresh(subscription.readTables, running.dirty)))
+                    break;
+            } while (true);
+        }
+        finally {
+            if (queryRefreshes.get(subscription) === running)
+                queryRefreshes.delete(subscription);
         }
     }
     async function sendAuthResult(client, id) {
