@@ -11,6 +11,7 @@ import { waitForEvidence, findProbeFiring, assertNotificationDeadline } from './
 import { bundleServerCapsuleModule } from '../dist/bundle-pipeline.js';
 import { createServerBundleModuleSource } from '../dist/templates/server-bundle-module-graph.js';
 import { setupEnvironment, parseEnvironment } from '../monitoring/trace/setup.mjs';
+import { verifyAvailabilityRules } from './availability-rule-preflight.mjs';
 const run = promisify(execFile);
 const repo = process.cwd();
 assert(process.env.SPORADES_CONFIG_DIR?.startsWith(repo + path.sep), 'Use worktree-local SPORADES_CONFIG_DIR.');
@@ -43,7 +44,8 @@ try {
   await writeFile(path.join(directory, 'fixture/cached.mjs'), `import {createServer} from 'node:http';createServer((req,res)=>{res.writeHead(200,{'cache-control':'no-store'});res.end('sporades-application-probe-v1:'+ '0'.repeat(32)+'\\n');}).listen(80);`);
   await writeFile(path.join(directory, 'compose.override.yaml'), `services:\n  collector:\n    networks:\n      default:\n        aliases: [sporades-telemetry]\n  capsule:\n    image: node:24.13.0-alpine3.23\n    command: [node, /fixture/server.mjs]\n    working_dir: /data\n    environment:\n      PORT: '80'\n      SPORADES_RUNTIME_PROBE_TOKEN: '${randomBytes(32).toString('hex')}'\n      SPORADES_CONFIG_DIR: /data/config\n    volumes: ['./fixture:/fixture:ro', './evidence:/evidence']\n    tmpfs: [/data]\n    networks:\n      default:\n        aliases: [demo.apps.example]\n    ports: ['127.0.0.1:5692:80']\n  cached:\n    image: node:24.13.0-alpine3.23\n    command: [node, /fixture/cached.mjs]\n    volumes: ['./fixture:/fixture:ro']\n    networks:\n      default:\n        aliases: [cached.apps.example]\n  notifier:\n    image: node:24.13.0-alpine3.23\n    command: [node, /fixture/notifier.mjs]\n    network_mode: service:alertmanager\n    volumes: ['./fixture:/fixture:ro', './evidence:/evidence']\n`);
   await writeFile(path.join(directory, 'compose.override.yaml'), `  sibling:\n    image: node:24.13.0-alpine3.23\n    command: [node, /fixture/sibling.mjs]\n    working_dir: /data\n    environment:\n      PORT: '80'\n      SPORADES_CONFIG_DIR: /data/config\n    volumes: ['./fixture:/fixture:ro', './evidence:/evidence']\n    tmpfs: [/data]\n`, { flag: 'a' });
-  await run('docker', ['run', '--rm', '--name', project + '-rules', '--entrypoint', 'promtool', '-v', repo + ':/workspace:ro', '-w', '/workspace/test/fixtures', 'prom/prometheus:v3.13.3', 'test', 'rules', 'availability-rules.test.yaml'], { timeout: 30_000 });
+  await verifyAvailabilityRules({ run, repo, project });
+  notificationTimeline.events.push({ phase: 'rule-preflight', result: 'passed' });
   launched = true;
   await compose('up', '-d', '--build');
   const origin = 'http://127.0.0.1:5691';
@@ -110,10 +112,11 @@ try {
   assert((await query('sporades_expected_capsule')).length, 'Host loss preserves expectation');
   await put({ ...inventory, revision: 2, capsules: inventory.capsules.map(capsule => ({ ...capsule, state: 'stopped', targets: [] })) });
   await until(async () => !(await query('sporades_expected_capsule')).length, 45_000);
-  await writeFile(path.join(repo, '.sporades/issue-120/docker-evidence.json'), JSON.stringify({ verifiedAt: new Date().toISOString(), project, topology: 'single Docker Desktop Linux VM; not separate-VM acceptance', probeNotificationMs: elapsed, notificationTimeline: timelineFile, realWebhookFiringAndRecovery: true, maximumLengthIdentity: capsuleId.length, healthySharedPrefixIdentities: true, runtimeTelemetryAbsence: true, acknowledgedStopRemovedExpectation: true }, null, 2) + '\n');
+  await writeFile(path.join(repo, '.sporades/issue-120/docker-evidence.json'), JSON.stringify({ verifiedAt: new Date().toISOString(), project, topology: 'single Linux Docker host; not separate-VM acceptance', probeNotificationMs: elapsed, notificationTimeline: timelineFile, realWebhookFiringAndRecovery: true, maximumLengthIdentity: capsuleId.length, healthySharedPrefixIdentities: true, runtimeTelemetryAbsence: true, acknowledgedStopRemovedExpectation: true }, null, 2) + '\n');
   console.log(`Availability Docker acceptance passed: probe notification in ${elapsed} ms, recovery and absence observed.`);
 } catch (error) {
   notificationTimeline.failure = error.message;
+  if (error.code?.startsWith('AVAILABILITY_RULE_PREFLIGHT_')) notificationTimeline.events.push({ phase: 'rule-preflight', result: 'failed', code: error.code });
   throw error;
 } finally {
   for (const [key, file] of [['recovered', 'recovered.json'], ['deliveries', 'deliveries.jsonl']]) {

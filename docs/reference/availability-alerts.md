@@ -57,7 +57,7 @@ Pending intent remains visible as stale inventory until acknowledged.
 
 Prometheus discovers targets every fifteen seconds through the private gateway
 listener and probes each origin once through pinned Blackbox exporter. Discovery
-refreshes a nonce header for `GET /__sporades/probe` without changing the scrape URL. The running application returns
+refreshes a nonce header for `GET /__sporades/probe` without changing the scrape URL. Dev sessions and generated Bundles use the same runtime handler and nonce validation. A lowercase hexadecimal nonce of 16–64 characters is accepted from `X-Sporades-Probe-Nonce` or the `nonce` query parameter; a supplied header takes precedence. Missing or invalid nonces return an opaque 404. The running application returns
 `sporades-application-probe-v1:<nonce>` with `Cache-Control: no-store`; Blackbox
 requires the exact freshly issued nonce in that application marker, a no-store
 response, HTTP 200 and no redirects. One bounded module pairs the request nonce header and expected body during configuration reloads; a static replay with the correct marker still fails.
@@ -128,3 +128,19 @@ separate-VM acceptance, place the Capsule Host and Monitoring stack
 on different disposable VMs, retain verified TLS on the relay, repeat the drill,
 and record delivery timestamps, topology and cleanup. After an intentional stop,
 wait for its inventory acknowledgement before expecting pages to cease.
+
+### Rule-validation preflight permissions
+
+Before starting the disposable stack, the drill runs pinned `promtool` as the
+image’s default non-root user against a read-only source mount. That user must
+be able to traverse the mounted source directory and read
+`test/fixtures/availability-rules.test.yaml` and its referenced rules. A source
+root with mode 0700 can therefore fail with `Permission denied` before any stack
+is launched. This is a failed rule preflight, not a notification-delivery result.
+The failure and its stage code are retained in the per-run timeline.
+
+Use a separate disposable checkout containing no credentials or operator data
+with readable rule fixtures and traversable source directories. Do not widen
+permissions on protected worktrees, `.private` files or operator configuration,
+and do not run the validator as root to hide the failure. Other Docker/image or
+rule-validation errors remain separately classified as preflight failures.

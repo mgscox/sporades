@@ -152000,8 +152000,7 @@ async function startDevSession(options) {
       if (routeConnectionToken(request, response, (currentToken) => websocketHub.createConnectionToken(currentToken))) {
         return;
       }
-      if (request.method === "GET" && requestPath === "/__sporades/health/runtime") {
-        await routeRuntimeHealth(runtime.database, request, response);
+      if (await routeRuntimeHealth(runtime.database, request, response)) {
         return;
       }
       if (routeHttpAdmission(runtime.database, request, response, target)) {
