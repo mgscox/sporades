@@ -249,7 +249,10 @@ export async function connectHostTelemetryRelay(remoteRoot: string, network: str
     const previousConfig = previous ? await readProtected(files.config) : null;
     const previousCredential = previous ? await readProtected(files.credential) : null;
     const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-    const descriptor = { inventory: { generation: randomBytes(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...(connection.caPem ? { caPem: connection.caPem } : {}) }, schemaVersion: 1, ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
+    // A verified migration retains export policy; ordinary connect deliberately
+    // re-enables exports. Read policy under the same lock as the binding fence.
+    const exportsDisabled = expectedBinding !== undefined && previous?.exportsDisabled === true;
+    const descriptor = { ...(exportsDisabled ? { exportsDisabled: true } : {}), inventory: { generation: randomBytes(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...(connection.caPem ? { caPem: connection.caPem } : {}) }, schemaVersion: 1, ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
     const candidate = `${JSON.stringify(descriptor, null, 2)}\n`;
     if (previous && (!previousConfig || !previousCredential || (previous.caConfigured && !previousCa))) throw helperError("Previous Host Telemetry state is incomplete.", "Restore or reconcile the protected working connection before reconnecting.");
     const previousDescriptor = await readProtected(files.descriptor);
@@ -259,7 +262,8 @@ export async function connectHostTelemetryRelay(remoteRoot: string, network: str
       await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 0o644);
       await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
       if (connection.caPem) await atomicWrite(files.ca, connection.caPem, 0o644);
-      await startRelay(files, network, Boolean(connection.caPem));
+      if (exportsDisabled) await stopHostTelemetryExports(remoteRoot, previous?.inventoryHost);
+      else await startRelay(files, network, Boolean(connection.caPem));
       await atomicWrite(files.descriptor, candidate, 0o600);
     } catch (error) {
       try { await recoverActivation(files); }
@@ -398,7 +402,7 @@ export async function migrateHostTelemetryRelay(remoteRoot: string, network: str
   const before = { origin: "host", previousEndpoint: previous.endpoint, destination, storage, inventoryAuthority, relayRestarted: false, oldInventory: "operator-retirement-required", history: "preserved" };
   if (!destination.accepted || storage.backendQuery.state !== "passed" || storage.recentIngestion.state !== "passed" || inventoryAuthority.state !== "passed") return { ...before, activation: "not-applied", rollback: "working-binding-preserved" };
   const saved = await connectHostTelemetryRelay(remoteRoot, network, { ...(previous.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: previous.tracePropagationOrigins } : {}), ...(previous.metricsIntervalMs ? { metricsIntervalMs: previous.metricsIntervalMs } : {}), ...(previous.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: previous.eventLoopDelayResolutionMs } : {}), ...connection, inventoryHost: previous.inventoryHost }, undefined, expectedBinding);
-  return { ...before, activation: "applied", relayRestarted: true, rollback: "migrate-to-previous-profile", connection: saved };
+  return { ...before, activation: "applied", relayRestarted: !saved.exportsDisabled, rollback: "migrate-to-previous-profile", connection: saved };
 }
 
 export type HostTelemetryMigration = Awaited<ReturnType<typeof migrateHostTelemetryRelay>>;

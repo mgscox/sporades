@@ -27475,7 +27475,8 @@ async function connectHostTelemetryRelay(remoteRoot, network, input, host, expec
     const previousConfig = previous ? await readProtected(files.config) : null;
     const previousCredential = previous ? await readProtected(files.credential) : null;
     const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-    const descriptor = { inventory: { generation: randomBytes4(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...connection.caPem ? { caPem: connection.caPem } : {} }, schemaVersion: 1, ...connection.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: (/* @__PURE__ */ new Date()).toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} };
+    const exportsDisabled = expectedBinding !== void 0 && previous?.exportsDisabled === true;
+    const descriptor = { ...exportsDisabled ? { exportsDisabled: true } : {}, inventory: { generation: randomBytes4(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...connection.caPem ? { caPem: connection.caPem } : {} }, schemaVersion: 1, ...connection.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: (/* @__PURE__ */ new Date()).toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} };
     const candidate = `${JSON.stringify(descriptor, null, 2)}
 `;
     if (previous && (!previousConfig || !previousCredential || previous.caConfigured && !previousCa)) throw helperError("Previous Host Telemetry state is incomplete.", "Restore or reconcile the protected working connection before reconnecting.");
@@ -27487,7 +27488,8 @@ async function connectHostTelemetryRelay(remoteRoot, network, input, host, expec
       await atomicWrite2(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}
 `, 384);
       if (connection.caPem) await atomicWrite2(files.ca, connection.caPem, 420);
-      await startRelay(files, network, Boolean(connection.caPem));
+      if (exportsDisabled) await stopHostTelemetryExports(remoteRoot, previous?.inventoryHost);
+      else await startRelay(files, network, Boolean(connection.caPem));
       await atomicWrite2(files.descriptor, candidate, 384);
     } catch (error) {
       try {
@@ -27618,7 +27620,7 @@ async function migrateHostTelemetryRelay(remoteRoot, network, input, host, query
   const before = { origin: "host", previousEndpoint: previous.endpoint, destination, storage, inventoryAuthority, relayRestarted: false, oldInventory: "operator-retirement-required", history: "preserved" };
   if (!destination.accepted || storage.backendQuery.state !== "passed" || storage.recentIngestion.state !== "passed" || inventoryAuthority.state !== "passed") return { ...before, activation: "not-applied", rollback: "working-binding-preserved" };
   const saved = await connectHostTelemetryRelay(remoteRoot, network, { ...previous.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: previous.tracePropagationOrigins } : {}, ...previous.metricsIntervalMs ? { metricsIntervalMs: previous.metricsIntervalMs } : {}, ...previous.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: previous.eventLoopDelayResolutionMs } : {}, ...connection, inventoryHost: previous.inventoryHost }, void 0, expectedBinding);
-  return { ...before, activation: "applied", relayRestarted: true, rollback: "migrate-to-previous-profile", connection: saved };
+  return { ...before, activation: "applied", relayRestarted: !saved.exportsDisabled, rollback: "migrate-to-previous-profile", connection: saved };
 }
 async function stopHostTelemetryExports(remoteRoot, host, operation = "disable") {
   if (inspectRelay() && !docker(["stop", RELAY_NAME]).ok) throw helperError("Host relay could not be stopped.", "Retry exports-disable; disabled launch policy and credentials are retained.");

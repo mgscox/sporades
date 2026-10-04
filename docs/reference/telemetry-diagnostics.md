@@ -81,11 +81,15 @@ return `activation: "not-applied"`, the failed/unavailable stages and
 concurrent binding change invalidates the verification and prevents activation.
 
 Successful activation persists the replacement connection and reports
-`activation: "applied"`, `relayRestarted: true`, the prior endpoint, a fresh
+`activation: "applied"`, the prior endpoint, a fresh
 inventory reconciliation, independent post-activation relay verification and
 Capsule coverage. It preserves Host inventory identity, Capsule lifecycle/data,
 opt-outs, resource collection and unspecified timing/propagation settings. It
-restarts the shared relay. Capsule restarts are **not automatic**: inspect
+restarts the shared relay and reports `relayRestarted: true` when exports are
+enabled. A Host-wide export pause remains saved at the destination and reports
+`relayRestarted: false`; migration and repeated reconciliation keep the relay
+and resource exporter stopped. Ordinary `host telemetry connect` deliberately
+re-enables exports. Capsule restarts are **not automatic**: inspect
 `coverage.capsuleCoverage.pendingRestart` and explicitly restart those Capsules
 whose runtime configuration needs updating. A destination outage after preflight
 can still leave verification failed or inventory pending; applied configuration

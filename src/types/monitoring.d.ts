@@ -17,6 +17,8 @@ export type { SenderCredentialResult } from "../../dist/cli/monitoring-stack.js"
 
 /** Sender-origin stage evidence; authenticated HTTP 2xx proves authentication
  * independently of OTLP body acceptance, and never proves storage alone.
+ * Migration retains a Host-wide export pause and reports relayRestarted: false;
+ * ordinary connect deliberately re-enables exports.
  * Activation rollback/recovery retains a deliberately disabled export policy;
  * exports-disable settles pending activation before publishing its newer intent. */
 export type { DiagnosticCheck, TelemetryDeliveryChecks } from "../../dist/cli/telemetry-diagnostics.js";

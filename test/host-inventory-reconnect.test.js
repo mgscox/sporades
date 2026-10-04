@@ -279,61 +279,94 @@ if(args[0]==='run')fs.writeFileSync(${JSON.stringify(marker)},'');
 });
 
 test('migration verifies fresh destination storage, registers inventory anew and leaves old expectations and history intact', async t => {
-  const f = await fixture(t);
-  const tls = await f.tls('successful-migration');
-  const { createServer: createHttpServer } = await import('node:http');
-  const stored = new Map();
-  const backend = createHttpServer(async (req, res) => {
-    if (req.url === '/v1/traces') {
-      let body = ''; for await (const part of req) body += part;
-      const span = JSON.parse(body).resourceSpans[0].scopeSpans[0].spans[0];
-      stored.set(span.traceId, { traceID: span.traceId, spans: [{ traceID: span.traceId, operationName: span.name, startTime: Number(BigInt(span.startTimeUnixNano) / 1000n) }] });
-      res.end('{}'); return;
-    }
-    try {
-      const span = JSON.parse(await readFile(path.join(f.root, 'relay-body.json'), 'utf8')).resourceSpans[0].scopeSpans[0].spans[0];
-      stored.set(span.traceId, { traceID: span.traceId, spans: [{ traceID: span.traceId, operationName: span.name, startTime: Number(BigInt(span.startTimeUnixNano) / 1000n) }] });
-    } catch {}
-    const trace = stored.get(req.url.split('/').at(-1));
-    res.end(JSON.stringify({ data: trace ? [trace] : [] }));
-  });
-  await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve));
-  t.after(() => { backend.closeAllConnections(); backend.close(); });
-  const base = `http://127.0.0.1:${backend.address().port}`;
-  const common = { ingestToken: 'new-ingestion-token', uiUser: 'operator', uiPassword: 'query-password', collectorUrl: base, jaegerUrl: base };
-  const oldDirectory = path.join(f.root, 'old-monitoring');
-  const oldGateway = createGateway({ ...common, ingestToken: 'old-ingestion-token', inventoryDirectory: oldDirectory, inventoryHosts: { [scope]: oldToken } }, tls);
-  const oldEndpoint = await f.listen(oldGateway);
-  const newEndpoint = await f.listen(createGateway({ ...common, inventoryDirectory: path.join(f.root, 'new-monitoring'), inventoryHosts: { [scope]: newToken } }, tls));
-  await f.saveLegacy(oldEndpoint, tls.cert);
-  assert.equal((await reconcileHostInventory(f.root)).pending, false);
-  const oldInventoryFiles = await import('node:fs/promises').then(fs => fs.readdir(oldDirectory));
-  const before = await Promise.all(oldInventoryFiles.map(file => readFile(path.join(oldDirectory, file))));
-  await writeFile(path.join(f.bin, 'docker'), `#!/usr/bin/env node
-const fs=require('node:fs'),https=require('node:https');const args=process.argv.slice(2);
-if(args[0]==='inspect')process.stdout.write('{"State":{"Running":true},"Config":{"Labels":{"com.sporades.host-telemetry-relay":"true"}}}');
+  for (const paused of [false, true]) await t.test(paused ? 'paused exports stay paused' : 'enabled exports restart', async t => {
+    const f = paused ? await shutdownFixture(t) : await fixture(t);
+    const tls = await f.tls('successful-migration');
+    const { createServer: createHttpServer } = await import('node:http');
+    const stored = new Map();
+    const backend = createHttpServer(async (req, res) => {
+      if (req.url === '/v1/traces') {
+        let body = ''; for await (const part of req) body += part;
+        const span = JSON.parse(body).resourceSpans[0].scopeSpans[0].spans[0];
+        stored.set(span.traceId, { traceID: span.traceId, spans: [{ traceID: span.traceId, operationName: span.name, startTime: Number(BigInt(span.startTimeUnixNano) / 1000n) }] });
+        res.end('{}'); return;
+      }
+      try {
+        const span = JSON.parse(await readFile(path.join(f.root, 'relay-body.json'), 'utf8')).resourceSpans[0].scopeSpans[0].spans[0];
+        stored.set(span.traceId, { traceID: span.traceId, spans: [{ traceID: span.traceId, operationName: span.name, startTime: Number(BigInt(span.startTimeUnixNano) / 1000n) }] });
+      } catch {}
+      const trace = stored.get(req.url.split('/').at(-1));
+      res.end(JSON.stringify({ data: trace ? [trace] : [] }));
+    });
+    await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve));
+    t.after(() => { backend.closeAllConnections(); backend.close(); });
+    const base = `http://127.0.0.1:${backend.address().port}`;
+    const common = { ingestToken: 'new-ingestion-token', uiUser: 'operator', uiPassword: 'query-password', collectorUrl: base, jaegerUrl: base };
+    const oldDirectory = path.join(f.root, 'old-monitoring');
+    const oldGateway = createGateway({ ...common, ingestToken: 'old-ingestion-token', inventoryDirectory: oldDirectory, inventoryHosts: { [scope]: oldToken } }, tls);
+    const oldEndpoint = await f.listen(oldGateway);
+    const newEndpoint = await f.listen(createGateway({ ...common, inventoryDirectory: path.join(f.root, 'new-monitoring'), inventoryHosts: { [scope]: newToken } }, tls));
+    await f.saveLegacy(oldEndpoint, tls.cert);
+    const { disableHostTelemetryExports, reconcileHostTelemetryRelay } = await import('../dist/cli/host-telemetry-relay.js');
+    if (paused) await disableHostTelemetryExports(f.root, scope);
+    assert.equal((await reconcileHostInventory(f.root)).pending, false);
+    const oldInventoryFiles = await import('node:fs/promises').then(fs => fs.readdir(oldDirectory));
+    const before = await Promise.all(oldInventoryFiles.map(file => readFile(path.join(oldDirectory, file))));
+    await writeFile(path.join(f.bin, 'docker'), `#!/usr/bin/env node
+const fs=require('node:fs');const args=process.argv.slice(2);
+const stateFile=${JSON.stringify(path.join(f.root, 'docker-state.json'))};
+const state=fs.existsSync(stateFile)?JSON.parse(fs.readFileSync(stateFile)):{relay:true,exporter:false};
+fs.appendFileSync(${JSON.stringify(path.join(f.root, 'commands'))},args.join(' ')+'\\n');
+if(args[0]==='inspect')process.stdout.write(JSON.stringify({State:{Running:state.relay},Config:{Labels:{'com.sporades.host-telemetry-relay':'true'}}}));
+if(args[0]==='container')process.stdout.write(JSON.stringify([{State:{Running:state.exporter},Config:{Labels:{'com.sporades.host-metrics':'true'}}}]));
+if(args[0]==='run'&&args.includes('--detach'))state.relay=true;
+if(args[0]==='stop')state[args.at(-1)==='sporades-telemetry-relay'?'relay':'exporter']=false;
+if(args[0]==='rm')state.relay=false;
+fs.writeFileSync(stateFile,JSON.stringify(state));
 if(args[0]==='run'&&args.includes('--rm')){
  fs.writeFileSync(${JSON.stringify(path.join(f.root, 'relay-body.json'))},args.at(-1));process.stdout.write('accepted');
 }
 `);
-  const { migrateHostTelemetryRelay, checkHostTelemetryDelivery } = await import('../dist/cli/host-telemetry-relay.js');
-  const migration = await migrateHostTelemetryRelay(f.root, 'fake-network', { endpoint: newEndpoint, credential: 'new-ingestion-token', inventoryCredential: newToken, inventoryHost: scope, caPem: tls.cert.toString() }, scope, 'operator:query-password');
-  assert.equal(migration.activation, 'applied');
-  assert.equal(migration.oldInventory, 'operator-retirement-required');
-  assert.equal((await hostInventoryStatus(f.root)).acknowledgedRevision, null);
-  const registered = await reconcileHostInventory(f.root);
-  assert.equal(registered.pending, false);
-  assert.equal(registered.acknowledgedRevision, 2);
-  const verification = await checkHostTelemetryDelivery(f.root, 'operator:query-password');
-  assert.equal(verification.checks.backendQuery.state, 'passed');
-  assert.equal(verification.checks.recentIngestion.state, 'passed');
-  assert.equal(verification.backendStorage, 'verified-relay-trace');
-  assert.notEqual(verification.traceId, verification.relayTraceId);
-  assert.ok(stored.has(verification.relayTraceId));
-  assert.deepEqual(await Promise.all(oldInventoryFiles.map(file => readFile(path.join(oldDirectory, file)))), before);
-  assert.doesNotMatch(JSON.stringify(migration) + JSON.stringify(verification), /query-password|new-ingestion-token|host-inventory-token|BEGIN CERTIFICATE/);
-  // A new invocation uses only durable Host state, independent of workstation profile selection.
-  assert.equal((await readHostTelemetryConnection(f.root)).endpoint, newEndpoint);
+    const { migrateHostTelemetryRelay, checkHostTelemetryDelivery } = await import('../dist/cli/host-telemetry-relay.js');
+    const migration = await migrateHostTelemetryRelay(f.root, 'fake-network', { endpoint: newEndpoint, credential: 'new-ingestion-token', inventoryCredential: newToken, inventoryHost: scope, caPem: tls.cert.toString() }, scope, 'operator:query-password');
+    assert.equal(migration.activation, 'applied');
+    assert.equal(migration.relayRestarted, !paused);
+    assert.equal(migration.connection.exportsDisabled, paused);
+    assert.equal(migration.connection.endpoint, newEndpoint);
+    assert.equal((await readHostTelemetryConnection(f.root)).exportsDisabled === true, paused);
+    assert.equal(migration.oldInventory, 'operator-retirement-required');
+    assert.equal((await hostInventoryStatus(f.root)).acknowledgedRevision, null);
+    const registered = await reconcileHostInventory(f.root);
+    assert.equal(registered.pending, false);
+    assert.equal(registered.acknowledgedRevision, 2);
+    const verification = await checkHostTelemetryDelivery(f.root, 'operator:query-password');
+    if (paused) {
+      assert.equal(verification.relayReady, false);
+      assert.equal(verification.backendStorage, 'verification-unavailable');
+      await reconcileHostTelemetryRelay(f.root);
+      await reconcileHostTelemetryRelay(f.root, scope);
+      assert.equal((await readHostTelemetryConnection(f.root)).exportsDisabled, true);
+      assert.doesNotMatch(await readFile(path.join(f.root, 'commands'), 'utf8'), /run |network connect/);
+      assert.deepEqual(JSON.parse(await readFile(f.stateFile)), { relay: false, exporter: false });
+      const inventory = JSON.parse(await readFile(path.join(f.root, 'telemetry/inventory.json'), 'utf8'));
+      assert.ok(inventory.desired.capsules.length > 0);
+      assert.ok(inventory.desired.capsules.every(capsule => capsule.state === 'opted-out'));
+      // Only deliberate connect resumes exports after migration and reconciliation.
+      await f.reconnect(newEndpoint, tls.cert);
+      assert.equal((await readHostTelemetryConnection(f.root)).exportsDisabled === true, false);
+      assert.match(await readFile(path.join(f.root, 'commands'), 'utf8'), /run --detach/);
+    } else {
+      assert.equal(verification.checks.backendQuery.state, 'passed');
+      assert.equal(verification.checks.recentIngestion.state, 'passed');
+      assert.equal(verification.backendStorage, 'verified-relay-trace');
+      assert.notEqual(verification.traceId, verification.relayTraceId);
+      assert.ok(stored.has(verification.relayTraceId));
+    }
+    assert.deepEqual(await Promise.all(oldInventoryFiles.map(file => readFile(path.join(oldDirectory, file)))), before);
+    assert.doesNotMatch(JSON.stringify(migration) + JSON.stringify(verification), /query-password|new-ingestion-token|host-inventory-token|BEGIN CERTIFICATE/);
+    // A new invocation uses only durable Host state, independent of workstation profile selection.
+    assert.equal((await readHostTelemetryConnection(f.root)).endpoint, newEndpoint);
+  });
 });
 
 test('sender stages distinguish TLS denial, partial OTLP rejection and malformed protected configuration', async t => {

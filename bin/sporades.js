@@ -129989,9 +129989,17 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
     throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", hint);
   };
   if (!input || typeof input !== "object" || Array.isArray(input)) invalid4("Pass one mail message object.");
-  const allowed = /* @__PURE__ */ new Set(["to", "cc", "bcc", "from", "replyTo", "subject", "textBody", "htmlBody", "provider"]);
+  const allowed = /* @__PURE__ */ new Set(["to", "cc", "bcc", "from", "replyTo", "subject", "textBody", "htmlBody", "autoSubmitted", "provider"]);
   const unknown = Object.keys(input).filter((key) => !allowed.has(key));
   if (unknown.length > 0) invalid4(`Remove unsupported mail fields: ${unknown.sort().join(", ")}.`);
+  const autoSubmittedDescriptor = Object.getOwnPropertyDescriptor(input, "autoSubmitted");
+  if (autoSubmittedDescriptor ? !autoSubmittedDescriptor.enumerable || !("value" in autoSubmittedDescriptor) : "autoSubmitted" in input) {
+    invalid4("Pass `autoSubmitted` as an enumerable own data field.");
+  }
+  const autoSubmitted = autoSubmittedDescriptor?.value;
+  if (autoSubmitted !== void 0 && !["no", "auto-generated", "auto-replied"].includes(autoSubmitted)) {
+    invalid4("Pass `autoSubmitted` as exactly `no`, `auto-generated`, or `auto-replied`.");
+  }
   const from = normalizeMailAddresses(input.from ?? defaultFrom, "from", false);
   if (from.length !== 1) invalid4("Pass exactly one sender in `from`, or configure `mail.smtp.defaultFrom`.");
   const to = normalizeMailAddresses(input.to, "to", true);
@@ -130034,6 +130042,7 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
     bcc,
     ...replyTo[0] ? { replyTo: replyTo[0] } : {},
     subject,
+    ...autoSubmitted !== void 0 ? { autoSubmitted } : {},
     ...input.textBody !== void 0 ? { textBody: input.textBody } : {},
     ...input.htmlBody !== void 0 ? { htmlBody: input.htmlBody } : {},
     ...providerHeaders?.length ? { providerHeaders } : {},
@@ -130841,6 +130850,7 @@ function buildSmtpMessage(message) {
     `Date: ${(/* @__PURE__ */ new Date()).toUTCString()}`,
     `Message-ID: ${message.messageId ?? `<${crypto.randomUUID()}@sporades.local>`}`,
     "MIME-Version: 1.0",
+    ...message.autoSubmitted !== void 0 ? [`Auto-Submitted: ${message.autoSubmitted}`] : [],
     ...(message.providerHeaders ?? []).map((header2) => header2.json ? foldMailgunJsonHeader(header2.name, header2.value) : header2.verbatim ? `${header2.name}: ${header2.value}` : foldMimeHeader(header2.name, header2.value))
   ];
   if (message.textBody !== void 0 && message.htmlBody !== void 0) {
