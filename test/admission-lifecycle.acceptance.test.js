@@ -342,7 +342,9 @@ for (const session of ['container', 'hosted']) test(`generated ${session} admiss
           : await upgrade(runtime.base, '/__sporades/ws?connectionToken=' + connectionToken, headers);
         probes.push({ nonce: id, group, transport, response });
       })));
-      await sleep(20);
+      // Stay below the observer bound even if every reload uses its full 10s
+      // deadline; each batch still probes both groups on both transports.
+      await sleep(50);
     } })();
     // Attach immediately: a traffic failure must not become an unhandled rejection
     // while publication is waiting for its next reload tick.
