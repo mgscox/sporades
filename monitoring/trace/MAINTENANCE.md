@@ -88,7 +88,15 @@ COMPOSE_PROJECT_NAME=sporades-monitoring-prod sporades monitoring stack rollback
 Maintenance holds an OS-owned SQLite writer lock in `.maintenance/lock.sqlite`.
 It releases on process exit, including SIGKILL; a concurrent invocation fails
 closed. The next upgrade or rollback restores the durable generated-file journal
-before planning new changes. Repeated rollback remains at the restored version.
+before planning new changes. Original bytes and original/intended hashes,
+permissions and owners are recorded before publication. Recovery checks every
+journalled file before restoring any. Operator edits, deletions or permission/
+owner changes refuse recovery, preserving all files and the journal. Keep services
+stopped, save overrides separately, and reconcile journalled files with their
+recorded original generation before retrying; reapply saved overrides afterward.
+Legacy journals without intended hashes require every file to already match its
+original bytes; otherwise recovery refuses and preserves the files and journal.
+Repeated rollback remains at the restored version.
 Do not remove lock databases, journals or other maintenance state by hand.
 
 Restore also acquires one atomic Docker container-name guard per backend volume,

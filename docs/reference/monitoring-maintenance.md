@@ -78,8 +78,16 @@ versions as the snapshot first, then plan any image change separately.
 Maintenance holds an OS-owned SQLite writer lock in `.maintenance/lock.sqlite`.
 It releases automatically on process exit, including an interrupted operation.
 A concurrent maintenance process fails closed. The next upgrade or rollback
-recovers the durable file journal before applying a new change. Do not remove
-lock databases or journals by hand. Backup never overwrites
+recovers the durable file journal before applying a new change. The journal
+records original bytes and the original/intended hashes, permissions and owners
+before publication. Recovery checks every journalled file before restoring any:
+an operator edit, deletion or permission/owner change refuses recovery and
+preserves all files and the journal. Keep services stopped, save overrides
+separately, and reconcile journalled files with their recorded original generation
+before retrying; reapply saved overrides after recovery. Older journals without
+intended hashes can only be retired when every file already matches its original
+bytes; otherwise recovery refuses with the same preservation guidance. Do not
+remove lock databases or journals by hand. Backup never overwrites
 an existing destination. Failed work cleans its unpublished `.partial-*` path;
 a crash can leave a protected partial path to inspect and remove only after
 confirming it is task-owned and inactive.

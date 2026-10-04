@@ -14,10 +14,14 @@ function fail(): never { throw commandError('Monitoring maintenance could not co
 async function exists(file: string) { try { return await lstat(file); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; throw e; } }
 async function regular(file: string) { const st = await lstat(file); if (!st.isFile() || st.isSymbolicLink() || st.mode & 0o022) fail(); return readFile(file); }
 async function safeDirectory(dir: string, privateMode = false) { const st = await lstat(dir); if (!st.isDirectory() || st.isSymbolicLink() || st.mode & (privateMode ? 0o077 : 0o022) || (process.geteuid && st.uid !== process.geteuid())) fail(); }
-async function atomic(file: string, bytes: Buffer | string, mode = 0o600) {
+async function atomic(file: string, bytes: Buffer | string, mode = 0o600, owner?: { uid: number; gid: number }) {
   const temp = `${file}.${randomBytes(8).toString('hex')}.tmp`;
   const handle = await open(temp, 'wx', mode);
-  try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+  try {
+    await handle.writeFile(bytes);
+    if (owner) { await handle.chown(owner.uid, owner.gid); await handle.chmod(mode); }
+    await handle.sync();
+  } finally { await handle.close(); }
   await rename(temp, file);
   const dir = await open(path.dirname(file), 'r'); try { await dir.sync(); } finally { await dir.close(); }
 }
@@ -47,12 +51,27 @@ async function validateEnvironment(dir: string, packageRoot: string) {
   if (setup.inspectEnvironment((await regular(path.join(dir, '.env'))).toString()).missing.length) fail();
   await regular(path.join(dir, '.compose.env'));
 }
-// A durable before-image is written before any generated file is replaced.
-// Re-entry restores an interrupted attempt before planning a new one.
+type FileGeneration = { hash: string; mode: number; uid: number; gid: number } | null;
+async function generation(file: string): Promise<FileGeneration> {
+  const st = await exists(file);
+  return st ? { hash: digest(await regular(file)), mode: st.mode & 0o777, uid: st.uid, gid: st.gid } : null;
+}
+function recoveryConflict(): never {
+  throw commandError('Monitoring maintenance could not complete.', 'Interrupted publication recovery found operator edits or an unverifiable legacy journal. All files and the journal were preserved. Keep services stopped, save your overrides separately, and reconcile journalled files with the recorded original generation before retrying. Do not delete the journal.');
+}
+// Persist both generations before publication. Recovery must check every file
+// before restoring any before-image, including on a second interrupted recovery.
 async function apply(dir: string, stateDir: string, next: Record<string, string | null>, recordPrevious = true) {
   const before: Record<string, string | null> = {};
-  for (const name of Object.keys(next)) { const f = path.join(dir, name); before[name] = await exists(f) ? (await regular(f)).toString('base64') : null; }
-  await atomic(path.join(stateDir, 'journal.json'), JSON.stringify(before));
+  const original: Record<string, FileGeneration> = {}, intended: Record<string, FileGeneration> = {};
+  const parent = await lstat(dir);
+  for (const [name, bytes] of Object.entries(next)) {
+    const f = path.join(dir, name);
+    before[name] = await exists(f) ? (await regular(f)).toString('base64') : null;
+    original[name] = await generation(f);
+    intended[name] = bytes === null ? null : { hash: digest(Buffer.from(bytes, 'base64')), mode: 0o644 & ~process.umask(), uid: process.geteuid!(), gid: parent.mode & 0o2000 ? parent.gid : process.getegid!() };
+  }
+  await atomic(path.join(stateDir, 'journal.json'), JSON.stringify({ schemaVersion: 1, before, original, intended }));
   for (const [name, bytes] of Object.entries(next)) { if (bytes === null) await rm(path.join(dir, name), { force: true }); else await atomic(path.join(dir, name), Buffer.from(bytes, 'base64'), 0o644); }
   if (recordPrevious) await atomic(path.join(stateDir, 'previous.json'), JSON.stringify({ before, after: Object.fromEntries(Object.entries(next).map(([k,v]) => [k, v === null ? null : digest(Buffer.from(v, 'base64'))])) }));
   await rm(path.join(stateDir, 'journal.json'));
@@ -63,8 +82,35 @@ function validImage(image: any) {
 }
 async function recover(dir: string, stateDir: string) {
   const journal = path.join(stateDir, 'journal.json'); if (!await exists(journal)) return;
-  const before = validImage(JSON.parse((await regular(journal)).toString()));
-  for (const [name, value] of Object.entries(before)) { if (value === null) await rm(path.join(dir, name), { force: true }); else await atomic(path.join(dir, name), Buffer.from(value, 'base64'), 0o644); }
+  const record = JSON.parse((await regular(journal)).toString());
+  const before = validImage(record.schemaVersion === 1 ? record.before : record);
+  if (record.schemaVersion !== 1) {
+    // Old journals have no evidence of the intended generation. Only an already
+    // restored journal is safe to retire; never infer provenance from new assets.
+    for (const [name, value] of Object.entries(before)) {
+      if ((await generation(path.join(dir, name)))?.hash !== (value === null ? undefined : digest(Buffer.from(value, 'base64')))) recoveryConflict();
+    }
+    await rm(journal); return;
+  }
+  for (const values of [record.original, record.intended]) {
+    if (!values || typeof values !== 'object' || Array.isArray(values) || !same(Object.keys(before), Object.keys(values))) fail();
+    for (const value of Object.values(values) as FileGeneration[]) {
+      if (value !== null && (typeof value !== 'object' || !/^[a-f0-9]{64}$/.test(value.hash) || !Number.isSafeInteger(value.mode) || value.mode < 0 || value.mode > 0o777 || value.mode & 0o022 || !Number.isSafeInteger(value.uid) || value.uid < 0 || !Number.isSafeInteger(value.gid) || value.gid < 0)) fail();
+    }
+  }
+  for (const [name, value] of Object.entries(before)) {
+    if ((record.original[name]?.hash ?? null) !== (value === null ? null : digest(Buffer.from(value, 'base64')))) fail();
+    const current = await generation(path.join(dir, name));
+    if (!same({ current }, { current: record.original[name] }) && !same({ current }, { current: record.intended[name] })) recoveryConflict();
+  }
+  for (const [name, value] of Object.entries(before)) {
+    const file = path.join(dir, name), original = record.original[name];
+    if (same({ current: await generation(file) }, { current: original })) continue;
+    if (value === null) await rm(file, { force: true });
+    else {
+      await atomic(file, Buffer.from(value, 'base64'), original.mode, original);
+    }
+  }
   await rm(journal);
 }
 

@@ -80491,10 +80491,10 @@ function createAdmissionRateLimiter(options = {}) {
   const windows = createBoundedFixedWindow({ ...options, idleMs: 864e5, expireWindows: true });
   let digest2;
   let parameters = /* @__PURE__ */ new Map();
-  function reconcile(generation) {
-    if ((generation?.digest ?? null) === digest2) return;
+  function reconcile(generation2) {
+    if ((generation2?.digest ?? null) === digest2) return;
     const next = /* @__PURE__ */ new Map();
-    for (const rule of generation?.policy.rules ?? []) {
+    for (const rule of generation2?.policy.rules ?? []) {
       if (rule.enabled && rule.action.kind === "rate-limit") next.set(rule.id, `${rule.action.limit}:${rule.action.windowMs}`);
     }
     windows.retain((key) => {
@@ -80502,7 +80502,7 @@ function createAdmissionRateLimiter(options = {}) {
       return next.has(id2) && next.get(id2) === parameters.get(id2);
     });
     parameters = next;
-    digest2 = generation?.digest ?? null;
+    digest2 = generation2?.digest ?? null;
   }
   function consume(id2, address, limit, windowMs) {
     const key = `${id2}\0${address}`;
@@ -80985,7 +80985,7 @@ function canonicalAdmissionPathname(raw) {
 function pathnameMatches(pathname, prefix) {
   return pathname === prefix || pathname.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`);
 }
-function matchHttpAdmissionRule(generation, input) {
+function matchHttpAdmissionRule(generation2, input) {
   if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(input.method)) throw new Error("Invalid admission method.");
   const method = input.method.toUpperCase();
   const pathname = canonicalAdmissionPathname(input.pathname);
@@ -81002,7 +81002,7 @@ function matchHttpAdmissionRule(generation, input) {
     if (values) values.push(value);
     else headers.set(name2, [value]);
   }
-  for (const rule of generation.policy.rules) {
+  for (const rule of generation2.policy.rules) {
     if (!rule.enabled) continue;
     let matches = true;
     let indeterminate = false;
@@ -106239,8 +106239,8 @@ async function finishFailedScheduledOccurrence(database, definition, occurrence,
   const completedAt = database.clock.now().toISOString();
   const code = "SCHEDULE_ENQUEUE_FAILED";
   const sql2 = database.adapter.dialect.sql;
-  const generation = await database.adapter.prepare(sql2("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(definition.name, definition.fingerprint, definition.generationToken);
-  if (Number(generation.changes) !== 1) {
+  const generation2 = await database.adapter.prepare(sql2("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(definition.name, definition.fingerprint, definition.generationToken);
+  if (Number(generation2.changes) !== 1) {
     await database.adapter.prepare(sql2("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(completedAt, id2, claimToken, definition.fingerprint, definition.generationToken);
     return { finished: false, nextOccurrence: null, superseded: true };
   }
@@ -120986,9 +120986,9 @@ function pdfDictionary(bytes, offset2, integerKeys, nameKeys = /* @__PURE__ */ n
         if (after < 0) return null;
         const reference = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+R(?:[\x00\x09\x0a\x0c\x0d\x20\[\]()<>\/%]|$)/.exec(bytes.subarray(after, Math.min(bytes.length, after + 80)).toString("latin1"));
         if (reference) {
-          const generation = Number(reference[1]);
-          if (!referenceKeys.has(name2) || first > 999999 || generation > 65535) return null;
-          references.set(name2, { objectNumber: first, generation });
+          const generation2 = Number(reference[1]);
+          if (!referenceKeys.has(name2) || first > 999999 || generation2 > 65535) return null;
+          references.set(name2, { objectNumber: first, generation: generation2 });
         } else {
           if (!integerKeys.has(name2)) return null;
           values.set(name2, first);
@@ -121085,7 +121085,7 @@ function pdfStreamLength(bytes, dictionary, entries, deadlineExpired) {
 function locatePdfIndirectInteger(bytes, reference, limit, deadlineExpired) {
   if (deadlineExpired?.("object")) return null;
   const objectNumber = String(reference.objectNumber);
-  const generation = String(reference.generation);
+  const generation2 = String(reference.generation);
   let found = null;
   const matches = (at2, text3) => at2 + text3.length <= limit && bytes.subarray(at2, at2 + text3.length).toString("ascii") === text3;
   const skipWhitespace = (at2) => {
@@ -121103,8 +121103,8 @@ function locatePdfIndirectInteger(bytes, reference, limit, deadlineExpired) {
     if (at2 >= limit || !pdfWhitespace(bytes[at2])) continue;
     at2 = skipWhitespace(at2);
     if (at2 < 0) return null;
-    if (!matches(at2, generation)) continue;
-    at2 += generation.length;
+    if (!matches(at2, generation2)) continue;
+    at2 += generation2.length;
     if (at2 >= limit || !pdfWhitespace(bytes[at2])) continue;
     at2 = skipWhitespace(at2);
     if (at2 < 0) return null;
@@ -121347,15 +121347,15 @@ function pdfXrefSection(bytes, offset2, allowHybrid = true, bootstrapEntries, de
         if (!entry) return null;
         const objectNumber = first + index2;
         const objectOffset = Number(entry[1]);
-        const generation = Number(entry[2]);
-        if (generation > 65535 || entries2.has(objectNumber) || objectNumber === 0 && (entry[3] !== "f" || generation !== 65535)) return null;
+        const generation2 = Number(entry[2]);
+        if (generation2 > 65535 || entries2.has(objectNumber) || objectNumber === 0 && (entry[3] !== "f" || generation2 !== 65535)) return null;
         if (entry[3] === "n") {
           if (objectOffset >= offset2) return null;
           const target = /^(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+(\d{1,10})[\x00\x09\x0a\x0c\x0d\x20]+obj(?:[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(objectOffset, Math.min(bytes.length, objectOffset + 80)).toString("latin1"));
-          if (!target || Number(target[1]) !== objectNumber || Number(target[2]) !== generation) return null;
-          entries2.set(objectNumber, { type: 1, offset: objectOffset, generation });
+          if (!target || Number(target[1]) !== objectNumber || Number(target[2]) !== generation2) return null;
+          entries2.set(objectNumber, { type: 1, offset: objectOffset, generation: generation2 });
           objectOffsets2.add(objectOffset);
-        } else entries2.set(objectNumber, { type: 0, nextFree: objectOffset, generation });
+        } else entries2.set(objectNumber, { type: 0, nextFree: objectOffset, generation: generation2 });
         cursor2 += entry[0].length;
       }
     }
@@ -123686,14 +123686,14 @@ function routeHttpAdmission(database, request, response, target) {
   const runtime = database.admissionPolicy;
   if (!runtime) return false;
   try {
-    const generation = runtime.current();
+    const generation2 = runtime.current();
     let limiter = runtime.rateLimiter ?? admissionLimiters.get(runtime);
     if (!limiter) {
       limiter = createAdmissionRateLimiter();
       admissionLimiters.set(runtime, limiter);
     }
-    limiter.reconcile(generation);
-    if (!generation || generation.policy.rules.length === 0) return false;
+    limiter.reconcile(generation2);
+    if (!generation2 || generation2.policy.rules.length === 0) return false;
     const parsed = target ?? requestTarget(request);
     const raw = request.url ?? "/";
     if (raw.includes("#")) throw new Error("Invalid admission target.");
@@ -123703,7 +123703,7 @@ function routeHttpAdmission(database, request, response, target) {
     }
     const queryStart = raw.indexOf("?");
     const address = trustedClientAddress(database, request);
-    const rule = matchHttpAdmissionRule(generation, {
+    const rule = matchHttpAdmissionRule(generation2, {
       method: request.method ?? "",
       pathname: parsed.pathname,
       query: queryStart === -1 ? "" : raw.slice(queryStart + 1),
@@ -134494,10 +134494,10 @@ async function createPostgresConnection(url, signal) {
       if (closed) {
         throw new Error("database is not open");
       }
-      const generation = cancellationGeneration;
+      const generation2 = cancellationGeneration;
       const pending = queryQueue.then(
-        () => executeQueuedPostgresQuery(sql2, generation),
-        () => executeQueuedPostgresQuery(sql2, generation)
+        () => executeQueuedPostgresQuery(sql2, generation2),
+        () => executeQueuedPostgresQuery(sql2, generation2)
       );
       queryQueue = pending.catch(() => {
       });
@@ -134556,8 +134556,8 @@ async function createPostgresConnection(url, signal) {
     }
     return true;
   }
-  function executeQueuedPostgresQuery(sql2, generation) {
-    if (generation !== cancellationGeneration) {
+  function executeQueuedPostgresQuery(sql2, generation2) {
+    if (generation2 !== cancellationGeneration) {
       throw Object.assign(new Error("canceling statement due to user request"), { code: "57014" });
     }
     return executePostgresQuery(sql2);
@@ -136621,10 +136621,10 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
     const committed = await database.adapter.withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       const sql2 = transactionAdapter.dialect.sql;
-      const generation = await transactionAdapter.prepare(sql2(
+      const generation2 = await transactionAdapter.prepare(sql2(
         "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?"
       )).run(definition.name, definition.fingerprint, definition.generationToken);
-      if (Number(generation.changes) !== 1) {
+      if (Number(generation2.changes) !== 1) {
         const completedAt = database.clock.now().toISOString();
         await transactionAdapter.prepare(sql2(
           "UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?"
@@ -136708,10 +136708,10 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
   let recoveryAt = null;
   const claimed = await database.adapter.withTransaction(async (transactionAdapter) => {
     const sql2 = transactionAdapter.dialect.sql;
-    const generation = await transactionAdapter.prepare(sql2(
+    const generation2 = await transactionAdapter.prepare(sql2(
       "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?"
     )).run(definition.name, definition.fingerprint, definition.generationToken);
-    if (Number(generation.changes) !== 1) return { claim: null, superseded: true };
+    if (Number(generation2.changes) !== 1) return { claim: null, superseded: true };
     await database.scheduleOccurrenceFault?.("after-generation-lock", { scheduleName: definition.name, scheduledFor });
     const inserted = await transactionAdapter.prepare(sql2(
       "INSERT INTO [sporades_schedule_occurrences] ([id], [scheduleName], [definitionFingerprint], [generationToken], [scheduledFor], [status], [claimToken], [claimExpiresAt], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?) ON CONFLICT DO NOTHING"
@@ -140705,17 +140705,17 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     queryOperations.get(subscription)?.end("cancelled");
     queryOperations.set(subscription, operation);
     return operation.run(async () => {
-      const generation = (subscription.generation ?? 0) + 1;
-      subscription.generation = generation;
+      const generation2 = (subscription.generation ?? 0) + 1;
+      subscription.generation = generation2;
       try {
         const database = getDatabase();
         const readTables = /* @__PURE__ */ new Set();
         const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
           sessionToken: client.session.token
         }));
-        if (subscription.generation === generation) subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
+        if (subscription.generation === generation2) subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
         const data2 = subscription.style === "direct" ? result.data ?? result.rows : { rows: result.data ?? result.rows };
-        if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) {
+        if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation2) {
           operation.end("cancelled");
           return;
         }
@@ -140729,7 +140729,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         operation.end(operationOutcome(result.error));
       } catch (error) {
         operation.end(operationOutcome(error));
-        if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
+        if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation2) return;
         subscription.readTables = null;
         try {
           onError(error);
@@ -140781,13 +140781,13 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         running.pending = false;
         running.unscoped = false;
         running.dirty.clear();
-        const generation = liveQueryWriteGeneration();
+        const generation2 = liveQueryWriteGeneration();
         const initialRun = operation !== void 0;
         await sendQueryResult(client, subscription, onError, operation);
         operation = void 0;
         if (running.cancelled || client.closing || client.socket.destroyed || !clients.has(client) || client.subscriptions.get(subscription.id) !== subscription) break;
         const latestGeneration = liveQueryWriteGeneration();
-        if (!initialRun && latestGeneration !== generation && latestGeneration !== dispatchedWriteGeneration) refreshQueries();
+        if (!initialRun && latestGeneration !== generation2 && latestGeneration !== dispatchedWriteGeneration) refreshQueries();
         if (!running.pending || !running.unscoped && !liveQueryNeedsRefresh(subscription.readTables, running.dirty)) break;
       } while (true);
     } finally {
@@ -146987,11 +146987,15 @@ async function safeDirectory(dir, privateMode = false) {
   const st = await lstat11(dir);
   if (!st.isDirectory() || st.isSymbolicLink() || st.mode & (privateMode ? 63 : 18) || process.geteuid && st.uid !== process.geteuid()) fail2();
 }
-async function atomic(file, bytes, mode = 384) {
+async function atomic(file, bytes, mode = 384, owner) {
   const temp = `${file}.${randomBytes9(8).toString("hex")}.tmp`;
   const handle = await open4(temp, "wx", mode);
   try {
     await handle.writeFile(bytes);
+    if (owner) {
+      await handle.chown(owner.uid, owner.gid);
+      await handle.chmod(mode);
+    }
     await handle.sync();
   } finally {
     await handle.close();
@@ -147031,13 +147035,24 @@ async function validateEnvironment(dir, packageRoot) {
   if (setup.inspectEnvironment((await regular(path18.join(dir, ".env"))).toString()).missing.length) fail2();
   await regular(path18.join(dir, ".compose.env"));
 }
+async function generation(file) {
+  const st = await exists(file);
+  return st ? { hash: digest(await regular(file)), mode: st.mode & 511, uid: st.uid, gid: st.gid } : null;
+}
+function recoveryConflict() {
+  throw commandError("Monitoring maintenance could not complete.", "Interrupted publication recovery found operator edits or an unverifiable legacy journal. All files and the journal were preserved. Keep services stopped, save your overrides separately, and reconcile journalled files with the recorded original generation before retrying. Do not delete the journal.");
+}
 async function apply(dir, stateDir, next, recordPrevious = true) {
   const before = {};
-  for (const name2 of Object.keys(next)) {
+  const original = {}, intended = {};
+  const parent = await lstat11(dir);
+  for (const [name2, bytes] of Object.entries(next)) {
     const f2 = path18.join(dir, name2);
     before[name2] = await exists(f2) ? (await regular(f2)).toString("base64") : null;
+    original[name2] = await generation(f2);
+    intended[name2] = bytes === null ? null : { hash: digest(Buffer.from(bytes, "base64")), mode: 420 & ~process.umask(), uid: process.geteuid(), gid: parent.mode & 1024 ? parent.gid : process.getegid() };
   }
-  await atomic(path18.join(stateDir, "journal.json"), JSON.stringify(before));
+  await atomic(path18.join(stateDir, "journal.json"), JSON.stringify({ schemaVersion: 1, before, original, intended }));
   for (const [name2, bytes] of Object.entries(next)) {
     if (bytes === null) await rm9(path18.join(dir, name2), { force: true });
     else await atomic(path18.join(dir, name2), Buffer.from(bytes, "base64"), 420);
@@ -147052,10 +147067,33 @@ function validImage(image) {
 async function recover(dir, stateDir) {
   const journal = path18.join(stateDir, "journal.json");
   if (!await exists(journal)) return;
-  const before = validImage(JSON.parse((await regular(journal)).toString()));
+  const record = JSON.parse((await regular(journal)).toString());
+  const before = validImage(record.schemaVersion === 1 ? record.before : record);
+  if (record.schemaVersion !== 1) {
+    for (const [name2, value] of Object.entries(before)) {
+      if ((await generation(path18.join(dir, name2)))?.hash !== (value === null ? void 0 : digest(Buffer.from(value, "base64")))) recoveryConflict();
+    }
+    await rm9(journal);
+    return;
+  }
+  for (const values of [record.original, record.intended]) {
+    if (!values || typeof values !== "object" || Array.isArray(values) || !same(Object.keys(before), Object.keys(values))) fail2();
+    for (const value of Object.values(values)) {
+      if (value !== null && (typeof value !== "object" || !/^[a-f0-9]{64}$/.test(value.hash) || !Number.isSafeInteger(value.mode) || value.mode < 0 || value.mode > 511 || value.mode & 18 || !Number.isSafeInteger(value.uid) || value.uid < 0 || !Number.isSafeInteger(value.gid) || value.gid < 0)) fail2();
+    }
+  }
   for (const [name2, value] of Object.entries(before)) {
-    if (value === null) await rm9(path18.join(dir, name2), { force: true });
-    else await atomic(path18.join(dir, name2), Buffer.from(value, "base64"), 420);
+    if ((record.original[name2]?.hash ?? null) !== (value === null ? null : digest(Buffer.from(value, "base64")))) fail2();
+    const current2 = await generation(path18.join(dir, name2));
+    if (!same({ current: current2 }, { current: record.original[name2] }) && !same({ current: current2 }, { current: record.intended[name2] })) recoveryConflict();
+  }
+  for (const [name2, value] of Object.entries(before)) {
+    const file = path18.join(dir, name2), original = record.original[name2];
+    if (same({ current: await generation(file) }, { current: original })) continue;
+    if (value === null) await rm9(file, { force: true });
+    else {
+      await atomic(file, Buffer.from(value, "base64"), original.mode, original);
+    }
   }
   await rm9(journal);
 }

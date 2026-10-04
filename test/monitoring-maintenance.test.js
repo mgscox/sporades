@@ -1,9 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, lstat, chmod } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 const root = process.cwd();
+const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+async function publicationJournal(stack, name, before, after) {
+  const st = await lstat(path.join(stack, name));
+  const attributes = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid };
+  return { schemaVersion: 1, before: { [name]: before.toString('base64') }, original: { [name]: { hash: digest(before), ...attributes } }, intended: { [name]: { hash: digest(after), ...attributes } } };
+}
 
 async function fixture(t) {
   const dir = await mkdtemp(path.join(root, '.sporades/maintenance-test-'));
@@ -97,7 +104,7 @@ test('interrupted generated-file publication is recovered before retry; rollback
   const { stack, cli } = await fixture(t);
   const saved = await readFile(path.join(stack, 'README.md'));
   await mkdir(path.join(stack, '.maintenance'), { mode: 0o700 });
-  await writeFile(path.join(stack, '.maintenance/journal.json'), JSON.stringify({ 'README.md': saved.toString('base64') }), { mode: 0o600 });
+  await writeFile(path.join(stack, '.maintenance/journal.json'), JSON.stringify(await publicationJournal(stack, 'README.md', saved, 'interrupted replacement')), { mode: 0o600 });
   await writeFile(path.join(stack, 'README.md'), 'interrupted replacement');
   assert.equal(cli(['upgrade', '--dir', stack]).status, 0);
   assert.deepEqual(await readFile(path.join(stack, 'README.md')), saved);
@@ -115,7 +122,8 @@ test('a live maintenance owner excludes concurrency and SIGKILL releases ownersh
   const { once } = await import('node:events');
   const state = path.join(stack, '.maintenance'); await mkdir(state, { mode: 0o700 });
   const original = await readFile(path.join(stack, 'README.md'));
-  const child = spawn(process.execPath, ['--input-type=module', '-e', `import {DatabaseSync} from 'node:sqlite';import {writeFileSync,chmodSync} from 'node:fs';const db=new DatabaseSync(${JSON.stringify(path.join(state, 'lock.sqlite'))});chmodSync(${JSON.stringify(path.join(state, 'lock.sqlite'))},0o600);db.exec('BEGIN IMMEDIATE');writeFileSync(${JSON.stringify(path.join(state, 'journal.json'))},${JSON.stringify(JSON.stringify({ 'README.md': original.toString('base64') }))},{mode:0o600});writeFileSync(${JSON.stringify(path.join(stack, 'README.md'))},'interrupted candidate');process.stdout.write('ready');setInterval(()=>{},1000);`], { stdio: ['ignore', 'pipe', 'ignore'] });
+  const journal = await publicationJournal(stack, 'README.md', original, 'interrupted candidate');
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `import {DatabaseSync} from 'node:sqlite';import {writeFileSync,chmodSync} from 'node:fs';const db=new DatabaseSync(${JSON.stringify(path.join(state, 'lock.sqlite'))});chmodSync(${JSON.stringify(path.join(state, 'lock.sqlite'))},0o600);db.exec('BEGIN IMMEDIATE');writeFileSync(${JSON.stringify(path.join(state, 'journal.json'))},${JSON.stringify(JSON.stringify(journal))},{mode:0o600});writeFileSync(${JSON.stringify(path.join(stack, 'README.md'))},'interrupted candidate');process.stdout.write('ready');setInterval(()=>{},1000);`], { stdio: ['ignore', 'pipe', 'ignore'] });
   t.after(() => child.kill('SIGKILL'));
   await once(child.stdout, 'data');
   assert.equal(cli(['upgrade', '--dir', stack]).status, 1, 'active OS writer lock excludes publication');
@@ -124,6 +132,74 @@ test('a live maintenance owner excludes concurrency and SIGKILL releases ownersh
   const recovered = cli(['upgrade', '--dir', stack]);
   assert.equal(recovered.status, 0, recovered.stdout);
   assert.deepEqual(await readFile(path.join(stack, 'README.md')), original);
+});
+
+test('SIGKILL after shipped CLI publication preserves subsequent operator edits and the entire journal', async t => {
+  for (const variant of ['collector.yaml', 'README.md', 'permissions', 'deletion', 'unmodified recovery']) {
+    await t.test(variant, async t => {
+      const { dir, stack, cli } = await fixture(t);
+      const manifestFile = path.join(stack, 'stack-manifest.json');
+      const manifest = JSON.parse(await readFile(manifestFile));
+      for (const name of ['README.md', 'collector.yaml']) {
+        const old = '# previous generated release\n' + await readFile(path.join(stack, name), 'utf8');
+        await writeFile(path.join(stack, name), old);
+        manifest.assets[name] = digest(old);
+      }
+      await writeFile(manifestFile, JSON.stringify(manifest));
+      const hook = path.join(dir, 'interrupt.cjs');
+      await writeFile(hook, `const fs=require('node:fs/promises');const rename=fs.rename;fs.rename=async(...args)=>{await rename(...args);if(args[1]===process.env.INTERRUPT_FILE)process.kill(process.pid,'SIGKILL');};require('node:module').syncBuiltinESMExports();`);
+      const interrupted = cli(['upgrade', '--dir', stack], { NODE_OPTIONS: '--require=' + hook, INTERRUPT_FILE: path.join(stack, 'collector.yaml') });
+      assert.equal(interrupted.signal, 'SIGKILL', interrupted.stdout + interrupted.stderr);
+      const journalFile = path.join(stack, '.maintenance/journal.json');
+      const journal = await readFile(journalFile);
+      const edited = path.join(stack, variant === 'README.md' ? 'README.md' : 'collector.yaml');
+      if (variant === 'unmodified recovery') {
+        // A second interruption while restoring must also remain recoverable.
+        const again = cli(['upgrade', '--dir', stack], { NODE_OPTIONS: '--require=' + hook, INTERRUPT_FILE: path.join(stack, 'README.md') });
+        assert.equal(again.signal, 'SIGKILL', again.stdout + again.stderr);
+        assert.equal(cli(['upgrade', '--dir', stack]).status, 0);
+        await assert.rejects(readFile(journalFile), { code: 'ENOENT' });
+        assert.deepEqual(await readFile(path.join(stack, 'collector.yaml')), await readFile(path.join(root, 'monitoring/trace/collector.yaml')));
+        return;
+      }
+      if (variant === 'permissions') await chmod(edited, 0o600);
+      else if (variant === 'deletion') await rm(edited);
+      else await writeFile(edited, await readFile(edited, 'utf8') + '\n# operator override SECRET\n');
+      const names = Object.keys(JSON.parse(journal).before);
+      const snapshot = await Promise.all(names.map(async name => ({ name, bytes: await readFile(path.join(stack, name)).catch(e => { if (e.code === 'ENOENT') return null; throw e; }), mode: await lstat(path.join(stack, name)).then(st => st.mode).catch(e => { if (e.code === 'ENOENT') return null; throw e; }) })));
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const retry = cli(['upgrade', '--dir', stack]);
+        assert.equal(retry.status, 1, retry.stdout + retry.stderr);
+        assert.match(retry.stdout + retry.stderr, /operator edits/);
+        assert.doesNotMatch(retry.stdout + retry.stderr, /SECRET/);
+        assert.deepEqual(await readFile(journalFile), journal);
+        for (const { name, bytes, mode } of snapshot) {
+          const file = path.join(stack, name);
+          if (bytes === null) await assert.rejects(readFile(file), { code: 'ENOENT' });
+          else { assert.deepEqual(await readFile(file), bytes); assert.equal((await lstat(file)).mode, mode); }
+        }
+      }
+    });
+  }
+});
+
+test('legacy publication journals refuse unverifiable replacements without losing operator edits', async t => {
+  const { stack, cli } = await fixture(t);
+  const file = path.join(stack, 'README.md'), before = await readFile(file);
+  await mkdir(path.join(stack, '.maintenance'), { mode: 0o700 });
+  const journalFile = path.join(stack, '.maintenance/journal.json');
+  const journal = JSON.stringify({ 'README.md': before.toString('base64') });
+  await writeFile(journalFile, journal, { mode: 0o600 });
+  await writeFile(file, 'operator override SECRET');
+  const result = cli(['upgrade', '--dir', stack]);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout + result.stderr, /legacy journal/);
+  assert.doesNotMatch(result.stdout + result.stderr, /SECRET/);
+  assert.equal(await readFile(file, 'utf8'), 'operator override SECRET');
+  assert.equal(await readFile(journalFile, 'utf8'), journal);
+  await writeFile(file, before);
+  assert.equal(cli(['upgrade', '--dir', stack]).status, 0);
+  await assert.rejects(readFile(journalFile), { code: 'ENOENT' });
 });
 
 test('schema-3 upgrade requires a matching trusted baseline and unsafe generated paths fail closed', async t => {
