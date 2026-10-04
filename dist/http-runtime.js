@@ -100,8 +100,9 @@
 //
 // `checkRuntimeSqlite` is exported for a test rather than for a caller, as it was before the move.
 //
-// This module reaches no Node builtin, so ADR-0042's `process.getBuiltinModule` accessor does not
-// appear in it. `Buffer` and `URL` are globals.
+// Upgrade denials use Node's ServerResponse to retain ordinary HTTP serialization and headers.
+// Static builtin imports are supported by the module graph (ADR-0042's constraint has expired).
+import { ServerResponse } from "node:http";
 import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
@@ -228,6 +229,44 @@ export function requestTarget(request) {
         throw error;
     }
     return target;
+}
+/** Apply HTTP admission before any upgrade, including unsupported Capsule paths. */
+export function routeWebSocketAdmission(database, request, socket) {
+    const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+    // These GET targets belong exclusively to the existing control dispatch. They have
+    // no WebSocket transport; reject without reading a generation or counting quotas.
+    if (request.method === "GET" && (target?.pathname === "/__sporades/health/runtime" || target?.pathname === "/__sporades/connection-token")) {
+        socket.destroy();
+        return true;
+    }
+    if (!database.admissionPolicy)
+        return false;
+    const response = new ServerResponse(request);
+    // An upgrade socket no longer has the HTTP server's ordinary error handling.
+    // Buffering a denial can race a client reset; own both error surfaces before
+    // end() or assignSocket() can flush, and keep failures local to this connection.
+    const closeConnection = () => { response.destroy(); socket.destroy(); };
+    response.on("error", closeConnection);
+    // Install the ordinary response headers, but never auto-answer upgrade preflight.
+    prepareHttpSecurity(database, request, response, () => true);
+    if (!routeHttpAdmission(database, request, response, target ?? undefined))
+        return false;
+    // Denial is buffered until admission completes. No response owns an accepted socket.
+    socket.on("error", closeConnection);
+    socket.once("close", () => response.destroy());
+    response.once("finish", () => { if (!socket.destroyed)
+        socket.end(); });
+    if (socket.destroyed || !socket.writable || socket.writableEnded) {
+        closeConnection();
+        return true;
+    }
+    try {
+        response.assignSocket(socket);
+    }
+    catch {
+        closeConnection();
+    }
+    return true;
 }
 function boundedRequestTargetPath(target) {
     const withoutQuery = String(target ?? "/").split(/[?#]/, 1)[0];

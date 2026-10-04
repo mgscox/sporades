@@ -36,6 +36,7 @@ import {
   routeConnectionToken,
   routeEndpoint,
   routeHttpAdmission,
+  routeWebSocketAdmission,
   routeRuntimeHealth,
   routeSporadesAuth,
   shutdownAndCloseDatabase,
@@ -252,6 +253,7 @@ const server = createServer(async (request, response) => telemetry.run(request, 
 }));
 
 server.on("upgrade", (request, socket) => {
+  if (routeWebSocketAdmission(database, request, socket)) return;
   const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
   if (!target) {
     socket.destroy();

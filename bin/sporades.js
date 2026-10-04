@@ -102734,6 +102734,9 @@ function chainMaybePromise(steps) {
   return pending ?? void 0;
 }
 
+// src/http-runtime.ts
+import { ServerResponse } from "node:http";
+
 // src/access-keys-runtime.ts
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
 var accessKeyLifecycleAuditEventsByContext = /* @__PURE__ */ new WeakMap();
@@ -123741,6 +123744,37 @@ function requestTarget(request) {
     throw error;
   }
   return target;
+}
+function routeWebSocketAdmission(database, request, socket) {
+  const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
+  if (request.method === "GET" && (target?.pathname === "/__sporades/health/runtime" || target?.pathname === "/__sporades/connection-token")) {
+    socket.destroy();
+    return true;
+  }
+  if (!database.admissionPolicy) return false;
+  const response = new ServerResponse(request);
+  const closeConnection = () => {
+    response.destroy();
+    socket.destroy();
+  };
+  response.on("error", closeConnection);
+  prepareHttpSecurity(database, request, response, () => true);
+  if (!routeHttpAdmission(database, request, response, target ?? void 0)) return false;
+  socket.on("error", closeConnection);
+  socket.once("close", () => response.destroy());
+  response.once("finish", () => {
+    if (!socket.destroyed) socket.end();
+  });
+  if (socket.destroyed || !socket.writable || socket.writableEnded) {
+    closeConnection();
+    return true;
+  }
+  try {
+    response.assignSocket(socket);
+  } catch {
+    closeConnection();
+  }
+  return true;
 }
 function boundedRequestTargetPath(target) {
   const withoutQuery = String(target ?? "/").split(/[?#]/, 1)[0];
@@ -151818,6 +151852,7 @@ async function startDevSession(options) {
     }
   }));
   server.on("upgrade", (request, socket) => {
+    if (routeWebSocketAdmission(runtime.database, request, socket)) return;
     const target = interpretHttpRequestTarget(request.url ?? "/", request.method);
     if (!target) {
       socket.destroy();
