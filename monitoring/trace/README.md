@@ -197,3 +197,16 @@ for Host-origin verified activation and fresh inventory registration. Keep the o
 profile for rollback and explicitly retire stale expectations at the previous
 server; historical data is untouched. See the
 [operator reference](https://github.com/mgscox/sporades/blob/main/docs/reference/telemetry-diagnostics.md).
+
+## Resource and API warnings
+
+The [starting performance policy](performance-policy.md) covers Host contention,
+RAM/swap, disk/inodes, monitoring storage, independent API 5xx/p95 and process
+pressure candidates. Configure `ALERT_POLICY_JSON` in the operator `.env`, declare
+intentional stream routes and expected Job services, then regenerate and validate
+rules. Prometheus remains the only evaluator and Alertmanager delivers recovery.
+The provisioned Fleet dashboard links acknowledged inventory and warnings to
+Capsule API/resources, Host pressure, Caddy and monitoring pipeline views.
+Lifecycle/deployment annotations use acknowledged inventory timestamps rather
+than Docker events. Parent #107 supersedes the original container-quota/OOM
+criteria; no external container collector or automatic remediation is introduced.

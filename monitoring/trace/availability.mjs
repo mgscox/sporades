@@ -1,10 +1,11 @@
+import { statfs } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createBlackboxDiscovery } from './blackbox-config.mjs';
 import { createInventoryStore } from './inventory-store.mjs';
 
 // This listener is private to the Compose network. It has no write authority,
 // sender credentials or outbound probe loop. Prometheus owns scheduling.
-export function createAvailabilityServer({ inventoryDirectory, blackboxDirectory, blackboxReloadUrl }) {
+export function createAvailabilityServer({ inventoryDirectory, blackboxDirectory, blackboxReloadUrl, storagePaths = {} }) {
   const store = createInventoryStore(inventoryDirectory);
   const discover = blackboxDirectory ? createBlackboxDiscovery(blackboxDirectory, blackboxReloadUrl) : null;
   let probeFreshUntil = 0;
@@ -17,6 +18,16 @@ export function createAvailabilityServer({ inventoryDirectory, blackboxDirectory
       const targets = [];
       const lines = discover ? [`sporades_probe_configuration_fresh ${Date.now() < probeFreshUntil ? 1 : 0}`] : [];
       const label = value => JSON.stringify(value);
+      if (req.url === '/metrics') for (const backend of ['metrics', 'traces']) {
+        if (!storagePaths[backend]) continue;
+        try {
+          const fs = await statfs(storagePaths[backend]);
+          if (!(fs.blocks > 0) || !(fs.bsize > 0)) throw new Error();
+          lines.push(`sporades_monitoring_storage_stat_ok{backend=${label(backend)}} 1`);
+          lines.push(`sporades_monitoring_storage_available_bytes{backend=${label(backend)}} ${fs.bavail * fs.bsize}`);
+          lines.push(`sporades_monitoring_storage_size_bytes{backend=${label(backend)}} ${fs.blocks * fs.bsize}`);
+        } catch { lines.push(`sporades_monitoring_storage_stat_ok{backend=${label(backend)}} 0`); }
+      }
       for (const { inventory: host, acknowledgedAt, expectationSince } of inventory) {
         const active = host.capsules.filter(capsule => ['running', 'failed'].includes(capsule.state));
         const h = `host=${label(host.host)}`;
@@ -25,6 +36,7 @@ export function createAvailabilityServer({ inventoryDirectory, blackboxDirectory
         lines.push(`sporades_inventory_acknowledged_seconds{${h}} ${Date.parse(acknowledgedAt) / 1000}`);
         for (const capsule of host.capsules) {
           lines.push(`sporades_inventory_state{${h},service_name=${label(capsule.id)},state=${label(capsule.state)}} 1`);
+          lines.push(`sporades_capsule_lifecycle_changed_seconds{${h},service_name=${label(capsule.id)},state=${label(capsule.state)}} ${Date.parse(capsule.changedAt) / 1000}`);
           if (!active.includes(capsule)) continue;
           lines.push(`sporades_expected_capsule{${h},service_name=${label(capsule.id)}} 1`);
           lines.push(`sporades_capsule_expected_since_seconds{${h},service_name=${label(capsule.id)}} ${Date.parse(expectationSince[capsule.id] ?? acknowledgedAt) / 1000}`);

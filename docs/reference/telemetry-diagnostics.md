@@ -151,3 +151,17 @@ Exercise a destination with failed TLS/auth/storage, confirm the old binding and
 traffic remain working, then exercise interruption and rollback. Account for old
 missing-target expectations and prove stored history survives. Local HTTPS tests
 and Docker boundary fakes do not establish this separate-VM acceptance.
+
+## Resource and API warnings
+
+The shipped [starting policy](./monitoring-performance.md) defines
+configurable Host contention/capacity, monitoring disk, API 5xx/p95, and process
+pressure candidate warnings. These are starting thresholds, not SLO promises.
+Set `ALERT_POLICY_JSON` in the Monitoring server's operator-owned `.env`; declare
+exact deliberate stream routes and expected Job services. Regenerate with
+`node setup.mjs`, check the generated Prometheus rules, and recreate Prometheus
+using the existing project name. Alertmanager retains existing delivery/silencing
+and resolved notifications. Fleet/resource/API navigation and acknowledged
+lifecycle/deployment annotations share the independent metric source; sampled
+traces do not determine percentiles. No container-quota/OOM collector or
+automatic restart is added, following the revised scope of parent #107.

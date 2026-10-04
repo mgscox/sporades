@@ -3,6 +3,7 @@ global:
   evaluation_interval: 15s
 rule_files:
   - /etc/prometheus/availability-rules.yaml
+  - /etc/prometheus/performance-rules.yaml
   - /etc/prometheus/pipeline-rules.yaml
 alerting:
   alertmanagers:

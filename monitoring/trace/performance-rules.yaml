@@ -1,0 +1,202 @@
+{
+  "groups": [
+    {
+      "name": "sporades-performance",
+      "interval": "15s",
+      "rules": [
+        {
+          "alert": "SporadesHostCpuContention",
+          "expr": "(1 - avg by (sporades_host) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) > 0.9) and on (sporades_host) (avg by (sporades_host) (rate(node_pressure_cpu_waiting_seconds_total[5m])) > 0.1)",
+          "for": "300s",
+          "labels": {
+            "severity": "warning",
+            "category": "resource"
+          },
+          "annotations": {
+            "summary": "Host CPU contention for {{ $labels.sporades_host }}",
+            "action": "Check CPU PSI, load, iowait and steal before attributing contention to a Capsule. Missing PSI is unsupported, not zero.",
+            "window": "Inspect the last 30 minutes; sustained window 300s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-hosts?var-host={{ $labels.sporades_host }}&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesHostMemoryLow",
+          "expr": "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.15",
+          "for": "600s",
+          "labels": {
+            "severity": "warning",
+            "category": "resource"
+          },
+          "annotations": {
+            "summary": "Low available Host RAM",
+            "action": "Inspect available RAM, swap and memory PSI; RSS is not a container limit.",
+            "window": "Inspect the last 30 minutes; sustained window 600s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-hosts?var-host={{ $labels.sporades_host }}&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesHostMemoryCritical",
+          "expr": "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.05",
+          "for": "120s",
+          "labels": {
+            "severity": "critical",
+            "category": "resource"
+          },
+          "annotations": {
+            "summary": "Critically low available Host RAM",
+            "action": "Check memory pressure and working sets; no automatic restart is performed.",
+            "window": "Inspect the last 30 minutes; sustained window 120s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-hosts?var-host={{ $labels.sporades_host }}&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesHostSwapPressure",
+          "expr": "(rate(node_vmstat_pswpout[5m]) > 1) and on (sporades_host) (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.15)",
+          "for": "600s",
+          "labels": {
+            "severity": "warning",
+            "category": "resource"
+          },
+          "annotations": {
+            "summary": "Host swapping with low available RAM",
+            "action": "Inspect paging, swap capacity and memory PSI.",
+            "window": "Inspect the last 30 minutes; sustained window 600s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-hosts?var-host={{ $labels.sporades_host }}&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesHostIoPressure",
+          "expr": "rate(node_pressure_io_stalled_seconds_total[5m]) > 0.2",
+          "for": "600s",
+          "labels": {
+            "severity": "warning",
+            "category": "resource"
+          },
+          "annotations": {
+            "summary": "Host I/O stalls",
+            "action": "Inspect disk latency, throughput and backing filesystems.",
+            "window": "Inspect the last 30 minutes; sustained window 600s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-hosts?var-host={{ $labels.sporades_host }}&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesHostDiskLow",
+          "expr": "((node_filesystem_avail_bytes{fstype!~\"tmpfs|devtmpfs|overlay|squashfs|nsfs|proc|sysfs\",mountpoint!~\"/proc(/.*)?|/sys(/.*)?|/dev(/.*)?\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|devtmpfs|overlay|squashfs|nsfs|proc|sysfs\",mountpoint!~\"/proc(/.*)?|/sys(/.*)?|/dev(/.*)?\"} < 0.1) or (node_filesystem_avail_bytes{fstype!~\"tmpfs|devtmpfs|overlay|squashfs|nsfs|proc|sysfs\",mountpoint!~\"/proc(/.*)?|/sys(/.*)?|/dev(/.*)?\"} < 1073741824)) and (node_filesystem_readonly{fstype!~\"tmpfs|devtmpfs|overlay|squashfs|nsfs|proc|sysfs\",mountpoint!~\"/proc(/.*)?|/sys(/.*)?|/dev(/.*)?\"} == 0)",
+          "for": "300s",
+          "labels": {
+            "severity": "warning",
+            "category": "resource"
+          },
+          "annotations": {
+            "summary": "Low writable Host disk capacity",
+            "action": "Inspect {{ $labels.mountpoint }} and Docker/Sporades data retention. Preserve Capsule data.",
+            "window": "Inspect the last 30 minutes; sustained window 300s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-hosts?var-host={{ $labels.sporades_host }}&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesHostInodesLow",
+          "expr": "(node_filesystem_files_free{fstype!~\"tmpfs|devtmpfs|overlay|squashfs|nsfs|proc|sysfs\",mountpoint!~\"/proc(/.*)?|/sys(/.*)?|/dev(/.*)?\"} / node_filesystem_files{fstype!~\"tmpfs|devtmpfs|overlay|squashfs|nsfs|proc|sysfs\",mountpoint!~\"/proc(/.*)?|/sys(/.*)?|/dev(/.*)?\"} < 0.1) and (node_filesystem_readonly{fstype!~\"tmpfs|devtmpfs|overlay|squashfs|nsfs|proc|sysfs\",mountpoint!~\"/proc(/.*)?|/sys(/.*)?|/dev(/.*)?\"} == 0)",
+          "for": "300s",
+          "labels": {
+            "severity": "warning",
+            "category": "resource"
+          },
+          "annotations": {
+            "summary": "Low Host filesystem inodes",
+            "action": "Inspect file growth on {{ $labels.mountpoint }}; bytes alone do not show inode exhaustion.",
+            "window": "Inspect the last 30 minutes; sustained window 300s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-hosts?var-host={{ $labels.sporades_host }}&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesMonitoringDiskLow",
+          "expr": "(sporades_monitoring_storage_available_bytes / sporades_monitoring_storage_size_bytes < 0.1) or (sporades_monitoring_storage_available_bytes < 1073741824)",
+          "for": "300s",
+          "labels": {
+            "severity": "warning",
+            "category": "resource"
+          },
+          "annotations": {
+            "summary": "Low monitoring storage capacity",
+            "action": "Inspect {{ $labels.backend }} storage and retention; back up before maintenance. Shared filesystems are not additive.",
+            "window": "Inspect the last 30 minutes; sustained window 300s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-pipeline?&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesMonitoringDiskUnknown",
+          "expr": "sporades_monitoring_storage_stat_ok == 0",
+          "for": "60s",
+          "labels": {
+            "severity": "warning",
+            "category": "resource"
+          },
+          "annotations": {
+            "summary": "Monitoring storage capacity unavailable",
+            "action": "Verify read-only backend filesystem mounts; unavailable measurements are not healthy zero.",
+            "window": "Inspect the last 30 minutes; sustained window 60s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-pipeline?&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesApiErrors",
+          "expr": "((sum by (service_name, deployment_environment_name) (increase(http_server_request_count_total{http_response_status_code=\"5xx\"}[5m]))) / (sum by (service_name, deployment_environment_name) (increase(http_server_request_count_total[5m]))) > 0.05) and (sum by (service_name, deployment_environment_name) (increase(http_server_request_count_total[5m])) >= 100) and on (service_name) (max by (service_name) (sporades_expected_capsule) == 1)",
+          "for": "0s",
+          "labels": {
+            "severity": "warning",
+            "category": "api"
+          },
+          "annotations": {
+            "summary": "Sustained API 5xx for {{ $labels.service_name }}",
+            "action": "Inspect errors and deployments. Quiet services use independent probes rather than error percentages.",
+            "window": "Inspect the last 30 minutes; sustained window 0s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-api?var-service={{ $labels.service_name }}&var-environment={{ $labels.deployment_environment_name }}&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesApiLatency",
+          "expr": "((histogram_quantile(0.95, sum by (le, service_name, deployment_environment_name, http_route) (rate(http_server_request_duration_seconds_bucket{sporades_http_outcome!=\"abort\"}[5m]))) > 1) and (sum by (service_name, deployment_environment_name, http_route) (increase(http_server_request_duration_seconds_count{sporades_http_outcome!=\"abort\"}[5m])) >= 100)) and on (service_name) (max by (service_name) (sporades_expected_capsule) == 1)",
+          "for": "600s",
+          "labels": {
+            "severity": "warning",
+            "category": "api"
+          },
+          "annotations": {
+            "summary": "API p95 over route budget",
+            "action": "Inspect the independent request histogram, route budget and recent deployments. Deliberate streams are excluded.",
+            "window": "Inspect the last 30 minutes; sustained window 600s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-api?var-service={{ $labels.service_name }}&var-environment={{ $labels.deployment_environment_name }}&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        },
+        {
+          "alert": "SporadesProcessPressureCandidate",
+          "expr": "(sum by (service_name, deployment_environment_name, instance) (rate(process_cpu_time_seconds_total{service_name!=\"sporades-stack-health\"}[5m])) > 0.9) and on (service_name, deployment_environment_name, instance) (process_event_loop_delay_p99_milliseconds > 100) and on (service_name,deployment_environment_name) (sum by (service_name,deployment_environment_name) (rate(http_server_request_count_total{http_response_status_code=\"5xx\"}[5m])) > 0) and on (service_name) (max by (service_name) (sporades_expected_capsule) == 1)",
+          "for": "300s",
+          "labels": {
+            "severity": "warning",
+            "category": "resource"
+          },
+          "annotations": {
+            "summary": "Process pressure with event-loop delay and API failures",
+            "action": "Candidate for investigation, not proof of a runaway. One CPU core is not total Host saturation; inspect expected Jobs and Host pressure.",
+            "window": "Inspect the last 30 minutes; sustained window 300s.",
+            "dashboard": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-resources?var-service={{ $labels.service_name }}&var-environment={{ $labels.deployment_environment_name }}&from=now-30m&to=now",
+            "fleet": "__MONITORING_PUBLIC_URL__/grafana/d/sporades-fleet?from=now-30m&to=now"
+          }
+        }
+      ]
+    }
+  ]
+}
