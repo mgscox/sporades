@@ -146722,7 +146722,7 @@ function renderCliHelp(command) {
 }
 
 // src/cli/monitoring-maintenance.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
+import { spawn as spawn2, spawnSync as spawnSync2 } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { createHash as createHash16, randomBytes as randomBytes9 } from "node:crypto";
 import { chown, chmod as chmod2, lstat as lstat11, mkdir as mkdir9, open as open4, readFile as readFile11, readdir as readdir5, rename as rename8, rm as rm9, writeFile as writeFile8 } from "node:fs/promises";
@@ -147100,6 +147100,95 @@ async function checkArchive(dir, backup, file) {
   }
   if (run2("-tvf").split("\n").some((line) => !/^[-d]/.test(line))) fail2();
 }
+async function storageGuards(dir, names) {
+  const owner = randomBytes9(16).toString("hex");
+  const guards = [];
+  const release = async () => {
+    for (const guard of guards.reverse()) {
+      guard.child.stdin?.end();
+      try {
+        docker(["rm", "--force", guard.id], dir);
+      } catch {
+      }
+      await guard.closed;
+    }
+  };
+  try {
+    for (const volume of Object.values(names).sort()) {
+      const name2 = `sporades-storage-guard-${digest(volume)}`;
+      const child = spawn2("docker", [
+        "run",
+        "--rm",
+        "--interactive",
+        "--name",
+        name2,
+        "--label",
+        `com.sporades.storage-guard=${owner}`,
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "busybox:1.37.0",
+        "sh",
+        "-c",
+        "echo locked; cat >/dev/null"
+      ], { cwd: dir, stdio: ["pipe", "pipe", "ignore"] });
+      const closed = new Promise((resolve2) => {
+        child.once("close", () => resolve2());
+        child.once("error", () => resolve2());
+      });
+      try {
+        await new Promise((resolve2, reject) => {
+          const timer = setTimeout(() => reject(new Error("guard unavailable")), 3e4);
+          let output = "";
+          const finish = (error) => {
+            clearTimeout(timer);
+            error ? reject(error) : resolve2();
+          };
+          child.once("error", finish);
+          child.once("close", () => finish(new Error("guard unavailable")));
+          child.stdout?.on("data", (data2) => {
+            output += data2.toString();
+            if (output === "locked\n") finish();
+            else if (output.length > 128) finish(new Error("guard unavailable"));
+          });
+        });
+        const meta2 = JSON.parse(docker(["inspect", name2], dir))[0];
+        if (meta2?.Config?.Labels?.["com.sporades.storage-guard"] !== owner || !meta2.State?.Running || typeof meta2.Id !== "string") fail2();
+        guards.push({ id: meta2.Id, child, closed });
+      } catch {
+        child.stdin?.end();
+        try {
+          const meta2 = JSON.parse(docker(["inspect", name2], dir))[0];
+          if (meta2?.Config?.Labels?.["com.sporades.storage-guard"] === owner) docker(["rm", "--force", meta2.Id], dir);
+        } catch {
+        }
+        child.kill("SIGTERM");
+        await closed;
+        fail2();
+      }
+    }
+    return {
+      release,
+      check: () => {
+        for (const guard of guards) {
+          const meta2 = JSON.parse(docker(["inspect", guard.id], dir))[0];
+          if (meta2?.Config?.Labels?.["com.sporades.storage-guard"] !== owner || !meta2.State?.Running) fail2();
+        }
+      }
+    };
+  } catch {
+    await release();
+    fail2();
+  }
+}
+function ownedVolume(dir, name2, id2) {
+  const meta2 = JSON.parse(docker(["volume", "inspect", name2], dir))[0];
+  if (meta2?.Name !== name2 || meta2.Driver !== "local" || meta2.Labels?.["com.sporades.restore"] !== id2) fail2();
+}
 async function storageMaintenance(action, dir, packageRoot, backup) {
   if (!backup) fail2();
   const location = path18.resolve(backup);
@@ -147122,6 +147211,8 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
       await copyTree(dir, path18.join(stage, "config"), /* @__PURE__ */ new Set([".maintenance", "backups", "data"]));
       for (const [key, name2] of Object.entries(names2)) {
         docker(["volume", "inspect", name2], dir);
+        const file = await open4(path18.join(stage, `${key}.tar`), "wx", 384);
+        await file.close();
         archive(dir, name2, stage, `${key}.tar`);
         await chmod2(path18.join(stage, `${key}.tar`), 384);
       }
@@ -147175,23 +147266,29 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
   await restoreMetadata(dir, snapshot.configMetadata);
   stopped(dir);
   const names = volumes(dir);
-  idleVolumes(dir, names);
-  if (prior?.names && JSON.stringify(prior.names) !== JSON.stringify(names)) fail2();
-  const existing = docker(["volume", "ls", "--format", "{{.Name}}"], dir).split("\n");
-  for (const name2 of Object.values(names)) {
-    if (existing.includes(name2)) {
-      const meta2 = JSON.parse(docker(["volume", "inspect", name2], dir))[0];
-      if (meta2?.Labels?.["com.sporades.restore"] !== id2) fail2();
+  const guards = await storageGuards(dir, names);
+  try {
+    idleVolumes(dir, names);
+    if (prior?.names && JSON.stringify(prior.names) !== JSON.stringify(names)) fail2();
+    const existing = docker(["volume", "ls", "--format", "{{.Name}}"], dir).split("\n");
+    for (const name2 of Object.values(names)) if (existing.includes(name2)) ownedVolume(dir, name2, id2);
+    if (prior?.complete) return { path: dir, action, changed: false, overrides: [] };
+    await atomic(journal, JSON.stringify({ id: id2, names, complete: false }));
+    for (const name2 of Object.values(names)) {
+      if (!existing.includes(name2)) docker(["volume", "create", "--label", `com.sporades.restore=${id2}`, name2], dir);
+      ownedVolume(dir, name2, id2);
     }
+    for (const [key, name2] of Object.entries(names)) {
+      guards.check();
+      idleVolumes(dir, names);
+      ownedVolume(dir, name2, id2);
+      archive(dir, name2, location, `${key}.tar`, true);
+    }
+    await atomic(journal, JSON.stringify({ id: id2, names, complete: true }));
+    return { path: dir, action, changed: true, overrides: [] };
+  } finally {
+    await guards.release();
   }
-  if (prior?.complete) return { path: dir, action, changed: false, overrides: [] };
-  await atomic(journal, JSON.stringify({ id: id2, names, complete: false }));
-  for (const [key, name2] of Object.entries(names)) {
-    if (!existing.includes(name2)) docker(["volume", "create", "--label", `com.sporades.restore=${id2}`, name2], dir);
-    archive(dir, name2, location, `${key}.tar`, true);
-  }
-  await atomic(journal, JSON.stringify({ id: id2, names, complete: true }));
-  return { path: dir, action, changed: true, overrides: [] };
 }
 async function metadata(dir, exclude = /* @__PURE__ */ new Set(), prefix = "") {
   const values = /* @__PURE__ */ Object.create(null);
@@ -147224,16 +147321,54 @@ async function validateComponents(dir, packageRoot) {
   for (const [name2, pattern] of Object.entries(expected)) {
     if (!pattern.test(config.services?.[name2]?.image ?? "")) fail2();
   }
-  const mount = (name2, target) => ["--mount", `type=bind,src=${path18.join(dir, name2)},dst=${target},readonly`];
-  if (dir.includes(",")) fail2();
-  const base = ["run", "--rm", "--network", "none", "--user", "0", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec"];
-  const collectorMount = config.services.collector.volumes?.find((v2) => v2.target === "/etc/otelcol/config.yaml");
-  if (collectorMount?.type !== "bind" || !["collector.yaml", "collector-persistent.yaml"].includes(path18.basename(collectorMount.source)) || path18.dirname(collectorMount.source) !== dir) fail2();
-  docker([...base, ...mount(path18.basename(collectorMount.source), "/etc/otelcol/config.yaml"), config.services.collector.image, "validate", "--config=/etc/otelcol/config.yaml"], dir);
   const setup = await import(pathToFileURL5(path18.join(packageRoot, "monitoring/trace/setup.mjs")).href);
   const env = setup.parseEnvironment((await regular(path18.join(dir, ".compose.env"))).toString());
-  docker([...base, "--env", `TRACE_RETENTION=${env.get("TRACE_RETENTION") ?? "72h"}`, ...mount("jaeger.yaml", "/etc/jaeger/config.yaml"), config.services.jaeger.image, "validate", "--config=/etc/jaeger/config.yaml"], dir);
-  docker([...base, ...mount("prometheus.yaml", "/etc/prometheus/prometheus.yml"), ...mount("pipeline-rules.yaml", "/etc/prometheus/pipeline-rules.yaml"), "--entrypoint", "/bin/promtool", config.services.prometheus.image, "check", "config", "/etc/prometheus/prometheus.yml"], dir);
+  const commands = {
+    collector: ["--config=/etc/otelcol/config.yaml"],
+    jaeger: ["--config=/etc/jaeger/config.yaml"],
+    prometheus: [
+      "--config.file=/etc/prometheus/prometheus.yml",
+      "--storage.tsdb.path=/prometheus",
+      `--storage.tsdb.retention.time=${env.get("METRIC_RETENTION") ?? "14d"}`,
+      `--storage.tsdb.retention.size=${env.get("METRIC_DISK_CAP") ?? "8GB"}`,
+      "--web.enable-otlp-receiver"
+    ]
+  };
+  for (const name2 of Object.keys(expected)) {
+    const service = config.services[name2];
+    if (service.entrypoint != null || service.configs?.length || service.secrets?.length || JSON.stringify(service.command) !== JSON.stringify(commands[name2])) fail2();
+    const environment = service.environment ?? {};
+    if (typeof environment !== "object" || Array.isArray(environment) || Object.entries(environment).some(([key, value]) => name2 !== "jaeger" || key !== "TRACE_RETENTION" || typeof value !== "string" || value.length > 256 || value.includes("\0"))) fail2();
+  }
+  const mount = async (service, target) => {
+    const matches = config.services[service].volumes?.filter((v2) => v2.target === target);
+    if (matches?.length !== 1 || matches[0].type !== "bind" || matches[0].read_only !== true) fail2();
+    const source = matches[0].source;
+    if (typeof source !== "string" || source.includes(",") || source !== path18.resolve(source) || !source.startsWith(dir + path18.sep)) fail2();
+    const relative = path18.relative(dir, source);
+    if (relative.split(path18.sep).some((p2) => !p2 || p2 === "." || p2 === "..")) fail2();
+    let parent = dir;
+    for (const component of relative.split(path18.sep).slice(0, -1)) {
+      parent = path18.join(parent, component);
+      const st = await lstat11(parent);
+      if (!st.isDirectory() || st.isSymbolicLink() || st.mode & 18) fail2();
+    }
+    await regular(source);
+    return ["--mount", `type=bind,src=${source},dst=${target},readonly`];
+  };
+  const supportedTargets = {
+    collector: ["/etc/otelcol/config.yaml", "/var/lib/otelcol/queue"],
+    jaeger: ["/etc/jaeger/config.yaml", "/badger"],
+    prometheus: ["/etc/prometheus/prometheus.yml", "/etc/prometheus/pipeline-rules.yaml", "/prometheus"]
+  };
+  for (const [name2, targets] of Object.entries(supportedTargets)) {
+    if (config.services[name2].volumes?.some((v2) => !targets.includes(v2.target))) fail2();
+  }
+  const base = ["run", "--rm", "--network", "none", "--user", "0", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec"];
+  docker([...base, ...await mount("collector", "/etc/otelcol/config.yaml"), config.services.collector.image, "validate", "--config=/etc/otelcol/config.yaml"], dir);
+  const retention = config.services.jaeger.environment?.TRACE_RETENTION ?? "72h";
+  docker([...base, "--env", `TRACE_RETENTION=${retention}`, ...await mount("jaeger", "/etc/jaeger/config.yaml"), config.services.jaeger.image, "validate", "--config=/etc/jaeger/config.yaml"], dir);
+  docker([...base, ...await mount("prometheus", "/etc/prometheus/prometheus.yml"), ...await mount("prometheus", "/etc/prometheus/pipeline-rules.yaml"), "--entrypoint", "/bin/promtool", config.services.prometheus.image, "check", "config", "/etc/prometheus/prometheus.yml"], dir);
   for (const name2 of ASSETS.filter((n) => n.endsWith(".json"))) JSON.parse((await regular(path18.join(dir, name2))).toString());
   for (const name2 of ASSETS.filter((n) => n.endsWith(".mjs"))) {
     const result = spawnSync2(process.execPath, ["--check", path18.join(dir, name2)], { encoding: "utf8", timeout: 1e4 });
@@ -147315,7 +147450,7 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid4) {
 }
 
 // src/cli/doctor.ts
-import { spawn as spawn2, spawnSync as spawnSync3 } from "node:child_process";
+import { spawn as spawn3, spawnSync as spawnSync3 } from "node:child_process";
 import { lstat as lstat12, readFile as readFile13, realpath as realpath5 } from "node:fs/promises";
 import { connect } from "node:net";
 import path20 from "node:path";
@@ -148407,7 +148542,7 @@ function hostedSshStateCheck(result, commands) {
 }
 async function runHostJsonCommand(args, projectDir) {
   return new Promise((resolve2) => {
-    const child = spawn2(process.execPath, [process.argv[1], ...args], {
+    const child = spawn3(process.execPath, [process.argv[1], ...args], {
       cwd: projectDir,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"]

@@ -9,7 +9,7 @@ async function fixture(t) {
   const dir = await mkdtemp(path.join(root, '.sporades/maintenance-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const bin = path.join(dir, 'bin'); await mkdir(bin);
-  await writeFile(path.join(bin, 'docker'), `#!/bin/sh\ncase "$*" in\n 'compose version --short') echo 5.5.1;;\n 'version --format {{.Server.Version}}') echo 29.5.0;;\n *'config --format json'*) echo '{"services":{"collector":{"image":"otel/opentelemetry-collector-contrib:0.138.0","volumes":[{"type":"bind","target":"/etc/otelcol/config.yaml","source":"'"$PWD"'/collector.yaml"}]},"jaeger":{"image":"cr.jaegertracing.io/jaegertracing/jaeger:2.21.0"},"prometheus":{"image":"prom/prometheus:v3.13.3"}}}';;\n *'config --quiet'*) if [ -n "$REJECT_CONFIG" ]; then echo "$REJECT_CONFIG" >&2; exit 1; fi;;\n *'ps --all --quiet'*) if [ -n "$RUNNING" ]; then echo running; fi;;\n 'inspect running') echo '[{"State":{"Running":true}}]';;\n *) exit 0;;\nesac\n`, { mode: 0o755 });
+  await writeFile(path.join(bin, 'docker'), `#!/bin/sh\ncase "$*" in\n 'compose version --short') echo 5.5.1;;\n 'version --format {{.Server.Version}}') echo 29.5.0;;\n *'config --format json'*) echo '{"services":{"collector":{"image":"otel/opentelemetry-collector-contrib:0.138.0","command":["--config=/etc/otelcol/config.yaml"],"volumes":[{"type":"bind","read_only":true,"target":"/etc/otelcol/config.yaml","source":"'"$PWD"'/collector.yaml"}]},"jaeger":{"image":"cr.jaegertracing.io/jaegertracing/jaeger:2.21.0","command":["--config=/etc/jaeger/config.yaml"],"environment":{"TRACE_RETENTION":"72h"},"volumes":[{"type":"bind","target":"/etc/jaeger/config.yaml","source":"'"$PWD"'/jaeger.yaml","read_only":true}]},"prometheus":{"image":"prom/prometheus:v3.13.3","command":["--config.file=/etc/prometheus/prometheus.yml","--storage.tsdb.path=/prometheus","--storage.tsdb.retention.time=14d","--storage.tsdb.retention.size=8GB","--web.enable-otlp-receiver"],"volumes":[{"type":"bind","target":"/etc/prometheus/prometheus.yml","source":"'"$PWD"'/prometheus.yaml","read_only":true},{"type":"bind","target":"/etc/prometheus/pipeline-rules.yaml","source":"'"$PWD"'/pipeline-rules.yaml","read_only":true}]}}}';;\n *'config --quiet'*) if [ -n "$REJECT_CONFIG" ]; then echo "$REJECT_CONFIG" >&2; exit 1; fi;;\n *'ps --all --quiet'*) if [ -n "$RUNNING" ]; then echo running; fi;;\n 'inspect running') echo '[{"State":{"Running":true}}]';;\n *) exit 0;;\nesac\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: bin + path.delimiter + process.env.PATH, SPORADES_CONFIG_DIR: path.join(dir, 'config') };
   const cli = (args, extra = {}) => spawnSync(process.execPath, [process.env.SPORADES_MAINTENANCE_TEST_BIN ?? path.join(root, 'bin/sporades.js'), 'monitoring', 'stack', ...args, '--json'], { env: { ...env, ...extra }, encoding: 'utf8' });
   const stack = path.join(dir, 'stack');
@@ -151,4 +151,54 @@ test('large cold snapshots hash archive bytes beyond the Node whole-file read li
   assert.equal(saved.status, 0, saved.stdout);
   const manifest = JSON.parse(await readFile(path.join(backup, 'backup-manifest.json')));
   assert.equal(manifest.files['metrics.tar'], '17f5b6a32ce5d36010fef46f65d8969ffa79d29e32850391c64f45f6807a51db');
+});
+
+// These probes model Compose's effective projection, rather than the generated filenames.
+test('upgrade validates effective backend mounts and rejects unsupported invocation overrides before publication', async t => {
+  for (const variant of ['prometheus mount', 'jaeger mount', 'prometheus command', 'jaeger environment', 'collector entrypoint']) {
+    await t.test(variant, async t => {
+      const { dir, stack, cli } = await fixture(t);
+      const manifestFile = path.join(stack, 'stack-manifest.json');
+      const manifest = JSON.parse(await readFile(manifestFile)); manifest.packageVersion = '0.9.29';
+      await writeFile(manifestFile, JSON.stringify(manifest));
+      const before = await readFile(manifestFile);
+      const readme = await readFile(path.join(stack, 'README.md'));
+      await writeFile(path.join(stack, 'operator-backend.yaml'), 'malformed-secret: [\n');
+      const wrapper = path.join(dir, 'bin/docker');
+      const script = await readFile(wrapper, 'utf8');
+      let altered = script;
+      if (variant.endsWith('mount')) {
+        const file = variant.startsWith('jaeger') ? 'jaeger.yaml' : 'prometheus.yaml';
+        altered = altered.replace('/' + file, '/operator-backend.yaml');
+      } else if (variant === 'prometheus command') altered = altered.replace('--config.file=/etc/prometheus/prometheus.yml', '--config.file=/etc/prometheus/unvalidated.yml');
+      else if (variant === 'jaeger environment') altered = altered.replace('"TRACE_RETENTION":"72h"', '"UNSUPPORTED":"secret"');
+      else altered = altered.replace('"collector":{', '"collector":{"entrypoint":["sh"],');
+      // The real validators reject the malformed file when that effective source is mounted.
+      altered = altered.replace('case "$*" in', 'case "$*" in\n *type=bind,src=*/operator-backend.yaml*) echo malformed-secret >&2; exit 1;;');
+      await writeFile(wrapper, altered);
+      const result = cli(['upgrade', '--dir', stack]);
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.doesNotMatch(result.stdout + result.stderr, /malformed-secret|UNSUPPORTED/);
+      assert.deepEqual(await readFile(manifestFile), before);
+      assert.deepEqual(await readFile(path.join(stack, 'README.md')), readme);
+    });
+  }
+});
+
+
+test('backup creates private operator-owned archive files before the root archiver writes', async t => {
+  const { dir, stack, cli } = await fixture(t);
+  const docker = path.join(dir, 'bin/docker');
+  await writeFile(docker, `#!${process.execPath}
+import fs from 'node:fs';import path from 'node:path';
+const a=process.argv.slice(2);
+if(a[0]==='compose'&&a[1]==='version')console.log('5.5.1');
+else if(a[0]==='version')console.log('29.5.0');
+else if(a.includes('config')){const services={},volumes={};for(const [key,service,target] of [['traces','jaeger','/badger'],['metrics','prometheus','/prometheus'],['grafana','grafana','/var/lib/grafana'],['inventory','gateway','/inventory']]){services[service]={volumes:[{type:'volume',source:key,target}]};volumes[key]={name:'private_'+key};}console.log(JSON.stringify({services,volumes}));}
+else if(a[0]==='run'){const bind=a.find(x=>x.startsWith('type=bind,src='));const location=bind.slice(14).split(',dst=')[0];const filename=path.basename(a.find(x=>x.startsWith('/backup/')));const out=path.join(location,filename);const st=fs.statSync(out);if((st.mode&511)!==384||st.uid!==process.getuid())process.exit(1);fs.writeFileSync(out,'snapshot');}
+`, { mode: 0o755 });
+  const backup = path.join(dir, 'private-backup');
+  const result = cli(['backup', '--dir', stack, '--backup', backup]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  for (const key of ['traces', 'metrics', 'grafana', 'inventory']) assert.equal(await readFile(path.join(backup, key + '.tar'), 'utf8'), 'snapshot');
 });

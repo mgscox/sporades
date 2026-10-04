@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { chown, chmod, lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
@@ -217,6 +217,70 @@ async function checkArchive(dir: string, backup: string, file: string) {
   }
   if (run('-tvf').split('\n').some(line => !/^[-d]/.test(line))) fail();
 }
+// Docker's atomic container names serialize each storage name across target
+// directories, operators and workstations using the same daemon. An attached
+// stdin pipe owns the guard lifetime: EOF after owner exit also removes it.
+async function storageGuards(dir: string, names: Record<string, string>) {
+  const owner = randomBytes(16).toString('hex');
+  const guards: { id: string; child: ReturnType<typeof spawn>; closed: Promise<void> }[] = [];
+  const release = async () => {
+    for (const guard of guards.reverse()) {
+      guard.child.stdin?.end();
+      try { docker(['rm', '--force', guard.id], dir); } catch { /* --rm may already have removed this exact ID. */ }
+      await guard.closed;
+    }
+  };
+  try {
+    for (const volume of Object.values(names).sort()) {
+      const name = `sporades-storage-guard-${digest(volume)}`;
+      const child = spawn('docker', ['run', '--rm', '--interactive', '--name', name,
+        '--label', `com.sporades.storage-guard=${owner}`, '--network', 'none', '--read-only',
+        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+        'busybox:1.37.0', 'sh', '-c', 'echo locked; cat >/dev/null'], { cwd: dir, stdio: ['pipe', 'pipe', 'ignore'] });
+      const closed = new Promise<void>(resolve => { child.once('close', () => resolve()); child.once('error', () => resolve()); });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('guard unavailable')), 30_000);
+          let output = '';
+          const finish = (error?: Error) => { clearTimeout(timer); error ? reject(error) : resolve(); };
+          child.once('error', finish);
+          child.once('close', () => finish(new Error('guard unavailable')));
+          child.stdout?.on('data', data => {
+            output += data.toString();
+            if (output === 'locked\n') finish();
+            else if (output.length > 128) finish(new Error('guard unavailable'));
+          });
+        });
+        const meta = JSON.parse(docker(['inspect', name], dir))[0];
+        if (meta?.Config?.Labels?.['com.sporades.storage-guard'] !== owner || !meta.State?.Running || typeof meta.Id !== 'string') fail();
+        guards.push({ id: meta.Id, child, closed });
+      } catch {
+        child.stdin?.end();
+        // Only this attempt's exact helper may be removed on failed startup.
+        try {
+          const meta = JSON.parse(docker(['inspect', name], dir))[0];
+          if (meta?.Config?.Labels?.['com.sporades.storage-guard'] === owner) docker(['rm', '--force', meta.Id], dir);
+        } catch {}
+        child.kill('SIGTERM');
+        await closed;
+        fail();
+      }
+    }
+    return {
+      release,
+      check: () => {
+        for (const guard of guards) {
+          const meta = JSON.parse(docker(['inspect', guard.id], dir))[0];
+          if (meta?.Config?.Labels?.['com.sporades.storage-guard'] !== owner || !meta.State?.Running) fail();
+        }
+      },
+    };
+  } catch { await release(); fail(); }
+}
+function ownedVolume(dir: string, name: string, id: string) {
+  const meta = JSON.parse(docker(['volume', 'inspect', name], dir))[0];
+  if (meta?.Name !== name || meta.Driver !== 'local' || meta.Labels?.['com.sporades.restore'] !== id) fail();
+}
 async function storageMaintenance(action: 'backup' | 'restore', dir: string, packageRoot: string, backup?: string): Promise<MonitoringMaintenanceResult> {
   if (!backup) fail();
   const location = path.resolve(backup);
@@ -239,6 +303,10 @@ async function storageMaintenance(action: 'backup' | 'restore', dir: string, pac
       await copyTree(dir, path.join(stage, 'config'), new Set(['.maintenance', 'backups', 'data']));
       for (const [key, name] of Object.entries(names)) {
         docker(['volume', 'inspect', name], dir);
+        // Root tar truncates this inode, preserving the invoking operator's
+        // ownership and private mode while retaining numeric metadata in tar.
+        const file = await open(path.join(stage, `${key}.tar`), 'wx', 0o600);
+        await file.close();
         archive(dir, name, stage, `${key}.tar`);
         await chmod(path.join(stage, `${key}.tar`), 0o600);
       }
@@ -280,24 +348,31 @@ async function storageMaintenance(action: 'backup' | 'restore', dir: string, pac
   await install(path.join(location, 'config'), dir);
   await restoreMetadata(dir, snapshot.configMetadata);
   stopped(dir);
-  const names = volumes(dir); idleVolumes(dir, names);
-  if (prior?.names && JSON.stringify(prior.names) !== JSON.stringify(names)) fail();
-  const existing = docker(['volume', 'ls', '--format', '{{.Name}}'], dir).split('\n');
-  for (const name of Object.values(names)) {
-    if (existing.includes(name)) {
-      const meta = JSON.parse(docker(['volume', 'inspect', name], dir))[0];
-      if (meta?.Labels?.['com.sporades.restore'] !== id) fail();
+  const names = volumes(dir);
+  const guards = await storageGuards(dir, names);
+  try {
+    idleVolumes(dir, names);
+    if (prior?.names && JSON.stringify(prior.names) !== JSON.stringify(names)) fail();
+    const existing = docker(['volume', 'ls', '--format', '{{.Name}}'], dir).split('\n');
+    for (const name of Object.values(names)) if (existing.includes(name)) ownedVolume(dir, name, id);
+    if (prior?.complete) return { path: dir, action, changed: false, overrides: [] };
+    await atomic(journal, JSON.stringify({ id, names, complete: false }));
+    // Creation is idempotent in Docker; success does not prove we created it.
+    // Recheck every exact owner after creation, before writing any volume bytes.
+    for (const name of Object.values(names)) {
+      if (!existing.includes(name)) docker(['volume', 'create', '--label', `com.sporades.restore=${id}`, name], dir);
+      ownedVolume(dir, name, id);
     }
-  }
-  if (prior?.complete) return { path: dir, action, changed: false, overrides: [] };
-  await atomic(journal, JSON.stringify({ id, names, complete: false }));
-  for (const [key, name] of Object.entries(names)) {
-    // Only freshly created, exact-snapshot-owned volumes may be populated.
-    if (!existing.includes(name)) docker(['volume', 'create', '--label', `com.sporades.restore=${id}`, name], dir);
-    archive(dir, name, location, `${key}.tar`, true);
-  }
-  await atomic(journal, JSON.stringify({ id, names, complete: true }));
-  return { path: dir, action, changed: true, overrides: [] };
+    for (const [key, name] of Object.entries(names)) {
+      guards.check();
+      idleVolumes(dir, names);
+      ownedVolume(dir, name, id);
+      archive(dir, name, location, `${key}.tar`, true);
+    }
+    await atomic(journal, JSON.stringify({ id, names, complete: true }));
+    return { path: dir, action, changed: true, overrides: [] };
+  } finally { await guards.release(); }
+
 }
 
 async function metadata(dir: string, exclude = new Set<string>(), prefix = ''): Promise<Record<string, { mode: number; uid: number; gid: number }>> {
@@ -333,16 +408,55 @@ async function validateComponents(dir: string, packageRoot: string) {
   for (const [name, pattern] of Object.entries(expected)) {
     if (!pattern.test(config.services?.[name]?.image ?? '')) fail();
   }
-  const mount = (name: string, target: string) => ['--mount', `type=bind,src=${path.join(dir, name)},dst=${target},readonly`];
-  if (dir.includes(',')) fail();
-  const base = ['run', '--rm', '--network', 'none', '--user', '0', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--tmpfs', '/tmp:rw,nosuid,nodev,noexec'];
-  const collectorMount = config.services.collector.volumes?.find((v: any) => v.target === '/etc/otelcol/config.yaml');
-  if (collectorMount?.type !== 'bind' || !['collector.yaml', 'collector-persistent.yaml'].includes(path.basename(collectorMount.source)) || path.dirname(collectorMount.source) !== dir) fail();
-  docker([...base, ...mount(path.basename(collectorMount.source), '/etc/otelcol/config.yaml'), config.services.collector.image, 'validate', '--config=/etc/otelcol/config.yaml'], dir);
   const setup = await import(pathToFileURL(path.join(packageRoot, 'monitoring/trace/setup.mjs')).href);
   const env = setup.parseEnvironment((await regular(path.join(dir, '.compose.env'))).toString());
-  docker([...base, '--env', `TRACE_RETENTION=${env.get('TRACE_RETENTION') ?? '72h'}`, ...mount('jaeger.yaml', '/etc/jaeger/config.yaml'), config.services.jaeger.image, 'validate', '--config=/etc/jaeger/config.yaml'], dir);
-  docker([...base, ...mount('prometheus.yaml', '/etc/prometheus/prometheus.yml'), ...mount('pipeline-rules.yaml', '/etc/prometheus/pipeline-rules.yaml'), '--entrypoint', '/bin/promtool', config.services.prometheus.image, 'check', 'config', '/etc/prometheus/prometheus.yml'], dir);
+  const commands: Record<string, string[]> = {
+    collector: ['--config=/etc/otelcol/config.yaml'],
+    jaeger: ['--config=/etc/jaeger/config.yaml'],
+    prometheus: ['--config.file=/etc/prometheus/prometheus.yml', '--storage.tsdb.path=/prometheus',
+      `--storage.tsdb.retention.time=${env.get('METRIC_RETENTION') ?? '14d'}`,
+      `--storage.tsdb.retention.size=${env.get('METRIC_DISK_CAP') ?? '8GB'}`, '--web.enable-otlp-receiver'],
+  };
+  for (const name of Object.keys(expected)) {
+    const service = config.services[name];
+    // Validation has a bounded invocation contract. Unsupported ways to select
+    // configuration must fail before publication, never validate a different file.
+    if (service.entrypoint != null || service.configs?.length || service.secrets?.length ||
+        JSON.stringify(service.command) !== JSON.stringify(commands[name])) fail();
+    const environment = service.environment ?? {};
+    if (typeof environment !== 'object' || Array.isArray(environment) ||
+        Object.entries(environment).some(([key, value]) => name !== 'jaeger' || key !== 'TRACE_RETENTION' ||
+          typeof value !== 'string' || value.length > 256 || value.includes('\0'))) fail();
+  }
+  const mount = async (service: string, target: string) => {
+    const matches = config.services[service].volumes?.filter((v: any) => v.target === target);
+    if (matches?.length !== 1 || matches[0].type !== 'bind' || matches[0].read_only !== true) fail();
+    const source = matches[0].source;
+    if (typeof source !== 'string' || source.includes(',') || source !== path.resolve(source) || !source.startsWith(dir + path.sep)) fail();
+    // Inspect every path component, not only the final file, before binding it.
+    const relative = path.relative(dir, source);
+    if (relative.split(path.sep).some(p => !p || p === '.' || p === '..')) fail();
+    let parent = dir;
+    for (const component of relative.split(path.sep).slice(0, -1)) {
+      parent = path.join(parent, component);
+      const st = await lstat(parent); if (!st.isDirectory() || st.isSymbolicLink() || st.mode & 0o022) fail();
+    }
+    await regular(source);
+    return ['--mount', `type=bind,src=${source},dst=${target},readonly`];
+  };
+  const supportedTargets: Record<string, string[]> = {
+    collector: ['/etc/otelcol/config.yaml', '/var/lib/otelcol/queue'],
+    jaeger: ['/etc/jaeger/config.yaml', '/badger'],
+    prometheus: ['/etc/prometheus/prometheus.yml', '/etc/prometheus/pipeline-rules.yaml', '/prometheus'],
+  };
+  for (const [name, targets] of Object.entries(supportedTargets)) {
+    if (config.services[name].volumes?.some((v: any) => !targets.includes(v.target))) fail();
+  }
+  const base = ['run', '--rm', '--network', 'none', '--user', '0', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--tmpfs', '/tmp:rw,nosuid,nodev,noexec'];
+  docker([...base, ...await mount('collector', '/etc/otelcol/config.yaml'), config.services.collector.image, 'validate', '--config=/etc/otelcol/config.yaml'], dir);
+  const retention = config.services.jaeger.environment?.TRACE_RETENTION ?? '72h';
+  docker([...base, '--env', `TRACE_RETENTION=${retention}`, ...await mount('jaeger', '/etc/jaeger/config.yaml'), config.services.jaeger.image, 'validate', '--config=/etc/jaeger/config.yaml'], dir);
+  docker([...base, ...await mount('prometheus', '/etc/prometheus/prometheus.yml'), ...await mount('prometheus', '/etc/prometheus/pipeline-rules.yaml'), '--entrypoint', '/bin/promtool', config.services.prometheus.image, 'check', 'config', '/etc/prometheus/prometheus.yml'], dir);
   for (const name of ASSETS.filter(n => n.endsWith('.json'))) JSON.parse((await regular(path.join(dir, name))).toString());
   for (const name of ASSETS.filter(n => n.endsWith('.mjs'))) {
     const result = spawnSync(process.execPath, ['--check', path.join(dir, name)], { encoding: 'utf8', timeout: 10_000 });

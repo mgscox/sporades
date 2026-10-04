@@ -51,6 +51,15 @@ used for planning. An operator edit during validation causes maintenance to
 fail before publication, preserving the edit. Finish editing and retry so the
 updated configuration is planned and validated together.
 
+Backend validation uses the effective Compose bind sources for Collector,
+Jaeger, Prometheus and Prometheus rules, plus Jaeger's effective
+`TRACE_RETENTION` environment. Configuration bind files must be read-only regular
+files inside the stack directory. Custom configuration filenames in that tree
+are supported. Command or entrypoint overrides, additional backend environment
+keys, Compose secrets/configs, and unsupported configuration mounts are rejected
+before publication; retain the shipped invocation and edit supported files or
+`.env` settings instead.
+
 ```sh
 COMPOSE_PROJECT_NAME=sporades-monitoring-prod sporades monitoring stack upgrade --dir /srv/sporades-monitoring
 ```
@@ -82,10 +91,20 @@ closed. The next upgrade or rollback restores the durable generated-file journal
 before planning new changes. Repeated rollback remains at the restored version.
 Do not remove lock databases, journals or other maintenance state by hand.
 
+Restore also acquires one atomic Docker container-name guard per backend volume,
+shared across target directories and workstations on the selected daemon.
+Competing restores fail closed. These helpers release on owner exit, including
+SIGKILL. Restore rechecks the exact snapshot label after volume creation and
+immediately before extraction; Docker creation success alone never grants
+ownership. Stop unrelated writers and avoid manual volume changes during restore.
+
 ## Cold backup
 
 Stop the services as above and choose a new backup path outside the stack
 directory and its parent tree. The command never overwrites an existing backup.
+Archive files are created by the invoking operator with mode `0600` before the
+root container writes tar bytes. Linux non-root operators retain file ownership;
+archived backend numeric UID/GID and modes are preserved independently.
 It stages the archive in a protected `.partial-*` directory, validates it, and
 publishes only after completion. A handled failure cleans its own staging path;
 a crash may leave a protected `.partial-*`. Inspect it and remove it only when

@@ -28,6 +28,15 @@ configuration before validation. Edits made during validation cause maintenance
 to fail before publication, preserving the operator's changes. Finish those
 edits, then retry so the updated configuration is planned and validated together.
 
+Backend validation uses the effective Compose bind sources for Collector,
+Jaeger, Prometheus and Prometheus rules, plus Jaeger's effective
+`TRACE_RETENTION` environment. Configuration bind files must be read-only regular
+files inside the stack directory. Custom configuration filenames in that tree
+are supported. Command or entrypoint overrides, additional backend environment
+keys, Compose secrets/configs, and unsupported configuration mounts are rejected
+before publication; retain the shipped invocation and edit supported files or
+`.env` settings instead.
+
 Maintenance requires stopped services. Use the same unique
 `COMPOSE_PROJECT_NAME` for `backup`, `restore`, `up`, `stop`, restart, and any
 `down` operation; the project name selects the persistent volumes. For example:
@@ -44,6 +53,9 @@ are secret-bearing: directories use mode `0700`, archives and `.env` use
 `0600`, and metadata records original numeric UID, GID, and mode. Encrypt
 backups with a trusted offline method before retaining or transferring them.
 SHA-256 checksums establish integrity only, not authenticity.
+Archive files are created by the invoking operator with mode `0600` before the
+root container writes tar bytes. Linux non-root operators retain file ownership;
+archived backend numeric UID/GID and modes are preserved independently.
 
 ## What is preserved
 
@@ -71,6 +83,13 @@ lock databases or journals by hand. Backup never overwrites
 an existing destination. Failed work cleans its unpublished `.partial-*` path;
 a crash can leave a protected partial path to inspect and remove only after
 confirming it is task-owned and inactive.
+
+Restore also acquires one atomic Docker container-name guard per backend volume,
+shared across target directories and workstations on the selected daemon.
+Competing restores fail closed. These helpers release on owner exit, including
+SIGKILL. Restore rechecks the exact snapshot label after volume creation and
+immediately before extraction; Docker creation success alone never grants
+ownership. Stop unrelated writers and avoid manual volume changes during restore.
 
 A restore reinstates authentication and expected-target state from backup time.
 Keep the restored gateway private until you reapply any later credential
