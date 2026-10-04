@@ -1259,6 +1259,8 @@ export type ScheduleDefinition = {
  * esbuild and Vite, preserving paths and bytes as unauthenticated assets. XML
  * uses application/xml; charset=utf-8. Dev observes public changes; failed
  * candidates retain the last successful tree and rollback restores release bytes.
+ * Scaffold HTML declares an empty data-URL favicon; replace its icon href with
+ * /favicon.ico and add public/favicon.ico to supply a custom icon.
  * Public paths cannot collide with generated output or reserved __sporades routes,
  * including conservative case and Unicode aliases such as client.jſ/client.js.
  * The generated server serves Vite-style content-hashed `/assets/` files with

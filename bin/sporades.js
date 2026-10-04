@@ -142505,6 +142505,7 @@ function scaffoldFiles(options) {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
     <title>${escapeHtml(options.name)}</title>${framework === "inferno" && toolchain === "esbuild" ? `
     <link rel="stylesheet" href="/assets/client.css" />` : ""}${options.template === "campfire" && !["inferno", "lit", "solid", "vue", "svelte"].includes(framework) ? `
     <script src="https://cdn.tailwindcss.com"></script>` : ""}
