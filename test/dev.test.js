@@ -964,6 +964,67 @@ test("Inferno Vite fails closed when project-owned Inferno compiler packages are
   });
 });
 
+test("installed CLI ships OAuth-only sign-in selection across every demo framework", async () => {
+  await withTempDir(async (dir) => {
+    const { tarballPath } = await packCandidateInto(dir);
+    const installed = await installPackedCandidateCli(dir, tarballPath);
+    for (const framework of ["react", "preact", "inferno", "lit", "solid", "svelte", "vue"]) {
+      for (const template of ["todo", "guestbook", "photo-library"]) {
+        const name = `${framework}-${template}-signin`;
+        const created = await runCliFrom(installed.cliPath, ["create", name, "--framework", framework, "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+        assert.equal(created.code, 0, created.stderr || created.stdout);
+        const entry = { vue: "App.vue", svelte: "App.svelte", solid: "App.tsx", lit: "index.ts" }[framework] ?? "index.tsx";
+        const source = await readFile(path.join(dir, name, "client", entry), "utf8");
+        if (framework === "vue") {
+          const { parse, compileScript } = await import("@vue/compiler-sfc");
+          const parsed = parse(source);
+          assert.deepEqual(parsed.errors, [], `${framework}/${template}`);
+          compileScript(parsed.descriptor, { id: name, inlineTemplate: true });
+        }
+        // Parity contract for shipped templates; mounted controls are tested below.
+        const compact = source.replace(/\s+/g, "").replace(/'/g, '"');
+        assert.match(compact, /\["google","microsoft","apple","facebook"\]\.includes\(provider\)&&state\.enabled&&state\.configured&&state\.runtimeAvailable/, `${framework}/${template}`);
+        assert.doesNotMatch(compact, /\.filter\(\(\[,state\]\)=>state\.enabled/, `${framework}/${template}`);
+      }
+    }
+  });
+});
+
+test("generated demo controls offer only available OAuth actions and preserve guest state", async () => {
+  for (const template of ["todo", "guestbook", "photo-library"]) await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, `signin-${template}`, template);
+    const available = { enabled: true, configured: true, runtimeAvailable: true };
+    const guest = { userId: "guest", provider: "anonymous", isGuest: true, isAuthenticated: false };
+    const providers = {
+      anonymous: available, email: available, google: available, facebook: available, futureProvider: available,
+      microsoft: { ...available, configured: false }, apple: { ...available, runtimeAvailable: false },
+    };
+    const session = litSource({ auth: guest, providers, error: null, loading: false });
+    const calls = [];
+    const harness = await mountInfernoTemplate(projectDir, {
+      session, auth: authStub({ async signIn(...args) { calls.push(args); return { data: null, error: null }; } }),
+      queries: Object.fromEntries(["todos", "entries", "publicPhotos", "personalPhotos"].map(name => [name, litSource({ data: [], error: null, loading: false })])),
+      mutations: Object.fromEntries(["addTodo", "sign", "recordPhoto", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"].map(name => [name, { async run() { return { data: null, error: null }; } }])),
+      files: {},
+    });
+    const controls = () => [...harness.window.document.querySelectorAll("button")].filter(button => button.textContent.startsWith("Sign in with"));
+    try {
+      assert.deepEqual(controls().map(button => button.textContent), ["Sign in with Google", "Sign in with Facebook"], template);
+      controls()[0].click(); await harness.settle();
+      assert.deepEqual(calls, [["google"]]);
+      session.publish({ auth: guest, providers: { ...providers, google: { ...available, enabled: false } }, error: null, loading: false });
+      await harness.settle();
+      assert.deepEqual(controls().map(button => button.textContent), ["Sign in with Facebook"]);
+      session.publish({ auth: { ...guest, provider: "facebook", isGuest: false, isAuthenticated: true }, providers, error: null, loading: false });
+      await harness.settle();
+      assert.deepEqual(controls(), []);
+      session.publish({ auth: guest, providers: { anonymous: available, email: available }, error: null, loading: false });
+      await harness.settle();
+      assert.deepEqual(controls(), []);
+    } finally { await harness.unmount(); }
+  });
+});
+
 test("real Inferno todo renders, mutates, and reconnects native component lifecycle", async () => {
   await withTempDir(async (dir) => {
     const projectDir = await createInfernoTemplate(dir, "inferno-todo-behavior", "todo");
