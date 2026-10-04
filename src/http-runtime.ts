@@ -208,16 +208,29 @@ export function routeHttpAdmission(
   request: Pick<IncomingMessage, "url" | "method" | "rawHeaders" | "headers">,
   response: Pick<ServerResponse, "writeHead" | "end">,
   target?: InterpretedHttpRequestTarget,
+  transport: "http" | "websocket" = "http",
 ) {
   const runtime = database.admissionPolicy;
   if (!runtime) return false;
+  const generation = runtime.current();
+  if (!generation) return false;
+  let rule: ReturnType<typeof matchHttpAdmissionRule> = null;
+  let routeClass: "ordinary" | "capsule-transport" | "invalid" = "invalid";
+  let recorded = false;
+  const record = (outcome: "admitted" | "denied" | "rate-limited") => {
+    if (recorded) return;
+    recorded = true;
+    runtime.evidence?.decision({ digest: generation.digest, ruleId: rule?.id ?? null, action: rule?.action.kind ?? null,
+      outcome, transport, routeClass,
+      sessionKind: ["dev", "public-dev", "container", "hosted"].includes(database.securitySession) ? database.securitySession : "dev",
+    }, database.log?.emit ? (data: any) => database.log.emit({ category: "platform", event: "admission.decision", level: "info", message: "Request admission decision sample", data }) : undefined);
+  };
   try {
     // Snapshot once: a request sees one complete validated immutable generation.
-    const generation = runtime.current();
     let limiter = runtime.rateLimiter ?? admissionLimiters.get(runtime);
     if (!limiter) { limiter = createAdmissionRateLimiter(); admissionLimiters.set(runtime, limiter); }
     limiter.reconcile(generation);
-    if (!generation || generation.policy.rules.length === 0) return false;
+    if (generation.policy.rules.length === 0) { routeClass = "ordinary"; record("admitted"); return false; }
     const parsed = target ?? requestTarget(request);
     const raw = request.url ?? "/";
     // HTTP request targets have no fragment. Do not let URL silently strip or repair input.
@@ -228,18 +241,20 @@ export function routeHttpAdmission(
     }
     const queryStart = raw.indexOf("?");
     const address = trustedClientAddress(database, request);
-    const rule = matchHttpAdmissionRule(generation, {
+    routeClass = parsed.pathname === "/__sporades/ws" ? "capsule-transport" : "ordinary";
+    rule = matchHttpAdmissionRule(generation, {
       method: request.method ?? "",
       pathname: parsed.pathname,
       query: queryStart === -1 ? "" : raw.slice(queryStart + 1),
       rawHeaders: request.rawHeaders,
       trustedAddress: address,
     });
-    if (!rule) return false;
+    if (!rule) { record("admitted"); return false; }
     if (rule.action.kind === "rate-limit") {
       if (!address) throw new Error("Missing trusted admission address.");
       const retryAfter = limiter.consume(rule.id, address, rule.action.limit, rule.action.windowMs);
-      if (!retryAfter) return false;
+      if (!retryAfter) { record("admitted"); return false; }
+      record("rate-limited");
       response.writeHead(429, {
         "cache-control": "no-store", "retry-after": String(retryAfter),
         "content-type": "text/plain; charset=utf-8", "content-length": "18", connection: "close",
@@ -248,6 +263,7 @@ export function routeHttpAdmission(
       return true;
     }
   } catch { /* Malformed or unsupported admission input has the same opaque denial. */ }
+  record("denied");
   response.writeHead(403, {
     "cache-control": "no-store",
     "content-type": "text/plain; charset=utf-8",
@@ -286,7 +302,7 @@ export function routeWebSocketAdmission(database: LooseRecord, request: Incoming
   response.on("error", closeConnection);
   // Install the ordinary response headers, but never auto-answer upgrade preflight.
   prepareHttpSecurity(database, request, response, () => true);
-  if (!routeHttpAdmission(database, request, response, target ?? undefined)) return false;
+  if (!routeHttpAdmission(database, request, response, target ?? undefined, "websocket")) return false;
   // Denial is buffered until admission completes. No response owns an accepted socket.
   socket.on("error", closeConnection);
   socket.once("close", () => response.destroy());

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { openAdmissionPolicy, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
+import { createAdmissionEvidence } from "../admission-evidence.js";
 import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
@@ -2879,14 +2880,18 @@ async function createDevRuntime(options) {
         return attached.attached;
     };
     let database;
-    const reportAdmissionHealth = (health) => {
+    const reportAdmissionHealth = (health, event = "loaded") => {
         try {
-            database?.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+            if (database)
+                database.log.emit({ category: "platform", event: `admission.policy.${event}`, level: event === "failure" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+            else if (event === "failure" || event === "recovery")
+                process.stderr.write(JSON.stringify({ event: `admission.policy.${event}`, data: health }) + "\n");
         }
         catch { /* Policy diagnostics never interrupt runtime work. */ }
     };
     let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
-    let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
+    const admissionEvidence = createAdmissionEvidence();
+    let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth, { evidence: admissionEvidence }) : null;
     try {
         database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), {
             serviceEnv: options.serviceEnv,
@@ -2919,10 +2924,10 @@ async function createDevRuntime(options) {
             let nextAdmission = admissionPolicy;
             if (changed) {
                 nextAdmission = null;
-                nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, health => {
-                    if (nextAdmission && nextAdmission === admissionPolicy)
-                        reportAdmissionHealth(health);
-                }) : null;
+                nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health, event) => {
+                    if (event === "failure" || event === "recovery" || (nextAdmission && nextAdmission === admissionPolicy))
+                        reportAdmissionHealth(health, event);
+                }, { evidence: admissionEvidence, deferActivation: true }) : null;
             }
             try {
                 const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), {
@@ -2945,8 +2950,7 @@ async function createDevRuntime(options) {
                 admissionPolicy = nextAdmission;
                 if (changed) {
                     await previousAdmission?.close();
-                    if (admissionPolicy)
-                        reportAdmissionHealth(admissionPolicy.health());
+                    admissionPolicy?.activate(previousAdmission?.health());
                 }
                 clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
             }

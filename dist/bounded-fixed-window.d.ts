@@ -4,6 +4,7 @@ export declare function createBoundedFixedWindow(options?: {
     maxBuckets?: number;
     idleMs?: number;
     expireWindows?: boolean;
+    onEviction?: () => void;
 }): Readonly<{
     retryAfter: (key: string, limit: number, windowMs: number) => number;
     record: (key: string, windowMs: number, ceiling?: number) => {

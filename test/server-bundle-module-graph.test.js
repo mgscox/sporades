@@ -2613,6 +2613,8 @@ test("a generated Bundle refuses invalid configured policy before Capsule evalua
     await writeFile(path.join(root,"server.mjs"),source);
     const result = spawnSync(process.execPath,[path.join(root,"server.mjs")],{cwd:root,encoding:"utf8",timeout:5000,env:{...process.env,PORT:"5688"}});
     assert.equal(result.status,1,result.stderr); assert.match(result.stderr,/Configured admission policy could not be loaded/); assert.doesNotMatch(result.stderr,/CAPSULE_EVALUATED/);
+    const failure = result.stderr.split("\n").flatMap(line => { try { const event = JSON.parse(line); return event.event === "admission.policy.failure" ? [event] : []; } catch { return []; } });
+    assert.equal(failure.length,1); assert.equal(failure[0].data.evidence.counters.reloadFailures,"1"); assert.equal(failure[0].data.digest,null);
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 
@@ -2624,7 +2626,8 @@ test("a generated Bundle enforces admission before Capsule middleware while cont
     const source = await buildBundle({config:capsuleConfig({admissionPolicy:{path:"policy.json"}}),serverEnv:{},serverSource:CAPSULE_SOURCE, serverModuleSource: await bundleServerCapsuleModule({ serverSource: CAPSULE_SOURCE.replace('if (ctx.kind !== "endpoint") return ctx;', 'if (ctx.kind !== "endpoint") return ctx; globalThis.process.getBuiltinModule("node:fs").appendFileSync("app-called", "called\\n");'), serverSourcePath: path.join(process.cwd(), "server", "index.ts") })});
     await writePublicTree(root,"plain bytes"); booted = await bootBundle({source,dir:root});
     const health = async () => (await (await fetch(`${booted.baseUrl}/__sporades/health/runtime`,{headers:{"x-sporades-host-probe":"a".repeat(64)}})).json()).data.runtime.admissionPolicy;
-    const initial = await health(); assert.equal(initial.state,"healthy"); assert.deepEqual(Object.keys(initial),["state","digest","rateLimit"]);
+    const initial = await health(); assert.equal(initial.state,"healthy"); assert.deepEqual(Object.keys(initial),["state","digest","rateLimit","evidence"]);
+    assert.equal(initial.evidence.version,1); assert.equal(initial.evidence.counters.evaluated,"0");
     assert.deepEqual(initial.rateLimit,{buckets:0,maxBuckets:10000,evictions:0});
     const denied = await fetch(`${booted.baseUrl}/probe/status?private=opaque`);
     assert.equal(denied.status,403); assert.equal(denied.headers.get("cache-control"),"no-store"); assert.equal(denied.headers.get("content-length"),"10"); assert.equal(await denied.text(),"Forbidden\n");
@@ -2637,6 +2640,8 @@ test("a generated Bundle enforces admission before Capsule middleware while cont
     await wait(async()=> (await health()).state==="degraded"); assert.equal((await health()).digest,initial.digest); assert.equal((await fetch(`${booted.baseUrl}/probe/status`)).status,403);
     await writeFile(path.join(root,"policy.json"),json("replacement", "/different"));
     await wait(async()=> (await health()).state==="healthy" && (await health()).digest!==initial.digest);
+    const recovered = await health(); assert.ok(BigInt(recovered.evidence.counters.reloadFailures) >= 1n); assert.equal(recovered.evidence.counters.reloadRecoveries,"1");
+    assert.equal(recovered.evidence.counters.denied,"3");
     assert.equal((await fetch(`${booted.baseUrl}/probe/status?unchanged=yes`)).status,202); assert.equal(await readFile(path.join(root,"app-called"),"utf8"),"called\n");
   } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
 });

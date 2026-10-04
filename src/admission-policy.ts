@@ -2,6 +2,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { validClientAddressNetwork, clientAddressMatches } from "./client-address.js";
 import { createAdmissionRateLimiter } from "./admission-rate-limit.js";
+import { createAdmissionEvidence } from "./admission-evidence.js";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
 import { readDeployFile, resolveDeployFiles, preservedDeployFilePath, type BuiltDeployFile } from "./deploy-files.js";
@@ -183,24 +184,44 @@ export async function publishAdmissionPolicy(root: string, relative: string, byt
     await rename(path.join(anchored, temporary), target); await handle.sync();
   } finally { await output?.close(); await rm(path.join(anchored, temporary), { force: true }); await handle.close(); }
 }
-export async function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth) => void, limiterOptions: Parameters<typeof createAdmissionRateLimiter>[0] = {}) {
-  const rateLimiter = createAdmissionRateLimiter(limiterOptions);
+export type AdmissionReloadEvent = "loaded" | "failure" | "recovery";
+export async function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth, event: AdmissionReloadEvent) => void, options: Parameters<typeof createAdmissionRateLimiter>[0] & { evidence?: ReturnType<typeof createAdmissionEvidence>; deferActivation?: boolean } = {}) {
+  // A Dev session owns evidence across loader replacement. Quota state remains loader-owned.
+  const { evidence = createAdmissionEvidence(options.now), deferActivation = false, ...limiterOptions } = options;
+  const rateLimiter = createAdmissionRateLimiter({ ...limiterOptions, onEviction: () => evidence.count("limiterEvictions") });
   let active: AdmissionGeneration | null = null;
   let health: AdmissionHealth = Object.freeze({ state: "disabled", digest: null });
+  let activated = !deferActivation;
+  let recoveryPending = false;
   let closed = false;
   let pending: Promise<void> | null = null;
-  function report(state: AdmissionHealth["state"]) {
+  function report(state: AdmissionHealth["state"], event: AdmissionReloadEvent, force = false) {
     const next = Object.freeze({ state, digest: active?.digest ?? null });
-    if (next.state === health.state && next.digest === health.digest) return;
-    health = next; try { onHealth?.(health); } catch { /* Diagnostics never break reload. */ }
+    if (!force && event === "loaded" && next.state === health.state && next.digest === health.digest) return;
+    health = next;
+    // Rejected prepared loaders emit failures, but cannot consume the session's recovery.
+    if (!activated && event !== "failure") return;
+    try { onHealth?.(Object.freeze({ ...health, evidence: evidence.snapshot() }), event); } catch { /* Diagnostics never break reload. */ }
+  }
+  function recover(state = health.state) {
+    if (!activated || !recoveryPending || state === "degraded") return false;
+    recoveryPending = false; evidence.count("reloadRecoveries"); return true;
+  }
+  function activate(previousHealth?: AdmissionHealth) {
+    if (activated) return;
+    recoveryPending ||= previousHealth?.state === "degraded";
+    activated = true;
+    report(health.state, recover() ? "recovery" : "loaded", true);
   }
   async function load(cold: boolean) {
     try {
       const bytes = await readDeployFile(root, relative, ADMISSION_LIMITS.bytes);
       const next = bytes.equals(REMOVED) ? null : parseAdmissionPolicy(bytes);
       rateLimiter.reconcile(next);
-      active = next; report(next ? "healthy" : "disabled");
-    } catch { report("degraded"); if (cold) throw new Error("Configured admission policy could not be loaded."); }
+      active = next;
+      const state = next ? "healthy" : "disabled";
+      report(state, recover(state) ? "recovery" : "loaded");
+    } catch { recoveryPending = true; evidence.count("reloadFailures"); report("degraded", "failure"); if (cold) throw new Error("Configured admission policy could not be loaded."); }
   }
   await load(true);
   const reload = () => {
@@ -209,7 +230,7 @@ export async function openAdmissionPolicy(root: string, relative: string, onHeal
     return pending;
   };
   const timer = setInterval(() => { void reload(); }, ADMISSION_LIMITS.reloadMs); timer.unref();
-  return Object.freeze({ current: () => active, rateLimiter,
-    health: (): AdmissionHealth => Object.freeze({ ...health, rateLimit: rateLimiter.stats() }),
-    reload, close: async () => { closed = true; clearInterval(timer); await pending; } });
+  return Object.freeze({ current: () => active, rateLimiter, evidence,
+    health: (): AdmissionHealth => Object.freeze({ ...health, rateLimit: rateLimiter.stats(), evidence: evidence.snapshot() }),
+    activate, reload, close: async () => { closed = true; clearInterval(timer); await pending; } });
 }

@@ -31,7 +31,7 @@ process.stdout.write(JSON.stringify({ listening: server.address().port }) + '\\n
     for (let restart = 0; restart < 2; restart++) {
       stdout = ''; stderr = '';
       child = spawn(process.execPath, [path.join(root, 'server.mjs')], { cwd: root, env: {
-        ...process.env, PORT: '0', SPORADES_SECURITY_SESSION: 'dev', SPORADES_ADMISSION_POLICY_PATH: 'policy.json', SPORADES_CONFIG_DIR: path.join(root, 'config'),
+        ...process.env, PORT: '0', SPORADES_SECURITY_SESSION: 'dev', SPORADES_ADMISSION_POLICY_PATH: 'policy.json', SPORADES_CONFIG_DIR: path.join(root, 'config'), SPORADES_LOG_STDOUT: '1',
       } });
       child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
       let port;
@@ -52,7 +52,13 @@ process.stdout.write(JSON.stringify({ listening: server.address().port }) + '\\n
       assert.equal((await fetch(base + '/__sporades/health/runtime')).status, 404);
       const health = await (await fetch(base + '/__sporades/health/runtime', { headers: { 'x-sporades-host-probe': probe } })).json();
       assert.deepEqual(health.data.runtime.admissionPolicy.rateLimit, { buckets: 1, maxBuckets: 10000, evictions: 0 });
-      child.kill('SIGTERM'); await once(child, 'exit'); assert.equal(child.exitCode, 0, stderr); child = undefined;
+      assert.equal(health.data.runtime.admissionPolicy.evidence.version, 1);
+      assert.deepEqual(health.data.runtime.admissionPolicy.evidence.counters, { evaluated: '3', admitted: '1', denied: '1', rateLimited: '1', reloadFailures: '0', reloadRecoveries: '0', limiterEvictions: '0', decisionsEmitted: '3', decisionsSuppressed: '0' });
+      child.kill('SIGTERM'); await once(child, 'close'); assert.equal(child.exitCode, 0, stderr); child = undefined;
+      const samples = stdout.split('\n').flatMap(line => { try { const event = JSON.parse(line); return event.event === 'admission.decision' ? [event] : []; } catch { return []; } });
+      assert.equal(samples.length, 3);
+      assert.deepEqual(samples.map(event => event.data.outcome), ['admitted', 'rate-limited', 'denied']);
+      for (const value of ['192.0.2.1', '203.0.113.1', probe, identity['x-sporades-client-address-token']]) assert.equal((JSON.stringify(health) + stdout + stderr).includes(value), false);
     }
   } finally {
     if (child && child.exitCode === null) { child.kill('SIGTERM'); await once(child, 'exit'); }

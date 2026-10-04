@@ -12,6 +12,7 @@
       "src/access-key-contract.ts",
       "src/access-keys-runtime.ts",
       "src/acl-runtime.ts",
+      "src/admission-evidence.ts",
       "src/admission-policy.ts",
       "src/admission-rate-limit.ts",
       "src/auth-admission.ts",
@@ -22,6 +23,7 @@
       "src/bundle-pipeline.ts",
       "src/capsule-services.ts",
       "src/cli/access-key-operator-envelope.ts",
+      "src/cli/admission-inspection.ts",
       "src/cli/cli-help.ts",
       "src/cli/cli-support.ts",
       "src/cli/cli-version.ts",
@@ -126,7 +128,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "be14f8554ae4ed8f0869be6034bd6849789c5441c06d39332373ceb583d0d645"
+    "digest": "36b1ac29d687caf8a28524c9d859f2ac6268199d3247fcc5e8dd78cfc7c92e05"
   },
   "outputs": {
     "files": [
@@ -144,6 +146,10 @@
       "dist/acl-runtime.d.ts.map",
       "dist/acl-runtime.js",
       "dist/acl-runtime.js.map",
+      "dist/admission-evidence.d.ts",
+      "dist/admission-evidence.d.ts.map",
+      "dist/admission-evidence.js",
+      "dist/admission-evidence.js.map",
       "dist/admission-policy.d.ts",
       "dist/admission-policy.d.ts.map",
       "dist/admission-policy.js",
@@ -184,6 +190,10 @@
       "dist/cli/access-key-operator-envelope.d.ts.map",
       "dist/cli/access-key-operator-envelope.js",
       "dist/cli/access-key-operator-envelope.js.map",
+      "dist/cli/admission-inspection.d.ts",
+      "dist/cli/admission-inspection.d.ts.map",
+      "dist/cli/admission-inspection.js",
+      "dist/cli/admission-inspection.js.map",
       "dist/cli/cli-help.d.ts",
       "dist/cli/cli-help.d.ts.map",
       "dist/cli/cli-help.js",
@@ -562,6 +572,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "ef0c4f12c7220b98de5262ea6550043820b908ffecb8574d5e5b8c665ff20d02"
+    "digest": "a23874411a48b0e0833ac969ce79992e93f4a98589e015d2ccc98edbe06953b8"
   }
 }

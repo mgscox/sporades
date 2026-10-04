@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { admissionStorageRoot, publishAdmissionPolicy, parseAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS } from "../admission-policy.js";
+import { inspectAdmissionHealth } from "../admission-evidence.js";
+import { ADMISSION_INSPECTION_SCRIPT } from "./admission-inspection.js";
 import { readDeployFile, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
@@ -2630,6 +2632,16 @@ async function statsCapsule(request) {
         lifecycle: readCapsuleLifecycle(request, registryRecord, stats.container.name, true),
         raw,
     };
+    if (resolveDeployFiles(registryRecord.currentRelease?.source?.deployFiles, true).some(file => file.update === "admission")) {
+        const probe = runDocker(["exec", stats.container.name, "node", "--input-type=module", "--eval", ADMISSION_INSPECTION_SCRIPT], { maxBuffer: 128 * 1024, timeoutMs: 1500 });
+        data.admissionPolicy = null;
+        if (probe.ok) {
+            try {
+                data.admissionPolicy = inspectAdmissionHealth(JSON.parse(probe.stdout).admissionPolicy);
+            }
+            catch { /* Resource stats remain available when runtime evidence is unavailable. */ }
+        }
+    }
     writeEnvelope({ ok: true, data, error: null });
 }
 async function inspectCapsuleSsh(request) {
@@ -3343,6 +3355,7 @@ function normaliseRuntimeHealthBody(body) {
         && (fileInspection === undefined || typeof fileInspection?.ok === "boolean");
     const safe = {
         ready: ready === true,
+        ...(inspectAdmissionHealth(body?.data?.runtime?.admissionPolicy) ? { admissionPolicy: inspectAdmissionHealth(body.data.runtime.admissionPolicy) } : {}),
         ...(validBounds && hasFileMaxSizeBytes ? { fileMaxSizeBytes, httpMaxBodyBytes } : {}),
         checks: {
             sqlite: { ok: sqlite?.ok === true },
