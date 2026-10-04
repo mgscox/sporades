@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
 
@@ -12,8 +12,16 @@ function command(bin, args, cwd, env = process.env) {
   return spawnSync(process.execPath, [bin, ...args], { cwd, env, encoding: 'utf8' });
 }
 
-test('packed CLI generates a stack outside checkout and preserves operator state', async () => {
+test('packed CLI generates a stack outside checkout and preserves operator state', async t => {
   const temp = await mkdtemp(join(tmpdir(), 'sporades package '));
+  // This artifact/credential test needs only the prerequisite version protocol.
+  // Real container lifecycle and storage acceptance have separate opt-in drills.
+  const tools = join(temp, 'supported Docker');
+  await mkdir(tools);
+  await writeFile(join(tools, 'docker'), '#!/bin/sh\nif [ "$1" = compose ] && [ "$2" = version ]; then echo 5.5.1; elif [ "$1" = version ]; then echo 29.8.1; else exit 1; fi\n', { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  process.env.PATH = tools + delimiter + previousPath;
+  t.after(() => { process.env.PATH = previousPath; });
   const packed = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp], { cwd: root, encoding: 'utf8' });
   assert.equal(packed.status, 0, packed.stderr);
   const filename = JSON.parse(packed.stdout)[0].filename;

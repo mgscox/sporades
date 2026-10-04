@@ -1,13 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, X509Certificate } from "node:crypto";
 import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
-import { request as httpsRequest } from "node:https";
 import path from "node:path";
 import { validateTracePropagationOrigins } from "../telemetry-propagation-policy.js";
 import { SPORADES_BASE_IMAGE } from "../base-image.js";
 import { helperError } from "./cli-support.js";
 import { withHostTelemetryLock } from "./host-telemetry-state.js";
 import { inventoryHost } from "./inventory-contract.js";
+import { otlpTraceAccepted, diagnosticTrace, failed, passed, unavailable, probeTelemetryDestination, probeInventoryDestination, queryDiagnosticTrace, validateQueryCredential } from "./telemetry-diagnostics.js";
 import { configureHostMetrics, hostMetricsStatus, hostScrapeConfig, readHostMetrics, HOST_METRICS_NETWORK } from "./host-metrics.js";
 const RELAY_IMAGE = "otel/opentelemetry-collector-contrib:0.138.0";
 const RELAY_NAME = "sporades-telemetry-relay";
@@ -42,6 +42,14 @@ export function validateHostRelayConnection(value) {
         invalid();
     if (input.caPem !== undefined && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----")))
         invalid();
+    if (input.caPem !== undefined) {
+        try {
+            new X509Certificate(input.caPem);
+        }
+        catch {
+            invalid();
+        }
+    }
     if (input.metricsIntervalMs !== undefined && (!Number.isSafeInteger(input.metricsIntervalMs) || input.metricsIntervalMs < 5_000 || input.metricsIntervalMs > 300_000))
         invalid();
     if (input.eventLoopDelayResolutionMs !== undefined && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || input.eventLoopDelayResolutionMs < 10 || input.eventLoopDelayResolutionMs > 1000))
@@ -111,6 +119,78 @@ async function atomicWrite(file, content, mode) {
         await rm(candidate, { force: true });
     }
 }
+async function readActivation(files) {
+    const file = path.join(files.directory, "activation.json");
+    const raw = await readProtected(file);
+    if (raw === null)
+        return null;
+    try {
+        if ((await lstat(file)).mode & 0o077 || Buffer.byteLength(raw) > 3 * 1024 * 1024)
+            throw new Error();
+        const value = JSON.parse(raw);
+        if (value.schemaVersion !== 1 || !/^[a-f0-9]{64}$/.test(value.candidateDigest) || (value.previous !== null && (typeof value.previous?.descriptor !== "string" || typeof value.previous.config !== "string" || typeof value.previous.credential !== "string" || (value.previous.ca !== null && typeof value.previous.ca !== "string"))))
+            throw new Error();
+        return value;
+    }
+    catch {
+        throw helperError("Host Telemetry activation journal is invalid.", "Restore protected Telemetry state from an operator backup before reconnecting.");
+    }
+}
+const digest = (text) => createHash("sha256").update(text).digest("hex");
+async function activationPending(files) {
+    const journal = await readActivation(files);
+    return Boolean(journal && digest(await readProtected(files.descriptor) ?? "") !== journal.candidateDigest);
+}
+// Called with the Host telemetry lock held. A crash before descriptor publication
+// restores the previous authority. A committed descriptor completes cleanup.
+async function recoverActivation(files) {
+    const journal = await readActivation(files);
+    if (!journal)
+        return;
+    if (digest(await readProtected(files.descriptor) ?? "") !== journal.candidateDigest) {
+        if (journal.previous) {
+            let previous;
+            try {
+                previous = JSON.parse(journal.previous.descriptor);
+            }
+            catch {
+                invalid();
+            }
+            if (!previous || typeof previous !== "object")
+                invalid();
+            if (previous.schemaVersion !== 1 || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(previous.network))
+                invalid();
+            if (previous.exportsDisabled !== undefined && typeof previous.exportsDisabled !== "boolean")
+                invalid();
+            validateHostRelayConnection({ endpoint: previous.endpoint, credential: journal.previous.credential.match(/^SPORADES_INGEST_AUTH=Bearer ([^\r\n]+)\n$/)?.[1], ...(journal.previous.ca ? { caPem: journal.previous.ca } : {}) });
+            await atomicWrite(files.config, journal.previous.config, 0o644);
+            await atomicWrite(files.credential, journal.previous.credential, 0o600);
+            if (journal.previous.ca)
+                await atomicWrite(files.ca, journal.previous.ca, 0o644);
+            else
+                await rm(files.ca, { force: true });
+            await atomicWrite(files.descriptor, journal.previous.descriptor, 0o600);
+            if (previous.exportsDisabled)
+                await stopHostTelemetryExports(path.dirname(files.directory), previous.inventoryHost);
+            else
+                await startRelay(files, previous.network, Boolean(previous.caConfigured));
+        }
+        else {
+            if (inspectRelay() && !docker(["rm", "-f", RELAY_NAME]).ok)
+                throw new Error("Recovery failed");
+            for (const file of [files.descriptor, files.config, files.credential, files.ca])
+                await rm(file, { force: true });
+        }
+    }
+    await rm(path.join(files.directory, "activation.json"), { force: true });
+    const dir = await open(files.directory, "r");
+    try {
+        await dir.sync();
+    }
+    finally {
+        await dir.close();
+    }
+}
 function docker(args) {
     const result = spawnSync("docker", args, { encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 });
     return { ok: !result.error && result.status === 0, stdout: String(result.stdout ?? "").trim() };
@@ -178,6 +258,8 @@ export async function readHostInventoryConnection(remoteRoot) {
     if (!record)
         return null;
     const files = paths(remoteRoot);
+    if (await activationPending(files))
+        throw new Error("Host Telemetry activation requires reconcile.");
     const details = await lstat(files.descriptor);
     if (details.mode & 0o077)
         throw new Error("Unprotected Host inventory state.");
@@ -214,13 +296,14 @@ export async function statusHostTelemetryRelay(remoteRoot) {
         resources: await hostMetricsStatus(remoteRoot),
         exportsDisabled: connection?.exportsDisabled === true,
         connected: Boolean(connection),
-        relayReady: Boolean(connection && !connection.exportsDisabled && relay?.State?.Running === true),
+        activationPending: connection ? await activationPending(paths(remoteRoot)) : false,
+        relayReady: Boolean(connection && !connection.exportsDisabled && relay?.State?.Running === true && !await activationPending(paths(remoteRoot))),
         capsuleCoverage: "not-configured",
         backendVerification: "unavailable",
         ...(connection ? { ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) } : {}),
     };
 }
-export async function connectHostTelemetryRelay(remoteRoot, network, input, host) {
+export async function connectHostTelemetryRelay(remoteRoot, network, input, host, expectedBinding) {
     const connection = validateHostRelayConnection(input);
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(network))
         invalid();
@@ -230,6 +313,10 @@ export async function connectHostTelemetryRelay(remoteRoot, network, input, host
     await mkdir(files.directory, { recursive: true, mode: 0o700 });
     await assertOwnedDirectory(files.directory);
     return withHostTelemetryLock(remoteRoot, async () => {
+        if (await readActivation(files))
+            throw helperError("Host Telemetry activation needs reconciliation.", "Run host telemetry reconcile before reconnecting or migrating.");
+        if (expectedBinding && createHash("sha256").update(JSON.stringify(await readConnectionRecord(remoteRoot))).digest("hex") !== expectedBinding)
+            throw helperError("Host Telemetry binding changed during destination verification.", "Inspect current status and retry migration against the saved binding.");
         const previous = await readHostTelemetryConnection(remoteRoot);
         if (previous?.inventoryHost && connection.inventoryHost && previous.inventoryHost !== connection.inventoryHost)
             throw helperError("Host inventory identity cannot change.", "Use the persisted exact Host identity when reconnecting; restore retained state rather than resetting authority.");
@@ -237,38 +324,39 @@ export async function connectHostTelemetryRelay(remoteRoot, network, input, host
         const previousConfig = previous ? await readProtected(files.config) : null;
         const previousCredential = previous ? await readProtected(files.credential) : null;
         const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-        const descriptor = { inventory: { generation: randomBytes(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...(connection.caPem ? { caPem: connection.caPem } : {}) }, schemaVersion: 1, ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
-        await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 0o644);
-        await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
-        if (connection.caPem)
-            await atomicWrite(files.ca, connection.caPem, 0o644);
+        // A verified migration retains export policy; ordinary connect deliberately
+        // re-enables exports. Read policy under the same lock as the binding fence.
+        const exportsDisabled = expectedBinding !== undefined && previous?.exportsDisabled === true;
+        const descriptor = { ...(exportsDisabled ? { exportsDisabled: true } : {}), inventory: { generation: randomBytes(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...(connection.caPem ? { caPem: connection.caPem } : {}) }, schemaVersion: 1, ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: new Date().toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) };
+        const candidate = `${JSON.stringify(descriptor, null, 2)}\n`;
+        if (previous && (!previousConfig || !previousCredential || (previous.caConfigured && !previousCa)))
+            throw helperError("Previous Host Telemetry state is incomplete.", "Restore or reconcile the protected working connection before reconnecting.");
+        const previousDescriptor = await readProtected(files.descriptor);
+        const journal = { schemaVersion: 1, candidateDigest: digest(candidate), previous: previous && previousDescriptor ? { descriptor: previousDescriptor, config: previousConfig, credential: previousCredential, ca: previousCa } : null };
+        await atomicWrite(path.join(files.directory, "activation.json"), JSON.stringify(journal), 0o600);
         try {
-            await startRelay(files, network, Boolean(connection.caPem));
+            await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 0o644);
+            await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}\n`, 0o600);
+            if (connection.caPem)
+                await atomicWrite(files.ca, connection.caPem, 0o644);
+            if (exportsDisabled)
+                await stopHostTelemetryExports(remoteRoot, previous?.inventoryHost);
+            else
+                await startRelay(files, network, Boolean(connection.caPem));
+            await atomicWrite(files.descriptor, candidate, 0o600);
         }
         catch (error) {
-            if (previous && previousConfig && previousCredential && (!previous.caConfigured || previousCa)) {
-                await atomicWrite(files.config, previousConfig, 0o644);
-                await atomicWrite(files.credential, previousCredential, 0o600);
-                if (previousCa)
-                    await atomicWrite(files.ca, previousCa, 0o644);
-                try {
-                    if (previous.exportsDisabled)
-                        await stopHostTelemetryExports(remoteRoot, host ?? previous.inventoryHost);
-                    else
-                        await startRelay(files, previous.network, previous.caConfigured);
-                }
-                catch {
-                    throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile.");
-                }
+            try {
+                await recoverActivation(files);
             }
-            else {
-                await rm(files.config, { force: true });
-                await rm(files.credential, { force: true });
+            catch {
+                throw helperError("Host Telemetry relay recovery failed.", "Protected rollback state is retained; inspect Docker and run host telemetry reconcile.");
             }
             throw error;
         }
-        await atomicWrite(files.descriptor, `${JSON.stringify(descriptor, null, 2)}\n`, 0o600);
-        // Remove superseded split credentials only after the complete bundle is durable.
+        // A published descriptor is the commit point. Interrupted cleanup never
+        // reactivates old credentials; reconcile recognizes the committed digest.
+        await recoverActivation(files);
         await rm(path.join(files.directory, "inventory-credential"), { force: true });
         return await statusHostTelemetryRelay(remoteRoot);
     });
@@ -290,7 +378,20 @@ async function startRelay(files, network, caConfigured) {
     if (inspectRelay()?.State?.Running !== true)
         throw helperError("Host Telemetry relay exited during startup.", "Inspect Docker relay logs for collector configuration errors, then retry.");
 }
+/** Host-owned inventory timer also repairs an interrupted activation. */
+export async function recoverHostTelemetryActivation(remoteRoot) {
+    const files = paths(remoteRoot);
+    if (!await readActivation(files))
+        return;
+    return withHostTelemetryLock(remoteRoot, () => recoverActivation(files));
+}
 export async function reconcileHostTelemetryRelay(remoteRoot, host, operation = "reconcile") {
+    return withHostTelemetryLock(remoteRoot, async () => {
+        await recoverActivation(paths(remoteRoot));
+        return reconcileRelayLocked(remoteRoot, host, operation);
+    });
+}
+async function reconcileRelayLocked(remoteRoot, host, operation) {
     const connection = await readHostTelemetryConnection(remoteRoot);
     if (!connection)
         throw helperError("Host Telemetry is not connected.", "Run `sporades host telemetry connect` first.");
@@ -333,37 +434,77 @@ export async function reconcileHostTelemetryRelay(remoteRoot, host, operation = 
     }
     return statusHostTelemetryRelay(remoteRoot);
 }
-const syntheticTrace = (id) => JSON.stringify({ resourceSpans: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: "sporades-host-relay-check" } }] }, scopeSpans: [{ spans: [{ traceId: id, spanId: id.slice(0, 16), name: "sporades.host.relay.check", kind: 1, startTimeUnixNano: String(Date.now() * 1_000_000), endTimeUnixNano: String((Date.now() + 1) * 1_000_000) }] }] }] });
-export async function checkHostTelemetryDelivery(remoteRoot) {
-    const descriptor = await readHostTelemetryConnection(remoteRoot);
-    if (!descriptor)
-        throw helperError("Host Telemetry is not connected.", "Run `sporades host telemetry connect` first.");
-    const files = paths(remoteRoot);
-    const raw = await readProtected(files.credential);
-    const credential = raw?.match(/^SPORADES_INGEST_AUTH=Bearer ([^\r\n]+)\n$/)?.[1];
-    if (!credential)
-        throw helperError("Host Telemetry credential is unavailable.", "Reconnect the relay with a scoped ingestion credential.");
-    const ca = descriptor.caConfigured ? await readProtected(files.ca) : undefined;
-    const url = new URL("v1/traces", descriptor.endpoint);
-    const traceId = randomBytes(16).toString("hex");
-    const body = syntheticTrace(traceId);
-    const result = await new Promise((resolve) => {
-        const request = httpsRequest(url, { method: "POST", headers: { "content-type": "application/json", "authorization": `Bearer ${credential}`, "content-length": Buffer.byteLength(body) }, ...(ca ? { ca } : {}), timeout: 5000 }, (response) => {
-            response.resume();
-            resolve({ stage: response.statusCode === 401 || response.statusCode === 403 ? "auth" : response.statusCode && response.statusCode >= 200 && response.statusCode < 300 ? "accepted" : "destination", accepted: Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 300), statusCode: response.statusCode });
+export async function checkHostTelemetryDelivery(remoteRoot, queryCredential) {
+    validateQueryCredential(queryCredential);
+    const checks = Object.fromEntries(["configuration", "agentReadiness", "dns", "tls", "authentication", "otlpAcceptance", "relayAcceptance", "recentIngestion", "backendQuery"].map(key => [key, unavailable("not-reached")]));
+    const base = { origin: "host", accepted: false, stage: "configuration", relayReady: false, relayAccepted: false, backendStorage: "verification-unavailable", capsuleCoverage: "not-configured", checks };
+    let captured;
+    try {
+        captured = await withHostTelemetryLock(remoteRoot, async () => {
+            const descriptor = await readHostTelemetryConnection(remoteRoot);
+            if (!descriptor)
+                throw new Error();
+            const files = paths(remoteRoot);
+            if (await activationPending(files))
+                throw new Error();
+            const credential = (await readProtected(files.credential))?.match(/^SPORADES_INGEST_AUTH=Bearer ([^\r\n]+)\n$/)?.[1];
+            const caPem = descriptor.caConfigured ? await readProtected(files.ca) : undefined;
+            const config = await readProtected(files.config);
+            if (!credential || typeof descriptor.caConfigured !== "boolean" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(descriptor.network) || (descriptor.caConfigured && !caPem))
+                throw new Error();
+            const connection = validateHostRelayConnection({ endpoint: descriptor.endpoint, credential, ...(caPem ? { caPem } : {}), ...(descriptor.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: descriptor.tracePropagationOrigins } : {}), ...(descriptor.metricsIntervalMs !== undefined ? { metricsIntervalMs: descriptor.metricsIntervalMs } : {}), ...(descriptor.eventLoopDelayResolutionMs !== undefined ? { eventLoopDelayResolutionMs: descriptor.eventLoopDelayResolutionMs } : {}) });
+            if (config !== renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(caPem), resources: await readHostMetrics(remoteRoot) }))
+                throw new Error();
+            return { descriptor, connection, relayReady: (await statusHostTelemetryRelay(remoteRoot)).relayReady };
         });
-        request.on("timeout", () => request.destroy(Object.assign(new Error("timeout"), { code: "ETIMEDOUT" })));
-        request.on("error", (error) => resolve({ stage: error.code === "ENOTFOUND" || error.code === "EAI_AGAIN" ? "dns" : String(error.code).startsWith("ERR_TLS") || String(error.code).includes("CERT") ? "tls" : "network", accepted: false }));
-        request.end(body);
-    });
-    const relayReady = (await statusHostTelemetryRelay(remoteRoot)).relayReady;
-    let relayAccepted = false;
-    if (relayReady) {
-        const script = `const u='http://${RELAY_ALIAS}:4318/v1/traces'; fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:process.argv[1],signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(()=>process.stdout.write('unavailable'));`;
-        const relay = docker(["run", "--rm", "--network", descriptor.network, "--user", "10001:10001", "--entrypoint", "node", SPORADES_BASE_IMAGE.image, "-e", script, body]);
-        relayAccepted = relay.ok && ["200", "202"].includes(relay.stdout);
     }
-    return { ...result, origin: "host", traceId, relayReady, relayAccepted, backendStorage: "verification-unavailable", capsuleCoverage: "not-configured" };
+    catch {
+        checks.configuration = failed("saved-state-invalid-or-unavailable");
+        return base;
+    }
+    checks.configuration = passed();
+    checks.agentReadiness = captured.relayReady ? passed() : failed("relay-not-running");
+    const result = await probeTelemetryDestination(captured.connection);
+    Object.assign(checks, result.checks);
+    // Never query the directly submitted trace as evidence for the relay path.
+    const relayProbe = diagnosticTrace();
+    let relayAccepted = false;
+    if (captured.relayReady) {
+        const script = `fetch('http://${RELAY_ALIAS}:4318/v1/traces',{method:'POST',headers:{'content-type':'application/json'},body:process.argv[1],signal:AbortSignal.timeout(5000)}).then(async r=>{if(!r.ok){process.stdout.write('rejected');return;}let d=await r.json();process.stdout.write((${otlpTraceAccepted.toString()})(d)?'accepted':'rejected');}).catch(()=>process.stdout.write('unavailable'));`;
+        const relay = docker(["run", "--rm", "--network", captured.descriptor.network, "--user", "10001:10001", "--entrypoint", "node", SPORADES_BASE_IMAGE.image, "-e", script, relayProbe.body]);
+        relayAccepted = relay.ok && relay.stdout === "accepted";
+        checks.relayAcceptance = relayAccepted ? passed() : relay.ok && relay.stdout === "rejected" ? failed("receiver-rejected") : unavailable("probe-unavailable");
+    }
+    if (!captured.relayReady)
+        checks.relayAcceptance = unavailable("relay-not-running");
+    const query = relayAccepted ? await queryDiagnosticTrace(captured.connection, relayProbe.traceId, queryCredential) : { backendQuery: unavailable("relay-probe-not-accepted"), recentIngestion: unavailable("relay-probe-not-accepted") };
+    Object.assign(checks, query);
+    return { ...base, ...result, traceId: result.traceId, relayTraceId: relayProbe.traceId, relayReady: captured.relayReady, relayAccepted, checks, backendStorage: query.backendQuery.state === "passed" && query.recentIngestion.state === "passed" ? "verified-relay-trace" : "verification-unavailable" };
+}
+/** Verifies the destination on the actual Host before changing saved authority.
+ * Old inventory is deliberately untouched: retiring its expectations is an
+ * explicit Monitoring operator step, independent of retained trace history.
+ */
+export async function migrateHostTelemetryRelay(remoteRoot, network, input, host, queryCredential) {
+    validateQueryCredential(queryCredential);
+    const connection = validateHostRelayConnection(input);
+    const previous = await withHostTelemetryLock(remoteRoot, () => readConnectionRecord(remoteRoot));
+    if (!previous || !inventoryHost(previous.inventoryHost))
+        throw helperError("Host Telemetry has no resolved inventory binding.", "Connect and register the Host before migrating it.");
+    validateHostRelayConnection({ endpoint: previous.endpoint, credential: "saved-binding-validation" });
+    if (typeof previous.network !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(previous.network))
+        invalid();
+    if (connection.inventoryHost && connection.inventoryHost !== previous.inventoryHost)
+        throw helperError("Host inventory identity cannot change.", "Use the persisted exact Host identity at the destination.");
+    const expectedBinding = createHash("sha256").update(JSON.stringify(previous)).digest("hex");
+    const destination = await probeTelemetryDestination(connection);
+    const storage = destination.accepted ? await queryDiagnosticTrace(connection, destination.traceId, queryCredential) : { backendQuery: unavailable("otlp-not-accepted"), recentIngestion: unavailable("otlp-not-accepted") };
+    const inventoryAuthority = await probeInventoryDestination(connection, previous.inventoryHost);
+    const before = { origin: "host", previousEndpoint: previous.endpoint, destination, storage, inventoryAuthority, relayRestarted: false, oldInventory: "operator-retirement-required", history: "preserved" };
+    if (!destination.accepted || storage.backendQuery.state !== "passed" || storage.recentIngestion.state !== "passed" || inventoryAuthority.state !== "passed")
+        return { ...before, activation: "not-applied", rollback: "working-binding-preserved" };
+    const saved = await connectHostTelemetryRelay(remoteRoot, network, { ...(previous.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: previous.tracePropagationOrigins } : {}), ...(previous.metricsIntervalMs ? { metricsIntervalMs: previous.metricsIntervalMs } : {}), ...(previous.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: previous.eventLoopDelayResolutionMs } : {}), ...connection, inventoryHost: previous.inventoryHost }, undefined, expectedBinding);
+    return { ...before, activation: "applied", relayRestarted: !saved.exportsDisabled, rollback: "migrate-to-previous-profile", connection: saved };
 }
 async function stopHostTelemetryExports(remoteRoot, host, operation = "disable") {
     // Stop delivery even if Caddy validation or exporter shutdown fails. Retry
@@ -376,14 +517,17 @@ async function stopHostTelemetryExports(remoteRoot, host, operation = "disable")
 }
 /** Durable opt-out keeps inventory authority and credentials for acknowledgement/recovery. */
 export async function disableHostTelemetryExports(remoteRoot, host) {
-    await withHostTelemetryLock(remoteRoot, async () => {
+    return withHostTelemetryLock(remoteRoot, async () => {
+        // Settle an older activation before publishing the newer opt-out intent.
+        // Keep shutdown serialized so reconnect cannot be stopped by this operation.
+        await recoverActivation(paths(remoteRoot));
         const record = await readConnectionRecord(remoteRoot);
         if (!record)
             throw helperError("Host Telemetry is not connected.", "Connect before changing export policy.");
         await atomicWrite(paths(remoteRoot).descriptor, JSON.stringify({ ...record, exportsDisabled: true }) + "\n", 0o600);
+        await stopHostTelemetryExports(remoteRoot, host);
+        return statusHostTelemetryRelay(remoteRoot);
     });
-    await stopHostTelemetryExports(remoteRoot, host);
-    return statusHostTelemetryRelay(remoteRoot);
 }
 /** Caller must first acknowledge the exact disabled inventory revision. */
 export async function removeHostTelemetryAgents(remoteRoot, host) {

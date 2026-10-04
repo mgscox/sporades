@@ -635,3 +635,10 @@ full SSH public-key material.
   <subname> --json`, then restart or push a fixed release. Automatic fallback
   only applies to `host push --verify --fallback-to-previous-release`, not to
   later runtime crashes.
+
+### Monitoring connection diagnosis and migration
+
+Use `host telemetry check` for Host-origin delivery stages and
+`host telemetry migrate --profile <destination>` for preflight-verified activation.
+See [Telemetry diagnostics and migration](./telemetry-diagnostics.md) for operator
+query authority, restart reports, inventory expectations and rollback.

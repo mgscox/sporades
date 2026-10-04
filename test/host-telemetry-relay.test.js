@@ -36,6 +36,8 @@ test('shipped Host help advertises Capsule Telemetry opt-out commands', () => {
   const help = spawnSync(process.execPath, ['bin/sporades.js', 'host', '--help'], { cwd: process.cwd(), encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /telemetry enable\|disable <subname>/);
+  assert.match(help.stdout, /telemetry connect\|migrate\|reconcile\|status\|check/);
+  assert.match(help.stdout, /--query-credential-env <name>/);
 });
 
 test('installed CLI resolves a verified Host profile and redacts the scoped credential', async () => {
@@ -46,7 +48,7 @@ test('installed CLI resolves a verified Host profile and redacts the scoped cred
   const ssh = path.join(bin, 'ssh');
   await writeFile(ssh, `#!/usr/bin/env node\nconst fs=require('node:fs');let data='';process.stdin.on('data',x=>data+=x);process.stdin.on('end',()=>{fs.writeFileSync(process.env.SPORADES_TEST_CAPTURE,data);const request=JSON.parse(data);process.stdout.write(JSON.stringify({ok:true,data:{action:request.action,endpoint:request.telemetry?.endpoint??null,relayReady:true,capsuleCoverage:'not-configured'},error:null})+'\\n')});\n`);
   await chmod(ssh, 0o755);
-  const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, 'config'), SPORADES_TEST_CAPTURE: capture, TRACE_INGEST_TOKEN: 'private-test-ingest-token', INVENTORY_TOKEN: 'private-test-inventory-token', PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, 'config'), SPORADES_TEST_CAPTURE: capture, QUERY_OPERATOR: 'operator:private-query-secret', TRACE_INGEST_TOKEN: 'private-test-ingest-token', INVENTORY_TOKEN: 'private-test-inventory-token', PATH: `${bin}${path.delimiter}${process.env.PATH}` };
   const cli = (...args) => spawnSync(process.execPath, ['bin/sporades.js', ...args], { cwd: process.cwd(), encoding: 'utf8', env });
   try {
     assert.equal(cli('host', 'add', 'remote', '--server', 'host.example', '--domain', 'capsules.example', '--json').status, 0);
@@ -63,6 +65,16 @@ test('installed CLI resolves a verified Host profile and redacts the scoped cred
     assert.equal(request.telemetry.inventoryHost, 'host-east');
     assert.doesNotMatch(connected.stdout + connected.stderr, /private-test-inventory-token/);
     assert.equal(request.capsule, null);
+    const migrated = cli('host', 'telemetry', 'migrate', '--host', 'remote', '--profile', 'remote', '--query-credential-env', 'QUERY_OPERATOR', '--json');
+    assert.equal(migrated.status, 0, migrated.stdout + migrated.stderr);
+    const migrationRequest = JSON.parse(await readFile(capture, 'utf8'));
+    assert.equal(migrationRequest.action, 'host.telemetry.migrate');
+    assert.equal(migrationRequest.diagnostics.queryCredential, 'operator:private-query-secret');
+    assert.doesNotMatch(migrated.stdout + migrated.stderr, /private-query-secret/);
+    const checked = cli('host', 'telemetry', 'check', '--host', 'remote', '--query-credential-env', 'QUERY_OPERATOR', '--json');
+    assert.equal(checked.status, 0, checked.stderr);
+    assert.equal(JSON.parse(await readFile(capture, 'utf8')).diagnostics.queryCredential, 'operator:private-query-secret');
+    assert.notEqual(cli('host', 'telemetry', 'status', '--host', 'remote', '--query-credential-env', 'QUERY_OPERATOR', '--json').status, 0);
     const status = cli('host', 'telemetry', 'status', '--host', 'remote', '--json');
     assert.equal(status.status, 0, status.stderr);
     assert.equal(JSON.parse(await readFile(capture, 'utf8')).telemetry, undefined);

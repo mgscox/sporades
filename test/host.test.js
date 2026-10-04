@@ -6,7 +6,7 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 
@@ -33,6 +33,20 @@ const hostHelperPath = path.join(repoRoot, "bin", "sporades-host-helper.js");
 const rootPackageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
 const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DDZjMa6q7iH+jF5bughycSLBOa/ test@example";
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
+
+// Host helper unit fixtures must never fall through to the workstation's engine.
+// Tests requiring Docker state prepend their explicit installFakeDocker fixture.
+const workstationPath = process.env.PATH;
+let unavailableDockerDirectory;
+before(async () => {
+  unavailableDockerDirectory = await mkdtemp(path.join(tmpdir(), "sporades-host-no-docker-"));
+  await writeFile(path.join(unavailableDockerDirectory, "docker"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  process.env.PATH = `${unavailableDockerDirectory}${path.delimiter}${workstationPath}`;
+});
+after(async () => {
+  process.env.PATH = workstationPath;
+  await rm(unavailableDockerDirectory, { recursive: true, force: true });
+});
 
 test("Hosted prerender warnings reach human and structured successful CLI output", async () => {
   await withTempDir(async (dir) => {
@@ -3919,6 +3933,9 @@ test("sporades host helper registers Hosted Capsules with registry state and una
 
 test("sporades host helper rotates a Hosted Capsule sealed-env key and cleans only unreferenced keys", async () => {
   await withTempDir(async (dir) => {
+    // This key-retention fixture has no runtime container. Keep its state probe
+    // independent of whichever Docker engine happens to be on the workstation.
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUNNING_STATUS: "1" } });
     const remoteRoot = path.join(dir, "remote-root");
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     const dataDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "data");
@@ -3961,7 +3978,7 @@ test("sporades host helper rotates a Hosted Capsule sealed-env key and cleans on
         host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
         capsule: { subname: "team-notes" },
       },
-      { cwd: dir },
+      { cwd: dir, env: docker.env },
     );
 
     assert.equal(rotate.code, 0, rotate.stderr);
