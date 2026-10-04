@@ -37,6 +37,7 @@ export declare function publishAdmissionPolicy(root: string, relative: string, b
 export type AdmissionReloadEvent = "loaded" | "failure" | "recovery";
 export declare function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth, event: AdmissionReloadEvent) => void, options?: Parameters<typeof createAdmissionRateLimiter>[0] & {
     evidence?: ReturnType<typeof createAdmissionEvidence>;
+    deferActivation?: boolean;
 }): Promise<Readonly<{
     current: () => Readonly<{
         digest: string;
@@ -57,6 +58,7 @@ export declare function openAdmissionPolicy(root: string, relative: string, onHe
         snapshot: () => import("../src/types/admission-policy.js").AdmissionEvidence;
     }>;
     health: () => AdmissionHealth;
+    activate: (previousHealth?: AdmissionHealth) => void;
     reload: () => Promise<void>;
     close: () => Promise<void>;
 }>>;

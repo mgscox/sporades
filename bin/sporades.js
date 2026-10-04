@@ -81161,31 +81161,46 @@ async function publishAdmissionPolicy(root, relative, bytes) {
   }
 }
 async function openAdmissionPolicy(root, relative, onHealth, options = {}) {
-  const { evidence = createAdmissionEvidence(options.now), ...limiterOptions } = options;
+  const { evidence = createAdmissionEvidence(options.now), deferActivation = false, ...limiterOptions } = options;
   const rateLimiter = createAdmissionRateLimiter({ ...limiterOptions, onEviction: () => evidence.count("limiterEvictions") });
   let active = null;
   let health = Object.freeze({ state: "disabled", digest: null });
+  let activated = !deferActivation;
+  let recoveryPending = false;
   let closed = false;
   let pending = null;
-  function report(state, event) {
+  function report(state, event, force = false) {
     const next = Object.freeze({ state, digest: active?.digest ?? null });
-    if (event === "loaded" && next.state === health.state && next.digest === health.digest) return;
+    if (!force && event === "loaded" && next.state === health.state && next.digest === health.digest) return;
     health = next;
+    if (!activated && event !== "failure") return;
     try {
       onHealth?.(Object.freeze({ ...health, evidence: evidence.snapshot() }), event);
     } catch {
     }
+  }
+  function recover2(state = health.state) {
+    if (!activated || !recoveryPending || state === "degraded") return false;
+    recoveryPending = false;
+    evidence.count("reloadRecoveries");
+    return true;
+  }
+  function activate(previousHealth) {
+    if (activated) return;
+    recoveryPending ||= previousHealth?.state === "degraded";
+    activated = true;
+    report(health.state, recover2() ? "recovery" : "loaded", true);
   }
   async function load(cold) {
     try {
       const bytes = await readDeployFile(root, relative, ADMISSION_LIMITS.bytes);
       const next = bytes.equals(REMOVED) ? null : parseAdmissionPolicy(bytes);
       rateLimiter.reconcile(next);
-      const recovered = health.state === "degraded";
-      if (recovered) evidence.count("reloadRecoveries");
       active = next;
-      report(next ? "healthy" : "disabled", recovered ? "recovery" : "loaded");
+      const state = next ? "healthy" : "disabled";
+      report(state, recover2(state) ? "recovery" : "loaded");
     } catch {
+      recoveryPending = true;
       evidence.count("reloadFailures");
       report("degraded", "failure");
       if (cold) throw new Error("Configured admission policy could not be loaded.");
@@ -81208,6 +81223,7 @@ async function openAdmissionPolicy(root, relative, onHealth, options = {}) {
     rateLimiter,
     evidence,
     health: () => Object.freeze({ ...health, rateLimit: rateLimiter.stats(), evidence: evidence.snapshot() }),
+    activate,
     reload,
     close: async () => {
       closed = true;
@@ -152618,7 +152634,7 @@ async function createDevRuntime(options) {
         nextAdmission = null;
         nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health, event) => {
           if (event === "failure" || event === "recovery" || nextAdmission && nextAdmission === admissionPolicy) reportAdmissionHealth(health, event);
-        }, { evidence: admissionEvidence }) : null;
+        }, { evidence: admissionEvidence, deferActivation: true }) : null;
       }
       try {
         const nextDatabase = await openDevDatabase(
@@ -152651,7 +152667,7 @@ async function createDevRuntime(options) {
         admissionPolicy = nextAdmission;
         if (changed) {
           await previousAdmission?.close();
-          if (admissionPolicy) reportAdmissionHealth(admissionPolicy.health());
+          admissionPolicy?.activate(previousAdmission?.health());
         }
         clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
       } catch (error) {

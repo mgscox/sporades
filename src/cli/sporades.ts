@@ -3175,7 +3175,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
         nextAdmission = null;
         nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health, event) => {
           if (event === "failure" || event === "recovery" || (nextAdmission && nextAdmission === admissionPolicy)) reportAdmissionHealth(health, event);
-        }, { evidence: admissionEvidence }) : null;
+        }, { evidence: admissionEvidence, deferActivation: true }) : null;
       }
       try {
       const nextDatabase: any = await openDevDatabase(
@@ -3207,7 +3207,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
       admissionPath = nextPath; admissionPolicy = nextAdmission;
       if (changed) {
         await previousAdmission?.close();
-        if (admissionPolicy) reportAdmissionHealth(admissionPolicy.health());
+        admissionPolicy?.activate(previousAdmission?.health());
       }
       clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
       } catch (error) { if (changed && nextAdmission !== admissionPolicy) await nextAdmission?.close(); throw error; }

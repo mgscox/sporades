@@ -1438,6 +1438,9 @@ precision. Totals and sampling reset on process restart, survive hot policy
 changes and explicit removal, and have no per-client or per-rule dimensions.
 Within one Dev process, runtime replacement, policy-path changes and disabling
 then re-enabling `admissionPolicy` retain all totals and the current sample budget.
+Replacing a degraded Dev policy at a new path records one recovery when the
+replacement runtime becomes active. Rejected policy or Capsule candidates retain
+the active policy's degradation and do not consume that recovery.
 While disabled, inspection omits policy fields and requests do not count;
 re-enabling exposes the retained evidence with the newly loaded policy digest.
 Each evaluated active generation, including an empty policy, has exactly one

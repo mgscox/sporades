@@ -117,7 +117,7 @@ export default capsule({ name: 'slow-evidence', schema: {} });`;
   }
 });
 
-test('one Dev PID retains counters and the exhausted sampling budget across path changes, disable/re-enable, and runtime replacement', { timeout: 45000 }, async () => {
+test('one Dev PID recovers a degraded policy across path replacement and retains counters and sampling through rejected candidates and runtime replacement', { timeout: 60000 }, async () => {
   const root = await mkdtemp(path.join(repo, '.agent-tmp-evidence-dev-'));
   let child, output = '', errors = '';
   try {
@@ -128,7 +128,7 @@ test('one Dev PID retains counters and the exhausted sampling budget across path
     await writeFile(path.join(project, 'a.json'), initialPolicy);
     await writeFile(path.join(project, 'b.json'), policy([deny('replacement')]));
     await writeFile(path.join(project, 'bad.json'), 'private-malformed-candidate');
-    child = spawn(process.execPath, [cli, 'dev', '--json'], { cwd: project, env });
+    child = spawn(process.execPath, [cli, 'dev', '--json'], { cwd: project, env: { ...env, SPORADES_LOG_STDOUT: '1' } });
     child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { errors += chunk; });
     const diagnostics = () => output + errors;
@@ -138,6 +138,7 @@ test('one Dev PID retains counters and the exhausted sampling budget across path
     const session = JSON.parse(await readFile(sessionPath, 'utf8'));
     assert.equal(session.pid, child.pid);
     const health = async () => (await (await fetch(base + '/__sporades/health/runtime', { headers: { 'x-sporades-host-probe': session.inspectionToken } })).json()).data.runtime.admissionPolicy;
+    const recoveryEvents = async () => events(output).filter(event => event.event === 'admission.policy.recovery');
     let previous;
     const assertRetained = async expectedDenied => {
       const current = await health();
@@ -164,17 +165,40 @@ test('one Dev PID retains counters and the exhausted sampling budget across path
     }
     assert.equal(await upgrade(base, '/blocked/0'), 403);
     await assertRetained(21);
+    const initialDigest = previous.digest;
     await writeFile(path.join(project, 'a.json'), 'private-malformed-policy');
     await until(async () => (await health()).state === 'degraded', child, diagnostics);
-    await writeFile(path.join(project, 'a.json'), initialPolicy);
-    await until(async () => (await health()).state === 'healthy', child, diagnostics);
-    const recovered = await assertRetained(21);
-    assert.equal(recovered.evidence.counters.reloadRecoveries, '1');
-    assert.ok(BigInt(recovered.evidence.counters.reloadFailures) >= 1n);
 
-    await rebuild(async () => { config.admissionPolicy.path = 'b.json'; await writeFile(configPath, JSON.stringify(config)); });
-    assert.notEqual((await health()).digest, recovered.digest);
-    await assertRetained(21);
+    await rebuild(async () => { config.admissionPolicy.path = 'bad.json'; await writeFile(configPath, JSON.stringify(config)); }, 'failed');
+    const retained = await assertRetained(21);
+    assert.equal(retained.state, 'degraded');
+    assert.equal(retained.digest, initialDigest);
+    assert.ok(BigInt(retained.evidence.counters.reloadFailures) >= 2n);
+    assert.equal(retained.evidence.counters.reloadRecoveries, '0');
+    assert.equal((await recoveryEvents()).length, 0);
+
+    // A valid policy candidate must not recover the session if Capsule preparation rejects it.
+    const serverPath = path.join(project, 'server/index.ts');
+    const serverSource = await readFile(serverPath, 'utf8');
+    await rebuild(async () => {
+      config.admissionPolicy.path = 'b.json';
+      await writeFile(serverPath, serverSource + '\nthrow new Error("candidate preparation rejected");\n');
+      await writeFile(configPath, JSON.stringify(config));
+    }, 'failed');
+    assert.equal((await health()).state, 'degraded');
+    assert.equal((await health()).digest, initialDigest);
+    assert.equal((await assertRetained(21)).evidence.counters.reloadRecoveries, '0');
+    assert.equal((await recoveryEvents()).length, 0);
+
+    await rebuild(async () => { await writeFile(serverPath, serverSource); });
+    const recovered = await assertRetained(21);
+    assert.equal(recovered.state, 'healthy');
+    assert.notEqual(recovered.digest, initialDigest);
+    assert.equal(recovered.evidence.counters.reloadRecoveries, '1');
+    const recoveries = await recoveryEvents();
+    assert.equal(recoveries.length, 1);
+    assert.equal(recoveries[0].data.digest, recovered.digest);
+    assert.equal(recoveries[0].data.evidence.counters.reloadRecoveries, '1');
     assert.equal((await fetch(base + '/blocked')).status, 403);
     await assertRetained(22);
 
@@ -202,6 +226,8 @@ test('one Dev PID retains counters and the exhausted sampling budget across path
     await assertRetained(23);
     assert.equal((await fetch(base + '/blocked')).status, 403);
     await assertRetained(24);
+    assert.equal((await health()).evidence.counters.reloadRecoveries, '1');
+    assert.equal((await recoveryEvents()).length, 1);
     for (const secret of ['private-malformed-candidate', 'private-malformed-policy', session.inspectionToken]) assert.equal(diagnostics().includes(secret), false, secret);
   } finally {
     await stop(child);

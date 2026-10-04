@@ -22,7 +22,9 @@ export type AdmissionPolicy = { version: 1; rules: readonly { id: string; enable
 export type AdmissionGeneration = Readonly<{ digest: string; policy: AdmissionPolicy }>;
 /** v1 per-process unsigned 64-bit decimal totals, exact until the explicit saturation ceiling.
  * No request, rule, address or policy-value dimensions. Process restart resets evidence;
- * Dev runtime replacement, policy-path changes and disable/re-enable retain totals and sampling. */
+ * Dev runtime replacement, policy-path changes and disable/re-enable retain totals and sampling.
+ * Replacing a degraded Dev policy records recovery only after the replacement becomes active;
+ * rejected policy or Capsule candidates do not consume that recovery. */
 export type AdmissionEvidence = Readonly<{
   version: 1;
   counters: Readonly<Record<"evaluated" | "admitted" | "denied" | "rateLimited" | "reloadFailures" | "reloadRecoveries" | "limiterEvictions" | "decisionsEmitted" | "decisionsSuppressed", string>>;

@@ -2927,7 +2927,7 @@ async function createDevRuntime(options) {
                 nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health, event) => {
                     if (event === "failure" || event === "recovery" || (nextAdmission && nextAdmission === admissionPolicy))
                         reportAdmissionHealth(health, event);
-                }, { evidence: admissionEvidence }) : null;
+                }, { evidence: admissionEvidence, deferActivation: true }) : null;
             }
             try {
                 const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config, await importCapsuleDefinition(capsuleModuleSource), {
@@ -2950,8 +2950,7 @@ async function createDevRuntime(options) {
                 admissionPolicy = nextAdmission;
                 if (changed) {
                     await previousAdmission?.close();
-                    if (admissionPolicy)
-                        reportAdmissionHealth(admissionPolicy.health());
+                    admissionPolicy?.activate(previousAdmission?.health());
                 }
                 clamavSidecar = await retireDevClamavSidecarIfUnused(clamavSidecar, database);
             }
