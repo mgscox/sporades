@@ -1,0 +1,43 @@
+{
+  "codeCommit": "765ba13ffcfbdb52b798dbfd465d42d3ec15d78a",
+  "mergedMain": "e9c635e6f422f9b45d6e72a85aa15332910f4874",
+  "node": "v24.19.0",
+  "temporaryRoot": {
+    "mode": "0700",
+    "uid": 501,
+    "gid": 20
+  },
+  "fullSuite": {
+    "command": "SPORADES_CONFIG_DIR=<worktree config> TMPDIR=<private root> COPYFILE_DISABLE=1 npm test",
+    "tests": 3161,
+    "passed": 2937,
+    "failed": 0,
+    "skipped": 224,
+    "cancelled": 0,
+    "exitCode": 0,
+    "durationMs": 1980116.520541
+  },
+  "repetition": {
+    "runs": 20,
+    "passed": 180,
+    "failed": 0,
+    "skipped": 0,
+    "cancelled": 0
+  },
+  "completeDeadlineFile": {
+    "passed": 6,
+    "failed": 0
+  },
+  "mergedStackGateway": {
+    "passed": 19,
+    "failed": 0,
+    "earlierAttempt": "failed order-sensitive pipeline rule assertion; retained separately"
+  },
+  "availabilityPipeline": {
+    "passed": 23,
+    "failed": 0,
+    "skipped": 1
+  },
+  "freshDocker": "not run; Docker Desktop info query did not respond",
+  "priorQA": "round-8-retained-qa-timelines.json"
+}

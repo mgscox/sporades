@@ -1,0 +1,61 @@
+{
+  "source": "https://github.com/mgscox/sporades/pull/204#issuecomment-5970638841",
+  "head": "1517a9de42ee05245a64fd785f583d6b504eee8d",
+  "evidenceKind": "QA-reported timeline summary; original raw QA event files are not present in this worktree",
+  "runs": [
+    {
+      "project": "barbara120-3a4d30d4",
+      "result": "failed",
+      "events": [
+        {
+          "phase": "firing",
+          "elapsedMs": 97169.811
+        },
+        {
+          "phase": "resolved recovery",
+          "observed": true
+        },
+        {
+          "phase": "stopped-sibling absence verification",
+          "result": "timeout",
+          "observedError": "EAI_AGAIN prometheus"
+        }
+      ],
+      "classification": "DNS/query interruption during absence verification; underlying infrastructure cause unresolved"
+    },
+    {
+      "project": "barbara120-42ba8a7a",
+      "result": "failed",
+      "events": [
+        {
+          "phase": "scrape outage",
+          "effect": "reset pending probe state"
+        },
+        {
+          "phase": "notification observation",
+          "result": "no webhook received"
+        }
+      ],
+      "classification": "Scrape continuity lost; underlying infrastructure cause unresolved"
+    },
+    {
+      "project": "barbara120-dcf84605",
+      "result": "passed",
+      "events": [
+        {
+          "phase": "firing",
+          "elapsedMs": 85667.174
+        },
+        {
+          "phase": "resolved recovery",
+          "observed": true
+        },
+        {
+          "phase": "stopped-sibling absence and acknowledged stop",
+          "result": "passed"
+        }
+      ],
+      "classification": "One complete local Docker drill passed; does not replace failed runs"
+    }
+  ]
+}
