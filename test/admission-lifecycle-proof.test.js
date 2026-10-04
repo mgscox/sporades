@@ -131,11 +131,11 @@ test('journal failure cannot stop removal of later owners or poison future write
   assert.deepEqual(JSON.parse(await readFile(journal,'utf8')),owners.snapshot());
 });
 
-for (const signal of [undefined, 'SIGTERM']) test(`outer runner retains child ownership after ${signal || 'failed startup'}`, {timeout:30000}, async t => {
+async function fakeOuterCleanup(t, { signal, runnerRemoval = 'success', childRemoval = 'fail', lateChild = false, interruptAt = 'startup' } = {}) {
   await mkdir(scratch,{recursive:true}); const root=await mkdtemp(path.join(scratch,'runner-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
   const bin=path.join(root,'bin'); await mkdir(bin); await writeFile(path.join(bin,'package.json'),'{"type":"commonjs"}');
-  const events=path.join(root,'events.jsonl');
+  const events=path.join(root,'events.jsonl'),stateFile=path.join(root,'docker-state.json');
   // The fake Git status permits archiving a dirty test checkout. All other Git
   // reads remain real; fake Docker never executes the archived tools program.
   await writeFile(path.join(bin,'git'),`#!${process.execPath}
@@ -147,15 +147,33 @@ if(process.argv[2]!=='status') {
   await writeFile(path.join(bin,'docker'),`#!${process.execPath}
 const fs=require('node:fs'),path=require('node:path'),args=process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(events)},JSON.stringify(args)+'\\n');
+const stateFile=${JSON.stringify(stateFile)};
+const createChild=source=>{
+  const fixture=path.join(source,'.sporades/issue-73/lifecycle-fake');
+  fs.mkdirSync(fixture,{recursive:true});fs.writeFileSync(path.join(fixture,'ownership.json'),JSON.stringify([{kind:'container',name:'sporades-lifecycle-container-aaaaaaaaaaaa',removed:false,attempts:[]}]));
+  fs.writeFileSync(path.join(fixture,'fixture-marker'),'retain me');
+  fs.appendFileSync(${JSON.stringify(events)},JSON.stringify(['created-child','sporades-lifecycle-container-aaaaaaaaaaaa'])+'\\n');
+};
 if(args[0]==='context') process.stdout.write('unix:///fake-proof.sock\\n');
 else if(args[0]==='info') process.stdout.write('fake-only\\n');
 else if(args[0]==='run') {
-  const source=args[args.indexOf('--workdir')+1],fixture=path.join(source,'.sporades/issue-73/lifecycle-fake');
-  fs.mkdirSync(fixture,{recursive:true});fs.writeFileSync(path.join(fixture,'ownership.json'),JSON.stringify([{kind:'container',name:'sporades-lifecycle-container-aaaaaaaaaaaa',removed:false,attempts:[]}]));
-  fs.writeFileSync(path.join(fixture,'fixture-marker'),'retain me');
-  ${signal ? 'setInterval(()=>{},1000);' : "process.stderr.write('fake runner startup failed\\n');process.exitCode=1;"}
+  const source=args[args.indexOf('--workdir')+1];
+  fs.writeFileSync(stateFile,JSON.stringify({source,removals:0}));
+  if(!${lateChild}) createChild(source);
+  fs.appendFileSync(${JSON.stringify(events)},JSON.stringify(['runner-ready'])+'\\n');
+  ${signal && interruptAt === 'startup' ? 'setInterval(()=>{},1000);' : "process.stderr.write('fake runner startup failed\\n');process.exitCode=1;"}
+} else if(args[0]==='rm'&&args.at(-1).startsWith('sporades-proof-runner-')) {
+  const state=JSON.parse(fs.readFileSync(stateFile,'utf8'));state.removals++;
+  fs.writeFileSync(stateFile,JSON.stringify(state));
+  if(state.removals===2&&${lateChild}) createChild(state.source);
+  const finish=()=>{
+    if(${JSON.stringify(runnerRemoval)}==='fail'||(${JSON.stringify(runnerRemoval)}==='retry'&&state.removals===1)) {
+      process.stderr.write('fake runner removal failed\\n');process.exitCode=1;
+    }
+  };
+  ${signal && interruptAt === 'removal' ? 'if(state.removals===2) setTimeout(finish,200); else finish();' : 'finish();'}
 } else if(args[0]==='rm'&&args.at(-1)==='sporades-lifecycle-container-aaaaaaaaaaaa') {
-  process.stderr.write('fake Capsule removal failed\\n');process.exitCode=1;
+  if(${JSON.stringify(childRemoval)}==='fail') {process.stderr.write('fake Capsule removal failed\\n');process.exitCode=1;}
 }
 `,{mode:0o755});
   const runRoot=path.join(root,'evidence');
@@ -168,24 +186,66 @@ else if(args[0]==='run') {
   if(signal) {
     const deadline=Date.now()+15000;
     while(Date.now()<deadline) {
-      try { if((await readFile(events,'utf8')).includes('"run"')) break; } catch {}
+      try {
+        const calls=(await readFile(events,'utf8')).trim().split('\n').map(JSON.parse);
+        if(interruptAt==='startup' ? calls.some(args=>args[0]==='runner-ready') : calls.filter(args=>args[0]==='rm'&&args.at(-1).startsWith('sporades-proof-runner-')).length>=2) break;
+      } catch {}
       await sleep(25);
     }
-    assert.ok((await readFile(events,'utf8')).includes('"run"'));
-    // Allow the fake launch to finish creating the durable child fixture.
-    await sleep(50); child.kill(signal);
+    const calls=(await readFile(events,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.ok(interruptAt==='startup' ? calls.some(args=>args[0]==='runner-ready') : calls.filter(args=>args[0]==='rm'&&args.at(-1).startsWith('sporades-proof-runner-')).length>=2);
+    child.kill(signal);
   }
   const [code]=await closed; assert.equal(code,1,output);
   const runs=await readdir(runRoot); assert.equal(runs.length,1);
   const report=JSON.parse(await readFile(path.join(runRoot,runs[0],'docker-report.json'),'utf8'));
-  assert.equal(report.status,'cleanup-failed'); assert.ok(report.retainedStage);
-  t.after(()=>rm(report.retainedStage,{recursive:true,force:true}));
-  await readFile(path.join(report.retainedStage,'source/.sporades/issue-73/lifecycle-fake/fixture-marker'));
+  const runner=report.cleanup.find(item=>item.name.startsWith('sporades-proof-runner-'));
+  const stage=runner.stage;
+  t.after(()=>rm(stage,{recursive:true,force:true}));
+  const calls=(await readFile(events,'utf8')).trim().split('\n').map(JSON.parse);
+  const removals=calls.filter(args=>args[0]==='rm'&&args.at(-1)===runner.name);
+  assert.equal(removals.length,runnerRemoval==='success'?1:2,'writer must not be retried after the inventory');
+  if(runnerRemoval==='retry') assert.ok(report.cleanup.some(item=>item.name==='sporades-lifecycle-container-aaaaaaaaaaaa'),'late child was omitted from recovery');
+  assert.equal(report.runnerTermination.confirmed,runnerRemoval!=='fail');
+  if(signal) assert.equal(report.interruption,signal);
+  if(runnerRemoval==='fail') {
+    assert.equal(report.status,'cleanup-failed'); assert.equal(report.retainedStage,stage);
+    assert.equal(report.childOwnershipScan,'blocked-runner-termination');
+    assert.deepEqual(report.childOwnership,[]);
+    assert.equal(runner.removed,false);
+    assert.ok(runner.attempts.every(attempt=>!attempt.removed&&/fake runner removal failed/.test(attempt.error)));
+    assert.equal(calls.some(args=>['inspect','rm'].includes(args[0])&&args.at(-1)==='sporades-lifecycle-container-aaaaaaaaaaaa'),false,'uncertain writer must block child recovery');
+    await readFile(path.join(stage,'source/.sporades/issue-73/lifecycle-fake/fixture-marker'));
+    return;
+  }
+  assert.equal(report.childOwnershipScan,'complete');
+  assert.equal(report.childOwnership.length,1);
+  assert.equal(report.childOwnership[0].name,'sporades-lifecycle-container-aaaaaaaaaaaa');
+  assert.equal(runner.removed,true);
+  if(runnerRemoval==='retry') assert.deepEqual(runner.attempts.map(attempt=>attempt.removed),[false,true]);
   const owner=report.cleanup.find(item=>item.name==='sporades-lifecycle-container-aaaaaaaaaaaa');
-  assert.equal(owner.removed,false); assert.equal(owner.attempts.length,2);
-  assert.ok(owner.attempts.every(attempt=>!attempt.removed&&/fake Capsule removal failed/.test(attempt.error)));
+  assert.ok(owner,'authoritative inventory omitted the child');
+  const runnerRemovalEnd=calls.findLastIndex(args=>args[0]==='rm'&&args.at(-1)===runner.name);
+  const childInspection=calls.findIndex(args=>args[0]==='inspect'&&args.at(-1)===owner.name);
+  assert.ok(childInspection>runnerRemovalEnd,'child inventory/recovery preceded confirmed writer termination');
+  if(childRemoval==='fail') {
+    assert.equal(report.status,'cleanup-failed'); assert.equal(report.retainedStage,stage);
+    await readFile(path.join(stage,'source/.sporades/issue-73/lifecycle-fake/fixture-marker'));
+    assert.equal(owner.removed,false); assert.equal(owner.attempts.length,2);
+    assert.ok(owner.attempts.every(attempt=>!attempt.removed&&/fake Capsule removal failed/.test(attempt.error)));
+  } else {
+    assert.equal(owner.removed,true); assert.equal(owner.attempts.length,1);
+    assert.equal(report.retainedStage,undefined);
+    assert.equal(report.status,signal?'interrupted':'incomplete');
+    await assert.rejects(readdir(stage),error=>error.code==='ENOENT','complete recovery should permit stage deletion');
+  }
   assert.ok(report.cleanup.filter(item=>item.name!==owner.name).every(item=>item.removed));
-});
+}
+
+for (const signal of [undefined, 'SIGTERM']) test(`outer runner retains child ownership after ${signal || 'failed startup'}`, {timeout:30000}, t => fakeOuterCleanup(t,{signal}));
+for (const runnerRemoval of ['retry','fail']) for (const signal of [undefined,'SIGTERM'])
+  test(`runner ${runnerRemoval} removal ${signal || 'without interruption'} inventories late ownership only after termination`, {timeout:30000},
+    t => fakeOuterCleanup(t,{runnerRemoval,signal,childRemoval:'success',lateChild:true,interruptAt:'removal'}));
 
 test('native runner interruption reaches the fixture owner and stops its child', {timeout:30000}, async t => {
   await mkdir(scratch,{recursive:true}); const root=await mkdtemp(path.join(scratch,'native-'));

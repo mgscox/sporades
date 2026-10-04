@@ -44,8 +44,13 @@ Bundle digest, timings, counters, RSS, image and cleanup results. A report remai
 acceptance. Ownership is atomically journaled before launch, including failed
 startup and cold-start attempts. Failed removal stays owned, records each error,
 and is retried; only confirmed removal permits fixture deletion. SIGINT/SIGTERM
-use the same cleanup path. Failed child cleanup also retains the outer validation
-copy even if tools/image removal succeeds. Resource names, attempt history and
+use the same cleanup path. Runner removal and its retries finish before the
+authoritative child-journal inventory. If runner termination cannot be confirmed,
+the report marks the scan `blocked-runner-termination`, reports `cleanup-failed`
+and retains the validation copy; later image cleanup cannot permit its deletion.
+After confirmed termination, the report records every inventoried child and its
+removal or recovery requirement. Unresolved child cleanup also retains the copy
+even if tools/image removal succeeds. Resource names, attempt history and
 retained paths are reported for manual recovery. SIGKILL or machine failure cannot
 run cleanup: inspect the per-run and fixture `ownership.json` journals and remove
 only the recorded resources before deleting their fixtures. The Docker runner tests committed files, so commit changes

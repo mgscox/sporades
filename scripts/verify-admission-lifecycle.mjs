@@ -132,35 +132,53 @@ SPORADES_REAL_ADMISSION_LIFECYCLE=1 SPORADES_ADMISSION_PROOF_BASE_IMAGE='${baseI
   if (!interrupted.signal.aborted && report.dockerVersion === undefined && !driver) report.status = 'docker-prerequisite-failed';
   process.exitCode = 1;
 } finally {
-  // Stop the runner before inspecting its journals: Docker CLI termination alone
-  // does not stop its container, which may still be creating Capsule resources.
-  if (stopRunner) try { await stopRunner(); } catch (error) { report.error ??= error.message; }
-  let childCleanupFailed = false;
+  // The writer must be gone before the authoritative inventory. In particular,
+  // a failed first removal may leave it creating children during the retry.
+  let runnerTerminated = !stopRunner;
+  if (stopRunner) {
+    for (let attempt = 0; !runnerTerminated && attempt < 2; attempt++) {
+      try { await stopRunner(); runnerTerminated = true; }
+      catch (error) { report.runnerTerminationError = error.message; }
+    }
+    report.runnerTermination = { name: container, confirmed: runnerTerminated };
+  }
+  let childCleanupFailed = !runnerTerminated;
+  report.childOwnershipScan = runnerTerminated ? 'complete' : 'blocked-runner-termination';
+  report.childOwnership = [];
+  if (!runnerTerminated) report.pending.push('Child ownership inventory/recovery after confirmed runner termination');
   const proofRoot = driver ? path.join(evidenceRoot,'fixtures') : stage && path.join(stage,'source/.sporades/issue-73');
-  if (proofRoot) {
+  if (proofRoot && runnerTerminated) {
     try {
       for (const directory of (await readdir(proofRoot)).filter(name => name.startsWith('lifecycle-'))) {
         try {
           const records = JSON.parse(await readFile(path.join(proofRoot,directory,'ownership.json'),'utf8'));
+          report.childOwnership.push(...records);
           if (records.some(record => record.journalErrors?.length)) childCleanupFailed = true;
-          for (const record of records.filter(record => !record.removed)) {
-            childCleanupFailed = true;
+          for (const record of records) {
+            if (record.removed) {
+              report.cleanup.push({...record,source:'child-journal'});
+              continue;
+            }
             if (record.kind === 'container' && /^sporades-lifecycle-(container|hosted)-[a-f0-9]{12}$/.test(record.name)) {
               try { await ownership.register('container',record.name,() => removeDocker('container',record.name), {stage}); }
               catch (error) { report.cleanup.push({kind:'ownership',name:record.name,removed:false,error:error.message}); }
-            } else report.cleanup.push({kind:record.kind,name:record.name,removed:false,error:'Child ownership requires manual recovery'});
+            } else {
+              childCleanupFailed = true;
+              report.cleanup.push({kind:record.kind,name:record.name,removed:false,error:'Child ownership requires manual recovery'});
+            }
           }
         } catch (error) {
           // Before registration a fixture may exist without a journal, but no
           // resource can have launched. Other unreadable journals require recovery.
           if (error.code !== 'ENOENT') {
             childCleanupFailed = true;
+            report.childOwnershipScan = 'failed';
             report.cleanup.push({kind:'ownership',fixture:path.join(proofRoot,directory),removed:false,error:error.message});
           }
         }
       }
     } catch (error) {
-      if (error.code !== 'ENOENT') { childCleanupFailed = true; report.cleanup.push({kind:'ownership',removed:false,error:error.message}); }
+      if (error.code !== 'ENOENT') { childCleanupFailed = true; report.childOwnershipScan = 'failed'; report.cleanup.push({kind:'ownership',removed:false,error:error.message}); }
     }
   }
   if (stage) for (const session of ['container','hosted']) {
@@ -168,13 +186,14 @@ SPORADES_REAL_ADMISSION_LIFECYCLE=1 SPORADES_ADMISSION_PROOF_BASE_IMAGE='${baseI
       await readFile(path.join(stage, `source/.sporades/issue-73/evidence/lifecycle-${session}-docker.json`))); }
     catch (error) { if (error.code !== 'ENOENT') report.cleanup.push({kind:'evidence',session,removed:false,error:error.message}); }
   }
-  report.cleanup.push(...await ownership.cleanup());
+  // Never retry the writer after the inventory. An uncertain writer stays owned
+  // for manual recovery; a confirmed one already has its removal receipt.
+  report.cleanup.push(...await ownership.cleanup(2, record => !stopRunner || record.name !== container));
   if (childCleanupFailed || report.cleanup.some(item => !item.removed || item.journalErrors?.length)) {
     process.exitCode = 1;
     report.status = 'cleanup-failed';
     if (stage) report.retainedStage = stage;
-    // Preserve child fixtures even if outer retries later succeed: the original
-    // failure evidence and journal are needed to review the interrupted proof.
+    // Retain the stage whenever termination, inventory or removal is incomplete.
   } else if (stage) await rm(stage, {recursive:true,force:true});
   for (const [signal, handler] of Object.entries(signalHandlers)) process.removeListener(signal, handler);
   await writeFile(path.join(evidenceRoot, driver ? 'driver-report.json' : 'docker-report.json'), JSON.stringify(report,null,2)+'\n');

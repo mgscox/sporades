@@ -40,8 +40,8 @@ export function lifecycleOwnership(journal) {
     cleanup.identifyProcess = async pid => { record.pid = pid; await persistRecord(record); };
     return cleanup;
   }
-  async function cleanup(attempts = 2) {
-    for (const record of [...owned].reverse()) {
+  async function cleanup(attempts = 2, select = () => true) {
+    for (const record of [...owned].reverse().filter(select)) {
       for (let attempt = 0; !record.removed && attempt < attempts; attempt++) {
         try {
           await record.remove(); record.removed = true;
