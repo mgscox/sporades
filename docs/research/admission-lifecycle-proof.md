@@ -1,68 +1,148 @@
 # Container and Hosted admission lifecycle proof
 
-Status: pending. This is the remaining verification plan for
-[issue #73](https://github.com/mgscox/sporades/issues/73), not an execution report
-or evidence that request admission is complete.
+Status: **ready for human verification; incomplete**. Issue #72 closed on
+2026-10-04. The prerequisite is available, but #73's deployed acceptance has not
+passed. Keep the implementation PR in draft until the remaining checks below
+have evidence. Native generated-runtime checks are useful driver validation;
+they are not Docker, mounted-policy or Caddy acceptance.
 
-Regression fixture fixes and regression-suite results on the draft PR do not
-prove the lifecycle scenarios below. The PR does not close #73 and must remain
-an unmerged draft while the dependency and acceptance work are outstanding.
+## Reproducible local checks
 
-## Dependency gate
+From the committed PR checkout:
 
-On 2026-10-02, GitHub's native dependency graph still marked
-[issue #72](https://github.com/mgscox/sporades/issues/72) open. It supplies the
-bounded, redacted counters, policy digest, reload health and existing inspection
-surfaces needed to prove this lifecycle. Recheck that dependency before starting
-the acceptance run. A planning-only draft must not be merged as completion
-of #73.
+```sh
+export SPORADES_CONFIG_DIR="$PWD/.sporades/issue-73/config"
+npm ci
+npm run build
+node scripts/verify-admission-lifecycle.mjs --driver-check
+node scripts/verify-admission-lifecycle.mjs
+```
 
-## Local harness
+The first runner checks generated Capsule processes on kernel-assigned ports. It
+loads the project seed and supplies a synthetic session/capability in a test-only
+epilogue. Its publisher uses the underlying atomic publication implementation.
+It explicitly leaves deployed ownership and Host helper publication pending.
 
-Use real running Capsule processes in Docker for both Container and Hosted
-sessions. The Hosted harness must include the actual local Host helper and Caddy
-route publication path; mocked Host commands alone cannot prove this boundary.
-Use a Capsule fixture with observable HTTP handler entry, exact response bytes,
-streamed chunks and WebSocket handshake/message handling, so rejected requests
-can be shown never to reach application code.
+The second runner requires a healthy **local Unix Docker socket** and rejects
+remote contexts. It archives `HEAD` into a worktree-local validation copy, builds
+unique tools and Base images, installs Linux dependencies there, and runs real
+hardened Container and Hosted processes. Hosted publication uses the shipped Host
+helper against a disposable seeded registry. The runner's administrative
+container receives the Docker socket; application containers never receive it.
+No SSH, Host profile, cloud service, Cloudflare or Appwrite account is required.
+It publishes no fixed workstation port; application ports bind only to loopback
+and use internal port 5688. Each run removes only its own named resources.
 
-Keep all CLI configuration, policy fixtures and run evidence inside the
-worktree. Set `SPORADES_CONFIG_DIR` for every Sporades command. Use uniquely named
-containers and Compose projects, available local ports outside 4000, 4100,
-4500–4699, 4317 and 5317, and remove only resources created by the run. Do not
-connect to a real Host, SSH target, cloud provider or production telemetry sink.
-The mandatory scenario must require no Cloudflare, Appwrite or paid account.
+Reports and logs live in `.sporades/issue-73/evidence/`. Reports include commit,
+working-tree dirtiness, scenario and generated-manifest digests, session kind,
+Bundle digest, timings, counters, RSS, image and cleanup results. A report remains
+`incomplete` after an interrupted assertion. `driver-check-passed` and
+`runtime-boundary-passed` have different meanings; neither means complete #73
+acceptance. Failed cleanup retains the validation copy and reports resource names
+for manual removal. The Docker runner tests committed files, so commit changes
+before invoking it. The socket must be accessible to the invoking UID and the
+runner's supplemental socket group.
 
-## Required scenarios and evidence
+## Evidence collected on 2026-10-04
 
-Run each applicable scenario in both session kinds. Record the commit, generated
-artifact digests, Base image, session kind, active policy digest, observations and
-cleanup result. No row below is currently proved by this document.
+The native driver passed both session scenarios. The original successful run
+measured policy add/change/recovery/removal in 1.3–2.1 seconds, 1,738/1,888
+concurrent denied HTTP/upgrade observations, exact counters for each 2,048-request
+hostile load, fewer than 22 KiB of total logs, and approximately 20 MiB RSS growth
+in the measured load interval. Hosted capability-seam churn retained exactly
+10,000 buckets and counted 112 evictions for 10,112 distinct synthetic addresses.
+The generated no-policy gate median was approximately 0.011 microseconds.
+Subsequent reports are authoritative for the current checkout.
 
-| Scenario | Evidence required before #73 can be completed |
-| --- | --- |
-| Authorized add, change and removal | Publish through the deployer-owned path; demonstrate each valid change within 10 seconds. Retain the application artifact digest and container identity to show no rebuild or redeploy. |
-| Concurrent replacement | Maintain traffic while replacing policy; correlate every decision with one complete old or new generation. Reject any partial-generation observation. |
-| Truncated and malformed hot replacement | Show continued last-known-good enforcement, degraded inspection health and failure evidence. Publish a valid generation and show health recovery and recovery evidence. |
-| Invalid configured cold start | Show that ordinary HTTP and WebSocket traffic cannot reach application handlers before policy validation succeeds. |
-| HTTP and WebSocket decisions | Exercise admit, opaque deny and rate limit before handler entry or upgrade acceptance. Assert exact caller-facing bytes/status and retry semantics from the completed contract. |
-| Client identity | Hosted: prove trusted Caddy client-address derivation and rejection of forged forwarding headers. Container: prove non-address enforcement and the contract's pinned behavior when trusted address identity is missing. |
-| Runtime tampering | Attempt policy write, truncate, rename, unlink and replacement from Capsule runtime code through its mounted or exposed path. Show unchanged deployer policy digest and enforcement. |
-| Hostile input and high rate | Exercise published file/parser/state/bucket bounds and eviction behavior. Assert exact unsampled counters, bounded log output and measured memory behavior under sustained load, including recovery visibility. |
-| No declared policy | Compare exact response bytes, route ordering, streaming, WebSocket behavior, logs and generated Bundle behavior with the baseline. Record the agreed latency threshold and measured results; do not invent a threshold or call ordinary unit tests this proof. |
-| Provider independence | Execute the entire mandatory run using local Docker/Caddy. Treat Cloudflare-origin coverage as optional and document the capabilities used without assuming a paid plan. |
-| Operator documentation | Reconcile the shipped commands and supported security contributions with observed behavior. State limits explicitly; do not claim comprehensive OWASP Top 10:2025 protection or generic signature-WAF coverage. |
+The agreed budget is a warmed median below **1 microsecond per admission gate
+call**, not a network or service-latency guarantee. The generated fixture measures
+seven batches of 200,000 calls after warmup and asserts untouched request/response
+surfaces. Canonical source coverage remains in `test/http-admission.test.js`.
+The 64 MiB RSS-growth and 128 KiB whole-scenario log thresholds are named harness
+stress guards, not universal production guarantees. Docker additionally imposes
+a 256 MiB container memory limit. Exact request totals, twenty retained sampling
+keys and fixed unsigned-64-bit counters are checked separately.
 
-## Completion handoff
+Docker proof could not start: `docker info` timed out at 12 seconds, and the
+local socket's `_ping` also timed out. The isolated runner records
+`docker-prerequisite-failed`, with no resources created. A separate native Host
+helper attempt rejected the external volume's group-writable ancestor
+(`/Volumes/M2_2TB`, mode 0775). Neither the shared daemon nor that ancestor's
+permissions were changed. The isolated Linux runner gives helper-owned paths a
+controlled trust chain, but that runner is still unexecuted.
 
-After #72 closes, implement an executable lifecycle harness and retain its
-reproducible invocation and measured evidence. Pin response/retry semantics,
-missing-identity behavior, resource limits and the latency budget to the completed
-contract before asserting them. Update shipped operator documentation and any
-public/generated surfaces affected by implementation, then run the build,
-typecheck and full regression suite in addition to the boundary scenarios.
+## Acceptance matrix
 
-The [request-admission research](./capsule-request-admission-waf.md) provides the
-design rationale and security limitations. It is not a substitute for execution
-evidence. The draft remains blocked until every required scenario has actual
-results and the prerequisite inspection surfaces are available.
+| Boundary | Automated scenario | Remaining deployed evidence |
+| --- | --- | --- |
+| Add/change/removal without redeploy | Timed atomic publisher operations; original Bundle digest and PID/container ID retained | Docker run; Container CLI publication and actual Hosted deployment/route path |
+| Concurrent atomic replacement | Both HTTP and upgrades must return opaque denial under every complete generation; application marker remains empty | Docker and actual Caddy traffic; capture old/new digests |
+| Last-known-good and recovery | Truncated and oversized hot files degrade health, retain digest/enforcement, recover, and reconcile failure/recovery event totals | Docker and existing doctor/Hosted stats inspection |
+| Invalid configured cold start | Docker relaunch must exit 1 before listening or `runtime.started` | Unexecuted Docker test; direct HTTP/upgrade refusal and actual Host unavailable route |
+| HTTP and WebSocket outcomes | Opaque 403/429, content length, no-store, Retry-After, shared HTTP/upgrade quota, expiry and successful query reply | Real Caddy upgrade and handler-entry observations |
+| Trusted identity | Forged capabilities rejected; Container rejects even a valid Hosted capability; Hosted synthetic address/CIDR and quota seam | Actual Caddy socket derivation, header stripping, direct-loopback denial |
+| Runtime policy ownership | Capsule endpoint attempts write, truncate, rename, unlink and replacement; Docker asserts failure and unchanged bytes | Unexecuted mounted-policy test |
+| Hostile bounds | Invalid UTF-8/depth/size/rule/condition/text candidates cannot replace file; raw hostile HTTP, exact counters, sampling, bucket eviction, RSS/log guards | Sustained Docker run and operator resource observation |
+| No-policy compatibility | Separate undeclared Bundle vs removed policy: exact bytes/status/content type, endpoint/static order, streamed POST, WebSocket query, no new counters/logs and gate budget | File response streaming, deployed baseline logs/route parity and cold restart |
+| Provider independence | Local runner needs Docker, Node/npm and public package/image downloads only | Complete mandatory Caddy/Host path without provider credentials |
+| Operator security scope | Shipped reference explains limited OWASP contributions and unsupported signature inspection | Human reconcile claims with final deployed observations |
+
+## Human completion steps
+
+1. Restore or provide a disposable local Linux Docker environment. Run the Docker
+   runner from the committed PR and retain its exit code, `docker-report.json`,
+   both session reports and log. Require `runtime-boundary-passed`, all scenario
+   assertions and successful cleanup. A daemon timeout, skip or driver pass does
+   not satisfy this step.
+2. On a **disposable test Host** with Caddy, use a fresh isolated Sporades config
+   directory and the shipped Host helper. Follow the
+   [Host provisioning contract](../agents/host-provisioning.md). Use Caddy's
+   automatic TLS mode or local HTTP test routing; do not supply provider secrets.
+   Register and push a small Capsule with `/blocked`, `/limited`, an observable
+   handler-entry marker, an echo endpoint, a File download and a query returning
+   a fixed reply. Declare `admissionPolicy.path: "policy.json"` with an empty v1
+   seed. The current production helper pins Capsule internal port 4000; this
+   operator drill is intentionally deferred from the agent's restricted ports.
+3. Retain `sporades host stats <subname> --host <alias> --json`,
+   `sporades host health <subname> --host <alias> --json`, and
+   `sporades doctor --session hosted --json`. Use
+   `sporades host policy publish <file> --host <alias> --subname <subname>` and
+   `sporades host policy remove --host <alias> --subname <subname>` for policy
+   changes; repeat the Container publication flow using
+   `sporades deploy policy publish <file>` / `sporades deploy policy remove`.
+   Record elapsed add/change/removal times, active digests, unchanged release and
+   container identities. Each valid change must be active within 10 seconds.
+4. Through Caddy, match the operator-controlled **actual socket address** with an
+   address rule. Forge `Forwarded`, `X-Forwarded-For`, `CF-Connecting-IP`,
+   `x-sporades-client-address` and its token. The outcome must still follow the
+   socket address. A direct loopback request without the Host capability must
+   fail closed for the potentially applicable address/quota rule. Repeat HTTP
+   and raw WebSocket upgrade deny/admit/quota cases and successful query replies;
+   confirm rejected traffic never enters the handler/query marker. Caddy must
+   protect runtime-health controls from unauthenticated public requests.
+5. Maintain parallel HTTP/upgrade traffic while alternating two complete deny
+   policies. Observe only complete old/new digests and opaque denials. As the
+   test Host administrator, atomically install a truncated policy and then an
+   oversized one in the preserved admission directory. Retain degraded doctor
+   and stats output, last-known-good enforcement and redacted failure events.
+   Publish valid recovery and retain healthy inspection and recovery events.
+   Restart with an invalid configured policy: no application HTTP/upgrade should
+   be exposed; the Host route should show its unavailable state. Restore valid
+   policy and verify restart recovery.
+6. Exercise all five mounted-policy mutation attempts **from Capsule code**.
+   Repeat bounded hostile traffic and high-cardinality quota churn; compare exact
+   counters with sent requests, resource stats and sampled logs. Keep the load
+   local. Inspect evidence for leaked addresses, request values, credentials or
+   proxy contents. Do not treat a low sampled event count as a request total.
+7. Push a separate undeclared-policy baseline. Compare response bytes and headers,
+   endpoint/static ordering, streamed File bytes (including a slow/disconnecting
+   client), query/upgrade behavior and logs with the removed-policy session.
+   Retain generated source parity, source gate-budget result and measured network
+   timings; do not apply the 1 microsecond gate budget to network round trips.
+8. Record pass/fail for every row, exact commit/image IDs, digests, observations and
+   cleanup. Fix failures on the PR branch, rerun the full regression suite, and
+   request QA before making the draft mergeable. Keep #73 open until all rows pass.
+
+Optional Cloudflare-origin tests are separate from mandatory acceptance. Record
+which account capabilities were actually used; do not assume paid managed or
+OWASP rulesets. Provider coverage cannot replace local Host/Caddy trust proof.

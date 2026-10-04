@@ -612,6 +612,19 @@ Hosted Capsule `host stats <subname>` also exposes the protected evidence under
 resource stats. No-policy inspection retains its existing shape. See
 [admission evidence bounds and redaction](projects-and-configuration.md#request-admission-policy-publication).
 
+Request admission makes limited contributions to the
+[OWASP Top 10:2025](https://top10.owasp.org/2025/): route/method restrictions reduce
+exposure relevant to A01; validated policy and trusted ingress help A02; quotas
+supplement A07; bounded redacted evidence helps A09; fail-closed parsing, reload
+and resource limits help A10. These describe this admission boundary's supported
+contributions, not comprehensive category coverage. The read-only mount protects
+policy integrity; it does not establish release provenance. Admission does not
+inspect bodies or query/header values for generic SQL injection, XSS, command
+injection or other signature-WAF patterns, and does not replace authentication,
+resource authorization, secure design, dependency controls or cryptography.
+See the [security scope assessment](../research/capsule-request-admission-waf.md#owasp-top-102025-and-defensible-default-coverage)
+and [lifecycle proof and operator completion steps](../research/admission-lifecycle-proof.md).
+
 Doctor output avoids secrets. It may include fingerprints, counts, paths, and
 structured state, but it must not print private keys, full Server env values, or
 full SSH public-key material.
