@@ -32,7 +32,7 @@ The default named storage volumes are `traces` (Jaeger Badger), `metrics`
 (Prometheus), `grafana`, and `inventory`. Backups also include the stack
 configuration and private files, including `.env`, `.compose.env`,
 `.private/senders`, credentials, certificates, and overrides. They preserve
-numeric UID/GID and mode metadata. The maintenance path supports only these
+numeric UID/GID and mode metadata. Restore with the same Linux identity mapping and backend image versions; macOS Docker Desktop drills do not establish cross-platform storage migration. The maintenance path supports only these
 default named backend volumes. It rejects external/custom volumes and custom
 backend bind mounts. An optional Collector persistent queue lives in a separate
 quota-limited directory and is excluded: it is a delivery queue, not retained
@@ -50,7 +50,7 @@ start services.
 COMPOSE_PROJECT_NAME=sporades-monitoring-prod sporades monitoring stack upgrade --dir /srv/sporades-monitoring
 ```
 
-A schema-3 manifest with asset hashes provides the baseline. For an older
+A schema-4 manifest with asset hashes provides the baseline. For an older
 manifest without hashes, pass `--baseline` pointing to the exact prior trusted
 schema-3 release directory; the package version and schema must match the
 installed manifest. Do not use an approximate copy or an untrusted baseline.

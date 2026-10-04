@@ -109100,8 +109100,8 @@ function createLocalFileStorageAdapter({ storagePath }) {
       return await readFile15(localFileVersionPath(storagePath, fileId, version3));
     },
     async openFileVersionStream({ fileId, version: version3 }) {
-      const { createReadStream } = await import("node:fs");
-      const stream = createReadStream(localFileVersionPath(storagePath, fileId, version3));
+      const { createReadStream: createReadStream2 } = await import("node:fs");
+      const stream = createReadStream2(localFileVersionPath(storagePath, fileId, version3));
       await new Promise((resolve2, reject) => {
         const cleanup = () => {
           stream.removeListener("open", opened);
@@ -146723,6 +146723,7 @@ function renderCliHelp(command) {
 
 // src/cli/monitoring-maintenance.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
+import { createReadStream } from "node:fs";
 import { createHash as createHash16, randomBytes as randomBytes9 } from "node:crypto";
 import { chown, chmod as chmod2, lstat as lstat11, mkdir as mkdir9, open as open4, readFile as readFile11, readdir as readdir5, rename as rename8, rm as rm9, writeFile as writeFile8 } from "node:fs/promises";
 import path18 from "node:path";
@@ -147048,8 +147049,13 @@ async function hashes(dir, prefix = "", exclude = /* @__PURE__ */ new Set()) {
     const file = path18.join(dir, e.name), name2 = prefix + e.name;
     if (e.isSymbolicLink()) fail2();
     if (e.isDirectory()) Object.assign(result, await hashes(file, name2 + "/"));
-    else if (e.isFile()) result[name2] = digest(await regular(file));
-    else fail2();
+    else if (e.isFile()) {
+      const st = await lstat11(file);
+      if (!st.isFile() || st.isSymbolicLink() || st.mode & 18) fail2();
+      const hash2 = createHash16("sha256");
+      for await (const chunk of createReadStream(file)) hash2.update(chunk);
+      result[name2] = hash2.digest("hex");
+    } else fail2();
   }
   return result;
 }

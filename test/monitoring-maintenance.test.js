@@ -11,7 +11,7 @@ async function fixture(t) {
   const bin = path.join(dir, 'bin'); await mkdir(bin);
   await writeFile(path.join(bin, 'docker'), `#!/bin/sh\ncase "$*" in\n 'compose version --short') echo 5.5.1;;\n 'version --format {{.Server.Version}}') echo 29.5.0;;\n *'config --format json'*) echo '{"services":{"collector":{"image":"otel/opentelemetry-collector-contrib:0.138.0","volumes":[{"type":"bind","target":"/etc/otelcol/config.yaml","source":"'"$PWD"'/collector.yaml"}]},"jaeger":{"image":"cr.jaegertracing.io/jaegertracing/jaeger:2.21.0"},"prometheus":{"image":"prom/prometheus:v3.13.3"}}}';;\n *'config --quiet'*) if [ -n "$REJECT_CONFIG" ]; then echo "$REJECT_CONFIG" >&2; exit 1; fi;;\n *'ps --all --quiet'*) if [ -n "$RUNNING" ]; then echo running; fi;;\n 'inspect running') echo '[{"State":{"Running":true}}]';;\n *) exit 0;;\nesac\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: bin + path.delimiter + process.env.PATH, SPORADES_CONFIG_DIR: path.join(dir, 'config') };
-  const cli = (args, extra = {}) => spawnSync(process.execPath, [path.join(root, 'bin/sporades.js'), 'monitoring', 'stack', ...args, '--json'], { env: { ...env, ...extra }, encoding: 'utf8' });
+  const cli = (args, extra = {}) => spawnSync(process.execPath, [process.env.SPORADES_MAINTENANCE_TEST_BIN ?? path.join(root, 'bin/sporades.js'), 'monitoring', 'stack', ...args, '--json'], { env: { ...env, ...extra }, encoding: 'utf8' });
   const stack = path.join(dir, 'stack');
   assert.equal(cli(['init', '--dir', stack]).status, 0);
   await writeFile(path.join(stack, '.env'), (await readFile(path.join(stack, '.env'), 'utf8')).replace('TRACE_TLS_MODE=tls', 'TRACE_TLS_MODE=proxy'));
@@ -111,4 +111,15 @@ test('schema-3 upgrade requires a matching trusted baseline and unsafe generated
   await rm(path.join(stack, 'collector.yaml')); await symlink(outside, path.join(stack, 'collector.yaml'));
   assert.equal(cli(['upgrade', '--dir', stack]).status, 1);
   assert.equal(await readFile(outside, 'utf8'), 'retained private data');
+});
+
+test('large cold snapshots hash archive bytes beyond the Node whole-file read limit', async t => {
+  const { dir, stack, cli } = await fixture(t);
+  const docker = path.join(dir, 'bin/docker');
+  await writeFile(docker, `#!${process.execPath}\nimport fs from 'node:fs';import path from 'node:path';const a=process.argv.slice(2);if(a[0]==='compose'&&a[1]==='version')console.log('5.5.1');else if(a[0]==='version')console.log('29.5.0');else if(a.includes('config')){const services={},volumes={};for(const [key,service,target] of [['traces','jaeger','/badger'],['metrics','prometheus','/prometheus'],['grafana','grafana','/var/lib/grafana'],['inventory','gateway','/inventory']]){services[service]={volumes:[{type:'volume',source:key,target}]};volumes[key]={name:'large_'+key};}console.log(JSON.stringify({services,volumes}));}else if(a[0]==='run'){const bind=a.find(x=>x.startsWith('type=bind,src='));const location=bind.match(/^type=bind,src=(.*),dst=\\/backup$/)[1];const filename=path.basename(a.find(x=>x.startsWith('/backup/')));const out=path.join(location,filename);fs.writeFileSync(out,'',{mode:0o600});fs.truncateSync(out,filename==='metrics.tar'?2147484160:512);}\n`, { mode: 0o755 });
+  const backup = path.join(dir, 'large-backup');
+  const saved = cli(['backup', '--dir', stack, '--backup', backup]);
+  assert.equal(saved.status, 0, saved.stdout);
+  const manifest = JSON.parse(await readFile(path.join(backup, 'backup-manifest.json')));
+  assert.equal(manifest.files['metrics.tar'], '17f5b6a32ce5d36010fef46f65d8969ffa79d29e32850391c64f45f6807a51db');
 });

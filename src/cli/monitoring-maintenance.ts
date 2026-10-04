@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createReadStream } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { chown, chmod, lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -176,7 +177,13 @@ async function hashes(dir: string, prefix = '', exclude = new Set<string>()): Pr
     const file = path.join(dir, e.name), name = prefix + e.name;
     if (e.isSymbolicLink()) fail();
     if (e.isDirectory()) Object.assign(result, await hashes(file, name + '/'));
-    else if (e.isFile()) result[name] = digest(await regular(file));
+    else if (e.isFile()) {
+      const st = await lstat(file);
+      if (!st.isFile() || st.isSymbolicLink() || st.mode & 0o022) fail();
+      const hash = createHash('sha256');
+      for await (const chunk of createReadStream(file)) hash.update(chunk);
+      result[name] = hash.digest('hex');
+    }
     else fail();
   }
   return result;
