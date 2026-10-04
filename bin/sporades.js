@@ -123753,10 +123753,27 @@ function routeWebSocketAdmission(database, request, socket) {
   }
   if (!database.admissionPolicy) return false;
   const response = new ServerResponse(request);
+  const closeConnection = () => {
+    response.destroy();
+    socket.destroy();
+  };
+  response.on("error", closeConnection);
   prepareHttpSecurity(database, request, response, () => true);
   if (!routeHttpAdmission(database, request, response, target ?? void 0)) return false;
-  response.on("finish", () => socket.end());
-  response.assignSocket(socket);
+  socket.on("error", closeConnection);
+  socket.once("close", () => response.destroy());
+  response.once("finish", () => {
+    if (!socket.destroyed) socket.end();
+  });
+  if (socket.destroyed || !socket.writable || socket.writableEnded) {
+    closeConnection();
+    return true;
+  }
+  try {
+    response.assignSocket(socket);
+  } catch {
+    closeConnection();
+  }
   return true;
 }
 function boundedRequestTargetPath(target) {

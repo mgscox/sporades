@@ -279,12 +279,24 @@ export function routeWebSocketAdmission(database: LooseRecord, request: Incoming
   }
   if (!database.admissionPolicy) return false;
   const response = new ServerResponse(request);
+  // An upgrade socket no longer has the HTTP server's ordinary error handling.
+  // Buffering a denial can race a client reset; own both error surfaces before
+  // end() or assignSocket() can flush, and keep failures local to this connection.
+  const closeConnection = () => { response.destroy(); socket.destroy(); };
+  response.on("error", closeConnection);
   // Install the ordinary response headers, but never auto-answer upgrade preflight.
   prepareHttpSecurity(database, request, response, () => true);
   if (!routeHttpAdmission(database, request, response, target ?? undefined)) return false;
   // Denial is buffered until admission completes. No response owns an accepted socket.
-  response.on("finish", () => socket.end());
-  response.assignSocket(socket as Socket);
+  socket.on("error", closeConnection);
+  socket.once("close", () => response.destroy());
+  response.once("finish", () => { if (!socket.destroyed) socket.end(); });
+  if (socket.destroyed || !socket.writable || socket.writableEnded) {
+    closeConnection();
+    return true;
+  }
+  try { response.assignSocket(socket as Socket); }
+  catch { closeConnection(); }
   return true;
 }
 

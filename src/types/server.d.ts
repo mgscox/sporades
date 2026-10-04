@@ -1435,5 +1435,6 @@ export function Reference(targetTable: string): ReferenceFieldBuilder;
 export type CapsuleFileAccessKeyPolicy = { read: { scopes?: readonly string[] } };
 
 /** Deployer-owned v1 request-admission JSON; HTTP and WebSocket upgrades (including /__sporades/ws)
- * share complete generations, canonical conditions, trusted Hosted identity and per-process quotas before Capsule code or protocol switching. */
+ * share complete generations, canonical conditions, trusted Hosted identity and per-process quotas before Capsule code or protocol switching.
+ * Client resets during opaque 403/429 upgrade denials close only the affected connection. */
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionPolicyConfig } from "./admission-policy.js";

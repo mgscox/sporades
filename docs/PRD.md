@@ -1505,6 +1505,8 @@ bursts and independent process quotas are documented. WebSocket upgrades apply
 the same complete generation before protocol switching, including the Capsule
 transport at `/__sporades/ws`, with ordinary opaque HTTP denial and shared quota
 buckets. Reserved GET controls have no WebSocket transport and bypass policy and
-quota counting. Nonmatching upgrades preserve the existing handshake. See the
+quota counting. Client resets while a denial is written close only that connection;
+the runtime remains available after both 403 and 429 upgrade denials.
+Nonmatching upgrades preserve the existing handshake. See the
 [configuration reference](reference/projects-and-configuration.md#request-admission-policy-publication)
 and [ADR-0054](adr/0054-request-admission-policy-is-deployer-owned.md).

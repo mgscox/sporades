@@ -2,15 +2,46 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, IncomingMessage } from 'node:http';
+import { Socket } from 'node:net';
+import { Duplex } from 'node:stream';
 import { mkdtemp, writeFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { bundleServerCapsuleModule } from '../dist/bundle-pipeline.js';
 import { createServerBundleModuleSource } from '../dist/templates/server-bundle-module-graph.js';
 import { clientAddressBoundaryToken } from '../dist/client-address.js';
+import { resetWebSocketUpgrade } from './helpers/reset-websocket-upgrade.js';
+import { routeWebSocketAdmission } from '../dist/http-runtime.js';
+import { parseAdmissionPolicy } from '../dist/admission-policy.js';
 
 const deny = conditions => ({ id: 'private-rule', enabled: true, conditions, action: { kind: 'deny' } });
 const wsPath = { kind: 'pathname', exact: '/__sporades/ws' };
+
+test('upgrade denial handles closed sockets and synchronous, socket and response write errors', async () => {
+  const generation = parseAdmissionPolicy(Buffer.from(JSON.stringify({ version: 1, rules: [deny([wsPath])] })));
+  for (const failure of ['destroyed', 'ended', 'throw', 'socket-error', 'response-error']) {
+    let writes = 0;
+    const socket = new Duplex({
+      read() {},
+      write(_chunk, _encoding, callback) {
+        writes++;
+        const error = Object.assign(new Error('reset client'), { code: 'EPIPE' });
+        if (failure === 'throw') throw error;
+        if (failure === 'response-error') { this._httpMessage.emit('error', error); callback(); }
+        else callback(error);
+      },
+    });
+    const request = new IncomingMessage(new Socket());
+    request.method = 'GET'; request.url = '/__sporades/ws';
+    if (failure === 'destroyed') socket.destroy();
+    if (failure === 'ended') socket.end();
+    assert.equal(routeWebSocketAdmission({ admissionPolicy: { current: () => generation } }, request, socket), true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(socket.destroyed, true, failure);
+    if (['destroyed', 'ended'].includes(failure)) assert.equal(writes, 0, failure);
+    else assert.ok(writes > 0, failure);
+  }
+});
 
 async function fixture(rules, run, epilogue = '') {
   const root = await mkdtemp(path.join(process.cwd(), '.agent-tmp-ws-admission-'));
@@ -128,6 +159,30 @@ function ordinaryRequest(base, target, headers, method = 'GET') {
 const probe = 'a'.repeat(64);
 const identity = address => ({ 'x-sporades-client-address': address, 'x-sporades-client-address-token': clientAddressBoundaryToken(probe) });
 const fakeHosted = `database.securitySession = 'hosted'; database.runtimeProbeToken = '${probe}';`;
+
+for (const status of [403, 429]) {
+  test(`generated Bundle survives reset clients during ${status} upgrade denial`, { timeout: 20000 }, async () => {
+    const rules = [status === 403 ? deny([wsPath]) : {
+      id: 'quota-reset', enabled: true, conditions: [wsPath],
+      action: { kind: 'rate-limit', limit: 1, windowMs: 60000 },
+    }];
+    await fixture(rules, async ({ base, token, output }) => {
+      const target = '/__sporades/ws?connectionToken=' + token;
+      const headers = status === 429 ? identity('192.0.2.1') : {};
+      if (status === 429) assert.equal((await upgrade(base, target, headers)).status, 101);
+      assert.equal((await upgrade(base, target, headers)).status, status);
+      for (let i = 0; i < 20; i++) {
+        await resetWebSocketUpgrade(base, target, headers);
+        const response = await fetch(base + '/__sporades/connection-token', {
+          headers: { 'x-sporades-connection-token-request': '1' },
+        }).catch(error => assert.fail(`${error}\n${output()}`));
+        assert.equal(response.status, 200, output());
+        assert.equal(typeof (await response.json()).token, 'string');
+      }
+      assert.equal((await upgrade(base, target, headers)).status, status, output());
+    }, status === 429 ? fakeHosted : '');
+  });
+}
 
 test('Hosted upgrades require canonical Host-authenticated identity and resist forged, duplicate and revoked addresses', { timeout: 20000 }, async () => {
   await fixture([deny([wsPath, { kind: 'address', value: '192.0.2.0/24' }])], async ({ base, token, rotate }) => {

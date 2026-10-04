@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import path from 'node:path';
+import { resetWebSocketUpgrade } from './helpers/reset-websocket-upgrade.js';
 
 const repo = process.cwd();
 const cli = path.join(repo, 'bin', 'sporades.js');
@@ -81,6 +82,14 @@ test('Dev denies Capsule WebSocket upgrades with the same opaque HTTP response',
     }
     assert.equal((output + errors).includes('opaque-deny-rule'), false);
     assert.equal((output + errors).includes(token), false);
+    for (let i = 0; i < 20; i++) {
+      await resetWebSocketUpgrade(base, target);
+      const response = await fetch(base + '/');
+      assert.equal(response.status, 200, output + errors);
+      await response.text();
+      assert.equal(child.exitCode, null, output + errors);
+    }
+    assert.equal((await upgrade(base, target)).status, 403, output + errors);
   } finally {
     if (child && child.exitCode === null) {
       const exited = once(child, 'exit');
