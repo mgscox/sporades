@@ -4,7 +4,7 @@
 // client after each writing mutation or job.
 //
 // Only adapters that record every statement they execute can scope a refresh. Such an adapter
-// carries `liveQueryTablesTracked`; with any other adapter the refresh stays unscoped (#105).
+// carries `liveQueryTablesTracked`; with any other adapter the refresh stays unscoped.
 const { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
 /** Marks a database adapter whose statement operations report reads and writes here. */
 export const liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
@@ -12,11 +12,21 @@ export const liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTab
 export const LIVE_QUERY_ANY_TABLE = "*";
 const liveQueryReads = new AsyncLocalStorage();
 let dirtyTables = new Set();
+let writeGeneration = 0;
+function recordTableWrite(table, tables) {
+    tables.add(table);
+    // Query evaluation may write diagnostic logs. Keep those writes in the
+    // completion window, but do not let them recursively refresh failed queries.
+    if (tables === dirtyTables && !liveQueryReads.getStore())
+        writeGeneration++;
+}
+/** Generation of writes published outside live-query evaluation. */
+export function liveQueryWriteGeneration() { return writeGeneration; }
 // Dialects render `[name]` identifiers as `"name"` before execution; accept either form.
 const quotedIdentifier = String.raw `(?:\[([^\]]+)\]|"([^"]+)")`;
 const readTablePattern = new RegExp(String.raw `\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
 const writeTablePattern = new RegExp(String.raw `^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`, "i");
-const nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT)\b/i;
+const nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT|LOCK\s+TABLE)\b/i;
 /** Runs a live query, collecting every table it reads into `tables`. */
 export function trackLiveQueryReads(tables, run) {
     return liveQueryReads.run(tables, run);
@@ -38,17 +48,31 @@ export function recordLiveQueryTableRead(table) {
     liveQueryReads.getStore()?.add(table);
 }
 /**
- * Records the table a statement wrote. Statements that changed no rows are ignored, and a
- * statement whose table cannot be identified (DDL, multi-statement exec) marks every table.
+ * Records the table a statement wrote. Recognized single-table writes with a trustworthy
+ * zero-row count are ignored. Unknown statements and batches always mark every table, because
+ * their reported count may describe only the final operation (including data-modifying CTEs).
  */
-export function recordLiveQueryStatementWrite(sql, result) {
-    if (result && typeof result === "object" && "changes" in result && Number(result.changes) === 0)
-        return;
+export function recordLiveQueryStatementWrite(sql, result, tables = dirtyTables) {
     const text = String(sql);
+    // exec can execute several statements but has no per-statement change counts. A semicolon
+    // inside a literal or comment can over-refresh; treating a second statement as just the first
+    // table would under-refresh. A single trailing terminator is harmless.
+    const terminator = text.indexOf(";");
+    if (terminator !== -1 && /\S/.test(text.slice(terminator + 1))) {
+        recordTableWrite(LIVE_QUERY_ANY_TABLE, tables);
+        return;
+    }
     if (nonWritingStatementPattern.test(text))
         return;
     const match = writeTablePattern.exec(text);
-    dirtyTables.add(match ? (match[1] ?? match[2]) : LIVE_QUERY_ANY_TABLE);
+    if (match && result && typeof result === "object" && "changes" in result && Number(result.changes) === 0)
+        return;
+    recordTableWrite(match ? (match[1] ?? match[2]) : LIVE_QUERY_ANY_TABLE, tables);
+}
+/** Publishes a settled transaction's writes into the current refresh window. */
+export function publishLiveQueryDirtyTables(tables) {
+    for (const table of tables)
+        recordTableWrite(table, dirtyTables);
 }
 /** Returns the tables written since the previous call, and starts a new window. */
 export function takeLiveQueryDirtyTables() {
