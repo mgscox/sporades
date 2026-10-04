@@ -464,8 +464,27 @@ authState.unsubscribe();
 ```
 
 Subscriptions immediately deliver their latest complete state, resubscribe
-after reconnect, and may be unsubscribed more than once safely. React and
-Preact clients can adapt those same primitives with `createHooks`:
+after reconnect, and may be unsubscribed more than once safely.
+
+SQLite, Postgres and libsql refresh subscribed queries only when a writing
+mutation or completed Job changed a table their last run read. Unknown statement
+tables and failed query runs retain the full-refresh fallback. Transaction writes
+are tracked conservatively, including writes that later roll back. Dedicated
+Postgres resource transactions publish their changed tables after settlement,
+so a concurrent refresh cannot consume the eventual commit's notification.
+Rejected Postgres and libsql prepared writes retain conservative invalidation:
+an earlier statement may have committed before a later statement rejects, or a
+remote write may have committed before its HTTP acknowledgement is lost.
+Libsql `exec()` publishes conservative invalidation after HTTP settlement, including
+rejection. Writes arriving during an in-flight subscription refresh trigger a
+follow-up refresh of their readers after that refresh completes.
+Refreshes coalesce per subscription and retain its pending table invalidations;
+a held reader cannot block other subscriptions. Unsubscribe, replacement and
+disconnect discard that reader's pending refresh work immediately.
+Query diagnostic writes remain in the completion window without recursively
+triggering more refreshes of failed queries.
+
+React and Preact clients can adapt those same primitives with `createHooks`:
 
 Declared Custom queries may take JSON-compatible positional arguments after
 the listener (or after the query name for framework adapters). The arguments
@@ -1483,7 +1502,8 @@ publication and explicit removal are atomic and survive redeploy and restart.
 Startup rejects invalid configured policy before app traffic. Bounded immutable
 generations reload within ten seconds under normal scheduling; hot failures
 retain the last-known-good generation and report redacted digest/health.
-HTTP admission enforces enabled exact-path and trusted Hosted address/CIDR deny rules before Capsule request code,
+HTTP admission enforces enabled method, exact/segment-prefix pathname, canonical
+header, query-key and trusted Hosted address/CIDR deny rules with AND semantics before Capsule request code,
 with ordered first-match semantics, disabled-rule skipping, constant ten-byte opaque
 403 responses and no-store caching. Genuine authenticated control routes remain
 outside admission and reserved targeting fails generation validation. No declared

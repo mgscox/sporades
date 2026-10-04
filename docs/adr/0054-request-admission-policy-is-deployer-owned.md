@@ -45,7 +45,10 @@ readiness response; platform reload events contain only digest and health.
 Issue #66 established this lifecycle independently of enforcement. Issue #67 now
 consumes one generation snapshot before HTTP Capsule routing to enforce exact-path
 denials. Genuine authenticated controls bypass admission; reserved targets fail
-validation. Issue #69 adds exact/CIDR address conditions using only canonical
+validation. Issue #68 completes non-address AND matching: methods, exact/segment-prefix
+paths, canonical public headers and query-key presence. Canonicalization is pinned
+in the [configuration reference](../reference/projects-and-configuration.md#request-admission-policy-publication).
+Issue #69 adds exact/CIDR address conditions using only canonical
 Host-authenticated identity in Hosted mode. Caddy replaces incoming internal
 identity and supplies a per-runtime capability derived from the existing
 Host-owned readiness token with a distinct domain. The runtime validates one

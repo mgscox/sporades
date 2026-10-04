@@ -1,6 +1,6 @@
 import { acquirePostgresResourceBootstrapLock, resourceError } from "./resource-runtime.js";
 import { notificationIntentSchemas } from "./notification-intent-runtime.js";
-import { liveQueryTablesTracked, recordLiveQueryStatementRead, recordLiveQueryStatementWrite } from "./live-query-invalidation.js";
+import { liveQueryTablesTracked, publishLiveQueryDirtyTables, recordLiveQueryStatementRead, recordLiveQueryStatementWrite } from "./live-query-invalidation.js";
 // The Capsule runtime's Database adapters and dialect: the three engines, the seam they answer, the
 // one shared method set every behavioural call goes through, and the app-schema DDL that method set
 // emits. Batch 9 of the migration ADR-0041 records, and the last domain to leave
@@ -1802,9 +1802,10 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     return telemetry.operations({
     exec(sql: string) {
       return run(() => useConnection(() => {
-        const result = connection.exec(sql);
+        // exec may apply an earlier statement before a later one throws. Keep invalidation
+        // conservative even when no combined result reaches the caller.
         recordLiveQueryStatementWrite(sql);
-        return result;
+        return connection.exec(sql);
       }));
     },
     prepare(sql: string) {
@@ -1860,9 +1861,8 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         let commitIssued = false;
         const operations = {
           exec: (sql: string) => {
-            const result = dedicated.exec(sql);
             recordLiveQueryStatementWrite(sql);
-            return result;
+            return dedicated.exec(sql);
           },
           prepare: (sql: string) => {
             const statement = dedicated.prepare(sql);
@@ -2171,22 +2171,36 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
 
   const createOperations = (run: (operation: () => any) => any) => telemetry.operations({
     exec(sql: string) {
-      return run(() => rawQuery(sql).then((): undefined => undefined));
+      return run(() => {
+        recordLiveQueryStatementWrite(sql);
+        return rawQuery(sql).then((): undefined => undefined);
+      });
     },
     prepare(sql: string) {
       assertOpen();
       return {
         all(...params: (number | undefined)[]) {
+          recordLiveQueryStatementRead(sql);
           return run(() => rawQuery(sql, params).then((result: any) => postgresRowsFromResult(normalization, result)));
         },
         get(...params: undefined[]) {
           return this.all(...params).then((rows: any[]) => rows[0] ?? null);
         },
         run(...params: string[]) {
-          return run(() => rawQuery(sql, params).then((result) => ({
-            changes: Number(result.rowCount ?? 0),
-            lastInsertRowid: undefined as any,
-          })));
+          return run(async () => {
+            try {
+              const result = await rawQuery(sql, params);
+              const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any };
+              recordLiveQueryStatementWrite(sql, written);
+              return written;
+            } catch (error) {
+              // A batch can COMMIT before a later statement rejects. No affected-row
+              // count is trustworthy on failure; record after settlement so an
+              // intervening refresh cannot consume the committed write's marker.
+              recordLiveQueryStatementWrite(sql);
+              throw error;
+            }
+          });
         },
         columns() {
           return run(() => rawQuery(
@@ -2201,6 +2215,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(connectionGate.runOperation),
     engine: "postgres",
+    [liveQueryTablesTracked]: true,
     [Symbol.for("sporades.database.resourceTransactionEligible")]: true,
     [resourceBootstrapMechanics]: ensureResourceSchemaPublished,
     [resourceConsumptionMechanics]: function() { return lockAndVerifyResourceSchema(this); },
@@ -2230,6 +2245,10 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     [resourceTransactionMechanics]: async function(fn: (transactionAdapter: LooseRecord) => any, beforeCommit?: (adapter: LooseRecord) => any, resource?: { table: string; id: string }, signal?: AbortSignal, retainAdmissionTimeout = false) {
       if (!resource || typeof resource.table !== "string" || typeof resource.id !== "string") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_STORAGE_ERROR" });
       let dedicated: any; let begun = false; let commitIssued = false;
+      // Other connections can refresh readers before this transaction commits.
+      // Keep its writes owned here until settlement so they cannot consume the
+      // only notification while those writes are still invisible.
+      const transactionDirtyTables = new Set<string>();
       try {
         try { if (!(this as any)[resourceSchemaPublished]) await ensureResourceSchemaPublished(signal); }
         catch (error: any) {
@@ -2250,11 +2269,30 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
           }
         };
         const operations = {
-          exec: async (statement: string) => { await query(statement); },
+          exec: async (statement: string) => {
+            recordLiveQueryStatementWrite(statement, undefined, transactionDirtyTables);
+            await query(statement);
+          },
           prepare: (statement: string) => ({
-            all: async (...params: any[]) => postgresRowsFromResult(normalization, await query(statement, params)),
-            get: async (...params: any[]) => (postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null),
-            run: async (...params: any[]) => { const result = await query(statement, params); return { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any }; },
+            all: async (...params: any[]) => {
+              recordLiveQueryStatementRead(statement);
+              return postgresRowsFromResult(normalization, await query(statement, params));
+            },
+            get: async (...params: any[]) => {
+              recordLiveQueryStatementRead(statement);
+              return postgresRowsFromResult(normalization, await query(statement, params))[0] ?? null;
+            },
+            run: async (...params: any[]) => {
+              try {
+                const result = await query(statement, params);
+                const written = { changes: Number(result.rowCount ?? 0), lastInsertRowid: undefined as any };
+                recordLiveQueryStatementWrite(statement, written, transactionDirtyTables);
+                return written;
+              } catch (error) {
+                recordLiveQueryStatementWrite(statement, undefined, transactionDirtyTables);
+                throw error;
+              }
+            },
             columns: async () => (await query(`SELECT * FROM (${sqlWithoutTrailingTerminator(statement)}) AS __sporades_columns LIMIT 0`)).fields.map((field: any) => ({ name: normalization.columnName(field.name) })),
           }),
         };
@@ -2293,7 +2331,11 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         }
       } catch (error: any) {
         throw error;
-      } finally { if (dedicated) await dedicated.close().catch(() => {}); }
+      } finally {
+        if (dedicated) await dedicated.close().catch(() => {});
+        // Rollback and lost COMMIT replies retain conservative invalidation too.
+        publishLiveQueryDirtyTables(transactionDirtyTables);
+      }
     },
     // Postgres has no way to ask a statement for its result shape without running something,
         // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
@@ -2931,15 +2973,22 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       const request = libsqlHasMultipleStatements(sql)
         ? { type: "sequence", sql }
         : { type: "execute", stmt: { sql } };
-      return run(() => {
+      return run(async () => {
         assertLibsqlOpen(closed);
-        return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then((): undefined => undefined);
+        try {
+          await libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction });
+        } finally {
+          // A refresh before HTTP settlement cannot cover the eventual write.
+          // Rejection can also follow a committed write or partial sequence.
+          recordLiveQueryStatementWrite(sql);
+        }
       });
     },
     prepare(sql: string) {
       assertLibsqlOpen(closed);
       return {
         all(...params: (number | undefined)[]) {
+          recordLiveQueryStatementRead(sql);
           return run(() => {
             assertLibsqlOpen(closed);
             return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) =>
@@ -2951,15 +3000,26 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
           return this.all(...params).then((rows: any[]) => rows[0] ?? null);
         },
         run(...params: string[]) {
-          return run(() => {
+          return run(async () => {
             assertLibsqlOpen(closed);
-            return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
-              changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
-              lastInsertRowid:
-                result.last_insert_rowid === null || result.last_insert_rowid === undefined
-                  ? undefined
-                  : BigInt(result.last_insert_rowid),
-            }));
+            try {
+              const result = await libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction });
+              const written = {
+                changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
+                lastInsertRowid:
+                  result.last_insert_rowid === null || result.last_insert_rowid === undefined
+                    ? undefined
+                    : BigInt(result.last_insert_rowid),
+              };
+              recordLiveQueryStatementWrite(sql, written);
+              return written;
+            } catch (error) {
+              // The remote write may have committed before its acknowledgement was
+              // lost. Record after rejection so an intervening refresh cannot consume
+              // its marker, and do not trust a zero-row count without a valid result.
+              recordLiveQueryStatementWrite(sql);
+              throw error;
+            }
           });
         },
         columns() {
@@ -2976,6 +3036,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(null, connectionGate.runOperation),
     engine: "libsql",
+    [liveQueryTablesTracked]: true,
     dialect,
     normalization,
     // No behavioural method body lives here either, for the reasons ADR-0037 records and the

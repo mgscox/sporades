@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer, request as httpRequest } from 'node:http';
-import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
-import { parseAdmissionPolicy, matchExactAdmissionRule } from '../dist/admission-policy.js';
+import { performance } from 'node:perf_hooks';
+import { parseAdmissionPolicy, matchHttpAdmissionRule, canonicalAdmissionPathname } from '../dist/admission-policy.js';
 import { routeHttpAdmission, routeConnectionToken, routeRuntimeHealth } from '../dist/http-runtime.js';
 import { createAdmissionRateLimiter } from '../dist/admission-rate-limit.js';
 
@@ -37,6 +37,38 @@ test('real HTTP quotas preserve under-quota body streams and return opaque 429/H
     const chunks = []; for await (const chunk of request) chunks.push(chunk);
     response.writeHead(201, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ url: request.url, header: request.headers['x-original'], body: Buffer.concat(chunks).toString() }));
+  });
+});
+
+test('compound canonical conditions select quotas without counting nonmatches or evaluating later rules', async () => {
+  const active = generation([
+    { id: 'compound-quota', enabled: true, conditions: [
+      { kind: 'method', value: 'POST' }, { kind: 'pathname', prefix: '/limited' },
+      { kind: 'header', name: 'x-plan', value: 'blue' }, { kind: 'query-key', name: 'tenant' },
+    ], action: { kind: 'rate-limit', limit: 1, windowMs: 2000 } },
+    rule('later-deny', '/limited/admin'),
+  ]);
+  const limiter = createAdmissionRateLimiter({ now: () => 0 });
+  await serve({ securitySession: 'hosted', runtimeProbeToken: probeToken, admissionPolicy: { current: () => active, rateLimiter: limiter } }, async (base, calls) => {
+    const headers = { ...hostedHeaders('192.0.2.1'), 'x-plan': 'blue' };
+    for (const [url, method, fields] of [
+      ['/limited/child?tenant=1', 'GET', headers],
+      ['/administrator?tenant=1', 'POST', headers],
+      ['/limited/child?tenant=1', 'POST', { ...headers, 'x-plan': 'red' }],
+      ['/limited/child?other=1', 'POST', headers],
+    ]) assert.equal((await fetch(base + url, { method, headers: fields })).status, 201);
+    assert.equal(limiter.stats().buckets, 0);
+    // Encoded dot segments, raw header casing, OWS and query-key decoding share the compound matcher.
+    const options = { method: 'POST', headers: { ...hostedHeaders('192.0.2.1'), 'X-Plan': ' blue ' } };
+    assert.equal((await fetch(base + '/limited/%2e/admin?%74enant=1', options)).status, 201);
+    const denied = await fetch(base + '/limited/admin?tenant=1', options);
+    assert.equal(denied.status, 429);
+    assert.equal(denied.headers.get('retry-after'), '2');
+    assert.equal(denied.headers.get('cache-control'), 'no-store');
+    assert.equal(await denied.text(), 'Too Many Requests\n');
+    assert.equal(calls(), 5);
+    assert.equal((await fetch(base + '/limited/admin?tenant=1', { method: 'POST', headers: { ...hostedHeaders('192.0.2.2'), 'x-plan': 'blue' } })).status, 201);
+    assert.equal(calls(), 6);
   });
 });
 
@@ -98,7 +130,7 @@ test('address matching handles family boundaries, mapped CIDRs, prefix endpoints
     ['::ffff:192.0.2.0/120', '192.0.2.255', true], ['::ffff:192.0.2.0/120', '192.0.3.1', false],
     ['::ffff:c000:0201', '192.0.2.1', true], ['::ffff:0:0/96', '192.0.2.1', true],
     ['::192.0.2.1', '192.0.2.1', false],
-  ]) assert.equal(!!matchExactAdmissionRule(generation([addressRule(network)]), '/blocked', address), match, network + ' ' + address);
+  ]) assert.equal(!!matchHttpAdmissionRule(generation([addressRule(network)]), { method: 'GET', pathname: '/blocked', query: '', rawHeaders: [], trustedAddress: address }), match, network + ' ' + address);
   for (const value of ['192.0.2.1/', '192.0.2.1/01', '192.0.2.1/-1', '192.0.2.1/33', '::1/129', '::1/64/1', '::ffff:192.0.2.1/95', '::ffff:192.0.2.1/24', 'fe80::1%eth0', '[::1]', ' 192.0.2.1', '192.0.2.1,192.0.2.2']) {
     assert.throws(() => generation([addressRule(value)]), /^Error: Invalid admission policy\.$/, value);
   }
@@ -138,6 +170,32 @@ async function serve(database, fn, application) {
   try { await fn(`http://127.0.0.1:${server.address().port}`, () => calls); }
   finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 }
+
+test('trusted address combines with canonical non-address conditions without widening public identity', async () => {
+  const conditions = [
+    { kind: 'address', value: '192.0.2.0/24' }, { kind: 'method', value: 'POST' },
+    { kind: 'pathname', prefix: '/blocked' }, { kind: 'header', name: 'x-mode', value: 'review' },
+    { kind: 'query-key', name: 'confirm' },
+  ];
+  for (const ordered of [conditions, [...conditions].reverse()]) {
+    const active = generation([{ id: 'compound', enabled: true, conditions: ordered, action: { kind: 'deny' } }]);
+    for (const securitySession of ['hosted', 'container']) {
+      await serve({ securitySession, runtimeProbeToken: probeToken, admissionPolicy: { current: () => active } }, async (base, calls) => {
+        const headers = { ...hostedHeaders('192.0.2.1'), 'x-mode': 'review' };
+        assert.equal((await fetch(base + '/blocked/child?%63onfirm=1&confirm=2', { method: 'POST', headers })).status, 403);
+        assert.equal((await fetch(base + '/blocked/child?confirm', { method: 'POST', headers: { ...hostedHeaders('198.51.100.1'), 'x-mode': 'review' } })).status, securitySession === 'hosted' ? 201 : 403);
+        assert.equal((await fetch(base + '/blocked/child?confirm', { method: 'POST', headers: { 'x-mode': 'review', 'x-forwarded-for': '198.51.100.1' } })).status, 403);
+        for (const [target, options] of [
+          ['/blocked/child?confirm', { method: 'GET', headers: { 'x-mode': 'review' } }],
+          ['/blockedish?confirm', { method: 'POST', headers: { 'x-mode': 'review' } }],
+          ['/blocked?confirm', { method: 'POST', headers: { 'x-mode': 'other' } }],
+          ['/blocked?other', { method: 'POST', headers: { 'x-mode': 'review' } }],
+        ]) assert.equal((await fetch(base + target, options)).status, 201, 'a deterministic AND nonmatch skips missing identity in either condition order');
+        assert.equal(calls(), securitySession === 'hosted' ? 5 : 4);
+      });
+    }
+  }
+});
 
 test('exact-path denial returns constant opaque bytes before invoking application code', async () => {
   const active = generation([rule('private-rule-name', '/blocked')]);
@@ -190,8 +248,8 @@ const rawResponse = (base, path) => new Promise((resolve, reject) => {
 
 test('the first matching enabled immutable rule decides; later rules cannot override it', () => {
   const active = generation([rule('disabled', '/blocked', false), rule('elsewhere', '/elsewhere'), rule('first', '/blocked'), rule('second', '/blocked')]);
-  assert.equal(matchExactAdmissionRule(active, '/blocked'), active.policy.rules[2]);
-  assert.equal(matchExactAdmissionRule(active, '/unmatched'), null);
+  assert.equal(matchHttpAdmissionRule(active, { method: 'GET', pathname: '/blocked', query: '', rawHeaders: [] }), active.policy.rules[2]);
+  assert.equal(matchHttpAdmissionRule(active, { method: 'GET', pathname: '/unmatched', query: '', rawHeaders: [] }), null);
 });
 
 test('canonical path matching ignores queries, decodes once and normalizes dot segments without rewriting requests', async () => {
@@ -212,7 +270,7 @@ test('canonical path matching ignores queries, decodes once and normalizes dot s
 
 test('malformed, ambiguous and unsupported enabled admission inputs fail closed with identical opaque bytes', async () => {
   for (const active of [
-    generation([{ ...rule('future-condition', '/blocked'), conditions: [{ kind: 'method', value: 'GET' }] }]),
+    generation([{ ...rule('future-condition', '/blocked'), conditions: [{ kind: 'address', value: '127.0.0.1' }] }]),
     generation([{ ...rule('future-action', '/blocked'), action: { kind: 'rate-limit', limit: 3, windowMs: 1000 } }]),
     generation([rule('ordinary', '/blocked')]),
   ]) {
@@ -294,4 +352,102 @@ test('absent, empty and removed policies touch no request, response or log surfa
   samples.sort((a, b) => a - b);
   t.diagnostic(`no-policy gate median=${samples[3].toFixed(4)}us budget=1us (7 x ${iterations} calls; loop/assertion included)`);
   assert.ok(samples[3] < 1, `no-policy gate exceeded 1us: ${samples[3]}`);
+});
+
+const compoundRule = conditions => ({ id: 'compound', enabled: true, conditions, action: { kind: 'deny' } });
+const match = (conditions, input = {}) => matchHttpAdmissionRule(generation([compoundRule(conditions)]), {
+  method: 'GET', pathname: '/admin', query: '', rawHeaders: [], ...input,
+});
+
+test('method, segment prefix, canonical header and query key combine with AND before application code', async () => {
+  const conditions = [{ kind: 'method', value: 'POST' }, { kind: 'pathname', prefix: '/admin' },
+    { kind: 'header', name: 'x-mode', value: 'blocked' }, { kind: 'query-key', name: 'flag' }];
+  await serve({ admissionPolicy: { current: () => generation([compoundRule(conditions)]) } }, async (base, calls) => {
+    const send = (path, method = 'POST', value = 'blocked') => fetch(base + path, { method, headers: { 'X-Mode': value } });
+    for (const path of ['/admin?flag', '/admin/child?flag=one&flag=two', '/admin/?%66lag=']) {
+      const denied = await send(path); assert.equal(denied.status, 403); assert.equal(await denied.text(), 'Forbidden\n');
+    }
+    assert.equal(calls(), 0);
+    for (const response of [await send('/administrator?flag'), await send('/admin?flag', 'GET'),
+      await send('/admin?flag', 'POST', 'Blocked'), await send('/admin?FLAG'), await send('/admin')]) {
+      assert.equal(response.status, 201); assert.equal(response.headers.get('cache-control'), 'max-age=17');
+    }
+    assert.equal(calls(), 5);
+  });
+});
+
+test('canonical path has explicit percent/dot semantics, preserves slash boundaries and never double decodes', () => {
+  const cases = { '/%61dmin': '/admin', '/a/%2E%2e/admin': '/admin', '/a/./admin': '/a/admin',
+    '/a/..': '/', '/a/.': '/a/', '/../../admin': '/admin', '//admin': '//admin', '/a//admin': '/a//admin',
+    '/admin/%E2%82%AC': '/admin/€', '/a//../admin': '/a/admin' };
+  for (const [raw, expected] of Object.entries(cases)) assert.equal(canonicalAdmissionPathname(raw), expected, raw);
+  for (const raw of ['/admin%2fchild', '/admin%5Cchild', '/%252e/admin', '/%FF', '/%c0%af', '/%', '/%00', '/a\\b', '/a b']) {
+    assert.throws(() => canonicalAdmissionPathname(raw), undefined, raw);
+  }
+  for (const pathname of ['/admin', '/admin/', '/admin/child', '/%61dmin/child']) assert.ok(match([{ kind: 'pathname', prefix: '/admin' }], { pathname }));
+  for (const pathname of ['/administrator', '/Admin', '//admin']) assert.equal(match([{ kind: 'pathname', prefix: '/admin' }], { pathname }), null);
+  assert.equal(match([{ kind: 'pathname', prefix: '/admin/' }], { pathname: '/admin' }), null);
+  assert.ok(match([{ kind: 'pathname', prefix: '/admin/' }], { pathname: '/admin/child' }));
+  assert.equal(match([{ kind: 'pathname', exact: '/admin' }], { pathname: '/admin/' }), null);
+});
+
+test('method casing, extension methods, OPTIONS asterisk and malformed inputs are deterministic', () => {
+  assert.ok(match([{ kind: 'method', value: 'GET' }], { method: 'gEt' }));
+  assert.equal(match([{ kind: 'method', value: 'GET' }], { method: 'M-SEARCH' }), null);
+  assert.ok(match([{ kind: 'method', value: 'OPTIONS' }], { method: 'OPTIONS', pathname: '*' }));
+  for (const method of ['', ' GET', 'GÉT', 'GET\n']) assert.throws(() => match([{ kind: 'method', value: 'GET' }], { method }));
+});
+
+test('raw header names are case-insensitive, values trim only OWS, presence includes empty/duplicate values', async () => {
+  const presence = [{ kind: 'header', name: 'x-test' }], exact = [{ kind: 'header', name: 'x-test', value: 'Value' }];
+  assert.ok(match(exact, { rawHeaders: ['X-TEST', ' \tValue\t '] }));
+  assert.equal(match(exact, { rawHeaders: ['X-Test', 'value'] }), null);
+  assert.equal(match(exact, { rawHeaders: ['X-Test', 'Value  inside'] }), null);
+  assert.ok(match([{ kind: 'header', name: 'x-test', value: '' }], { rawHeaders: ['x-test', ' \t'] }));
+  assert.equal(match(presence), null);
+  assert.ok(match(presence, { rawHeaders: ['X-Test', '', 'x-test', 'second'] }));
+  for (const rawHeaders of [['X-Test', 'Value', 'x-test', 'other'], ['X-Test', 'Value', 'x-test', 'Value']]) {
+    assert.throws(() => match(exact, { rawHeaders }), /Indeterminate/);
+    for (const conditions of [[...exact, { kind: 'method', value: 'POST' }], [{ kind: 'method', value: 'POST' }, ...exact]]) {
+      assert.equal(match(conditions, { rawHeaders }), null);
+    }
+  }
+  // Real Node requests may join duplicate custom fields or discard singleton duplicates in headers.
+  await serve({ admissionPolicy: { current: () => generation([compoundRule(exact)]) } }, async (base, calls) => {
+    const url = new URL(base);
+    const response = await new Promise((resolve, reject) => {
+      const request = httpRequest({ hostname: url.hostname, port: url.port, path: '/admin', headers: ['Host', url.host, 'X-Test', 'Value', 'x-test', 'other'] }, resolve);
+      request.on('error', reject); request.end();
+    });
+    assert.equal(response.statusCode, 403); response.resume(); assert.equal(calls(), 0);
+  });
+});
+
+test('query keys decode once, plus is space, repeated keys are presence, and malformed values also fail closed', () => {
+  const conditions = [{ kind: 'query-key', name: 'some key' }, { kind: 'query-key', name: 'é' }];
+  assert.ok(match(conditions, { query: 'some+key=one&%C3%A9&some%20key=two' }));
+  assert.equal(match(conditions, { query: 'Some+key&%C3%A9' }), null);
+  assert.equal(match([{ kind: 'query-key', name: 'key' }], { query: '%256bey' }), null);
+  assert.ok(match([{ kind: 'query-key', name: '%6bey' }], { query: '%256bey' }));
+  assert.equal(match([{ kind: 'query-key', name: 'key' }], { query: 'other=key' }), null);
+  assert.ok(match([{ kind: 'query-key', name: 'a&b' }], { query: 'a%26b=value' }));
+  for (const query of ['key=%', '%GG', 'key=%FF', 'key=%00', 'key=%ED%A0%80']) assert.throws(() => match([{ kind: 'query-key', name: 'key' }], { query }));
+});
+
+test('malformed request targets have opaque denial even for nonmatching rules', async () => {
+  await serve({ admissionPolicy: { current: () => generation([rule('unrelated', '/unrelated')]) } }, async (base, calls) => {
+    for (const path of ['/admin#fragment', '/admin?key=%', '/admin?key=%FF', 'ftp://example.test/admin', 'http://user:pass@example.test/admin', 'http:///example.test/admin', 'http:////example.test/admin']) {
+      const response = await rawResponse(base, path); assert.equal(response.status, 403, path); assert.equal(response.body, 'Forbidden\n');
+    }
+    assert.equal(calls(), 0);
+  });
+});
+
+test('first match stops before later indeterminate rules; unsupported conditions are order-independent', () => {
+  const first = compoundRule([{ kind: 'method', value: 'GET' }]);
+  const later = { ...compoundRule([{ kind: 'address', value: '127.0.0.1' }]), id: 'later' };
+  const input = { method: 'GET', pathname: '/admin', query: '', rawHeaders: [] };
+  const active = generation([first, later]); assert.equal(matchHttpAdmissionRule(active, input), active.policy.rules[0]);
+  for (const conditions of [[{ kind: 'address', value: '127.0.0.1' }, { kind: 'method', value: 'POST' }],
+    [{ kind: 'method', value: 'POST' }, { kind: 'address', value: '127.0.0.1' }]]) assert.equal(match(conditions), null);
 });

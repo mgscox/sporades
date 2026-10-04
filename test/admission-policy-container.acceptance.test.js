@@ -63,6 +63,20 @@ test(`real generated ${session} session enforces immutable read-only policy gene
       };
       await wait(async()=> (await health()).state==='healthy');
       await denied(); await allowed();
+      const compound = Buffer.from(JSON.stringify({version:1,rules:[{id:'compound',enabled:true,conditions:[
+        {kind:'method',value:'GET'},{kind:'pathname',prefix:'/blocked'},
+        {kind:'header',name:'x-mode',value:'blocked'},{kind:'query-key',name:'flag'}
+      ],action:{kind:'deny'}}]}));
+      await publishAdmissionPolicy(storage,'policy.json',compound);
+      await wait(async()=> (await health()).digest===parseAdmissionPolicy(compound).digest);
+      for (const target of ['/blocked?flag=one&flag=two','/%62locked?%66lag']) {
+        const response = await fetch(origin + target,{headers:{'X-Mode':'blocked'}});
+        assert.equal(response.status,403); assert.equal(response.headers.get('cache-control'),'no-store'); assert.equal(await response.text(),'Forbidden\n');
+      }
+      await assert.rejects(readFile(marker),{code:'ENOENT'});
+      await admitted(); await allowed();
+      const restored = policy('initial'); await publishAdmissionPolicy(storage,'policy.json',restored);
+      await wait(async()=> (await health()).digest===parseAdmissionPolicy(restored).digest);
       await assert.rejects(run('docker',['exec',name,'node','-e',`require('node:fs').writeFileSync('/run/sporades-admission/${path.basename(target)}','tamper')`]),error=>{assert.match(error.stderr,/EROFS|EACCES/);return true;});
       const old = (await health()).digest;
       await chmod(target,0o644); await writeFile(target,'{'); await chmod(target,0o444);

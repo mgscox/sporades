@@ -27,9 +27,10 @@ import { DATABASE_ADAPTER_ENGINES } from "./database-adapter-engines.js";
 //   `<title>: SQLite`. Surfaces added later distinguish themselves here.
 // - `appTableNames` declares the app tables the surface migrates, so the Postgres schema reset
 //   drops them before the run.
+// - `adapterOptions` selects storage-fixture mechanics, such as process isolation for libSQL.
 // - `prepareStorage` seeds the storage state the surface's cases read, once per engine.
 // - `cases` are `{ name, run(adapter) }` entries, each executed as a subtest of the engine's test.
-export function runDatabaseAdapterConformance({ title, appTableNames = [], prepareStorage, cases }) {
+export function runDatabaseAdapterConformance({ title, appTableNames = [], adapterOptions = {}, prepareStorage, cases }) {
   for (const engine of DATABASE_ADAPTER_ENGINES) {
     test(`${title}: ${engine.name}`, { skip: engine.skip }, async (t) => {
       await engine.withAdapter(
@@ -43,7 +44,7 @@ export function runDatabaseAdapterConformance({ title, appTableNames = [], prepa
             });
           }
         },
-        { appTableNames },
+        { ...adapterOptions, appTableNames },
       );
     });
   }

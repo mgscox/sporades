@@ -659,14 +659,14 @@ storage, mounted read-only at `/run/sporades-admission`. Authorized CLI/Host
 publication replaces it atomically; explicit removal uses a durable marker.
 The runtime loads a bounded deeply frozen generation before app startup, polls
 every two seconds, and keeps the last-known-good generation on hot failure.
-Reload health and digest expose no match values. HTTP requests now enforce enabled exact-path and trusted Hosted address/CIDR deny rules before Capsule request code,
+Reload health and digest expose no match values. HTTP requests enforce enabled method, exact/segment-prefix pathname, canonical header, query-key and trusted Hosted address/CIDR
+conditions with AND semantics before Capsule request code,
 with ordered first-match semantics and constant opaque 403 responses. Genuine authenticated
 Host controls bypass admission; reserved targets fail generation validation. Address identity
 requires one canonical validated IP and the Host-owned boundary capability; public forwarding
 headers never independently grant authority. Missing identity fails closed for potentially
 applicable address rules. Dev and local Container have no trusted identity, while other rules
-continue to operate. IPv4-mapped IPv6 normalizes to IPv4. Other matchers,
-quotas and WebSocket upgrades remain subsequent slices. Generic writable `deploy.files` authority
+continue to operate. IPv4-mapped IPv6 normalizes to IPv4. Quotas and WebSocket upgrades remain subsequent slices. Generic writable `deploy.files` authority
 never applies. See ADR-0054.
 
 ### Sender credentials
