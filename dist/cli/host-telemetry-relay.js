@@ -152,6 +152,8 @@ async function readConnectionRecord(remoteRoot) {
     if (value.schemaVersion !== 1 || typeof value.endpoint !== "string" || typeof value.network !== "string" || value.internalEndpoint !== `http://${RELAY_ALIAS}:4318/`) {
         throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
     }
+    if (value.exportsDisabled !== undefined && typeof value.exportsDisabled !== "boolean")
+        invalid();
     if (value.tracePropagationOrigins !== undefined) {
         try {
             value.tracePropagationOrigins = validateTracePropagationOrigins(value.tracePropagationOrigins);
@@ -166,8 +168,8 @@ export async function readHostTelemetryConnection(remoteRoot) {
     const record = await readConnectionRecord(remoteRoot);
     if (!record)
         return null;
-    const { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs } = record;
-    const value = { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs };
+    const { exportsDisabled, schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs } = record;
+    const value = { exportsDisabled, schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs };
     return value;
 }
 /** Call only while holding withHostTelemetryLock; legacy split state needs it too. */
@@ -210,8 +212,9 @@ export async function statusHostTelemetryRelay(remoteRoot) {
     const relay = inspectRelay();
     return {
         resources: await hostMetricsStatus(remoteRoot),
+        exportsDisabled: connection?.exportsDisabled === true,
         connected: Boolean(connection),
-        relayReady: Boolean(connection && relay?.State?.Running === true),
+        relayReady: Boolean(connection && !connection.exportsDisabled && relay?.State?.Running === true),
         capsuleCoverage: "not-configured",
         backendVerification: "unavailable",
         ...(connection ? { ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}), endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...(connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}), ...(connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {}) } : {}),
@@ -288,6 +291,13 @@ export async function reconcileHostTelemetryRelay(remoteRoot, host, operation = 
     const connection = await readHostTelemetryConnection(remoteRoot);
     if (!connection)
         throw helperError("Host Telemetry is not connected.", "Run `sporades host telemetry connect` first.");
+    if (connection.exportsDisabled) {
+        if (operation === "enable")
+            throw helperError("Host exports are disabled.", "Reconnect deliberately to enable monitoring.");
+        if (host && (operation === "disable" || operation === "remove"))
+            await configureHostMetrics(remoteRoot, host, operation);
+        return statusHostTelemetryRelay(remoteRoot);
+    }
     const files = paths(remoteRoot);
     if (!await readProtected(files.config) || !await readProtected(files.credential) || (connection.caConfigured && !await readProtected(files.ca))) {
         throw helperError("Host Telemetry configuration is incomplete.", "Reconnect the relay with a verified Telemetry profile.");
@@ -352,5 +362,31 @@ export async function checkHostTelemetryDelivery(remoteRoot) {
         relayAccepted = relay.ok && ["200", "202"].includes(relay.stdout);
     }
     return { ...result, origin: "host", traceId, relayReady, relayAccepted, backendStorage: "verification-unavailable", capsuleCoverage: "not-configured" };
+}
+/** Durable opt-out keeps inventory authority and credentials for acknowledgement/recovery. */
+export async function disableHostTelemetryExports(remoteRoot, host) {
+    await withHostTelemetryLock(remoteRoot, async () => {
+        const record = await readConnectionRecord(remoteRoot);
+        if (!record)
+            throw helperError("Host Telemetry is not connected.", "Connect before changing export policy.");
+        await atomicWrite(paths(remoteRoot).descriptor, JSON.stringify({ ...record, exportsDisabled: true }) + "\n", 0o600);
+    });
+    await configureHostMetrics(remoteRoot, host, "disable");
+    if (inspectRelay() && !docker(["stop", RELAY_NAME]).ok)
+        throw helperError("Host relay could not be stopped.", "Retry exports-disable; disabled launch policy and credentials are retained.");
+    return statusHostTelemetryRelay(remoteRoot);
+}
+/** Caller must first acknowledge the exact disabled inventory revision. */
+export async function removeHostTelemetryAgents(remoteRoot, host) {
+    if (!(await readHostTelemetryConnection(remoteRoot))?.exportsDisabled)
+        throw helperError("Host exports are still enabled.", "Run exports-disable and reconcile inventory before remove-agents.");
+    const { reconcileHostInventory } = await import("./host-inventory.js");
+    const inventory = await reconcileHostInventory(remoteRoot);
+    if (!inventory.host || inventory.pending || inventory.failure || inventory.acknowledgedRevision !== inventory.desiredRevision)
+        throw helperError("Deliberate removal is not acknowledged.", "Restore inventory connectivity/authority and retry remove-agents. Credentials and the reconciler are retained.");
+    await configureHostMetrics(remoteRoot, host, "remove");
+    if (inspectRelay() && !docker(["rm", "-f", RELAY_NAME]).ok)
+        throw helperError("Host relay could not be removed.", "Retry remove-agents; protected credentials and Capsule data are retained.");
+    return statusHostTelemetryRelay(remoteRoot);
 }
 //# sourceMappingURL=host-telemetry-relay.js.map

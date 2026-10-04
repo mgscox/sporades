@@ -1,11 +1,11 @@
 import type { RuntimeTelemetryConfig } from "../runtime-telemetry.js";
 
-type Connection = { tracePropagationOrigins?: string[]; internalEndpoint: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number } | null;
+type Connection = { exportsDisabled?: boolean; tracePropagationOrigins?: string[]; internalEndpoint: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number } | null;
 type Capsule = { domain: string; subname: string; telemetry?: { disabled?: boolean } };
 
 /** A Host-owned launch decision; project config and Server env never supply these fields. */
 export function hostedTelemetryConfig(connection: Connection, capsule: Capsule): RuntimeTelemetryConfig | null {
-  if (!connection || capsule.telemetry?.disabled === true) return null;
+  if (!connection || connection.exportsDisabled === true || capsule.telemetry?.disabled === true) return null;
   if (connection.internalEndpoint !== "http://sporades-telemetry:4318/") throw new Error("Invalid Host Telemetry relay endpoint.");
   return {
     ...(connection.tracePropagationOrigins !== undefined ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}),

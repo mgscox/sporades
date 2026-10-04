@@ -186,3 +186,39 @@ test('named sender rotation reconnects a durable Host outbox over verified HTTPS
     assert(!status.includes(pair.get('TRACE_INGEST_TOKEN')));
   }
 });
+
+test('Host export disable reconciles deliberate opt-out; agent removal denies revoked authority and retains credentials', async t => {
+  const f = await fixture(t);
+  const { disableHostTelemetryExports, removeHostTelemetryAgents, reconcileHostTelemetryRelay } = await import('../dist/cli/host-telemetry-relay.js');
+  const tls = await f.tls('removal');
+  const central = createGateway({ inventoryDirectory: path.join(f.root, 'central'), inventoryHosts: { [scope]: oldToken } }, tls);
+  const endpoint = await f.listen(central);
+  await f.saveLegacy(endpoint, tls.cert);
+  await mkdir(path.join(f.root, 'caddy'));
+  await writeFile(path.join(f.root, 'caddy/Caddyfile'), '{\n admin off\n}\n');
+  const commands = path.join(f.root, 'commands');
+  await writeFile(path.join(f.bin, 'docker'), `#!/bin/sh\necho "$*" >> '${commands}'\nif [ "$1" = inspect ] && [ "$4" = sporades-telemetry-relay ]; then echo '{"State":{"Running":false},"Config":{"Labels":{"com.sporades.host-telemetry-relay":"true"}}}'; elif [ \"$1\" = container ] || [ \"$1\" = inspect ]; then exit 1; fi\n`, { mode: 0o755 });
+  assert.equal((await reconcileHostInventory(f.root)).pending, false);
+  const credentialBefore = await readFile(path.join(f.telemetry, 'credential.env'));
+  await assert.rejects(removeHostTelemetryAgents(f.root, scope), /still enabled/);
+  await disableHostTelemetryExports(f.root, scope);
+  assert.equal((await readHostTelemetryConnection(f.root)).exportsDisabled, true);
+  const result = await reconcileHostInventory(f.root);
+  assert.equal(result.pending, false);
+  const saved = JSON.parse(await readFile(path.join(f.telemetry, 'inventory.json')));
+  assert.equal(saved.desired.capsules[0].state, 'opted-out');
+  assert.deepEqual(saved.desired.capsules[0].targets, []);
+  // A ordinary reconcile must not resurrect either exporter or relay.
+  await writeFile(commands, '');
+  await reconcileHostTelemetryRelay(f.root, scope);
+  assert.doesNotMatch(await readFile(commands, 'utf8'), /run |network connect/);
+  // Revoked inventory authority cannot be mistaken for acknowledged deliberate removal.
+  await writeFile(path.join(f.telemetry, 'inventory-credential'), 'revoked-inventory-token\n', { mode: 0o600 });
+  await assert.rejects(removeHostTelemetryAgents(f.root, scope), /not acknowledged/);
+  assert.doesNotMatch(await readFile(commands, 'utf8'), /rm -f/);
+  await writeFile(path.join(f.telemetry, 'inventory-credential'), oldToken + '\n', { mode: 0o600 });
+  await removeHostTelemetryAgents(f.root, scope);
+  assert.match(await readFile(commands, 'utf8'), /rm -f sporades-telemetry-relay/);
+  assert.deepEqual(await readFile(path.join(f.telemetry, 'credential.env')), credentialBefore);
+  assert.equal(JSON.parse(await readFile(path.join(f.root, 'hosts', scope, 'registry/capsules/notes.json'))).status, 'running');
+});
