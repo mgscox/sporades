@@ -158,3 +158,16 @@ migration, permissions, backup, upgrade and redacted result contracts. Existing
 shared ingestion token before disabling it. Routine credential commands never
 rewrite `.env` or Capsule Sealed Server env. Inventory recovery `inventory.mjs`
 also accepts `HOST_INVENTORY_TOKEN` in its process environment for named senders.
+
+## Sender diagnostics and migration
+
+The existing dashboard operator Basic credential can perform
+`GET /v1/diagnostics/traces/<32-lowercase-hex-id>`. This fixed diagnostic lookup
+returns only exact probe visibility and freshness booleans. Ingestion and inventory
+bearer credentials are denied; no raw trace or arbitrary backend query is returned.
+Use `host telemetry check --query-credential-env <name>` from the installed CLI.
+Use `host telemetry migrate --profile <destination> --query-credential-env <name>`
+for Host-origin verified activation and fresh inventory registration. Keep the old
+profile for rollback and explicitly retire stale expectations at the previous
+server; historical data is untouched. See the
+[operator reference](https://github.com/mgscox/sporades/blob/main/docs/reference/telemetry-diagnostics.md).

@@ -14,3 +14,8 @@ export type { TelemetryProfile } from "../../dist/cli/telemetry-profile.js";
 
 /** CLI sender results never contain ingestion or inventory secret values. */
 export type { SenderCredentialResult } from "../../dist/cli/monitoring-stack.js";
+
+/** Sender-origin stage evidence; authenticated HTTP 2xx proves authentication
+ * independently of OTLP body acceptance, and never proves storage alone. */
+export type { DiagnosticCheck, TelemetryDeliveryChecks } from "../../dist/cli/telemetry-diagnostics.js";
+export type { HostTelemetryDiagnostic, HostTelemetryMigration } from "../../dist/cli/host-telemetry-relay.js";

@@ -1,0 +1,41 @@
+{
+  "kind": "local-docker-backend-proof",
+  "signal": "traces",
+  "destination": {
+    "traceId": "6842c0a71e2dbca25119928d66214480",
+    "accepted": true,
+    "stage": "accepted",
+    "statusCode": 200,
+    "checks": {
+      "dns": {
+        "state": "passed"
+      },
+      "tls": {
+        "state": "passed"
+      },
+      "authentication": {
+        "state": "passed"
+      },
+      "otlpAcceptance": {
+        "state": "passed"
+      }
+    }
+  },
+  "visibility": {
+    "backendQuery": {
+      "state": "passed"
+    },
+    "recentIngestion": {
+      "state": "passed"
+    }
+  },
+  "bearerQueryStatus": 401,
+  "wrongOperator": {
+    "state": "failed",
+    "reason": "operator-auth"
+  },
+  "operatorEnvironmentPreserved": true,
+  "restartStorageVerified": true,
+  "relayVerified": false,
+  "separateVmVerified": false
+}
