@@ -50,6 +50,8 @@ const TEAM_RUNTIME_TABLES = [
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-dev-"));
+  // Scratch CommonJS helpers must not inherit an enclosing checkout's ESM scope.
+  await writeFile(path.join(dir, "package.json"), '{"type":"commonjs"}\n');
   try {
     return await fn(dir);
   } finally {
@@ -294,6 +296,7 @@ async function installFakeDocker(dir) {
   const logPath = path.join(dir, "docker-calls.jsonl");
   const dockerPath = path.join(fakeBinDir, "docker");
   await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(path.join(fakeBinDir, "package.json"), '{"type":"commonjs"}\n');
   await writeFile(
     dockerPath,
     `#!/usr/bin/env node
@@ -5381,7 +5384,8 @@ test("failed Dev watcher setup removes its session and private action Bundle", a
     await writeFile(configPath, `${JSON.stringify(config)}\n`);
     await writeFile(path.join(projectDir, ".env.sporades.server"), "STALE_SECRET=watcher-old-secret\n", { mode: 0o600 });
     const preload = path.join(dir, "fail-second-watch.cjs");
-    await writeFile(preload, `const fs = require("node:fs");\nconst moduleApi = require("node:module");\nconst originalWatch = fs.watch;\nlet count = 0;\nfs.watch = (...args) => {\n  if (++count === 2) throw Object.assign(new Error("injected watch failure"), { code: "EMFILE" });\n  return originalWatch(...args);\n};\nmoduleApi.syncBuiltinESMExports();\n`);
+    // Linux recursive watches also call fs.watch internally without recursive=true.
+    await writeFile(preload, `const fs = require("node:fs");\nconst moduleApi = require("node:module");\nconst originalWatch = fs.watch;\nlet count = 0;\nfs.watch = (...args) => {\n  if (args[1]?.recursive === true && ++count === 2) throw Object.assign(new Error("injected watch failure"), { code: "EMFILE" });\n  return originalWatch(...args);\n};\nmoduleApi.syncBuiltinESMExports();\n`);
     const failed = await runCli(["dev", "--json"], { cwd: projectDir, env: { NODE_OPTIONS: `--require=${preload}` } });
     assert.notEqual(failed.code, 0);
     assert.match(failed.stdout + failed.stderr, /injected watch failure/);

@@ -25,7 +25,7 @@ async function withTempDir(fn) {
 async function withHttpServer(handler, fn) {
   const server = createServer(handler);
   await new Promise((resolve) => {
-    server.listen(0, "::1", resolve);
+    server.listen(0, "127.0.0.1", resolve);
   });
   try {
     return await fn(server.address().port);
@@ -144,6 +144,7 @@ async function installFakeDocker(dir, options = {}) {
   const logPath = path.join(dir, "docker-calls.jsonl");
   const dockerPath = path.join(fakeBinDir, "docker");
   await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(path.join(fakeBinDir, "package.json"), '{"type":"commonjs"}\n');
   await writeFile(
     dockerPath,
     `#!/usr/bin/env node
@@ -348,6 +349,7 @@ async function installDoctorFakeSsh(dir, scriptBody) {
   const sshPath = path.join(fakeBinDir, "ssh");
   const helperPath = path.join(fakeRemoteDir, "sporades-host-helper");
   await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(path.join(fakeBinDir, "package.json"), '{"type":"commonjs"}\n');
   await mkdir(fakeRemoteDir, { recursive: true });
   await writeFile(
     helperPath,

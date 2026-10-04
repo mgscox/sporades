@@ -13,14 +13,17 @@ export async function installProjectTailwindToolchain(projectDir, repoRoot) {
   const nodeModules = path.join(projectDir, "node_modules");
   await mkdir(nodeModules, { recursive: true });
   // Keep the fixture usable on the platform running the suite, including Docker.
-  const nativePackages = (await readdir(path.join(repoRoot, "node_modules"))).filter(name => name.startsWith("lightningcss-"));
-  await Promise.all([...TAILWIND_TOOLCHAIN_PACKAGES, ...nativePackages].map(async (packageName) => {
+  const nativePackages = (await readdir(path.join(repoRoot, "node_modules")))
+    .filter((name) => name.startsWith("lightningcss-"));
+  const copies = await Promise.allSettled([...TAILWIND_TOOLCHAIN_PACKAGES, ...nativePackages].map(async (packageName) => {
     try {
       await cp(path.join(repoRoot, "node_modules", packageName), path.join(nodeModules, packageName), { recursive: true });
     } catch (error) {
       if (error.code !== "ENOENT" || packageName !== "fsevents") throw error;
     }
   }));
+  // Finish every copy before reporting an error so fixture cleanup cannot race it.
+  for (const copy of copies) if (copy.status === "rejected") throw copy.reason;
   const manifestPath = path.join(projectDir, "package.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   manifest.devDependencies = {

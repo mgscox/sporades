@@ -7,21 +7,19 @@ import { join, delimiter } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
 
-function command(bin, args, cwd, env = process.env) {
+function runCommand(bin, args, cwd, env = process.env) {
   env = { ...env, SPORADES_CONFIG_DIR: join(root, ".sporades/packed-stack-config") };
   return spawnSync(process.execPath, [bin, ...args], { cwd, env, encoding: 'utf8' });
 }
 
 test('packed CLI generates a stack outside checkout and preserves operator state', async t => {
   const temp = await mkdtemp(join(tmpdir(), 'sporades package '));
-  // This artifact/credential test needs only the prerequisite version protocol.
-  // Real container lifecycle and storage acceptance have separate opt-in drills.
-  const tools = join(temp, 'supported Docker');
-  await mkdir(tools);
-  await writeFile(join(tools, 'docker'), '#!/bin/sh\nif [ "$1" = compose ] && [ "$2" = version ]; then echo 5.5.1; elif [ "$1" = version ]; then echo 29.8.1; else exit 1; fi\n', { mode: 0o755 });
-  const previousPath = process.env.PATH;
-  process.env.PATH = tools + delimiter + previousPath;
-  t.after(() => { process.env.PATH = previousPath; });
+  // Initialization and validation need version discovery, not a live Docker daemon.
+  const supportedDocker = join(temp, 'supported docker');
+  await mkdir(supportedDocker);
+  await writeFile(join(supportedDocker, 'docker'), '#!/bin/sh\nif [ "$1" = "compose" ] && [ "$2" = "version" ]; then echo 2.40.3; elif [ "$1" = "version" ]; then echo 29.0.0; else exit 1; fi\n', { mode: 0o755 });
+  const supportedEnv = { ...process.env, PATH: `${supportedDocker}:${process.env.PATH}` };
+  const command = (bin, args, cwd, env = supportedEnv) => runCommand(bin, args, cwd, env);
   const packed = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp], { cwd: root, encoding: 'utf8' });
   assert.equal(packed.status, 0, packed.stderr);
   const filename = JSON.parse(packed.stdout)[0].filename;

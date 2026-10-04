@@ -451,6 +451,8 @@ async function installFakeDocker(dir, containerId = "container-new", options = {
   const logPath = path.join(dir, "docker-calls.jsonl");
   const dockerPath = path.join(fakeBinDir, "docker");
   await mkdir(fakeBinDir, { recursive: true });
+  // This executable uses require even when TMPDIR is inside this ESM repository.
+  await writeFile(path.join(fakeBinDir, "package.json"), '{"type":"commonjs"}\n');
   await writeFile(
     dockerPath,
     `#!/usr/bin/env node
@@ -1129,6 +1131,8 @@ test("sporades deploy --json bundles and starts a container session", async () =
     await chmod(path.join(dataDir, "uploads"), 0o755);
     await chmod(path.join(dataDir, "data.db"), 0o644);
     await chmod(path.join(dataDir, "uploads", "file.bin"), 0o644);
+    const initialDataDir = await stat(dataDir);
+    const initialDatabase = await stat(path.join(dataDir, "data.db"));
     const docker = await installFakeDocker(dir, "container-first");
 
     const deployResult = await runCli(["deploy", "--port", "4321", "--json"], {
@@ -1212,10 +1216,10 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assert.equal(preparedUploadsDir.mode & 0o777, 0o700);
     assert.equal(preparedDatabase.mode & 0o777, 0o600);
     assert.equal(preparedUpload.mode & 0o777, 0o600);
-    assert.equal(preparedDataDir.uid, process.getuid());
-    assert.equal(preparedDataDir.gid, process.getgid());
-    assert.equal(preparedDatabase.uid, process.getuid());
-    assert.equal(preparedDatabase.gid, process.getgid());
+    assert.equal(preparedDataDir.uid, initialDataDir.uid);
+    assert.equal(preparedDataDir.gid, initialDataDir.gid);
+    assert.equal(preparedDatabase.uid, initialDatabase.uid);
+    assert.equal(preparedDatabase.gid, initialDatabase.gid);
 
     const statusResult = await runCli(["deploy", "status", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(statusResult.code, 0, statusResult.stderr);
@@ -1393,6 +1397,8 @@ test("sporades deploy does not require changing local runtime data ownership", a
     await mkdir(path.join(dataDir, "uploads"), { recursive: true });
     await writeFile(path.join(dataDir, "data.db"), "sqlite bytes\n");
     await writeFile(path.join(dataDir, "uploads", "file.bin"), "uploaded bytes\n");
+    const initialDataDir = await stat(dataDir);
+    const initialDatabase = await stat(path.join(dataDir, "data.db"));
     const docker = await installFakeDocker(dir, "container-first");
 
     const deployResult = await runCli(["deploy", "--json"], {
@@ -1410,10 +1416,10 @@ test("sporades deploy does not require changing local runtime data ownership", a
     const preparedDatabase = await stat(path.join(dataDir, "data.db"));
     assert.equal(preparedDataDir.mode & 0o777, 0o700);
     assert.equal(preparedDatabase.mode & 0o777, 0o600);
-    assert.equal(preparedDataDir.uid, process.getuid());
-    assert.equal(preparedDataDir.gid, process.getgid());
-    assert.equal(preparedDatabase.uid, process.getuid());
-    assert.equal(preparedDatabase.gid, process.getgid());
+    assert.equal(preparedDataDir.uid, initialDataDir.uid);
+    assert.equal(preparedDataDir.gid, initialDataDir.gid);
+    assert.equal(preparedDatabase.uid, initialDatabase.uid);
+    assert.equal(preparedDatabase.gid, initialDatabase.gid);
   });
 });
 
