@@ -50,6 +50,8 @@ const TEAM_RUNTIME_TABLES = [
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-dev-"));
+  // Scratch CommonJS helpers must not inherit an enclosing checkout's ESM scope.
+  await writeFile(path.join(dir, "package.json"), '{"type":"commonjs"}\n');
   try {
     return await fn(dir);
   } finally {
@@ -294,6 +296,7 @@ async function installFakeDocker(dir) {
   const logPath = path.join(dir, "docker-calls.jsonl");
   const dockerPath = path.join(fakeBinDir, "docker");
   await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(path.join(fakeBinDir, "package.json"), '{"type":"commonjs"}\n');
   await writeFile(
     dockerPath,
     `#!/usr/bin/env node
