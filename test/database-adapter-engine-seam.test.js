@@ -163,6 +163,7 @@ const MIGRATED_RUNTIME_MODULES = [
   { file: "client-address.js", atLeast: 4, sentinel: "parseAddress" },
   { file: "bounded-fixed-window.js", atLeast: 0, sentinel: "createBoundedFixedWindow" },
   { file: "admission-rate-limit.js", atLeast: 0, sentinel: "createAdmissionRateLimiter" },
+  { file: "admission-evidence.js", atLeast: 1, sentinel: "inspectAdmissionHealth" },
   { file: "deploy-files.js", atLeast: 15, sentinel: "readBoundedDeployFile" },
   // The monolith. `sendJsonWithCompletion` is the sentinel: the WebSocket transport's one write path
   // that reports when the frame actually reached the socket, which every subscription rebroadcast

@@ -2862,9 +2862,12 @@ async function createDevRuntime(options) {
         return attached.attached;
     };
     let database;
-    const reportAdmissionHealth = (health) => {
+    const reportAdmissionHealth = (health, event = "loaded") => {
         try {
-            database?.log.emit({ category: "platform", event: health.state === "degraded" ? "admission.policy.degraded" : "admission.policy.loaded", level: health.state === "degraded" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+            if (database)
+                database.log.emit({ category: "platform", event: `admission.policy.${event}`, level: event === "failure" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
+            else if (event === "failure")
+                process.stderr.write(JSON.stringify({ event: "admission.policy.failure", data: health }) + "\n");
         }
         catch { /* Policy diagnostics never interrupt runtime work. */ }
     };
@@ -2902,9 +2905,9 @@ async function createDevRuntime(options) {
             let nextAdmission = admissionPolicy;
             if (changed) {
                 nextAdmission = null;
-                nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, health => {
-                    if (nextAdmission && nextAdmission === admissionPolicy)
-                        reportAdmissionHealth(health);
+                nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health, event) => {
+                    if (event === "failure" || (nextAdmission && nextAdmission === admissionPolicy))
+                        reportAdmissionHealth(health, event);
                 }) : null;
             }
             try {

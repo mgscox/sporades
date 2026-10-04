@@ -1428,6 +1428,54 @@ meeting the ten-second update target under normal scheduling. The Host-authentic
 runtime-health response adds `data.runtime.admissionPolicy` with `state`
 (`healthy`, `degraded`, `disabled`), active SHA-256 `digest` or `null`, and
 `rateLimit: { buckets, maxBuckets, evictions }` aggregate local quota diagnostics.
-Platform reload events report only state and digest on load, degradation and recovery.
-They contain no rule or match values. No declaration adds no loader, policy
-fields or policy logs. See [the authority ADR](../adr/0054-request-admission-policy-is-deployer-owned.md).
+It also adds `evidence.version: 1` with fixed aggregate `counters`: `evaluated`,
+`admitted`, `denied` (opaque 403), `rateLimited` (opaque 429), `reloadFailures`,
+`reloadRecoveries`, `limiterEvictions`, `decisionsEmitted` and
+`decisionsSuppressed`. Counters are unsigned 64-bit **decimal strings**, exact
+through `18446744073709551615`; reaching the ceiling retains that value and a
+subsequent increment sets `saturated: true`. They never wrap or silently lose
+precision. Totals and sampling reset on process restart, survive hot policy
+changes and explicit removal, and have no per-client or per-rule dimensions.
+Each evaluated active generation, including an empty policy, has exactly one
+admitted/denied/rate-limited outcome. Removal disables evaluation; genuine
+reserved GET controls never count. HTTP and pre-switch WebSocket admission
+use the same accounting and quota buckets. Limiter eviction counts capacity
+evictions, excluding ordinary window expiry and reload reconciliation.
+
+Platform `admission.decision` events are sampled: at most **20 attempts per
+60,000 monotonic milliseconds**, and at most one per stable rule ID/outcome pair
+in that window. A process retains at most **20 sample keys**, even across
+generation churn; address, route, headers and query values never form a sample
+key. Suppression increments its exact aggregate total without allocating a log
+event. Sink failures cannot alter decisions and still consume the sample budget.
+Samples contain only the validated rule ID or `null`, action or `null`, closed
+outcome, active digest, session kind (`dev`, `public-dev`, `container`, `hosted`),
+transport (`http`, `websocket`) and route class (`ordinary`, `capsule-transport`,
+`invalid`). Route class never contains a pathname. No address fingerprint is
+emitted in v1; client addresses and all match values are omitted entirely.
+
+`admission.policy.loaded`, `admission.policy.failure` and
+`admission.policy.recovery` events carry redacted health/digest/counters.
+Every failed load attempt and recovery bypass decision sampling, including a
+cold failure before the runtime logger exists (redacted stderr JSON). Concurrent
+reload calls coalesce into one load; normal polling is once per two seconds.
+A hot failure retains the complete last-known-good digest while reporting
+`degraded` (or retains the disabled state after explicit removal). Successful load or explicit removal after degradation increments
+`reloadRecoveries` and emits recovery.
+
+`sporades doctor --session dev|public-dev|container|hosted --json` reports the
+active snapshot under the corresponding `doctor.<session>.admission-policy`
+check (`public-dev` uses `dev`). Degradation, unavailable inspection or a legacy
+runtime without v1 counters is a warning;
+`--strict` makes warnings fail. Text doctor includes digest and totals too.
+`sporades host stats <subname> --json` adds `data.admissionPolicy` for a Capsule
+whose release declares policy storage, using an authenticated probe inside the
+bound container; `null` means evidence could not be read and resource stats
+remain available. Hosted health carries the snapshot in `data.runtime`.
+Operator surfaces allowlist fields and validate bounded strings/counters even
+when a runtime supplies extra fields. They expose no raw addresses, matched
+header/query values, raw query strings, credentials, bodies or proxy headers.
+These are read-only extensions of existing commands, with no new dashboard,
+public evidence route or Capsule API. No declaration adds no loader, policy
+fields, inspection check or policy logs. See
+[the authority ADR](../adr/0054-request-admission-policy-is-deployer-owned.md).
