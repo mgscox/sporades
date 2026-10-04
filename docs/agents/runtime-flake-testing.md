@@ -46,3 +46,9 @@ Keep expiry assertions tied to these lifecycle boundaries. Cold module loading,
 worker startup and child process scheduling can legitimately exceed an inspection
 deadline under load; their speed must not decide whether the test's fixture is
 accepted. Production inspection retains its two-second fail-closed deadline.
+
+The ten-round stress run also exposed the ClamAV health/shutdown fixture's real
+five-millisecond cleanup budget. That fixture now uses its existing clock/delay
+seam while keeping child exit events asynchronous; scheduler delays no longer
+consume its synthetic SIGTERM/SIGKILL budget. Runtime termination behavior is
+unchanged.
