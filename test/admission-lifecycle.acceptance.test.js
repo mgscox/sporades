@@ -133,7 +133,8 @@ async function fixture(root, session, declared = true) {
   const env = { PORT: native ? '0' : '5688', PROOF_DATA_DIR: native ? data : '/app/data',
     PROOF_POLICY_FILE: native ? target : '/run/sporades-admission/' + path.basename(target),
     SPORADES_RUNTIME_PROBE_TOKEN: probe, SPORADES_CONFIG_DIR: config, SPORADES_LOG_STDOUT: '1',
-    ...(!native ? { SPORADES_SECURITY_SESSION: session } : {}),
+    SPORADES_SECURITY_SESSION: native ? 'dev' : session,
+    SPORADES_ADMISSION_POLICY_PATH: declared ? (native ? path.basename(target) : 'policy.json') : '',
   };
   async function start() {
     if (native) {
