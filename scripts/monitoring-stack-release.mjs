@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { mkdtemp, cp, readFile, writeFile, rm, mkdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { ASSETS, STACK_SCHEMA } from '../dist/cli/monitoring-stack.js';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,11 +16,12 @@ const basename = `sporades-monitoring-trace-${version}`;
 try {
   const directory = join(temporary, basename);
   await mkdir(directory);
-  for (const name of ['.dockerignore', '.env.example', 'Dockerfile.gateway', 'README.md', 'collector.yaml', 'compose.yaml', 'gateway.mjs', 'sender-credentials.mjs', 'inventory-contract.mjs', 'inventory-store.mjs', 'inventory.mjs', 'jaeger.yaml', 'prometheus.yaml', 'grafana-datasource.yaml', 'grafana-dashboard-provider.yaml', 'api-dashboard.json', 'resource-dashboard.json', 'host-dashboard.json', 'caddy-dashboard.json', 'pipeline-dashboard.json', 'pipeline-rules.yaml', 'collector-persistent.yaml', 'compose.queue.yaml', 'OUTAGES.md', 'setup.mjs', 'smoke.mjs']) {
-    await cp(join(source, name), join(directory, name));
+  const assets = {};
+  for (const name of ASSETS) {
+    await cp(join(source, name === '.gitignore' ? 'gitignore.template' : name), join(directory, name));
+    assets[name] = createHash('sha256').update(await readFile(join(directory, name))).digest('hex');
   }
-  await cp(join(source, 'gitignore.template'), join(directory, '.gitignore'));
-  await writeFile(join(directory, 'stack-manifest.json'), `${JSON.stringify({ schemaVersion: 3, packageVersion: version }, null, 2)}\n`);
+  await writeFile(join(directory, 'stack-manifest.json'), `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version, assets }, null, 2)}\n`);
   const packed = spawnSync('tar', ['-czf', output, '-C', temporary, basename], { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } });
   if (packed.status !== 0) throw new Error(packed.stderr.trim() || 'tar failed');
   process.stdout.write(`${output}\n`);

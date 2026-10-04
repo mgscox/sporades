@@ -62,6 +62,7 @@ export default defineConfig({
           { text: "Client, auth, and preferences", link: "/reference/client-auth-and-preferences" },
           { text: "Files and realtime", link: "/reference/files-and-realtime" },
           { text: "Operations and hosting", link: "/reference/operations-and-hosting" },
+          { text: "Monitoring maintenance", link: "/reference/monitoring-maintenance" },
           { text: "Sender credentials", link: "/reference/sender-credentials" },
           { text: "Architecture", link: "/architecture" },
           { text: "Runtime layout", link: "/runtime-layout" },

@@ -1,3 +1,6 @@
+export declare const STACK_SCHEMA = 4;
+export declare const ASSETS: string[];
+export declare function prerequisite(): void;
 export declare function runMonitoringStack(action: 'init' | 'validate', directory: string, packageRoot: string): Promise<{
     path: string;
     schemaVersion: number;
