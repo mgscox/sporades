@@ -66,7 +66,12 @@ capacity eviction counts in protected health. Compatible IDs/parameters retain
 state across reload; disabling/removal/parameter changes clear affected state,
 and process restart resets it. Boundary bursts and independent replica quotas
 are deliberate v1 limits. Missing identity takes the existing opaque 403 path.
-The remaining matchers and WebSocket upgrades are later slices.
+Issue #70 applies the same generation snapshot and trusted request attributes to
+WebSocket upgrades before protocol switching, including `/__sporades/ws` Capsule
+traffic. Denials return the ordinary opaque pre-switch HTTP response; quotas share
+HTTP buckets. Nonmatching requests retain handshake and application transport
+behavior. Reserved GET controls have no WebSocket transport and are rejected
+without consulting policy or counting quota buckets.
 
 ## Consequences
 

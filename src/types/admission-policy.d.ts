@@ -1,4 +1,6 @@
-/** Deployer-owned JSON policy. HTTP conditions use AND and ordered first-match denial/quotas.
+/** Deployer-owned JSON policy. HTTP and pre-switch WebSocket upgrades share one generation,
+ * AND conditions and ordered first-match denial/quotas, including /__sporades/ws Capsule traffic.
+ * Reserved GET controls have no WebSocket transport and never count quota buckets.
  * Methods are uppercase ASCII; paths decode once and normalize dot segments, prefixes follow segment boundaries.
  * Header names are lowercase non-sensitive tokens; values have no outer whitespace. Presence accepts duplicates;
  * exact values require one raw occurrence (ambiguous duplicates fail closed). Query keys decode once, case-sensitively.
