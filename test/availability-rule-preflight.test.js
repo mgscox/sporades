@@ -33,3 +33,15 @@ test('Docker daemon permission errors are not classified as source traversal fai
     throw Object.assign(new Error('private diagnostic'), { stderr: 'permission denied while trying to connect to the Docker daemon socket' });
   } }), error => error.code === 'AVAILABILITY_RULE_PREFLIGHT_FAILED' && !/mode-0700/.test(error.message));
 });
+
+test('promtool missing-rule warning identifies source visibility without guessing permissions', async () => {
+  await assert.rejects(verifyAvailabilityRules({ repo: '/source', project: 'qa-preflight', run: async () => {
+    throw Object.assign(new Error('private diagnostic'), { code: 1, stderr: 'WARNING: no file match pattern ../../monitoring/trace/availability-rules.yaml\nFAILED:' });
+  } }), error => {
+    assert.equal(error.code, 'AVAILABILITY_RULE_PREFLIGHT_SOURCE');
+    assert.match(error.message, /missing|unreadable/);
+    assert.match(error.message, /mode-0700/);
+    assert(!error.message.includes('private diagnostic'));
+    return true;
+  });
+});

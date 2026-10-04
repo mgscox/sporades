@@ -116,7 +116,7 @@ try {
   console.log(`Availability Docker acceptance passed: probe notification in ${elapsed} ms, recovery and absence observed.`);
 } catch (error) {
   notificationTimeline.failure = error.message;
-  if (error.code?.startsWith('AVAILABILITY_RULE_PREFLIGHT_')) notificationTimeline.events.push({ phase: 'rule-preflight', result: 'failed', code: error.code });
+  if (typeof error.code === 'string' && error.code.startsWith('AVAILABILITY_RULE_PREFLIGHT_')) notificationTimeline.events.push({ phase: 'rule-preflight', result: 'failed', code: error.code });
   throw error;
 } finally {
   for (const [key, file] of [['recovered', 'recovered.json'], ['deliveries', 'deliveries.jsonl']]) {

@@ -135,8 +135,10 @@ Before starting the disposable stack, the drill runs pinned `promtool` as the
 image’s default non-root user against a read-only source mount. That user must
 be able to traverse the mounted source directory and read
 `test/fixtures/availability-rules.test.yaml` and its referenced rules. A source
-root with mode 0700 can therefore fail with `Permission denied` before any stack
-is launched. This is a failed rule preflight, not a notification-delivery result.
+root with mode 0700 can therefore produce a `no file match pattern` warning
+or `Permission denied` before any stack is launched. A missing-rule warning
+identifies a source-visibility failure; check readability and the rule path to
+distinguish permissions from a missing file. This is a failed rule preflight, not a notification-delivery result.
 The failure and its stage code are retained in the per-run timeline.
 
 Use a separate disposable checkout containing no credentials or operator data
