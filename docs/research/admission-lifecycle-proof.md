@@ -1,10 +1,13 @@
 # Container and Hosted admission lifecycle proof
 
-Status: **ready for human verification; incomplete**. Issue #72 closed on
-2026-10-04. The prerequisite is available, but #73's deployed acceptance has not
-passed. Keep the implementation PR in draft until the remaining checks below
-have evidence. Native generated-runtime checks are useful driver validation;
-they are not Docker, mounted-policy or Caddy acceptance.
+Status: **Hosted acceptance ready for human verification; #73 incomplete**.
+Issue #72 closed on 2026-10-04. The harness PR has a separate local Docker merge
+gate: keep PR #221 in draft until the committed Docker runner exits 0 with
+`runtime-boundary-passed`, both Container and Hosted fixture reports passing,
+and confirmed cleanup of every owned resource. Then make the harness PR ready
+for QA and merge; deferred actual Hosted checks below remain under open issue
+#73. Native generated-runtime checks validate the driver; they do not satisfy
+the local Docker gate or actual Host/Caddy acceptance.
 
 ## Reproducible local checks
 
@@ -183,8 +186,11 @@ controlled trust chain, but that runner is still unexecuted.
    Retain generated source parity, source gate-budget result and measured network
    timings; do not apply the 1 microsecond gate budget to network round trips.
 8. Record pass/fail for every row, exact commit/image IDs, digests, observations and
-   cleanup. Fix failures on the PR branch, rerun the full regression suite, and
-   request QA before making the draft mergeable. Keep #73 open until all rows pass.
+   cleanup under #73. Actual Hosted acceptance does not block the harness PR
+   once its local Docker merge gate passes. Fix harness failures on its branch
+   and rerun relevant checks before requesting QA; if the harness has merged,
+   track later fixes separately under #73. Close #73 only when all acceptance
+   rows have evidence, including the deferred actual Host/Caddy checks.
 
 Optional Cloudflare-origin tests are separate from mandatory acceptance. Record
 which account capabilities were actually used; do not assume paid managed or
