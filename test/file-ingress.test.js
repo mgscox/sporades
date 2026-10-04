@@ -2646,16 +2646,21 @@ test("ClamAV shutdown retains stubborn children for a later successful cleanup r
   assert.equal(timed.listenerCount("exit"), 0); assert.equal(timed.listenerCount("close"), 0); assert.equal(timed.listenerCount("error"), 0);
 });
 
-test("ClamAV health requires a bounded PING and shutdown awaits both managed children", async () => {
+test("ClamAV health requires a bounded PING and shutdown awaits both managed children", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-health-")); const socketPath = path.join(dir, "clamd.sock"); let commands = 0;
   const server = createNetServer((socket) => socket.once("data", (bytes) => { commands += 1; assert.equal(bytes.toString(), "zPING\0"); socket.end(Buffer.from(commands === 1 ? "BUSY\0" : "PONG\0")); })); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
   const child = (stuck = false) => { const listeners = new Map(); const signals = []; return { exitCode: null, signals, once(name, handler) { listeners.set(name, handler); }, kill(signal) { signals.push(signal); if (stuck && signal === "SIGTERM") return; this.exitCode = signal === "SIGKILL" ? null : 0; queueMicrotask(() => { this.exitCode = 0; listeners.get("exit")?.(0); }); } }; };
   try {
-    // Keep the queued child exits asynchronous, but drive the shutdown budget
-    // through the existing clock seam. A real 5 ms budget can expire while a
-    // loaded event loop waits to escalate the synthetic updater to SIGKILL.
+    // This fixture tests TERM/KILL and exit observation, not whether the OS can
+    // schedule two timer turns inside five milliseconds under suite load.
+    t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2030-01-01T00:00:00.000Z") });
     let now = Date.now();
-    const clamd = child(); const updater = child(true); const database = { clamavRequired: true, clamavReady: true, __clamavProcess: clamd, __clamavUpdateProcess: updater, __clamavTest: { socketPath, loadedSignature: "daily:1", terminateTimeoutMs: 5, now: () => now, delay: async (milliseconds) => { now += milliseconds; }, signature: { version: "daily:1", updatedAt: new Date(now).toISOString() } } };
+    // Wall time can advance after capturing the runtime clock. The signature
+    // must still describe that captured instant rather than appear future-dated.
+    t.mock.timers.tick(1);
+    assert.equal(Date.now() - now, 1);
+    const delay = milliseconds => new Promise(resolve => queueMicrotask(() => { now += milliseconds; resolve(); }));
+    const clamd = child(); const updater = child(true); const database = { clamavRequired: true, clamavReady: true, __clamavProcess: clamd, __clamavUpdateProcess: updater, __clamavTest: { socketPath, loadedSignature: "daily:1", terminateTimeoutMs: 5, now: () => now, delay, signature: { version: "daily:1", updatedAt: new Date(now).toISOString() } } };
     assert.deepEqual(await checkClamavRuntime(database), { ok: false }); assert.equal(database.clamavReady, false); assert.deepEqual(await checkClamavRuntime(database), { ok: true }); assert.equal(commands, 2); await shutdownClamavRuntime(database); assert.deepEqual(clamd.signals, ["SIGTERM"]); assert.deepEqual(updater.signals, ["SIGTERM", "SIGKILL"]); assert.equal(database.clamavReady, false); assert.equal(database.__clamavProcess, null); assert.equal(database.__clamavUpdateProcess, null);
     const external = { clamavRequired: true, clamavReady: true, __clamavDevSidecar: { process: child(), externallyManaged: true }, __clamavTest: { socketPath, loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } } }; assert.deepEqual(await checkClamavRuntime(external), { ok: true }); assert.equal(commands, 3);
   } finally { await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }

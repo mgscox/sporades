@@ -1,3 +1,4 @@
+import { reportHostAvailability } from "./host-availability.js";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, open, readFile, readdir, rename, rm } from "node:fs/promises";
@@ -171,6 +172,9 @@ export async function reconcileHostInventory(root) {
     if (!captured)
         return hostInventoryStatus(root);
     const { state, connection } = captured;
+    const relay = await readHostTelemetryConnection(root);
+    if (relay)
+        await reportHostAvailability({ host: state.desired.host, network: relay.network, capsules: state.desired.capsules });
     const { credential, caPem: ca } = connection;
     const body = JSON.stringify(state.desired);
     const result = await new Promise(resolve => {

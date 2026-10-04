@@ -4,5 +4,8 @@
 !inventory-store.mjs
 !inventory.mjs
 !Dockerfile.gateway
+!availability.mjs
+!blackbox-config.mjs
+!blackbox.yaml
 
 !sender-credentials.mjs

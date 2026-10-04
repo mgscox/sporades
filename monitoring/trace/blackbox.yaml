@@ -1,0 +1,19 @@
+modules:
+  sporades_application:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      body_size_limit: 1KB
+      valid_status_codes: [200]
+      follow_redirects: false
+      headers:
+        X-Sporades-Probe-Nonce: __NONCE__
+        Cache-Control: no-cache, no-store
+        Pragma: no-cache
+      fail_if_body_not_matches_regexp:
+        - '^sporades-application-probe-v1:[a-f0-9]{32}\n$'
+      fail_if_header_not_matches:
+        - header: Cache-Control
+          regexp: '^no-store$'
+          allow_missing: false

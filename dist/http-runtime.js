@@ -772,6 +772,16 @@ export async function handleFileHttpRoute(database, request, response, websocket
 }
 export async function routeRuntimeHealth(database, request, response) {
     const target = requestTarget({ url: String(request.url), method: request.method });
+    if (request.method === "GET" && target.pathname === "/__sporades/probe") {
+        const nonce = request.headers["x-sporades-probe-nonce"] ?? new URL(String(request.url), "http://localhost").searchParams.get("nonce");
+        if (typeof nonce !== "string" || !/^[a-f0-9]{16,64}$/.test(nonce)) {
+            writeNotFound(response);
+            return true;
+        }
+        response.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", pragma: "no-cache", vary: "X-Sporades-Probe-Nonce" });
+        response.end(`sporades-application-probe-v1:${nonce}\n`);
+        return true;
+    }
     if (request.method !== "GET" || target.pathname !== "/__sporades/health/runtime") {
         return false;
     }

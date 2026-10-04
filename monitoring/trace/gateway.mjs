@@ -2,6 +2,7 @@ import { createServer as createHttpServer, request as httpRequest } from 'node:h
 import { createServer as createHttpsServer } from 'node:https';
 import { readFileSync } from 'node:fs';
 import { timingSafeEqual, randomBytes } from 'node:crypto';
+import { createAvailabilityServer } from './availability.mjs';
 import { senderAuthorization } from './sender-credentials.mjs';
 import { createInventoryStore } from './inventory-store.mjs';
 import { inventoryHost, INVENTORY_MAX_BYTES, validateInventory, validateInventoryCredentials } from './inventory-contract.mjs';
@@ -261,7 +262,7 @@ export function createGateway(config, tls) {
     if (!same(auth, `${config.uiUser}:${config.uiPassword}`)) {
       res.writeHead(401, { 'www-authenticate': 'Basic realm="Sporades traces"' }); res.end(); return;
     }
-    proxyUi(req, res, req.url.startsWith('/grafana/') ? config.grafanaUrl : config.jaegerUrl, config.uiRequestDeadlineMs);
+    proxyUi(req, res, req.url.startsWith('/alertmanager/') ? config.alertmanagerUrl : req.url.startsWith('/grafana/') ? config.grafanaUrl : config.jaegerUrl, config.uiRequestDeadlineMs);
   };
   const gateway = tls ? createHttpsServer(tls, handler) : createHttpServer(handler);
   pipelines.set(gateway, pipeline);
@@ -285,14 +286,16 @@ if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
     jaegerUrl: 'http://jaeger:16686',
     prometheusUrl: 'http://prometheus:9090',
     grafanaUrl: 'http://grafana:3000',
+    alertmanagerUrl: 'http://alertmanager:9093',
     inventoryDirectory: '/inventory',
     senderDirectory: '/run/senders',
   }, tls);
   gateway.listen(8443, '0.0.0.0');
+  const availability = createAvailabilityServer({ inventoryDirectory: '/inventory', blackboxDirectory: '/blackbox', blackboxReloadUrl: 'http://blackbox:9115/-/reload' }).listen(9091, '0.0.0.0');
   const metrics = createGatewayMetrics(gateway).listen(8889, '0.0.0.0');
   process.once('SIGTERM', () => {
-    const deadline = setTimeout(() => { gateway.closeAllConnections(); metrics.closeAllConnections(); process.exit(0); }, 2000);
+    const deadline = setTimeout(() => { gateway.closeAllConnections(); metrics.closeAllConnections(); availability.closeAllConnections(); process.exit(0); }, 2000);
     deadline.unref();
-    Promise.all([gateway, metrics].map(server => new Promise(resolve => server.close(resolve)))).then(() => { clearTimeout(deadline); process.exit(0); });
+    Promise.all([gateway, metrics, availability].map(server => new Promise(resolve => server.close(resolve)))).then(() => { clearTimeout(deadline); process.exit(0); });
   });
 }

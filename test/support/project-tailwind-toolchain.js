@@ -12,6 +12,7 @@ const TAILWIND_TOOLCHAIN_PACKAGES = [
 export async function installProjectTailwindToolchain(projectDir, repoRoot) {
   const nodeModules = path.join(projectDir, "node_modules");
   await mkdir(nodeModules, { recursive: true });
+  // Keep the fixture usable on the platform running the suite, including Docker.
   const nativePackages = (await readdir(path.join(repoRoot, "node_modules")))
     .filter((name) => name.startsWith("lightningcss-"));
   const copies = await Promise.allSettled([...TAILWIND_TOOLCHAIN_PACKAGES, ...nativePackages].map(async (packageName) => {

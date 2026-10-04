@@ -1,0 +1,42 @@
+{
+  "codeCommit": "723eaa5a3d161a1c9fb01bba57a5628a47bfb413",
+  "mergedMain": "e9c635e6f422f9b45d6e72a85aa15332910f4874",
+  "node": "v24.19.0",
+  "fullSuite": {
+    "tests": 3166,
+    "passed": 2942,
+    "failed": 0,
+    "skipped": 224,
+    "cancelled": 0,
+    "exitCode": 0,
+    "durationMs": 1588483.950583
+  },
+  "tempRoot": {
+    "mode": "0700",
+    "uid": 501,
+    "gid": 20
+  },
+  "focusedChecks": {
+    "passed": 15,
+    "failed": 0
+  },
+  "liveParityRepetitions": {
+    "runs": 5,
+    "passed": 5,
+    "failed": 0
+  },
+  "initialDiagnosticRepetitions": {
+    "runs": 5,
+    "passed": 15,
+    "failed": 0
+  },
+  "finalPreflightCases": {
+    "passed": 4,
+    "failed": 0
+  },
+  "earlierFullAttempt": {
+    "result": "interrupted intentionally to include exact QA warning regression",
+    "exitCode": 130
+  },
+  "freshAuthorDockerDrill": "not run; round-nine QA Docker evidence retained separately"
+}

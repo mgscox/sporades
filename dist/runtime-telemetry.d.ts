@@ -8,6 +8,7 @@ export type RuntimeTelemetryConfig = {
         caFile?: string;
     };
     credentialEnv?: string;
+    /** Stable Capsule identity; preserve the full Hosted domain/subname. */
     serviceName: string;
     samplingRatio?: number;
     environment?: "dev" | "container" | "hosted";
