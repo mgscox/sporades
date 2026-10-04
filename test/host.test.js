@@ -108,7 +108,7 @@ async function withTempDir(fn) {
 async function withHttpServer(handler, fn) {
   const server = createServer(handler);
   await new Promise((resolve) => {
-    server.listen(0, "::1", resolve);
+    server.listen(0, "127.0.0.1", resolve);
   });
   try {
     return await fn(server.address().port);
@@ -172,7 +172,7 @@ test("connection-token refresh route returns a fresh no-store browser gate", asy
     response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     response.end("Not found");
   }, async (port) => {
-    const baseUrl = `http://[::1]:${port}`;
+    const baseUrl = `http://127.0.0.1:${port}`;
     const refreshHeaders = { "x-sporades-connection-token-request": "1" };
     const first = await fetch(new URL("/__sporades/connection-token", baseUrl), { headers: refreshHeaders });
     assert.equal(first.status, 200);
@@ -216,7 +216,7 @@ test("conditional token checks preserve live gates and TTL while enforcing refre
       if (routeConnectionToken(request, response, (current) => { calls += 1; return hub.createConnectionToken(current); })) return;
       response.writeHead(404); response.end();
     }, async (port) => {
-      const url = `http://[::1]:${port}/__sporades/connection-token`;
+      const url = `http://127.0.0.1:${port}/__sporades/connection-token`;
       const headers = { "x-sporades-connection-token-request": "1", "x-sporades-connection-token": token };
       now += 3 * 60 * 60 * 1000;
       const valid = await fetch(url, { headers });
@@ -646,11 +646,17 @@ async function writeHostProfileConfig(configDir, config) {
   await writeFile(path.join(configDir, "hosts.json"), `${JSON.stringify(config, null, 2)}\n`);
 }
 
+async function prepareFakeBin(fakeBinDir) {
+  await mkdir(fakeBinDir, { recursive: true });
+  // Node fixtures use require independently of the surrounding project module mode.
+  await writeFile(path.join(fakeBinDir, "package.json"), '{"type":"commonjs"}\n');
+}
+
 async function installFakeSsh(dir) {
   const fakeBinDir = path.join(dir, "fake-bin");
   const logPath = path.join(dir, "ssh-calls.jsonl");
   const sshPath = path.join(fakeBinDir, "ssh");
-  await mkdir(fakeBinDir, { recursive: true });
+  await prepareFakeBin(fakeBinDir);
   await writeFile(
     sshPath,
     `#!/usr/bin/env node
@@ -677,7 +683,7 @@ async function installFakeShellSsh(dir) {
   const fakeBinDir = path.join(dir, "fake-shell-ssh-bin");
   const logPath = path.join(dir, "ssh-shell-calls.jsonl");
   const sshPath = path.join(fakeBinDir, "ssh");
-  await mkdir(fakeBinDir, { recursive: true });
+  await prepareFakeBin(fakeBinDir);
   await writeFile(
     sshPath,
     `#!/usr/bin/env node
@@ -708,8 +714,8 @@ async function installContractFakeSsh(dir, scriptBody) {
   const logPath = path.join(dir, "ssh-contract-calls.jsonl");
   const sshPath = path.join(fakeBinDir, "ssh");
   const helperPath = path.join(fakeRemoteDir, "sporades-host-helper");
-  await mkdir(fakeBinDir, { recursive: true });
-  await mkdir(fakeRemoteDir, { recursive: true });
+  await prepareFakeBin(fakeBinDir);
+  await prepareFakeBin(fakeRemoteDir);
   await writeFile(
     helperPath,
     `#!/usr/bin/env node
@@ -768,7 +774,7 @@ async function installFakeScp(dir) {
   const logPath = path.join(dir, "scp-calls.jsonl");
   const uploadDir = path.join(dir, "fake-uploads");
   const scpPath = path.join(fakeBinDir, "scp");
-  await mkdir(fakeBinDir, { recursive: true });
+  await prepareFakeBin(fakeBinDir);
   await mkdir(uploadDir, { recursive: true });
   await writeFile(
     scpPath,
@@ -805,7 +811,7 @@ async function installFakeDocker(dir, options = {}) {
   const caddyLogPath = path.join(dir, "caddy-calls.jsonl");
   const dockerPath = path.join(fakeBinDir, "docker");
   const caddyPath = path.join(fakeBinDir, "caddy");
-  await mkdir(fakeBinDir, { recursive: true });
+  await prepareFakeBin(fakeBinDir);
   await writeFile(
     dockerPath,
     `#!/usr/bin/env node
@@ -941,7 +947,7 @@ async function installFakeCaddy(dir, options = {}) {
   const fakeBinDir = path.join(dir, "fake-caddy-bin");
   const logPath = path.join(dir, "caddy-calls.jsonl");
   const caddyPath = path.join(fakeBinDir, "caddy");
-  await mkdir(fakeBinDir, { recursive: true });
+  await prepareFakeBin(fakeBinDir);
   await writeFile(
     caddyPath,
     `#!/usr/bin/env node
@@ -981,7 +987,7 @@ async function installFakeJournalctl(dir, options = {}) {
   const fakeBinDir = path.join(dir, "fake-journalctl-bin");
   const logPath = path.join(dir, "journalctl-calls.jsonl");
   const journalctlPath = path.join(fakeBinDir, "journalctl");
-  await mkdir(fakeBinDir, { recursive: true });
+  await prepareFakeBin(fakeBinDir);
   await writeFile(
     journalctlPath,
     `#!/usr/bin/env node
@@ -1013,7 +1019,7 @@ async function installFakeCaddyUserCommands(dir, options = {}) {
   const chownLogPath = path.join(dir, "chown-calls.jsonl");
   const idPath = path.join(fakeBinDir, "id");
   const chownPath = path.join(fakeBinDir, "chown");
-  await mkdir(fakeBinDir, { recursive: true });
+  await prepareFakeBin(fakeBinDir);
   await writeFile(
     idPath,
     `#!/usr/bin/env node
@@ -1402,8 +1408,13 @@ async function writePublicRuntimeFiles(runtimeDir) {
 
 async function createTarGz(archivePath, sourceDir, entries) {
   const result = await new Promise((resolve) => {
-    // Fixtures model production archives, which exclude automatic macOS metadata.
-    const child = spawn("tar", ["-czf", archivePath, "-C", sourceDir, ...entries], { env: { ...process.env, COPYFILE_DISABLE: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    // Preserve explicitly supplied hostile entries, but omit incidental macOS xattrs.
+    // GNU tar otherwise encodes a duplicate file argument as a hard link.
+    const regularFileArgs = process.platform === "linux" ? ["--hard-dereference", "--absolute-names"] : [];
+    const child = spawn("tar", ["-czf", archivePath, ...regularFileArgs, "-C", sourceDir, ...entries], {
+      env: { ...process.env, COPYFILE_DISABLE: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -1420,10 +1431,15 @@ async function createTarGz(archivePath, sourceDir, entries) {
 }
 
 async function createTarGzWithTransforms(archivePath, sourceDir, transforms, entries) {
-  const args = ["-czf", archivePath, "-C", sourceDir, ...transforms.flatMap((rule) => ["-s", rule]), ...entries];
+  const transformArgs = transforms.flatMap((rule) => process.platform === "darwin"
+    ? ["-s", rule]
+    : ["--transform", `s${rule}`]);
+  const args = ["-czf", archivePath, ...(process.platform === "linux" ? ["--absolute-names"] : []), "-C", sourceDir, ...transformArgs, ...entries];
   const result = await new Promise((resolve) => {
-    // Explicit transformed metadata entries remain available to rejection tests.
-    const child = spawn("tar", args, { env: { ...process.env, COPYFILE_DISABLE: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("tar", args, {
+      env: { ...process.env, COPYFILE_DISABLE: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stderr = "";
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("close", (code) => resolve({ code, stderr }));
