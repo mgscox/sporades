@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { openAdmissionPolicy, type AdmissionHealth, type AdmissionReloadEvent, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
+import { createAdmissionEvidence } from "../admission-evidence.js";
 import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
 import { validateAliasDomains } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
@@ -3119,12 +3120,13 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
   const reportAdmissionHealth = (health: AdmissionHealth, event: AdmissionReloadEvent = "loaded") => {
     try {
       if (database) database.log.emit({ category: "platform", event: `admission.policy.${event}`, level: event === "failure" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
-      else if (event === "failure") process.stderr.write(JSON.stringify({ event: "admission.policy.failure", data: health }) + "\n");
+      else if (event === "failure" || event === "recovery") process.stderr.write(JSON.stringify({ event: `admission.policy.${event}`, data: health }) + "\n");
     }
     catch { /* Policy diagnostics never interrupt runtime work. */ }
   };
   let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
-  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
+  const admissionEvidence = createAdmissionEvidence();
+  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth, { evidence: admissionEvidence }) : null;
   try {
   database = await openDevDatabase(
     options.databasePath,
@@ -3160,8 +3162,8 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
       if (changed) {
         nextAdmission = null;
         nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health, event) => {
-          if (event === "failure" || (nextAdmission && nextAdmission === admissionPolicy)) reportAdmissionHealth(health, event);
-        }) : null;
+          if (event === "failure" || event === "recovery" || (nextAdmission && nextAdmission === admissionPolicy)) reportAdmissionHealth(health, event);
+        }, { evidence: admissionEvidence }) : null;
       }
       try {
       const nextDatabase: any = await openDevDatabase(

@@ -59,8 +59,8 @@ let admissionLog;
 const admissionPolicyRuntime = admissionPath ? await openAdmissionPolicy(admissionDeployed ? "/run/sporades-admission" : process.cwd(), admissionDeployed ? path.basename(preservedDeployFilePath("/run/sporades-admission", admissionPath)) : admissionPath, (health, event) => {
     if (admissionLog)
         admissionLog(health, event);
-    else if (event === "failure")
-        process.stderr.write(JSON.stringify({ event: "admission.policy.failure", data: health }) + "\n");
+    else if (event === "failure" || event === "recovery")
+        process.stderr.write(JSON.stringify({ event: `admission.policy.${event}`, data: health }) + "\n");
 }) : null;
 const sporadesCapsuleModule = sporadesAction ? null : await import(sporadesCapsuleModuleUrl);
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;

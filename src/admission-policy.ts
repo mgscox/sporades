@@ -185,8 +185,9 @@ export async function publishAdmissionPolicy(root: string, relative: string, byt
   } finally { await output?.close(); await rm(path.join(anchored, temporary), { force: true }); await handle.close(); }
 }
 export type AdmissionReloadEvent = "loaded" | "failure" | "recovery";
-export async function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth, event: AdmissionReloadEvent) => void, limiterOptions: Parameters<typeof createAdmissionRateLimiter>[0] = {}) {
-  const evidence = createAdmissionEvidence(limiterOptions.now);
+export async function openAdmissionPolicy(root: string, relative: string, onHealth?: (health: AdmissionHealth, event: AdmissionReloadEvent) => void, options: Parameters<typeof createAdmissionRateLimiter>[0] & { evidence?: ReturnType<typeof createAdmissionEvidence> } = {}) {
+  // A Dev session owns evidence across loader replacement. Quota state remains loader-owned.
+  const { evidence = createAdmissionEvidence(options.now), ...limiterOptions } = options;
   const rateLimiter = createAdmissionRateLimiter({ ...limiterOptions, onEviction: () => evidence.count("limiterEvictions") });
   let active: AdmissionGeneration | null = null;
   let health: AdmissionHealth = Object.freeze({ state: "disabled", digest: null });

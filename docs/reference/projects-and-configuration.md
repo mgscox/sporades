@@ -1436,6 +1436,10 @@ through `18446744073709551615`; reaching the ceiling retains that value and a
 subsequent increment sets `saturated: true`. They never wrap or silently lose
 precision. Totals and sampling reset on process restart, survive hot policy
 changes and explicit removal, and have no per-client or per-rule dimensions.
+Within one Dev process, runtime replacement, policy-path changes and disabling
+then re-enabling `admissionPolicy` retain all totals and the current sample budget.
+While disabled, inspection omits policy fields and requests do not count;
+re-enabling exposes the retained evidence with the newly loaded policy digest.
 Each evaluated active generation, including an empty policy, has exactly one
 admitted/denied/rate-limited outcome. Removal disables evaluation; genuine
 reserved GET controls never count. HTTP and pre-switch WebSocket admission
@@ -1457,7 +1461,8 @@ emitted in v1; client addresses and all match values are omitted entirely.
 `admission.policy.loaded`, `admission.policy.failure` and
 `admission.policy.recovery` events carry redacted health/digest/counters.
 Every failed load attempt and recovery bypass decision sampling, including a
-cold failure before the runtime logger exists (redacted stderr JSON). Concurrent
+cold failure and hot failure/recovery during slow Capsule initialization before
+the runtime logger exists (redacted stderr JSON). Concurrent
 reload calls coalesce into one load; normal polling is once per two seconds.
 A hot failure retains the complete last-known-good digest while reporting
 `degraded` (or retains the disabled state after explicit removal). Successful load or explicit removal after degradation increments

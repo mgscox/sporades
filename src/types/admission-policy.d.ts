@@ -21,7 +21,8 @@ export type AdmissionAction = { kind: "deny" } | { kind: "rate-limit"; limit: nu
 export type AdmissionPolicy = { version: 1; rules: readonly { id: string; enabled: boolean; conditions: readonly AdmissionCondition[]; action: AdmissionAction }[] };
 export type AdmissionGeneration = Readonly<{ digest: string; policy: AdmissionPolicy }>;
 /** v1 per-process unsigned 64-bit decimal totals, exact until the explicit saturation ceiling.
- * No request, rule, address or policy-value dimensions. Restart resets evidence. */
+ * No request, rule, address or policy-value dimensions. Process restart resets evidence;
+ * Dev runtime replacement, policy-path changes and disable/re-enable retain totals and sampling. */
 export type AdmissionEvidence = Readonly<{
   version: 1;
   counters: Readonly<Record<"evaluated" | "admitted" | "denied" | "rateLimited" | "reloadFailures" | "reloadRecoveries" | "limiterEvictions" | "decisionsEmitted" | "decisionsSuppressed", string>>;

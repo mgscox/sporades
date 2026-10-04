@@ -266,8 +266,9 @@ export async function publishAdmissionPolicy(root, relative, bytes) {
         await handle.close();
     }
 }
-export async function openAdmissionPolicy(root, relative, onHealth, limiterOptions = {}) {
-    const evidence = createAdmissionEvidence(limiterOptions.now);
+export async function openAdmissionPolicy(root, relative, onHealth, options = {}) {
+    // A Dev session owns evidence across loader replacement. Quota state remains loader-owned.
+    const { evidence = createAdmissionEvidence(options.now), ...limiterOptions } = options;
     const rateLimiter = createAdmissionRateLimiter({ ...limiterOptions, onEviction: () => evidence.count("limiterEvictions") });
     let active = null;
     let health = Object.freeze({ state: "disabled", digest: null });

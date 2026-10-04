@@ -81160,8 +81160,8 @@ async function publishAdmissionPolicy(root, relative, bytes) {
     await handle.close();
   }
 }
-async function openAdmissionPolicy(root, relative, onHealth, limiterOptions = {}) {
-  const evidence = createAdmissionEvidence(limiterOptions.now);
+async function openAdmissionPolicy(root, relative, onHealth, options = {}) {
+  const { evidence = createAdmissionEvidence(options.now), ...limiterOptions } = options;
   const rateLimiter = createAdmissionRateLimiter({ ...limiterOptions, onEviction: () => evidence.count("limiterEvictions") });
   let active = null;
   let health = Object.freeze({ state: "disabled", digest: null });
@@ -151966,12 +151966,13 @@ async function createDevRuntime(options) {
   const reportAdmissionHealth = (health, event = "loaded") => {
     try {
       if (database) database.log.emit({ category: "platform", event: `admission.policy.${event}`, level: event === "failure" ? "warn" : "info", message: "Admission policy reload health changed", data: health });
-      else if (event === "failure") process.stderr.write(JSON.stringify({ event: "admission.policy.failure", data: health }) + "\n");
+      else if (event === "failure" || event === "recovery") process.stderr.write(JSON.stringify({ event: `admission.policy.${event}`, data: health }) + "\n");
     } catch {
     }
   };
   let admissionPath = resolveAdmissionPolicy(options.config.admissionPolicy, options.config.deploy?.files);
-  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth) : null;
+  const admissionEvidence = createAdmissionEvidence();
+  let admissionPolicy = admissionPath ? await openAdmissionPolicy(options.projectDir, admissionPath, reportAdmissionHealth, { evidence: admissionEvidence }) : null;
   try {
     database = await openDevDatabase(
       options.databasePath,
@@ -152010,8 +152011,8 @@ async function createDevRuntime(options) {
       if (changed) {
         nextAdmission = null;
         nextAdmission = nextPath ? await openAdmissionPolicy(options.projectDir, nextPath, (health, event) => {
-          if (event === "failure" || nextAdmission && nextAdmission === admissionPolicy) reportAdmissionHealth(health, event);
-        }) : null;
+          if (event === "failure" || event === "recovery" || nextAdmission && nextAdmission === admissionPolicy) reportAdmissionHealth(health, event);
+        }, { evidence: admissionEvidence }) : null;
       }
       try {
         const nextDatabase = await openDevDatabase(
