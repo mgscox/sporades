@@ -1,6 +1,6 @@
 /** A Host-owned launch decision; project config and Server env never supply these fields. */
 export function hostedTelemetryConfig(connection, capsule) {
-    if (!connection || capsule.telemetry?.disabled === true)
+    if (!connection || connection.exportsDisabled === true || capsule.telemetry?.disabled === true)
         return null;
     if (connection.internalEndpoint !== "http://sporades-telemetry:4318/")
         throw new Error("Invalid Host Telemetry relay endpoint.");

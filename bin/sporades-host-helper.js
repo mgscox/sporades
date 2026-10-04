@@ -41,6 +41,107 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+// src/cli/cli-support.ts
+function errorDetails(error) {
+  if (error === null || error === void 0) {
+    return {};
+  }
+  return typeof error === "object" ? error : { message: String(error) };
+}
+function helperError(message, hint, diagnostics = null) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (diagnostics) {
+    error.diagnostics = diagnostics;
+  }
+  return error;
+}
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    let stdin = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      stdin += chunk;
+    });
+    process.stdin.on("end", () => resolve(stdin));
+    process.stdin.on("error", reject);
+  });
+}
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function writeResult(result, failed = false) {
+  process.stdout.write(`${JSON.stringify(result)}
+`);
+  if (failed) {
+    process.exitCode = 1;
+  }
+}
+function writeEnvelope(result, failed = false) {
+  writeResult(result, failed);
+}
+var init_cli_support = __esm({
+  "src/cli/cli-support.ts"() {
+    "use strict";
+  }
+});
+
+// src/base-image.ts
+function baseImageRuntimeUser() {
+  return `${SPORADES_BASE_IMAGE.runtimeUid}:${SPORADES_BASE_IMAGE.runtimeGid}`;
+}
+function normaliseBaseImageUpdatePolicy(value) {
+  const mode = typeof value === "string" ? value : typeof value?.mode === "string" ? value.mode : SPORADES_BASE_IMAGE.updatePolicy.defaultMode;
+  if (!SPORADES_BASE_IMAGE.updatePolicy.modes.includes(mode)) {
+    return SPORADES_BASE_IMAGE.updatePolicy.defaultMode;
+  }
+  return mode;
+}
+function baseImageUpdatePolicy(mode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
+  return {
+    mode: normaliseBaseImageUpdatePolicy(mode),
+    autoPatch: {
+      supported: SPORADES_BASE_IMAGE.updatePolicy.autoPatchSupported,
+      reason: SPORADES_BASE_IMAGE.updatePolicy.autoPatchUnsupportedReason
+    }
+  };
+}
+function baseImageMetadata(updatePolicyMode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
+  return {
+    name: SPORADES_BASE_IMAGE.name,
+    image: SPORADES_BASE_IMAGE.image,
+    version: SPORADES_BASE_IMAGE.version,
+    updatePolicy: baseImageUpdatePolicy(updatePolicyMode)
+  };
+}
+function baseImageLabels(updatePolicyMode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
+  return {
+    "com.sporades.base-image.name": SPORADES_BASE_IMAGE.name,
+    "com.sporades.base-image.version": SPORADES_BASE_IMAGE.version,
+    "com.sporades.base-image.update-policy": normaliseBaseImageUpdatePolicy(updatePolicyMode)
+  };
+}
+var SPORADES_BASE_IMAGE;
+var init_base_image = __esm({
+  "src/base-image.ts"() {
+    "use strict";
+    SPORADES_BASE_IMAGE = {
+      name: "sporades-base",
+      image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+      version: "0.2.0-node22-alpine",
+      runtimeUser: "sporades",
+      runtimeUid: 10001,
+      runtimeGid: 10001,
+      updatePolicy: {
+        defaultMode: "host-managed",
+        modes: ["host-managed", "auto-patch", "manual"],
+        autoPatchSupported: false,
+        autoPatchUnsupportedReason: "Base image updates are applied by replacing containers, not mutating them in place."
+      }
+    };
+  }
+});
+
 // node_modules/tslib/tslib.es6.js
 var tslib_es6_exports = {};
 __export(tslib_es6_exports, {
@@ -26261,6 +26362,1079 @@ var require_png2 = __commonJS({
   }
 });
 
+// src/telemetry-propagation-policy.ts
+function validateTracePropagationOrigins(value) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value) || value.length > 32) throw new Error("Invalid trace propagation origins.");
+  return [...new Set(value.map((entry) => {
+    if (typeof entry !== "string" || entry.length > 2048 || !/^https?:\/\/[^/?#]+\/?$/i.test(entry) || /[\s\\*]/.test(entry)) throw new Error("Invalid trace propagation origins.");
+    let url;
+    try {
+      url = new URL(entry);
+    } catch {
+      throw new Error("Invalid trace propagation origins.");
+    }
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.hostname.includes("*") || url.username || url.password || url.pathname !== "/" || url.search || url.hash || entry.includes("?") || entry.includes("#")) throw new Error("Invalid trace propagation origins.");
+    return url.origin;
+  }))];
+}
+var init_telemetry_propagation_policy = __esm({
+  "src/telemetry-propagation-policy.ts"() {
+    "use strict";
+  }
+});
+
+// src/cli/host-telemetry-state.ts
+import { spawn } from "node:child_process";
+import { lstat as lstat3, open as open3 } from "node:fs/promises";
+import path5 from "node:path";
+async function protectedPath(file, isDirectory = false) {
+  const stat2 = await lstat3(file);
+  if (stat2.isSymbolicLink() || (isDirectory ? !stat2.isDirectory() : !stat2.isFile()) || stat2.mode & 63 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unprotected Host inventory state.");
+}
+async function withHostTelemetryLock(root, operation) {
+  const dir = path5.join(root, "telemetry");
+  if (!path5.isAbsolute(root) || root === "/" || path5.normalize(root) !== root) throw new Error("Invalid Host inventory root.");
+  await protectedPath(dir, true);
+  const file = path5.join(dir, "inventory.lock");
+  const handle = await open3(file, "a", 384);
+  await handle.close();
+  await protectedPath(file);
+  const child = spawn(process.env.SPORADES_TEST_FLOCK_PATH || "/usr/bin/flock", ["--exclusive", "--timeout", "2", "--conflict-exit-code", "75", "--no-fork", file, process.execPath, "-e", "process.stdout.write('locked');process.stdin.resume();"], { stdio: ["pipe", "pipe", "ignore"] });
+  try {
+    await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", () => reject(new Error("Inventory lock unavailable.")));
+      child.stdout.once("data", () => resolve());
+    });
+    return await operation();
+  } finally {
+    child.stdin.end();
+  }
+}
+var init_host_telemetry_state = __esm({
+  "src/cli/host-telemetry-state.ts"() {
+    "use strict";
+  }
+});
+
+// src/cli/inventory-contract.ts
+function inventoryHost(value) {
+  return typeof value === "string" && value.length <= 253 && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+}
+function invalid2() {
+  throw new Error("Invalid lifecycle inventory.");
+}
+function keys(value, names) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== names.sort().join()) invalid2();
+}
+function validateInventory(value) {
+  keys(value, ["schemaVersion", "host", "revision", "capsules"]);
+  if (value.schemaVersion !== 1 || !inventoryHost(value.host) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) invalid2();
+  if (!Array.isArray(value.capsules) || value.capsules.length > 2e3 || JSON.stringify(value).length > INVENTORY_MAX_BYTES) invalid2();
+  const ids = /* @__PURE__ */ new Set();
+  const capsules = value.capsules.map((item) => {
+    keys(item, ["id", "state", "changedAt", "release", "targets"]);
+    if (typeof item.id !== "string" || item.id.length > 320) invalid2();
+    const [domain, subname, extra] = item.id.split("/");
+    if (!inventoryHost(domain) || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(subname ?? "") || extra !== void 0 || ids.has(item.id)) invalid2();
+    ids.add(item.id);
+    if (!["registered", "released", "running", "stopped", "failed", "deleted", "opted-out"].includes(String(item.state))) invalid2();
+    if (typeof item.changedAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(item.changedAt) || !Number.isFinite(Date.parse(item.changedAt))) invalid2();
+    if (item.release !== null && (typeof item.release !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(item.release))) invalid2();
+    if (!Array.isArray(item.targets) || item.targets.length > 21 || new Set(item.targets).size !== item.targets.length) invalid2();
+    for (const target of item.targets) {
+      if (typeof target !== "string" || target.length > 2048) invalid2();
+      let url;
+      try {
+        url = new URL(target);
+      } catch {
+        return invalid2();
+      }
+      if (!["https:", "http:"].includes(url.protocol) || !inventoryHost(url.hostname) || url.username || url.password || url.port || url.search || url.hash || url.pathname !== "/" || url.href !== target) invalid2();
+    }
+    if (["deleted", "opted-out", "stopped"].includes(String(item.state)) && item.targets.length) invalid2();
+    return { ...item, targets: [...item.targets].sort() };
+  }).sort((a, b) => a.id.localeCompare(b.id));
+  return { schemaVersion: 1, host: value.host, revision: Number(value.revision), capsules };
+}
+var INVENTORY_MAX_BYTES;
+var init_inventory_contract = __esm({
+  "src/cli/inventory-contract.ts"() {
+    "use strict";
+    INVENTORY_MAX_BYTES = 1024 * 1024;
+  }
+});
+
+// src/cli/host-metrics.ts
+import { spawnSync as spawnSync2 } from "node:child_process";
+import { createHash as createHash4, randomBytes } from "node:crypto";
+import { mkdir as mkdir2, lstat as lstat4, readFile as readFile4, writeFile, rename as rename3, rm as rm3, access } from "node:fs/promises";
+import { isIP as isIP2 } from "node:net";
+import path6 from "node:path";
+function fail(message) {
+  throw helperError(message, "Inspect Host telemetry resources and protected Caddy configuration, then retry `sporades host telemetry reconcile`. No secret values are included in diagnostics.");
+}
+function run(command, args, timeout = 6e4) {
+  const r = spawnSync2(command, args, { encoding: "utf8", timeout, maxBuffer: 2 * 1024 * 1024 });
+  return { ok: !r.error && r.status === 0, text: String(r.stdout ?? "").trim() };
+}
+function inspect(kind, name2) {
+  const r = run("docker", [kind, "inspect", name2]);
+  if (!r.ok) return null;
+  try {
+    return JSON.parse(r.text)[0];
+  } catch {
+    return fail("Invalid Docker inspection response.");
+  }
+}
+function ownedContainer() {
+  const c = inspect("container", NAME);
+  if (c && c.Config?.Labels?.[OWNER] !== "true") fail("The Host exporter container name belongs to another installation.");
+  return c;
+}
+async function trusted(file, optional = false) {
+  try {
+    const s = await lstat4(file);
+    if (s.isSymbolicLink() || !s.isFile() && !s.isDirectory() || s.mode & 18 || process.geteuid && s.uid !== process.geteuid()) fail("Unsafe Host metrics configuration path.");
+  } catch (e) {
+    if (!optional || e.code !== "ENOENT") throw e;
+  }
+}
+async function publish(file, text2, mode = 384) {
+  await trusted(path6.dirname(file));
+  await trusted(file, true);
+  const tmp = `${file}.${randomBytes(8).toString("hex")}.tmp`;
+  await writeFile(tmp, text2, { flag: "wx", mode });
+  try {
+    await rename3(tmp, file);
+  } finally {
+    await rm3(tmp, { force: true });
+  }
+}
+async function readHostMetrics(root) {
+  const file = path6.join(root, "telemetry", "resources.json");
+  try {
+    await trusted(path6.dirname(file));
+    await trusted(file);
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    throw e;
+  }
+  const v = JSON.parse(await readFile4(file, "utf8"));
+  if (typeof v.host !== "string" || !/^[a-z0-9][a-z0-9.-]{0,252}$/.test(v.host) || isIP2(v.address) !== 4 || typeof v.enabled !== "boolean" || typeof v.psi !== "boolean") fail("Invalid Host metrics state.");
+  if (v.caddyMetricsServer !== void 0 && !/^[a-zA-Z0-9_-]{1,80}$/.test(v.caddyMetricsServer)) fail("Invalid Caddy metrics server identity.");
+  return v;
+}
+function tokens(s) {
+  const result = [];
+  const pattern = /#[^\n]*|"(?:\\.|[^"\\])*"|`[^`]*`|[{}]|[^\s{}#]+/g;
+  for (const match of s.matchAll(pattern)) {
+    if (!match[0].startsWith("#")) result.push({ value: match[0], start: match.index, end: match.index + match[0].length });
+  }
+  return result;
+}
+function stripManaged(s) {
+  return s.replace(/# BEGIN Sporades Host metrics[\s\S]*?# END Sporades Host metrics\n?/g, "");
+}
+function enableCaddy(s, address) {
+  if (s.includes(`${BEGIN}
+http://${address}:20190 {
+ bind ${address}
+ metrics /metrics
+}
+${END}`)) return s;
+  s = stripManaged(s);
+  const t2 = tokens(s);
+  const additions = [];
+  const metric = `
+${BEGIN}
+metrics
+${END}
+`;
+  if (t2[0]?.value !== "{") {
+    s = `{
+${BEGIN}
+servers {
+ metrics
+}
+${END}
+}
+${s}`;
+  } else {
+    let depth2 = 1, globalEnd = -1, catchall = false;
+    for (let i = 1; i < t2.length; i++) {
+      if (depth2 === 1 && t2[i].value === "servers") {
+        let open7 = i + 1;
+        while (open7 < t2.length && t2[open7].value !== "{") open7++;
+        if (open7 === t2.length) fail("Cannot locate Caddy servers options.");
+        if (open7 === i + 1) catchall = true;
+        let d = 1, hasMetrics = false;
+        for (let j = open7 + 1; j < t2.length && d; j++) {
+          if (d === 1 && t2[j].value === "metrics") hasMetrics = true;
+          if (t2[j].value === "{") d++;
+          if (t2[j].value === "}") d--;
+        }
+        if (!hasMetrics) additions.push({ at: t2[open7].end, text: metric });
+      }
+      if (t2[i].value === "{") depth2++;
+      if (t2[i].value === "}") depth2--;
+      if (depth2 === 0) {
+        globalEnd = t2[i].start;
+        break;
+      }
+    }
+    if (globalEnd < 0) fail("Unclosed Caddy global options.");
+    if (!catchall) additions.push({ at: globalEnd, text: `${BEGIN}
+servers {
+ metrics
+}
+${END}
+` });
+    for (const a of additions.sort((a2, b) => b.at - a2.at)) s = s.slice(0, a.at) + a.text + s.slice(a.at);
+  }
+  return `${s.trimEnd()}
+
+${BEGIN}
+http://${address}:20190 {
+ bind ${address}
+ metrics /metrics
+}
+${END}
+`;
+}
+async function configureBootOrder(root) {
+  if (run("systemctl", ["show", "caddy.service", "--property=LoadState", "--value"]).text !== "loaded") return;
+  const dir = "/etc/systemd/system/caddy.service.d";
+  await trusted("/etc/systemd/system");
+  await mkdir2(dir, { recursive: true, mode: 493 });
+  await trusted(dir);
+  const file = path6.join(dir, "90-sporades-host-metrics.conf");
+  const config = JSON.stringify(path6.join(root, "caddy", "Caddyfile")).replace(/%/g, "%%");
+  const content2 = `# Sporades Host metrics boot ordering
+[Unit]
+After=docker.service
+Requires=docker.service
+[Service]
+ExecStart=
+ExecStart=/usr/bin/caddy run --config ${config} --adapter caddyfile
+ExecReload=
+ExecReload=/usr/bin/caddy reload --config ${config} --adapter caddyfile
+Restart=on-failure
+RestartSec=5s
+`;
+  await trusted(file, true);
+  const before = await readFile4(file, "utf8").catch((e) => {
+    if (e.code === "ENOENT") return null;
+    throw e;
+  });
+  if (before === content2) return;
+  if (before && !before.startsWith("# Sporades Host metrics boot ordering\n")) fail("Caddy boot-order override is operator-owned.");
+  await publish(file, content2, 420);
+  if (!run("systemctl", ["daemon-reload"]).ok) fail("Could not reload Caddy boot ordering.");
+}
+async function configureCaddy(root, address, enabled) {
+  const dir = path6.join(root, "caddy");
+  const file = path6.join(dir, "Caddyfile");
+  await trusted(root);
+  await trusted(dir);
+  await trusted(file);
+  const before = await readFile4(file, "utf8");
+  const after = enabled ? enableCaddy(before, address) : stripManaged(before);
+  if (before === after) return enabled ? metricsServer(file, address) : void 0;
+  const candidate = path6.join(dir, `.telemetry-${randomBytes(8).toString("hex")}.tmp`);
+  await writeFile(candidate, after, { flag: "wx", mode: 420 });
+  try {
+    if (!run("caddy", ["validate", "--config", candidate, "--adapter", "caddyfile"]).ok) fail("Caddy rejected the Host metrics configuration; the active configuration was preserved.");
+    await publish(path6.join(root, "telemetry", "caddy-before-resources.conf"), before);
+    await publish(file, after, 420);
+    if (!run("caddy", ["reload", "--config", file, "--adapter", "caddyfile"]).ok) {
+      await publish(file, before, 420);
+      if (!run("caddy", ["reload", "--config", file, "--adapter", "caddyfile"]).ok) fail("Caddy reload and recovery failed; the previous file has been restored.");
+      fail("Caddy reload failed; the previous configuration was restored.");
+    }
+  } finally {
+    await rm3(candidate, { force: true });
+  }
+  return enabled ? metricsServer(file, address) : void 0;
+}
+function metricsServer(file, address) {
+  const result = run("caddy", ["adapt", "--config", file, "--adapter", "caddyfile"]);
+  if (!result.ok) fail("Cannot identify the private Caddy metrics listener.");
+  const servers = JSON.parse(result.text)?.apps?.http?.servers ?? {};
+  const match = Object.entries(servers).find(([, value]) => value.listen?.includes(`${address}:20190`));
+  if (!match || !/^[a-zA-Z0-9_-]{1,80}$/.test(match[0])) fail("Cannot identify the private Caddy metrics listener.");
+  return match[0];
+}
+async function configureHostMetrics(root, host, operation = "reconcile") {
+  if (!/^[a-z0-9][a-z0-9.-]{0,252}$/.test(host)) fail("Invalid canonical Host identity.");
+  const saved = await readHostMetrics(root);
+  host = saved?.host ?? host;
+  const enabled = operation === "enable" || operation === "reconcile" && saved?.enabled !== false;
+  if (!enabled) {
+    await configureCaddy(root, saved?.address ?? "127.0.0.1", false);
+    if (ownedContainer() && !run("docker", operation === "remove" ? ["rm", "-f", NAME] : ["stop", NAME]).ok) fail("Could not stop the Host exporter.");
+    const state2 = { host, address: saved?.address ?? "127.0.0.1", enabled: false, psi: saved?.psi ?? false };
+    await publish(path6.join(root, "telemetry", "resources.json"), JSON.stringify(state2));
+    return state2;
+  }
+  let network = inspect("network", HOST_METRICS_NETWORK);
+  if (!network) {
+    if (!run("docker", ["network", "create", "--internal", "--label", `${OWNER}=true`, HOST_METRICS_NETWORK]).ok) fail("Could not create the private Host metrics network.");
+    network = inspect("network", HOST_METRICS_NETWORK);
+  }
+  if (network?.Labels?.[OWNER] !== "true" || network?.Internal !== true) fail("The Host metrics network is not privately owned by Sporades.");
+  const address = network?.IPAM?.Config?.find((c) => isIP2(c.Gateway ?? "") === 4)?.Gateway;
+  if (!address) fail("The Host metrics network needs an IPv4 gateway.");
+  const args = ["--network", "host", "--pid", "host", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65534:65534", "--memory", "128m", "--cpus", "0.25", "--pids-limit", "64", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--mount", "type=bind,source=/,target=/host,readonly,bind-propagation=rslave", IMAGE, "--path.rootfs=/host", "--path.procfs=/host/proc", "--path.sysfs=/host/sys", `--web.listen-address=${address}:9100`, "--collector.disable-defaults", ...["cpu", "loadavg", "meminfo", "vmstat", "diskstats", "filesystem", "netdev", "netstat", "pressure", "uname", "time", "stat"].map((c) => `--collector.${c}`), "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|pstore|rpc_pipefs|securityfs|squashfs|sysfs|tracefs)$", "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/docker/netns)($|/)", "--collector.netdev.device-exclude=^(veth.*|br-.*|docker.*|lo)$"];
+  const hash2 = createHash4("sha256").update(JSON.stringify(args)).digest("hex");
+  const current2 = ownedContainer();
+  if (current2?.Config?.Labels?.[`${OWNER}.hash`] !== hash2) {
+    if (!run("docker", ["pull", IMAGE], 18e4).ok) fail("Could not obtain the pinned Host exporter image.");
+    if (current2 && !run("docker", ["rm", "-f", NAME]).ok) fail("Could not replace the Host exporter.");
+    if (!run("docker", ["run", "-d", "--name", NAME, "--restart", "unless-stopped", "--label", `${OWNER}=true`, "--label", `${OWNER}.hash=${hash2}`, ...args]).ok) fail("Could not start the Host exporter.");
+  } else if (!current2?.State?.Running && !run("docker", ["start", NAME]).ok) fail("Could not restart the Host exporter.");
+  let caddyMetricsServer;
+  try {
+    caddyMetricsServer = await configureCaddy(root, address, true);
+  } catch (e) {
+    if (!current2) run("docker", ["rm", "-f", NAME]);
+    throw e;
+  }
+  await configureBootOrder(root);
+  const psi = await access("/proc/pressure/cpu").then(() => true, () => false);
+  const state = { host, address, enabled: true, psi, caddyMetricsServer };
+  await publish(path6.join(root, "telemetry", "resources.json"), JSON.stringify(state));
+  return state;
+}
+function hostScrapeConfig(state) {
+  if (!state.enabled) return "";
+  return `  prometheus/host:
+    config:
+      scrape_configs:
+${[["node", 9100], ["caddy", 20190]].map(([source, port]) => `        - job_name: sporades-host-${source}
+          scrape_interval: 15s
+          scrape_timeout: 5s
+          sample_limit: 10000
+          static_configs:
+            - targets: [${JSON.stringify(`${state.address}:${port}`)}]
+              labels:
+                sporades_host: ${JSON.stringify(state.host)}
+                telemetry_source: ${source}
+          metric_relabel_configs:
+${source === "caddy" && state.caddyMetricsServer ? `            - source_labels: [server]
+              regex: ${JSON.stringify(state.caddyMetricsServer)}
+              action: drop
+` : ""}            - action: labeldrop
+              regex: "host|url|url_path"
+`).join("")}`;
+}
+async function hostMetricsStatus(root) {
+  const state = await readHostMetrics(root);
+  if (!state) return { configured: false, enabled: false, backendVerification: "unavailable" };
+  const node = ownedContainer();
+  return { configured: true, enabled: state.enabled, host: state.host, exporterRunning: Boolean(node?.State?.Running), psi: state.psi ? "supported" : "unsupported", backendVerification: "unavailable" };
+}
+var HOST_METRICS_NETWORK, NAME, IMAGE, OWNER, BEGIN, END;
+var init_host_metrics = __esm({
+  "src/cli/host-metrics.ts"() {
+    "use strict";
+    init_cli_support();
+    HOST_METRICS_NETWORK = "sporades-host-metrics";
+    NAME = "sporades-node-exporter";
+    IMAGE = "quay.io/prometheus/node-exporter:v1.12.1";
+    OWNER = "com.sporades.host-metrics";
+    BEGIN = "# BEGIN Sporades Host metrics";
+    END = "# END Sporades Host metrics";
+  }
+});
+
+// src/cli/host-inventory.ts
+var host_inventory_exports = {};
+__export(host_inventory_exports, {
+  exportHostInventory: () => exportHostInventory,
+  hostInventoryStatus: () => hostInventoryStatus,
+  installHostInventoryWorker: () => installHostInventoryWorker,
+  inventoryUnit: () => inventoryUnit,
+  kickHostInventory: () => kickHostInventory,
+  queueHostInventory: () => queueHostInventory,
+  reconcileHostInventory: () => reconcileHostInventory,
+  removeHostInventoryWorker: () => removeHostInventoryWorker
+});
+import { spawnSync as spawnSync3 } from "node:child_process";
+import { createHash as createHash5, randomBytes as randomBytes2 } from "node:crypto";
+import { lstat as lstat5, open as open4, readFile as readFile5, readdir as readdir3, rename as rename4, rm as rm4 } from "node:fs/promises";
+import { request as httpsRequest } from "node:https";
+import path7 from "node:path";
+function directory(root) {
+  if (!path7.isAbsolute(root) || root === "/" || path7.normalize(root) !== root) throw new Error("Invalid Host inventory root.");
+  return path7.join(root, "telemetry");
+}
+async function protectedPath2(file, isDirectory = false) {
+  const stat2 = await lstat5(file);
+  if (stat2.isSymbolicLink() || (isDirectory ? !stat2.isDirectory() : !stat2.isFile()) || stat2.mode & 63 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unprotected Host inventory state.");
+}
+async function readState(root) {
+  const file = path7.join(directory(root), "inventory.json");
+  try {
+    await protectedPath2(file);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  let state;
+  try {
+    state = JSON.parse(await readFile5(file, "utf8"));
+  } catch {
+    throw new Error("Invalid inventory outbox.");
+  }
+  state.desired = validateInventory(state.desired);
+  if (typeof state.endpoint !== "string" || state.acknowledgement && (!Number.isSafeInteger(state.acknowledgement.revision) || !Number.isFinite(Date.parse(state.acknowledgement.acknowledgedAt)))) throw new Error("Invalid inventory outbox.");
+  return state;
+}
+async function atomicWrite(file, content2) {
+  const temporary = `${file}.${randomBytes2(8).toString("hex")}.tmp`;
+  try {
+    const handle = await open4(temporary, "wx", 384);
+    try {
+      await handle.writeFile(content2);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename4(temporary, file);
+    const dir = await open4(path7.dirname(file), "r");
+    try {
+      await dir.sync();
+    } finally {
+      await dir.close();
+    }
+  } finally {
+    await rm4(temporary, { force: true });
+  }
+}
+async function registrySnapshot(root, previous, exportsDisabled = false) {
+  const capsules = [];
+  const hostsDirectory = path7.join(root, "hosts");
+  for (const dir of [root, hostsDirectory]) {
+    const stat2 = await lstat5(dir);
+    if (!stat2.isDirectory() || stat2.isSymbolicLink() || stat2.mode & 18 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unsafe Host registry root.");
+  }
+  const domains = await readdir3(hostsDirectory, { withFileTypes: true });
+  for (const domain of domains.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!inventoryHost(domain.name)) continue;
+    if (!domain.isDirectory() || domain.isSymbolicLink()) throw new Error("Unsafe Host registry directory.");
+    const registry = path7.join(hostsDirectory, domain.name, "registry");
+    const records = path7.join(registry, "capsules");
+    for (const dir of [registry, records]) {
+      const stat2 = await lstat5(dir);
+      if (!stat2.isDirectory() || stat2.isSymbolicLink() || stat2.mode & 18 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unsafe Host registry.");
+    }
+    for (const file of await readdir3(records, { withFileTypes: true })) {
+      if (!file.name.endsWith(".json")) continue;
+      if (!file.isFile() || file.isSymbolicLink()) throw new Error("Unsafe registry record.");
+      const recordPath = path7.join(records, file.name);
+      const stat2 = await lstat5(recordPath);
+      if (stat2.mode & 18 || process.geteuid && stat2.uid !== process.geteuid() || stat2.size > 8 * 1024 * 1024) throw new Error("Unsafe registry record.");
+      let record;
+      try {
+        record = JSON.parse(await readFile5(recordPath, "utf8"));
+      } catch {
+        throw new Error("Invalid Host registry record.");
+      }
+      if (record.domain !== domain.name || `${record.subname}.json` !== file.name || record.remoteCapsuleId && record.remoteCapsuleId !== `${domain.name}/${record.subname}`) throw new Error("Invalid registry identity.");
+      const state = record.status === "unregistered" ? "deleted" : exportsDisabled || record.telemetry?.disabled === true ? "opted-out" : record.status;
+      const disabled = ["deleted", "stopped", "opted-out"].includes(state);
+      const url = new URL(record.hostedUrl);
+      if (url.hostname !== `${record.subname}.${domain.name}`) throw new Error("Invalid registry address.");
+      const targets = disabled ? [] : [url.href, ...(record.aliasDomains ?? []).map((alias) => `${url.protocol}//${alias}/`)];
+      capsules.push({ id: `${domain.name}/${record.subname}`, state, changedAt: record.updatedAt, release: record.currentRelease?.id ?? null, targets });
+    }
+  }
+  for (const capsule of previous) {
+    if (!capsules.some((item) => item.id === capsule.id)) {
+      const domain = capsule.id.split("/")[0];
+      if (!domains.some((item) => item.name === domain)) throw new Error("Expected Host registry disappeared.");
+      capsules.push(capsule.state === "deleted" ? capsule : { ...capsule, state: "deleted", changedAt: (/* @__PURE__ */ new Date()).toISOString(), targets: [] });
+    }
+  }
+  return capsules;
+}
+async function queueLocked(root, connection) {
+  const previous = await readState(root);
+  if (previous && previous.desired.host !== connection.host) throw new Error("Inventory Host identity cannot change.");
+  const desired = validateInventory({ schemaVersion: 1, host: connection.host, revision: previous?.desired.revision ?? 1, capsules: await registrySnapshot(root, previous?.desired.capsules ?? [], (await readHostTelemetryConnection(root))?.exportsDisabled === true) });
+  const sameGeneration = previous?.connectionGeneration === connection.generation;
+  const changed = !previous || JSON.stringify(desired) !== JSON.stringify(previous.desired) || !sameGeneration;
+  if (changed && previous) desired.revision++;
+  const state = changed ? { desired, endpoint: connection.endpoint, connectionGeneration: connection.generation, acknowledgement: sameGeneration ? previous.acknowledgement : null, lastAttemptAt: previous?.lastAttemptAt ?? null, failure: null } : previous;
+  if (changed) await atomicWrite(path7.join(directory(root), "inventory.json"), JSON.stringify(state) + "\n");
+  return state;
+}
+async function queueHostInventory(root) {
+  if (!await readHostTelemetryConnection(root)) return null;
+  return withHostTelemetryLock(root, async () => {
+    const connection = await readHostInventoryConnection(root);
+    return connection ? queueLocked(root, connection) : null;
+  });
+}
+async function hostInventoryStatus(root, snapshotFailed = false) {
+  const connected = await readHostTelemetryConnection(root);
+  const status = async () => {
+    const state = await readState(root);
+    let unavailable = false;
+    const connection = connected ? await readHostInventoryConnection(root).catch(() => {
+      unavailable = true;
+      return null;
+    }) : null;
+    const failed = snapshotFailed || unavailable;
+    const sameGeneration = Boolean(connection && state?.connectionGeneration === connection.generation);
+    const acknowledgement = sameGeneration ? state?.acknowledgement : null;
+    const reconcilerInstalled = spawnSync3("systemctl", ["is-enabled", `${inventoryUnit(root)}.timer`], { stdio: "ignore", timeout: 1e3 }).status === 0;
+    return { host: state?.desired.host ?? connection?.host ?? connected?.inventoryHost ?? null, desiredRevision: state?.desired.revision ?? null, acknowledgedRevision: acknowledgement?.revision ?? null, acknowledgedAt: acknowledgement?.acknowledgedAt ?? null, pending: Boolean(connected && (failed || !sameGeneration || !state || state.desired.revision !== acknowledgement?.revision)), stale: Boolean(connected && (failed || !acknowledgement || Date.now() - Date.parse(acknowledgement.acknowledgedAt) > 18e4)), lastAttemptAt: state?.lastAttemptAt ?? null, failure: failed ? "snapshot-unavailable" : sameGeneration ? state?.failure ?? null : connected ? "snapshot-unavailable" : null, reconcilerInstalled };
+  };
+  return connected ? withHostTelemetryLock(root, status) : status();
+}
+async function exportHostInventory(root) {
+  return (await queueHostInventory(root))?.desired ?? null;
+}
+async function reconcileHostInventory(root) {
+  if (!await readHostTelemetryConnection(root)) return hostInventoryStatus(root);
+  const captured = await withHostTelemetryLock(root, async () => {
+    const connection2 = await readHostInventoryConnection(root);
+    return connection2 ? { connection: connection2, state: await queueLocked(root, connection2) } : null;
+  });
+  if (!captured) return hostInventoryStatus(root);
+  const { state, connection } = captured;
+  const { credential, caPem: ca } = connection;
+  const body = JSON.stringify(state.desired);
+  const result = await new Promise((resolve) => {
+    const req = httpsRequest(new URL(`/v1/inventory/${state.desired.host}`, state.endpoint), { method: "PUT", ...ca ? { ca } : {}, headers: { authorization: `Bearer ${credential}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (res) => {
+      let text2 = "";
+      res.once("error", () => resolve({ failure: "network-or-tls" }));
+      res.once("aborted", () => resolve({ failure: "network-or-tls" }));
+      res.on("data", (chunk) => {
+        text2 += chunk;
+        if (text2.length > 8192) req.destroy();
+      });
+      res.on("end", () => {
+        if (res.statusCode !== 200) {
+          resolve({ failure: res.statusCode === 401 || res.statusCode === 403 ? "auth" : res.statusCode === 409 ? "revision-conflict" : "destination" });
+          return;
+        }
+        try {
+          const acknowledgement = JSON.parse(text2).data;
+          if (acknowledgement.revision !== state.desired.revision || typeof acknowledgement.acknowledgedAt !== "string" || !Number.isFinite(Date.parse(acknowledgement.acknowledgedAt))) throw new Error();
+          resolve({ acknowledgement });
+        } catch {
+          resolve({ failure: "invalid-acknowledgement" });
+        }
+      });
+    });
+    const deadline = setTimeout(() => req.destroy(new Error("timeout")), 5e3);
+    req.once("close", () => clearTimeout(deadline));
+    req.once("error", () => resolve({ failure: "network-or-tls" }));
+    req.end(body);
+  });
+  await withHostTelemetryLock(root, async () => {
+    const current2 = await readState(root);
+    const active = await readHostInventoryConnection(root);
+    if (!active || active.generation !== connection.generation || !current2 || current2.connectionGeneration !== connection.generation || current2.desired.host !== state.desired.host) return;
+    if ((current2.acknowledgement?.revision ?? 0) > state.desired.revision) return;
+    if (result.acknowledgement && (!current2.acknowledgement || current2.acknowledgement.revision < result.acknowledgement.revision || current2.acknowledgement.revision === result.acknowledgement.revision && Date.parse(current2.acknowledgement.acknowledgedAt) <= Date.parse(result.acknowledgement.acknowledgedAt))) current2.acknowledgement = result.acknowledgement;
+    current2.lastAttemptAt = (/* @__PURE__ */ new Date()).toISOString();
+    current2.failure = result.failure ?? null;
+    await atomicWrite(path7.join(directory(root), "inventory.json"), JSON.stringify(current2) + "\n");
+  });
+  return hostInventoryStatus(root);
+}
+function inventoryUnit(root) {
+  return `sporades-inventory-${createHash5("sha256").update(root).digest("hex").slice(0, 16)}`;
+}
+function kickHostInventory(root) {
+  spawnSync3("systemctl", ["start", "--no-block", `${inventoryUnit(root)}.service`], { stdio: "ignore", timeout: 1e3 });
+}
+async function installHostInventoryWorker(root) {
+  directory(root);
+  const probe = spawnSync3("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e3 });
+  if (probe.status !== 0 || probe.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-unavailable" };
+  const helper = path7.join(root, "bin", "sporades-host-helper");
+  for (const file of ["/etc/systemd/system", helper]) {
+    const stat2 = await lstat5(file);
+    if (stat2.isSymbolicLink() || stat2.uid !== 0 || stat2.mode & 18) throw new Error("Unsafe inventory worker installation path.");
+  }
+  const unit = inventoryUnit(root);
+  const marker = "# Managed by Sporades: lifecycle inventory\n";
+  const executable = JSON.stringify(helper).replace(/%/g, "%%").replace(/\$/g, () => "$$");
+  const encoded = Buffer.from(root).toString("base64url");
+  const files = {
+    [`${unit}.service`]: `${marker}[Unit]
+Description=Sporades lifecycle inventory
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${executable} --reconcile-inventory ${encoded}
+TimeoutStartSec=30
+UMask=0077
+`,
+    [`${unit}.timer`]: `${marker}[Unit]
+Description=Reconcile Sporades lifecycle inventory
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+RandomizedDelaySec=5s
+
+[Install]
+WantedBy=timers.target
+`
+  };
+  for (const [name2, content2] of Object.entries(files)) {
+    const file = path7.join("/etc/systemd/system", name2);
+    try {
+      const stat2 = await lstat5(file);
+      if (stat2.isSymbolicLink() || stat2.uid !== 0 || stat2.mode & 18 || !(await readFile5(file, "utf8")).startsWith(marker)) throw new Error("Inventory unit is operator-owned.");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await atomicWrite(file, content2);
+  }
+  for (const args of [["daemon-reload"], ["enable", "--now", `${unit}.timer`]]) if (spawnSync3("systemctl", args, { timeout: 1e4, stdio: "ignore" }).status !== 0) throw new Error("Inventory worker installation failed.");
+  return { installed: true, unit: `${unit}.timer`, intervalSeconds: 60 };
+}
+async function removeHostInventoryWorker(root) {
+  directory(root);
+  const unit = inventoryUnit(root);
+  const files = ["timer", "service"].map((kind) => path7.join("/etc/systemd/system", `${unit}.${kind}`));
+  const present = [];
+  for (const file of files) {
+    try {
+      const st = await lstat5(file);
+      if (!st.isFile() || st.isSymbolicLink() || st.uid !== 0 || st.mode & 18 || !(await readFile5(file, "utf8")).startsWith("# Managed by Sporades: lifecycle inventory\n")) throw new Error("Inventory worker is not owned.");
+      present.push(file);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+  }
+  if (present.length) {
+    const commands = [
+      ...present.includes(files[0]) ? [["disable", "--now", `${unit}.timer`]] : [],
+      ...present.includes(files[1]) ? [["stop", `${unit}.service`]] : []
+    ];
+    for (const args of commands) if (spawnSync3("systemctl", args, { stdio: "ignore", timeout: 1e4 }).status !== 0) throw new Error("Inventory worker removal failed.");
+    for (const file of present) await rm4(file);
+    if (spawnSync3("systemctl", ["daemon-reload"], { stdio: "ignore", timeout: 1e4 }).status !== 0) throw new Error("Inventory worker removal failed.");
+  }
+  return { removed: true };
+}
+var init_host_inventory = __esm({
+  "src/cli/host-inventory.ts"() {
+    "use strict";
+    init_host_telemetry_relay();
+    init_inventory_contract();
+    init_host_telemetry_state();
+  }
+});
+
+// src/cli/host-telemetry-relay.ts
+import { spawnSync as spawnSync4 } from "node:child_process";
+import { createHash as createHash6, randomBytes as randomBytes3 } from "node:crypto";
+import { lstat as lstat6, mkdir as mkdir3, open as open5, readFile as readFile6, rename as rename5, rm as rm5 } from "node:fs/promises";
+import { request as httpsRequest2 } from "node:https";
+import path8 from "node:path";
+function invalid3() {
+  throw helperError("Invalid Host Telemetry connection.", "Use a verified HTTPS OTLP/HTTP origin and a scoped ingestion credential without control characters.");
+}
+function validateHostRelayConnection(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid3();
+  const input = value;
+  if (Object.keys(input).some((key) => !["endpoint", "credential", "inventoryCredential", "inventoryHost", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs", "tracePropagationOrigins"].includes(key))) invalid3();
+  if (typeof input.endpoint !== "string" || input.endpoint.length > 2048) invalid3();
+  let url;
+  try {
+    url = new URL(input.endpoint);
+  } catch {
+    return invalid3();
+  }
+  if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash || url.pathname !== "/") invalid3();
+  if (typeof input.credential !== "string" || !input.credential || input.credential.length > 4096 || /[\x00-\x1f\x7f]/.test(input.credential)) invalid3();
+  if (input.inventoryCredential !== void 0 && (typeof input.inventoryCredential !== "string" || input.inventoryCredential.length < 16 || input.inventoryCredential.length > 4096 || /[\x00-\x20\x7f]/.test(input.inventoryCredential))) invalid3();
+  if (input.inventoryHost !== void 0 && !inventoryHost(input.inventoryHost)) invalid3();
+  if (input.caPem !== void 0 && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----"))) invalid3();
+  if (input.metricsIntervalMs !== void 0 && (!Number.isSafeInteger(input.metricsIntervalMs) || input.metricsIntervalMs < 5e3 || input.metricsIntervalMs > 3e5)) invalid3();
+  if (input.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || input.eventLoopDelayResolutionMs < 10 || input.eventLoopDelayResolutionMs > 1e3)) invalid3();
+  if (input.tracePropagationOrigins !== void 0) {
+    try {
+      input.tracePropagationOrigins = validateTracePropagationOrigins(input.tracePropagationOrigins);
+    } catch {
+      invalid3();
+    }
+  }
+  return input;
+}
+function renderHostRelayCollectorConfig(options) {
+  const endpoint = new URL(options.endpoint);
+  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") invalid3();
+  return `receivers:
+  prometheus/pipeline:
+    config:
+      scrape_configs:
+        - job_name: sporades-pipeline-relay
+          scrape_interval: 15s
+          scrape_timeout: 3s
+          sample_limit: 2000
+          static_configs:
+            - targets: [127.0.0.1:8888]
+${options.resources ? hostScrapeConfig(options.resources) : ""}  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        max_request_body_size: 2097152
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 96
+    spike_limit_mib: 24
+  batch:
+    send_batch_size: 256
+    send_batch_max_size: 256
+    timeout: 1s
+exporters:
+  otlphttp/remote:
+    endpoint: ${JSON.stringify(options.endpoint)}
+    headers:
+      Authorization: "\${env:SPORADES_INGEST_AUTH}"
+${options.caFile ? "    tls:\n      ca_file: /etc/otelcol/ca.pem\n" : ""}    timeout: 2s
+    sending_queue:
+      enabled: true
+      sizer: bytes
+      queue_size: 16777216
+      num_consumers: 2
+      block_on_overflow: false
+      wait_for_result: false
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 5s
+      max_elapsed_time: 300s
+service:
+  telemetry:
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/remote]
+    metrics:
+      receivers: [otlp, prometheus/pipeline${options.resources?.enabled ? ", prometheus/host" : ""}]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/remote]
+`;
+}
+function paths(remoteRoot) {
+  if (!path8.isAbsolute(remoteRoot) || path8.normalize(remoteRoot) !== remoteRoot || remoteRoot === "/") invalid3();
+  const directory2 = path8.join(remoteRoot, "telemetry");
+  return { directory: directory2, descriptor: path8.join(directory2, "connection.json"), config: path8.join(directory2, "collector.yaml"), credential: path8.join(directory2, "credential.env"), ca: path8.join(directory2, "ca.pem") };
+}
+async function assertOwnedDirectory(directory2) {
+  const details = await lstat6(directory2);
+  if (!details.isDirectory() || details.isSymbolicLink() || process.geteuid && details.uid !== process.geteuid() || (details.mode & 63) !== 0) {
+    throw helperError("Host Telemetry state is not protected.", "Use a helper-owned telemetry directory with mode 0700 and no symlinks.");
+  }
+}
+async function readProtected(file) {
+  try {
+    const details = await lstat6(file);
+    if (!details.isFile() || details.isSymbolicLink() || process.geteuid && details.uid !== process.geteuid() || (details.mode & 18) !== 0) throw new Error("unsafe file");
+    return await readFile6(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw helperError("Host Telemetry state is not protected.", "Repair helper-owned Telemetry files and retry.");
+  }
+}
+async function atomicWrite2(file, content2, mode) {
+  const candidate = `${file}.${randomBytes3(8).toString("hex")}.tmp`;
+  try {
+    const handle = await open5(candidate, "wx", mode);
+    try {
+      await handle.writeFile(content2);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename5(candidate, file);
+    const directory2 = await open5(path8.dirname(file), "r");
+    try {
+      await directory2.sync();
+    } finally {
+      await directory2.close();
+    }
+  } finally {
+    await rm5(candidate, { force: true });
+  }
+}
+function docker(args) {
+  const result = spawnSync4("docker", args, { encoding: "utf8", timeout: 3e4, maxBuffer: 64 * 1024 });
+  return { ok: !result.error && result.status === 0, stdout: String(result.stdout ?? "").trim() };
+}
+function inspectRelay() {
+  const result = docker(["inspect", "--format", "{{json .}}", RELAY_NAME]);
+  if (!result.ok) return null;
+  try {
+    const value = JSON.parse(result.stdout);
+    if (value?.Config?.Labels?.["com.sporades.host-telemetry-relay"] !== "true") throw new Error("foreign container");
+    return value;
+  } catch {
+    throw helperError("Host Telemetry relay name is occupied.", "Inspect the existing relay container before reconciling it.");
+  }
+}
+async function readConnectionRecord(remoteRoot) {
+  const files = paths(remoteRoot);
+  try {
+    await assertOwnedDirectory(files.directory);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  const raw = await readProtected(files.descriptor);
+  if (!raw) return null;
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
+  }
+  if (value.schemaVersion !== 1 || typeof value.endpoint !== "string" || typeof value.network !== "string" || value.internalEndpoint !== `http://${RELAY_ALIAS}:4318/`) {
+    throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
+  }
+  if (value.exportsDisabled !== void 0 && typeof value.exportsDisabled !== "boolean") invalid3();
+  if (value.tracePropagationOrigins !== void 0) {
+    try {
+      value.tracePropagationOrigins = validateTracePropagationOrigins(value.tracePropagationOrigins);
+    } catch {
+      invalid3();
+    }
+  }
+  return value;
+}
+async function readHostTelemetryConnection(remoteRoot) {
+  const record = await readConnectionRecord(remoteRoot);
+  if (!record) return null;
+  const { exportsDisabled, schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost: inventoryHost2, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs } = record;
+  const value = { exportsDisabled, schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost: inventoryHost2, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs };
+  return value;
+}
+async function readHostInventoryConnection(remoteRoot) {
+  const record = await readConnectionRecord(remoteRoot);
+  if (!record) return null;
+  const files = paths(remoteRoot);
+  const details = await lstat6(files.descriptor);
+  if (details.mode & 63) throw new Error("Unprotected Host inventory state.");
+  if (!inventoryHost(record.inventoryHost)) throw new Error("Reconnect Host Telemetry to assign inventory authority.");
+  const bundle = record.inventory;
+  let credential, caPem, generation;
+  if (bundle !== void 0) {
+    if (!bundle || typeof bundle.generation !== "string" || !/^[a-f0-9]{32}$/.test(bundle.generation)) throw new Error("Invalid inventory connection.");
+    ({ credential, caPem, generation } = bundle);
+    if (Boolean(caPem) !== record.caConfigured) throw new Error("Invalid inventory connection.");
+  } else {
+    const tokenPath = path8.join(files.directory, "inventory-credential");
+    if ((await lstat6(tokenPath)).mode & 63) throw new Error("Unprotected Host inventory state.");
+    credential = (await readProtected(tokenPath) ?? "").trim();
+    caPem = record.caConfigured ? await readProtected(files.ca) ?? void 0 : void 0;
+    if (record.caConfigured && !caPem) throw new Error("Invalid inventory connection.");
+    generation = createHash6("sha256").update(JSON.stringify([record, credential, caPem])).digest("hex");
+  }
+  validateHostRelayConnection({ endpoint: record.endpoint, credential, ...caPem ? { caPem } : {} });
+  return { generation, endpoint: record.endpoint, host: record.inventoryHost, credential, caPem };
+}
+async function statusHostTelemetryRelay(remoteRoot) {
+  const connection = await readHostTelemetryConnection(remoteRoot);
+  const relay = inspectRelay();
+  return {
+    resources: await hostMetricsStatus(remoteRoot),
+    exportsDisabled: connection?.exportsDisabled === true,
+    connected: Boolean(connection),
+    relayReady: Boolean(connection && !connection.exportsDisabled && relay?.State?.Running === true),
+    capsuleCoverage: "not-configured",
+    backendVerification: "unavailable",
+    ...connection ? { ...connection.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}, endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} } : {}
+  };
+}
+async function connectHostTelemetryRelay(remoteRoot, network, input, host) {
+  const connection = validateHostRelayConnection(input);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(network)) invalid3();
+  if (!docker(["network", "inspect", network]).ok) throw helperError("Hosted Docker network is unavailable.", "Bootstrap the Host before connecting Telemetry.");
+  const files = paths(remoteRoot);
+  await mkdir3(files.directory, { recursive: true, mode: 448 });
+  await assertOwnedDirectory(files.directory);
+  return withHostTelemetryLock(remoteRoot, async () => {
+    const previous = await readHostTelemetryConnection(remoteRoot);
+    if (previous?.inventoryHost && connection.inventoryHost && previous.inventoryHost !== connection.inventoryHost) throw helperError("Host inventory identity cannot change.", "Use the persisted exact Host identity when reconnecting; restore retained state rather than resetting authority.");
+    const resources = host ? await configureHostMetrics(remoteRoot, host) : await readHostMetrics(remoteRoot);
+    const previousConfig = previous ? await readProtected(files.config) : null;
+    const previousCredential = previous ? await readProtected(files.credential) : null;
+    const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
+    const descriptor = { inventory: { generation: randomBytes3(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...connection.caPem ? { caPem: connection.caPem } : {} }, schemaVersion: 1, ...connection.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: (/* @__PURE__ */ new Date()).toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} };
+    await atomicWrite2(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 420);
+    await atomicWrite2(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}
+`, 384);
+    if (connection.caPem) await atomicWrite2(files.ca, connection.caPem, 420);
+    try {
+      await startRelay(files, network, Boolean(connection.caPem));
+    } catch (error) {
+      if (previous && previousConfig && previousCredential && (!previous.caConfigured || previousCa)) {
+        await atomicWrite2(files.config, previousConfig, 420);
+        await atomicWrite2(files.credential, previousCredential, 384);
+        if (previousCa) await atomicWrite2(files.ca, previousCa, 420);
+        try {
+          if (previous.exportsDisabled) await stopHostTelemetryExports(remoteRoot, host ?? previous.inventoryHost);
+          else await startRelay(files, previous.network, previous.caConfigured);
+        } catch {
+          throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile.");
+        }
+      } else {
+        await rm5(files.config, { force: true });
+        await rm5(files.credential, { force: true });
+      }
+      throw error;
+    }
+    await atomicWrite2(files.descriptor, `${JSON.stringify(descriptor, null, 2)}
+`, 384);
+    await rm5(path8.join(files.directory, "inventory-credential"), { force: true });
+    return await statusHostTelemetryRelay(remoteRoot);
+  });
+}
+async function startRelay(files, network, caConfigured) {
+  const existing = inspectRelay();
+  if (existing) {
+    if (!docker(["rm", "-f", RELAY_NAME]).ok) throw helperError("Host Telemetry relay could not be reconciled.", "Inspect Docker relay state and retry.");
+  }
+  const hash2 = createHash6("sha256").update(await readFile6(files.config)).digest("hex");
+  const resources = await readHostMetrics(path8.dirname(files.directory));
+  const args = ["run", "--detach", "--name", RELAY_NAME, "--label", RELAY_LABEL, "--label", `com.sporades.relay-config=${hash2}`, "--network", network, "--network-alias", RELAY_ALIAS, "--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--memory", "192m", "--cpus", "0.5", "--pids-limit", "128", "--stop-timeout", "5", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", files.credential, "--mount", `type=bind,source=${files.config},target=/etc/otelcol/config.yaml,readonly`, ...caConfigured ? ["--mount", `type=bind,source=${files.ca},target=/etc/otelcol/ca.pem,readonly`] : [], RELAY_IMAGE, "--config=/etc/otelcol/config.yaml"];
+  if (!docker(args).ok) throw helperError("Host Telemetry relay failed to start.", "Inspect protected relay configuration and Docker logs, then retry `sporades host telemetry connect`.");
+  if (resources?.enabled && !docker(["network", "connect", HOST_METRICS_NETWORK, RELAY_NAME]).ok) throw helperError("Could not attach relay to the private metrics network.", "Retry telemetry reconcile.");
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  if (inspectRelay()?.State?.Running !== true) throw helperError("Host Telemetry relay exited during startup.", "Inspect Docker relay logs for collector configuration errors, then retry.");
+}
+async function reconcileHostTelemetryRelay(remoteRoot, host, operation = "reconcile") {
+  const connection = await readHostTelemetryConnection(remoteRoot);
+  if (!connection) throw helperError("Host Telemetry is not connected.", "Run `sporades host telemetry connect` first.");
+  if (connection.exportsDisabled) {
+    if (operation === "enable") throw helperError("Host exports are disabled.", "Reconnect deliberately to enable monitoring.");
+    await stopHostTelemetryExports(remoteRoot, host ?? connection.inventoryHost, operation === "remove" ? "remove" : "disable");
+    return statusHostTelemetryRelay(remoteRoot);
+  }
+  const files = paths(remoteRoot);
+  if (!await readProtected(files.config) || !await readProtected(files.credential) || connection.caConfigured && !await readProtected(files.ca)) {
+    throw helperError("Host Telemetry configuration is incomplete.", "Reconnect the relay with a verified Telemetry profile.");
+  }
+  if (!docker(["network", "inspect", connection.network]).ok) throw helperError("Hosted Docker network is unavailable.", "Bootstrap the Host before reconciling Telemetry.");
+  const resources = host ? await configureHostMetrics(remoteRoot, host, operation) : await readHostMetrics(remoteRoot);
+  const oldConfig = await readProtected(files.config);
+  const config = renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: connection.caConfigured, resources });
+  const hash2 = createHash6("sha256").update(config).digest("hex");
+  const existing = inspectRelay();
+  const restart = !existing?.State?.Running || !existing?.NetworkSettings?.Networks?.[connection.network] || existing?.Config?.Labels?.["com.sporades.relay-config"] !== hash2 || resources?.enabled && !existing?.NetworkSettings?.Networks?.[HOST_METRICS_NETWORK];
+  if (oldConfig !== config) await atomicWrite2(files.config, config, 420);
+  if (restart) {
+    try {
+      await startRelay(files, connection.network, connection.caConfigured);
+    } catch (error) {
+      if (oldConfig) {
+        await atomicWrite2(files.config, oldConfig, 420);
+        try {
+          await startRelay(files, connection.network, connection.caConfigured);
+        } catch {
+          throw helperError("Host relay recovery failed.", "Inspect Docker and retry reconcile; protected connection credentials are preserved.");
+        }
+      }
+      throw error;
+    }
+  }
+  return statusHostTelemetryRelay(remoteRoot);
+}
+async function checkHostTelemetryDelivery(remoteRoot) {
+  const descriptor = await readHostTelemetryConnection(remoteRoot);
+  if (!descriptor) throw helperError("Host Telemetry is not connected.", "Run `sporades host telemetry connect` first.");
+  const files = paths(remoteRoot);
+  const raw = await readProtected(files.credential);
+  const credential = raw?.match(/^SPORADES_INGEST_AUTH=Bearer ([^\r\n]+)\n$/)?.[1];
+  if (!credential) throw helperError("Host Telemetry credential is unavailable.", "Reconnect the relay with a scoped ingestion credential.");
+  const ca = descriptor.caConfigured ? await readProtected(files.ca) : void 0;
+  const url = new URL("v1/traces", descriptor.endpoint);
+  const traceId = randomBytes3(16).toString("hex");
+  const body = syntheticTrace(traceId);
+  const result = await new Promise((resolve) => {
+    const request = httpsRequest2(url, { method: "POST", headers: { "content-type": "application/json", "authorization": `Bearer ${credential}`, "content-length": Buffer.byteLength(body) }, ...ca ? { ca } : {}, timeout: 5e3 }, (response) => {
+      response.resume();
+      resolve({ stage: response.statusCode === 401 || response.statusCode === 403 ? "auth" : response.statusCode && response.statusCode >= 200 && response.statusCode < 300 ? "accepted" : "destination", accepted: Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 300), statusCode: response.statusCode });
+    });
+    request.on("timeout", () => request.destroy(Object.assign(new Error("timeout"), { code: "ETIMEDOUT" })));
+    request.on("error", (error) => resolve({ stage: error.code === "ENOTFOUND" || error.code === "EAI_AGAIN" ? "dns" : String(error.code).startsWith("ERR_TLS") || String(error.code).includes("CERT") ? "tls" : "network", accepted: false }));
+    request.end(body);
+  });
+  const relayReady = (await statusHostTelemetryRelay(remoteRoot)).relayReady;
+  let relayAccepted = false;
+  if (relayReady) {
+    const script = `const u='http://${RELAY_ALIAS}:4318/v1/traces'; fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:process.argv[1],signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(()=>process.stdout.write('unavailable'));`;
+    const relay = docker(["run", "--rm", "--network", descriptor.network, "--user", "10001:10001", "--entrypoint", "node", SPORADES_BASE_IMAGE.image, "-e", script, body]);
+    relayAccepted = relay.ok && ["200", "202"].includes(relay.stdout);
+  }
+  return { ...result, origin: "host", traceId, relayReady, relayAccepted, backendStorage: "verification-unavailable", capsuleCoverage: "not-configured" };
+}
+async function stopHostTelemetryExports(remoteRoot, host, operation = "disable") {
+  if (inspectRelay() && !docker(["stop", RELAY_NAME]).ok) throw helperError("Host relay could not be stopped.", "Retry exports-disable; disabled launch policy and credentials are retained.");
+  const identity = host ?? (await readHostMetrics(remoteRoot))?.host;
+  if (identity) await configureHostMetrics(remoteRoot, identity, operation);
+}
+async function disableHostTelemetryExports(remoteRoot, host) {
+  await withHostTelemetryLock(remoteRoot, async () => {
+    const record = await readConnectionRecord(remoteRoot);
+    if (!record) throw helperError("Host Telemetry is not connected.", "Connect before changing export policy.");
+    await atomicWrite2(paths(remoteRoot).descriptor, JSON.stringify({ ...record, exportsDisabled: true }) + "\n", 384);
+  });
+  await stopHostTelemetryExports(remoteRoot, host);
+  return statusHostTelemetryRelay(remoteRoot);
+}
+async function removeHostTelemetryAgents(remoteRoot, host) {
+  if (!(await readHostTelemetryConnection(remoteRoot))?.exportsDisabled) throw helperError("Host exports are still enabled.", "Run exports-disable and reconcile inventory before remove-agents.");
+  const { reconcileHostInventory: reconcileHostInventory2 } = await Promise.resolve().then(() => (init_host_inventory(), host_inventory_exports));
+  const inventory = await reconcileHostInventory2(remoteRoot);
+  if (!inventory.host || inventory.pending || inventory.failure || inventory.acknowledgedRevision !== inventory.desiredRevision) throw helperError("Deliberate removal is not acknowledged.", "Restore inventory connectivity/authority and retry remove-agents. Credentials and the reconciler are retained.");
+  await configureHostMetrics(remoteRoot, host, "remove");
+  if (inspectRelay() && !docker(["rm", "-f", RELAY_NAME]).ok) throw helperError("Host relay could not be removed.", "Retry remove-agents; protected credentials and Capsule data are retained.");
+  return statusHostTelemetryRelay(remoteRoot);
+}
+var RELAY_IMAGE, RELAY_NAME, RELAY_ALIAS, RELAY_LABEL, MAX_CA_BYTES, syntheticTrace;
+var init_host_telemetry_relay = __esm({
+  "src/cli/host-telemetry-relay.ts"() {
+    "use strict";
+    init_telemetry_propagation_policy();
+    init_base_image();
+    init_cli_support();
+    init_host_telemetry_state();
+    init_inventory_contract();
+    init_host_metrics();
+    RELAY_IMAGE = "otel/opentelemetry-collector-contrib:0.138.0";
+    RELAY_NAME = "sporades-telemetry-relay";
+    RELAY_ALIAS = "sporades-telemetry";
+    RELAY_LABEL = "com.sporades.host-telemetry-relay=true";
+    MAX_CA_BYTES = 1024 * 1024;
+    syntheticTrace = (id2) => JSON.stringify({ resourceSpans: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: "sporades-host-relay-check" } }] }, scopeSpans: [{ spans: [{ traceId: id2, spanId: id2.slice(0, 16), name: "sporades.host.relay.check", kind: 1, startTimeUnixNano: String(Date.now() * 1e6), endTimeUnixNano: String((Date.now() + 1) * 1e6) }] }] }] });
+  }
+});
+
 // src/admission-policy.ts
 import path2 from "node:path";
 import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
@@ -26830,50 +28004,9 @@ async function publishAdmissionPolicy(root, relative, bytes) {
 }
 
 // src/cli/host-domain-aliases.ts
+init_cli_support();
 import { readdir as readdir2, readFile as readFile2 } from "node:fs/promises";
 import path3 from "node:path";
-
-// src/cli/cli-support.ts
-function errorDetails(error) {
-  if (error === null || error === void 0) {
-    return {};
-  }
-  return typeof error === "object" ? error : { message: String(error) };
-}
-function helperError(message, hint, diagnostics = null) {
-  const error = new Error(message);
-  error.hint = hint;
-  if (diagnostics) {
-    error.diagnostics = diagnostics;
-  }
-  return error;
-}
-function readStdin() {
-  return new Promise((resolve, reject) => {
-    let stdin = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => {
-      stdin += chunk;
-    });
-    process.stdin.on("end", () => resolve(stdin));
-    process.stdin.on("error", reject);
-  });
-}
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-function writeResult(result, failed = false) {
-  process.stdout.write(`${JSON.stringify(result)}
-`);
-  if (failed) {
-    process.exitCode = 1;
-  }
-}
-function writeEnvelope(result, failed = false) {
-  writeResult(result, failed);
-}
-
-// src/cli/host-domain-aliases.ts
 function validateAliasDomains(value) {
   if (value === void 0) return [];
   if (!Array.isArray(value) || value.length > 20 || value.some((hostname) => typeof hostname !== "string" || hostname.length > 253 || !hostname.includes(".") || /^[0-9.]+$/.test(hostname) || !hostname.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))) {
@@ -26935,6 +28068,7 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
 }
 
 // src/cli/sporades-host-helper.ts
+init_base_image();
 import { spawnSync as spawnSync6 } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
 import { access as access2, chmod, lstat as lstat8, mkdir as mkdir4, open as open6, opendir, readdir as readdir4, readFile as readFile8, readlink, rename as rename7, rm as rm7, stat, statfs, symlink, writeFile as writeFile3 } from "node:fs/promises";
@@ -26942,56 +28076,6 @@ import { createHash as createHash8, generateKeyPairSync, randomBytes as randomBy
 import { freemem, loadavg, totalmem } from "node:os";
 import path11 from "node:path";
 import { isDeepStrictEqual } from "node:util";
-
-// src/base-image.ts
-var SPORADES_BASE_IMAGE = {
-  name: "sporades-base",
-  image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
-  version: "0.2.0-node22-alpine",
-  runtimeUser: "sporades",
-  runtimeUid: 10001,
-  runtimeGid: 10001,
-  updatePolicy: {
-    defaultMode: "host-managed",
-    modes: ["host-managed", "auto-patch", "manual"],
-    autoPatchSupported: false,
-    autoPatchUnsupportedReason: "Base image updates are applied by replacing containers, not mutating them in place."
-  }
-};
-function baseImageRuntimeUser() {
-  return `${SPORADES_BASE_IMAGE.runtimeUid}:${SPORADES_BASE_IMAGE.runtimeGid}`;
-}
-function normaliseBaseImageUpdatePolicy(value) {
-  const mode = typeof value === "string" ? value : typeof value?.mode === "string" ? value.mode : SPORADES_BASE_IMAGE.updatePolicy.defaultMode;
-  if (!SPORADES_BASE_IMAGE.updatePolicy.modes.includes(mode)) {
-    return SPORADES_BASE_IMAGE.updatePolicy.defaultMode;
-  }
-  return mode;
-}
-function baseImageUpdatePolicy(mode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
-  return {
-    mode: normaliseBaseImageUpdatePolicy(mode),
-    autoPatch: {
-      supported: SPORADES_BASE_IMAGE.updatePolicy.autoPatchSupported,
-      reason: SPORADES_BASE_IMAGE.updatePolicy.autoPatchUnsupportedReason
-    }
-  };
-}
-function baseImageMetadata(updatePolicyMode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
-  return {
-    name: SPORADES_BASE_IMAGE.name,
-    image: SPORADES_BASE_IMAGE.image,
-    version: SPORADES_BASE_IMAGE.version,
-    updatePolicy: baseImageUpdatePolicy(updatePolicyMode)
-  };
-}
-function baseImageLabels(updatePolicyMode = SPORADES_BASE_IMAGE.updatePolicy.defaultMode) {
-  return {
-    "com.sporades.base-image.name": SPORADES_BASE_IMAGE.name,
-    "com.sporades.base-image.version": SPORADES_BASE_IMAGE.version,
-    "com.sporades.base-image.update-policy": normaliseBaseImageUpdatePolicy(updatePolicyMode)
-  };
-}
 
 // src/runtime-restart-policy.ts
 var FATAL_RUNTIME_RESTART_POLICY = {
@@ -42963,24 +44047,8 @@ var nativeAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "abor
 var nativeReason = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "reason").get;
 var nativeExceptionName = Object.getOwnPropertyDescriptor(DOMException.prototype, "name").get;
 
-// src/telemetry-propagation-policy.ts
-function validateTracePropagationOrigins(value) {
-  if (value === void 0) return [];
-  if (!Array.isArray(value) || value.length > 32) throw new Error("Invalid trace propagation origins.");
-  return [...new Set(value.map((entry) => {
-    if (typeof entry !== "string" || entry.length > 2048 || !/^https?:\/\/[^/?#]+\/?$/i.test(entry) || /[\s\\*]/.test(entry)) throw new Error("Invalid trace propagation origins.");
-    let url;
-    try {
-      url = new URL(entry);
-    } catch {
-      throw new Error("Invalid trace propagation origins.");
-    }
-    if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.hostname.includes("*") || url.username || url.password || url.pathname !== "/" || url.search || url.hash || entry.includes("?") || entry.includes("#")) throw new Error("Invalid trace propagation origins.");
-    return url.origin;
-  }))];
-}
-
 // src/runtime-telemetry.ts
+init_telemetry_propagation_policy();
 var processInstanceId = randomUUID3();
 function activeRuntimeLogIdentity() {
   const scope = runtimeRequestScope.getStore();
@@ -43313,6 +44381,9 @@ var serviceUserMutationAuthority = Object.freeze({ kind: "service-user-mutation-
 var MutationExecutionStorage = process.getBuiltinModule("node:async_hooks").AsyncLocalStorage;
 var mutationExecution = new MutationExecutionStorage();
 
+// src/cli/sporades-host-helper.ts
+init_cli_support();
+
 // src/cli/cli-version.ts
 var CLI_VERSION = "0.9.31";
 
@@ -43393,6 +44464,7 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid4) {
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
+init_cli_support();
 
 // src/cli/host-helper-release-files.ts
 function expectedReleaseFiles(release) {
@@ -43610,6 +44682,8 @@ function validatePublicArchiveBounds(entries) {
 }
 
 // src/cli/host-helper-config.ts
+init_base_image();
+init_cli_support();
 import { readFile as readFile3 } from "node:fs/promises";
 import path4 from "node:path";
 var HOST_HELPER_CONFIG_FILE = "sporades-host-helper.json";
@@ -43738,955 +44812,12 @@ function readConfigPositiveInteger(value, key, configPath) {
   return value;
 }
 
-// src/cli/host-telemetry-relay.ts
-import { spawnSync as spawnSync3 } from "node:child_process";
-import { createHash as createHash5, randomBytes as randomBytes2 } from "node:crypto";
-import { lstat as lstat5, mkdir as mkdir3, open as open4, readFile as readFile5, rename as rename4, rm as rm4 } from "node:fs/promises";
-import { request as httpsRequest } from "node:https";
-import path7 from "node:path";
-
-// src/cli/host-telemetry-state.ts
-import { spawn } from "node:child_process";
-import { lstat as lstat3, open as open3 } from "node:fs/promises";
-import path5 from "node:path";
-async function protectedPath(file, isDirectory = false) {
-  const stat2 = await lstat3(file);
-  if (stat2.isSymbolicLink() || (isDirectory ? !stat2.isDirectory() : !stat2.isFile()) || stat2.mode & 63 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unprotected Host inventory state.");
-}
-async function withHostTelemetryLock(root, operation) {
-  const dir = path5.join(root, "telemetry");
-  if (!path5.isAbsolute(root) || root === "/" || path5.normalize(root) !== root) throw new Error("Invalid Host inventory root.");
-  await protectedPath(dir, true);
-  const file = path5.join(dir, "inventory.lock");
-  const handle = await open3(file, "a", 384);
-  await handle.close();
-  await protectedPath(file);
-  const child = spawn(process.env.SPORADES_TEST_FLOCK_PATH || "/usr/bin/flock", ["--exclusive", "--timeout", "2", "--conflict-exit-code", "75", "--no-fork", file, process.execPath, "-e", "process.stdout.write('locked');process.stdin.resume();"], { stdio: ["pipe", "pipe", "ignore"] });
-  try {
-    await new Promise((resolve, reject) => {
-      child.once("error", reject);
-      child.once("exit", () => reject(new Error("Inventory lock unavailable.")));
-      child.stdout.once("data", () => resolve());
-    });
-    return await operation();
-  } finally {
-    child.stdin.end();
-  }
-}
-
-// src/cli/inventory-contract.ts
-var INVENTORY_MAX_BYTES = 1024 * 1024;
-function inventoryHost(value) {
-  return typeof value === "string" && value.length <= 253 && value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
-}
-function invalid2() {
-  throw new Error("Invalid lifecycle inventory.");
-}
-function keys(value, names) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== names.sort().join()) invalid2();
-}
-function validateInventory(value) {
-  keys(value, ["schemaVersion", "host", "revision", "capsules"]);
-  if (value.schemaVersion !== 1 || !inventoryHost(value.host) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) invalid2();
-  if (!Array.isArray(value.capsules) || value.capsules.length > 2e3 || JSON.stringify(value).length > INVENTORY_MAX_BYTES) invalid2();
-  const ids = /* @__PURE__ */ new Set();
-  const capsules = value.capsules.map((item) => {
-    keys(item, ["id", "state", "changedAt", "release", "targets"]);
-    if (typeof item.id !== "string" || item.id.length > 320) invalid2();
-    const [domain, subname, extra] = item.id.split("/");
-    if (!inventoryHost(domain) || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(subname ?? "") || extra !== void 0 || ids.has(item.id)) invalid2();
-    ids.add(item.id);
-    if (!["registered", "released", "running", "stopped", "failed", "deleted", "opted-out"].includes(String(item.state))) invalid2();
-    if (typeof item.changedAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(item.changedAt) || !Number.isFinite(Date.parse(item.changedAt))) invalid2();
-    if (item.release !== null && (typeof item.release !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(item.release))) invalid2();
-    if (!Array.isArray(item.targets) || item.targets.length > 21 || new Set(item.targets).size !== item.targets.length) invalid2();
-    for (const target of item.targets) {
-      if (typeof target !== "string" || target.length > 2048) invalid2();
-      let url;
-      try {
-        url = new URL(target);
-      } catch {
-        return invalid2();
-      }
-      if (!["https:", "http:"].includes(url.protocol) || !inventoryHost(url.hostname) || url.username || url.password || url.port || url.search || url.hash || url.pathname !== "/" || url.href !== target) invalid2();
-    }
-    if (["deleted", "opted-out", "stopped"].includes(String(item.state)) && item.targets.length) invalid2();
-    return { ...item, targets: [...item.targets].sort() };
-  }).sort((a, b) => a.id.localeCompare(b.id));
-  return { schemaVersion: 1, host: value.host, revision: Number(value.revision), capsules };
-}
-
-// src/cli/host-metrics.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash4, randomBytes } from "node:crypto";
-import { mkdir as mkdir2, lstat as lstat4, readFile as readFile4, writeFile, rename as rename3, rm as rm3, access } from "node:fs/promises";
-import { isIP as isIP2 } from "node:net";
-import path6 from "node:path";
-var HOST_METRICS_NETWORK = "sporades-host-metrics";
-var NAME = "sporades-node-exporter";
-var IMAGE = "quay.io/prometheus/node-exporter:v1.12.1";
-var OWNER = "com.sporades.host-metrics";
-function fail(message) {
-  throw helperError(message, "Inspect Host telemetry resources and protected Caddy configuration, then retry `sporades host telemetry reconcile`. No secret values are included in diagnostics.");
-}
-function run(command, args, timeout = 6e4) {
-  const r = spawnSync2(command, args, { encoding: "utf8", timeout, maxBuffer: 2 * 1024 * 1024 });
-  return { ok: !r.error && r.status === 0, text: String(r.stdout ?? "").trim() };
-}
-function inspect(kind, name2) {
-  const r = run("docker", [kind, "inspect", name2]);
-  if (!r.ok) return null;
-  try {
-    return JSON.parse(r.text)[0];
-  } catch {
-    return fail("Invalid Docker inspection response.");
-  }
-}
-function ownedContainer() {
-  const c = inspect("container", NAME);
-  if (c && c.Config?.Labels?.[OWNER] !== "true") fail("The Host exporter container name belongs to another installation.");
-  return c;
-}
-async function trusted(file, optional = false) {
-  try {
-    const s = await lstat4(file);
-    if (s.isSymbolicLink() || !s.isFile() && !s.isDirectory() || s.mode & 18 || process.geteuid && s.uid !== process.geteuid()) fail("Unsafe Host metrics configuration path.");
-  } catch (e) {
-    if (!optional || e.code !== "ENOENT") throw e;
-  }
-}
-async function publish(file, text2, mode = 384) {
-  await trusted(path6.dirname(file));
-  await trusted(file, true);
-  const tmp = `${file}.${randomBytes(8).toString("hex")}.tmp`;
-  await writeFile(tmp, text2, { flag: "wx", mode });
-  try {
-    await rename3(tmp, file);
-  } finally {
-    await rm3(tmp, { force: true });
-  }
-}
-async function readHostMetrics(root) {
-  const file = path6.join(root, "telemetry", "resources.json");
-  try {
-    await trusted(path6.dirname(file));
-    await trusted(file);
-  } catch (e) {
-    if (e.code === "ENOENT") return null;
-    throw e;
-  }
-  const v = JSON.parse(await readFile4(file, "utf8"));
-  if (typeof v.host !== "string" || !/^[a-z0-9][a-z0-9.-]{0,252}$/.test(v.host) || isIP2(v.address) !== 4 || typeof v.enabled !== "boolean" || typeof v.psi !== "boolean") fail("Invalid Host metrics state.");
-  if (v.caddyMetricsServer !== void 0 && !/^[a-zA-Z0-9_-]{1,80}$/.test(v.caddyMetricsServer)) fail("Invalid Caddy metrics server identity.");
-  return v;
-}
-function tokens(s) {
-  const result = [];
-  const pattern = /#[^\n]*|"(?:\\.|[^"\\])*"|`[^`]*`|[{}]|[^\s{}#]+/g;
-  for (const match of s.matchAll(pattern)) {
-    if (!match[0].startsWith("#")) result.push({ value: match[0], start: match.index, end: match.index + match[0].length });
-  }
-  return result;
-}
-var BEGIN = "# BEGIN Sporades Host metrics";
-var END = "# END Sporades Host metrics";
-function stripManaged(s) {
-  return s.replace(/# BEGIN Sporades Host metrics[\s\S]*?# END Sporades Host metrics\n?/g, "");
-}
-function enableCaddy(s, address) {
-  if (s.includes(`${BEGIN}
-http://${address}:20190 {
- bind ${address}
- metrics /metrics
-}
-${END}`)) return s;
-  s = stripManaged(s);
-  const t2 = tokens(s);
-  const additions = [];
-  const metric = `
-${BEGIN}
-metrics
-${END}
-`;
-  if (t2[0]?.value !== "{") {
-    s = `{
-${BEGIN}
-servers {
- metrics
-}
-${END}
-}
-${s}`;
-  } else {
-    let depth2 = 1, globalEnd = -1, catchall = false;
-    for (let i = 1; i < t2.length; i++) {
-      if (depth2 === 1 && t2[i].value === "servers") {
-        let open7 = i + 1;
-        while (open7 < t2.length && t2[open7].value !== "{") open7++;
-        if (open7 === t2.length) fail("Cannot locate Caddy servers options.");
-        if (open7 === i + 1) catchall = true;
-        let d = 1, hasMetrics = false;
-        for (let j = open7 + 1; j < t2.length && d; j++) {
-          if (d === 1 && t2[j].value === "metrics") hasMetrics = true;
-          if (t2[j].value === "{") d++;
-          if (t2[j].value === "}") d--;
-        }
-        if (!hasMetrics) additions.push({ at: t2[open7].end, text: metric });
-      }
-      if (t2[i].value === "{") depth2++;
-      if (t2[i].value === "}") depth2--;
-      if (depth2 === 0) {
-        globalEnd = t2[i].start;
-        break;
-      }
-    }
-    if (globalEnd < 0) fail("Unclosed Caddy global options.");
-    if (!catchall) additions.push({ at: globalEnd, text: `${BEGIN}
-servers {
- metrics
-}
-${END}
-` });
-    for (const a of additions.sort((a2, b) => b.at - a2.at)) s = s.slice(0, a.at) + a.text + s.slice(a.at);
-  }
-  return `${s.trimEnd()}
-
-${BEGIN}
-http://${address}:20190 {
- bind ${address}
- metrics /metrics
-}
-${END}
-`;
-}
-async function configureBootOrder(root) {
-  if (run("systemctl", ["show", "caddy.service", "--property=LoadState", "--value"]).text !== "loaded") return;
-  const dir = "/etc/systemd/system/caddy.service.d";
-  await trusted("/etc/systemd/system");
-  await mkdir2(dir, { recursive: true, mode: 493 });
-  await trusted(dir);
-  const file = path6.join(dir, "90-sporades-host-metrics.conf");
-  const config = JSON.stringify(path6.join(root, "caddy", "Caddyfile")).replace(/%/g, "%%");
-  const content2 = `# Sporades Host metrics boot ordering
-[Unit]
-After=docker.service
-Requires=docker.service
-[Service]
-ExecStart=
-ExecStart=/usr/bin/caddy run --config ${config} --adapter caddyfile
-ExecReload=
-ExecReload=/usr/bin/caddy reload --config ${config} --adapter caddyfile
-Restart=on-failure
-RestartSec=5s
-`;
-  await trusted(file, true);
-  const before = await readFile4(file, "utf8").catch((e) => {
-    if (e.code === "ENOENT") return null;
-    throw e;
-  });
-  if (before === content2) return;
-  if (before && !before.startsWith("# Sporades Host metrics boot ordering\n")) fail("Caddy boot-order override is operator-owned.");
-  await publish(file, content2, 420);
-  if (!run("systemctl", ["daemon-reload"]).ok) fail("Could not reload Caddy boot ordering.");
-}
-async function configureCaddy(root, address, enabled) {
-  const dir = path6.join(root, "caddy");
-  const file = path6.join(dir, "Caddyfile");
-  await trusted(root);
-  await trusted(dir);
-  await trusted(file);
-  const before = await readFile4(file, "utf8");
-  const after = enabled ? enableCaddy(before, address) : stripManaged(before);
-  if (before === after) return enabled ? metricsServer(file, address) : void 0;
-  const candidate = path6.join(dir, `.telemetry-${randomBytes(8).toString("hex")}.tmp`);
-  await writeFile(candidate, after, { flag: "wx", mode: 420 });
-  try {
-    if (!run("caddy", ["validate", "--config", candidate, "--adapter", "caddyfile"]).ok) fail("Caddy rejected the Host metrics configuration; the active configuration was preserved.");
-    await publish(path6.join(root, "telemetry", "caddy-before-resources.conf"), before);
-    await publish(file, after, 420);
-    if (!run("caddy", ["reload", "--config", file, "--adapter", "caddyfile"]).ok) {
-      await publish(file, before, 420);
-      if (!run("caddy", ["reload", "--config", file, "--adapter", "caddyfile"]).ok) fail("Caddy reload and recovery failed; the previous file has been restored.");
-      fail("Caddy reload failed; the previous configuration was restored.");
-    }
-  } finally {
-    await rm3(candidate, { force: true });
-  }
-  return enabled ? metricsServer(file, address) : void 0;
-}
-function metricsServer(file, address) {
-  const result = run("caddy", ["adapt", "--config", file, "--adapter", "caddyfile"]);
-  if (!result.ok) fail("Cannot identify the private Caddy metrics listener.");
-  const servers = JSON.parse(result.text)?.apps?.http?.servers ?? {};
-  const match = Object.entries(servers).find(([, value]) => value.listen?.includes(`${address}:20190`));
-  if (!match || !/^[a-zA-Z0-9_-]{1,80}$/.test(match[0])) fail("Cannot identify the private Caddy metrics listener.");
-  return match[0];
-}
-async function configureHostMetrics(root, host, operation = "reconcile") {
-  if (!/^[a-z0-9][a-z0-9.-]{0,252}$/.test(host)) fail("Invalid canonical Host identity.");
-  const saved = await readHostMetrics(root);
-  host = saved?.host ?? host;
-  const enabled = operation === "enable" || operation === "reconcile" && saved?.enabled !== false;
-  if (!enabled) {
-    await configureCaddy(root, saved?.address ?? "127.0.0.1", false);
-    if (ownedContainer() && !run("docker", operation === "remove" ? ["rm", "-f", NAME] : ["stop", NAME]).ok) fail("Could not stop the Host exporter.");
-    const state2 = { host, address: saved?.address ?? "127.0.0.1", enabled: false, psi: saved?.psi ?? false };
-    await publish(path6.join(root, "telemetry", "resources.json"), JSON.stringify(state2));
-    return state2;
-  }
-  let network = inspect("network", HOST_METRICS_NETWORK);
-  if (!network) {
-    if (!run("docker", ["network", "create", "--internal", "--label", `${OWNER}=true`, HOST_METRICS_NETWORK]).ok) fail("Could not create the private Host metrics network.");
-    network = inspect("network", HOST_METRICS_NETWORK);
-  }
-  if (network?.Labels?.[OWNER] !== "true" || network?.Internal !== true) fail("The Host metrics network is not privately owned by Sporades.");
-  const address = network?.IPAM?.Config?.find((c) => isIP2(c.Gateway ?? "") === 4)?.Gateway;
-  if (!address) fail("The Host metrics network needs an IPv4 gateway.");
-  const args = ["--network", "host", "--pid", "host", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65534:65534", "--memory", "128m", "--cpus", "0.25", "--pids-limit", "64", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--mount", "type=bind,source=/,target=/host,readonly,bind-propagation=rslave", IMAGE, "--path.rootfs=/host", "--path.procfs=/host/proc", "--path.sysfs=/host/sys", `--web.listen-address=${address}:9100`, "--collector.disable-defaults", ...["cpu", "loadavg", "meminfo", "vmstat", "diskstats", "filesystem", "netdev", "netstat", "pressure", "uname", "time", "stat"].map((c) => `--collector.${c}`), "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|pstore|rpc_pipefs|securityfs|squashfs|sysfs|tracefs)$", "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/docker/netns)($|/)", "--collector.netdev.device-exclude=^(veth.*|br-.*|docker.*|lo)$"];
-  const hash2 = createHash4("sha256").update(JSON.stringify(args)).digest("hex");
-  const current2 = ownedContainer();
-  if (current2?.Config?.Labels?.[`${OWNER}.hash`] !== hash2) {
-    if (!run("docker", ["pull", IMAGE], 18e4).ok) fail("Could not obtain the pinned Host exporter image.");
-    if (current2 && !run("docker", ["rm", "-f", NAME]).ok) fail("Could not replace the Host exporter.");
-    if (!run("docker", ["run", "-d", "--name", NAME, "--restart", "unless-stopped", "--label", `${OWNER}=true`, "--label", `${OWNER}.hash=${hash2}`, ...args]).ok) fail("Could not start the Host exporter.");
-  } else if (!current2?.State?.Running && !run("docker", ["start", NAME]).ok) fail("Could not restart the Host exporter.");
-  let caddyMetricsServer;
-  try {
-    caddyMetricsServer = await configureCaddy(root, address, true);
-  } catch (e) {
-    if (!current2) run("docker", ["rm", "-f", NAME]);
-    throw e;
-  }
-  await configureBootOrder(root);
-  const psi = await access("/proc/pressure/cpu").then(() => true, () => false);
-  const state = { host, address, enabled: true, psi, caddyMetricsServer };
-  await publish(path6.join(root, "telemetry", "resources.json"), JSON.stringify(state));
-  return state;
-}
-function hostScrapeConfig(state) {
-  if (!state.enabled) return "";
-  return `  prometheus/host:
-    config:
-      scrape_configs:
-${[["node", 9100], ["caddy", 20190]].map(([source, port]) => `        - job_name: sporades-host-${source}
-          scrape_interval: 15s
-          scrape_timeout: 5s
-          sample_limit: 10000
-          static_configs:
-            - targets: [${JSON.stringify(`${state.address}:${port}`)}]
-              labels:
-                sporades_host: ${JSON.stringify(state.host)}
-                telemetry_source: ${source}
-          metric_relabel_configs:
-${source === "caddy" && state.caddyMetricsServer ? `            - source_labels: [server]
-              regex: ${JSON.stringify(state.caddyMetricsServer)}
-              action: drop
-` : ""}            - action: labeldrop
-              regex: "host|url|url_path"
-`).join("")}`;
-}
-async function hostMetricsStatus(root) {
-  const state = await readHostMetrics(root);
-  if (!state) return { configured: false, enabled: false, backendVerification: "unavailable" };
-  const node = ownedContainer();
-  return { configured: true, enabled: state.enabled, host: state.host, exporterRunning: Boolean(node?.State?.Running), psi: state.psi ? "supported" : "unsupported", backendVerification: "unavailable" };
-}
-
-// src/cli/host-telemetry-relay.ts
-var RELAY_IMAGE = "otel/opentelemetry-collector-contrib:0.138.0";
-var RELAY_NAME = "sporades-telemetry-relay";
-var RELAY_ALIAS = "sporades-telemetry";
-var RELAY_LABEL = "com.sporades.host-telemetry-relay=true";
-var MAX_CA_BYTES = 1024 * 1024;
-function invalid3() {
-  throw helperError("Invalid Host Telemetry connection.", "Use a verified HTTPS OTLP/HTTP origin and a scoped ingestion credential without control characters.");
-}
-function validateHostRelayConnection(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) invalid3();
-  const input = value;
-  if (Object.keys(input).some((key) => !["endpoint", "credential", "inventoryCredential", "inventoryHost", "caPem", "metricsIntervalMs", "eventLoopDelayResolutionMs", "tracePropagationOrigins"].includes(key))) invalid3();
-  if (typeof input.endpoint !== "string" || input.endpoint.length > 2048) invalid3();
-  let url;
-  try {
-    url = new URL(input.endpoint);
-  } catch {
-    return invalid3();
-  }
-  if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash || url.pathname !== "/") invalid3();
-  if (typeof input.credential !== "string" || !input.credential || input.credential.length > 4096 || /[\x00-\x1f\x7f]/.test(input.credential)) invalid3();
-  if (input.inventoryCredential !== void 0 && (typeof input.inventoryCredential !== "string" || input.inventoryCredential.length < 16 || input.inventoryCredential.length > 4096 || /[\x00-\x20\x7f]/.test(input.inventoryCredential))) invalid3();
-  if (input.inventoryHost !== void 0 && !inventoryHost(input.inventoryHost)) invalid3();
-  if (input.caPem !== void 0 && (typeof input.caPem !== "string" || Buffer.byteLength(input.caPem) > MAX_CA_BYTES || !input.caPem.includes("-----BEGIN CERTIFICATE-----"))) invalid3();
-  if (input.metricsIntervalMs !== void 0 && (!Number.isSafeInteger(input.metricsIntervalMs) || input.metricsIntervalMs < 5e3 || input.metricsIntervalMs > 3e5)) invalid3();
-  if (input.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(input.eventLoopDelayResolutionMs) || input.eventLoopDelayResolutionMs < 10 || input.eventLoopDelayResolutionMs > 1e3)) invalid3();
-  if (input.tracePropagationOrigins !== void 0) {
-    try {
-      input.tracePropagationOrigins = validateTracePropagationOrigins(input.tracePropagationOrigins);
-    } catch {
-      invalid3();
-    }
-  }
-  return input;
-}
-function renderHostRelayCollectorConfig(options) {
-  const endpoint = new URL(options.endpoint);
-  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") invalid3();
-  return `receivers:
-  prometheus/pipeline:
-    config:
-      scrape_configs:
-        - job_name: sporades-pipeline-relay
-          scrape_interval: 15s
-          scrape_timeout: 3s
-          sample_limit: 2000
-          static_configs:
-            - targets: [127.0.0.1:8888]
-${options.resources ? hostScrapeConfig(options.resources) : ""}  otlp:
-    protocols:
-      http:
-        endpoint: 0.0.0.0:4318
-        max_request_body_size: 2097152
-processors:
-  memory_limiter:
-    check_interval: 1s
-    limit_mib: 96
-    spike_limit_mib: 24
-  batch:
-    send_batch_size: 256
-    send_batch_max_size: 256
-    timeout: 1s
-exporters:
-  otlphttp/remote:
-    endpoint: ${JSON.stringify(options.endpoint)}
-    headers:
-      Authorization: "\${env:SPORADES_INGEST_AUTH}"
-${options.caFile ? "    tls:\n      ca_file: /etc/otelcol/ca.pem\n" : ""}    timeout: 2s
-    sending_queue:
-      enabled: true
-      sizer: bytes
-      queue_size: 16777216
-      num_consumers: 2
-      block_on_overflow: false
-      wait_for_result: false
-    retry_on_failure:
-      enabled: true
-      initial_interval: 1s
-      max_interval: 5s
-      max_elapsed_time: 300s
-service:
-  telemetry:
-    metrics:
-      level: detailed
-      readers:
-        - pull:
-            exporter:
-              prometheus:
-                host: 127.0.0.1
-                port: 8888
-  pipelines:
-    traces:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [otlphttp/remote]
-    metrics:
-      receivers: [otlp, prometheus/pipeline${options.resources?.enabled ? ", prometheus/host" : ""}]
-      processors: [memory_limiter, batch]
-      exporters: [otlphttp/remote]
-`;
-}
-function paths(remoteRoot) {
-  if (!path7.isAbsolute(remoteRoot) || path7.normalize(remoteRoot) !== remoteRoot || remoteRoot === "/") invalid3();
-  const directory2 = path7.join(remoteRoot, "telemetry");
-  return { directory: directory2, descriptor: path7.join(directory2, "connection.json"), config: path7.join(directory2, "collector.yaml"), credential: path7.join(directory2, "credential.env"), ca: path7.join(directory2, "ca.pem") };
-}
-async function assertOwnedDirectory(directory2) {
-  const details = await lstat5(directory2);
-  if (!details.isDirectory() || details.isSymbolicLink() || process.geteuid && details.uid !== process.geteuid() || (details.mode & 63) !== 0) {
-    throw helperError("Host Telemetry state is not protected.", "Use a helper-owned telemetry directory with mode 0700 and no symlinks.");
-  }
-}
-async function readProtected(file) {
-  try {
-    const details = await lstat5(file);
-    if (!details.isFile() || details.isSymbolicLink() || process.geteuid && details.uid !== process.geteuid() || (details.mode & 18) !== 0) throw new Error("unsafe file");
-    return await readFile5(file, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") return null;
-    throw helperError("Host Telemetry state is not protected.", "Repair helper-owned Telemetry files and retry.");
-  }
-}
-async function atomicWrite(file, content2, mode) {
-  const candidate = `${file}.${randomBytes2(8).toString("hex")}.tmp`;
-  try {
-    const handle = await open4(candidate, "wx", mode);
-    try {
-      await handle.writeFile(content2);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename4(candidate, file);
-    const directory2 = await open4(path7.dirname(file), "r");
-    try {
-      await directory2.sync();
-    } finally {
-      await directory2.close();
-    }
-  } finally {
-    await rm4(candidate, { force: true });
-  }
-}
-function docker(args) {
-  const result = spawnSync3("docker", args, { encoding: "utf8", timeout: 3e4, maxBuffer: 64 * 1024 });
-  return { ok: !result.error && result.status === 0, stdout: String(result.stdout ?? "").trim() };
-}
-function inspectRelay() {
-  const result = docker(["inspect", "--format", "{{json .}}", RELAY_NAME]);
-  if (!result.ok) return null;
-  try {
-    const value = JSON.parse(result.stdout);
-    if (value?.Config?.Labels?.["com.sporades.host-telemetry-relay"] !== "true") throw new Error("foreign container");
-    return value;
-  } catch {
-    throw helperError("Host Telemetry relay name is occupied.", "Inspect the existing relay container before reconciling it.");
-  }
-}
-async function readConnectionRecord(remoteRoot) {
-  const files = paths(remoteRoot);
-  try {
-    await assertOwnedDirectory(files.directory);
-  } catch (error) {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  }
-  const raw = await readProtected(files.descriptor);
-  if (!raw) return null;
-  let value;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
-  }
-  if (value.schemaVersion !== 1 || typeof value.endpoint !== "string" || typeof value.network !== "string" || value.internalEndpoint !== `http://${RELAY_ALIAS}:4318/`) {
-    throw helperError("Host Telemetry connection is invalid.", "Repair protected Host Telemetry state.");
-  }
-  if (value.tracePropagationOrigins !== void 0) {
-    try {
-      value.tracePropagationOrigins = validateTracePropagationOrigins(value.tracePropagationOrigins);
-    } catch {
-      invalid3();
-    }
-  }
-  return value;
-}
-async function readHostTelemetryConnection(remoteRoot) {
-  const record = await readConnectionRecord(remoteRoot);
-  if (!record) return null;
-  const { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost: inventoryHost2, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs } = record;
-  const value = { schemaVersion, endpoint, network, internalEndpoint, caConfigured, connectedAt, inventoryHost: inventoryHost2, tracePropagationOrigins, metricsIntervalMs, eventLoopDelayResolutionMs };
-  return value;
-}
-async function readHostInventoryConnection(remoteRoot) {
-  const record = await readConnectionRecord(remoteRoot);
-  if (!record) return null;
-  const files = paths(remoteRoot);
-  const details = await lstat5(files.descriptor);
-  if (details.mode & 63) throw new Error("Unprotected Host inventory state.");
-  if (!inventoryHost(record.inventoryHost)) throw new Error("Reconnect Host Telemetry to assign inventory authority.");
-  const bundle = record.inventory;
-  let credential, caPem, generation;
-  if (bundle !== void 0) {
-    if (!bundle || typeof bundle.generation !== "string" || !/^[a-f0-9]{32}$/.test(bundle.generation)) throw new Error("Invalid inventory connection.");
-    ({ credential, caPem, generation } = bundle);
-    if (Boolean(caPem) !== record.caConfigured) throw new Error("Invalid inventory connection.");
-  } else {
-    const tokenPath = path7.join(files.directory, "inventory-credential");
-    if ((await lstat5(tokenPath)).mode & 63) throw new Error("Unprotected Host inventory state.");
-    credential = (await readProtected(tokenPath) ?? "").trim();
-    caPem = record.caConfigured ? await readProtected(files.ca) ?? void 0 : void 0;
-    if (record.caConfigured && !caPem) throw new Error("Invalid inventory connection.");
-    generation = createHash5("sha256").update(JSON.stringify([record, credential, caPem])).digest("hex");
-  }
-  validateHostRelayConnection({ endpoint: record.endpoint, credential, ...caPem ? { caPem } : {} });
-  return { generation, endpoint: record.endpoint, host: record.inventoryHost, credential, caPem };
-}
-async function statusHostTelemetryRelay(remoteRoot) {
-  const connection = await readHostTelemetryConnection(remoteRoot);
-  const relay = inspectRelay();
-  return {
-    resources: await hostMetricsStatus(remoteRoot),
-    connected: Boolean(connection),
-    relayReady: Boolean(connection && relay?.State?.Running === true),
-    capsuleCoverage: "not-configured",
-    backendVerification: "unavailable",
-    ...connection ? { ...connection.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}, endpoint: connection.endpoint, internalEndpoint: connection.internalEndpoint, network: connection.network, caConfigured: connection.caConfigured, connectedAt: connection.connectedAt, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} } : {}
-  };
-}
-async function connectHostTelemetryRelay(remoteRoot, network, input, host) {
-  const connection = validateHostRelayConnection(input);
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(network)) invalid3();
-  if (!docker(["network", "inspect", network]).ok) throw helperError("Hosted Docker network is unavailable.", "Bootstrap the Host before connecting Telemetry.");
-  const files = paths(remoteRoot);
-  await mkdir3(files.directory, { recursive: true, mode: 448 });
-  await assertOwnedDirectory(files.directory);
-  return withHostTelemetryLock(remoteRoot, async () => {
-    const previous = await readHostTelemetryConnection(remoteRoot);
-    if (previous?.inventoryHost && connection.inventoryHost && previous.inventoryHost !== connection.inventoryHost) throw helperError("Host inventory identity cannot change.", "Use the persisted exact Host identity when reconnecting; restore retained state rather than resetting authority.");
-    const resources = host ? await configureHostMetrics(remoteRoot, host) : await readHostMetrics(remoteRoot);
-    const previousConfig = previous ? await readProtected(files.config) : null;
-    const previousCredential = previous ? await readProtected(files.credential) : null;
-    const previousCa = previous?.caConfigured ? await readProtected(files.ca) : null;
-    const descriptor = { inventory: { generation: randomBytes2(16).toString("hex"), credential: connection.inventoryCredential ?? connection.credential, ...connection.caPem ? { caPem: connection.caPem } : {} }, schemaVersion: 1, ...connection.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {}, endpoint: connection.endpoint, network, internalEndpoint: `http://${RELAY_ALIAS}:4318/`, caConfigured: Boolean(connection.caPem), connectedAt: (/* @__PURE__ */ new Date()).toISOString(), inventoryHost: previous?.inventoryHost ?? connection.inventoryHost ?? host, ...connection.metricsIntervalMs ? { metricsIntervalMs: connection.metricsIntervalMs } : {}, ...connection.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: connection.eventLoopDelayResolutionMs } : {} };
-    await atomicWrite(files.config, renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: Boolean(connection.caPem), resources }), 420);
-    await atomicWrite(files.credential, `SPORADES_INGEST_AUTH=Bearer ${connection.credential}
-`, 384);
-    if (connection.caPem) await atomicWrite(files.ca, connection.caPem, 420);
-    try {
-      await startRelay(files, network, Boolean(connection.caPem));
-    } catch (error) {
-      if (previous && previousConfig && previousCredential && (!previous.caConfigured || previousCa)) {
-        await atomicWrite(files.config, previousConfig, 420);
-        await atomicWrite(files.credential, previousCredential, 384);
-        if (previousCa) await atomicWrite(files.ca, previousCa, 420);
-        try {
-          await startRelay(files, previous.network, previous.caConfigured);
-        } catch {
-          throw helperError("Host Telemetry relay recovery failed.", "The saved connection remains protected; inspect Docker and retry reconcile.");
-        }
-      } else {
-        await rm4(files.config, { force: true });
-        await rm4(files.credential, { force: true });
-      }
-      throw error;
-    }
-    await atomicWrite(files.descriptor, `${JSON.stringify(descriptor, null, 2)}
-`, 384);
-    await rm4(path7.join(files.directory, "inventory-credential"), { force: true });
-    return await statusHostTelemetryRelay(remoteRoot);
-  });
-}
-async function startRelay(files, network, caConfigured) {
-  const existing = inspectRelay();
-  if (existing) {
-    if (!docker(["rm", "-f", RELAY_NAME]).ok) throw helperError("Host Telemetry relay could not be reconciled.", "Inspect Docker relay state and retry.");
-  }
-  const hash2 = createHash5("sha256").update(await readFile5(files.config)).digest("hex");
-  const resources = await readHostMetrics(path7.dirname(files.directory));
-  const args = ["run", "--detach", "--name", RELAY_NAME, "--label", RELAY_LABEL, "--label", `com.sporades.relay-config=${hash2}`, "--network", network, "--network-alias", RELAY_ALIAS, "--restart", "unless-stopped", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--memory", "192m", "--cpus", "0.5", "--pids-limit", "128", "--stop-timeout", "5", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--env-file", files.credential, "--mount", `type=bind,source=${files.config},target=/etc/otelcol/config.yaml,readonly`, ...caConfigured ? ["--mount", `type=bind,source=${files.ca},target=/etc/otelcol/ca.pem,readonly`] : [], RELAY_IMAGE, "--config=/etc/otelcol/config.yaml"];
-  if (!docker(args).ok) throw helperError("Host Telemetry relay failed to start.", "Inspect protected relay configuration and Docker logs, then retry `sporades host telemetry connect`.");
-  if (resources?.enabled && !docker(["network", "connect", HOST_METRICS_NETWORK, RELAY_NAME]).ok) throw helperError("Could not attach relay to the private metrics network.", "Retry telemetry reconcile.");
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  if (inspectRelay()?.State?.Running !== true) throw helperError("Host Telemetry relay exited during startup.", "Inspect Docker relay logs for collector configuration errors, then retry.");
-}
-async function reconcileHostTelemetryRelay(remoteRoot, host, operation = "reconcile") {
-  const connection = await readHostTelemetryConnection(remoteRoot);
-  if (!connection) throw helperError("Host Telemetry is not connected.", "Run `sporades host telemetry connect` first.");
-  const files = paths(remoteRoot);
-  if (!await readProtected(files.config) || !await readProtected(files.credential) || connection.caConfigured && !await readProtected(files.ca)) {
-    throw helperError("Host Telemetry configuration is incomplete.", "Reconnect the relay with a verified Telemetry profile.");
-  }
-  if (!docker(["network", "inspect", connection.network]).ok) throw helperError("Hosted Docker network is unavailable.", "Bootstrap the Host before reconciling Telemetry.");
-  const resources = host ? await configureHostMetrics(remoteRoot, host, operation) : await readHostMetrics(remoteRoot);
-  const oldConfig = await readProtected(files.config);
-  const config = renderHostRelayCollectorConfig({ endpoint: connection.endpoint, caFile: connection.caConfigured, resources });
-  const hash2 = createHash5("sha256").update(config).digest("hex");
-  const existing = inspectRelay();
-  const restart = !existing?.State?.Running || !existing?.NetworkSettings?.Networks?.[connection.network] || existing?.Config?.Labels?.["com.sporades.relay-config"] !== hash2 || resources?.enabled && !existing?.NetworkSettings?.Networks?.[HOST_METRICS_NETWORK];
-  if (oldConfig !== config) await atomicWrite(files.config, config, 420);
-  if (restart) {
-    try {
-      await startRelay(files, connection.network, connection.caConfigured);
-    } catch (error) {
-      if (oldConfig) {
-        await atomicWrite(files.config, oldConfig, 420);
-        try {
-          await startRelay(files, connection.network, connection.caConfigured);
-        } catch {
-          throw helperError("Host relay recovery failed.", "Inspect Docker and retry reconcile; protected connection credentials are preserved.");
-        }
-      }
-      throw error;
-    }
-  }
-  return statusHostTelemetryRelay(remoteRoot);
-}
-var syntheticTrace = (id2) => JSON.stringify({ resourceSpans: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: "sporades-host-relay-check" } }] }, scopeSpans: [{ spans: [{ traceId: id2, spanId: id2.slice(0, 16), name: "sporades.host.relay.check", kind: 1, startTimeUnixNano: String(Date.now() * 1e6), endTimeUnixNano: String((Date.now() + 1) * 1e6) }] }] }] });
-async function checkHostTelemetryDelivery(remoteRoot) {
-  const descriptor = await readHostTelemetryConnection(remoteRoot);
-  if (!descriptor) throw helperError("Host Telemetry is not connected.", "Run `sporades host telemetry connect` first.");
-  const files = paths(remoteRoot);
-  const raw = await readProtected(files.credential);
-  const credential = raw?.match(/^SPORADES_INGEST_AUTH=Bearer ([^\r\n]+)\n$/)?.[1];
-  if (!credential) throw helperError("Host Telemetry credential is unavailable.", "Reconnect the relay with a scoped ingestion credential.");
-  const ca = descriptor.caConfigured ? await readProtected(files.ca) : void 0;
-  const url = new URL("v1/traces", descriptor.endpoint);
-  const traceId = randomBytes2(16).toString("hex");
-  const body = syntheticTrace(traceId);
-  const result = await new Promise((resolve) => {
-    const request = httpsRequest(url, { method: "POST", headers: { "content-type": "application/json", "authorization": `Bearer ${credential}`, "content-length": Buffer.byteLength(body) }, ...ca ? { ca } : {}, timeout: 5e3 }, (response) => {
-      response.resume();
-      resolve({ stage: response.statusCode === 401 || response.statusCode === 403 ? "auth" : response.statusCode && response.statusCode >= 200 && response.statusCode < 300 ? "accepted" : "destination", accepted: Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 300), statusCode: response.statusCode });
-    });
-    request.on("timeout", () => request.destroy(Object.assign(new Error("timeout"), { code: "ETIMEDOUT" })));
-    request.on("error", (error) => resolve({ stage: error.code === "ENOTFOUND" || error.code === "EAI_AGAIN" ? "dns" : String(error.code).startsWith("ERR_TLS") || String(error.code).includes("CERT") ? "tls" : "network", accepted: false }));
-    request.end(body);
-  });
-  const relayReady = (await statusHostTelemetryRelay(remoteRoot)).relayReady;
-  let relayAccepted = false;
-  if (relayReady) {
-    const script = `const u='http://${RELAY_ALIAS}:4318/v1/traces'; fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:process.argv[1],signal:AbortSignal.timeout(5000)}).then(r=>process.stdout.write(String(r.status))).catch(()=>process.stdout.write('unavailable'));`;
-    const relay = docker(["run", "--rm", "--network", descriptor.network, "--user", "10001:10001", "--entrypoint", "node", SPORADES_BASE_IMAGE.image, "-e", script, body]);
-    relayAccepted = relay.ok && ["200", "202"].includes(relay.stdout);
-  }
-  return { ...result, origin: "host", traceId, relayReady, relayAccepted, backendStorage: "verification-unavailable", capsuleCoverage: "not-configured" };
-}
-
-// src/cli/host-inventory.ts
-import { spawnSync as spawnSync4 } from "node:child_process";
-import { createHash as createHash6, randomBytes as randomBytes3 } from "node:crypto";
-import { lstat as lstat6, open as open5, readFile as readFile6, readdir as readdir3, rename as rename5, rm as rm5 } from "node:fs/promises";
-import { request as httpsRequest2 } from "node:https";
-import path8 from "node:path";
-function directory(root) {
-  if (!path8.isAbsolute(root) || root === "/" || path8.normalize(root) !== root) throw new Error("Invalid Host inventory root.");
-  return path8.join(root, "telemetry");
-}
-async function protectedPath2(file, isDirectory = false) {
-  const stat2 = await lstat6(file);
-  if (stat2.isSymbolicLink() || (isDirectory ? !stat2.isDirectory() : !stat2.isFile()) || stat2.mode & 63 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unprotected Host inventory state.");
-}
-async function readState(root) {
-  const file = path8.join(directory(root), "inventory.json");
-  try {
-    await protectedPath2(file);
-  } catch (error) {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  }
-  let state;
-  try {
-    state = JSON.parse(await readFile6(file, "utf8"));
-  } catch {
-    throw new Error("Invalid inventory outbox.");
-  }
-  state.desired = validateInventory(state.desired);
-  if (typeof state.endpoint !== "string" || state.acknowledgement && (!Number.isSafeInteger(state.acknowledgement.revision) || !Number.isFinite(Date.parse(state.acknowledgement.acknowledgedAt)))) throw new Error("Invalid inventory outbox.");
-  return state;
-}
-async function atomicWrite2(file, content2) {
-  const temporary = `${file}.${randomBytes3(8).toString("hex")}.tmp`;
-  try {
-    const handle = await open5(temporary, "wx", 384);
-    try {
-      await handle.writeFile(content2);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename5(temporary, file);
-    const dir = await open5(path8.dirname(file), "r");
-    try {
-      await dir.sync();
-    } finally {
-      await dir.close();
-    }
-  } finally {
-    await rm5(temporary, { force: true });
-  }
-}
-async function registrySnapshot(root, previous) {
-  const capsules = [];
-  const hostsDirectory = path8.join(root, "hosts");
-  for (const dir of [root, hostsDirectory]) {
-    const stat2 = await lstat6(dir);
-    if (!stat2.isDirectory() || stat2.isSymbolicLink() || stat2.mode & 18 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unsafe Host registry root.");
-  }
-  const domains = await readdir3(hostsDirectory, { withFileTypes: true });
-  for (const domain of domains.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!inventoryHost(domain.name)) continue;
-    if (!domain.isDirectory() || domain.isSymbolicLink()) throw new Error("Unsafe Host registry directory.");
-    const registry = path8.join(hostsDirectory, domain.name, "registry");
-    const records = path8.join(registry, "capsules");
-    for (const dir of [registry, records]) {
-      const stat2 = await lstat6(dir);
-      if (!stat2.isDirectory() || stat2.isSymbolicLink() || stat2.mode & 18 || process.geteuid && stat2.uid !== process.geteuid()) throw new Error("Unsafe Host registry.");
-    }
-    for (const file of await readdir3(records, { withFileTypes: true })) {
-      if (!file.name.endsWith(".json")) continue;
-      if (!file.isFile() || file.isSymbolicLink()) throw new Error("Unsafe registry record.");
-      const recordPath = path8.join(records, file.name);
-      const stat2 = await lstat6(recordPath);
-      if (stat2.mode & 18 || process.geteuid && stat2.uid !== process.geteuid() || stat2.size > 8 * 1024 * 1024) throw new Error("Unsafe registry record.");
-      let record;
-      try {
-        record = JSON.parse(await readFile6(recordPath, "utf8"));
-      } catch {
-        throw new Error("Invalid Host registry record.");
-      }
-      if (record.domain !== domain.name || `${record.subname}.json` !== file.name || record.remoteCapsuleId && record.remoteCapsuleId !== `${domain.name}/${record.subname}`) throw new Error("Invalid registry identity.");
-      const state = record.status === "unregistered" ? "deleted" : record.telemetry?.disabled === true ? "opted-out" : record.status;
-      const disabled = ["deleted", "stopped", "opted-out"].includes(state);
-      const url = new URL(record.hostedUrl);
-      if (url.hostname !== `${record.subname}.${domain.name}`) throw new Error("Invalid registry address.");
-      const targets = disabled ? [] : [url.href, ...(record.aliasDomains ?? []).map((alias) => `${url.protocol}//${alias}/`)];
-      capsules.push({ id: `${domain.name}/${record.subname}`, state, changedAt: record.updatedAt, release: record.currentRelease?.id ?? null, targets });
-    }
-  }
-  for (const capsule of previous) {
-    if (!capsules.some((item) => item.id === capsule.id)) {
-      const domain = capsule.id.split("/")[0];
-      if (!domains.some((item) => item.name === domain)) throw new Error("Expected Host registry disappeared.");
-      capsules.push(capsule.state === "deleted" ? capsule : { ...capsule, state: "deleted", changedAt: (/* @__PURE__ */ new Date()).toISOString(), targets: [] });
-    }
-  }
-  return capsules;
-}
-async function queueLocked(root, connection) {
-  const previous = await readState(root);
-  if (previous && previous.desired.host !== connection.host) throw new Error("Inventory Host identity cannot change.");
-  const desired = validateInventory({ schemaVersion: 1, host: connection.host, revision: previous?.desired.revision ?? 1, capsules: await registrySnapshot(root, previous?.desired.capsules ?? []) });
-  const sameGeneration = previous?.connectionGeneration === connection.generation;
-  const changed = !previous || JSON.stringify(desired) !== JSON.stringify(previous.desired) || !sameGeneration;
-  if (changed && previous) desired.revision++;
-  const state = changed ? { desired, endpoint: connection.endpoint, connectionGeneration: connection.generation, acknowledgement: sameGeneration ? previous.acknowledgement : null, lastAttemptAt: previous?.lastAttemptAt ?? null, failure: null } : previous;
-  if (changed) await atomicWrite2(path8.join(directory(root), "inventory.json"), JSON.stringify(state) + "\n");
-  return state;
-}
-async function queueHostInventory(root) {
-  if (!await readHostTelemetryConnection(root)) return null;
-  return withHostTelemetryLock(root, async () => {
-    const connection = await readHostInventoryConnection(root);
-    return connection ? queueLocked(root, connection) : null;
-  });
-}
-async function hostInventoryStatus(root, snapshotFailed = false) {
-  const connected = await readHostTelemetryConnection(root);
-  const status = async () => {
-    const state = await readState(root);
-    let unavailable = false;
-    const connection = connected ? await readHostInventoryConnection(root).catch(() => {
-      unavailable = true;
-      return null;
-    }) : null;
-    const failed = snapshotFailed || unavailable;
-    const sameGeneration = Boolean(connection && state?.connectionGeneration === connection.generation);
-    const acknowledgement = sameGeneration ? state?.acknowledgement : null;
-    const reconcilerInstalled = spawnSync4("systemctl", ["is-enabled", `${inventoryUnit(root)}.timer`], { stdio: "ignore", timeout: 1e3 }).status === 0;
-    return { host: state?.desired.host ?? connection?.host ?? connected?.inventoryHost ?? null, desiredRevision: state?.desired.revision ?? null, acknowledgedRevision: acknowledgement?.revision ?? null, acknowledgedAt: acknowledgement?.acknowledgedAt ?? null, pending: Boolean(connected && (failed || !sameGeneration || !state || state.desired.revision !== acknowledgement?.revision)), stale: Boolean(connected && (failed || !acknowledgement || Date.now() - Date.parse(acknowledgement.acknowledgedAt) > 18e4)), lastAttemptAt: state?.lastAttemptAt ?? null, failure: failed ? "snapshot-unavailable" : sameGeneration ? state?.failure ?? null : connected ? "snapshot-unavailable" : null, reconcilerInstalled };
-  };
-  return connected ? withHostTelemetryLock(root, status) : status();
-}
-async function exportHostInventory(root) {
-  return (await queueHostInventory(root))?.desired ?? null;
-}
-async function reconcileHostInventory(root) {
-  if (!await readHostTelemetryConnection(root)) return hostInventoryStatus(root);
-  const captured = await withHostTelemetryLock(root, async () => {
-    const connection2 = await readHostInventoryConnection(root);
-    return connection2 ? { connection: connection2, state: await queueLocked(root, connection2) } : null;
-  });
-  if (!captured) return hostInventoryStatus(root);
-  const { state, connection } = captured;
-  const { credential, caPem: ca } = connection;
-  const body = JSON.stringify(state.desired);
-  const result = await new Promise((resolve) => {
-    const req = httpsRequest2(new URL(`/v1/inventory/${state.desired.host}`, state.endpoint), { method: "PUT", ...ca ? { ca } : {}, headers: { authorization: `Bearer ${credential}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (res) => {
-      let text2 = "";
-      res.once("error", () => resolve({ failure: "network-or-tls" }));
-      res.once("aborted", () => resolve({ failure: "network-or-tls" }));
-      res.on("data", (chunk) => {
-        text2 += chunk;
-        if (text2.length > 8192) req.destroy();
-      });
-      res.on("end", () => {
-        if (res.statusCode !== 200) {
-          resolve({ failure: res.statusCode === 401 || res.statusCode === 403 ? "auth" : res.statusCode === 409 ? "revision-conflict" : "destination" });
-          return;
-        }
-        try {
-          const acknowledgement = JSON.parse(text2).data;
-          if (acknowledgement.revision !== state.desired.revision || typeof acknowledgement.acknowledgedAt !== "string" || !Number.isFinite(Date.parse(acknowledgement.acknowledgedAt))) throw new Error();
-          resolve({ acknowledgement });
-        } catch {
-          resolve({ failure: "invalid-acknowledgement" });
-        }
-      });
-    });
-    const deadline = setTimeout(() => req.destroy(new Error("timeout")), 5e3);
-    req.once("close", () => clearTimeout(deadline));
-    req.once("error", () => resolve({ failure: "network-or-tls" }));
-    req.end(body);
-  });
-  await withHostTelemetryLock(root, async () => {
-    const current2 = await readState(root);
-    const active = await readHostInventoryConnection(root);
-    if (!active || active.generation !== connection.generation || !current2 || current2.connectionGeneration !== connection.generation || current2.desired.host !== state.desired.host) return;
-    if ((current2.acknowledgement?.revision ?? 0) > state.desired.revision) return;
-    if (result.acknowledgement && (!current2.acknowledgement || current2.acknowledgement.revision < result.acknowledgement.revision || current2.acknowledgement.revision === result.acknowledgement.revision && Date.parse(current2.acknowledgement.acknowledgedAt) <= Date.parse(result.acknowledgement.acknowledgedAt))) current2.acknowledgement = result.acknowledgement;
-    current2.lastAttemptAt = (/* @__PURE__ */ new Date()).toISOString();
-    current2.failure = result.failure ?? null;
-    await atomicWrite2(path8.join(directory(root), "inventory.json"), JSON.stringify(current2) + "\n");
-  });
-  return hostInventoryStatus(root);
-}
-function inventoryUnit(root) {
-  return `sporades-inventory-${createHash6("sha256").update(root).digest("hex").slice(0, 16)}`;
-}
-function kickHostInventory(root) {
-  spawnSync4("systemctl", ["start", "--no-block", `${inventoryUnit(root)}.service`], { stdio: "ignore", timeout: 1e3 });
-}
-async function installHostInventoryWorker(root) {
-  directory(root);
-  const probe = spawnSync4("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e3 });
-  if (probe.status !== 0 || probe.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-unavailable" };
-  const helper = path8.join(root, "bin", "sporades-host-helper");
-  for (const file of ["/etc/systemd/system", helper]) {
-    const stat2 = await lstat6(file);
-    if (stat2.isSymbolicLink() || stat2.uid !== 0 || stat2.mode & 18) throw new Error("Unsafe inventory worker installation path.");
-  }
-  const unit = inventoryUnit(root);
-  const marker = "# Managed by Sporades: lifecycle inventory\n";
-  const executable = JSON.stringify(helper).replace(/%/g, "%%").replace(/\$/g, () => "$$");
-  const encoded = Buffer.from(root).toString("base64url");
-  const files = {
-    [`${unit}.service`]: `${marker}[Unit]
-Description=Sporades lifecycle inventory
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=${executable} --reconcile-inventory ${encoded}
-TimeoutStartSec=30
-UMask=0077
-`,
-    [`${unit}.timer`]: `${marker}[Unit]
-Description=Reconcile Sporades lifecycle inventory
-
-[Timer]
-OnBootSec=30s
-OnUnitActiveSec=60s
-RandomizedDelaySec=5s
-
-[Install]
-WantedBy=timers.target
-`
-  };
-  for (const [name2, content2] of Object.entries(files)) {
-    const file = path8.join("/etc/systemd/system", name2);
-    try {
-      const stat2 = await lstat6(file);
-      if (stat2.isSymbolicLink() || stat2.uid !== 0 || stat2.mode & 18 || !(await readFile6(file, "utf8")).startsWith(marker)) throw new Error("Inventory unit is operator-owned.");
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    await atomicWrite2(file, content2);
-  }
-  for (const args of [["daemon-reload"], ["enable", "--now", `${unit}.timer`]]) if (spawnSync4("systemctl", args, { timeout: 1e4, stdio: "ignore" }).status !== 0) throw new Error("Inventory worker installation failed.");
-  return { installed: true, unit: `${unit}.timer`, intervalSeconds: 60 };
-}
+// src/cli/sporades-host-helper.ts
+init_host_telemetry_relay();
+init_host_inventory();
 
 // src/cli/host-autostart.ts
+init_cli_support();
 import { spawnSync as spawnSync5 } from "node:child_process";
 import { createHash as createHash7, randomBytes as randomBytes4 } from "node:crypto";
 import { lstat as lstat7, readFile as readFile7, writeFile as writeFile2, rename as rename6, rm as rm6 } from "node:fs/promises";
@@ -44772,7 +44903,7 @@ WantedBy=multi-user.target docker.service
 
 // src/cli/hosted-telemetry-coverage.ts
 function hostedTelemetryConfig(connection, capsule) {
-  if (!connection || capsule.telemetry?.disabled === true) return null;
+  if (!connection || connection.exportsDisabled === true || capsule.telemetry?.disabled === true) return null;
   if (connection.internalEndpoint !== "http://sporades-telemetry:4318/") throw new Error("Invalid Host Telemetry relay endpoint.");
   return {
     ...connection.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: connection.tracePropagationOrigins } : {},
@@ -44793,6 +44924,7 @@ function hostedTelemetryCoverage(desired, running, runtime, expectedServiceName,
 
 // src/cli/host-helper-validation.ts
 import path10 from "node:path";
+init_cli_support();
 function missingCapsuleHint(request, purpose) {
   if (purpose === "push") {
     return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before pushing a release.`;
@@ -45553,6 +45685,8 @@ function managedRouteMutationLockIdentity(request) {
           bootstrapTrust
         };
       }
+    case "host.telemetry.exports-disable":
+    case "host.telemetry.remove-agents":
     case "host.telemetry.connect":
     case "host.telemetry.resources-enable":
     case "host.telemetry.resources-disable":
@@ -45786,7 +45920,7 @@ async function setCapsuleTelemetryDisabled(request, disabled) {
 }
 async function inspectHostedTelemetryCoverage(request, record, connection) {
   const serviceName = `${request.host.domain}/${record.subname}`;
-  const desired = Boolean(connection) && record.telemetry?.disabled !== true;
+  const desired = Boolean(connection && !connection.exportsDisabled) && record.telemetry?.disabled !== true;
   const expectedConfig = hostedTelemetryConfig(connection, { domain: request.host.domain, subname: record.subname, telemetry: record.telemetry });
   const expectedHash = createHash8("sha256").update(JSON.stringify(expectedConfig)).digest("hex");
   const name2 = createHostedContainerName(request.host.domain, record.subname);
@@ -45823,7 +45957,7 @@ async function main(request) {
   try {
     await dispatchMain(request);
   } finally {
-    const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.reconcile", "host.telemetry.enable", "host.telemetry.disable"];
+    const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.reconcile", "host.telemetry.exports-disable", "host.telemetry.enable", "host.telemetry.disable"];
     if (mutations.includes(request.action)) {
       try {
         if (await queueHostInventory(request.host.remoteRoot)) kickHostInventory(request.host.remoteRoot);
@@ -45843,7 +45977,17 @@ async function dispatchMain(request) {
     }
     validateCanonicalHostRouteRoot(request);
     if (request.action === "host.telemetry.connect" || request.action === "host.telemetry.reconcile") await installHostInventoryWorker(request.host.remoteRoot);
-    const data2 = request.action === "host.telemetry.inventory-export" ? { inventory: await exportHostInventory(request.host.remoteRoot) } : request.action === "host.telemetry.inventory-reconcile" ? await reconcileHostInventory(request.host.remoteRoot) : capsuleOperation ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable") : request.action === "host.telemetry.connect" ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain)) : ["host.telemetry.reconcile", "host.telemetry.resources-enable", "host.telemetry.resources-disable", "host.telemetry.resources-remove"].includes(request.action) ? await hostTelemetryStatusWithCoverage(request, await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain, request.action === "host.telemetry.reconcile" ? "reconcile" : request.action.slice("host.telemetry.resources-".length))) : request.action === "host.telemetry.status" ? await hostTelemetryStatusWithCoverage(request) : request.action === "host.telemetry.check" ? await checkHostTelemetryDelivery(request.host.remoteRoot) : null;
+    if (request.action === "host.telemetry.remove-agents") {
+      const connection = await readHostTelemetryConnection(request.host.remoteRoot);
+      if (!connection?.exportsDisabled) throw helperError("Host exports are still enabled.", "Run exports-disable first.");
+      const inventory = await reconcileHostInventory(request.host.remoteRoot);
+      if (!inventory.host || inventory.pending || inventory.failure || inventory.acknowledgedRevision !== inventory.desiredRevision) throw helperError("Deliberate removal is not acknowledged.", "Restore inventory connectivity/authority and retry remove-agents. Credentials and the reconciler are retained.");
+      const agents = await removeHostTelemetryAgents(request.host.remoteRoot, request.host.domain);
+      await removeHostInventoryWorker(request.host.remoteRoot);
+      writeEnvelope({ ok: true, data: { ...agents, inventory, agentsRemoved: true }, error: null });
+      return;
+    }
+    const data2 = request.action === "host.telemetry.exports-disable" ? await hostTelemetryStatusWithCoverage(request, await disableHostTelemetryExports(request.host.remoteRoot, request.host.domain)) : request.action === "host.telemetry.inventory-export" ? { inventory: await exportHostInventory(request.host.remoteRoot) } : request.action === "host.telemetry.inventory-reconcile" ? await reconcileHostInventory(request.host.remoteRoot) : capsuleOperation ? await setCapsuleTelemetryDisabled(request, request.action === "host.telemetry.disable") : request.action === "host.telemetry.connect" ? await hostTelemetryStatusWithCoverage(request, await connectHostTelemetryRelay(request.host.remoteRoot, hostHelperConfig.hostedCapsule.dockerNetwork, request.telemetry, request.host.domain)) : ["host.telemetry.reconcile", "host.telemetry.resources-enable", "host.telemetry.resources-disable", "host.telemetry.resources-remove"].includes(request.action) ? await hostTelemetryStatusWithCoverage(request, await reconcileHostTelemetryRelay(request.host.remoteRoot, request.host.domain, request.action === "host.telemetry.reconcile" ? "reconcile" : request.action.slice("host.telemetry.resources-".length))) : request.action === "host.telemetry.status" ? await hostTelemetryStatusWithCoverage(request) : request.action === "host.telemetry.check" ? await checkHostTelemetryDelivery(request.host.remoteRoot) : null;
     if (!data2) throw helperError("Unsupported Host Telemetry request.", "Use connect, reconcile, status, check, enable, or disable.");
     writeEnvelope({ ok: true, data: data2, error: null });
     return;

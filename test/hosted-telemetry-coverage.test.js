@@ -22,3 +22,8 @@ test('coverage distinguishes desired settings from live runtime proof', () => {
   assert.equal(hostedTelemetryCoverage(false, true, { supported: true, enabled: true }).state, 'pending-restart');
   assert.equal(hostedTelemetryCoverage(true, true, { supported: true, enabled: true, serviceName: 'capsules.example/alpha', configHash: 'old' }, 'capsules.example/alpha', 'new').state, 'pending-restart');
 });
+
+test('Host export disable overrides future Capsule opt-ins without changing per-Capsule policy', () => {
+  assert.equal(hostedTelemetryConfig({ ...connection, exportsDisabled: true }, capsule), null);
+  assert.equal(hostedTelemetryConfig({ ...connection, exportsDisabled: true }, { ...capsule, telemetry: { disabled: false } }), null);
+});
