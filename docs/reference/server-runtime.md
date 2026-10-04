@@ -848,7 +848,12 @@ inspection omits the payload and does not expose raw provider history.
 
 `ctx.mail.send(...)` accepts one provider-independent message with `to`,
 optional `cc`, `bcc`, `from`, and `replyTo`, plus `subject`, `textBody` and/or
-`htmlBody`, and an optional validated `provider` object. It returns a stable
+`htmlBody`, an optional `autoSubmitted: "no" | "auto-generated" | "auto-replied"`,
+and an optional validated `provider` object. `autoSubmitted` emits exactly one
+standard `Auto-Submitted` header for every SMTP vendor; omission emits none.
+Invalid values and attempts to supply the standard header through
+`provider.headers` fail before transport handoff. See
+[automated responses](../guide/mail.md#automated-responses). It returns a stable
 `{ messageId, accepted, rejected }` result. Delivery is partial by recipient:
 an address the server rejects at RCPT is returned in `rejected` while the
 message still reaches every address in `accepted`. The call fails only when no

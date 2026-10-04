@@ -476,6 +476,8 @@ export type MailSendInput = {
   subject: string;
   textBody?: string;
   htmlBody?: string;
+  /** Emits one standard Auto-Submitted header; omitted messages emit none. */
+  autoSubmitted?: "no" | "auto-generated" | "auto-replied";
   provider?: JsonObject;
 };
 
