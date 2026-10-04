@@ -94,7 +94,11 @@ checks are reported without hiding the applied state.
 
 The activation journal is helper-owned mode 0600. Failure before descriptor
 publication restores previous configuration, credentials and CA and restarts the
-previous relay. If recovery fails, the protected journal remains and the error
+previous relay only when exports were enabled. A deliberately disabled binding
+keeps its relay and resource exporter stopped through rollback and recovery.
+`host telemetry exports-disable` settles any older activation before publishing
+its opt-out intent and serializes shutdown with reconnect.
+If recovery fails, the protected journal remains and the error
 requires reconcile. An abrupt interruption before commit is repaired by
 `host telemetry reconcile` or the existing Host inventory timer; interruption
 after descriptor publication completes cleanup of the committed generation.

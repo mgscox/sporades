@@ -132,7 +132,7 @@ Options:
   --json              Write JSON output
   --help, -h          Show this help
 `,
-  monitoring: `Usage: sporades monitoring stack <init|validate> [options]
+  monitoring: `Usage: sporades monitoring stack <init|validate|upgrade|rollback|backup|restore> [options]
        sporades monitoring sender <issue|rotate|commit|cancel|revoke|export|status|legacy-revoke> [options]
 
 Generate or inspect the versioned trace stack from an installed Sporades package.
@@ -142,6 +142,8 @@ Rotation stages a second generation; commit retires the old one after sender ver
 
 Options:
   --dir <path>        Target stack directory (default: current directory)
+  --backup <path>     Protected cold snapshot directory (backup/restore)
+  --baseline <path>   Trusted prior release assets for a schema-3 upgrade
   --sender <name>     Named sender for lifecycle operations (optional for status)
   --host <identity>   Exact inventory Host scope (issue or legacy-revoke only)
   --out <path>        New mode-0600 credential handoff file (export only)
@@ -208,6 +210,8 @@ Profile commands:
   telemetry connect|migrate|reconcile|status|check
   telemetry inventory-export|inventory-reconcile
                       Manage the shared Host Telemetry relay
+  telemetry exports-disable|remove-agents
+                       Disable exports; remove agents after inventory acknowledgement
   telemetry resources-enable|resources-disable|resources-remove
                      Manage Host OS and Caddy collection independently of Capsules
   telemetry enable|disable <subname>

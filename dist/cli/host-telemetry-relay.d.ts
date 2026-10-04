@@ -17,6 +17,7 @@ export declare function renderHostRelayCollectorConfig(options: {
     resources?: HostMetrics | null;
 }): string;
 export declare function readHostTelemetryConnection(remoteRoot: string): Promise<{
+    exportsDisabled?: boolean;
     schemaVersion: 1;
     endpoint: string;
     network: string;
@@ -61,6 +62,7 @@ export declare function statusHostTelemetryRelay(remoteRoot: string): Promise<{
         psi: string;
         backendVerification: string;
     };
+    exportsDisabled: boolean;
     connected: boolean;
     activationPending: boolean;
     relayReady: boolean;
@@ -91,6 +93,7 @@ export declare function connectHostTelemetryRelay(remoteRoot: string, network: s
         psi: string;
         backendVerification: string;
     };
+    exportsDisabled: boolean;
     connected: boolean;
     activationPending: boolean;
     relayReady: boolean;
@@ -123,6 +126,7 @@ export declare function reconcileHostTelemetryRelay(remoteRoot: string, host?: s
         psi: string;
         backendVerification: string;
     };
+    exportsDisabled: boolean;
     connected: boolean;
     activationPending: boolean;
     relayReady: boolean;
@@ -200,6 +204,7 @@ export declare function migrateHostTelemetryRelay(remoteRoot: string, network: s
             psi: string;
             backendVerification: string;
         };
+        exportsDisabled: boolean;
         connected: boolean;
         activationPending: boolean;
         relayReady: boolean;
@@ -229,4 +234,68 @@ export declare function migrateHostTelemetryRelay(remoteRoot: string, network: s
     history: string;
 }>;
 export type HostTelemetryMigration = Awaited<ReturnType<typeof migrateHostTelemetryRelay>>;
+/** Durable opt-out keeps inventory authority and credentials for acknowledgement/recovery. */
+export declare function disableHostTelemetryExports(remoteRoot: string, host: string): Promise<{
+    eventLoopDelayResolutionMs?: number | undefined;
+    metricsIntervalMs?: number | undefined;
+    endpoint?: string | undefined;
+    internalEndpoint?: string | undefined;
+    network?: string | undefined;
+    caConfigured?: boolean | undefined;
+    connectedAt?: string | undefined;
+    tracePropagationOrigins?: string[] | undefined;
+    resources: {
+        configured: boolean;
+        enabled: boolean;
+        backendVerification: string;
+        host?: undefined;
+        exporterRunning?: undefined;
+        psi?: undefined;
+    } | {
+        configured: boolean;
+        enabled: boolean;
+        host: string;
+        exporterRunning: boolean;
+        psi: string;
+        backendVerification: string;
+    };
+    exportsDisabled: boolean;
+    connected: boolean;
+    activationPending: boolean;
+    relayReady: boolean;
+    capsuleCoverage: string;
+    backendVerification: string;
+}>;
+/** Caller must first acknowledge the exact disabled inventory revision. */
+export declare function removeHostTelemetryAgents(remoteRoot: string, host: string): Promise<{
+    eventLoopDelayResolutionMs?: number | undefined;
+    metricsIntervalMs?: number | undefined;
+    endpoint?: string | undefined;
+    internalEndpoint?: string | undefined;
+    network?: string | undefined;
+    caConfigured?: boolean | undefined;
+    connectedAt?: string | undefined;
+    tracePropagationOrigins?: string[] | undefined;
+    resources: {
+        configured: boolean;
+        enabled: boolean;
+        backendVerification: string;
+        host?: undefined;
+        exporterRunning?: undefined;
+        psi?: undefined;
+    } | {
+        configured: boolean;
+        enabled: boolean;
+        host: string;
+        exporterRunning: boolean;
+        psi: string;
+        backendVerification: string;
+    };
+    exportsDisabled: boolean;
+    connected: boolean;
+    activationPending: boolean;
+    relayReady: boolean;
+    capsuleCoverage: string;
+    backendVerification: string;
+}>;
 //# sourceMappingURL=host-telemetry-relay.d.ts.map

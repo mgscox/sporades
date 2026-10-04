@@ -45,6 +45,7 @@
       "src/cli/hosted-capsule-contract.ts",
       "src/cli/hosted-telemetry-coverage.ts",
       "src/cli/inventory-contract.ts",
+      "src/cli/monitoring-maintenance.ts",
       "src/cli/monitoring-stack.ts",
       "src/cli/project-config.ts",
       "src/cli/schedule-inspection-envelope.ts",
@@ -126,7 +127,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "539d673f8c717b7df453caaad8561bf85e3479633e5b744f0d7a39c78075d018"
+    "digest": "ba4e850b48d17b983b638010b0dc2219620f7feb4642257d5be49b28f0e97ef7"
   },
   "outputs": {
     "files": [
@@ -276,6 +277,10 @@
       "dist/cli/inventory-contract.d.ts.map",
       "dist/cli/inventory-contract.js",
       "dist/cli/inventory-contract.js.map",
+      "dist/cli/monitoring-maintenance.d.ts",
+      "dist/cli/monitoring-maintenance.d.ts.map",
+      "dist/cli/monitoring-maintenance.js",
+      "dist/cli/monitoring-maintenance.js.map",
       "dist/cli/monitoring-stack.d.ts",
       "dist/cli/monitoring-stack.d.ts.map",
       "dist/cli/monitoring-stack.js",
@@ -562,6 +567,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "a3cec62879b6ac203bca4c9155c0167268fd157b2818785721d73846fe654d1a"
+    "digest": "664b1757660129a4adca116360cdb5d2df7ae4805f3fabfc2951059005f3262c"
   }
 }

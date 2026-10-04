@@ -86,7 +86,7 @@ test('installed CLI resolves a verified Host profile and redacts the scoped cred
     assert.equal(enabled.status, 0, enabled.stderr);
     assert.equal(JSON.parse(await readFile(capture, 'utf8')).action, 'host.telemetry.enable');
     assert.notEqual(cli('host', 'telemetry', 'disable', '--host', 'remote', '--json').status, 0);
-    for (const operation of ['resources-enable', 'resources-disable', 'resources-remove', 'inventory-export', 'inventory-reconcile']) {
+    for (const operation of ['resources-enable', 'resources-disable', 'resources-remove', 'inventory-export', 'inventory-reconcile', 'exports-disable', 'remove-agents']) {
       const result = cli('host', 'telemetry', operation, '--host', 'remote', '--json');
       assert.equal(result.status, 0, result.stderr);
       assert.equal(JSON.parse(await readFile(capture, 'utf8')).action, `host.telemetry.${operation}`);

@@ -25,6 +25,7 @@ import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClama
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
+import { runMonitoringMaintenance } from "./monitoring-maintenance.js";
 import { runMonitoringStack } from "./monitoring-stack.js";
 import { changeTelemetryProfile, readTelemetryProfiles, resolveLocalTelemetryConfig, toContainerTelemetryConfig } from "./telemetry-profile.js";
 import { createHttpRequestTelemetry } from "../runtime-telemetry.js";
@@ -150,19 +151,35 @@ async function main() {
                 await runMonitoringSenderCommand(args);
                 return;
             }
-            if (args[0] !== 'stack' || !['init', 'validate'].includes(args[1] ?? '')) {
-                throw commandError('Unknown monitoring operation.', 'Use `sporades monitoring stack init|validate --dir <path>`.');
+            if (args[0] !== 'stack' || !['init', 'validate', 'upgrade', 'rollback', 'backup', 'restore'].includes(args[1] ?? '')) {
+                throw commandError('Unknown monitoring operation.', 'Use `sporades monitoring stack init|validate|upgrade|rollback|backup|restore --dir <path>`.');
             }
             let directory = process.cwd();
+            let backup;
+            let baseline;
             let json = false;
             for (let index = 2; index < args.length; index++) {
                 if (args[index] === '--dir')
                     directory = readFlagValue(args, ++index, '--dir');
+                else if (args[index] === '--backup')
+                    backup = readFlagValue(args, ++index, '--backup');
+                else if (args[index] === '--baseline')
+                    baseline = readFlagValue(args, ++index, '--baseline');
                 else if (args[index] === '--json')
                     json = true;
                 else
                     throw commandError('Unknown monitoring option.', 'Use `--dir <path>` and optional `--json`.');
             }
+            if (!['init', 'validate'].includes(args[1])) {
+                const data = await runMonitoringMaintenance(args[1], directory, resolveSporadesPackageRoot(), { backup, baseline });
+                if (json)
+                    writeResult({ ok: true, data, error: null });
+                else
+                    process.stdout.write(`Monitoring stack ${args[1]}: ${data.path}\n`);
+                return;
+            }
+            if (backup || baseline)
+                throw commandError('Unexpected maintenance option.', 'Use --backup for backup/restore and --baseline for legacy upgrades.');
             const data = await runMonitoringStack(args[1], directory, resolveSporadesPackageRoot());
             if (json)
                 writeResult({ ok: true, data, error: null });
@@ -1186,7 +1203,7 @@ function parseHostArgs(args) {
     switch (subcommand) {
         case "telemetry": {
             const [operation, ...extra] = positional;
-            if (!operation || !["connect", "migrate", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
+            if (!operation || !["connect", "migrate", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove", "exports-disable", "remove-agents"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
                 throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
             }
             if ((operation === "enable" || operation === "disable") && extra.length !== 1)
