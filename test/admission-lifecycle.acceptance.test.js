@@ -14,13 +14,20 @@ import { ADMISSION_LIMITS, publishAdmissionPolicy, parseAdmissionPolicy } from '
 import { preservedDeployFilePath } from '../dist/deploy-files.js';
 import { baseImageMetadata, baseImageRuntimeUser } from '../dist/base-image.js';
 import { clientAddressBoundaryToken } from '../dist/client-address.js';
+import { lifecycleOwnership, removeOwnedDockerContainer, assertGenerationObservation } from './support/admission-lifecycle-proof.js';
 
 // Native mode validates the scenario driver and generated runtime. It deliberately
 // makes no claim about deployed mounts, Docker hardening or the Caddy boundary.
 const native = process.env.SPORADES_ADMISSION_DRIVER_CHECK === '1';
 const enabled = native || process.env.SPORADES_REAL_ADMISSION_LIFECYCLE === '1';
+const interrupted = new AbortController();
+if (enabled) for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
+  process.exitCode = 1; interrupted.abort(new Error(`Lifecycle interrupted by ${signal}`));
+});
 const exec = promisify(execFile);
 const repo = path.resolve(new URL('..', import.meta.url).pathname);
+const proofRoot = path.resolve(process.env.SPORADES_ADMISSION_PROOF_ROOT || path.join(repo, '.sporades/issue-73'));
+assert.ok(proofRoot.startsWith(repo + path.sep), 'Lifecycle proof files must remain inside the worktree');
 const probe = 'c'.repeat(64); // disposable synthetic Host capability, never a profile credential
 const image = process.env.SPORADES_ADMISSION_PROOF_BASE_IMAGE || baseImageMetadata().image;
 const token = clientAddressBoundaryToken(probe);
@@ -40,7 +47,7 @@ async function localDockerOnly() {
 
 async function until(predicate, label, timeout = 9500) {
   const deadline = performance.now() + timeout;
-  do { if (await predicate()) return; await sleep(50); } while (performance.now() < deadline);
+  do { interrupted.signal.throwIfAborted(); if (await predicate()) return; await sleep(50); } while (performance.now() < deadline);
   assert.fail(label);
 }
 
@@ -91,7 +98,7 @@ export default capsule({ name:'lifecycle-proof', schema:{},
   }
 });`;
 
-async function fixture(root, session, declared = true) {
+async function fixture(root, session, ownership, declared = true) {
   const domain = `proof-${randomBytes(5).toString('hex')}.invalid`;
   const hostRoot = path.join(root, 'host');
   const capsule = path.join(hostRoot, 'hosts', domain, 'capsules', 'proof');
@@ -119,6 +126,23 @@ async function fixture(root, session, declared = true) {
     config: { name: 'lifecycle-proof', ...(declared ? { admissionPolicy: { path: native ? path.basename(target) : 'policy.json' } } : {}) },
     serverEnv: {}, serverSource: app, serverModuleSource,
     epilogue: `${native ? `database.securitySession=${JSON.stringify(session)}; database.runtimeProbeToken=${JSON.stringify(probe)};` : ''}
+      // Fixture-only observation: delegate unchanged to the real decision evidence
+      // and record its exact captured digest, without altering policy or responses.
+      if(database.admissionPolicy) {
+        const scope=new (process.getBuiltinModule('node:async_hooks').AsyncLocalStorage)();
+        const emit=server.emit; server.emit=function(event,...args) {
+          return event==='request'||event==='upgrade' ? scope.run(args[0],()=>emit.call(this,event,...args)) : emit.call(this,event,...args);
+        };
+        const runtime=database.admissionPolicy; let observations=0;
+        database.admissionPolicy=Object.freeze({...runtime,evidence:Object.freeze({...runtime.evidence,
+          decision(value,emit) {
+            const nonce=scope.getStore()?.headers['x-proof-observation'];
+            if(nonce && /^[0-9]{1,6}$/.test(nonce) && observations++<4096)
+              process.getBuiltinModule('node:fs').appendFileSync(process.env.PROOF_DATA_DIR+'/observations',JSON.stringify({nonce,...value})+'\\n');
+            return runtime.evidence.decision(value,emit);
+          }
+        })});
+      }
       const untouched = new Proxy({}, {get(){throw new Error('no-policy gate touched a surface');}});
       const samples=[]; for(let batch=0;batch<8;batch++) { const start=performance.now();
         for(let i=0;i<200000;i++) { if(routeHttpAdmission({},untouched,untouched)) throw new Error('unexpected admission'); }
@@ -128,8 +152,10 @@ async function fixture(root, session, declared = true) {
   });
   const serverFile = path.join(root, 'server.mjs'); await writeFile(serverFile, source);
   const name = `sporades-lifecycle-${session}-${randomBytes(6).toString('hex')}`;
-  let child, output = '', errors = '', base, cleaned = false, launchArgs;
-  const command = async args => (await exec('docker', args, { timeout: 20000, maxBuffer: 2 * 1024 * 1024 })).stdout;
+  let child, output = '', errors = '', base, cleanup, launchArgs;
+  const command = async (args, cleanupCommand = false) => (await exec('docker', args, {
+    timeout: 20000, maxBuffer: 2 * 1024 * 1024, ...(cleanupCommand ? {} : { signal: interrupted.signal }),
+  })).stdout;
   const env = { PORT: native ? '0' : '5688', PROOF_DATA_DIR: native ? data : '/app/data',
     PROOF_POLICY_FILE: native ? target : '/run/sporades-admission/' + path.basename(target),
     SPORADES_RUNTIME_PROBE_TOKEN: probe, SPORADES_CONFIG_DIR: config, SPORADES_LOG_STDOUT: '1',
@@ -137,9 +163,20 @@ async function fixture(root, session, declared = true) {
     SPORADES_ADMISSION_POLICY_PATH: declared ? (native ? path.basename(target) : 'policy.json') : '',
   };
   async function start() {
+    cleanup = await ownership.register(native ? 'process' : 'container', name, async () => {
+      if (native) {
+        if (child?.pid && child.exitCode === null && child.signalCode === null) {
+          const closed = once(child, 'exit'); child.kill('SIGTERM');
+          const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
+          try { await closed; } finally { clearTimeout(timer); }
+        }
+      } else await removeOwnedDockerContainer(args => command(args, true), name);
+    }, { fixture: root });
+    interrupted.signal.throwIfAborted();
     if (native) {
       child = spawn(process.execPath, [serverFile], { cwd: storage, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
       child.stdout.on('data', chunk => output += chunk); child.stderr.on('data', chunk => errors += chunk);
+      await cleanup.identifyProcess(child.pid);
       await until(async () => {
         const ready = output.split('\n').flatMap(line => { try { const v = JSON.parse(line); return v.proofListening ? [v] : []; } catch { return []; } }).at(-1);
         if (child.exitCode !== null) assert.fail(output + errors);
@@ -162,6 +199,7 @@ async function fixture(root, session, declared = true) {
     return value.stdout + value.stderr;
   }
   const health = async () => {
+    interrupted.signal.throwIfAborted();
     const response = await fetch(base + '/__sporades/health/runtime', { headers: { 'x-sporades-host-probe': probe }, signal: AbortSignal.timeout(3000) });
     assert.equal(response.status, 200); return (await response.json()).data.runtime;
   };
@@ -180,23 +218,19 @@ async function fixture(root, session, declared = true) {
   };
   const replace = async value => { const candidate = target + '.candidate'; await writeFile(candidate, value, { mode: 0o444 }); await rename(candidate, target); };
   const calls = async () => { try { return (await readFile(path.join(data, 'calls'), 'utf8')).trim().split('\n'); } catch (error) { if (error.code === 'ENOENT') return []; throw error; } };
-  const cleanup = async () => {
-    if (cleaned) return;
-    cleaned = true;
-    if (native) { if (child?.exitCode === null && child.signalCode === null) { const closed = once(child, 'exit'); child.kill('SIGTERM'); await closed; } }
-    else await command(['rm', '-f', name]);
-  };
-  try { await start(); await until(async () => { try { return !!await health(); } catch { return false; } }, 'runtime readiness'); }
-  catch (error) { await cleanup().catch(() => {}); throw error; }
+  await start(); await until(async () => { try { return !!await health(); } catch { return false; } }, 'runtime readiness');
   return { base, health, activate, publish, replace, calls, logs, cleanup, target, storage, data, serverFile, name,
     identity: address => ({ 'x-sporades-client-address': address, 'x-sporades-client-address-token': token }),
     artifactDigest: hash(source), command, child,
-    coldCleanup: () => command(['rm', '-f', name]),
-    coldStart: () => command(launchArgs.filter(arg => arg !== '-d')),
+    coldStart: async () => {
+      await ownership.register('container', name, () => removeOwnedDockerContainer(args => command(args, true), name), {fixture:root});
+      return command(launchArgs.filter(arg => arg !== '-d'));
+    },
   };
 }
 
 async function http(base, target, headers = {}, method = 'GET') {
+  interrupted.signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const req = request(base + target, { method, headers }, response => {
       const chunks = []; response.on('data', chunk => chunks.push(chunk));
@@ -207,6 +241,7 @@ async function http(base, target, headers = {}, method = 'GET') {
 }
 
 async function upgrade(base, target, headers = {}) {
+  interrupted.signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const req = request(base + target, { headers: { connection: 'Upgrade', upgrade: 'websocket',
       'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', ...headers } }, response => {
@@ -254,14 +289,17 @@ async function streamedEcho(base) {
 
 for (const session of ['container', 'hosted']) test(`generated ${session} admission lifecycle boundary (${native ? 'native driver check; deployment proof pending' : 'Docker'})`, { skip: !enabled, timeout: 240000 }, async t => {
   if (!native) await localDockerOnly();
-  await mkdir(path.join(repo, '.sporades/issue-73'), {recursive:true});
-  const root = await mkdtemp(path.join(repo, '.sporades/issue-73/lifecycle-'));
-  let runtime, baseline, coldCreated = false;
+  await mkdir(proofRoot, {recursive:true});
+  const root = await mkdtemp(path.join(proofRoot, 'lifecycle-'));
+  let runtime, baseline;
+  const ownership = lifecycleOwnership(path.join(root, 'ownership.json'));
+  const onAbort = () => interrupted.abort(t.signal.reason);
+  t.signal.addEventListener('abort', onAbort, { once: true });
   const evidence = { session, mode: native ? 'native-driver-check' : 'local-docker', measurements: {}, pending: ['actual Host lifecycle/Caddy publication and socket-derived identity'] };
   evidence.status = 'incomplete';
   if (native) evidence.pending.push('Docker read-only mount, hardening, authorized Host helper publication and invalid deployed cold start');
   try {
-    runtime = await fixture(path.join(root, 'runtime'), session);
+    runtime = await fixture(path.join(root, 'runtime'), session, ownership);
     evidence.bundleDigest = runtime.artifactDigest;
     evidence.baseImage = image;
     if (!native) evidence.baseImageId = (await runtime.command(['inspect', '--format', '{{.Image}}', runtime.name])).trim();
@@ -278,21 +316,68 @@ for (const session of ['container', 'hosted']) test(`generated ${session} admiss
     assert.equal(BigInt(countersAfter.evaluated) - BigInt(countersBefore.evaluated), 2n);
     assert.equal(BigInt(countersAfter.denied) - BigInt(countersBefore.denied), 2n);
 
-    // Every complete generation denies both transports. Any partial/empty policy
-    // would admit HTTP or move the upgrade to transport authentication instead.
-    let stopped = false, observed = 0;
+    // Opposite probe groups distinguish complete generations from a union,
+    // intersection, or an HTTP/WebSocket split. Each request has its own witness
+    // from the real gate; requests straddling replacement need no timing guess.
+    const generationPolicies = ['a', 'b', 'a', 'b'].map((group, index) => {
+      const policy = bytes(['/blocked', '/__sporades/ws'].map((target, transport) => ({
+        ...deny(`generation-${index}-${transport}`, target),
+        conditions: [{ kind: 'pathname', exact: target }, { kind: 'header', name: 'x-proof-group', value: group }],
+      })));
+      return { group, policy, digest: parseAdmissionPolicy(policy).digest };
+    });
+    const generations = new Map(generationPolicies.map(({digest,group}) => [digest,group]));
+    evidence.measurements.atomicStartMs = await runtime.activate(generationPolicies[0].policy);
+    const connectionResponse = await fetch(runtime.base + '/__sporades/connection-token', { headers: { 'x-sporades-connection-token-request': '1' } });
+    assert.equal(connectionResponse.status, 200);
+    const connectionToken = (await connectionResponse.json()).token;
+    let stopped = false, nonce = 0;
+    const probes = [], stable = new Map();
     const traffic = (async () => { while (!stopped) {
-      const responses = await Promise.all([http(runtime.base, '/blocked'), upgrade(runtime.base, '/__sporades/ws')]);
-      for (const response of responses) opaque(response, 403); observed += responses.length;
-      await sleep(5);
+      await Promise.all(['a', 'b'].flatMap(group => ['http', 'websocket'].map(async transport => {
+        const id = String(++nonce);
+        assert.ok(nonce <= 4096, 'atomic proof observation bound exceeded');
+        const headers = { 'x-proof-group': group, 'x-proof-observation': id };
+        const response = transport === 'http' ? await http(runtime.base, '/blocked', headers)
+          : await upgrade(runtime.base, '/__sporades/ws?connectionToken=' + connectionToken, headers);
+        probes.push({ nonce: id, group, transport, response });
+      })));
+      await sleep(20);
     } })();
+    // Attach immediately: a traffic failure must not become an unhandled rejection
+    // while publication is waiting for its next reload tick.
+    let trafficError; traffic.catch(error => { trafficError = error; stopped = true; });
     try {
-      for (let generation = 0; generation < 3; generation++) {
-        evidence.measurements[`change${generation}Ms`] = await runtime.activate(bytes([deny(`new-${generation}`, '/blocked'), deny(`ws-new-${generation}`, '/__sporades/ws')]));
+      await sleep(100);
+      for (let generation = 1; generation < generationPolicies.length; generation++) {
+        evidence.measurements[`change${generation}Ms`] = await runtime.activate(generationPolicies[generation].policy);
+        await sleep(100);
+        if (trafficError) throw trafficError;
       }
     } finally { stopped = true; await traffic; }
-    evidence.measurements.concurrentDecisions = observed; assert.ok(observed > 10);
-    assert.deepEqual(await runtime.calls(), []);
+    const observations = (await readFile(path.join(runtime.data, 'observations'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    const byNonce = new Map(observations.map(observation => [observation.nonce, observation]));
+    assert.equal(observations.length, probes.length);
+    assert.equal(byNonce.size, probes.length);
+    let admittedHttp = 0;
+    for (const probe of probes) {
+      const observation = byNonce.get(probe.nonce); assert.ok(observation, 'missing gate decision witness');
+      const denied = assertGenerationObservation(generations, observation, probe, probe.response);
+      if (denied) opaque(probe.response, 403);
+      else if (probe.transport === 'http') { assert.equal(probe.response.body, 'original bytes\n'); admittedHttp++; }
+      const counts = stable.get(observation.digest) ?? { httpAdmitted: 0, httpDenied: 0, websocketAdmitted: 0, websocketDenied: 0 };
+      counts[probe.transport + (denied ? 'Denied' : 'Admitted')]++; stable.set(observation.digest, counts);
+    }
+    for (const {digest} of generationPolicies) {
+      const counts = stable.get(digest);
+      assert.ok(counts && Object.values(counts).every(count => count > 0), 'complete generation lacked admit and deny observations on each transport');
+    }
+    assert.equal((await runtime.calls()).length, admittedHttp);
+    assert.ok((await runtime.calls()).every(call => call === 'blocked'));
+    evidence.measurements.concurrentDecisions = probes.length;
+    evidence.measurements.atomicGenerations = Object.fromEntries(stable);
+    await rm(path.join(runtime.data, 'calls'), { force: true });
+    await runtime.activate(initial);
     const good = (await runtime.health()).admissionPolicy.digest;
     await runtime.replace('{');
     await until(async () => (await runtime.health()).admissionPolicy.state === 'degraded', 'truncated replacement did not degrade');
@@ -387,7 +472,7 @@ for (const session of ['container', 'hosted']) test(`generated ${session} admiss
 
     evidence.measurements.removeMs = await runtime.activate(null);
     const removedCounters = (await runtime.health()).admissionPolicy.evidence.counters;
-    baseline = await fixture(path.join(root, 'no-policy'), session, false);
+    baseline = await fixture(path.join(root, 'no-policy'), session, ownership, false);
     assert.equal(Object.hasOwn(await baseline.health(), 'admissionPolicy'), false);
     for (const target of ['/blocked', '/asset.txt', '/missing']) {
       const old = await http(baseline.base, target), current = await http(runtime.base, target);
@@ -419,7 +504,6 @@ for (const session of ['container', 'hosted']) test(`generated ${session} admiss
     await runtime.activate(initial); await runtime.cleanup();
     await runtime.replace('{');
     if (!native) {
-      coldCreated = true;
       await runtime.coldStart().then(() => assert.fail('invalid cold start succeeded'), error => assert.equal(error.code, 1));
       const coldLogs = await runtime.logs(); assert.match(coldLogs, /Configured admission policy could not be loaded/);
       assert.equal(coldLogs.includes('proofListening'), false);
@@ -428,17 +512,13 @@ for (const session of ['container', 'hosted']) test(`generated ${session} admiss
     evidence.status = native ? 'driver-check-passed' : 'runtime-boundary-passed';
     t.diagnostic(JSON.stringify(evidence));
   } finally {
-    evidence.cleanup = [];
-    for (const [name, operation] of [[baseline?.name, () => baseline?.cleanup()], [runtime?.name, () => runtime?.cleanup()],
-      ...(coldCreated ? [[runtime.name, () => runtime.coldCleanup()]] : [])]) {
-      if (!name) continue;
-      try { await operation(); evidence.cleanup.push({name,removed:true}); }
-      catch (error) { evidence.cleanup.push({name,removed:false,error:error.message}); }
-    }
-    const cleanupFailed = evidence.cleanup.some(item => !item.removed);
+    t.signal.removeEventListener('abort', onAbort);
+    evidence.cleanup = await ownership.cleanup();
+    if (interrupted.signal.aborted) { evidence.status = 'interrupted'; evidence.error = interrupted.signal.reason.message; }
+    const cleanupFailed = evidence.cleanup.some(item => !item.removed || item.journalErrors?.length);
     if (cleanupFailed) { evidence.status = 'cleanup-failed'; evidence.retainedFixture = root; }
-    await mkdir(path.join(repo, '.sporades/issue-73/evidence'), {recursive:true});
-    await writeFile(path.join(repo, `.sporades/issue-73/evidence/lifecycle-${session}-${native ? 'driver' : 'docker'}.json`), JSON.stringify(evidence, null, 2) + '\n');
+    await mkdir(path.join(proofRoot, 'evidence'), {recursive:true});
+    await writeFile(path.join(proofRoot, `evidence/lifecycle-${session}-${native ? 'driver' : 'docker'}.json`), JSON.stringify(evidence, null, 2) + '\n');
     if (!cleanupFailed) await rm(root, { recursive: true, force: true });
     assert.equal(cleanupFailed, false, 'Owned lifecycle resource cleanup failed; see retained evidence');
   }

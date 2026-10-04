@@ -33,13 +33,22 @@ No SSH, Host profile, cloud service, Cloudflare or Appwrite account is required.
 It publishes no fixed workstation port; application ports bind only to loopback
 and use internal port 5688. Each run removes only its own named resources.
 
-Reports and logs live in `.sporades/issue-73/evidence/`. Reports include commit,
+Each invocation keeps reports and logs in its own
+`.sporades/issue-73/evidence/run-<id>/` directory, printed as `evidenceRoot` in
+the final report. Native session reports are under `fixtures/evidence/` there;
+Docker session reports are copied directly into the run directory. Reports include commit,
 working-tree dirtiness, scenario and generated-manifest digests, session kind,
 Bundle digest, timings, counters, RSS, image and cleanup results. A report remains
 `incomplete` after an interrupted assertion. `driver-check-passed` and
 `runtime-boundary-passed` have different meanings; neither means complete #73
-acceptance. Failed cleanup retains the validation copy and reports resource names
-for manual removal. The Docker runner tests committed files, so commit changes
+acceptance. Ownership is atomically journaled before launch, including failed
+startup and cold-start attempts. Failed removal stays owned, records each error,
+and is retried; only confirmed removal permits fixture deletion. SIGINT/SIGTERM
+use the same cleanup path. Failed child cleanup also retains the outer validation
+copy even if tools/image removal succeeds. Resource names, attempt history and
+retained paths are reported for manual recovery. SIGKILL or machine failure cannot
+run cleanup: inspect the per-run and fixture `ownership.json` journals and remove
+only the recorded resources before deleting their fixtures. The Docker runner tests committed files, so commit changes
 before invoking it. The socket must be accessible to the invoking UID and the
 runner's supplemental socket group.
 
@@ -52,7 +61,14 @@ hostile load, fewer than 22 KiB of total logs, and approximately 20 MiB RSS grow
 in the measured load interval. Hosted capability-seam churn retained exactly
 10,000 buckets and counted 112 evictions for 10,112 distinct synthetic addresses.
 The generated no-policy gate median was approximately 0.011 microseconds.
-Subsequent reports are authoritative for the current checkout.
+Subsequent reports are authoritative for the current checkout. After Poirot round
+1, replacement uses opposite admitted/denied probe groups and records each gate's
+actual digest and outcome in a bounded fixture-only observation file. The observer
+delegates unchanged to runtime evidence; it changes neither the immutable policy,
+decision logic nor caller-facing responses. This proves per-request attribution
+without inferring a generation from a health read before or after a request.
+Fake-Docker coverage now exercises failed startup/removal, successful retries,
+SIGINT/SIGTERM and outer-runner fixture retention; it creates no real containers.
 
 The agreed budget is a warmed median below **1 microsecond per admission gate
 call**, not a network or service-latency guarantee. The generated fixture measures
@@ -76,7 +92,7 @@ controlled trust chain, but that runner is still unexecuted.
 | Boundary | Automated scenario | Remaining deployed evidence |
 | --- | --- | --- |
 | Add/change/removal without redeploy | Timed atomic publisher operations; original Bundle digest and PID/container ID retained | Docker run; Container CLI publication and actual Hosted deployment/route path |
-| Concurrent atomic replacement | Both HTTP and upgrades must return opaque denial under every complete generation; application marker remains empty | Docker and actual Caddy traffic; capture old/new digests |
+| Concurrent atomic replacement | Opposite probe groups must admit/deny HTTP and upgrades according to each request's captured digest; union, empty and split generations fail; handler markers equal admitted HTTP totals | Docker and actual Caddy traffic; retain per-request digest/outcome witnesses |
 | Last-known-good and recovery | Truncated and oversized hot files degrade health, retain digest/enforcement, recover, and reconcile failure/recovery event totals | Docker and existing doctor/Hosted stats inspection |
 | Invalid configured cold start | Docker relaunch must exit 1 before listening or `runtime.started` | Unexecuted Docker test; direct HTTP/upgrade refusal and actual Host unavailable route |
 | HTTP and WebSocket outcomes | Opaque 403/429, content length, no-store, Retry-After, shared HTTP/upgrade quota, expiry and successful query reply | Real Caddy upgrade and handler-entry observations |
@@ -120,8 +136,25 @@ controlled trust chain, but that runner is still unexecuted.
    and raw WebSocket upgrade deny/admit/quota cases and successful query replies;
    confirm rejected traffic never enters the handler/query marker. Caddy must
    protect runtime-health controls from unauthenticated public requests.
-5. Maintain parallel HTTP/upgrade traffic while alternating two complete deny
-   policies. Observe only complete old/new digests and opaque denials. As the
+5. Repeat the generated fixture's concurrent replacement scenario behind the
+   disposable Caddy route, preserving its **trusted fixture epilogue observer**
+   from `test/admission-lifecycle.acceptance.test.js` (not application code).
+   Create policy A with two rules: pathname `/blocked` or `/__sporades/ws`, each
+   combined with header `x-proof-group` equal to `a`, action `deny`. Policy B
+   uses the same paths but matches header value `b`. Give every publication fresh
+   rule IDs and retain the expected digest-to-group map. Send both groups over
+   HTTP and WebSocket continuously, with unique `x-proof-observation` nonces;
+   obtain a valid connection token so admitted upgrades return 101. In A, group
+   `a` must get opaque 403 and group `b` HTTP 200 / upgrade 101; B reverses this.
+   Match **each response** to its nonce in `/app/data/observations`, then check
+   the captured digest and outcome against the expected complete policy. Require
+   admitted and denied observations on both transports for every generation,
+   and handler markers only for admitted HTTP. Reject unknown digests, both-group
+   denial, both-group admission, or split HTTP/WebSocket results under one digest.
+   Do not use a nearby health read as the request's generation witness; a reload
+   can occur between reads. The fixture observer is bounded to 4,096 observations;
+   shorten or restart the drill before exceeding it. Return to an unconditional
+   two-transport deny policy before the failure/recovery checks. As the
    test Host administrator, atomically install a truncated policy and then an
    oversized one in the preserved admission directory. Retain degraded doctor
    and stats output, last-known-good enforcement and redacted failure events.

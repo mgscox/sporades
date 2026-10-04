@@ -2,19 +2,22 @@
 // publishes a release or creates provider resources. Caddy acceptance is separate.
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { lifecycleOwnership } from '../test/support/admission-lifecycle-proof.js';
 
 const exec = promisify(execFile);
-const repo = fileURLToPath(new URL('..', import.meta.url));
-const evidenceRoot = path.join(repo, '.sporades/issue-73/evidence');
+const repo = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+const evidenceBase = path.resolve(process.env.SPORADES_ADMISSION_RUN_ROOT || path.join(repo, '.sporades/issue-73/evidence'));
+if (!evidenceBase.startsWith(repo + path.sep)) throw new Error('Proof evidence must remain inside the worktree');
 const config = path.join(repo, '.sporades/issue-73/config');
 const driver = process.argv.includes('--driver-check');
 if (process.argv.slice(2).some(arg => arg !== '--driver-check')) throw new Error('Usage: node scripts/verify-admission-lifecycle.mjs [--driver-check]');
-await Promise.all([evidenceRoot, config].map(dir => mkdir(dir, {recursive:true})));
 const id = randomBytes(6).toString('hex');
+const evidenceRoot = path.join(evidenceBase, `run-${id}`);
+await Promise.all([evidenceRoot, config].map(dir => mkdir(dir, {recursive:true})));
 const container = `sporades-proof-runner-${id}`;
 const toolsImage = `sporades-proof-tools-${id}`;
 const baseImage = `sporades-proof-base-${id}`;
@@ -25,13 +28,31 @@ const report = { mode: driver ? 'native-driver-check' : 'isolated-local-docker',
   workingTreeDirty: Boolean((await exec('git', ['status', '--porcelain'], {cwd:repo})).stdout.trim()),
   pending: ['actual Host lifecycle/Caddy publication, socket-derived Hosted identity, File response streaming and operator drill'],
   cleanup: [],
+  evidenceRoot,
 };
-let stage, started = false, builtTools = false, builtBase = false;
+const ownership = lifecycleOwnership(path.join(evidenceRoot, 'ownership.json'));
+const interrupted = new AbortController();
+let stage, activeChild, stopRunner;
+const onSignal = signal => {
+  report.interruption = signal;
+  report.status = 'interrupted'; report.error = `Lifecycle runner interrupted by ${signal}`;
+  process.exitCode = 1; interrupted.abort(new Error(report.error));
+  const child = activeChild;
+  if (child) {
+    child.kill('SIGTERM');
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000); timer.unref();
+    child.once('close', () => clearTimeout(timer));
+  }
+};
+const signalHandlers = Object.fromEntries(['SIGINT', 'SIGTERM'].map(signal => [signal, () => onSignal(signal)]));
+for (const [signal, handler] of Object.entries(signalHandlers)) process.on(signal, handler);
 const log = path.join(evidenceRoot, driver ? 'driver-run.log' : 'docker-run.log');
 await writeFile(log, '');
 async function run(command, args, options = {}) {
+  interrupted.signal.throwIfAborted();
   const child = spawn(command, args, { cwd: options.cwd ?? repo,
     env: { ...process.env, SPORADES_CONFIG_DIR:config, ...options.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  activeChild = child;
   const { appendFile } = await import('node:fs/promises');
   // Serialize writes so the retained log includes all output before the exit record.
   let writing = Promise.resolve();
@@ -46,21 +67,32 @@ async function run(command, args, options = {}) {
     });
     await writing;
     if (expired || result.code !== 0) throw new Error(`${command} exited ${result.code ?? result.signal}${expired ? ' (timeout)' : ''}; see ${log}`);
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); activeChild = undefined; }
+}
+async function removeDocker(kind, name) {
+  try { await exec('docker', kind === 'container' ? ['inspect',name] : ['image','inspect',name], {timeout:15000}); }
+  catch (error) {
+    if (error.code === 1 && /No such (image|object|container)/i.test(error.stderr || '')) return;
+    throw error;
+  }
+  await exec('docker', [kind === 'container' ? 'rm' : 'image', ...(kind === 'container' ? ['-f'] : ['rm']), name], {timeout:15000});
 }
 try {
   if (driver) {
-    await run(process.execPath, ['--test', '--test-concurrency=1', 'test/admission-lifecycle.acceptance.test.js'],
-      {env:{SPORADES_ADMISSION_DRIVER_CHECK:'1'},timeout:480000});
+    // Direct node:test execution keeps signal handling in the process that owns
+    // the fixture children, rather than terminating a --test coordinator first.
+    await run(process.execPath, ['test/admission-lifecycle.acceptance.test.js'],
+      {env:{SPORADES_ADMISSION_DRIVER_CHECK:'1',SPORADES_ADMISSION_PROOF_ROOT:path.join(evidenceRoot,'fixtures')},timeout:480000});
+    interrupted.signal.throwIfAborted();
     report.status = 'driver-check-passed';
     report.pending.push('all deployed Docker/mount/Host helper proof');
   } else {
     const host = process.env.DOCKER_HOST;
     if (host && !host.startsWith('unix://')) throw new Error('Remote Docker endpoints are prohibited');
-    const context = (await exec('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], {timeout:5000})).stdout.trim();
+    const context = (await exec('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], {timeout:5000,signal:interrupted.signal})).stdout.trim();
     if (!context.startsWith('unix://')) throw new Error('Only a local Unix Docker context is supported');
     const socket = (host || context).slice('unix://'.length);
-    report.dockerVersion = (await exec('docker', ['info', '--format', '{{.ServerVersion}}'], {timeout:12000})).stdout.trim();
+    report.dockerVersion = (await exec('docker', ['info', '--format', '{{.ServerVersion}}'], {timeout:12000,signal:interrupted.signal})).stdout.trim();
     if (report.workingTreeDirty) throw new Error('Commit the proof checkout before running Docker acceptance; the runner archives a pinned commit');
     stage = await mkdtemp(path.join(repo, '.sporades/issue-73/linux-'));
     const source = path.join(stage, 'source'); await mkdir(source);
@@ -73,9 +105,10 @@ try {
     // the Docker daemon, rather than inside the runner's mount namespace.
     const buildContext = path.join(stage, 'tools'); await mkdir(buildContext);
     await writeFile(path.join(buildContext, 'Dockerfile'), 'FROM node:24.19.0-alpine\nRUN apk add --no-cache docker-cli python3 util-linux\n');
-    builtTools = true;
+    await ownership.register('image', toolsImage, () => removeDocker('image', toolsImage), {stage});
     await run('docker', ['build', '--tag', toolsImage, buildContext]);
-    builtBase = true; started = true;
+    await ownership.register('image', baseImage, () => removeDocker('image', baseImage), {stage});
+    stopRunner = await ownership.register('container', container, () => removeDocker('container', container), {stage});
     const program = `
 set -eu
 npm ci --no-audit --no-fund
@@ -92,33 +125,58 @@ SPORADES_REAL_ADMISSION_LIFECYCLE=1 SPORADES_ADMISSION_PROOF_BASE_IMAGE='${baseI
       '--env', `SPORADES_CONFIG_DIR=${source}/.sporades/config`, toolsImage, 'sh', '-c', program], {timeout:900000});
     for (const session of ['container','hosted']) await writeFile(path.join(evidenceRoot, `lifecycle-${session}-docker.json`),
       await readFile(path.join(source, `.sporades/issue-73/evidence/lifecycle-${session}-docker.json`)));
-    report.status = 'runtime-boundary-passed';
+    interrupted.signal.throwIfAborted(); report.status = 'runtime-boundary-passed';
   }
 } catch (error) {
   report.error = error.message;
-  if (report.dockerVersion === undefined && !driver) report.status = 'docker-prerequisite-failed';
+  if (!interrupted.signal.aborted && report.dockerVersion === undefined && !driver) report.status = 'docker-prerequisite-failed';
   process.exitCode = 1;
 } finally {
+  // Stop the runner before inspecting its journals: Docker CLI termination alone
+  // does not stop its container, which may still be creating Capsule resources.
+  if (stopRunner) try { await stopRunner(); } catch (error) { report.error ??= error.message; }
+  let childCleanupFailed = false;
+  const proofRoot = driver ? path.join(evidenceRoot,'fixtures') : stage && path.join(stage,'source/.sporades/issue-73');
+  if (proofRoot) {
+    try {
+      for (const directory of (await readdir(proofRoot)).filter(name => name.startsWith('lifecycle-'))) {
+        try {
+          const records = JSON.parse(await readFile(path.join(proofRoot,directory,'ownership.json'),'utf8'));
+          if (records.some(record => record.journalErrors?.length)) childCleanupFailed = true;
+          for (const record of records.filter(record => !record.removed)) {
+            childCleanupFailed = true;
+            if (record.kind === 'container' && /^sporades-lifecycle-(container|hosted)-[a-f0-9]{12}$/.test(record.name)) {
+              try { await ownership.register('container',record.name,() => removeDocker('container',record.name), {stage}); }
+              catch (error) { report.cleanup.push({kind:'ownership',name:record.name,removed:false,error:error.message}); }
+            } else report.cleanup.push({kind:record.kind,name:record.name,removed:false,error:'Child ownership requires manual recovery'});
+          }
+        } catch (error) {
+          // Before registration a fixture may exist without a journal, but no
+          // resource can have launched. Other unreadable journals require recovery.
+          if (error.code !== 'ENOENT') {
+            childCleanupFailed = true;
+            report.cleanup.push({kind:'ownership',fixture:path.join(proofRoot,directory),removed:false,error:error.message});
+          }
+        }
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') { childCleanupFailed = true; report.cleanup.push({kind:'ownership',removed:false,error:error.message}); }
+    }
+  }
   if (stage) for (const session of ['container','hosted']) {
     try { await writeFile(path.join(evidenceRoot, `lifecycle-${session}-docker.json`),
       await readFile(path.join(stage, `source/.sporades/issue-73/evidence/lifecycle-${session}-docker.json`))); }
     catch (error) { if (error.code !== 'ENOENT') report.cleanup.push({kind:'evidence',session,removed:false,error:error.message}); }
   }
-  for (const [kind, name] of [[started && 'container',container],[builtBase && 'image',baseImage],[builtTools && 'image',toolsImage]]) {
-    if (!kind) continue;
-    try {
-      let absent = false;
-      try { await exec('docker', kind === 'container' ? ['inspect',name] : ['image','inspect',name], {timeout:15000}); }
-      catch (error) {
-        if (error.code === 1 && /No such (image|object|container)/i.test(error.stderr || '')) absent = true;
-        else throw error;
-      }
-      if (!absent) await exec('docker', [kind === 'container' ? 'rm' : 'image', ...(kind === 'container' ? ['-f'] : ['rm']), name], {timeout:15000});
-      report.cleanup.push({kind,name,removed:true,...(absent ? {alreadyAbsent:true} : {})});
-    }
-    catch (error) { report.cleanup.push({kind,name,removed:false,error:error.message}); process.exitCode = 1; }
-  }
-  if (stage && report.cleanup.every(item => item.removed)) await rm(stage, {recursive:true,force:true});
+  report.cleanup.push(...await ownership.cleanup());
+  if (childCleanupFailed || report.cleanup.some(item => !item.removed || item.journalErrors?.length)) {
+    process.exitCode = 1;
+    report.status = 'cleanup-failed';
+    if (stage) report.retainedStage = stage;
+    // Preserve child fixtures even if outer retries later succeed: the original
+    // failure evidence and journal are needed to review the interrupted proof.
+  } else if (stage) await rm(stage, {recursive:true,force:true});
+  for (const [signal, handler] of Object.entries(signalHandlers)) process.removeListener(signal, handler);
   await writeFile(path.join(evidenceRoot, driver ? 'driver-report.json' : 'docker-report.json'), JSON.stringify(report,null,2)+'\n');
   process.stdout.write(JSON.stringify(report,null,2)+'\n');
 }
