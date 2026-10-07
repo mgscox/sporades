@@ -26,8 +26,11 @@ queries, Capsule data, stopped/opted-out controls and rollback credentials.
   Require A's current acknowledgement and `backendStorage:verified-relay-trace`.
   Send a uniquely marked authenticated Todo mutation from an independent client;
   record its exact production trace ID and retrieve it from A with operator
-  credentials. Preserve a protected A inventory export and the original
-  historical trace/19-sample metric window from #128. Ensure the test binding has
+  credentials. Preserve a protected A inventory export and record a historical
+  trace/metric window within A's configured retention. Reuse #128's original
+  trace/19-sample window while retained; if it has expired, record the retention
+  boundary and seed a new pre-run historical reference. Normal retention expiry
+  is not migration data loss. Ensure the test binding has
   a CA bundle, so recovery tests both Collector config and CA readability.
 
 - [ ] **Interrupt the actual activation child before descriptor publication.**
