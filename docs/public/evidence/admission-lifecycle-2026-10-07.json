@@ -1,7 +1,7 @@
 {
   "proofCommit": "e733b0afb85bf2e4c8e761dab0c94014b3e740d3",
   "run": "run-206ccc6ce924",
-  "issueAcceptance": "incomplete - full non-root regression gate pending",
+  "issueAcceptance": "complete - local Docker and deployed operator evidence; non-root regression gate passed",
   "scope": "real local Docker Capsules and a separate real Caddy process with stubbed Host service management",
   "status": "runtime-boundary-passed",
   "dockerVersion": "29.8.2",
@@ -17,11 +17,11 @@
       "skipped": 0,
       "cancelled": 0
     },
-    "pending": [
-      "actual Host deployment/readiness/route publication; this check stubs Docker and Host service management",
+    "caddyVersion": "v2.11.4",
+    "limitations": [
+      "local Caddy check stubs Docker and Host service management; actual deployment evidence is recorded separately in operatorEvidence",
       "real Cloudflare-origin infrastructure; the allowed-source case is explicitly simulated"
-    ],
-    "caddyVersion": "v2.11.4"
+    ]
   },
   "sessions": {
     "container": {
@@ -226,9 +226,7 @@
     "ownershipRecordsRemoved": 10,
     "uniqueResourcesIndependentlyAbsent": 8
   },
-  "pending": [
-    "complete non-root full regression gate"
-  ],
+  "pending": [],
   "operatorEvidence": {
     "sourceCommit": "9e460853588a53144509e9f719b47a534314b5f9",
     "sourceTree": "a1200bc4c7d678e6e7c7803c3e199a48182e4d13",
@@ -245,5 +243,28 @@
     "cleanup": "operator recorded owned Host deletion and provider 404",
     "finding": "normal push currentRelease pointer omits source metadata; stats must resolve exact release history",
     "cloudflareOrigin": "not performed - optional"
+  },
+  "regression": {
+    "sourceCommit": "e1d130773457d7cfdf1d95d64912aa492c9d275f",
+    "platform": "Linux ARM64",
+    "node": "24.19.0",
+    "uid": 501,
+    "gid": 20,
+    "cpus": 4,
+    "memoryGiB": 6,
+    "temporaryStorage": "private executable short tmpfs outside repository package scope",
+    "commands": [
+      "npm ci --no-audit --no-fund",
+      "npm run typecheck",
+      "npm test (including pretest build and generated artifact freshness)"
+    ],
+    "exitCode": 0,
+    "tests": 3201,
+    "pass": 2974,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 227,
+    "duration_ms": 1486342.053722,
+    "earlierRuns": "failed or interrupted diagnostics, never credited as passes"
   }
 }

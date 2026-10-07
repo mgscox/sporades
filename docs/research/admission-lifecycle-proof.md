@@ -1,13 +1,14 @@
 # Container and Hosted admission lifecycle proof
 
-Status: **Deployed operator evidence collected; final agent regression gate pending**.
+Status: **Local and deployed operator evidence collected; agent regression gate passed**.
 Issue #72 is closed and the original Docker harness merged in PR #221 on
 2026-10-04. The disposable Container/Hosted operator drill was completed on
 2026-10-07 and exposed a `host stats` registry lookup defect. This branch resolves
 that exact current release, regenerates the shipped helper and covers normal
 push, removed declarations, stale history, legacy metadata and unavailable
-inspection. A clean full non-root regression run is still required before #73
-can be completed. The operator report's interrupted root run is not a pass.
+inspection. The full non-root regression gate passed at `e1d13077`: 3,201 tests,
+2,974 passed, zero failed or cancelled, and 227 explicitly skipped. The operator
+report's interrupted root run is not a pass.
 
 The extended local runner separately checks a real Caddy process and streamed
 File responses. Require a committed run with `runtime-boundary-passed`, both
@@ -201,10 +202,17 @@ This agent did not contact that Host or a provider, or repeat the deployed drill
 | Operator security scope | Shipped reference limits OWASP contributions | Operator reconciled Top 10:2025 wording; no comprehensive/signature-WAF or optional Cloudflare coverage claimed |
 | Inspection regression | Generated helper tests exact pointer/history lookup, removed declaration, stale history, legacy metadata, malformed and failed probe | Actual health/doctor passed; actual stats omission triggered this source repair. New stats build is tested locally, not redeployed to the deleted Host |
 
-A completed non-root full regression run remains the final agent gate. Focused
-retries and an interrupted full run do not satisfy it. The deployed observations
-above belong to the operator's recorded baseline; the new helper repair is
-supported by the focused generated-helper regression rather than a new cloud run.
+The non-root full regression gate passed at
+`e1d130773457d7cfdf1d95d64912aa492c9d275f` on Linux ARM64, Node 24.19.0, UID
+501:20, four CPUs and six GiB, with a private executable short tmpfs outside the
+repository package scope. `npm ci --no-audit --no-fund`, `npm run typecheck` and
+`npm test` completed with exit 0; pretest rebuilt and checked generated artifacts.
+The suite reported 3,201 tests: 2,974 passed, zero failed or cancelled, and 227
+explicitly skipped. Mandatory running Docker and actual deployed observations
+remain the separate evidence above. Earlier failed/interrupted runs and focused
+retries are diagnostics, not full-suite passes. The deployed observations belong
+to the operator's recorded baseline; the new helper repair is tested locally
+rather than claimed as a new cloud deployment.
 
 ## Reproduction and human follow-up steps
 
