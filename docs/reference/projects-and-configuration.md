@@ -1482,7 +1482,8 @@ check (`public-dev` uses `dev`). Degradation, unavailable inspection or a legacy
 runtime without v1 counters is a warning;
 `--strict` makes warnings fail. Text doctor includes digest and totals too.
 `sporades host stats <subname> --json` adds `data.admissionPolicy` for a Capsule
-whose release declares policy storage, using an authenticated probe inside the
+whose current recorded release declares policy storage. The helper resolves
+the exact `currentRelease.id` in release history, then uses an authenticated probe inside the
 bound container; `null` means evidence could not be read and resource stats
 remain available. Hosted health carries the snapshot in `data.runtime`.
 Operator surfaces allowlist fields and validate bounded strings/counters even

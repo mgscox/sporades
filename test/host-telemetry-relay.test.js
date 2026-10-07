@@ -45,8 +45,18 @@ test('installed CLI resolves a verified Host profile and redacts the scoped cred
   const bin = path.join(root, 'bin');
   const capture = path.join(root, 'request.json');
   await mkdir(bin);
+  // The owned TMPDIR may be inside this repository's ES-module package scope.
+  await writeFile(path.join(bin, 'package.json'), '{"type":"commonjs"}');
   const ssh = path.join(bin, 'ssh');
-  await writeFile(ssh, `#!/usr/bin/env node\nconst fs=require('node:fs');let data='';process.stdin.on('data',x=>data+=x);process.stdin.on('end',()=>{fs.writeFileSync(process.env.SPORADES_TEST_CAPTURE,data);const request=JSON.parse(data);process.stdout.write(JSON.stringify({ok:true,data:{action:request.action,endpoint:request.telemetry?.endpoint??null,relayReady:true,capsuleCoverage:'not-configured'},error:null})+'\\n')});\n`);
+  await writeFile(ssh, `#!/usr/bin/env node
+const fs=require('node:fs');let data='';
+process.stdin.on('data',x=>data+=x);
+process.stdin.on('end',()=>{
+  fs.writeFileSync(process.env.SPORADES_TEST_CAPTURE,data);
+  const request=JSON.parse(data);
+  process.stdout.write(JSON.stringify({ok:true,data:{action:request.action,endpoint:request.telemetry?.endpoint??null,relayReady:true,capsuleCoverage:'not-configured'},error:null})+'\\n');
+});
+`);
   await chmod(ssh, 0o755);
   const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, 'config'), SPORADES_TEST_CAPTURE: capture, QUERY_OPERATOR: 'operator:private-query-secret', TRACE_INGEST_TOKEN: 'private-test-ingest-token', INVENTORY_TOKEN: 'private-test-inventory-token', PATH: `${bin}${path.delimiter}${process.env.PATH}` };
   const cli = (...args) => spawnSync(process.execPath, ['bin/sporades.js', ...args], { cwd: process.cwd(), encoding: 'utf8', env });

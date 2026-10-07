@@ -95,3 +95,8 @@ export function assertGenerationObservation(generations, observation, probe, res
   assert.equal(response.status, denied ? 403 : probe.transport === 'http' ? 200 : 101, 'mixed generation response');
   return denied;
 }
+
+export function assertRequiredCaddyProof(result) {
+  assert.deepEqual(result, { passed: 1, failed: 0, skipped: 0, cancelled: 0 },
+    'The required real Caddy check must complete; missing, skipped or failed proof is incomplete');
+}

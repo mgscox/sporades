@@ -22,9 +22,10 @@ import { installProjectInfernoToolchain } from "./support/project-inferno-toolch
 import { installPrerenderFixture } from "./support/prerender-capsule.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 import { summarizePublicTree } from "../dist/public-tree.js";
-import { routeHttpAdmission } from "../dist/http-runtime.js";
+import { routeHttpAdmission, routeWebSocketAdmission } from "../dist/http-runtime.js";
 import { parseAdmissionPolicy } from "../dist/admission-policy.js";
 import { trustedClientAddress } from "../dist/client-address.js";
+import { ADMISSION_INSPECTION_SCRIPT } from "../dist/cli/admission-inspection.js";
 import { installPrerenderWarnings, assertPrerenderWarnings } from "./support/prerender-warnings.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -7949,20 +7950,27 @@ test("sporades host helper keeps read-only Capsule inspection available during a
       env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "800" },
     });
     const mutation = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(fixture.lockDir);
-    const read = startHostHelper({
-      action: "capsule.release.list",
-      host: fixture.request.host,
-      capsule: fixture.request.capsule,
-    }, { cwd: dir, env: { ...fixture.docker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "2000" } });
-    const readResult = await Promise.race([
-      read.result,
-      new Promise((resolve) => setTimeout(() => resolve(null), 300)),
-    ]);
-    assert.notEqual(readResult, null, "read-only inspection must not wait behind route mutation");
-    assert.doesNotMatch(JSON.parse(readResult.stdout).error?.message ?? "", /route is locked/i);
-    assert.equal((await Promise.race([mutation.result.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 10))])), false);
-    assert.equal(JSON.parse((await mutation.result).stdout).ok, true);
+    let read;
+    try {
+      await waitForPath(fixture.lockDir);
+      read = startHostHelper({
+        action: "capsule.release.list",
+        host: fixture.request.host,
+        capsule: fixture.request.capsule,
+      }, { cwd: dir, env: { ...fixture.docker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "2000" } });
+      const readResult = await Promise.race([
+        read.result,
+        new Promise((resolve) => setTimeout(() => resolve(null), 300)),
+      ]);
+      assert.notEqual(readResult, null, "read-only inspection must not wait behind route mutation");
+      assert.doesNotMatch(JSON.parse(readResult.stdout).error?.message ?? "", /route is locked/i);
+      assert.equal((await Promise.race([mutation.result.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 10))])), false);
+      assert.equal(JSON.parse((await mutation.result).stdout).ok, true);
+    } finally {
+      // Even a failed timing assertion must settle both helper processes before the
+      // surrounding fixture removes their directory.
+      await Promise.allSettled([mutation.result, ...(read ? [read.result] : [])]);
+    }
   });
 });
 
@@ -9099,6 +9107,59 @@ test("sporades host helper reports normalized Docker no-stream stats with raw pa
       ["inspect", "--format", "{{json .}}", "sporades-capsules-example-dev-team-notes"],
     ]);
   });
+});
+
+test("sporades host helper stats inspects admission from the exact current release history", async (t) => {
+  const admissionFiles = [{ path: "policy.json", update: "admission" }];
+  const releaseId = "20260101T000000Z-abcdef12";
+  const digest = "a".repeat(64);
+  const health = { state: "degraded", digest, rateLimit: { buckets: 2, maxBuckets: 10000, evictions: 3 } };
+  for (const scenario of [
+    { name: "normal push pointer with older release first", files: admissionFiles, expected: health },
+    { name: "revoked declaration ignores historical and stale pointer metadata", files: [], stalePointer: true, probe: false },
+    { name: "missing exact release ignores historical declaration", missing: true, probe: false },
+    { name: "legacy current release metadata", legacy: true, expected: health },
+    { name: "malformed inspection stays opaque", files: admissionFiles, stdout: "truncated-private-probe", expected: null },
+    { name: "failed inspection preserves resource stats", files: admissionFiles, exitStatus: 1, expected: null },
+  ]) await t.test(scenario.name, async () => withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const recordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(recordPath), { recursive: true });
+    const source = { deployFiles: admissionFiles };
+    await writeFile(recordPath, JSON.stringify({
+      subname: "team-notes", domain: "capsules.example.dev", status: "running",
+      currentRelease: { id: releaseId, ...(scenario.legacy || scenario.stalePointer ? { source } : {}) },
+      ...(scenario.legacy ? {} : { releases: [
+        { id: "20251231T000000Z-deadbeef", source },
+        ...(!scenario.missing ? [{ id: releaseId, source: { deployFiles: scenario.files } }] : []),
+      ] }),
+    }) + "\n");
+    const docker = await installFakeDocker(dir, { env: {
+      FAKE_DOCKER_STATS_JSON: JSON.stringify({ CPUPerc: "12.34%", PIDs: "11" }),
+      FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{
+        stdout: scenario.stdout ?? JSON.stringify({ admissionPolicy: { ...health, address: "private-runtime-address", capability: "private-runtime-capability" } }),
+        exitStatus: scenario.exitStatus ?? 0,
+      }]),
+    } });
+    const result = await runHostHelper({
+      action: "capsule.stats",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" },
+      stats: { hostedUrl: "https://team-notes.capsules.example.dev", remoteCapsuleId: "capsules.example.dev/team-notes", container: { name: "sporades-capsules-example-dev-team-notes" } },
+    }, { cwd: dir, env: docker.env });
+    assert.equal(result.code, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true, result.stdout);
+    assert.equal(output.data.stats.cpuPercent, 12.34);
+    const probes = (await docker.calls()).filter(call => call.args[0] === "exec");
+    assert.equal(probes.length, scenario.probe === false ? 0 : 1);
+    if (scenario.probe === false) assert.equal(Object.hasOwn(output.data, "admissionPolicy"), false);
+    else {
+      assert.deepEqual(output.data.admissionPolicy, scenario.expected);
+      assert.deepEqual(probes[0].args, ["exec", "sporades-capsules-example-dev-team-notes", "node", "--input-type=module", "--eval", ADMISSION_INSPECTION_SCRIPT]);
+    }
+    assert.doesNotMatch(result.stdout + result.stderr, /private-runtime|truncated-private-probe/);
+  }));
 });
 
 test("sporades host helper lists an empty Hosted Capsule registry", async () => {
@@ -15848,24 +15909,36 @@ test('real Caddy rewrites Hosted identity and gates simulated Cloudflare traffic
     await mkdir(path.dirname(recordPath), { recursive: true });
     await writeFile(recordPath, JSON.stringify({subname:'address',domain:'capsules.example.dev'}));
     await symlink(releaseDir, path.join(capsuleDir,'current'));
-    const policy = parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'address',enabled:true,conditions:[{kind:'pathname',exact:'/blocked'},{kind:'address',value:'192.0.2.0/24'}],action:{kind:'deny'}}]})));
+    let policy = parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'address',enabled:true,conditions:[{kind:'pathname',exact:'/blocked'},{kind:'address',value:'192.0.2.0/24'}],action:{kind:'deny'}}]})));
     const database = {securitySession:'hosted',runtimeProbeToken:null,admissionPolicy:{current:()=>policy}};
-    let calls = 0;
+    let calls = 0, handlers = 0;
     const runtime = createServer((request,response) => {
       calls++;
       if (routeHttpAdmission(database,request,response)) return;
+      handlers++;
       response.setHeader('content-type','application/json');
       response.end(JSON.stringify({address:trustedClientAddress(database,request),count:request.rawHeaders.filter((name,i)=>i%2===0 && name.toLowerCase()==='x-sporades-client-address').length}));
+    });
+    runtime.on('upgrade', (request, socket) => {
+      if (routeWebSocketAdmission(database, request, socket)) return;
+      handlers++;
+      const accept = createHash('sha1').update(request.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+      socket.end(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     });
     await new Promise(resolve=>runtime.listen(0,'127.0.0.1',resolve));
     try {
       const docker = await installFakeDocker(path.join(dir,'docker'),{env:{FAKE_DOCKER_PUBLISHED_PORT:`127.0.0.1:${runtime.address().port}`}});
       const caddy = await installFakeCaddy(path.join(dir,'caddy'));
-      const env = {...docker.env,...caddy.env,PATH:`${caddy.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`};
+      // The real proxy runs as the fixture owner. Host service management remains
+      // fake; an installed system caddy user must not change this fixture's owner.
+      const caddyUser = await installFakeCaddyUserCommands(path.join(dir,'caddy-user'));
+      const env = {...docker.env,...caddy.env,...caddyUser.env,
+        PATH:`${caddyUser.fakeBinDir}${path.delimiter}${caddy.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`};
       for (const mode of ['automatic','cloudflare-origin','simulated-cloudflare']) {
         const tls = mode === 'automatic' ? {mode:'automatic'} : {mode:'cloudflare-origin',certificate:path.join(remoteRoot,'hosts','capsules.example.dev','tls','origin.crt'),key:path.join(remoteRoot,'hosts','capsules.example.dev','tls','origin.key')};
         const result = await runHostHelper({action:'capsule.start',host:{alias:'local',domain:'capsules.example.dev',scheme:'https',remoteRoot},capsule:{subname:'address'},lifecycle:{hostedUrl:'https://address.capsules.example.dev',container:{name:'sporades-capsules-example-dev-address'},routes:{running:{hostname:'address.capsules.example.dev',target:'container',containerName:'sporades-capsules-example-dev-address',port:4000,routeFile,tls}}}},{cwd:dir,env});
         assert.equal(result.code,0,result.stderr);
+        assert.equal(JSON.parse(result.stdout).ok,true,result.stdout);
         database.runtimeProbeToken = JSON.parse(await readFile(recordPath,'utf8')).runtimeProbe.token;
         const reservation = createServer(); await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));
         const port = reservation.address().port; await new Promise(resolve=>reservation.close(resolve));
@@ -15911,6 +15984,60 @@ test('real Caddy rewrites Hosted identity and gates simulated Cloudflare traffic
           assert.equal(duplicate.status,mode==='automatic'?200:403);
           if (mode==='automatic') assert.deepEqual(JSON.parse(duplicate.body),{address:'127.0.0.1',count:1});
           if (mode==='simulated-cloudflare') assert.equal(duplicate.body,'Forbidden\n');
+          if (mode==='automatic') {
+            const upgrade = target => new Promise((resolve,reject) => {
+              const outgoing=httpRequest(base+target,{headers:{...headers,connection:'Upgrade',upgrade:'websocket',
+                'sec-websocket-version':'13','sec-websocket-key':'dGhlIHNhbXBsZSBub25jZQ=='}},incoming=>{
+                const chunks=[]; incoming.on('data',chunk=>chunks.push(chunk));
+                incoming.on('end',()=>resolve({status:incoming.statusCode,headers:incoming.headers,body:Buffer.concat(chunks).toString()}));
+              });
+              outgoing.on('upgrade',(incoming,socket)=>{socket.destroy();resolve({status:incoming.statusCode});});
+              outgoing.on('error',reject); outgoing.setTimeout(5000,()=>outgoing.destroy(new Error('Caddy upgrade timeout'))); outgoing.end();
+            });
+            const denied = async (response, status) => {
+              assert.equal(response.status,status); assert.equal(await response.text(),status===403?'Forbidden\n':'Too Many Requests\n');
+              assert.equal(response.headers.get('cache-control'),'no-store');
+            };
+            const beforeControl=calls;
+            assert.equal((await fetch(base+'/__sporades/health/runtime')).status,404);
+            assert.equal(calls,beforeControl,'public runtime control must not reach the runtime');
+            const direct=await fetch(`http://127.0.0.1:${runtime.address().port}/blocked`,{headers});
+            await denied(direct,403);
+            // Match the actual accepted peer, irrespective of forged forwarding
+            // values. Both transports deny before the fixture application marker.
+            policy=parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'socket-peer',enabled:true,
+              conditions:[{kind:'pathname',prefix:'/proof'},{kind:'address',value:'127.0.0.1/32'}],action:{kind:'deny'}}]})));
+            const beforeDeny=handlers;
+            await denied(await fetch(base+'/proof/limited',{headers}),403);
+            const wsDenied=await upgrade('/proof/ws');
+            assert.equal(wsDenied.status,403); assert.equal(wsDenied.body,'Forbidden\n');
+            assert.equal(wsDenied.headers['cache-control'],'no-store');
+            assert.equal(handlers,beforeDeny);
+            // The proxy must use one trusted socket identity for HTTP and upgrade
+            // traffic, so changing forged headers cannot split a shared quota.
+            for (const first of ['http','websocket']) {
+              policy=parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'proxy-quota-'+first,enabled:true,
+                conditions:[{kind:'pathname',prefix:'/proof'}],action:{kind:'rate-limit',limit:1,windowMs:60000}}]})));
+              const admitted=first==='http' ? await fetch(base+'/proof/limited',{headers}) : await upgrade('/proof/ws');
+              assert.equal(admitted.status,first==='http'?200:101);
+              if(first==='http') await admitted.arrayBuffer();
+              const beforeQuota=handlers;
+              if(first==='http') {
+                const limited=await upgrade('/proof/ws');
+                assert.equal(limited.status,429); assert.equal(limited.body,'Too Many Requests\n');
+                assert.equal(limited.headers['cache-control'],'no-store');
+                assert.ok(Number(limited.headers['retry-after'])>=1 && Number(limited.headers['retry-after'])<=60);
+              } else {
+                const limited=await fetch(base+'/proof/limited',{headers});
+                await denied(limited,429);
+                assert.ok(Number(limited.headers.get('retry-after'))>=1 && Number(limited.headers.get('retry-after'))<=60);
+              }
+              assert.equal(handlers,beforeQuota,'rate-limited traffic reached application code');
+            }
+            // Restore the original generation for the optional simulated modes.
+            policy=parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'address',enabled:true,
+              conditions:[{kind:'pathname',exact:'/blocked'},{kind:'address',value:'192.0.2.0/24'}],action:{kind:'deny'}}]})));
+          }
         } finally {
           if (child.exitCode === null) {
             child.kill('SIGTERM'); const kill = setTimeout(()=>child.kill('SIGKILL'),1000);

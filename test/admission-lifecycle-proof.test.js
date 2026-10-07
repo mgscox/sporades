@@ -2,13 +2,24 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createServer } from 'node:net';
 import { mkdir, mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { lifecycleOwnership, removeOwnedDockerContainer, assertGenerationObservation, lifecycleDockerNetworkArgs, lifecycleDockerEndpoint } from './support/admission-lifecycle-proof.js';
+import { lifecycleOwnership, removeOwnedDockerContainer, assertGenerationObservation, lifecycleDockerNetworkArgs, lifecycleDockerEndpoint, assertRequiredCaddyProof } from './support/admission-lifecycle-proof.js';
 
 const repo = path.resolve(new URL('..', import.meta.url).pathname);
 const scratch = path.join(repo, '.sporades/issue-73/cleanup-tests');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test('Caddy receipt requires one completed real proxy check; skip, failure and missing output cannot pass', () => {
+  assertRequiredCaddyProof({ passed: 1, failed: 0, skipped: 0, cancelled: 0 });
+  for (const invalid of [
+    { passed: 0, failed: 0, skipped: 0, cancelled: 0 },
+    { passed: 0, failed: 0, skipped: 1, cancelled: 0 },
+    { passed: 1, failed: 1, skipped: 0, cancelled: 0 },
+    { passed: 1, failed: 0, skipped: 0, cancelled: 1 },
+  ]) assert.throws(() => assertRequiredCaddyProof(invalid));
+});
 
 test('runner probes address sibling DNS while workstation probes retain loopback publication', async () => {
   const network='sporades-proof-network-cccccccccccc';
@@ -150,8 +161,18 @@ test('journal failure cannot stop removal of later owners or poison future write
 
 async function fakeOuterCleanup(t, { signal, runnerRemoval = 'success', childRemoval = 'fail', networkRemoval = 'success', lateChild = false, interruptAt = 'startup' } = {}) {
   await mkdir(scratch,{recursive:true}); const root=await mkdtemp(path.join(scratch,'runner-'));
-  t.after(()=>rm(root,{recursive:true,force:true}));
+  let socketServer;
+  t.after(async()=>{
+    if(socketServer) await new Promise(resolve=>socketServer.close(resolve));
+    await rm(root,{recursive:true,force:true});
+  });
   const bin=path.join(root,'bin'); await mkdir(bin); await writeFile(path.join(bin,'package.json'),'{"type":"commonjs"}');
+  // Linux inspects the socket's GID. Keep an owned Unix socket alive throughout
+  // the fixture; Darwin skips the stat and avoids its shorter socket-path limit.
+  const socket=path.join(root,'fake-proof.sock');
+  if(process.platform==='linux') {
+    socketServer=createServer(); socketServer.listen(socket); await once(socketServer,'listening');
+  }
   const events=path.join(root,'events.jsonl'),stateFile=path.join(root,'docker-state.json');
   // The fake Git status permits archiving a dirty test checkout. All other Git
   // reads remain real; fake Docker never executes the archived tools program.
@@ -171,7 +192,7 @@ const createChild=source=>{
   fs.writeFileSync(path.join(fixture,'fixture-marker'),'retain me');
   fs.appendFileSync(${JSON.stringify(events)},JSON.stringify(['created-child','sporades-lifecycle-container-aaaaaaaaaaaa'])+'\\n');
 };
-if(args[0]==='context') process.stdout.write('unix:///fake-proof.sock\\n');
+if(args[0]==='context') process.stdout.write(${JSON.stringify('unix://' + socket + '\n')});
 else if(args[0]==='info') process.stdout.write('fake-only\\n');
 else if(args[0]==='network'&&args[1]==='create') {
   const evidence=${JSON.stringify(path.join(root,'evidence'))};
@@ -205,7 +226,7 @@ else if(args[0]==='run') {
   const runRoot=path.join(root,'evidence');
   const child=spawn(process.execPath,['scripts/verify-admission-lifecycle.mjs'],{cwd:repo,
     env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,PROOF_REAL_PATH:process.env.PATH,
-      DOCKER_HOST:'unix:///fake-proof.sock',SPORADES_CONFIG_DIR:path.join(root,'config'),SPORADES_ADMISSION_RUN_ROOT:runRoot},stdio:['ignore','pipe','pipe']});
+      DOCKER_HOST:'unix://'+socket,SPORADES_CONFIG_DIR:path.join(root,'config'),SPORADES_ADMISSION_RUN_ROOT:runRoot},stdio:['ignore','pipe','pipe']});
   const closed=once(child,'close'); let output='';
   child.stdout.on('data',chunk=>output+=chunk); child.stderr.on('data',chunk=>output+=chunk);
   t.after(()=>{if(child.exitCode===null&&child.signalCode===null) child.kill('SIGKILL');});

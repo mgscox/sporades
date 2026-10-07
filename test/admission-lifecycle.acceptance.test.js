@@ -82,6 +82,9 @@ export default capsule({ name:'lifecycle-proof', schema:{},
     limited:endpoint({path:'/limited',method:'GET'}, () => { called('limited'); return {status:200,body:'original bytes\\n'}; }),
     identity:endpoint({path:'/identity',method:'GET'}, () => { called('identity'); return {status:200,body:'original bytes\\n'}; }),
     echo:endpoint({path:'/echo',method:'POST'}, ctx => { called('echo'); return {status:201,headers:{'x-proof-app':'original'},body:ctx.request.body}; }),
+    download:endpoint({path:'/download',method:'GET',response:{fileAttachment:true}}, ctx => {
+      called('download'); return ctx.files.attachment(JSON.parse(globalThis.process.env.PROOF_DOWNLOAD_FILE),{filename:'proof.txt'});
+    }),
     resources:endpoint({path:'/resources',method:'GET'}, () => ({body:globalThis.process.memoryUsage()})),
     tamper:endpoint({path:'/tamper',method:'GET'}, () => {
       called('tamper'); const file=globalThis.process.env.PROOF_POLICY_FILE;
@@ -127,6 +130,16 @@ async function fixture(root, session, ownership, declared = true) {
     config: { name: 'lifecycle-proof', ...(declared ? { admissionPolicy: { path: native ? path.basename(target) : 'policy.json' } } : {}) },
     serverEnv: {}, serverSource: app, serverModuleSource,
     epilogue: `${native ? `database.securitySession=${JSON.stringify(session)}; database.runtimeProbeToken=${JSON.stringify(probe)};` : ''}
+      // Trusted fixture seeding uses the shipped File lifecycle. The Capsule
+      // handler receives only immutable identity and returns an attachment.
+      import {createPendingFileUpload as proofPrepareFile, completePendingFileUpload as proofCompleteFile} from '../file-storage-runtime.js';
+      import {Readable as ProofReadable} from 'node:stream';
+      const proofOwner={userId:'proof-owner',displayName:'proof-owner',email:null,picture:null,isAuthenticated:false,isGuest:true,provider:'anonymous'};
+      const proofUpload=await proofPrepareFile(database,proofOwner,{file:{name:'proof.txt',path:'/proof.txt',type:'text/plain',size:2097152}});
+      if(!proofUpload.ok) throw new Error('File fixture preparation failed');
+      const proofFile=await proofCompleteFile(database,proofUpload.data.uploadUrl.split('/').pop(),ProofReadable.from([Buffer.alloc(2097152,0x61)]));
+      if(!proofFile.ok) throw new Error('File fixture completion failed');
+      process.env.PROOF_DOWNLOAD_FILE=JSON.stringify({id:proofFile.data.file.id,version:proofFile.data.file.version});
       // Fixture-only observation: delegate unchanged to the real decision evidence
       // and record its exact captured digest, without altering policy or responses.
       if(database.admissionPolicy) {
@@ -239,6 +252,40 @@ async function http(base, target, headers = {}, method = 'GET') {
       response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks).toString() }));
     });
     req.on('error', reject); req.setTimeout(5000, () => req.destroy(new Error('HTTP timeout'))); req.end();
+  });
+}
+
+async function slowFileDownload(base) {
+  return new Promise((resolve, reject) => {
+    const req = request(base + '/download', response => {
+      const digest = createHash('sha256'); let bytes = 0;
+      response.on('error', reject);
+      response.on('data', chunk => {
+        bytes += chunk.length; digest.update(chunk);
+        response.pause(); setTimeout(() => response.resume(), 10);
+      });
+      response.on('end', () => resolve({ status: response.statusCode, bytes, digest: digest.digest('hex'),
+        type: response.headers['content-type'], length: response.headers['content-length'] ?? null,
+        transferEncoding: response.headers['transfer-encoding'] ?? null,
+        cache: response.headers['cache-control'], disposition: response.headers['content-disposition'] }));
+    });
+    req.on('error', reject); req.setTimeout(5000, () => req.destroy(new Error('File download timeout'))); req.end();
+  });
+}
+
+async function resetFileDownload(base) {
+  return new Promise((resolve, reject) => {
+    const req = request(base + '/download', response => {
+      if (response.statusCode !== 200) { response.resume(); reject(new Error('File reset requires a successful response')); return; }
+      let received = 0;
+      response.once('data', chunk => { received = chunk.length; response.destroy(); });
+      response.on('error', error => { if (error.code !== 'ECONNRESET') reject(error); });
+      response.once('close', () => {
+        try { assert.ok(received > 0 && received < 2 * 1024 * 1024, 'reset must interrupt File bytes'); resolve(); }
+        catch (error) { reject(error); }
+      });
+    });
+    req.on('error', reject); req.setTimeout(5000, () => req.destroy(new Error('File reset timeout'))); req.end();
   });
 }
 
@@ -484,6 +531,22 @@ for (const session of ['container', 'hosted']) test(`generated ${session} admiss
       assert.deepEqual({status:current.status,body:current.body,type:current.headers['content-type']}, {status:old.status,body:old.body,type:old.headers['content-type']});
     }
     assert.deepEqual(await streamedEcho(runtime.base), await streamedEcho(baseline.base));
+    // A streamed request body does not prove File response compatibility. Read a
+    // real runtime-owned File slowly, then reset mid-response and verify recovery.
+    const download = await slowFileDownload(runtime.base);
+    assert.deepEqual(download, await slowFileDownload(baseline.base));
+    assert.equal(download.status, 200);
+    assert.equal(download.bytes, 2 * 1024 * 1024);
+    if (download.length !== null) assert.equal(Number(download.length), download.bytes);
+    assert.equal(download.type, 'application/octet-stream');
+    assert.equal(download.cache, 'private, no-store');
+    assert.match(download.disposition, /^attachment; filename="proof.txt"/);
+    assert.equal(download.digest, hash(Buffer.alloc(2 * 1024 * 1024, 0x61)));
+    await resetFileDownload(runtime.base);
+    await resetFileDownload(baseline.base);
+    assert.equal((await http(runtime.base, '/blocked')).status, 200);
+    assert.equal((await http(baseline.base, '/blocked')).status, 200);
+    evidence.measurements.fileStreaming = { ...download, slowClient: true, resetRecovery: true };
     assert.equal(await queryReply(runtime.base), await queryReply(baseline.base));
     assert.deepEqual((await runtime.health()).admissionPolicy.evidence.counters, removedCounters, 'removed policy changed request counters');
     const allLogs = await runtime.logs(), baselineLogs = await baseline.logs();
