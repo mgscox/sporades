@@ -15923,7 +15923,7 @@ test('real Caddy rewrites Hosted identity and gates simulated Cloudflare traffic
               outgoing.on('error',reject); outgoing.setTimeout(5000,()=>outgoing.destroy(new Error('Caddy upgrade timeout'))); outgoing.end();
             });
             const denied = async (response, status) => {
-              assert.equal(response.status,status); assert.equal(await response.text(),'Forbidden\n');
+              assert.equal(response.status,status); assert.equal(await response.text(),status===403?'Forbidden\n':'Too Many Requests\n');
               assert.equal(response.headers.get('cache-control'),'no-store');
             };
             const beforeControl=calls;
@@ -15952,7 +15952,7 @@ test('real Caddy rewrites Hosted identity and gates simulated Cloudflare traffic
               const beforeQuota=handlers;
               if(first==='http') {
                 const limited=await upgrade('/proof/ws');
-                assert.equal(limited.status,429); assert.equal(limited.body,'Forbidden\n');
+                assert.equal(limited.status,429); assert.equal(limited.body,'Too Many Requests\n');
                 assert.equal(limited.headers['cache-control'],'no-store');
                 assert.ok(Number(limited.headers['retry-after'])>=1 && Number(limited.headers['retry-after'])<=60);
               } else {
