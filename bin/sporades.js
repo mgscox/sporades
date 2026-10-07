@@ -147668,8 +147668,9 @@ async function validateComponents(dir, packageRoot) {
     const environment = service.environment ?? {};
     if (typeof environment !== "object" || Array.isArray(environment) || Object.entries(environment).some(([key, value]) => name2 !== "jaeger" || key !== "TRACE_RETENTION" || typeof value !== "string" || value.length > 256 || value.includes("\0"))) fail2();
   }
-  const mount = async (service, target) => {
+  const mount = async (service, target, optional = false) => {
     const matches = config.services[service].volumes?.filter((v2) => v2.target === target);
+    if (optional && !matches?.length) return [];
     if (matches?.length !== 1 || matches[0].type !== "bind" || matches[0].read_only !== true) fail2();
     const source = matches[0].source;
     if (typeof source !== "string" || source.includes(",") || source !== path18.resolve(source) || !source.startsWith(dir + path18.sep)) fail2();
@@ -147696,7 +147697,7 @@ async function validateComponents(dir, packageRoot) {
   docker([...base, ...await mount("collector", "/etc/otelcol/config.yaml"), config.services.collector.image, "validate", "--config=/etc/otelcol/config.yaml"], dir);
   const retention = config.services.jaeger.environment?.TRACE_RETENTION ?? "72h";
   docker([...base, "--env", `TRACE_RETENTION=${retention}`, ...await mount("jaeger", "/etc/jaeger/config.yaml"), config.services.jaeger.image, "validate", "--config=/etc/jaeger/config.yaml"], dir);
-  docker([...base, ...await mount("prometheus", "/etc/prometheus/prometheus.yml"), ...await mount("prometheus", "/etc/prometheus/pipeline-rules.yaml"), ...await mount("prometheus", "/etc/prometheus/availability-rules.yaml"), ...await mount("prometheus", "/etc/prometheus/performance-rules.yaml"), "--entrypoint", "/bin/promtool", config.services.prometheus.image, "check", "config", "/etc/prometheus/prometheus.yml"], dir);
+  docker([...base, ...await mount("prometheus", "/etc/prometheus/prometheus.yml"), ...await mount("prometheus", "/etc/prometheus/pipeline-rules.yaml"), ...await mount("prometheus", "/etc/prometheus/availability-rules.yaml", true), ...await mount("prometheus", "/etc/prometheus/performance-rules.yaml", true), "--entrypoint", "/bin/promtool", config.services.prometheus.image, "check", "config", "/etc/prometheus/prometheus.yml"], dir);
   for (const name2 of ASSETS.filter((n) => n.endsWith(".json"))) JSON.parse((await regular(path18.join(dir, name2))).toString());
   for (const name2 of ASSETS.filter((n) => n.endsWith(".mjs"))) {
     const result = spawnSync2(process.execPath, ["--check", path18.join(dir, name2)], { encoding: "utf8", timeout: 1e4 });

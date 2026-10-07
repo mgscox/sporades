@@ -52,13 +52,16 @@ fail before publication, preserving the edit. Finish editing and retry so the
 updated configuration is planned and validated together.
 
 Backend validation uses the effective Compose bind sources for Collector,
-Jaeger, Prometheus and its pipeline, availability and performance rules, plus Jaeger's effective
+Jaeger, Prometheus and its pipeline rules, plus availability/performance rule
+mounts when present and Jaeger's effective
 `TRACE_RETENTION` environment. Configuration bind files must be read-only regular
 files inside the stack directory. Custom configuration filenames in that tree
 are supported. Command or entrypoint overrides, additional backend environment
 keys, Compose secrets/configs, and unsupported configuration mounts are rejected
 before publication; retain the shipped invocation and edit supported files or
-`.env` settings instead.
+`.env` settings instead. Older supported pipeline-only generations can roll back
+without availability/performance mounts. Referenced rules must still exist in
+the validator's mounted configuration; Prometheus rejects missing references.
 
 ```sh
 COMPOSE_PROJECT_NAME=sporades-monitoring-prod sporades monitoring stack upgrade --dir /srv/sporades-monitoring

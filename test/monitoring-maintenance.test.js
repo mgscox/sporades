@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ASSETS } from '../dist/cli/monitoring-stack.js';
+import { legacyPipelineGeneration } from './monitoring-legacy-fixture.js';
 const root = process.cwd();
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 async function publicationJournal(stack, name, before, after) {
@@ -50,6 +51,36 @@ test('upgrade tracks generated assets, preserves overrides and literal credentia
   assert.equal(rolled.status, 0, rolled.stdout + rolled.stderr);
   assert.equal(await readFile(path.join(stack, 'README.md'), 'utf8'), 'previous release documentation\n');
   assert.ok((await readFile(path.join(stack, '.env'), 'utf8')) === env);
+  assert.equal(JSON.parse(cli(['rollback', '--dir', stack]).stdout).data.changed, false);
+});
+
+test('pipeline-only schema-4 stack rolls back after init fills newer assets', async t => {
+  const { dir, stack, cli } = await fixture(t);
+  const legacy = await legacyPipelineGeneration(stack);
+  const docker = path.join(dir, 'bin/docker');
+  const original = docker + '-original';
+  await writeFile(original, await readFile(docker), { mode: 0o755 });
+  // Resolve the effective mounts of each candidate, rather than returning the
+  // current stack's optional mounts for an older rollback generation.
+  await writeFile(docker, `#!${process.execPath}
+import fs from 'node:fs';import cp from 'node:child_process';
+const args=process.argv.slice(2);
+const r=cp.spawnSync(${JSON.stringify(original)},args,{encoding:'utf8'});
+if(args.includes('config')&&args.includes('--format')){
+  const config=JSON.parse(r.stdout),compose=fs.readFileSync('compose.yaml','utf8');
+  config.services.prometheus.volumes=config.services.prometheus.volumes.filter(v=>!v.target.endsWith('availability-rules.yaml')&&!v.target.endsWith('performance-rules.yaml')||compose.includes(v.target));
+  process.stdout.write(JSON.stringify(config));
+}else process.stdout.write(r.stdout);
+process.stderr.write(r.stderr);process.exit(r.status??1);
+`, { mode: 0o755 });
+  const initialized = cli(['init', '--dir', stack]);
+  assert.equal(initialized.status, 0, initialized.stdout + initialized.stderr);
+  assert.equal(await readFile(path.join(stack, 'compose.yaml'), 'utf8'), legacy['compose.yaml']);
+  assert.equal(await readFile(path.join(stack, 'prometheus.yaml'), 'utf8'), legacy['prometheus.yaml']);
+  assert.equal(cli(['upgrade', '--dir', stack]).status, 0);
+  const rolled = cli(['rollback', '--dir', stack]);
+  assert.equal(rolled.status, 0, rolled.stdout + rolled.stderr);
+  for (const [name, bytes] of Object.entries(legacy)) assert.equal(await readFile(path.join(stack, name), 'utf8'), bytes, name);
   assert.equal(JSON.parse(cli(['rollback', '--dir', stack]).stdout).data.changed, false);
 });
 
