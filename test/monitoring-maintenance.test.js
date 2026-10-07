@@ -312,7 +312,7 @@ test('UMask=0077 shipped maintenance publishes explicit modes and recovers inter
       assert.equal((await lstat(path.join(stack, name))).mode & 0o777, 0o644, name);
       if (name !== 'stack-manifest.json') assert.deepEqual(await readFile(path.join(stack, name)), await readFile(path.join(root, 'monitoring/trace', name === '.gitignore' ? 'gitignore.template' : name)));
     }
-    for (const name of ['.env', '.compose.env', '.private/credentials.json', '.private/grafana-admin-password', '.private/alertmanager.yaml', '.maintenance/previous.json', '.maintenance/lock.sqlite']) {
+    for (const name of ['.env', '.compose.env', '.private/credentials.json', '.private/grafana-admin-password', '.private/alertmanager.yaml', '.private/senders/registry.json', '.maintenance/previous.json', '.maintenance/lock.sqlite']) {
       assert.equal((await lstat(path.join(stack, name))).mode & 0o777, 0o600, name);
     }
     const rolled = cli(['rollback', '--dir', stack]);

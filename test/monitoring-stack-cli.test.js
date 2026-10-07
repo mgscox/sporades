@@ -49,7 +49,7 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   for (const name of [...ASSETS, 'stack-manifest.json', '.private/blackbox/blackbox.yaml', '.private/availability-rules.yaml', '.private/performance-rules.yaml']) {
     assert.equal((await stat(join(target, name))).mode & 0o777, 0o644, name);
   }
-  for (const name of ['.env', '.compose.env', '.private/credentials.json', '.private/grafana-admin-password', '.private/alertmanager.yaml']) {
+  for (const name of ['.env', '.compose.env', '.private/credentials.json', '.private/grafana-admin-password', '.private/alertmanager.yaml', '.private/senders/registry.json']) {
     assert.equal((await stat(join(target, name))).mode & 0o777, 0o600, name);
   }
   const result = JSON.parse(first.stdout);
