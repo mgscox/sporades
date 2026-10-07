@@ -3,6 +3,8 @@
 Status: **blocked; release acceptance has not passed** (2026-10-07).
 This record accompanies a draft PR. It does not authorize rollout or claim a
 production canary; canary execution belongs to ticket 25 (#132).
+PR #225 references #131 and must remain draft while the prerequisite and release
+gates below are pending. It must not close #131 or merge as completed acceptance.
 
 ## Prerequisite gate
 
@@ -30,8 +32,9 @@ Its package declares Sporades `0.9.31` and Node `>=22.13.0 <23 || >=24`.
 The local verification runtime is Node `24.19.0`, npm `11.17.0`, macOS.
 The Base Dockerfile declares `node:22.14-alpine`, image version
 `0.2.0-node22-alpine`. These are source declarations, not an accepted runtime
-matrix or deployment result. No monitoring Compose stack or installed generated
-Capsule acceptance has been run for this record.
+matrix or deployment result. No assembled monitoring Compose release acceptance
+has been run for this record. Poirot's later local installed-Capsule smoke is
+recorded separately below and does not fill any assembled-release gate.
 
 On resumption, pin the final checkout, npm tarball, installed CLI, Host helper,
 generated-source manifest and monitoring release archive with SHA-256 hashes.
@@ -90,3 +93,36 @@ Checks used `SPORADES_CONFIG_DIR="$PWD/.sporades/issue-131-config"`.
 Local logs and screenshots are retained under ignored `logs/issue-131/`.
 No runtime, public/config contract or shipped artifact change was needed for
 this documentation handoff.
+
+## Poirot round 1
+
+[QA report](https://github.com/mgscox/sporades/pull/225#issuecomment-6044223376),
+pinned to `a9c869cae703ceaa512bde41d175df1c7e8db061`, confirmed that #128 was
+still open and every assembled-release gate remained pending. Keep PR #225 draft
+with `Refs #131`; completion is not claimed by this handoff.
+
+QA passed local build, typecheck, generated freshness, documentation checks
+(53 tests and site build), installed-package parity (494 files), and desktop /
+phone browser checks. Its installed generated To Do Capsule smoke covered guest
+auth, live updates, keyboard submission, empty input and restart persistence.
+These are QA observations on that pinned head, not fresh author reruns or proof
+of assembled monitoring, actual alerts, separate-VM topology or capacity.
+
+QA's full suite exited 1: 3,192 tests, 2,961 passed, 4 failed, 227 skipped,
+zero cancelled. Failures were ClamAV readiness deadline, Dev db-dump JSON timeout,
+expired Job lease recovery and delayed Job retry exhaustion. All four exact
+cases passed isolated retries; QA classified them as untouched flakes rather
+than PR regressions. Retain the failed full-suite result separately from the
+retry passes and the original author run above.
+
+After the authorized manager signs off #128's pinned real separate-VM recovery
+evidence, execute every pending row against one pinned release candidate and
+publish hashes, topology, commands, outcomes and unsupported surfaces. Obtain
+final package/build/test validation, assembled signals and actual alert delivery,
+privacy/recovery drills, off/on performance and measured capacity evidence before
+marking #131 complete. No real Host/cloud operations are authorized for this desk.
+
+Author correction validation: `npm run build`, `npm run typecheck`,
+`npm run docs:check` (53 tests and site build), and `git diff --check` passed.
+Regeneration left shipped source, artifacts and tests unchanged. The full-suite
+outcomes above are retained; this correction adds no release acceptance evidence.
