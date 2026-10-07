@@ -12,14 +12,23 @@ test('overlapping request logs carry isolated trace and stable request identitie
   const telemetry = createHttpRequestTelemetry({ endpoint: 'http://127.0.0.1:19999', tls: { mode: 'loopback' }, serviceName: 'log-test' });
   const logs = [];
   let atFloor;
+  let fastStarted;
+  const fastRequestStarted = new Promise(resolve => { fastStarted = resolve; });
+  let bothStarted;
+  const bothRequestsStarted = new Promise(resolve => { bothStarted = resolve; });
+  const started = new Set();
   const app = createServer((request, response) => telemetry.run(request, response, [{ method: 'GET', path: '/work' }], async () => {
     const label = request.url.includes('slow') ? 'slow' : 'fast';
     const log = (suffix) => logs.push(createLogEnvelope({ config: { name: 'log-test' }, category: 'app', event: 'ctx.log', message: `${label}-${suffix}`, request: { method: 'GET', path: '/work' }, correlation: { id: `caller-${label}` }, data: { safe: label, password: 'private-password' } }));
     log('start');
+    started.add(label);
+    if (label === 'fast') fastStarted();
+    if (started.size === 2) bothStarted();
     if (label === 'slow') {
       const config = { name: 'log-test', logs: { payloadMaxBytes: minimumLogPayloadMaxBytes({ name: 'log-test' }) } };
       atFloor = createLogEnvelope({ config, timestamp: '2026-09-11T00:00:00.000Z', category: 'c'.repeat(16), level: 'l'.repeat(16), event: 'e'.repeat(64), message: 'm'.repeat(128), data: { value: 'd'.repeat(244) } });
     }
+    await bothRequestsStarted;
     await new Promise((resolve) => setTimeout(resolve, label === 'slow' ? 50 : 5));
     log('end');
     response.writeHead(200).end();
@@ -27,10 +36,10 @@ test('overlapping request logs carry isolated trace and stable request identitie
   await once(app, 'listening');
   try {
     const origin = `http://127.0.0.1:${app.address().port}`;
-    await Promise.all([
-      fetch(`${origin}/work?slow=private`, { headers: { traceparent: '00-11111111111111111111111111111111-aaaaaaaaaaaaaaaa-01' } }),
-      fetch(`${origin}/work?fast=private`, { headers: { traceparent: '00-22222222222222222222222222222222-bbbbbbbbbbbbbbbb-01' } }),
-    ]);
+    const fast = fetch(`${origin}/work?fast=private`, { headers: { traceparent: '00-22222222222222222222222222222222-bbbbbbbbbbbbbbbb-01' } });
+    await fastRequestStarted;
+    const slow = fetch(`${origin}/work?slow=private`, { headers: { traceparent: '00-11111111111111111111111111111111-aaaaaaaaaaaaaaaa-01' } });
+    await Promise.all([fast, slow]);
     assert.equal(logs.length, 4);
     for (const label of ['slow', 'fast']) {
       const pair = logs.filter((entry) => entry.message.startsWith(label));
@@ -43,7 +52,7 @@ test('overlapping request logs carry isolated trace and stable request identitie
       assert.deepEqual(pair[0].correlation, { id: `caller-${label}` });
       assert.equal(pair[0].data.password, '[REDACTED]');
     }
-    assert.notEqual(logs[0].request.id, logs[2].request.id);
+    assert.notEqual(logs.find(entry => entry.message === 'slow-start').request.id, logs.find(entry => entry.message === 'fast-start').request.id);
     assert.equal(atFloor.truncated, false);
     assert.equal(Buffer.byteLength(JSON.stringify(atFloor)), minimumLogPayloadMaxBytes({ name: 'log-test' }));
     assert.doesNotMatch(JSON.stringify(logs), /private|aaaaaaaa|bbbbbbbb/);

@@ -59,9 +59,15 @@ test("sporades host jobs guides upgrade when fake SSH reports an old helper", as
   try {
     const bin = path.join(dir, "bin"), config = path.join(dir, "config"); await mkdir(bin); await mkdir(config);
     await writeFile(path.join(config, "hosts.json"), JSON.stringify({ currentHostAlias: "live", profiles: { live: { server: "host", domain: "example.test", scheme: "https", remoteRoot: "/srv/sporades" } } }));
-    const ssh = path.join(bin, "ssh"); await writeFile(ssh, `#!/bin/sh\necho '{"ok":false,"data":null,"error":{"message":"Unsupported Host helper action.","hint":"old"}}'\n`); await chmod(ssh, 0o755);
+    const ssh = path.join(bin, "ssh");
+    // Consume the newline-terminated helper request before exiting so the
+    // fixture cannot race the CLI's stdin write and report a transport failure.
+    await writeFile(ssh, `#!/bin/sh
+IFS= read -r input || exit 9
+echo '{"ok":false,"data":null,"error":{"message":"Unsupported Host helper action.","hint":"old"}}'
+`); await chmod(ssh, 0o755);
     const result = run(["host", "jobs", "--host", "live", "--subname", "team-notes"], dir, { PATH: `${bin}${path.delimiter}${process.env.PATH}`, SPORADES_CONFIG_DIR: config });
-    assert.equal(result.status, 1); const body = JSON.parse(result.stdout); assert.equal(body.error.code, "HOST_HELPER_UPGRADE_REQUIRED"); assert.match(body.error.hint, /sporades host upgrade/);
+    assert.equal(result.status, 1); const body = JSON.parse(result.stdout); assert.equal(body.error.code, "HOST_HELPER_UPGRADE_REQUIRED", JSON.stringify(body)); assert.match(body.error.hint, /sporades host upgrade/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

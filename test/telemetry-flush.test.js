@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { createHttpRequestTelemetry } from '../dist/runtime-telemetry.js';
 
 async function receiver(delayMs = 100, holdFirstTrace = false) {
@@ -49,6 +49,16 @@ async function requestBurst(telemetry, amount) {
   } finally { await new Promise(resolve => app.close(resolve)); }
 }
 
+function finishRequestBurst(telemetry, amount) {
+  // Queue spans synchronously while the real scheduled export is held. Another
+  // network burst could outlast the export timeout before shutdown even starts.
+  for (let index = 0; index < amount; index++) {
+    const request = Object.assign(new EventEmitter(), { method: 'GET', url: `/work?id=${index}`, headers: {} });
+    const response = Object.assign(new EventEmitter(), { statusCode: 200, headersSent: true, writableFinished: true });
+    telemetry.run(request, response, [{ method: 'GET', path: '/work' }], () => response.emit('finish'));
+  }
+}
+
 test('healthy shutdown exports every accepted span across multiple batches without outage diagnostics', async () => {
   const sink = await receiver();
   const diagnostics = [];
@@ -68,9 +78,9 @@ test('shutdown drains queued spans while a scheduled trace export is in flight',
   const diagnostics = [];
   const telemetry = createHttpRequestTelemetry({ endpoint: sink.endpoint, tls: { mode: 'loopback' }, serviceName: 'inflight-flush-test' }, item => diagnostics.push(item));
   try {
-    await requestBurst(telemetry, 32);
+    finishRequestBurst(telemetry, 32);
     await sink.firstTraceArrived;
-    await requestBurst(telemetry, 128);
+    finishRequestBurst(telemetry, 128);
     const shutdown = telemetry.shutdown();
     sink.releaseFirstTrace();
     await shutdown;
