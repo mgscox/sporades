@@ -15862,11 +15862,16 @@ test('real Caddy rewrites Hosted identity and gates simulated Cloudflare traffic
     try {
       const docker = await installFakeDocker(path.join(dir,'docker'),{env:{FAKE_DOCKER_PUBLISHED_PORT:`127.0.0.1:${runtime.address().port}`}});
       const caddy = await installFakeCaddy(path.join(dir,'caddy'));
-      const env = {...docker.env,...caddy.env,PATH:`${caddy.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`};
+      // The real proxy runs as the fixture owner. Host service management remains
+      // fake; an installed system caddy user must not change this fixture's owner.
+      const caddyUser = await installFakeCaddyUserCommands(path.join(dir,'caddy-user'));
+      const env = {...docker.env,...caddy.env,...caddyUser.env,
+        PATH:`${caddyUser.fakeBinDir}${path.delimiter}${caddy.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`};
       for (const mode of ['automatic','cloudflare-origin','simulated-cloudflare']) {
         const tls = mode === 'automatic' ? {mode:'automatic'} : {mode:'cloudflare-origin',certificate:path.join(remoteRoot,'hosts','capsules.example.dev','tls','origin.crt'),key:path.join(remoteRoot,'hosts','capsules.example.dev','tls','origin.key')};
         const result = await runHostHelper({action:'capsule.start',host:{alias:'local',domain:'capsules.example.dev',scheme:'https',remoteRoot},capsule:{subname:'address'},lifecycle:{hostedUrl:'https://address.capsules.example.dev',container:{name:'sporades-capsules-example-dev-address'},routes:{running:{hostname:'address.capsules.example.dev',target:'container',containerName:'sporades-capsules-example-dev-address',port:4000,routeFile,tls}}}},{cwd:dir,env});
         assert.equal(result.code,0,result.stderr);
+        assert.equal(JSON.parse(result.stdout).ok,true,result.stdout);
         database.runtimeProbeToken = JSON.parse(await readFile(recordPath,'utf8')).runtimeProbe.token;
         const reservation = createServer(); await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));
         const port = reservation.address().port; await new Promise(resolve=>reservation.close(resolve));
