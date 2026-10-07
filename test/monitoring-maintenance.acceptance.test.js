@@ -125,4 +125,6 @@ test('installed CLI cold backup restores queryable history and exact inventory i
   assert.equal(compose(restored, ['restart', 'jaeger', 'prometheus', 'gateway'], prefix + '-restored').status, 0);
   await readiness();
   assert.equal((await fetch(origin + '/api/traces/' + traceId, { headers: { authorization: basic } })).status, 200);
+  assert.equal(JSON.parse(compose(restored, metricQuery, prefix + '-restored').stdout).data.result[0].value[1], '130');
+  t.diagnostic(JSON.stringify({ projects: [prefix + '-original', prefix + '-restored'], umask: process.umask().toString(8), restoredTraceId: traceId, restoredMetricValue: metricValue, inventoryRevision: inventory.revision, historySurvivedRestart: true }));
 });

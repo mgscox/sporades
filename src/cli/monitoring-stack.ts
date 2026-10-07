@@ -65,6 +65,7 @@ export async function runMonitoringStack(action: 'init' | 'validate', directory:
     const current = await existingFile(destination);
     if (!current && action === 'init') {
       await cp(sourcePath, destination, { errorOnExist: true, force: false });
+      await chmod(destination, 0o644);
       created.push(name);
     } else if (!current) missingAssets.push(name);
     else {

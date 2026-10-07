@@ -17,7 +17,7 @@ async function fixture(t) {
   const dir = await mkdtemp(path.join(root, '.sporades/maintenance-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const bin = path.join(dir, 'bin'); await mkdir(bin);
-  await writeFile(path.join(bin, 'docker'), `#!/bin/sh\ncase "$*" in\n 'compose version --short') echo 5.5.1;;\n 'version --format {{.Server.Version}}') echo 29.5.0;;\n *'config --format json'*) echo '{"services":{"collector":{"image":"otel/opentelemetry-collector-contrib:0.138.0","command":["--config=/etc/otelcol/config.yaml"],"volumes":[{"type":"bind","read_only":true,"target":"/etc/otelcol/config.yaml","source":"'"$PWD"'/collector.yaml"}]},"jaeger":{"image":"cr.jaegertracing.io/jaegertracing/jaeger:2.21.0","command":["--config=/etc/jaeger/config.yaml"],"environment":{"TRACE_RETENTION":"72h"},"volumes":[{"type":"bind","target":"/etc/jaeger/config.yaml","source":"'"$PWD"'/jaeger.yaml","read_only":true}]},"prometheus":{"image":"prom/prometheus:v3.13.3","command":["--config.file=/etc/prometheus/prometheus.yml","--storage.tsdb.path=/prometheus","--storage.tsdb.retention.time=14d","--storage.tsdb.retention.size=8GB","--web.enable-otlp-receiver"],"volumes":[{"type":"bind","target":"/etc/prometheus/prometheus.yml","source":"'"$PWD"'/prometheus.yaml","read_only":true},{"type":"bind","target":"/etc/prometheus/pipeline-rules.yaml","source":"'"$PWD"'/pipeline-rules.yaml","read_only":true}]}}}';;\n *'config --quiet'*) if [ -n "$REJECT_CONFIG" ]; then echo "$REJECT_CONFIG" >&2; exit 1; fi;;\n *'ps --all --quiet'*) if [ -n "$RUNNING" ]; then echo running; fi;;\n 'inspect running') echo '[{"State":{"Running":true}}]';;\n *) exit 0;;\nesac\n`, { mode: 0o755 });
+  await writeFile(path.join(bin, 'docker'), `#!/bin/sh\ncase "$*" in\n 'compose version --short') echo 5.5.1;;\n 'version --format {{.Server.Version}}') echo 29.5.0;;\n *'config --format json'*) echo '{"services":{"collector":{"image":"otel/opentelemetry-collector-contrib:0.138.0","command":["--config=/etc/otelcol/config.yaml"],"volumes":[{"type":"bind","read_only":true,"target":"/etc/otelcol/config.yaml","source":"'"$PWD"'/collector.yaml"}]},"jaeger":{"image":"cr.jaegertracing.io/jaegertracing/jaeger:2.21.0","command":["--config=/etc/jaeger/config.yaml"],"environment":{"TRACE_RETENTION":"72h"},"volumes":[{"type":"bind","target":"/etc/jaeger/config.yaml","source":"'"$PWD"'/jaeger.yaml","read_only":true}]},"prometheus":{"image":"prom/prometheus:v3.13.3","command":["--config.file=/etc/prometheus/prometheus.yml","--storage.tsdb.path=/prometheus","--storage.tsdb.retention.time=14d","--storage.tsdb.retention.size=8GB","--web.enable-otlp-receiver"],"volumes":[{"type":"bind","target":"/etc/prometheus/prometheus.yml","source":"'"$PWD"'/prometheus.yaml","read_only":true},{"type":"bind","target":"/etc/prometheus/pipeline-rules.yaml","source":"'"$PWD"'/pipeline-rules.yaml","read_only":true},{"type":"bind","target":"/etc/prometheus/availability-rules.yaml","source":"'"$PWD"'/.private/availability-rules.yaml","read_only":true},{"type":"bind","target":"/etc/prometheus/performance-rules.yaml","source":"'"$PWD"'/.private/performance-rules.yaml","read_only":true}]}}}';;\n *'config --quiet'*) if [ -n "$REJECT_CONFIG" ]; then echo "$REJECT_CONFIG" >&2; exit 1; fi;;\n *'ps --all --quiet'*) if [ -n "$RUNNING" ]; then echo running; fi;;\n 'inspect running') echo '[{"State":{"Running":true}}]';;\n *) exit 0;;\nesac\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: bin + path.delimiter + process.env.PATH, SPORADES_CONFIG_DIR: path.join(dir, 'config') };
   const cli = (args, extra = {}) => spawnSync(process.execPath, [process.env.SPORADES_MAINTENANCE_TEST_BIN ?? path.join(root, 'bin/sporades.js'), 'monitoring', 'stack', ...args, '--json'], { env: { ...env, ...extra }, encoding: 'utf8' });
   const stack = path.join(dir, 'stack');
@@ -232,7 +232,7 @@ test('large cold snapshots hash archive bytes beyond the Node whole-file read li
 
 // These probes model Compose's effective projection, rather than the generated filenames.
 test('upgrade validates effective backend mounts and rejects unsupported invocation overrides before publication', async t => {
-  for (const variant of ['prometheus mount', 'jaeger mount', 'prometheus command', 'jaeger environment', 'collector entrypoint']) {
+  for (const variant of ['prometheus mount', 'availability rules mount', 'performance rules mount', 'jaeger mount', 'prometheus command', 'jaeger environment', 'collector entrypoint']) {
     await t.test(variant, async t => {
       const { dir, stack, cli } = await fixture(t);
       const manifestFile = path.join(stack, 'stack-manifest.json');
@@ -245,7 +245,7 @@ test('upgrade validates effective backend mounts and rejects unsupported invocat
       const script = await readFile(wrapper, 'utf8');
       let altered = script;
       if (variant.endsWith('mount')) {
-        const file = variant.startsWith('jaeger') ? 'jaeger.yaml' : 'prometheus.yaml';
+        const file = variant.startsWith('jaeger') ? 'jaeger.yaml' : variant.startsWith('availability') ? '.private/availability-rules.yaml' : variant.startsWith('performance') ? '.private/performance-rules.yaml' : 'prometheus.yaml';
         altered = altered.replace('/' + file, '/operator-backend.yaml');
       } else if (variant === 'prometheus command') altered = altered.replace('--config.file=/etc/prometheus/prometheus.yml', '--config.file=/etc/prometheus/unvalidated.yml');
       else if (variant === 'jaeger environment') altered = altered.replace('"TRACE_RETENTION":"72h"', '"UNSUPPORTED":"secret"');
@@ -283,6 +283,22 @@ else if(a[0]==='run'){const bind=a.find(x=>x.startsWith('type=bind,src='));const
 
 test('UMask=0077 shipped maintenance publishes explicit modes and recovers interrupted generations', async t => {
   const { dir, stack, cli } = await fixture(t);
+  // Docker validation drops all capabilities and must read public bind files
+  // as a different uid. Reject an unreadable staged config at that boundary.
+  const docker = path.join(dir, 'bin/docker');
+  const dockerScript = await readFile(docker, 'utf8');
+  const checkModes = 'const fs=require("node:fs");for(const arg of process.argv.slice(1)){if(arg.startsWith("type=bind,src=")){const source=arg.split(",")[1].slice(4);if(!(fs.statSync(source).mode&4))process.exit(1);}}';
+  await writeFile(docker, dockerScript.replace('case "$*" in', `if [ "$1" = run ]; then "${process.execPath}" -e '${checkModes}' -- "$@" || exit 1; fi\ncase "$*" in`));
+  // A version-only upgrade leaves backend config bytes unchanged, so staging
+  // must preserve their readable modes before any generated replacement.
+  const priorFile = path.join(stack, 'stack-manifest.json');
+  const prior = JSON.parse(await readFile(priorFile)); prior.packageVersion = '0.9.30';
+  await writeFile(priorFile, JSON.stringify(prior));
+  const stagingUmask = process.umask(0o077);
+  try {
+    const staged = cli(['upgrade', '--dir', stack]);
+    assert.equal(staged.status, 0, staged.stdout + staged.stderr);
+  } finally { process.umask(stagingUmask); }
   const manifestFile = path.join(stack, 'stack-manifest.json');
   const manifest = JSON.parse(await readFile(manifestFile));
   for (const name of ASSETS) {

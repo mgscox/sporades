@@ -147081,6 +147081,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
     const current2 = await existingFile(destination);
     if (!current2 && action === "init") {
       await cp(sourcePath, destination, { errorOnExist: true, force: false });
+      await chmod2(destination, 420);
       created.push(name2);
     } else if (!current2) missingAssets.push(name2);
     else {
@@ -147356,8 +147357,11 @@ async function copyTree(source, target, exclude = /* @__PURE__ */ new Set()) {
     if (entry.isDirectory()) {
       await mkdir9(to, { mode: 448 });
       await copyTree(from, to);
-    } else if (entry.isFile()) await writeFile8(to, await regular(from), { flag: "wx", mode: (await lstat11(from)).mode & 511 });
-    else fail2();
+    } else if (entry.isFile()) {
+      const mode = (await lstat11(from)).mode & 511;
+      await writeFile8(to, await regular(from), { flag: "wx", mode });
+      await chmod3(to, mode);
+    } else fail2();
   }
 }
 var STORAGE = { traces: ["jaeger", "/badger"], metrics: ["prometheus", "/prometheus"], grafana: ["grafana", "/var/lib/grafana"], inventory: ["gateway", "/inventory"] };
@@ -147683,7 +147687,7 @@ async function validateComponents(dir, packageRoot) {
   const supportedTargets = {
     collector: ["/etc/otelcol/config.yaml", "/var/lib/otelcol/queue"],
     jaeger: ["/etc/jaeger/config.yaml", "/badger"],
-    prometheus: ["/etc/prometheus/prometheus.yml", "/etc/prometheus/pipeline-rules.yaml", "/prometheus"]
+    prometheus: ["/etc/prometheus/prometheus.yml", "/etc/prometheus/pipeline-rules.yaml", "/etc/prometheus/availability-rules.yaml", "/etc/prometheus/performance-rules.yaml", "/prometheus"]
   };
   for (const [name2, targets] of Object.entries(supportedTargets)) {
     if (config.services[name2].volumes?.some((v2) => !targets.includes(v2.target))) fail2();
@@ -147692,7 +147696,7 @@ async function validateComponents(dir, packageRoot) {
   docker([...base, ...await mount("collector", "/etc/otelcol/config.yaml"), config.services.collector.image, "validate", "--config=/etc/otelcol/config.yaml"], dir);
   const retention = config.services.jaeger.environment?.TRACE_RETENTION ?? "72h";
   docker([...base, "--env", `TRACE_RETENTION=${retention}`, ...await mount("jaeger", "/etc/jaeger/config.yaml"), config.services.jaeger.image, "validate", "--config=/etc/jaeger/config.yaml"], dir);
-  docker([...base, ...await mount("prometheus", "/etc/prometheus/prometheus.yml"), ...await mount("prometheus", "/etc/prometheus/pipeline-rules.yaml"), "--entrypoint", "/bin/promtool", config.services.prometheus.image, "check", "config", "/etc/prometheus/prometheus.yml"], dir);
+  docker([...base, ...await mount("prometheus", "/etc/prometheus/prometheus.yml"), ...await mount("prometheus", "/etc/prometheus/pipeline-rules.yaml"), ...await mount("prometheus", "/etc/prometheus/availability-rules.yaml"), ...await mount("prometheus", "/etc/prometheus/performance-rules.yaml"), "--entrypoint", "/bin/promtool", config.services.prometheus.image, "check", "config", "/etc/prometheus/prometheus.yml"], dir);
   for (const name2 of ASSETS.filter((n) => n.endsWith(".json"))) JSON.parse((await regular(path18.join(dir, name2))).toString());
   for (const name2 of ASSETS.filter((n) => n.endsWith(".mjs"))) {
     const result = spawnSync2(process.execPath, ["--check", path18.join(dir, name2)], { encoding: "utf8", timeout: 1e4 });

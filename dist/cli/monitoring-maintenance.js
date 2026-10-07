@@ -294,8 +294,11 @@ async function copyTree(source, target, exclude = new Set()) {
             await mkdir(to, { mode: 0o700 });
             await copyTree(from, to);
         }
-        else if (entry.isFile())
-            await writeFile(to, await regular(from), { flag: 'wx', mode: (await lstat(from)).mode & 0o777 });
+        else if (entry.isFile()) {
+            const mode = (await lstat(from)).mode & 0o777;
+            await writeFile(to, await regular(from), { flag: 'wx', mode });
+            await chmod(to, mode);
+        }
         else
             fail();
     }
@@ -662,7 +665,7 @@ async function validateComponents(dir, packageRoot) {
     const supportedTargets = {
         collector: ['/etc/otelcol/config.yaml', '/var/lib/otelcol/queue'],
         jaeger: ['/etc/jaeger/config.yaml', '/badger'],
-        prometheus: ['/etc/prometheus/prometheus.yml', '/etc/prometheus/pipeline-rules.yaml', '/prometheus'],
+        prometheus: ['/etc/prometheus/prometheus.yml', '/etc/prometheus/pipeline-rules.yaml', '/etc/prometheus/availability-rules.yaml', '/etc/prometheus/performance-rules.yaml', '/prometheus'],
     };
     for (const [name, targets] of Object.entries(supportedTargets)) {
         if (config.services[name].volumes?.some((v) => !targets.includes(v.target)))
@@ -672,7 +675,7 @@ async function validateComponents(dir, packageRoot) {
     docker([...base, ...await mount('collector', '/etc/otelcol/config.yaml'), config.services.collector.image, 'validate', '--config=/etc/otelcol/config.yaml'], dir);
     const retention = config.services.jaeger.environment?.TRACE_RETENTION ?? '72h';
     docker([...base, '--env', `TRACE_RETENTION=${retention}`, ...await mount('jaeger', '/etc/jaeger/config.yaml'), config.services.jaeger.image, 'validate', '--config=/etc/jaeger/config.yaml'], dir);
-    docker([...base, ...await mount('prometheus', '/etc/prometheus/prometheus.yml'), ...await mount('prometheus', '/etc/prometheus/pipeline-rules.yaml'), '--entrypoint', '/bin/promtool', config.services.prometheus.image, 'check', 'config', '/etc/prometheus/prometheus.yml'], dir);
+    docker([...base, ...await mount('prometheus', '/etc/prometheus/prometheus.yml'), ...await mount('prometheus', '/etc/prometheus/pipeline-rules.yaml'), ...await mount('prometheus', '/etc/prometheus/availability-rules.yaml'), ...await mount('prometheus', '/etc/prometheus/performance-rules.yaml'), '--entrypoint', '/bin/promtool', config.services.prometheus.image, 'check', 'config', '/etc/prometheus/prometheus.yml'], dir);
     for (const name of ASSETS.filter(n => n.endsWith('.json')))
         JSON.parse((await regular(path.join(dir, name))).toString());
     for (const name of ASSETS.filter(n => n.endsWith('.mjs'))) {

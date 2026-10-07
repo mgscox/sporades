@@ -52,7 +52,7 @@ fail before publication, preserving the edit. Finish editing and retry so the
 updated configuration is planned and validated together.
 
 Backend validation uses the effective Compose bind sources for Collector,
-Jaeger, Prometheus and Prometheus rules, plus Jaeger's effective
+Jaeger, Prometheus and its pipeline, availability and performance rules, plus Jaeger's effective
 `TRACE_RETENTION` environment. Configuration bind files must be read-only regular
 files inside the stack directory. Custom configuration filenames in that tree
 are supported. Command or entrypoint overrides, additional backend environment
@@ -86,8 +86,12 @@ COMPOSE_PROJECT_NAME=sporades-monitoring-prod sporades monitoring stack rollback
 ```
 
 Generated stack assets and `stack-manifest.json` are published with explicit
-mode `0644`, including under systemd `UMask=0077`. The publication journal records
-that same intended mode; interrupted recovery preserves the original recorded
+mode `0644`, including under systemd `UMask=0077`. Stack initialization also
+sets newly copied public assets to `0644` when package extraction narrowed their
+source permissions. Existing operator files keep their permissions. Candidate
+and backup copies preserve each source file mode independently of umask,
+including private modes. The publication journal records that same intended
+mode; interrupted recovery preserves the original recorded
 mode and ownership. `.env`, `.compose.env`, credentials, maintenance journals and
 backup archives remain private (`0600`); protected state directories use `0700`.
 Operator overrides are preserved. Restores use the snapshot's recorded modes.
