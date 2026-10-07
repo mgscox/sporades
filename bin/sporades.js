@@ -82111,6 +82111,7 @@ function createConnection() {
   let retryInFlight = false;
   let terminalConnectionError = null;
   let connectionErrorPanel = null;
+  let connectionErrorTeardown = null;
   ${options.devRefresh ? "let latestDevRefreshSequence = 0;" : ""}
   let journeyRetireOwner = null;
   window.addEventListener?.("pagehide", (event) => {
@@ -82180,6 +82181,7 @@ function createConnection() {
     openedSocket.addEventListener("open", () => {
       openedAt = Date.now();
       retryInFlight = false;
+      dismissConnectionErrorPanel();
       ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
       const consent = journeyConsentOptions;
       const consentUserId = journeyEnabledUserId;
@@ -82344,8 +82346,8 @@ function createConnection() {
   function showTerminalConnectionError() {
     const error = {
       code: "CONNECTION_UNAVAILABLE",
-      message: "Sporades could not connect to this workspace.",
-      hint: "Check the connection, then try again.",
+      message: "Could not connect to the server.",
+      hint: "Check your internet connection, then try again or reload the page.",
     };
     terminalConnectionError = error;
     retryQueue.length = 0;
@@ -82359,28 +82361,106 @@ function createConnection() {
       subscription.latest = { data: null, error, loading: false };
       for (const listener of subscription.listeners) listener(subscription.latest);
     }
-    if (typeof document === "undefined" || (connectionErrorPanel && connectionErrorPanel.isConnected !== false)) return;
+    if (typeof document === "undefined") return;
     const errorRoot = document.body ?? document.documentElement;
     if (!errorRoot) return;
-    const panel = document.createElement("div");
-    connectionErrorPanel = panel;
-    panel.id = "sporades-connection-error";
-    panel.setAttribute?.("role", "alert");
-    panel.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:grid;place-content:center;gap:1rem;padding:2rem;text-align:center;background:#fff;color:#111;font:16px/1.5 system-ui,sans-serif";
-    panel.textContent = "Sporades could not connect to this workspace. Check your connection and try again.";
-    const retry = document.createElement("button");
+    // A failed manual retry replaces the panel so its controls are re-armed.
+    const manualRetryFailed = connectionErrorPanel !== null;
+    dismissConnectionErrorPanel();
+    renderConnectionErrorPanel(errorRoot, manualRetryFailed);
+  }
+
+  function connectionErrorCopy() {
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      return {
+        title: "You're offline",
+        body: "This page needs an internet connection to stay up to date. Reconnect to the internet, then try again.",
+      };
+    }
+    return {
+      title: "Could not connect to the server",
+      body: "This page lost its live connection and could not get it back after several attempts. The server may be restarting or temporarily unavailable.",
+    };
+  }
+
+  function renderConnectionErrorPanel(errorRoot, manualRetryFailed) {
+    const dark = typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)")?.matches === true;
+    const color = dark
+      ? { page: "#0f1115", card: "#181b21", border: "#2c313a", text: "#e8eaed", muted: "#a3acb7", accent: "#6ea8ff", onAccent: "#0b0d10" }
+      : { page: "#f4f5f7", card: "#ffffff", border: "#dcdfe4", text: "#16181d", muted: "#545d69", accent: "#1f5fd1", onAccent: "#ffffff" };
+    const element = (tag, css, id) => {
+      const node = document.createElement(tag);
+      if (id) node.id = id;
+      node.style.cssText = css;
+      return node;
+    };
+    const buttonCss = "font:inherit;font-weight:600;padding:.625rem 1.125rem;border-radius:8px;cursor:pointer;";
+
+    const panel = element("div",
+      "position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:1rem;box-sizing:border-box;overflow:auto;text-align:left;"
+        + "background:" + color.page + ";color:" + color.text + ";font:16px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif",
+      "sporades-connection-error");
+    panel.setAttribute?.("role", "alertdialog");
+    panel.setAttribute?.("aria-modal", "true");
+    panel.setAttribute?.("aria-labelledby", "sporades-connection-error-title");
+    panel.setAttribute?.("aria-describedby", "sporades-connection-error-body");
+    const card = element("div",
+      "width:100%;max-width:26rem;box-sizing:border-box;padding:1.75rem;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.08);"
+        + "background:" + color.card + ";border:1px solid " + color.border);
+    const title = element("h2", "margin:0 0 .5rem;font-size:1.25rem;line-height:1.3;font-weight:600;color:inherit", "sporades-connection-error-title");
+    const body = element("p", "margin:0 0 .75rem", "sporades-connection-error-body");
+    const note = element("p", "margin:0 0 1.5rem;font-size:.9375rem;color:" + color.muted);
+    note.textContent = "Anything you changed since the connection dropped may not have been saved.";
+    const actions = element("div", "display:flex;flex-wrap:wrap;gap:.75rem");
+    const retry = element("button", buttonCss + "border:1px solid " + color.accent + ";background:" + color.accent + ";color:" + color.onAccent);
     retry.type = "button";
     retry.textContent = "Try again";
+    const reload = element("button", buttonCss + "border:1px solid " + color.border + ";background:transparent;color:inherit");
+    reload.type = "button";
+    reload.textContent = "Reload page";
+    const status = element("p", "margin:1rem 0 0;min-height:1.5em;font-size:.9375rem;color:" + color.muted);
+    status.setAttribute?.("aria-live", "polite");
+    if (manualRetryFailed) status.textContent = "Still unable to connect. Wait a moment, then try again.";
+
+    const applyCopy = () => {
+      const copy = connectionErrorCopy();
+      title.textContent = copy.title;
+      body.textContent = copy.body;
+    };
+    applyCopy();
+    window.addEventListener?.("online", applyCopy);
+    window.addEventListener?.("offline", applyCopy);
+    connectionErrorTeardown = () => {
+      window.removeEventListener?.("online", applyCopy);
+      window.removeEventListener?.("offline", applyCopy);
+    };
+
     retry.addEventListener("click", () => {
-      panel.remove();
-      connectionErrorPanel = null;
+      // The panel stays up while the manual attempt runs; open() dismisses it.
+      if (terminalConnectionError === null) return;
+      retry.disabled = true;
+      retry.textContent = "Reconnecting\u2026";
+      status.textContent = "Reconnecting to the server\u2026";
       automaticConnectionAttempts = 0;
       retryInFlight = false;
       terminalConnectionError = null;
       scheduleConnectionRetry(true);
-    }, { once: true });
-    panel.append(retry);
+    });
+    reload.addEventListener("click", () => window.location.reload());
+
+    actions.append(retry, reload);
+    card.append(title, body, note, actions, status);
+    panel.append(card);
+    connectionErrorPanel = panel;
     errorRoot.append(panel);
+    retry.focus?.();
+  }
+
+  function dismissConnectionErrorPanel() {
+    connectionErrorTeardown?.();
+    connectionErrorTeardown = null;
+    connectionErrorPanel?.remove();
+    connectionErrorPanel = null;
   }
 
   function send(message, onSocket = null) {
