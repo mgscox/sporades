@@ -1944,6 +1944,18 @@ test("runtime restart invalidating an open page token recovers without wedging t
   }
 });
 
+function findConnectionPanelElements(root, predicate, found = []) {
+  for (const child of root.children ?? []) {
+    if (predicate(child)) found.push(child);
+    findConnectionPanelElements(child, predicate, found);
+  }
+  return found;
+}
+
+function connectionPanelText(root) {
+  return findConnectionPanelElements(root, () => true).map((element) => element.textContent).join(" ");
+}
+
 test("repeated connection rejection stops after four attempts and renders a manual retry", async () => {
   const timers = createDeterministicTimers();
   let refreshedTokens = 0;
@@ -2000,9 +2012,12 @@ test("repeated connection rejection stops after four attempts and renders a manu
     assert.equal((await queuedAuth).error.code, "CONNECTION_UNAVAILABLE", "a request queued during recovery resolves when the episode goes terminal");
     const errorPanel = elements.get("sporades-connection-error");
     assert.notEqual(errorPanel, appOwnedConnectionError, "an app-owned matching id cannot suppress the runtime retry panel");
-    assert.match(errorPanel.textContent, /could not connect/i);
-    const retryButton = errorPanel.children.find((child) => child.tagName === "BUTTON");
-    assert.equal(retryButton.textContent, "Try again");
+    assert.match(connectionPanelText(errorPanel), /could not connect to the server/i);
+    assert.match(connectionPanelText(errorPanel), /may not have been saved/i, "the panel warns that recent changes may be lost");
+    assert.doesNotMatch(connectionPanelText(errorPanel), /workspace|sporades/i, "end-user copy never names the platform");
+    const buttons = findConnectionPanelElements(errorPanel, (element) => element.tagName === "BUTTON");
+    assert.deepEqual(buttons.map((button) => button.textContent), ["Try again", "Reload page"]);
+    const [retryButton] = buttons;
     await runtime.auth.get();
     assert.equal(browser.sockets.length, 4, "ordinary app activity cannot bypass the terminal manual-retry gate");
 
@@ -2023,6 +2038,9 @@ test("repeated connection rejection stops after four attempts and renders a manu
 
     retryButton.click();
     await settleMicrotasks();
+    assert.equal(elements.get("sporades-connection-error"), errorPanel, "the panel stays up while the manual retry runs");
+    assert.equal(retryButton.disabled, true);
+    assert.equal(retryButton.textContent, "Reconnecting\u2026");
     assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
     timers.runNext();
     const recovered = browser.sockets[4];
@@ -3008,7 +3026,7 @@ function installRecoveryHarness() {
     body: { append(panel) { panels.push(panel); } },
     createElement(tag) {
       return { tagName: tag, style: {}, children: [], listeners: {},
-        append(child) { this.children.push(child); },
+        append(...children) { this.children.push(...children); },
         setAttribute() {},
         addEventListener(type, listener) { this.listeners[type] = listener; },
         remove() { panels.splice(panels.indexOf(this), 1); },
@@ -3121,7 +3139,7 @@ test("message-bearing reconnects terminate and notify existing and late live que
     assert.equal(h.timers.pending().length, 0, "useful messages do not forgive unstable reconnects");
     assert.equal(states.at(-1).error.code, "CONNECTION_UNAVAILABLE");
     assert.equal(states.at(-1).loading, false);
-    assert.match(h.panels[0].textContent, /could not connect/i);
+    assert.match(connectionPanelText(h.panels[0]), /could not connect to the server/i);
     const late = [];
     runtime.queries.subscribe("late-live", (state) => late.push(state));
     assert.equal(late.at(-1).error.code, "CONNECTION_UNAVAILABLE");
@@ -3129,7 +3147,7 @@ test("message-bearing reconnects terminate and notify existing and late live que
     h.advance(24 * 60 * 60 * 1000);
     assert.equal((await runtime.auth.get()).error.code, "CONNECTION_UNAVAILABLE");
     assert.equal(h.sockets.length, 4, "time and app activity cannot bypass manual retry");
-    h.panels[0].children[0].listeners.click();
+    findConnectionPanelElements(h.panels[0], (element) => element.textContent === "Try again")[0].listeners.click();
     await settleMicrotasks();
     h.timers.runNext();
     await h.openLatest();
@@ -3137,6 +3155,41 @@ test("message-bearing reconnects terminate and notify existing and late live que
     assert.equal(late.at(-1).error, null);
     assert.equal(h.panels.length, 0);
   } finally { h.cleanup(); }
+});
+
+test("connection error panel explains offline state and a failed manual retry", async () => {
+  const h = installRecoveryHarness();
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { onLine: false } });
+  try {
+    const runtime = await importClientRuntime();
+    runtime.auth.subscribe(() => {});
+    const exhaust = async () => {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await h.dropLatest();
+        if (attempt < 3) h.timers.runNext();
+      }
+    };
+    await exhaust();
+    assert.equal(h.panels.length, 1);
+    assert.match(connectionPanelText(h.panels[0]), /offline/i, "offline browsers get offline-specific guidance");
+    assert.doesNotMatch(connectionPanelText(h.panels[0]), /still unable/i);
+
+    findConnectionPanelElements(h.panels[0], (element) => element.textContent === "Try again")[0].listeners.click();
+    await settleMicrotasks();
+    assert.equal(h.panels.length, 1, "the panel remains while the manual retry runs");
+    h.timers.runNext();
+    await exhaust();
+    assert.equal(h.panels.length, 1, "a failed manual retry replaces rather than stacks the panel");
+    assert.match(connectionPanelText(h.panels[0]), /still unable to connect/i);
+    const [retry] = findConnectionPanelElements(h.panels[0], (element) => element.tagName === "button");
+    assert.equal(retry.textContent, "Try again", "a replacement panel re-arms the retry control");
+    assert.notEqual(retry.disabled, true);
+  } finally {
+    if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+    else delete globalThis.navigator;
+    h.cleanup();
+  }
 });
 
 test("app activity stays serialized behind an expired established-token check", async () => {
