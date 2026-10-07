@@ -3066,6 +3066,9 @@ test("stable retries atomically refresh a matching leased receipt's inspection w
     await assert.rejects(api(v1).claim(lease, { path: "/attachments/leased.txt" }), { code: "INGRESS_INSPECTION_REQUIRED" });
 
     scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0", onRequest: () => { scannerCalls += 1; } });
+    // The short unavailable-scan override must not govern healthy concurrent
+    // retries. Use the normal runtime scan budget once the scanner is ready.
+    delete database.__clamavTest.timeoutMs;
     const v2 = endpoint("leased-clamav-v2"); const callsBeforeConflict = scannerCalls;
     await assert.rejects(stage(v2, "leased-conflict", "different bytes"), { code: "INGRESS_DESCRIPTOR_CONFLICT" });
     assert.equal(scannerCalls, callsBeforeConflict, "a descriptor mismatch must fail before scanner work or evidence publication");

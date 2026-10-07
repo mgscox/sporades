@@ -7944,20 +7944,27 @@ test("sporades host helper keeps read-only Capsule inspection available during a
       env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "800" },
     });
     const mutation = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(fixture.lockDir);
-    const read = startHostHelper({
-      action: "capsule.release.list",
-      host: fixture.request.host,
-      capsule: fixture.request.capsule,
-    }, { cwd: dir, env: { ...fixture.docker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "2000" } });
-    const readResult = await Promise.race([
-      read.result,
-      new Promise((resolve) => setTimeout(() => resolve(null), 300)),
-    ]);
-    assert.notEqual(readResult, null, "read-only inspection must not wait behind route mutation");
-    assert.doesNotMatch(JSON.parse(readResult.stdout).error?.message ?? "", /route is locked/i);
-    assert.equal((await Promise.race([mutation.result.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 10))])), false);
-    assert.equal(JSON.parse((await mutation.result).stdout).ok, true);
+    let read;
+    try {
+      await waitForPath(fixture.lockDir);
+      read = startHostHelper({
+        action: "capsule.release.list",
+        host: fixture.request.host,
+        capsule: fixture.request.capsule,
+      }, { cwd: dir, env: { ...fixture.docker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "2000" } });
+      const readResult = await Promise.race([
+        read.result,
+        new Promise((resolve) => setTimeout(() => resolve(null), 300)),
+      ]);
+      assert.notEqual(readResult, null, "read-only inspection must not wait behind route mutation");
+      assert.doesNotMatch(JSON.parse(readResult.stdout).error?.message ?? "", /route is locked/i);
+      assert.equal((await Promise.race([mutation.result.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 10))])), false);
+      assert.equal(JSON.parse((await mutation.result).stdout).ok, true);
+    } finally {
+      // Even a failed timing assertion must settle both helper processes before the
+      // surrounding fixture removes their directory.
+      await Promise.allSettled([mutation.result, ...(read ? [read.result] : [])]);
+    }
   });
 });
 
