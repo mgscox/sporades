@@ -118,7 +118,9 @@ try {
 set -eu
 npm ci --no-audit --no-fund
 npm run build
-docker build --tag '${baseImage}' --file Dockerfile.base .
+# The Base image has no COPY/ADD inputs. Send only its Dockerfile rather than
+# archiving the installed dependencies, npm cache and validation evidence.
+docker build --tag '${baseImage}' - < Dockerfile.base
 SPORADES_REAL_ADMISSION_LIFECYCLE=1 SPORADES_ADMISSION_PROOF_BASE_IMAGE='${baseImage}' node --test --test-concurrency=1 test/admission-lifecycle.acceptance.test.js
 SPORADES_CADDY_ACCEPTANCE_BIN=caddy node scripts/verify-admission-caddy.mjs
 `;
