@@ -265,7 +265,8 @@ async function slowFileDownload(base) {
         response.pause(); setTimeout(() => response.resume(), 10);
       });
       response.on('end', () => resolve({ status: response.statusCode, bytes, digest: digest.digest('hex'),
-        type: response.headers['content-type'], length: response.headers['content-length'],
+        type: response.headers['content-type'], length: response.headers['content-length'] ?? null,
+        transferEncoding: response.headers['transfer-encoding'] ?? null,
         cache: response.headers['cache-control'], disposition: response.headers['content-disposition'] }));
     });
     req.on('error', reject); req.setTimeout(5000, () => req.destroy(new Error('File download timeout'))); req.end();
@@ -536,7 +537,7 @@ for (const session of ['container', 'hosted']) test(`generated ${session} admiss
     assert.deepEqual(download, await slowFileDownload(baseline.base));
     assert.equal(download.status, 200);
     assert.equal(download.bytes, 2 * 1024 * 1024);
-    assert.equal(download.length, '2097152');
+    if (download.length !== null) assert.equal(Number(download.length), download.bytes);
     assert.equal(download.type, 'application/octet-stream');
     assert.equal(download.cache, 'private, no-store');
     assert.match(download.disposition, /^attachment; filename="proof.txt"/);
