@@ -22,7 +22,7 @@ import { installProjectInfernoToolchain } from "./support/project-inferno-toolch
 import { installPrerenderFixture } from "./support/prerender-capsule.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 import { summarizePublicTree } from "../dist/public-tree.js";
-import { routeHttpAdmission } from "../dist/http-runtime.js";
+import { routeHttpAdmission, routeWebSocketAdmission } from "../dist/http-runtime.js";
 import { parseAdmissionPolicy } from "../dist/admission-policy.js";
 import { trustedClientAddress } from "../dist/client-address.js";
 import { installPrerenderWarnings, assertPrerenderWarnings } from "./support/prerender-warnings.js";
@@ -15842,14 +15842,21 @@ test('real Caddy rewrites Hosted identity and gates simulated Cloudflare traffic
     await mkdir(path.dirname(recordPath), { recursive: true });
     await writeFile(recordPath, JSON.stringify({subname:'address',domain:'capsules.example.dev'}));
     await symlink(releaseDir, path.join(capsuleDir,'current'));
-    const policy = parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'address',enabled:true,conditions:[{kind:'pathname',exact:'/blocked'},{kind:'address',value:'192.0.2.0/24'}],action:{kind:'deny'}}]})));
+    let policy = parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'address',enabled:true,conditions:[{kind:'pathname',exact:'/blocked'},{kind:'address',value:'192.0.2.0/24'}],action:{kind:'deny'}}]})));
     const database = {securitySession:'hosted',runtimeProbeToken:null,admissionPolicy:{current:()=>policy}};
-    let calls = 0;
+    let calls = 0, handlers = 0;
     const runtime = createServer((request,response) => {
       calls++;
       if (routeHttpAdmission(database,request,response)) return;
+      handlers++;
       response.setHeader('content-type','application/json');
       response.end(JSON.stringify({address:trustedClientAddress(database,request),count:request.rawHeaders.filter((name,i)=>i%2===0 && name.toLowerCase()==='x-sporades-client-address').length}));
+    });
+    runtime.on('upgrade', (request, socket) => {
+      if (routeWebSocketAdmission(database, request, socket)) return;
+      handlers++;
+      const accept = createHash('sha1').update(request.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+      socket.end(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     });
     await new Promise(resolve=>runtime.listen(0,'127.0.0.1',resolve));
     try {
@@ -15905,6 +15912,60 @@ test('real Caddy rewrites Hosted identity and gates simulated Cloudflare traffic
           assert.equal(duplicate.status,mode==='automatic'?200:403);
           if (mode==='automatic') assert.deepEqual(JSON.parse(duplicate.body),{address:'127.0.0.1',count:1});
           if (mode==='simulated-cloudflare') assert.equal(duplicate.body,'Forbidden\n');
+          if (mode==='automatic') {
+            const upgrade = target => new Promise((resolve,reject) => {
+              const outgoing=httpRequest(base+target,{headers:{...headers,connection:'Upgrade',upgrade:'websocket',
+                'sec-websocket-version':'13','sec-websocket-key':'dGhlIHNhbXBsZSBub25jZQ=='}},incoming=>{
+                const chunks=[]; incoming.on('data',chunk=>chunks.push(chunk));
+                incoming.on('end',()=>resolve({status:incoming.statusCode,headers:incoming.headers,body:Buffer.concat(chunks).toString()}));
+              });
+              outgoing.on('upgrade',(incoming,socket)=>{socket.destroy();resolve({status:incoming.statusCode});});
+              outgoing.on('error',reject); outgoing.setTimeout(5000,()=>outgoing.destroy(new Error('Caddy upgrade timeout'))); outgoing.end();
+            });
+            const denied = async (response, status) => {
+              assert.equal(response.status,status); assert.equal(await response.text(),'Forbidden\n');
+              assert.equal(response.headers.get('cache-control'),'no-store');
+            };
+            const beforeControl=calls;
+            assert.equal((await fetch(base+'/__sporades/health/runtime')).status,404);
+            assert.equal(calls,beforeControl,'public runtime control must not reach the runtime');
+            const direct=await fetch(`http://127.0.0.1:${runtime.address().port}/blocked`,{headers});
+            await denied(direct,403);
+            // Match the actual accepted peer, irrespective of forged forwarding
+            // values. Both transports deny before the fixture application marker.
+            policy=parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'socket-peer',enabled:true,
+              conditions:[{kind:'pathname',prefix:'/proof'},{kind:'address',value:'127.0.0.1/32'}],action:{kind:'deny'}}]})));
+            const beforeDeny=handlers;
+            await denied(await fetch(base+'/proof/limited',{headers}),403);
+            const wsDenied=await upgrade('/proof/ws');
+            assert.equal(wsDenied.status,403); assert.equal(wsDenied.body,'Forbidden\n');
+            assert.equal(wsDenied.headers['cache-control'],'no-store');
+            assert.equal(handlers,beforeDeny);
+            // The proxy must use one trusted socket identity for HTTP and upgrade
+            // traffic, so changing forged headers cannot split a shared quota.
+            for (const first of ['http','websocket']) {
+              policy=parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'proxy-quota-'+first,enabled:true,
+                conditions:[{kind:'pathname',prefix:'/proof'}],action:{kind:'rate-limit',limit:1,windowMs:60000}}]})));
+              const admitted=first==='http' ? await fetch(base+'/proof/limited',{headers}) : await upgrade('/proof/ws');
+              assert.equal(admitted.status,first==='http'?200:101);
+              if(first==='http') await admitted.arrayBuffer();
+              const beforeQuota=handlers;
+              if(first==='http') {
+                const limited=await upgrade('/proof/ws');
+                assert.equal(limited.status,429); assert.equal(limited.body,'Forbidden\n');
+                assert.equal(limited.headers['cache-control'],'no-store');
+                assert.ok(Number(limited.headers['retry-after'])>=1 && Number(limited.headers['retry-after'])<=60);
+              } else {
+                const limited=await fetch(base+'/proof/limited',{headers});
+                await denied(limited,429);
+                assert.ok(Number(limited.headers.get('retry-after'))>=1 && Number(limited.headers.get('retry-after'))<=60);
+              }
+              assert.equal(handlers,beforeQuota,'rate-limited traffic reached application code');
+            }
+            // Restore the original generation for the optional simulated modes.
+            policy=parseAdmissionPolicy(Buffer.from(JSON.stringify({version:1,rules:[{id:'address',enabled:true,
+              conditions:[{kind:'pathname',exact:'/blocked'},{kind:'address',value:'192.0.2.0/24'}],action:{kind:'deny'}}]})));
+          }
         } finally {
           if (child.exitCode === null) {
             child.kill('SIGTERM'); const kill = setTimeout(()=>child.kill('SIGKILL'),1000);

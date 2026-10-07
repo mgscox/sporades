@@ -4,11 +4,21 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { lifecycleOwnership, removeOwnedDockerContainer, assertGenerationObservation, lifecycleDockerNetworkArgs, lifecycleDockerEndpoint } from './support/admission-lifecycle-proof.js';
+import { lifecycleOwnership, removeOwnedDockerContainer, assertGenerationObservation, lifecycleDockerNetworkArgs, lifecycleDockerEndpoint, assertRequiredCaddyProof } from './support/admission-lifecycle-proof.js';
 
 const repo = path.resolve(new URL('..', import.meta.url).pathname);
 const scratch = path.join(repo, '.sporades/issue-73/cleanup-tests');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test('Caddy receipt requires one completed real proxy check; skip, failure and missing output cannot pass', () => {
+  assertRequiredCaddyProof({ passed: 1, failed: 0, skipped: 0, cancelled: 0 });
+  for (const invalid of [
+    { passed: 0, failed: 0, skipped: 0, cancelled: 0 },
+    { passed: 0, failed: 0, skipped: 1, cancelled: 0 },
+    { passed: 1, failed: 1, skipped: 0, cancelled: 0 },
+    { passed: 1, failed: 0, skipped: 0, cancelled: 1 },
+  ]) assert.throws(() => assertRequiredCaddyProof(invalid));
+});
 
 test('runner probes address sibling DNS while workstation probes retain loopback publication', async () => {
   const network='sporades-proof-network-cccccccccccc';

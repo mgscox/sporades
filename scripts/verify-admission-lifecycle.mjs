@@ -1,5 +1,5 @@
 // Isolated local Docker runtime proof. This never SSHs, loads a Host profile,
-// publishes a release or creates provider resources. Caddy acceptance is separate.
+// publishes a release or creates provider resources. Actual Host acceptance is separate.
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
@@ -27,7 +27,7 @@ const report = { mode: driver ? 'native-driver-check' : 'isolated-local-docker',
   manifestDigest: createHash('sha256').update(await readFile(path.join(repo, 'dist/generated-source-manifest.json'))).digest('hex'),
   scenarioDigest: createHash('sha256').update(await readFile(path.join(repo, 'test/admission-lifecycle.acceptance.test.js'))).digest('hex'),
   workingTreeDirty: Boolean((await exec('git', ['status', '--porcelain'], {cwd:repo})).stdout.trim()),
-  pending: ['actual Host lifecycle/Caddy publication, socket-derived Hosted identity, File response streaming and operator drill'],
+  pending: ['actual Host lifecycle/readiness/Caddy publication, deployed inspection, restart parity and operator drill'],
   cleanup: [],
   evidenceRoot,
 };
@@ -87,7 +87,7 @@ try {
       {env:{SPORADES_ADMISSION_DRIVER_CHECK:'1',SPORADES_ADMISSION_PROOF_ROOT:path.join(evidenceRoot,'fixtures')},timeout:480000});
     interrupted.signal.throwIfAborted();
     report.status = 'driver-check-passed';
-    report.pending.push('all deployed Docker/mount/Host helper proof');
+    report.pending.push('all deployed Docker/mount/Host helper and real Caddy proof');
   } else {
     const host = process.env.DOCKER_HOST;
     if (host && !host.startsWith('unix://')) throw new Error('Remote Docker endpoints are prohibited');
@@ -106,7 +106,7 @@ try {
     // Preserve the host absolute path: child Capsule bind sources resolve through
     // the Docker daemon, rather than inside the runner's mount namespace.
     const buildContext = path.join(stage, 'tools'); await mkdir(buildContext);
-    await writeFile(path.join(buildContext, 'Dockerfile'), 'FROM node:24.19.0-alpine\nRUN apk add --no-cache docker-cli python3 util-linux\n');
+    await writeFile(path.join(buildContext, 'Dockerfile'), 'FROM node:24.19.0-alpine\nRUN apk add --no-cache docker-cli python3 util-linux caddy\n');
     await ownership.register('image', toolsImage, () => removeDocker('image', toolsImage), {stage});
     await run('docker', ['build', '--tag', toolsImage, buildContext]);
     await ownership.register('image', baseImage, () => removeDocker('image', baseImage), {stage});
@@ -120,6 +120,7 @@ npm ci --no-audit --no-fund
 npm run build
 docker build --tag '${baseImage}' --file Dockerfile.base .
 SPORADES_REAL_ADMISSION_LIFECYCLE=1 SPORADES_ADMISSION_PROOF_BASE_IMAGE='${baseImage}' node --test --test-concurrency=1 test/admission-lifecycle.acceptance.test.js
+SPORADES_CADDY_ACCEPTANCE_BIN=caddy node scripts/verify-admission-caddy.mjs
 `;
     const mountedSocket = process.platform === 'darwin' ? '/var/run/docker.sock' : socket;
     const {stat} = await import('node:fs/promises');
@@ -131,6 +132,8 @@ SPORADES_REAL_ADMISSION_LIFECYCLE=1 SPORADES_ADMISSION_PROOF_BASE_IMAGE='${baseI
       '--env', `SPORADES_CONFIG_DIR=${source}/.sporades/config`, toolsImage, 'sh', '-c', program], {timeout:900000});
     for (const session of ['container','hosted']) await writeFile(path.join(evidenceRoot, `lifecycle-${session}-docker.json`),
       await readFile(path.join(source, `.sporades/issue-73/evidence/lifecycle-${session}-docker.json`)));
+    report.caddy = JSON.parse(await readFile(path.join(source, '.sporades/issue-73/caddy-report.json'), 'utf8'));
+    if (report.caddy.status !== 'proxy-boundary-passed') throw new Error('Real Caddy proof did not pass');
     interrupted.signal.throwIfAborted(); report.status = 'runtime-boundary-passed';
   }
 } catch (error) {
@@ -191,6 +194,11 @@ SPORADES_REAL_ADMISSION_LIFECYCLE=1 SPORADES_ADMISSION_PROOF_BASE_IMAGE='${baseI
     try { await writeFile(path.join(evidenceRoot, `lifecycle-${session}-docker.json`),
       await readFile(path.join(stage, `source/.sporades/issue-73/evidence/lifecycle-${session}-docker.json`))); }
     catch (error) { if (error.code !== 'ENOENT') report.cleanup.push({kind:'evidence',session,removed:false,error:error.message}); }
+  }
+  if (stage) {
+    try { await writeFile(path.join(evidenceRoot, 'caddy-report.json'),
+      await readFile(path.join(stage, 'source/.sporades/issue-73/caddy-report.json'))); }
+    catch (error) { if (error.code !== 'ENOENT') report.cleanup.push({kind:'evidence',check:'caddy',removed:false,error:error.message}); }
   }
   // Never retry the writer after the inventory. An uncertain writer stays owned
   // for manual recovery; a confirmed one already has its removal receipt.
