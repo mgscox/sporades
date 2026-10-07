@@ -162,6 +162,9 @@ async function fakeOuterCleanup(t, { signal, runnerRemoval = 'success', childRem
   await mkdir(scratch,{recursive:true}); const root=await mkdtemp(path.join(scratch,'runner-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
   const bin=path.join(root,'bin'); await mkdir(bin); await writeFile(path.join(bin,'package.json'),'{"type":"commonjs"}');
+  // Linux reads the socket's GID before launching the tools runner. Fake Docker
+  // never opens this path, but it needs real fixture-owned metadata to inspect.
+  const socket=path.join(root,'fake-proof.sock'); await writeFile(socket,'fake socket metadata only');
   const events=path.join(root,'events.jsonl'),stateFile=path.join(root,'docker-state.json');
   // The fake Git status permits archiving a dirty test checkout. All other Git
   // reads remain real; fake Docker never executes the archived tools program.
@@ -181,7 +184,7 @@ const createChild=source=>{
   fs.writeFileSync(path.join(fixture,'fixture-marker'),'retain me');
   fs.appendFileSync(${JSON.stringify(events)},JSON.stringify(['created-child','sporades-lifecycle-container-aaaaaaaaaaaa'])+'\\n');
 };
-if(args[0]==='context') process.stdout.write('unix:///fake-proof.sock\\n');
+if(args[0]==='context') process.stdout.write(${JSON.stringify('unix://' + socket + '\n')});
 else if(args[0]==='info') process.stdout.write('fake-only\\n');
 else if(args[0]==='network'&&args[1]==='create') {
   const evidence=${JSON.stringify(path.join(root,'evidence'))};
@@ -215,7 +218,7 @@ else if(args[0]==='run') {
   const runRoot=path.join(root,'evidence');
   const child=spawn(process.execPath,['scripts/verify-admission-lifecycle.mjs'],{cwd:repo,
     env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,PROOF_REAL_PATH:process.env.PATH,
-      DOCKER_HOST:'unix:///fake-proof.sock',SPORADES_CONFIG_DIR:path.join(root,'config'),SPORADES_ADMISSION_RUN_ROOT:runRoot},stdio:['ignore','pipe','pipe']});
+      DOCKER_HOST:'unix://'+socket,SPORADES_CONFIG_DIR:path.join(root,'config'),SPORADES_ADMISSION_RUN_ROOT:runRoot},stdio:['ignore','pipe','pipe']});
   const closed=once(child,'close'); let output='';
   child.stdout.on('data',chunk=>output+=chunk); child.stderr.on('data',chunk=>output+=chunk);
   t.after(()=>{if(child.exitCode===null&&child.signalCode===null) child.kill('SIGKILL');});

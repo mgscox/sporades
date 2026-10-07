@@ -43,6 +43,9 @@ wire headers. It also proves HTTP/upgrade denial before handler entry, shared
 quota/Retry-After semantics and public control-route rejection. Docker and Host service management in that check are stubs; it
 does not establish deployed Host readiness or actual route publication. The
 Cloudflare allowed-source case is simulated and needs no account.
+The Base image build receives only `Dockerfile.base` over stdin. That Dockerfile
+has no `COPY` or `ADD` inputs; installed dependencies, npm caches and evidence
+are excluded from its context.
 The tools runner and Capsule fixtures join one uniquely named user-defined
 bridge. Runner probes use each Capsule's Docker DNS name and internal port 5688,
 not the runner's loopback. It publishes no fixed workstation port; application
@@ -124,6 +127,39 @@ Linux runner exercised the helper within its controlled trust chain. The local
 Hosted fixture still uses a synthetic trusted-identity capability. It does not
 prove actual Host deployment, Caddy publication or socket-derived identity.
 Subsequent reports remain authoritative for the current checkout.
+
+## Extended local evidence collected on 2026-10-07
+
+The committed runner passed at `e733b0af`, run `run-206ccc6ce924`, using Docker
+29.8.2, the Base image's Node 22.14.0 and Caddy 2.11.4. The
+[bounded evidence receipt](/evidence/admission-lifecycle-2026-10-07.json) contains
+the exact commit, generated/scenario digests, Bundle/image identities, counters,
+per-generation decisions, measured bounds and cleanup results. It contains no
+client addresses, proxy capabilities or private workstation paths.
+
+| Local measurement | Container | Hosted fixture |
+| --- | --- | --- |
+| Valid publication activation range | 0.78–2.03 seconds | 1.24–2.05 seconds |
+| Hostile denial requests with exact totals | 2,048 | 2,048 |
+| Load-interval RSS growth | 7.63 MiB | 6.95 MiB |
+| Whole-scenario runtime logs | 20,889 bytes | 26,220 bytes |
+| No-policy gate median | 0.0195 microseconds | 0.0285 microseconds |
+| Slow File download and reset recovery | 2 MiB, exact bytes, passed | 2 MiB, exact bytes, passed |
+
+Both sessions rejected all five policy mutation attempts, retained enforcement
+on truncated/oversized hot updates, recovered healthy state and rejected invalid
+configured cold starts before listening. The Hosted capability fixture retained
+exactly 10,000 buckets and counted 112 evictions. The separate real Caddy check
+completed once with zero failures, skips or cancellations, exercising socket
+identity, duplicate-header rewriting, opaque HTTP/upgrade denial, shared quota
+and public control-route rejection. Host service management in that check remains
+stubbed; these results do not complete the deployed rows below.
+
+All ten ownership records were removed. Runner termination and the final child
+inventory were confirmed; independent Docker inspection found all eight distinct
+resources absent. Raw transcripts and receipts are retained in the author's
+ignored `.sporades/issue-73/evidence/run-206ccc6ce924/` directory. Earlier failed
+and interrupted runs remain separate diagnostics, not successful acceptance.
 
 ## Acceptance matrix
 

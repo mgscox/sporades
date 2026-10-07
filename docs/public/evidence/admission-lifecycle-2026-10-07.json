@@ -1,0 +1,232 @@
+{
+  "proofCommit": "e733b0afb85bf2e4c8e761dab0c94014b3e740d3",
+  "run": "run-206ccc6ce924",
+  "issueAcceptance": "incomplete - actual Host drill pending",
+  "scope": "real local Docker Capsules and a separate real Caddy process with stubbed Host service management",
+  "status": "runtime-boundary-passed",
+  "dockerVersion": "29.8.2",
+  "scenarioDigest": "ba1aee26e5e83d8f123b4efcfff6337176e89874c6851fc39e9ec7bf9b60a02f",
+  "generatedManifestDigest": "c034362d368aff606f65511548715ba134409cde6c77ece9e7debdb591a55540",
+  "caddy": {
+    "mode": "local-caddy-route",
+    "status": "proxy-boundary-passed",
+    "check": "real Caddy rewrites Hosted identity and gates simulated Cloudflare traffic before admission",
+    "results": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0
+    },
+    "pending": [
+      "actual Host deployment/readiness/route publication; this check stubs Docker and Host service management",
+      "real Cloudflare-origin infrastructure; the allowed-source case is explicitly simulated"
+    ],
+    "caddyVersion": "v2.11.4"
+  },
+  "sessions": {
+    "container": {
+      "status": "runtime-boundary-passed",
+      "runtimeNode": "22.14.0",
+      "bundleDigest": "9546c82b99be3af6e55d6e1984289bb6843e96623cc681dedcc369ad8f38adb6",
+      "baseImageId": "sha256:a76c5009cf55f5475fbe2efa960eccb80e80d72dc74a4245487968fe5d471f48",
+      "publicationMs": {
+        "addMs": 1337.8085489999994,
+        "atomicStartMs": 1925.7752599999994,
+        "change1Ms": 1887.5800529999997,
+        "change2Ms": 1955.559009999999,
+        "change3Ms": 1863.5431929999995,
+        "recoveryMs": 2022.8133769999986,
+        "removeMs": 783.1940800000011
+      },
+      "atomicGenerations": {
+        "8d7fc5011e7983aef6821f1561b8c497b6878d0817c664beddf4dc0870faeca4": {
+          "httpAdmitted": 20,
+          "httpDenied": 20,
+          "websocketAdmitted": 20,
+          "websocketDenied": 20
+        },
+        "2a5ba0b4b45c8fc7edcb59df7ce838e92063ae01cd293a61cfb9c7fe072cfde0": {
+          "httpAdmitted": 22,
+          "httpDenied": 22,
+          "websocketAdmitted": 22,
+          "websocketDenied": 22
+        },
+        "e98824132f62d4d6ed946d138bab0f7cbe3fef4994b151c91d98f4a6d1af001d": {
+          "httpAdmitted": 24,
+          "httpDenied": 24,
+          "websocketAdmitted": 24,
+          "websocketDenied": 24
+        },
+        "91ef0869d57fd7245ca8c34223ef9f7eb796f14e427d86c3acf60962c4dad348": {
+          "httpAdmitted": 2,
+          "httpDenied": 2,
+          "websocketAdmitted": 2,
+          "websocketDenied": 2
+        }
+      },
+      "hostileLoad": {
+        "requests": 2048,
+        "elapsedMs": 1217.8022500000006,
+        "rssBefore": 93962240,
+        "rssAfter": 101961728,
+        "counters": {
+          "evaluated": "2333",
+          "admitted": "138",
+          "denied": "2195",
+          "rateLimited": "0",
+          "reloadFailures": "2",
+          "reloadRecoveries": "2",
+          "limiterEvictions": "0",
+          "decisionsEmitted": "15",
+          "decisionsSuppressed": "2318"
+        },
+        "activeDigest": "dd34b722f9957cb03ba9279ac8557fc48884f2cd7f079ae78054cc9dbb41e6de"
+      },
+      "runtimeTamper": [
+        {
+          "op": "write",
+          "code": "EROFS"
+        },
+        {
+          "op": "truncate",
+          "code": "EACCES"
+        },
+        {
+          "op": "rename",
+          "code": "EROFS"
+        },
+        {
+          "op": "unlink",
+          "code": "EROFS"
+        },
+        {
+          "op": "replace",
+          "code": "EXDEV"
+        }
+      ],
+      "fileStreaming": {
+        "status": 200,
+        "bytes": 2097152,
+        "digest": "5256ec18f11624025905d057d6befb03d77b243511ac5f77ed5e0221ce6d84b5",
+        "type": "application/octet-stream",
+        "length": null,
+        "transferEncoding": "chunked",
+        "cache": "private, no-store",
+        "disposition": "attachment; filename=\"proof.txt\"; filename*=UTF-8''proof.txt",
+        "slowClient": true,
+        "resetRecovery": true
+      },
+      "noPolicyGateMedianUs": 0.019490394999999695,
+      "logBytes": 20889
+    },
+    "hosted": {
+      "status": "runtime-boundary-passed",
+      "runtimeNode": "22.14.0",
+      "bundleDigest": "6d1dd52e37f48131c54af7086264d138fc8ca8231919367e8da45d4e5785ca54",
+      "baseImageId": "sha256:a76c5009cf55f5475fbe2efa960eccb80e80d72dc74a4245487968fe5d471f48",
+      "publicationMs": {
+        "addMs": 1243.8458839999948,
+        "atomicStartMs": 1902.7848340000055,
+        "change1Ms": 1921.1400769999964,
+        "change2Ms": 1951.3022869999986,
+        "change3Ms": 1957.2519790000006,
+        "recoveryMs": 2044.6876189999966,
+        "removeMs": 2040.7654050000128
+      },
+      "atomicGenerations": {
+        "8d7fc5011e7983aef6821f1561b8c497b6878d0817c664beddf4dc0870faeca4": {
+          "httpAdmitted": 29,
+          "httpDenied": 29,
+          "websocketAdmitted": 29,
+          "websocketDenied": 29
+        },
+        "2a5ba0b4b45c8fc7edcb59df7ce838e92063ae01cd293a61cfb9c7fe072cfde0": {
+          "httpAdmitted": 29,
+          "httpDenied": 29,
+          "websocketAdmitted": 29,
+          "websocketDenied": 29
+        },
+        "e98824132f62d4d6ed946d138bab0f7cbe3fef4994b151c91d98f4a6d1af001d": {
+          "httpAdmitted": 25,
+          "httpDenied": 25,
+          "websocketAdmitted": 25,
+          "websocketDenied": 25
+        },
+        "91ef0869d57fd7245ca8c34223ef9f7eb796f14e427d86c3acf60962c4dad348": {
+          "httpAdmitted": 2,
+          "httpDenied": 2,
+          "websocketAdmitted": 2,
+          "websocketDenied": 2
+        }
+      },
+      "hostileLoad": {
+        "requests": 2048,
+        "elapsedMs": 2550.615340000004,
+        "rssBefore": 94621696,
+        "rssAfter": 101912576,
+        "counters": {
+          "evaluated": "2406",
+          "admitted": "177",
+          "denied": "2226",
+          "rateLimited": "3",
+          "reloadFailures": "2",
+          "reloadRecoveries": "2",
+          "limiterEvictions": "0",
+          "decisionsEmitted": "18",
+          "decisionsSuppressed": "2388"
+        },
+        "activeDigest": "dd34b722f9957cb03ba9279ac8557fc48884f2cd7f079ae78054cc9dbb41e6de"
+      },
+      "runtimeTamper": [
+        {
+          "op": "write",
+          "code": "EROFS"
+        },
+        {
+          "op": "truncate",
+          "code": "EACCES"
+        },
+        {
+          "op": "rename",
+          "code": "EROFS"
+        },
+        {
+          "op": "unlink",
+          "code": "EROFS"
+        },
+        {
+          "op": "replace",
+          "code": "EXDEV"
+        }
+      ],
+      "fileStreaming": {
+        "status": 200,
+        "bytes": 2097152,
+        "digest": "5256ec18f11624025905d057d6befb03d77b243511ac5f77ed5e0221ce6d84b5",
+        "type": "application/octet-stream",
+        "length": null,
+        "transferEncoding": "chunked",
+        "cache": "private, no-store",
+        "disposition": "attachment; filename=\"proof.txt\"; filename*=UTF-8''proof.txt",
+        "slowClient": true,
+        "resetRecovery": true
+      },
+      "noPolicyGateMedianUs": 0.02846840499999985,
+      "logBytes": 26220,
+      "bucketBound": {
+        "buckets": 10000,
+        "maxBuckets": 10000,
+        "evictions": 112
+      }
+    }
+  },
+  "cleanup": {
+    "runnerTerminationConfirmed": true,
+    "childInventory": "complete",
+    "ownershipRecordsRemoved": 10,
+    "uniqueResourcesIndependentlyAbsent": 8
+  },
+  "pending": [
+    "actual Host lifecycle/readiness/Caddy publication, deployed inspection, restart parity and operator drill"
+  ]
+}
