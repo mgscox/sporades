@@ -3229,7 +3229,13 @@ test("sporades host helper bootstraps a Hosted domain idempotently without delet
       },
     };
 
-    const bootstrap = await runHostHelper(request, { cwd: dir, env });
+    const savedUmask = process.umask(0o077);
+    let bootstrap;
+    try { bootstrap = await runHostHelper(request, { cwd: dir, env }); }
+    finally { process.umask(savedUmask); }
+    for (const file of ["Caddyfile", "sporades-hosted-domains.caddy", "hosts/capsules.example.dev.caddy", "hosts/capsules.example.dev/host.caddy", "hosts/capsules.example.dev/.sporades-placeholder.caddy"]) {
+      assert.equal((await stat(path.join(remoteRoot, "caddy", file))).mode & 0o777, 0o644, file);
+    }
 
     assert.equal(bootstrap.code, 0, bootstrap.stderr);
     const output = JSON.parse(bootstrap.stdout);

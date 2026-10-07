@@ -49,6 +49,7 @@
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "test:access-key-release": "node ./scripts/verify-access-key-release.mjs",
     "test:docs": "node --test --test-concurrency=1 test/docs.test.js test/docs-llms.test.js",
+    "test:real-monitoring-maintenance": "SPORADES_MAINTENANCE_DOCKER=1 node --test --test-concurrency=1 test/monitoring-maintenance.acceptance.test.js",
     "test:real-vite-container": "SPORADES_REAL_VITE_CONTAINER=1 node --test --test-concurrency=1 test/real-vite-container.test.js",
     "test:real-clamav-container": "SPORADES_REAL_CLAMAV_DOCKER=1 node --test --test-concurrency=1 test/clamav-docker.acceptance.test.js",
     "test:real-clamav-dev": "SPORADES_REAL_CLAMAV_DEV=1 node --test --test-concurrency=1 test/clamav-dev.acceptance.test.js",

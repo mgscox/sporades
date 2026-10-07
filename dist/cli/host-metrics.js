@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, lstat, readFile, writeFile, rename, rm, access } from "node:fs/promises";
+import { mkdir, lstat, readFile, writeFile, rename, rm, access, chmod } from "node:fs/promises";
 import { isIP } from "node:net";
 import path from "node:path";
 import { helperError } from "./cli-support.js";
@@ -49,6 +49,7 @@ async function publish(file, text, mode = 0o600) {
     const tmp = `${file}.${randomBytes(8).toString("hex")}.tmp`;
     await writeFile(tmp, text, { flag: "wx", mode });
     try {
+        await chmod(tmp, mode);
         await rename(tmp, file);
     }
     finally {

@@ -1,0 +1,89 @@
+{
+  "project": "barbara120-c0ed0084",
+  "scope": "Compact non-secret webhook evidence; full synthetic scrape timeline retained in local ignored validation logs.",
+  "blocked": {
+    "atNs": "1046247861130",
+    "unixAtMs": 1791389770521
+  },
+  "blockedAtNs": "1046247861130",
+  "firingReceivedAtNs": "1143260714022",
+  "notificationMs": 97012.852892,
+  "recovered": {
+    "atNs": "1146262561118",
+    "unixAtMs": 1791389870536
+  },
+  "deliveries": [
+    {
+      "receivedAtNs": "1143260714022",
+      "receivedUnixMs": 1791389867534,
+      "alerts": [
+        {
+          "alertname": "SporadesProbeFailure",
+          "status": "firing",
+          "startsAt": "2026-10-07T16:17:42.401Z",
+          "endsAt": "0001-01-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "receivedAtNs": "1158193145883",
+      "receivedUnixMs": 1791389882467,
+      "alerts": [
+        {
+          "alertname": "SporadesHostTelemetryAbsent",
+          "status": "firing",
+          "startsAt": "2026-10-07T16:17:57.401Z",
+          "endsAt": "0001-01-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "receivedAtNs": "1158234725232",
+      "receivedUnixMs": 1791389882508,
+      "alerts": [
+        {
+          "alertname": "SporadesProbeFailure",
+          "status": "resolved",
+          "startsAt": "2026-10-07T16:17:42.401Z",
+          "endsAt": "2026-10-07T16:17:57.401Z"
+        }
+      ]
+    },
+    {
+      "receivedAtNs": "1218192015629",
+      "receivedUnixMs": 1791389942466,
+      "alerts": [
+        {
+          "alertname": "SporadesInventoryStale",
+          "status": "firing",
+          "startsAt": "2026-10-07T16:18:57.401Z",
+          "endsAt": "0001-01-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "receivedAtNs": "1248146141470",
+      "receivedUnixMs": 1791389972420,
+      "alerts": [
+        {
+          "alertname": "SporadesProbeFailure",
+          "status": "firing",
+          "startsAt": "2026-10-07T16:19:27.401Z",
+          "endsAt": "0001-01-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "receivedAtNs": "1308233641795",
+      "receivedUnixMs": 1791390032507,
+      "alerts": [
+        {
+          "alertname": "SporadesCapsuleTelemetryAbsent",
+          "status": "firing",
+          "startsAt": "2026-10-07T16:20:27.401Z",
+          "endsAt": "0001-01-01T00:00:00Z"
+        }
+      ]
+    }
+  ]
+}

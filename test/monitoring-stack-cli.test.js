@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
@@ -25,12 +25,20 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   const filename = JSON.parse(packed.stdout)[0].filename;
   const install = join(temp, 'installed package');
   await mkdir(install);
-  const extracted = spawnSync('tar', ['-xzf', join(temp, filename), '-C', install], { encoding: 'utf8' });
+  const extractionUmask = process.umask(0o077);
+  let extracted;
+  try { extracted = spawnSync('tar', ['-xzf', join(temp, filename), '-C', install], { encoding: 'utf8' }); }
+  finally { process.umask(extractionUmask); }
   assert.equal(extracted.status, 0, extracted.stderr);
+  const { ASSETS } = await import('../dist/cli/monitoring-stack.js');
+  // Also reproduce narrowed archive modes on tar implementations that preserve
+  // permissions when run as root. All these packaged assets are public.
+  for (const name of ASSETS) await chmod(join(install, 'package', 'monitoring', 'trace', name === '.gitignore' ? 'gitignore.template' : name), 0o600);
   const bin = join(install, 'package', 'bin', 'sporades.js');
   const legacy = join(temp, 'legacy stack');
   await mkdir(legacy);
   await writeFile(join(legacy, 'compose.yaml'), 'services:\n  old: {}\n');
+  await chmod(join(legacy, 'compose.yaml'), 0o600);
   await writeFile(join(legacy, 'setup.mjs'), `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(join(legacy, 'untrusted-executed'))}, 'yes');\n`);
   const adopted = command(bin, ['monitoring', 'stack', 'init', '--dir', legacy, '--json'], temp);
   assert.equal(adopted.status, 0, adopted.stderr || adopted.stdout);
@@ -38,10 +46,20 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   await assert.rejects(readFile(join(legacy, 'stack-manifest.json'), 'utf8'), /ENOENT/);
   await assert.rejects(readFile(join(legacy, 'untrusted-executed'), 'utf8'), /ENOENT/);
   assert.match(await readFile(join(legacy, 'compose.yaml'), 'utf8'), /old/);
+  assert.equal((await stat(join(legacy, 'compose.yaml'))).mode & 0o777, 0o600, 'existing operator file permissions are preserved');
   assert.equal((await stat(join(legacy, '.private', 'credentials.json'))).mode & 0o777, 0o600);
   const target = join(temp, 'monitoring stack');
-  const first = command(bin, ['monitoring', 'stack', 'init', '--dir', target, '--json'], temp);
+  const savedUmask = process.umask(0o077);
+  let first;
+  try { first = command(bin, ['monitoring', 'stack', 'init', '--dir', target, '--json'], temp); }
+  finally { process.umask(savedUmask); }
   assert.equal(first.status, 0, first.stderr || first.stdout);
+  for (const name of [...ASSETS, 'stack-manifest.json', '.private/blackbox/blackbox.yaml', '.private/availability-rules.yaml', '.private/performance-rules.yaml']) {
+    assert.equal((await stat(join(target, name))).mode & 0o777, 0o644, name);
+  }
+  for (const name of ['.env', '.compose.env', '.private/credentials.json', '.private/grafana-admin-password', '.private/alertmanager.yaml', '.private/senders/registry.json']) {
+    assert.equal((await stat(join(target, name))).mode & 0o777, 0o600, name);
+  }
   const result = JSON.parse(first.stdout);
   assert.equal(result.ok, true);
   assert.equal(result.data.notificationDelivery, 'disabled');

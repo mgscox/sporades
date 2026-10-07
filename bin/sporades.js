@@ -81304,7 +81304,7 @@ import { spawnSync as spawnSync4 } from "node:child_process";
 import { createHash as createHash18, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes10, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync as readFileSync4, statSync as statSync2, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
-import { appendFile, chmod as chmod4, cp as cp2, lstat as lstat13, mkdir as mkdir11, open as open5, readdir as readdir6, readFile as readFile14, rename as rename9, rm as rm10, writeFile as writeFile10 } from "node:fs/promises";
+import { appendFile, chmod as chmod5, cp as cp2, lstat as lstat13, mkdir as mkdir11, open as open5, readdir as readdir6, readFile as readFile14, rename as rename9, rm as rm10, writeFile as writeFile10 } from "node:fs/promises";
 import path21 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL6 } from "node:url";
 
@@ -147090,14 +147090,14 @@ function renderCliHelp(command) {
 import { spawn as spawn2, spawnSync as spawnSync2 } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { createHash as createHash16, randomBytes as randomBytes9 } from "node:crypto";
-import { chown, chmod as chmod2, lstat as lstat11, mkdir as mkdir9, open as open4, readFile as readFile11, readdir as readdir5, rename as rename8, rm as rm9, writeFile as writeFile8 } from "node:fs/promises";
+import { chown, chmod as chmod3, lstat as lstat11, mkdir as mkdir9, open as open4, readFile as readFile11, readdir as readdir5, rename as rename8, rm as rm9, writeFile as writeFile8 } from "node:fs/promises";
 import path18 from "node:path";
 import { pathToFileURL as pathToFileURL5 } from "node:url";
 
 // src/cli/monitoring-stack.ts
 import { spawnSync } from "node:child_process";
 import { createHash as createHash15 } from "node:crypto";
-import { cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
+import { chmod as chmod2, cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
 import path17 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
 var STACK_SCHEMA = 4;
@@ -147161,6 +147161,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
     const current2 = await existingFile(destination);
     if (!current2 && action === "init") {
       await cp(sourcePath, destination, { errorOnExist: true, force: false });
+      await chmod2(destination, 420);
       created.push(name2);
     } else if (!current2) missingAssets.push(name2);
     else {
@@ -147172,6 +147173,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
   if (action === "init" && !manifestStat && !preexistingContent) {
     await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash15("sha256").update(await readFile10(path17.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
 `, { flag: "wx", mode: 420 });
+    await chmod2(manifestPath, 420);
     created.push("stack-manifest.json");
   }
   let missing = [];
@@ -147226,10 +147228,8 @@ async function atomic(file, bytes, mode = 384, owner) {
   const handle = await open4(temp, "wx", mode);
   try {
     await handle.writeFile(bytes);
-    if (owner) {
-      await handle.chown(owner.uid, owner.gid);
-      await handle.chmod(mode);
-    }
+    if (owner) await handle.chown(owner.uid, owner.gid);
+    await handle.chmod(mode);
     await handle.sync();
   } finally {
     await handle.close();
@@ -147284,7 +147284,7 @@ async function apply(dir, stateDir, next, recordPrevious = true) {
     const f2 = path18.join(dir, name2);
     before[name2] = await exists(f2) ? (await regular(f2)).toString("base64") : null;
     original[name2] = await generation(f2);
-    intended[name2] = bytes === null ? null : { hash: digest(Buffer.from(bytes, "base64")), mode: 420 & ~process.umask(), uid: process.geteuid(), gid: parent.mode & 1024 ? parent.gid : process.getegid() };
+    intended[name2] = bytes === null ? null : { hash: digest(Buffer.from(bytes, "base64")), mode: 420, uid: process.geteuid(), gid: parent.mode & 1024 ? parent.gid : process.getegid() };
   }
   await atomic(path18.join(stateDir, "journal.json"), JSON.stringify({ schemaVersion: 1, before, original, intended }));
   for (const [name2, bytes] of Object.entries(next)) {
@@ -147350,7 +147350,7 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
     if (lockStat && (!lockStat.isFile() || lockStat.isSymbolicLink() || lockStat.mode & 63 || process.geteuid && lockStat.uid !== process.geteuid())) fail2();
     const { DatabaseSync } = await import("node:sqlite");
     lock = new DatabaseSync(lockPath);
-    await chmod2(lockPath, 384);
+    await chmod3(lockPath, 384);
     lock.exec("BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS maintenance_lock (id INTEGER PRIMARY KEY);");
     if (action !== "restore") stopped(dir);
     await recover(dir, stateDir);
@@ -147437,8 +147437,11 @@ async function copyTree(source, target, exclude = /* @__PURE__ */ new Set()) {
     if (entry.isDirectory()) {
       await mkdir9(to, { mode: 448 });
       await copyTree(from, to);
-    } else if (entry.isFile()) await writeFile8(to, await regular(from), { flag: "wx", mode: (await lstat11(from)).mode & 511 });
-    else fail2();
+    } else if (entry.isFile()) {
+      const mode = (await lstat11(from)).mode & 511;
+      await writeFile8(to, await regular(from), { flag: "wx", mode });
+      await chmod3(to, mode);
+    } else fail2();
   }
 }
 var STORAGE = { traces: ["jaeger", "/badger"], metrics: ["prometheus", "/prometheus"], grafana: ["grafana", "/var/lib/grafana"], inventory: ["gateway", "/inventory"] };
@@ -147619,7 +147622,7 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
         const file = await open4(path18.join(stage, `${key}.tar`), "wx", 384);
         await file.close();
         archive(dir, name2, stage, `${key}.tar`);
-        await chmod2(path18.join(stage, `${key}.tar`), 384);
+        await chmod3(path18.join(stage, `${key}.tar`), 384);
       }
       const files = await hashes(stage);
       if (!same(beforeFiles, await hashes(path18.join(stage, "config"))) || !same(beforeFiles, await hashes(dir, "", excluded)) || !same(configMetadata, await metadata(dir, excluded)) || await exists(path18.join(dir, ".private/senders/.lock"))) fail2();
@@ -147717,7 +147720,7 @@ async function restoreMetadata(dir, values) {
     const file = path18.join(dir, name2);
     const st = await lstat11(file);
     if (st.uid !== v2.uid || st.gid !== v2.gid) await chown(file, v2.uid, v2.gid);
-    await chmod2(file, v2.mode);
+    await chmod3(file, v2.mode);
   }
 }
 async function validateComponents(dir, packageRoot) {
@@ -147745,8 +147748,9 @@ async function validateComponents(dir, packageRoot) {
     const environment = service.environment ?? {};
     if (typeof environment !== "object" || Array.isArray(environment) || Object.entries(environment).some(([key, value]) => name2 !== "jaeger" || key !== "TRACE_RETENTION" || typeof value !== "string" || value.length > 256 || value.includes("\0"))) fail2();
   }
-  const mount = async (service, target) => {
+  const mount = async (service, target, optional = false) => {
     const matches = config.services[service].volumes?.filter((v2) => v2.target === target);
+    if (optional && !matches?.length) return [];
     if (matches?.length !== 1 || matches[0].type !== "bind" || matches[0].read_only !== true) fail2();
     const source = matches[0].source;
     if (typeof source !== "string" || source.includes(",") || source !== path18.resolve(source) || !source.startsWith(dir + path18.sep)) fail2();
@@ -147764,7 +147768,7 @@ async function validateComponents(dir, packageRoot) {
   const supportedTargets = {
     collector: ["/etc/otelcol/config.yaml", "/var/lib/otelcol/queue"],
     jaeger: ["/etc/jaeger/config.yaml", "/badger"],
-    prometheus: ["/etc/prometheus/prometheus.yml", "/etc/prometheus/pipeline-rules.yaml", "/prometheus"]
+    prometheus: ["/etc/prometheus/prometheus.yml", "/etc/prometheus/pipeline-rules.yaml", "/etc/prometheus/availability-rules.yaml", "/etc/prometheus/performance-rules.yaml", "/prometheus"]
   };
   for (const [name2, targets] of Object.entries(supportedTargets)) {
     if (config.services[name2].volumes?.some((v2) => !targets.includes(v2.target))) fail2();
@@ -147773,7 +147777,7 @@ async function validateComponents(dir, packageRoot) {
   docker([...base, ...await mount("collector", "/etc/otelcol/config.yaml"), config.services.collector.image, "validate", "--config=/etc/otelcol/config.yaml"], dir);
   const retention = config.services.jaeger.environment?.TRACE_RETENTION ?? "72h";
   docker([...base, "--env", `TRACE_RETENTION=${retention}`, ...await mount("jaeger", "/etc/jaeger/config.yaml"), config.services.jaeger.image, "validate", "--config=/etc/jaeger/config.yaml"], dir);
-  docker([...base, ...await mount("prometheus", "/etc/prometheus/prometheus.yml"), ...await mount("prometheus", "/etc/prometheus/pipeline-rules.yaml"), "--entrypoint", "/bin/promtool", config.services.prometheus.image, "check", "config", "/etc/prometheus/prometheus.yml"], dir);
+  docker([...base, ...await mount("prometheus", "/etc/prometheus/prometheus.yml"), ...await mount("prometheus", "/etc/prometheus/pipeline-rules.yaml"), ...await mount("prometheus", "/etc/prometheus/availability-rules.yaml", true), ...await mount("prometheus", "/etc/prometheus/performance-rules.yaml", true), "--entrypoint", "/bin/promtool", config.services.prometheus.image, "check", "config", "/etc/prometheus/prometheus.yml"], dir);
   for (const name2 of ASSETS.filter((n) => n.endsWith(".json"))) JSON.parse((await regular(path18.join(dir, name2))).toString());
   for (const name2 of ASSETS.filter((n) => n.endsWith(".mjs"))) {
     const result = spawnSync2(process.execPath, ["--check", path18.join(dir, name2)], { encoding: "utf8", timeout: 1e4 });
@@ -147896,7 +147900,7 @@ async function readAdmissionInspection(response) {
 
 // src/cli/project-config.ts
 import { createHash as createHash17 } from "node:crypto";
-import { chmod as chmod3, mkdir as mkdir10, readFile as readFile12, writeFile as writeFile9 } from "node:fs/promises";
+import { chmod as chmod4, mkdir as mkdir10, readFile as readFile12, writeFile as writeFile9 } from "node:fs/promises";
 import path19 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var DEFAULT_CSP_DIRECTIVES = {
@@ -148141,7 +148145,7 @@ async function resolveLocalContainerSshAccess(config, projectDir) {
   await mkdir10(sshDir, { recursive: true });
   await writeFile9(authorizedKeysPath, `${lines.join("\n")}
 `, { mode: 420 });
-  await chmod3(authorizedKeysPath, 420);
+  await chmod4(authorizedKeysPath, 420);
   return {
     enabled: true,
     authorizedKeysPath,
@@ -154310,7 +154314,7 @@ async function startContainerSession(options) {
   ] : [];
   if (bundle.deployFiles.length) {
     await mkdir11(path21.join(runtimeDir, "deploy-files"), { recursive: true, mode: 448 });
-    await chmod4(path21.join(runtimeDir, "deploy-files"), 448);
+    await chmod5(path21.join(runtimeDir, "deploy-files"), 448);
   }
   const deployReleaseRoot = path21.join(runtimeDir, "deploy-files", randomBytes10(16).toString("hex"));
   const telemetryCaStagePath = telemetryCa ? path21.join(runtimeDir, "telemetry-ca", `${randomBytes10(16).toString("hex")}.pem`) : null;
@@ -154421,7 +154425,7 @@ async function startContainerSession(options) {
       await recordPreservedFileAttempt(seedJournal, { telemetryCaStagePath });
       await mkdir11(path21.dirname(telemetryCaStagePath), { recursive: true, mode: 448 });
       await writeFile10(telemetryCaStagePath, telemetryCa, { flag: "wx", mode: 420 });
-      await chmod4(telemetryCaStagePath, 420);
+      await chmod5(telemetryCaStagePath, 420);
     }
     await recordPreservedFileAttempt(seedJournal, {
       candidate: { name: containerName, transaction: containerTransactionToken },
@@ -155610,7 +155614,7 @@ async function createHostReleaseArchive(options) {
   const releaseId = createHostReleaseId();
   const hostPushDir = path21.join(options.projectDir, ".sporades", "host-push");
   await mkdir11(hostPushDir, { recursive: true, mode: 448 });
-  await chmod4(hostPushDir, 448);
+  await chmod5(hostPushDir, 448);
   const localArchive = path21.join(hostPushDir, `${releaseId}.tar.gz`);
   const packageDir = path21.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin2(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
@@ -155663,7 +155667,7 @@ async function createHostReleaseArchive(options) {
     const authorizedKeysPath = path21.join(packageDir, ".sporades", "ssh", "authorized_keys");
     await writeFile10(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
 `, { mode: 420 });
-    await chmod4(authorizedKeysPath, 420);
+    await chmod5(authorizedKeysPath, 420);
   }
   const tarArgs = [
     "-czf",
@@ -155693,7 +155697,7 @@ async function createHostReleaseArchive(options) {
       "Check that tar is available and the Capsule runtime files are readable, then retry `sporades host push`."
     );
   }
-  await chmod4(localArchive, 384);
+  await chmod5(localArchive, 384);
   return {
     id: releaseId,
     localArchive,
@@ -156040,11 +156044,11 @@ function upgradeHostHelper(options) {
     `chmod 0755 ${quoteRemoteShell(stagedHelper)}`,
     `${quoteRemoteShell(stagedHelper)} --install-host-helper ${quoteRemoteShell(remoteHelper)} ${quoteRemoteShell(helperChecksum)}`
   ].join(" && ");
-  const chmod5 = spawnSync4("ssh", [options.profile.server, activateCommand], {
+  const chmod6 = spawnSync4("ssh", [options.profile.server, activateCommand], {
     cwd: options.projectDir,
     encoding: "utf8"
   });
-  if (chmod5.error || chmod5.status !== 0) {
+  if (chmod6.error || chmod6.status !== 0) {
     throw commandError(
       "Failed to activate the Host helper upgrade.",
       "Check the Host profile SSH target, SSH key access, and remote root permissions."
@@ -157176,7 +157180,7 @@ async function prepareRuntimeDataPath(targetPath) {
     );
   }
   if (stats.isDirectory()) {
-    await chmod4(targetPath, 448);
+    await chmod5(targetPath, 448);
     const entries = await readdir6(targetPath, { withFileTypes: true });
     for (const entry of entries) {
       await prepareRuntimeDataPath(path21.join(targetPath, entry.name));
@@ -157184,7 +157188,7 @@ async function prepareRuntimeDataPath(targetPath) {
     return;
   }
   if (stats.isFile()) {
-    await chmod4(targetPath, 384);
+    await chmod5(targetPath, 384);
   }
 }
 function localContainerRuntimeUser() {

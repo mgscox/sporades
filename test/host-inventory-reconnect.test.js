@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, lstat } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:https';
@@ -255,27 +255,45 @@ if(args[0]==='run'&&!args.includes('--rm')){const config=fs.readFileSync(${JSON.
 });
 
 
-test('interrupted relay activation reconciles the previous authority before exporting again', async t => {
+test('UMask=0077 interrupted relay activation restores readable assets and private authority', async t => {
   const f = await fixture(t);
   const tls = await f.tls('interrupted');
   await f.saveLegacy('https://old.example/', tls.cert);
-  const marker = path.join(f.root, 'candidate-started');
-  await writeFile(path.join(f.bin, 'docker'), `#!/usr/bin/env node
-const fs=require('node:fs');const args=process.argv.slice(2);
-if(args[0]==='inspect')process.stdout.write('{"State":{"Running":true},"Config":{"Labels":{"com.sporades.host-telemetry-relay":"true"}}}');
-if(args[0]==='run')fs.writeFileSync(${JSON.stringify(marker)},'');
-`);
-  const script = `import {connectHostTelemetryRelay} from ${JSON.stringify(new URL('../dist/cli/host-telemetry-relay.js', import.meta.url).href)};await connectHostTelemetryRelay(${JSON.stringify(f.root)},'fake-network',${JSON.stringify({ endpoint: 'https://new.example/', credential: 'candidate-secret', inventoryCredential: newToken, inventoryHost: scope, caPem: tls.cert.toString() })});`;
-  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env: process.env, stdio: 'ignore' });
-  t.after(() => child.kill('SIGKILL'));
-  const exited = once(child, 'exit');
-  await waitFor(() => readFile(marker).then(() => true, () => false));
-  child.kill('SIGKILL'); await exited;
-  const { reconcileHostTelemetryRelay } = await import('../dist/cli/host-telemetry-relay.js');
-  await reconcileHostTelemetryRelay(f.root);
-  assert.equal((await readHostTelemetryConnection(f.root)).endpoint, 'https://old.example/');
-  assert.equal(await readFile(path.join(f.telemetry, 'credential.env'), 'utf8'), 'SPORADES_INGEST_AUTH=Bearer old-ingestion-token\n');
-  assert.doesNotMatch(await readFile(path.join(f.telemetry, 'collector.yaml'), 'utf8'), /new.example/);
+  const files = ['connection.json', 'collector.yaml', 'credential.env', 'ca.pem'];
+  const saved = await Promise.all(files.map(file => readFile(path.join(f.telemetry, file))));
+  const savedUmask = process.umask(0o077);
+  try {
+    const marker = path.join(f.root, 'candidate-started');
+    await writeFile(path.join(f.bin, 'docker'), `#!/usr/bin/env node
+  const fs=require('node:fs');const args=process.argv.slice(2);
+  if(args[0]==='inspect')process.stdout.write('{"State":{"Running":true},"Config":{"Labels":{"com.sporades.host-telemetry-relay":"true"}}}');
+  if(args[0]==='run')fs.writeFileSync(${JSON.stringify(marker)},'');
+  `);
+    const script = `import {connectHostTelemetryRelay} from ${JSON.stringify(new URL('../dist/cli/host-telemetry-relay.js', import.meta.url).href)};await connectHostTelemetryRelay(${JSON.stringify(f.root)},'fake-network',${JSON.stringify({ endpoint: 'https://new.example/', credential: 'candidate-secret', inventoryCredential: newToken, inventoryHost: scope, caPem: tls.cert.toString() })});`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env: process.env, stdio: 'ignore' });
+    t.after(() => child.kill('SIGKILL'));
+    const exited = once(child, 'exit');
+    await waitFor(() => readFile(marker).then(() => true, () => false));
+    child.kill('SIGKILL'); await exited;
+    const intended = { 'collector.yaml': 0o644, 'ca.pem': 0o644, 'credential.env': 0o600, 'connection.json': 0o600, 'activation.json': 0o600, 'inventory-credential': 0o600 };
+    const candidateModes = await Promise.all(Object.keys(intended).map(async file => [file, (await lstat(path.join(f.telemetry, file))).mode & 0o777]));
+    const { reconcileHostTelemetryRelay } = await import('../dist/cli/host-telemetry-relay.js');
+    // Exercise the same autonomous recovery entry point as the inventory timer.
+    const { recoverHostTelemetryActivation } = await import('../dist/cli/host-telemetry-relay.js');
+    await recoverHostTelemetryActivation(f.root);
+    for (const file of files) assert.equal((await lstat(path.join(f.telemetry, file))).mode & 0o777, intended[file], `autonomous recovery: ${file}`);
+    for (const [file, mode] of candidateModes) assert.equal(mode, intended[file], `interrupted candidate: ${file}`);
+    assert.deepEqual(await Promise.all(files.map(file => readFile(path.join(f.telemetry, file)))), saved);
+    await assert.rejects(readFile(path.join(f.telemetry, 'activation.json')), { code: 'ENOENT' });
+    await reconcileHostTelemetryRelay(f.root);
+    await reconcileHostTelemetryRelay(f.root);
+    for (const [file, mode] of Object.entries({ 'collector.yaml': 0o644, 'ca.pem': 0o644, 'credential.env': 0o600, 'connection.json': 0o600 })) {
+      assert.equal((await lstat(path.join(f.telemetry, file))).mode & 0o777, mode, `recovered: ${file}`);
+    }
+    assert.equal((await readHostTelemetryConnection(f.root)).endpoint, 'https://old.example/');
+    assert.equal(await readFile(path.join(f.telemetry, 'credential.env'), 'utf8'), 'SPORADES_INGEST_AUTH=Bearer old-ingestion-token\n');
+    assert.doesNotMatch(await readFile(path.join(f.telemetry, 'collector.yaml'), 'utf8'), /new.example/);
+  } finally { process.umask(savedUmask); }
 });
 
 test('migration verifies fresh destination storage, registers inventory anew and leaves old expectations and history intact', async t => {
@@ -659,4 +677,19 @@ test('Host export disable reconciles deliberate opt-out; agent removal denies re
   assert.match(await readFile(commands, 'utf8'), /rm -f sporades-telemetry-relay/);
   assert.deepEqual(await readFile(path.join(f.telemetry, 'credential.env')), credentialBefore);
   assert.equal(JSON.parse(await readFile(path.join(f.root, 'hosts', scope, 'registry/capsules/notes.json'))).status, 'running');
+});
+
+
+test('UMask=0077 successful relay publication keeps config/CA readable and credentials private', async t => {
+  const f = await fixture(t);
+  const tls = await f.tls('permissions');
+  const savedUmask = process.umask(0o077);
+  try {
+    await f.reconnect('https://new.example/', tls.cert);
+    for (const [file, mode] of Object.entries({ 'collector.yaml': 0o644, 'ca.pem': 0o644, 'credential.env': 0o600, 'connection.json': 0o600 })) {
+      assert.equal((await lstat(path.join(f.telemetry, file))).mode & 0o777, mode, file);
+    }
+    assert.equal((await lstat(f.telemetry)).mode & 0o777, 0o700);
+    await assert.rejects(readFile(path.join(f.telemetry, 'activation.json')), { code: 'ENOENT' });
+  } finally { process.umask(savedUmask); }
 });

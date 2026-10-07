@@ -26598,7 +26598,7 @@ var init_inventory_contract = __esm({
 // src/cli/host-metrics.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash4, randomBytes as randomBytes2 } from "node:crypto";
-import { mkdir as mkdir2, lstat as lstat4, readFile as readFile4, writeFile, rename as rename3, rm as rm3, access } from "node:fs/promises";
+import { mkdir as mkdir2, lstat as lstat4, readFile as readFile4, writeFile, rename as rename3, rm as rm3, access, chmod } from "node:fs/promises";
 import { isIP as isIP3 } from "node:net";
 import path6 from "node:path";
 function fail(message) {
@@ -26636,6 +26636,7 @@ async function publish(file, text2, mode = 384) {
   const tmp = `${file}.${randomBytes2(8).toString("hex")}.tmp`;
   await writeFile(tmp, text2, { flag: "wx", mode });
   try {
+    await chmod(tmp, mode);
     await rename3(tmp, file);
   } finally {
     await rm3(tmp, { force: true });
@@ -27360,6 +27361,7 @@ async function atomicWrite2(file, content2, mode) {
     const handle = await open5(candidate, "wx", mode);
     try {
       await handle.writeFile(content2);
+      await handle.chmod(mode);
       await handle.sync();
     } finally {
       await handle.close();
@@ -28398,7 +28400,7 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
 init_base_image();
 import { spawnSync as spawnSync6 } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
-import { access as access2, chmod, lstat as lstat8, mkdir as mkdir4, open as open6, opendir, readdir as readdir4, readFile as readFile8, readlink, rename as rename7, rm as rm7, stat, statfs, symlink, writeFile as writeFile3 } from "node:fs/promises";
+import { access as access2, chmod as chmod2, lstat as lstat8, mkdir as mkdir4, open as open6, opendir, readdir as readdir4, readFile as readFile8, readlink, rename as rename7, rm as rm7, stat, statfs, symlink, writeFile as writeFile3 } from "node:fs/promises";
 import { createHash as createHash8, generateKeyPairSync, randomBytes as randomBytes6 } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path11 from "node:path";
@@ -45778,7 +45780,7 @@ async function publishHostHelperBytes(contents, target, mode) {
   const temporary = `${target}.tmp-${process.pid}-${randomBytes6(8).toString("hex")}`;
   try {
     await writeFile3(temporary, contents, { flag: "wx", mode });
-    await chmod(temporary, mode);
+    await chmod2(temporary, mode);
     await rename7(temporary, target);
   } finally {
     await rm7(temporary, { force: true });
@@ -47079,7 +47081,7 @@ async function claimReleaseArchive(request2) {
   if (!claimsStats.isDirectory() || claimsStats.isSymbolicLink() || typeof process.getuid === "function" && claimsStats.uid !== process.getuid()) {
     throw helperError("Hosted Capsule release claim directory is unsafe.", "Repair Host helper ownership of the release claim directory and retry.");
   }
-  await chmod(claimsDirectory, 448);
+  await chmod2(claimsDirectory, 448);
   const claimedPath = path11.join(claimsDirectory, `${request2.release.id}-${process.pid}-${randomBytes6(16).toString("hex")}.tar.gz`);
   await rename7(request2.release.remoteArchive, claimedPath);
   try {
@@ -47087,7 +47089,7 @@ async function claimReleaseArchive(request2) {
     if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || stats.size > HOST_RELEASE_ARCHIVE_LIMITS.compressedBytes) {
       throw helperError("Hosted Capsule release archive is unsafe.", "Upload one bounded regular archive file and retry `sporades host push`.");
     }
-    await chmod(claimedPath, 384);
+    await chmod2(claimedPath, 384);
     return { path: claimedPath, sha256: await releaseArchiveSha256(claimedPath) };
   } catch (error) {
     await rm7(claimedPath, { force: true });
@@ -50016,6 +50018,7 @@ async function atomicPublishBootstrapFile(target, contents, boundary) {
   await writeFile3(temporary, contents, { flag: "wx", mode: 420 });
   try {
     await assertBootstrapMutationBoundary(`${boundary}-publish`, [target, temporary]);
+    await chmod2(temporary, 420);
     await rename7(temporary, target);
     await refreshTrustedBootstrapFinalFileIdentity(target);
   } catch (error) {

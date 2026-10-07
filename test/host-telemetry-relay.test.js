@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderHostRelayCollectorConfig, validateHostRelayConnection } from '../dist/cli/host-telemetry-relay.js';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, chmod, rm, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -103,4 +103,34 @@ process.stdin.on('end',()=>{
       assert.equal(JSON.parse(await readFile(capture, 'utf8')).capsule, null);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('UMask=0077 Host metrics publication keeps Caddy readable and state private', async t => {
+  const root = await mkdtemp(path.resolve('.sporades/host-metrics-modes-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, 'bin');
+  await mkdir(bin); await mkdir(path.join(root, 'caddy')); await mkdir(path.join(root, 'telemetry'), { mode: 0o700 });
+  await writeFile(path.join(root, 'caddy/Caddyfile'), 'apps.example {\n respond "ok"\n}\n');
+  await writeFile(path.join(bin, 'docker'), `#!/bin/sh
+if [ "$1" = network ] && [ "$2" = inspect ]; then
+ echo '[{"Labels":{"com.sporades.host-metrics":"true"},"Internal":true,"IPAM":{"Config":[{"Gateway":"127.0.0.1"}]}}]'
+elif [ "$1" = container ] && [ "$2" = inspect ]; then echo '[]'; fi
+`, { mode: 0o755 });
+  await writeFile(path.join(bin, 'caddy'), `#!/bin/sh
+if [ "$1" = adapt ]; then echo '{"apps":{"http":{"servers":{"metrics":{"listen":["127.0.0.1:20190"]}}}}}'; fi
+`, { mode: 0o755 });
+  // This local fake prevents the Linux-only boot-order path from writing /etc.
+  await writeFile(path.join(bin, 'systemctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const savedPath = process.env.PATH, savedUmask = process.umask(0o077);
+  process.env.PATH = bin + path.delimiter + savedPath;
+  try {
+    const { configureHostMetrics } = await import('../dist/cli/host-metrics.js');
+    for (const operation of ['enable', 'disable']) {
+      await configureHostMetrics(root, 'apps.example', operation);
+      for (const [file, mode] of Object.entries({ 'caddy/Caddyfile': 0o644, 'telemetry/resources.json': 0o600, 'telemetry/caddy-before-resources.conf': 0o600 })) {
+        assert.equal((await lstat(path.join(root, file))).mode & 0o777, mode, `${operation}: ${file}`);
+      }
+    }
+  } finally { process.env.PATH = savedPath; process.umask(savedUmask); }
 });

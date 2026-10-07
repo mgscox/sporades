@@ -19,7 +19,9 @@ async function atomic(file: string, bytes: Buffer | string, mode = 0o600, owner?
   const handle = await open(temp, 'wx', mode);
   try {
     await handle.writeFile(bytes);
-    if (owner) { await handle.chown(owner.uid, owner.gid); await handle.chmod(mode); }
+    // Publication modes are part of the journalled generation, independent of systemd UMask.
+    if (owner) await handle.chown(owner.uid, owner.gid);
+    await handle.chmod(mode);
     await handle.sync();
   } finally { await handle.close(); }
   await rename(temp, file);
@@ -69,7 +71,7 @@ async function apply(dir: string, stateDir: string, next: Record<string, string 
     const f = path.join(dir, name);
     before[name] = await exists(f) ? (await regular(f)).toString('base64') : null;
     original[name] = await generation(f);
-    intended[name] = bytes === null ? null : { hash: digest(Buffer.from(bytes, 'base64')), mode: 0o644 & ~process.umask(), uid: process.geteuid!(), gid: parent.mode & 0o2000 ? parent.gid : process.getegid!() };
+    intended[name] = bytes === null ? null : { hash: digest(Buffer.from(bytes, 'base64')), mode: 0o644, uid: process.geteuid!(), gid: parent.mode & 0o2000 ? parent.gid : process.getegid!() };
   }
   await atomic(path.join(stateDir, 'journal.json'), JSON.stringify({ schemaVersion: 1, before, original, intended }));
   for (const [name, bytes] of Object.entries(next)) { if (bytes === null) await rm(path.join(dir, name), { force: true }); else await atomic(path.join(dir, name), Buffer.from(bytes, 'base64'), 0o644); }
@@ -209,7 +211,11 @@ async function copyTree(source: string, target: string, exclude = new Set<string
     const from = path.join(source, entry.name), to = path.join(target, entry.name);
     if (entry.isSymbolicLink()) fail();
     if (entry.isDirectory()) { await mkdir(to, { mode: 0o700 }); await copyTree(from, to); }
-    else if (entry.isFile()) await writeFile(to, await regular(from), { flag: 'wx', mode: (await lstat(from)).mode & 0o777 });
+    else if (entry.isFile()) {
+      const mode = (await lstat(from)).mode & 0o777;
+      await writeFile(to, await regular(from), { flag: 'wx', mode });
+      await chmod(to, mode);
+    }
     else fail();
   }
 }
@@ -474,8 +480,9 @@ async function validateComponents(dir: string, packageRoot: string) {
         Object.entries(environment).some(([key, value]) => name !== 'jaeger' || key !== 'TRACE_RETENTION' ||
           typeof value !== 'string' || value.length > 256 || value.includes('\0'))) fail();
   }
-  const mount = async (service: string, target: string) => {
+  const mount = async (service: string, target: string, optional = false) => {
     const matches = config.services[service].volumes?.filter((v: any) => v.target === target);
+    if (optional && !matches?.length) return [];
     if (matches?.length !== 1 || matches[0].type !== 'bind' || matches[0].read_only !== true) fail();
     const source = matches[0].source;
     if (typeof source !== 'string' || source.includes(',') || source !== path.resolve(source) || !source.startsWith(dir + path.sep)) fail();
@@ -493,7 +500,7 @@ async function validateComponents(dir: string, packageRoot: string) {
   const supportedTargets: Record<string, string[]> = {
     collector: ['/etc/otelcol/config.yaml', '/var/lib/otelcol/queue'],
     jaeger: ['/etc/jaeger/config.yaml', '/badger'],
-    prometheus: ['/etc/prometheus/prometheus.yml', '/etc/prometheus/pipeline-rules.yaml', '/prometheus'],
+    prometheus: ['/etc/prometheus/prometheus.yml', '/etc/prometheus/pipeline-rules.yaml', '/etc/prometheus/availability-rules.yaml', '/etc/prometheus/performance-rules.yaml', '/prometheus'],
   };
   for (const [name, targets] of Object.entries(supportedTargets)) {
     if (config.services[name].volumes?.some((v: any) => !targets.includes(v.target))) fail();
@@ -502,7 +509,9 @@ async function validateComponents(dir: string, packageRoot: string) {
   docker([...base, ...await mount('collector', '/etc/otelcol/config.yaml'), config.services.collector.image, 'validate', '--config=/etc/otelcol/config.yaml'], dir);
   const retention = config.services.jaeger.environment?.TRACE_RETENTION ?? '72h';
   docker([...base, '--env', `TRACE_RETENTION=${retention}`, ...await mount('jaeger', '/etc/jaeger/config.yaml'), config.services.jaeger.image, 'validate', '--config=/etc/jaeger/config.yaml'], dir);
-  docker([...base, ...await mount('prometheus', '/etc/prometheus/prometheus.yml'), ...await mount('prometheus', '/etc/prometheus/pipeline-rules.yaml'), '--entrypoint', '/bin/promtool', config.services.prometheus.image, 'check', 'config', '/etc/prometheus/prometheus.yml'], dir);
+  // Older supported generations mount only pipeline rules. Present optional
+  // mounts receive the same checks; promtool rejects references without files.
+  docker([...base, ...await mount('prometheus', '/etc/prometheus/prometheus.yml'), ...await mount('prometheus', '/etc/prometheus/pipeline-rules.yaml'), ...await mount('prometheus', '/etc/prometheus/availability-rules.yaml', true), ...await mount('prometheus', '/etc/prometheus/performance-rules.yaml', true), '--entrypoint', '/bin/promtool', config.services.prometheus.image, 'check', 'config', '/etc/prometheus/prometheus.yml'], dir);
   for (const name of ASSETS.filter(n => n.endsWith('.json'))) JSON.parse((await regular(path.join(dir, name))).toString());
   for (const name of ASSETS.filter(n => n.endsWith('.mjs'))) {
     const result = spawnSync(process.execPath, ['--check', path.join(dir, name)], { encoding: 'utf8', timeout: 10_000 });

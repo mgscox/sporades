@@ -4953,6 +4953,7 @@ async function atomicPublishBootstrapFile(target: string, contents: string, boun
   await writeFile(temporary, contents, { flag: "wx", mode: 0o644 });
   try {
     await assertBootstrapMutationBoundary(`${boundary}-publish`, [target, temporary]);
+    await chmod(temporary, 0o644);
     await rename(temporary, target);
     await refreshTrustedBootstrapFinalFileIdentity(target);
   } catch (error) {
