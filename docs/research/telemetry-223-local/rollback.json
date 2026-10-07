@@ -1,0 +1,93 @@
+{
+  "implementation": "95b5e054e07ac051849d335feb0c84c04980c964",
+  "integratedCommit": "24cdc908fece15b8198419ab82aefb8a0f08f3cd",
+  "integrationScope": "Main connection-lost UI merged after Docker acceptance; monitoring implementation and stack assets are byte-identical. CLI was regenerated.",
+  "umask": "0077",
+  "passed": 5,
+  "failed": 0,
+  "skipped": 0,
+  "durationMs": 153850.078459,
+  "legacyGeneration": "6542368d",
+  "diagnostics": [
+    {
+      "project": "barbara224-legacy-bfb426ffc5",
+      "generation": "6542368d",
+      "upgradeExit": 0,
+      "rollbackExit": 0,
+      "missingReferencedRule": null
+    },
+    {
+      "project": "barbara224-legacy-e7a22508f7",
+      "generation": "6542368d",
+      "upgradeExit": 0,
+      "rollbackExit": 1,
+      "missingReferencedRule": "availability"
+    },
+    {
+      "project": "barbara224-legacy-23ad62b0af",
+      "generation": "6542368d",
+      "upgradeExit": 0,
+      "rollbackExit": 1,
+      "missingReferencedRule": "performance"
+    },
+    {
+      "projects": [
+        "dennis130-1711cdd15e-original",
+        "dennis130-1711cdd15e-restored"
+      ],
+      "umask": "77",
+      "restoredTraceId": "2446998bf47001559e88f6b7fe129080",
+      "restoredMetricValue": 130,
+      "inventoryRevision": 1,
+      "historySurvivedRestart": true
+    }
+  ],
+  "engine": "29.8.2",
+  "compose": "5.5.1",
+  "taskContainersAndVolumesRemoved": true,
+  "temporaryRunnerDeleted": true,
+  "topology": "local Linux Docker host; not real separate-VM scenario 3",
+  "unchangedMonitoringSha256": {
+    "src/cli/monitoring-maintenance.ts": "aa46cb20efd860d6122ac6b8e5842b4ff4f47b1e0d10fc1b1d7944a34248895b",
+    "src/cli/monitoring-stack.ts": "25147b63dee2bb4f5a0dcd0f26c15fc76ec228629055f8dfa8d3a4f017f7e3e7",
+    "dist/cli/monitoring-maintenance.js": "d3e256bf643e7438b91099235602872611a5a7ac76222cb885b817c0751dcd8d",
+    "dist/cli/monitoring-stack.js": "e109ecbdecbf8145ec208bfd671951dad4c24869ed63296b14fdab166b09adcf",
+    "monitoring/trace/compose.queue.yaml": "647428d23cc5c00b816929c445f913d3aca371ed5438b18224c6109d2b91f7dd",
+    "monitoring/trace/jaeger.yaml": "255800b146b02ac2fe705852e45206e34d6bfaaa13d7de78f3e339abd69d843a",
+    "monitoring/trace/pipeline-dashboard.json": "3894734b091137107e73753c07506a695c684244ee3d1e157d15f43aa0f258b4",
+    "monitoring/trace/smoke.mjs": "aee72804b5497e8313bf196c69a17dd64e3f11407675622fdd00df6b573222c7",
+    "monitoring/trace/blackbox.yaml": "b0578e5a1b67a0ef2578b01cf869d615a58217d2068a481f347d4c5c58da25ae",
+    "monitoring/trace/Dockerfile.gateway": "f4a7c1004d1bc6930424bae05f50c9b124af67fde71d21c8df1d47d363104bd7",
+    "monitoring/trace/setup.mjs": "ee82b71e04027eb46f852949445870d5ec48780f788e12a62095a1be7d2b710a",
+    "monitoring/trace/grafana-dashboard-provider.yaml": "58997758c6c8288c246aa1ab800f1667690abdd1f0bb210ae39a3a2612faab7c",
+    "monitoring/trace/collector-persistent.yaml": "4db9ba744867e67a56107f7beeacffbc4693b3156588f098dbe06e6665fec674",
+    "monitoring/trace/MAINTENANCE.md": "94cdcfb683bc69b797e25ca9c73fb15b84b052e99c935df0f15e435a5d8eabcf",
+    "monitoring/trace/host-dashboard.json": "f2b4c8f553f3c789847f7aee6c6d879558823ddfef1bd98cec2b94f5baa3fa44",
+    "monitoring/trace/api-dashboard.json": "5bb66c83208c6a2cd22bae86c373faf4d2a672a02fa47204aa25b34ada1e8914",
+    "monitoring/trace/sender-credentials.mjs": "d067db8bd818fd2e18a46b30bf455235f749ca369c4b2abeaf2bb8fe1736f8bb",
+    "monitoring/trace/prometheus.yaml": "777c1e82cb3f94409d8aea9d339d11d9e30ca63c29412b8a0c6e3c84b898c571",
+    "monitoring/trace/gateway.mjs": "4f84adbd82181eb763b9f8945653785d21dbfa52df80bebbd96608448756feb5",
+    "monitoring/trace/inventory-store.mjs": "e0bcab8b7f48c1a4d4643c090afb838da3f0fb9764bb98ba63cc5832b2fd4caf",
+    "monitoring/trace/gitignore.template": "2aa44ec39cf4dc49a10e3d31a047888e1efe213951d31ce36ede73c5ea304955",
+    "monitoring/trace/fleet-dashboard.json": "f8dd18896b6973a791fc833c09f88a106568f40b580e39db1c2415c751d417e3",
+    "monitoring/trace/grafana-datasource.yaml": "5de35ee2c3d48cfde2f9975bd7764a920f12a12af22fe0b98c5d0c870dcda18a",
+    "monitoring/trace/collector.yaml": "61d30f244c4dc60618afcd33377747e312b49ca295bd97dd18897aa652f786cf",
+    "monitoring/trace/.dockerignore": "e3ac6c4947f305d509eac468a83e915aeb3d693a804ed9cfc67c6dc87e7a218c",
+    "monitoring/trace/pipeline-rules.yaml": "e7d37a3c010b454eecb4356b33d449af709818d5b85fc5c16071f6abb7edb26a",
+    "monitoring/trace/.gitignore": "2aa44ec39cf4dc49a10e3d31a047888e1efe213951d31ce36ede73c5ea304955",
+    "monitoring/trace/OUTAGES.md": "bc6b2b91bd639578677e55579857e641eb970552bd81601fdbeacd15c6b704d8",
+    "monitoring/trace/README.md": "80b851e4f8fc8898b7654e277c8f94d229489b7aaf87317bed33e0d5c269f142",
+    "monitoring/trace/inventory.mjs": "e888e9b459f3db40a99402367e56ae07f1adc2561eeac51a4daae2d9f97fb735",
+    "monitoring/trace/caddy-dashboard.json": "880c97f0a7bfff6c0d0c97c80396ed8e70a2a39cb7ed7557b290cc62436986ad",
+    "monitoring/trace/compose.yaml": "b1236bac2fecceb96cede1ef7b723d49773fd51622bf279d4519515128d0e42e",
+    "monitoring/trace/inventory-contract.mjs": "1886d82ea17ad4ee5a21c1755699f27d9af2e854b053746033b12ed13126161a",
+    "monitoring/trace/.env.example": "94630ba15ee0dd62175a01b150242dd78cfc71990d1bd998b4d322ccafcbdb2f",
+    "monitoring/trace/performance-policy.mjs": "e11f2d28f023b5f4eb4902eae14b8fa7f560f16324f0349805ac0a85b154d44f",
+    "monitoring/trace/availability.mjs": "f99f02a477cf1af959f1edfb169365e6828afe139bb65d7bde466eac99ae04b7",
+    "monitoring/trace/performance-policy.md": "646d34259768eb34c1b353e48187c6c863152dfbfb642715661678c11e6b780e",
+    "monitoring/trace/blackbox-config.mjs": "93819320ba5c89e031a4af0ecc7ba610388d26ab0cc11a97ac0dcc7e80935242",
+    "monitoring/trace/availability-rules.yaml": "ca01e7b8cd9142d1daeaa48ea3cb104934a43fe0214969411668fb766cdcbc26",
+    "monitoring/trace/resource-dashboard.json": "f8cd8c6a156a2a7c3f73b388729e0888665683a59de9bf80132a96a1de3b3e32",
+    "monitoring/trace/performance-rules.yaml": "9a04d1559c64d0cb5b0cd4b0997412b16edb28f9d993402b8e8fd2a1f76c37f9"
+  }
+}

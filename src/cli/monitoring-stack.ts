@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commandError } from './cli-support.js';
@@ -65,6 +65,7 @@ export async function runMonitoringStack(action: 'init' | 'validate', directory:
     const current = await existingFile(destination);
     if (!current && action === 'init') {
       await cp(sourcePath, destination, { errorOnExist: true, force: false });
+      await chmod(destination, 0o644);
       created.push(name);
     } else if (!current) missingAssets.push(name);
     else {
@@ -75,6 +76,7 @@ export async function runMonitoringStack(action: 'init' | 'validate', directory:
   }
   if (action === 'init' && !manifestStat && !preexistingContent) {
     await writeFile(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version, assets: Object.fromEntries(await Promise.all(ASSETS.map(async name => [name, createHash('sha256').update(await readFile(path.join(source, name === '.gitignore' ? 'gitignore.template' : name))).digest('hex')])) ) }, null, 2)}\n`, { flag: 'wx', mode: 0o644 });
+    await chmod(manifestPath, 0o644);
     created.push('stack-manifest.json');
   }
   let missing: string[] = [];

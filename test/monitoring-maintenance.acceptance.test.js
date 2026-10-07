@@ -5,6 +5,57 @@ import { access, mkdtemp, mkdir, readFile, writeFile, stat, rm } from 'node:fs/p
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { parseEnvironment } from '../monitoring/trace/setup.mjs';
+import { legacyPipelineGeneration } from './monitoring-legacy-fixture.js';
+
+test('real validators accept pipeline-only schema-4 rollback and reject missing referenced rules', { skip: process.env.SPORADES_MAINTENANCE_DOCKER !== '1', timeout: 300_000 }, async t => {
+  for (const missing of [null, 'availability', 'performance']) {
+    await t.test(missing ? `missing ${missing} reference` : 'legacy rollback', async t => {
+      const root = process.cwd();
+      const temp = await mkdtemp(path.join(root, '.sporades/legacy-maintenance-docker-'));
+      const stack = path.join(temp, 'stack');
+      const project = 'barbara224-legacy-' + randomBytes(5).toString('hex');
+      const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(temp, 'config'), COMPOSE_PROJECT_NAME: project };
+      const cli = args => spawnSync(process.execPath, [path.join(root, 'bin/sporades.js'), 'monitoring', 'stack', ...args, '--dir', stack, '--json'], { env, encoding: 'utf8', timeout: 120_000 });
+      t.after(async () => {
+        spawnSync('docker', ['compose', '--env-file', '.compose.env', 'down', '-v', '--rmi', 'local'], { cwd: stack, env, encoding: 'utf8', timeout: 120_000 });
+        await rm(temp, { recursive: true, force: true });
+      });
+      assert.equal(cli(['init']).status, 0);
+      await writeFile(path.join(stack, '.env'), (await readFile(path.join(stack, '.env'), 'utf8')).replace('TRACE_TLS_MODE=tls', 'TRACE_TLS_MODE=proxy'));
+      const legacy = await legacyPipelineGeneration(stack);
+      if (missing) {
+        // The old Compose generation has no mount for this referenced rule.
+        // Upgrade replaces the generated config; rollback must validate the
+        // saved candidate with real promtool and refuse its missing file.
+        const config = path.join(stack, 'prometheus.yaml');
+        legacy['prometheus.yaml'] = legacy['prometheus.yaml'].replace('  - /etc/prometheus/pipeline-rules.yaml', '  - /etc/prometheus/pipeline-rules.yaml\n  - /etc/prometheus/' + missing + '-rules.yaml');
+        await writeFile(config, legacy['prometheus.yaml']);
+        const manifestFile = path.join(stack, 'stack-manifest.json');
+        const manifest = JSON.parse(await readFile(manifestFile));
+        const { createHash } = await import('node:crypto');
+        manifest.assets['prometheus.yaml'] = createHash('sha256').update(legacy['prometheus.yaml']).digest('hex');
+        await writeFile(manifestFile, JSON.stringify(manifest));
+      }
+      assert.equal(cli(['init']).status, 0);
+      assert.equal(await readFile(path.join(stack, 'compose.yaml'), 'utf8'), legacy['compose.yaml']);
+      const upgraded = cli(['upgrade']);
+      assert.equal(upgraded.status, 0, upgraded.stdout + upgraded.stderr);
+      const before = await readFile(path.join(stack, 'stack-manifest.json'));
+      const currentConfig = await readFile(path.join(stack, 'prometheus.yaml'));
+      const rolled = cli(['rollback']);
+      assert.equal(rolled.status, missing ? 1 : 0, rolled.stdout + rolled.stderr);
+      if (missing) {
+        assert.deepEqual(await readFile(path.join(stack, 'stack-manifest.json')), before);
+        assert.deepEqual(await readFile(path.join(stack, 'prometheus.yaml')), currentConfig);
+        assert.doesNotMatch(rolled.stdout + rolled.stderr, /Checking|FAILED|no such file|promtool/);
+      } else {
+        for (const [name, bytes] of Object.entries(legacy)) assert.equal(await readFile(path.join(stack, name), 'utf8'), bytes, name);
+        assert.equal(JSON.parse(cli(['rollback']).stdout).data.changed, false);
+      }
+      t.diagnostic(JSON.stringify({ project, generation: '6542368d', upgradeExit: upgraded.status, rollbackExit: rolled.status, missingReferencedRule: missing }));
+    });
+  }
+});
 
 test('installed CLI cold backup restores queryable history and exact inventory into fresh volumes', { skip: process.env.SPORADES_MAINTENANCE_DOCKER !== '1', timeout: 300_000 }, async t => {
   const root = process.cwd();
@@ -125,4 +176,6 @@ test('installed CLI cold backup restores queryable history and exact inventory i
   assert.equal(compose(restored, ['restart', 'jaeger', 'prometheus', 'gateway'], prefix + '-restored').status, 0);
   await readiness();
   assert.equal((await fetch(origin + '/api/traces/' + traceId, { headers: { authorization: basic } })).status, 200);
+  assert.equal(JSON.parse(compose(restored, metricQuery, prefix + '-restored').stdout).data.result[0].value[1], '130');
+  t.diagnostic(JSON.stringify({ projects: [prefix + '-original', prefix + '-restored'], umask: process.umask().toString(8), restoredTraceId: traceId, restoredMetricValue: metricValue, inventoryRevision: inventory.revision, historySurvivedRestart: true }));
 });

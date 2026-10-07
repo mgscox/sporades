@@ -52,13 +52,16 @@ fail before publication, preserving the edit. Finish editing and retry so the
 updated configuration is planned and validated together.
 
 Backend validation uses the effective Compose bind sources for Collector,
-Jaeger, Prometheus and Prometheus rules, plus Jaeger's effective
+Jaeger, Prometheus and its pipeline rules, plus availability/performance rule
+mounts when present and Jaeger's effective
 `TRACE_RETENTION` environment. Configuration bind files must be read-only regular
 files inside the stack directory. Custom configuration filenames in that tree
 are supported. Command or entrypoint overrides, additional backend environment
 keys, Compose secrets/configs, and unsupported configuration mounts are rejected
 before publication; retain the shipped invocation and edit supported files or
-`.env` settings instead.
+`.env` settings instead. Older supported pipeline-only generations can roll back
+without availability/performance mounts. Referenced rules must still exist in
+the validator's mounted configuration; Prometheus rejects missing references.
 
 ```sh
 COMPOSE_PROJECT_NAME=sporades-monitoring-prod sporades monitoring stack upgrade --dir /srv/sporades-monitoring
@@ -84,6 +87,17 @@ backup on the first restore.
 ```sh
 COMPOSE_PROJECT_NAME=sporades-monitoring-prod sporades monitoring stack rollback --dir /srv/sporades-monitoring
 ```
+
+Generated stack assets and `stack-manifest.json` are published with explicit
+mode `0644`, including under systemd `UMask=0077`. Stack initialization also
+sets newly copied public assets to `0644` when package extraction narrowed their
+source permissions. Existing operator files keep their permissions. Candidate
+and backup copies preserve each source file mode independently of umask,
+including private modes. The publication journal records that same intended
+mode; interrupted recovery preserves the original recorded
+mode and ownership. `.env`, `.compose.env`, credentials, maintenance journals and
+backup archives remain private (`0600`); protected state directories use `0700`.
+Operator overrides are preserved. Restores use the snapshot's recorded modes.
 
 Maintenance holds an OS-owned SQLite writer lock in `.maintenance/lock.sqlite`.
 It releases on process exit, including SIGKILL; a concurrent invocation fails

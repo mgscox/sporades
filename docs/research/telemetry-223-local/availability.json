@@ -1,0 +1,26 @@
+{
+  "verifiedAt": "2026-10-07T16:20:40.444Z",
+  "project": "barbara120-c0ed0084",
+  "topology": "single Linux Docker host; not separate-VM acceptance",
+  "probeNotificationMs": 97012.852892,
+  "notificationTimeline": "availability-notification-timeline.json",
+  "realWebhookFiringAndRecovery": true,
+  "maximumLengthIdentity": 317,
+  "healthySharedPrefixIdentities": true,
+  "runtimeTelemetryAbsence": true,
+  "acknowledgedStopRemovedExpectation": true,
+  "umask": "0077",
+  "runner": "temporary local Lima Ubuntu 26.04 arm64, Docker 29.8.2, Compose 5.5.1",
+  "testedSurfaceBaseCommit": "c56199668340cf16809db0d2b883eae7d575b5f0",
+  "scope": "Run preceded the final maintenance rule-mount correction. Availability runtime, generated server runtime and monitored assets were unchanged by the repair.",
+  "unchangedSurfaceSha256": {
+    "monitoring/trace/gateway.mjs": "4f84adbd82181eb763b9f8945653785d21dbfa52df80bebbd96608448756feb5",
+    "monitoring/trace/availability.mjs": "f99f02a477cf1af959f1edfb169365e6828afe139bb65d7bde466eac99ae04b7",
+    "monitoring/trace/blackbox-config.mjs": "93819320ba5c89e031a4af0ecc7ba610388d26ab0cc11a97ac0dcc7e80935242",
+    "monitoring/trace/availability-rules.yaml": "ca01e7b8cd9142d1daeaa48ea3cb104934a43fe0214969411668fb766cdcbc26",
+    "monitoring/trace/prometheus.yaml": "777c1e82cb3f94409d8aea9d339d11d9e30ca63c29412b8a0c6e3c84b898c571",
+    "monitoring/trace/compose.yaml": "b1236bac2fecceb96cede1ef7b723d49773fd51622bf279d4519515128d0e42e",
+    "monitoring/trace/setup.mjs": "ee82b71e04027eb46f852949445870d5ec48780f788e12a62095a1be7d2b710a",
+    "dist/runtime-telemetry.js": "e2aca2c04388f910bba4d3ad4028b64721817371f2a1c486ac210e1f514257f0"
+  }
+}

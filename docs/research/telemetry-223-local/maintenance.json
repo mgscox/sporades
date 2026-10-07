@@ -1,0 +1,20 @@
+{
+  "projects": [
+    "dennis130-159c44e424-original",
+    "dennis130-159c44e424-restored"
+  ],
+  "umask": "0077",
+  "restoredTraceId": "732e062f7543f460ab575c87234df1fc",
+  "restoredMetricValue": 130,
+  "inventoryRevision": 1,
+  "historySurvivedRestart": true,
+  "runtimeCommit": "b11eb871f967555f1d5232618502bdea70d3d3fe",
+  "runner": "temporary local Lima Ubuntu 26.04 arm64, Docker 29.8.2, Compose 5.5.1",
+  "result": "pass",
+  "passed": 1,
+  "failed": 0,
+  "durationMs": 165290.053125,
+  "taskContainersAndVolumesRemoved": true,
+  "temporaryRunnerDeleted": true,
+  "topology": "single local Linux Docker host; real separate-VM scenario 3 not run"
+}
