@@ -1,14 +1,19 @@
 # Container and Hosted admission lifecycle proof
 
-Status: **Actual Hosted acceptance requires human verification; #73 incomplete**.
+Status: **Deployed operator evidence collected; final agent regression gate pending**.
 Issue #72 is closed and the original Docker harness merged in PR #221 on
-2026-10-04. That merge established the local runtime boundary; it did not
-complete actual Hosted acceptance. The extended runner additionally checks a
-real Caddy process and streamed File responses. Require a committed run with
-`runtime-boundary-passed`, both session reports passing, a Caddy receipt of
-`proxy-boundary-passed`, and confirmed resource cleanup. Native driver checks
-remain distinct from Docker proof. Keep a completion PR in draft and #73 open
-until the deferred actual Host steps below have evidence.
+2026-10-04. The disposable Container/Hosted operator drill was completed on
+2026-10-07 and exposed a `host stats` registry lookup defect. This branch resolves
+that exact current release, regenerates the shipped helper and covers normal
+push, removed declarations, stale history, legacy metadata and unavailable
+inspection. A clean full non-root regression run is still required before #73
+can be completed. The operator report's interrupted root run is not a pass.
+
+The extended local runner separately checks a real Caddy process and streamed
+File responses. Require a committed run with `runtime-boundary-passed`, both
+session reports passing, a Caddy receipt of `proxy-boundary-passed`, and confirmed
+resource cleanup. Native driver checks remain distinct from Docker proof, and
+local proxy fixtures remain distinct from the actual deployed evidence below.
 
 ## Reproducible local checks
 
@@ -161,23 +166,47 @@ resources absent. Raw transcripts and receipts are retained in the author's
 ignored `.sporades/issue-73/evidence/run-206ccc6ce924/` directory. Earlier failed
 and interrupted runs remain separate diagnostics, not successful acceptance.
 
+## Deployed operator evidence collected on 2026-10-07
+
+The [operator report on PR #221](https://github.com/mgscox/sporades/pull/221#issuecomment-6040886272)
+records the actual disposable Host drill at merged source
+`9e460853588a53144509e9f719b47a534314b5f9`, exact archive tree
+`a1200bc4c7d678e6e7c7803c3e199a48182e4d13`, Node 24.21.0, Docker 29.1.3 and
+Caddy 2.6.2. It used the normal Host helper lifecycle and automatic TLS, with
+actual helper-owned Hosted identity capabilities. A bounded trusted observer
+recorded unchanged admission decisions; File tests used a synthetic owner/session.
+
+The report and 33-file archive are retained on the evidence box named in the
+[issue follow-up](https://github.com/mgscox/sporades/issues/73#issuecomment-6041000103).
+The archive SHA-256 was independently checked during this follow-up:
+`d9f669aa5973d5d8716d1e2d6045916ef8fef3592ef4cc6800552b69ebefface`.
+GitHub archive upload failed; no remotely downloadable raw archive is claimed.
+The operator recorded deletion of the owned test Host and a provider 404.
+This agent did not contact that Host or a provider, or repeat the deployed drill.
+
 ## Acceptance matrix
 
-| Boundary | Automated scenario | Remaining deployed evidence |
+| Boundary | Local automated scenario | Actual deployed operator evidence |
 | --- | --- | --- |
-| Add/change/removal without redeploy | Timed atomic publisher operations; original Bundle digest and PID/container ID retained | Container CLI publication and actual Hosted deployment/route path |
-| Concurrent atomic replacement | Opposite probe groups must admit/deny HTTP and upgrades according to each request's captured digest; union, empty and split generations fail; handler markers equal admitted HTTP totals | Actual Caddy traffic; retain per-request digest/outcome witnesses |
-| Last-known-good and recovery | Truncated and oversized hot files degrade health, retain digest/enforcement, recover, and reconcile failure/recovery event totals | Existing doctor/Hosted stats inspection on an actual Host |
-| Invalid configured cold start | Docker relaunch must exit 1 before listening or `runtime.started` | Actual Host unavailable route and direct HTTP/upgrade refusal |
-| HTTP and WebSocket outcomes | Opaque 403/429, content length, no-store, Retry-After, shared HTTP/upgrade quota, expiry and successful query reply | Real Caddy upgrade and handler-entry observations |
-| Trusted identity | Forged capabilities rejected; Container rejects even a valid Hosted capability; Hosted synthetic address/CIDR and quota seam; separate real Caddy check exercises socket identity and duplicate header stripping using helper-generated routes | Generated Capsule behind actual deployed Caddy, direct-loopback denial and real route publication |
-| Runtime policy ownership | Capsule endpoint attempts write, truncate, rename, unlink and replacement; Docker asserts failure and unchanged bytes | Actual Host helper-owned mounted path |
-| Hostile bounds | Invalid UTF-8/depth/size/rule/condition/text candidates cannot replace file; raw hostile HTTP, exact counters, sampling, bucket eviction, RSS/log guards | Sustained actual Host load and operator resource observation |
-| No-policy compatibility | Separate undeclared Bundle vs removed policy: exact bytes/status/content type, endpoint/static order, streamed POST, runtime-owned 2 MiB File attachment with slow reader/disconnect recovery, WebSocket query, no new counters/logs and gate budget | Deployed proxy/File streaming, baseline logs/route parity and cold restart |
-| Provider independence | Local runner needs Docker, Node/npm and public package/image downloads only | Complete mandatory Caddy/Host path without provider credentials |
-| Operator security scope | Shipped reference explains limited OWASP contributions and unsupported signature inspection | Human reconcile claims with final deployed observations |
+| Add/change/removal without redeploy | Timed atomic publication; Bundle digest and PID/container identity retained | Shipped Container and Hosted publication commands, all valid changes within 10 seconds with unchanged runtime identity |
+| Concurrent atomic replacement | Per-request captured digest and opposite HTTP/upgrade probe groups; partial generations fail | Four generations, 544 nonce-correlated witnesses; admits and denials on both transports for every generation; exact handler-entry totals |
+| Last-known-good and recovery | Truncated/oversized updates retain enforcement and reconcile failure/recovery events | Degraded health and valid recovery passed; health/doctor evidence available; stats omission repaired by exact-release regression below |
+| Invalid configured cold start | Docker exit 1 before listen or runtime-start event | HTTP/upgrade 503 and no application container; valid recovery restored enforcement |
+| HTTP and WebSocket outcomes | Opaque 403/429, no-store, Retry-After, shared quota, expiry and query reply | Actual Caddy deny/admit/quota, retry semantics, expiry and pre-handler rejection passed |
+| Trusted identity | Hosted capability fixture plus separate socket-derived real Caddy check; Container missing-identity behavior | Actual socket rule, forged forwarding/internal headers, direct-loopback rejection and helper-owned identity passed |
+| Runtime policy ownership | Write/truncate/rename/unlink/replace attempts fail; bytes unchanged | All five Capsule mutation attempts failed; stored bytes unchanged |
+| Hostile bounds | Parser/state/bucket/log/RSS guards and exact request totals | 2,048 exact hostile requests, about 5 MiB RSS growth, 97,924 log bytes below 128 KiB; 10,112 actual source sockets, 10,000 buckets and 112 evictions; seven invalid publications retained bytes |
+| No-policy compatibility | Response bytes, route ordering, streamed POST/File with slow/reset clients, WebSocket, counters/logs and gate budget | Separate undeclared Hosted baseline, removed-policy parity, 2 MiB File bytes/headers, slow/reset recovery, no new counters/events and restart parity; gate medians below 1 microsecond |
+| Provider independence | Docker/Node/npm/public downloads only | Mandatory runtime checks used Node/Docker/Caddy/SSH without Cloudflare/Appwrite credentials or paid WAF capabilities; the operator's disposable cloud machine is replaceable by a local test Host |
+| Operator security scope | Shipped reference limits OWASP contributions | Operator reconciled Top 10:2025 wording; no comprehensive/signature-WAF or optional Cloudflare coverage claimed |
+| Inspection regression | Generated helper tests exact pointer/history lookup, removed declaration, stale history, legacy metadata, malformed and failed probe | Actual health/doctor passed; actual stats omission triggered this source repair. New stats build is tested locally, not redeployed to the deleted Host |
 
-## Human completion steps
+A completed non-root full regression run remains the final agent gate. Focused
+retries and an interrupted full run do not satisfy it. The deployed observations
+above belong to the operator's recorded baseline; the new helper repair is
+supported by the focused generated-helper regression rather than a new cloud run.
+
+## Reproduction and human follow-up steps
 
 1. Reproduce the extended local Docker proof using a healthy local Unix engine.
    If using a Linux VM, mount the checkout at the same absolute path used on the
@@ -251,22 +280,23 @@ and interrupted runs remain separate diagnostics, not successful acceptance.
    Retain generated source parity, source gate-budget result and measured network
    timings; do not apply the 1 microsecond gate budget to network round trips.
 8. Record pass/fail for every row, exact commit/image IDs, digests, observations and
-   cleanup under #73. Keep the completion PR in draft while actual Hosted
-   acceptance is pending. Fix harness failures on its branch and rerun relevant
-   checks before requesting QA. Close #73 only when all acceptance
-   rows have evidence, including the deferred actual Host/Caddy checks.
+   cleanup under #73. The original operator drill is already recorded above;
+   these steps support reproduction or a further human drill if QA requests one.
+   Fix harness/product failures and run the complete suite as non-root before
+   requesting QA. Close #73 only when all required evidence and regression gates
+   pass. Keep a reproduction PR in draft if a required deployed row is pending.
 
 Optional Cloudflare-origin tests are separate from mandatory acceptance. Record
 which account capabilities were actually used; do not assume paid managed or
 OWASP rulesets. Provider coverage cannot replace local Host/Caddy trust proof.
 
-For each deferred row, attach the command or traffic transcript, exit status,
+For any additional deployed row, attach the command or traffic transcript, exit status,
 observed result, expected result, release/container identities, active digest,
 elapsed publication time and evidence file path. Retain denied handler counts,
 redacted inspection and cleanup receipts alongside successful outcomes. Mark a
 row **pending** when its environment is unavailable; a skip or a native fixture
-pass cannot complete a deployed row. The human handoff is complete only when
-every remaining deployed row is passed and the full regression suite is green.
+pass cannot complete a deployed row. The issue is complete only when
+every required row is passed and the full regression suite is green.
 
 ## Operator security claims
 

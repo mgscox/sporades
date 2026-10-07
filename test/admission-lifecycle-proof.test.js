@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createServer } from 'node:net';
 import { mkdir, mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { lifecycleOwnership, removeOwnedDockerContainer, assertGenerationObservation, lifecycleDockerNetworkArgs, lifecycleDockerEndpoint, assertRequiredCaddyProof } from './support/admission-lifecycle-proof.js';
@@ -160,11 +161,18 @@ test('journal failure cannot stop removal of later owners or poison future write
 
 async function fakeOuterCleanup(t, { signal, runnerRemoval = 'success', childRemoval = 'fail', networkRemoval = 'success', lateChild = false, interruptAt = 'startup' } = {}) {
   await mkdir(scratch,{recursive:true}); const root=await mkdtemp(path.join(scratch,'runner-'));
-  t.after(()=>rm(root,{recursive:true,force:true}));
+  let socketServer;
+  t.after(async()=>{
+    if(socketServer) await new Promise(resolve=>socketServer.close(resolve));
+    await rm(root,{recursive:true,force:true});
+  });
   const bin=path.join(root,'bin'); await mkdir(bin); await writeFile(path.join(bin,'package.json'),'{"type":"commonjs"}');
-  // Linux reads the socket's GID before launching the tools runner. Fake Docker
-  // never opens this path, but it needs real fixture-owned metadata to inspect.
-  const socket=path.join(root,'fake-proof.sock'); await writeFile(socket,'fake socket metadata only');
+  // Linux inspects the socket's GID. Keep an owned Unix socket alive throughout
+  // the fixture; Darwin skips the stat and avoids its shorter socket-path limit.
+  const socket=path.join(root,'fake-proof.sock');
+  if(process.platform==='linux') {
+    socketServer=createServer(); socketServer.listen(socket); await once(socketServer,'listening');
+  }
   const events=path.join(root,'events.jsonl'),stateFile=path.join(root,'docker-state.json');
   // The fake Git status permits archiving a dirty test checkout. All other Git
   // reads remain real; fake Docker never executes the archived tools program.

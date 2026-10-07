@@ -25,6 +25,7 @@ import { summarizePublicTree } from "../dist/public-tree.js";
 import { routeHttpAdmission, routeWebSocketAdmission } from "../dist/http-runtime.js";
 import { parseAdmissionPolicy } from "../dist/admission-policy.js";
 import { trustedClientAddress } from "../dist/client-address.js";
+import { ADMISSION_INSPECTION_SCRIPT } from "../dist/cli/admission-inspection.js";
 import { installPrerenderWarnings, assertPrerenderWarnings } from "./support/prerender-warnings.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -9093,6 +9094,59 @@ test("sporades host helper reports normalized Docker no-stream stats with raw pa
       ["inspect", "--format", "{{json .}}", "sporades-capsules-example-dev-team-notes"],
     ]);
   });
+});
+
+test("sporades host helper stats inspects admission from the exact current release history", async (t) => {
+  const admissionFiles = [{ path: "policy.json", update: "admission" }];
+  const releaseId = "20260101T000000Z-abcdef12";
+  const digest = "a".repeat(64);
+  const health = { state: "degraded", digest, rateLimit: { buckets: 2, maxBuckets: 10000, evictions: 3 } };
+  for (const scenario of [
+    { name: "normal push pointer with older release first", files: admissionFiles, expected: health },
+    { name: "revoked declaration ignores historical and stale pointer metadata", files: [], stalePointer: true, probe: false },
+    { name: "missing exact release ignores historical declaration", missing: true, probe: false },
+    { name: "legacy current release metadata", legacy: true, expected: health },
+    { name: "malformed inspection stays opaque", files: admissionFiles, stdout: "truncated-private-probe", expected: null },
+    { name: "failed inspection preserves resource stats", files: admissionFiles, exitStatus: 1, expected: null },
+  ]) await t.test(scenario.name, async () => withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const recordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(recordPath), { recursive: true });
+    const source = { deployFiles: admissionFiles };
+    await writeFile(recordPath, JSON.stringify({
+      subname: "team-notes", domain: "capsules.example.dev", status: "running",
+      currentRelease: { id: releaseId, ...(scenario.legacy || scenario.stalePointer ? { source } : {}) },
+      ...(scenario.legacy ? {} : { releases: [
+        { id: "20251231T000000Z-deadbeef", source },
+        ...(!scenario.missing ? [{ id: releaseId, source: { deployFiles: scenario.files } }] : []),
+      ] }),
+    }) + "\n");
+    const docker = await installFakeDocker(dir, { env: {
+      FAKE_DOCKER_STATS_JSON: JSON.stringify({ CPUPerc: "12.34%", PIDs: "11" }),
+      FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{
+        stdout: scenario.stdout ?? JSON.stringify({ admissionPolicy: { ...health, address: "private-runtime-address", capability: "private-runtime-capability" } }),
+        exitStatus: scenario.exitStatus ?? 0,
+      }]),
+    } });
+    const result = await runHostHelper({
+      action: "capsule.stats",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" },
+      stats: { hostedUrl: "https://team-notes.capsules.example.dev", remoteCapsuleId: "capsules.example.dev/team-notes", container: { name: "sporades-capsules-example-dev-team-notes" } },
+    }, { cwd: dir, env: docker.env });
+    assert.equal(result.code, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true, result.stdout);
+    assert.equal(output.data.stats.cpuPercent, 12.34);
+    const probes = (await docker.calls()).filter(call => call.args[0] === "exec");
+    assert.equal(probes.length, scenario.probe === false ? 0 : 1);
+    if (scenario.probe === false) assert.equal(Object.hasOwn(output.data, "admissionPolicy"), false);
+    else {
+      assert.deepEqual(output.data.admissionPolicy, scenario.expected);
+      assert.deepEqual(probes[0].args, ["exec", "sporades-capsules-example-dev-team-notes", "node", "--input-type=module", "--eval", ADMISSION_INSPECTION_SCRIPT]);
+    }
+    assert.doesNotMatch(result.stdout + result.stderr, /private-runtime|truncated-private-probe/);
+  }));
 });
 
 test("sporades host helper lists an empty Hosted Capsule registry", async () => {

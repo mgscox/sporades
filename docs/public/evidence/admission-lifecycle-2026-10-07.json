@@ -1,7 +1,7 @@
 {
   "proofCommit": "e733b0afb85bf2e4c8e761dab0c94014b3e740d3",
   "run": "run-206ccc6ce924",
-  "issueAcceptance": "incomplete - actual Host drill pending",
+  "issueAcceptance": "incomplete - full non-root regression gate pending",
   "scope": "real local Docker Capsules and a separate real Caddy process with stubbed Host service management",
   "status": "runtime-boundary-passed",
   "dockerVersion": "29.8.2",
@@ -227,6 +227,23 @@
     "uniqueResourcesIndependentlyAbsent": 8
   },
   "pending": [
-    "actual Host lifecycle/readiness/Caddy publication, deployed inspection, restart parity and operator drill"
-  ]
+    "complete non-root full regression gate"
+  ],
+  "operatorEvidence": {
+    "sourceCommit": "9e460853588a53144509e9f719b47a534314b5f9",
+    "sourceTree": "a1200bc4c7d678e6e7c7803c3e199a48182e4d13",
+    "report": "https://github.com/mgscox/sporades/pull/221#issuecomment-6040886272",
+    "archiveSha256": "d9f669aa5973d5d8716d1e2d6045916ef8fef3592ef4cc6800552b69ebefface",
+    "archiveChecksumIndependentlyVerified": true,
+    "scope": "operator-reported disposable actual Host and Container lifecycles; new stats repair not redeployed",
+    "generationWitnesses": 544,
+    "hostileRequests": 2048,
+    "distinctSourceSockets": 10112,
+    "maxBuckets": 10000,
+    "evictions": 112,
+    "logBytes": 97924,
+    "cleanup": "operator recorded owned Host deletion and provider 404",
+    "finding": "normal push currentRelease pointer omits source metadata; stats must resolve exact release history",
+    "cloudflareOrigin": "not performed - optional"
+  }
 }

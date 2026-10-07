@@ -2655,7 +2655,9 @@ async function statsCapsule(request) {
         lifecycle: readCapsuleLifecycle(request, registryRecord, stats.container.name, true),
         raw,
     };
-    if (resolveDeployFiles(registryRecord.currentRelease?.source?.deployFiles, true).some(file => file.update === "admission")) {
+    const releaseId = registryRecord.currentRelease?.id;
+    const release = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
+    if (resolveDeployFiles(release?.source?.deployFiles, true).some(file => file.update === "admission")) {
         const probe = runDocker(["exec", stats.container.name, "node", "--input-type=module", "--eval", ADMISSION_INSPECTION_SCRIPT], { maxBuffer: 128 * 1024, timeoutMs: 1500 });
         data.admissionPolicy = null;
         if (probe.ok) {
