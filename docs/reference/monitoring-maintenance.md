@@ -75,6 +75,13 @@ It cannot reverse backend data-schema changes. Take a cold backup before a
 potentially incompatible backend update; restore with the same backend image
 versions as the snapshot first, then plan any image change separately.
 
+Generated stack assets and `stack-manifest.json` are published with explicit
+mode `0644`, including under systemd `UMask=0077`. The publication journal records
+that same intended mode; interrupted recovery preserves the original recorded
+mode and ownership. `.env`, `.compose.env`, credentials, maintenance journals and
+backup archives remain private (`0600`); protected state directories use `0700`.
+Operator overrides are preserved. Restores use the snapshot's recorded modes.
+
 Maintenance holds an OS-owned SQLite writer lock in `.maintenance/lock.sqlite`.
 It releases automatically on process exit, including an interrupted operation.
 A concurrent maintenance process fails closed. The next upgrade or rollback

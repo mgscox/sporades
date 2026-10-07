@@ -85,6 +85,13 @@ backup on the first restore.
 COMPOSE_PROJECT_NAME=sporades-monitoring-prod sporades monitoring stack rollback --dir /srv/sporades-monitoring
 ```
 
+Generated stack assets and `stack-manifest.json` are published with explicit
+mode `0644`, including under systemd `UMask=0077`. The publication journal records
+that same intended mode; interrupted recovery preserves the original recorded
+mode and ownership. `.env`, `.compose.env`, credentials, maintenance journals and
+backup archives remain private (`0600`); protected state directories use `0700`.
+Operator overrides are preserved. Restores use the snapshot's recorded modes.
+
 Maintenance holds an OS-owned SQLite writer lock in `.maintenance/lock.sqlite`.
 It releases on process exit, including SIGKILL; a concurrent invocation fails
 closed. The next upgrade or rollback restores the durable generated-file journal

@@ -165,3 +165,14 @@ and resolved notifications. Fleet/resource/API navigation and acknowledged
 lifecycle/deployment annotations share the independent metric source; sampled
 traces do not determine percentiles. No container-quota/OOM collector or
 automatic restart is added, following the revised scope of parent #107.
+
+## Host-owned file permissions
+
+Relay activation and interrupted-activation recovery explicitly publish
+`telemetry/collector.yaml` and the optional `telemetry/ca.pem` at mode `0644`
+before rename, so the Collector running as another uid can read its bind mounts
+even when the inventory service runs with `UMask=0077`. The containing Telemetry
+directory stays `0700`; `connection.json`, `credential.env` and `activation.json`
+stay `0600`. Inventory acknowledgement alone does not prove recovered delivery.
+The manager-only [scenario 3 re-run](../research/telemetry-223-scenario3.md) requires
+independent stored production traces and fresh Capsule/Host/Caddy metrics.

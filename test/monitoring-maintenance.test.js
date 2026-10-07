@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, lstat, chmod } from 'node:fs/p
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { ASSETS } from '../dist/cli/monitoring-stack.js';
 const root = process.cwd();
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 async function publicationJournal(stack, name, before, after) {
@@ -277,4 +278,45 @@ else if(a[0]==='run'){const bind=a.find(x=>x.startsWith('type=bind,src='));const
   const result = cli(['backup', '--dir', stack, '--backup', backup]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   for (const key of ['traces', 'metrics', 'grafana', 'inventory']) assert.equal(await readFile(path.join(backup, key + '.tar'), 'utf8'), 'snapshot');
+});
+
+
+test('UMask=0077 shipped maintenance publishes explicit modes and recovers interrupted generations', async t => {
+  const { dir, stack, cli } = await fixture(t);
+  const manifestFile = path.join(stack, 'stack-manifest.json');
+  const manifest = JSON.parse(await readFile(manifestFile));
+  for (const name of ASSETS) {
+    const before = Buffer.concat([await readFile(path.join(stack, name)), Buffer.from('\n')]);
+    await writeFile(path.join(stack, name), before);
+    manifest.assets[name] = digest(before);
+  }
+  await writeFile(manifestFile, JSON.stringify(manifest));
+  const savedUmask = process.umask(0o077);
+  try {
+    const hook = path.join(dir, 'interrupt-modes.cjs');
+    await writeFile(hook, `const fs=require('node:fs/promises');const rename=fs.rename;fs.rename=async(...args)=>{await rename(...args);if(args[1]===process.env.INTERRUPT_FILE)process.kill(process.pid,'SIGKILL');};require('node:module').syncBuiltinESMExports();`);
+    const interrupted = cli(['upgrade', '--dir', stack], { NODE_OPTIONS: '--require=' + hook, INTERRUPT_FILE: path.join(stack, 'collector.yaml') });
+    assert.equal(interrupted.signal, 'SIGKILL', interrupted.stdout + interrupted.stderr);
+    const journalFile = path.join(stack, '.maintenance/journal.json');
+    assert.equal((await lstat(journalFile)).mode & 0o777, 0o600);
+    const journal = JSON.parse(await readFile(journalFile));
+    for (const value of Object.values(journal.intended)) assert.equal(value.mode, 0o644, 'journal must match explicit published mode');
+    assert.equal((await lstat(path.join(stack, 'collector.yaml'))).mode & 0o777, 0o644);
+    // Kill recovery after a restored file, then retry with the same restrictive umask.
+    const again = cli(['upgrade', '--dir', stack], { NODE_OPTIONS: '--require=' + hook, INTERRUPT_FILE: path.join(stack, '.dockerignore') });
+    assert.equal(again.signal, 'SIGKILL', again.stdout + again.stderr);
+    const recovered = cli(['upgrade', '--dir', stack]);
+    assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
+    await assert.rejects(readFile(journalFile), { code: 'ENOENT' });
+    for (const name of [...ASSETS, 'stack-manifest.json']) {
+      assert.equal((await lstat(path.join(stack, name))).mode & 0o777, 0o644, name);
+      if (name !== 'stack-manifest.json') assert.deepEqual(await readFile(path.join(stack, name)), await readFile(path.join(root, 'monitoring/trace', name === '.gitignore' ? 'gitignore.template' : name)));
+    }
+    for (const name of ['.env', '.compose.env', '.private/credentials.json', '.private/grafana-admin-password', '.private/alertmanager.yaml', '.maintenance/previous.json', '.maintenance/lock.sqlite']) {
+      assert.equal((await lstat(path.join(stack, name))).mode & 0o777, 0o600, name);
+    }
+    const rolled = cli(['rollback', '--dir', stack]);
+    assert.equal(rolled.status, 0, rolled.stdout + rolled.stderr);
+    for (const name of [...ASSETS, 'stack-manifest.json']) assert.equal((await lstat(path.join(stack, name))).mode & 0o777, 0o644, `rollback: ${name}`);
+  } finally { process.umask(savedUmask); }
 });

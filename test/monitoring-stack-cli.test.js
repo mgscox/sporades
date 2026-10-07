@@ -40,8 +40,18 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   assert.match(await readFile(join(legacy, 'compose.yaml'), 'utf8'), /old/);
   assert.equal((await stat(join(legacy, '.private', 'credentials.json'))).mode & 0o777, 0o600);
   const target = join(temp, 'monitoring stack');
-  const first = command(bin, ['monitoring', 'stack', 'init', '--dir', target, '--json'], temp);
+  const savedUmask = process.umask(0o077);
+  let first;
+  try { first = command(bin, ['monitoring', 'stack', 'init', '--dir', target, '--json'], temp); }
+  finally { process.umask(savedUmask); }
   assert.equal(first.status, 0, first.stderr || first.stdout);
+  const { ASSETS } = await import('../dist/cli/monitoring-stack.js');
+  for (const name of [...ASSETS, 'stack-manifest.json', '.private/blackbox/blackbox.yaml', '.private/availability-rules.yaml', '.private/performance-rules.yaml']) {
+    assert.equal((await stat(join(target, name))).mode & 0o777, 0o644, name);
+  }
+  for (const name of ['.env', '.compose.env', '.private/credentials.json', '.private/grafana-admin-password', '.private/alertmanager.yaml']) {
+    assert.equal((await stat(join(target, name))).mode & 0o777, 0o600, name);
+  }
   const result = JSON.parse(first.stdout);
   assert.equal(result.ok, true);
   assert.equal(result.data.notificationDelivery, 'disabled');

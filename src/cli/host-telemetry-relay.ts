@@ -88,7 +88,9 @@ async function atomicWrite(file: string, content: string, mode: number) {
   const candidate = `${file}.${randomBytes(8).toString("hex")}.tmp`;
   try {
     const handle = await open(candidate, "wx", mode);
-    try { await handle.writeFile(content); await handle.sync(); } finally { await handle.close(); }
+    // Collector bind mounts must be readable by its uid even under UMask=0077;
+    // credential and journal callers still explicitly request 0600.
+    try { await handle.writeFile(content); await handle.chmod(mode); await handle.sync(); } finally { await handle.close(); }
     await rename(candidate, file);
     const directory = await open(path.dirname(file), "r");
     try { await directory.sync(); } finally { await directory.close(); }

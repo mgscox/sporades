@@ -19,7 +19,9 @@ async function atomic(file: string, bytes: Buffer | string, mode = 0o600, owner?
   const handle = await open(temp, 'wx', mode);
   try {
     await handle.writeFile(bytes);
-    if (owner) { await handle.chown(owner.uid, owner.gid); await handle.chmod(mode); }
+    // Publication modes are part of the journalled generation, independent of systemd UMask.
+    if (owner) await handle.chown(owner.uid, owner.gid);
+    await handle.chmod(mode);
     await handle.sync();
   } finally { await handle.close(); }
   await rename(temp, file);
@@ -69,7 +71,7 @@ async function apply(dir: string, stateDir: string, next: Record<string, string 
     const f = path.join(dir, name);
     before[name] = await exists(f) ? (await regular(f)).toString('base64') : null;
     original[name] = await generation(f);
-    intended[name] = bytes === null ? null : { hash: digest(Buffer.from(bytes, 'base64')), mode: 0o644 & ~process.umask(), uid: process.geteuid!(), gid: parent.mode & 0o2000 ? parent.gid : process.getegid!() };
+    intended[name] = bytes === null ? null : { hash: digest(Buffer.from(bytes, 'base64')), mode: 0o644, uid: process.geteuid!(), gid: parent.mode & 0o2000 ? parent.gid : process.getegid!() };
   }
   await atomic(path.join(stateDir, 'journal.json'), JSON.stringify({ schemaVersion: 1, before, original, intended }));
   for (const [name, bytes] of Object.entries(next)) { if (bytes === null) await rm(path.join(dir, name), { force: true }); else await atomic(path.join(dir, name), Buffer.from(bytes, 'base64'), 0o644); }

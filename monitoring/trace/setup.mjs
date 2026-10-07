@@ -116,6 +116,7 @@ export async function setupEnvironment(path) {
   catch (error) {
     if (error.code !== 'ENOENT') throw error;
     await writeFile(join(blackboxDir, 'blackbox.yaml'), await readFile(new URL('./blackbox.yaml', import.meta.url)), { mode: 0o644 });
+    await chmod(join(blackboxDir, 'blackbox.yaml'), 0o644);
   }
   const notificationPath = join(privateDir, 'alertmanager.yaml');
   const webhook = entries.get('ALERT_WEBHOOK_URL');
