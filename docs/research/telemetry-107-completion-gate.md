@@ -44,18 +44,35 @@ The desk's safety contract prohibits real Host commands, cloud server creation
 and using the operator's real monitoring endpoints. The requested draft PR does
 not authorize those operations, so this acceptance cannot be completed here.
 
-After the manager records the result and resolves #128, audit the parent PRD's
-remaining acceptance evidence, including the rollout/canary, notification and
-capacity requirements, before closing #107. Closed implementation issues alone
-do not certify all of those observations. This record makes no new claim about
-their current outcome.
+Manager acceptance of scenario 3 and the final parent evidence audit remain
+pending. Record both before requesting completion sign-off. The audit must
+include the rollout/canary, notification and capacity requirements. Closed
+implementation issues alone do not certify those observations. This record
+makes no new claim about their current outcome.
 
 ## Draft disposition
 
-The PR carrying this record remains draft while #107 is incomplete. Its requested
-`Closes #107` footer is conditional on completing the parent acceptance; it is
-not evidence of completion. Keep the PR draft until the manager's acceptance and
-the final parent audit are recorded. The change contains only this research
-record, with no changes to APIs, types, monitoring assets or generated runtime
-artifacts. Fresh local validation is reported in the PR description separately
-from the linked historical evidence.
+The PR carrying this record remains draft while acceptance is incomplete and
+references the issues without requesting automatic closure. GitHub closing
+keywords take effect on merge; surrounding prose cannot make that action
+conditional. Keep the PR draft and its closing-target list empty until the
+manager's acceptance and final parent audit are recorded. Neither draft status
+nor passing local checks constitutes completion sign-off.
+
+The change contains only this research record, with no changes to APIs, types,
+monitoring assets or generated runtime artifacts. Fresh local validation is
+reported in the PR description separately from historical evidence.
+
+## Round 1 QA evidence
+
+[Dennis's round 1 report](https://github.com/mgscox/sporades/pull/228#issuecomment-6054459975)
+withheld merge sign-off because manager acceptance and the parent audit remain
+pending, and GitHub listed both open issues as closing targets. The description
+and this record must carry references only while those gates remain outstanding.
+
+QA passed documentation tests/build, typecheck, build, generated parity and
+desktop/phone browser checks. Its full suite exited 1: **3,208 tests, 2,802
+passed, 178 failed, 228 skipped, zero cancelled**. Seven representative failures
+reproduced on main `ffa5eb6d`; the other failures were not individually compared.
+These are QA's historical results, not a fresh run or a complete baseline
+comparison. No manager-only infrastructure acceptance is claimed.
