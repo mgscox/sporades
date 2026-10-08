@@ -1,0 +1,227 @@
+{
+  "startedAt": "2026-10-08T18:56:17.499Z",
+  "finishedAt": "2026-10-08T18:56:30.322Z",
+  "evidenceLevel": "installed-package Dev acceptance with an explicitly fixture-only loopback OTLP receiver; no Docker Compose, stored-backend, separate-VM, or real Host acceptance",
+  "runtime": "v24.19.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "versions": {
+    "checkout": "0.9.31",
+    "pack": "0.9.31",
+    "installed": "0.9.31",
+    "installedCli": "0.9.31"
+  },
+  "artifacts": {
+    "npmTarball": {
+      "path": ".sporades/issue-131-release/sporades-0.9.31.tgz",
+      "sha256": "c80e94a30049bb7e5c409726179d3873ea63cccc20da6f88799b1d94e38193b5"
+    },
+    "monitoringArchive": {
+      "path": ".sporades/issue-131-release/sporades-monitoring-trace-0.9.31.tar.gz",
+      "sha256": "d2171e8b0eeced605c554f7bdb031bfc370ae655368df409206395530ecbc93b"
+    },
+    "installedBin": {
+      "sha256": "e10e270d3c20f7d237471c0d4fea280c95e02c4e16234979a44a0ca0ce173c5b"
+    },
+    "installedHostHelper": {
+      "sha256": "dd7e804f74ab193924092f966b2a972105b5ac121de45649c5424f8cb696f847"
+    },
+    "generatedSourceManifest": {
+      "sha256": "b99125c4ebb1d3883ee3cc8baa50cd2d7b3b251d9f64fce68d4189620d129de7"
+    },
+    "generatedCapsule": {
+      "path": ".sporades/monitoring-release-verification/run-1791485777440-36136-yRG2XY/monitoring-release-36136-e105c056/.sporades/build/server.mjs",
+      "sha256": "bc2c9c07d2eabb30940196ac3d8df7f856217603041239989e9cad2c76814c8b"
+    }
+  },
+  "packageParity": {
+    "shippedFiles": 494,
+    "byteIdentical": true
+  },
+  "monitoringArchive": {
+    "manifestVersion": "0.9.31",
+    "schemaVersion": 4,
+    "verifiedAssets": 36,
+    "manifestHashesAndInstalledBytesMatch": true
+  },
+  "requestLogs": {
+    "labels": [
+      {
+        "label": "slow",
+        "traceId": "11111111111111111111111111111111",
+        "paired": true
+      },
+      {
+        "label": "fast",
+        "traceId": "22222222222222222222222222222222",
+        "paired": true
+      }
+    ],
+    "requestIdsMatchWithinEachRequest": true
+  },
+  "privacy": {
+    "privateQueryAbsentFromOtlp": true,
+    "privateBaggageAbsentFromOtlp": true,
+    "privateHeaderAbsentFromOtlp": true,
+    "privateExceptionAbsentFromOtlp": true,
+    "credentialAbsentFromOtlp": true,
+    "serverMaterialAbsentFromBrowserBundle": true
+  },
+  "http": {
+    "concurrentSuccesses": 2,
+    "translatedFailure": 500,
+    "appNodeModules": false
+  },
+  "telemetry": {
+    "receiver": "127.0.0.1:5219 fixture-only",
+    "authenticatedMetricsAndTracesReceived": true,
+    "spans": 50,
+    "metricNames": [
+      "http.server.active_requests",
+      "http.server.request.count",
+      "http.server.request.duration",
+      "otel.sdk.processor.span.processed",
+      "otel.sdk.processor.span.queue.capacity",
+      "otel.sdk.processor.span.queue.size",
+      "process.cpu.time",
+      "process.event_loop.delay.max",
+      "process.event_loop.delay.mean",
+      "process.event_loop.delay.p99",
+      "process.event_loop.utilization",
+      "process.memory.array_buffers",
+      "process.memory.external",
+      "process.memory.heap.allocated",
+      "process.memory.heap.limit",
+      "process.memory.heap.used",
+      "process.memory.rss",
+      "process.uptime",
+      "sporades.job.queue.depth",
+      "sporades.job.queue.oldest_pending_age",
+      "sporades.telemetry.collection.time",
+      "sporades.telemetry.export.failure.count",
+      "sporades.telemetry.export.in_flight",
+      "sporades.telemetry.export.last_success",
+      "sporades.websocket.active_connections"
+    ],
+    "traceIds": [
+      "11111111111111111111111111111111",
+      "22222222222222222222222222222222"
+    ]
+  },
+  "devProcess": {
+    "exitCode": 0,
+    "signal": null
+  },
+  "status": "incomplete-release-acceptance",
+  "runtimeSourceCommit": "ffa5eb6d517bdaa95a9f1542b9b6dcbb7811517a",
+  "checks": {
+    "installedReleaseVerifier": {
+      "status": "passed",
+      "exitCode": 0
+    },
+    "tamperedArchiveRejectedBeforeDev": {
+      "status": "passed",
+      "rejectedExitCode": 1
+    },
+    "outsideWorktreeConfigRejected": {
+      "status": "passed",
+      "rejectedExitCode": 1
+    },
+    "typecheck": {
+      "status": "passed",
+      "exitCode": 0
+    },
+    "focusedParity": {
+      "status": "passed",
+      "tests": 11,
+      "passed": 8,
+      "skipped": 3,
+      "failed": 0,
+      "exitCode": 0
+    },
+    "fullSuite": {
+      "status": "passed",
+      "exitCode": 0,
+      "tests": 3208,
+      "passed": 2980,
+      "failed": 0,
+      "skipped": 228,
+      "cancelled": 0,
+      "durationMs": 1541885.134917
+    },
+    "documentation": {
+      "status": "passed",
+      "tests": 53,
+      "passed": 53,
+      "failed": 0,
+      "exitCode": 0,
+      "buildWarnings": [
+        "Existing missing promql highlighter fallback",
+        "Existing bundle chunk-size warning"
+      ]
+    },
+    "docker": {
+      "command": "docker info",
+      "status": "unavailable",
+      "reason": "timeout after 10 seconds",
+      "elapsedSeconds": 10.009
+    },
+    "interruptionCleanup": {
+      "status": "passed",
+      "signal": "SIGTERM",
+      "exitCode": 1,
+      "ownedPortsClosed": [
+        5218,
+        5219
+      ]
+    },
+    "browser": {
+      "status": "passed",
+      "desktop": [
+        1440,
+        1000
+      ],
+      "phone": [
+        390,
+        844
+      ],
+      "diagnosticsLink": "opened expected guide",
+      "consoleErrors": [
+        "404 for /favicon.ico on docs dev server"
+      ],
+      "consoleWarnings": 0,
+      "ownedBrowserAndServerStopped": true,
+      "screenshots": [
+        "logs/issue-131/browser/issue-131-desktop.png",
+        "logs/issue-131/browser/issue-131-phone.png"
+      ]
+    },
+    "build": {
+      "status": "passed",
+      "exitCode": 0
+    },
+    "generatedFreshness": {
+      "status": "passed",
+      "exitCode": 0
+    },
+    "postBuildArtifactParity": {
+      "status": "passed",
+      "files": 494,
+      "byteIdentical": true
+    }
+  },
+  "pendingReleaseGates": [
+    "actual Compose acceptance",
+    "local Container and Hosted modes",
+    "real same-VM and separate-VM assembled topology acceptance",
+    "stored all-signal and success/failure log lookup",
+    "actual firing/resolved alert delivery",
+    "complete privacy/concurrency/authority drills",
+    "quota/unit/reset/pipeline outage/migration/lifecycle drills on identical artifacts",
+    "<=5% p95 and throughput gates; fixed/load-dependent memory and sustained growth",
+    "measured capacity, retention and disk headroom",
+    "operator sign-off and repeat package/build validation if the final deployed candidate changes"
+  ],
+  "productionCanaryClaimed": false
+}

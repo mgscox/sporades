@@ -1,128 +1,150 @@
 # Packaged monitoring release acceptance — #131
 
-Status: **blocked; release acceptance has not passed** (2026-10-07).
-This record accompanies a draft PR. It does not authorize rollout or claim a
-production canary; canary execution belongs to ticket 25 (#132).
-PR #225 references #131 and must remain draft while the prerequisite and release
-gates below are pending. It must not close #131 or merge as completed acceptance.
+Status: **incomplete; rollout gates have not passed** (2026-10-08). This record
+and local verifier accompany a draft PR. Production canary execution is #132.
 
-## Prerequisite gate
+## Prerequisites and candidate
 
-The GitHub native blocker audit for [#131](https://github.com/mgscox/sporades/issues/131)
-found #128 open. The other ten native blockers (#113, #115, #121, #122, #123,
-#124, #125, #126, #129 and #130) were closed. The separately named dependency
-#120 was also closed. Issue closure is a prerequisite state, not evidence that
-the assembled release passed this ticket's integration gates.
+The live native dependency audit found all eleven blockers closed (#113, #115,
+#121–#126, #128–#130); separately named #118/#120 are also closed. The
+[#128 real separate-VM acceptance](https://github.com/mgscox/sporades/issues/128#issuecomment-6066627099)
+supersedes its pending handoff. It tested repair #224 at
+`c3a6e6e65fad0e58af339ac80ddb40f3fcd98777`, including controller-off recovery,
+applied migration/rollback, fresh stored production delivery and retained history.
+That prerequisite result does **not** establish assembled release acceptance.
 
-The latest [#128 scenario 3 checklist](https://github.com/mgscox/sporades/issues/128#issuecomment-6040548665)
-explicitly describes pending manager-only separate-VM acceptance. It requires
-interrupted activation followed by autonomous recovery with the controller off,
-readable Collector config and CA files, independent production trace/metric
-delivery, inventory acknowledgement, retained history and applied rollback.
-Complete that checklist and obtain manager sign-off before resuming #131.
+Runtime sources and shipped files are from main at
+`ffa5eb6d517bdaa95a9f1542b9b6dcbb7811517a`. Parked [PR #225](https://github.com/mgscox/sporades/pull/225)
+was closed unmerged; its branch was fetched and merged to preserve its history.
+This change adds acceptance tooling/docs, with no runtime, public/configuration
+contract or packaged-payload change. [Local evidence](./telemetry-131-local-evidence.json)
+identifies exact archives, installed CLI/helper/manifest and generated Capsule.
+Preserve these archives for deployment: a new pack can have a different archive
+hash even when every shipped file matches. Record actual deployed image digests.
 
-Desk safety prohibits real Host commands, SSH and cloud operations. Local fakes
-and Docker cannot replace real separate-VM final deployment evidence. This draft
-records the handoff; it does not change Host behavior or bypass the blocker.
+## Reproduce local verification
 
-## Candidate and evidence boundaries
+Run in an isolated candidate worktree with dependencies installed. The verifier
+uses ports 5218/5219 and a unique worktree evidence directory. It installs the
+supplied archive with npm lifecycle scripts disabled, stops only its own child
+and receiver, and preserves reports. It never invokes Docker or a real Host.
 
-The audited checkout is `9e460853588a53144509e9f719b47a534314b5f9`.
-Its package declares Sporades `0.9.31` and Node `>=22.13.0 <23 || >=24`.
-The local verification runtime is Node `24.19.0`, npm `11.17.0`, macOS.
-The Base Dockerfile declares `node:22.14-alpine`, image version
-`0.2.0-node22-alpine`. These are source declarations, not an accepted runtime
-matrix or deployment result. No assembled monitoring Compose release acceptance
-has been run for this record. Poirot's later local installed-Capsule smoke is
-recorded separately below and does not fill any assembled-release gate.
+```sh
+export SPORADES_CONFIG_DIR="$PWD/.sporades/issue-131-config"
+mkdir -p "$SPORADES_CONFIG_DIR" .sporades/issue-131-release
+npm run build
+npm run typecheck
+COPYFILE_DISABLE=1 npm test
+node scripts/check-generated-bin.mjs
+COPYFILE_DISABLE=1 npm pack --ignore-scripts --json \
+  --pack-destination "$PWD/.sporades/issue-131-release"
+COPYFILE_DISABLE=1 TMPDIR="$PWD/.sporades/issue-131-release" \
+  node scripts/monitoring-stack-release.mjs \
+  "$PWD/.sporades/issue-131-release/sporades-monitoring-trace-0.9.31.tar.gz"
+node scripts/verify-monitoring-release.mjs \
+  "$PWD/.sporades/issue-131-release/sporades-0.9.31.tgz" \
+  "$PWD/.sporades/issue-131-release/sporades-monitoring-trace-0.9.31.tar.gz"
+COPYFILE_DISABLE=1 node --test --test-concurrency=1 \
+  test/generated-source-manifest.test.js test/monitoring-stack-cli.test.js \
+  test/telemetry-fetch-bundle.test.js
+npm run docs:check
+```
 
-On resumption, pin the final checkout, npm tarball, installed CLI, Host helper,
-generated-source manifest and monitoring release archive with SHA-256 hashes.
-Record actual image digests, OS/architecture, runtime versions, VM identities,
-UTC timestamps and command exits. Run every desk Sporades command with
-`SPORADES_CONFIG_DIR` inside its worktree. Use dedicated isolated configuration
-on the authorized operator's controller; preserve credentials in protected
-files and publish only redacted evidence.
+Do not run `npm run package`: it publishes and tags. The verifier checks all
+installed shipped bytes and monitoring-archive parity, invokes the installed
+CLI, scaffolds a Vanilla Capsule without app `node_modules`, and drives
+concurrent successful requests and a translated failure. It asserts authenticated
+OTLP trace/metric receipt, distinct trace/request identities through existing
+CLI log inspection and absence of its synthetic privacy seeds in OTLP. This
+loopback receiver is a fixture. Receipt does not establish stored traces, backend
+queries, Compose, exhaustive privacy, performance or operator alert delivery.
 
-## Remaining acceptance work
+With a healthy **local** Docker engine, additionally run:
 
-Every row below is **pending**. Attach evidence to the final pinned candidate;
-earlier prerequisite reports or successful unit tests cannot fill these rows.
+```sh
+SPORADES_FETCH_DOCKER=1 node --test --test-concurrency=1 test/telemetry-fetch-bundle.test.js
+SPORADES_MAINTENANCE_DOCKER=1 node --test --test-concurrency=1 test/monitoring-maintenance.acceptance.test.js
+SPORADES_REAL_TELEMETRY_OUTAGE=1 node --test --test-concurrency=1 test/telemetry-outage.acceptance.test.js
+SPORADES_REAL_TELEMETRY_CA_CONTAINER=1 node --test --test-concurrency=1 test/telemetry-container-ca.acceptance.test.js
+```
 
-| Gate | Required record |
+These harnesses use owned resources and teardown. Maintenance uses a packed CLI;
+outage uses the checkout CLI, accelerated queue limits and a tmpfs fixture; CA
+uses a receiver fixture. None alone fills final deployment gates. On this desk
+`docker info` timed out after ten seconds; no Compose/Container drill started.
+
+## Runtime and storage matrix
+
+| Surface | Declared contract | Fresh evidence |
+| --- | --- | --- |
+| CLI/runtime | Node `>=22.13.0 <23 || >=24` | macOS arm64, Node 24.19.0/npm 11.17.0 only |
+| Base | `node:22.14-alpine`, `0.2.0-node22-alpine` | Not run; digest/Node 22 evidence pending |
+| Monitoring | Linux amd64/arm64, Docker 29.x, Compose >=2.40.3 | Asset parity only; engine unavailable |
+| Gateway | `node:24.13.0-alpine3.23` | Packaged Dockerfile only |
+| Backends | Collector 0.138.0, Jaeger 2.21.0, Prometheus 3.13.3, Grafana 13.2.2 | Packaged declarations only |
+| Probes/alerts | Blackbox 0.28.0, Alertmanager 0.34.1, BusyBox 1.37.0 | Packaged declarations only; delivery pending |
+
+Defaults: 72-hour traces, 14-day metrics and 8 GB retained metric blocks. The
+stack README requires at least 10 GB for metrics plus separate room for traces,
+WAL/head/compaction, other volumes, logs and OS. Compose limits total roughly
+3 GiB; these limits are not measured consumption or accepted capacity. No new
+capacity, retention safety, disk-headroom or memory-growth result is claimed.
+See packaged `monitoring/trace/README.md`, `OUTAGES.md` and `MAINTENANCE.md`.
+
+## Fresh local outcome
+
+Build/typecheck and generated freshness passed. The full suite passed (3,208
+tests: 2,980 passed, 228 skipped, zero failures/cancellations). Focused parity
+passed (8 passed, 3 Docker-matrix skips). Installed parity checked 494 files and
+36 monitoring assets. Altered-archive, outside-worktree configuration and SIGTERM
+cleanup checks passed. Documentation checks passed all 53 tests and the site
+build; desktop/phone rendering and the diagnostics link passed. The browser
+recorded one missing `/favicon.ico` error and no warnings. Owned browser/server
+processes were stopped. Logs and screenshots remain under ignored
+`logs/issue-131/`; the JSON record contains public hashes and outcomes.
+
+## Remaining authorized operator work
+
+This desk prohibits real Host commands, SSH and cloud operations. The manager
+must execute all rows against the **same pinned candidate** on disposable
+infrastructure. Preserve failed attempts separately; prerequisite closures,
+fixture receipt and historical QA do not establish these release passes.
+
+| Gate | Required evidence |
 | --- | --- |
-| Execution modes and topologies | Installed CLI, actual generated Capsule and monitoring Compose in Dev, local Container and Hosted modes; same-VM and real separate-VM coverage. Run the generated app without app `node_modules`. Record which mode/topology combinations are supported and why any surface is unsupported. |
-| Assembled signals | Stored production traces, request/runtime/Host/Caddy metrics, existing-log correlation, default Hosted coverage and opt-out, automatic inventory, authenticated transport, readiness, and actual alert firing and recovery delivery. Inventory or relay acceptance alone is insufficient. |
-| Privacy and concurrency | Seed synthetic sensitive values across signal families and inspect stored output for leaks. Repeat concurrent-context isolation against the installed generated app; retain deny/revocation and cross-Host authentication results. |
-| Quotas and recovery | Repeat quota/unit/reset, prolonged pipeline outage, credential migration and lifecycle interruption/recovery drills against the same pinned artifacts. Prove preserved application data and backend history, current inventory and fresh stored delivery after recovery. |
-| Performance | Apply identical representative load with monitoring off/on, recording workload, warmup, duration and samples. Require p95 latency regression <=5% and throughput loss <=5%; document fixed and load-dependent memory budgets and demonstrate no sustained growth. Resolve failed gates before rollout. |
-| Runtime and capacity | Record tested runtime/image matrix, capacity under measured load, trace/metric retention, configured disk caps, observed disk usage and headroom. Source defaults alone do not establish measured capacity or retention safety. |
-| Release parity | Build/typecheck, full suite and applicable focused regressions; generated-source and installed-package parity on the final artifacts. Record skips and unsupported surfaces separately from passes. |
+| Modes/topologies | Installed CLI, actual generated Capsule and monitoring Compose in Dev/Container/Hosted, same-VM and real separate-VM; no app `node_modules`; exact versions/digests, VM roles, TLS topology, UTC exits and unsupported combinations. |
+| Signals/logs | Independently query fresh stored HTTP/database/fetch/auth/file/WebSocket/Job traces and request/runtime/Host/Caddy metrics; locate success/failure logs by exact trace ID; supported SQLite/PostgreSQL coverage and explicit unsupported PSI. |
+| Coverage/inventory | Default existing/new Hosted coverage, opt-out, local opt-in; register/deploy/start/restart/rollback/stop/delete/address changes without manual import; acknowledged current inventory and stale/pending state. |
+| Transport/readiness/alerts | Verified TLS, ingestion/inventory/query authority separation, revoked/wrong/cross-Host denial, minimal readiness failure/recovery, probes during blocked app, actual firing delivery within two minutes and resolved notification. |
+| Privacy/concurrency | Seed headers/bodies/queries/exceptions/env/SQL/incoming metadata; inspect stored signals, logs, browser artifacts, descriptors and diagnostics; overlap contexts and prove deny/revocation boundaries. |
+| Quotas/recovery | Units/denominators/reset-safe rates, bounded CPU/heap/Buffer/I/O, pipeline saturation/outage, credential migration/rollback and interrupted lifecycle/workstation-off recovery; preserved business responses/Jobs/data/history, bounded memory/disk and fresh stored recovery. |
+| Overhead/capacity | Identical off/on load: p95 regression <=5%, throughput loss <=5%, measured fixed/load-dependent memory budget and no sustained growth; active series, samples/s, request rate, volume usage, peak RSS, retention projection/headroom. Resolve failures before rollout. |
+| Final parity | Green build/typecheck/full suite, generated freshness and installed-package parity on final artifacts. Record skips as pending/unsupported, never passes. |
 
-Use the prerequisite operator workflows in
-[telemetry diagnostics](../reference/telemetry-diagnostics.md),
-[monitoring outage recovery](https://github.com/mgscox/sporades/blob/9e460853588a53144509e9f719b47a534314b5f9/monitoring/trace/OUTAGES.md),
-[monitoring maintenance](https://github.com/mgscox/sporades/blob/9e460853588a53144509e9f719b47a534314b5f9/monitoring/trace/MAINTENANCE.md) and
-[Host provisioning](../agents/host-provisioning.md).
-Retain failed attempts and subsequent successful observations separately.
+For overhead, predeclare app/data fixture, request mix, concurrency/offered load,
+sampling/collection settings, warmup and measurement durations. Use paired
+alternating off/on trials with equivalent warm caches. Retain raw latency,
+errors, completed requests and variability; compare successful p95 and achieved
+throughput at equal offered load. Measure idle and increasing-load memory and
+sustained fixed-load growth after warmup. Publish repeats and a time series, not
+a single RSS snapshot; this record relaxes no threshold.
 
-## Draft validation
+The #128 report also found a pre-existing Caddy route permission defect under
+`UMask=0077`, temporarily repaired on its disposable Host without a product fix.
+Check route readability after boot/publication as release preflight. A failure
+blocks acceptance; track its repair independently rather than silently correcting
+permissions in the final run or treating telemetry migration as its fix.
 
-Local checks establish repository health only. All deployment, alert-delivery,
-load, capacity and separate-VM release acceptance gates above remain pending.
+Use [diagnostics](../reference/telemetry-diagnostics.md),
+[maintenance](../reference/monitoring-maintenance.md),
+[performance policy](../reference/monitoring-performance.md) and
+[Host provisioning](../agents/host-provisioning.md). Protect credentials/raw seeded
+output; publish redacted hashes, commands, attempts and stored observations.
+Complete #131 only after every gate passes; #132 remains separate.
 
-- `npm run typecheck`: passed.
-- `COPYFILE_DISABLE=1 npm test`: **failed**, exit 1; 3,192 tests, 2,963 passed,
-  2 failed, 227 skipped, zero cancelled (3,256,265 ms). Its pretest build and
-  generated CLI freshness check passed. Failures were the Apple HTTPS browser
-  tracer's raw WebSocket message timeout and the Host helper's read-only
-  inspection-during-route-mutation timing assertion.
-- Focused rerun:
-  `node --test --test-concurrency=1 --test-name-pattern='Apple HTTPS browser tracer completes|keeps read-only Capsule inspection available during a route mutation' test/dev.test.js test/host.test.js`:
-  both passed, exit 0. This does not replace the failed full-run result or
-  establish its cause. The full-run failures remain unresolved; obtain a green
-  full suite on the eventual release candidate before accepting #131.
-- `npm run docs:build`: passed (existing chunk-size warning).
-- Playwright: the new page rendered at desktop and 390 x 844 phone widths;
-  its telemetry-diagnostics link opened the expected operator page. The correct
-  page reported zero console errors/warnings. An initial request without the
-  site's `/sporades/` base returned 404 and was corrected. Browser and owned
-  docs server on port 5218 were stopped.
+## Historical draft results
 
-Checks used `SPORADES_CONFIG_DIR="$PWD/.sporades/issue-131-config"`.
-Local logs and screenshots are retained under ignored `logs/issue-131/`.
-No runtime, public/config contract or shipped artifact change was needed for
-this documentation handoff.
-
-## Poirot round 1
-
-[QA report](https://github.com/mgscox/sporades/pull/225#issuecomment-6044223376),
-pinned to `a9c869cae703ceaa512bde41d175df1c7e8db061`, confirmed that #128 was
-still open and every assembled-release gate remained pending. Keep PR #225 draft
-with `Refs #131`; completion is not claimed by this handoff.
-
-QA passed local build, typecheck, generated freshness, documentation checks
-(53 tests and site build), installed-package parity (494 files), and desktop /
-phone browser checks. Its installed generated To Do Capsule smoke covered guest
-auth, live updates, keyboard submission, empty input and restart persistence.
-These are QA observations on that pinned head, not fresh author reruns or proof
-of assembled monitoring, actual alerts, separate-VM topology or capacity.
-
-QA's full suite exited 1: 3,192 tests, 2,961 passed, 4 failed, 227 skipped,
-zero cancelled. Failures were ClamAV readiness deadline, Dev db-dump JSON timeout,
-expired Job lease recovery and delayed Job retry exhaustion. All four exact
-cases passed isolated retries; QA classified them as untouched flakes rather
-than PR regressions. Retain the failed full-suite result separately from the
-retry passes and the original author run above.
-
-After the authorized manager signs off #128's pinned real separate-VM recovery
-evidence, execute every pending row against one pinned release candidate and
-publish hashes, topology, commands, outcomes and unsupported surfaces. Obtain
-final package/build/test validation, assembled signals and actual alert delivery,
-privacy/recovery drills, off/on performance and measured capacity evidence before
-marking #131 complete. No real Host/cloud operations are authorized for this desk.
-
-Author correction validation: `npm run build`, `npm run typecheck`,
-`npm run docs:check` (53 tests and site build), and `git diff --check` passed.
-Regeneration left shipped source, artifacts and tests unchanged. The full-suite
-outcomes above are retained; this correction adds no release acceptance evidence.
+PR #225's author suite failed with 2 failures and its QA suite with 4 failures
+(both 3,192 tests). Isolated retries passed without replacing failed full runs.
+QA also reported package parity and a To Do smoke on its earlier head. Those
+results remain in the closed PR and are not credited as fresh release evidence.
