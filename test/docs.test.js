@@ -6,9 +6,28 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createMarkdownRenderer } from "vitepress";
+import { Window } from "happy-dom";
 import { inflateSync } from "node:zlib";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+test("monitoring release runbook renders its complete runtime contract and reachable public evidence", async () => {
+  const source = await readProjectFile("docs/research/telemetry-131-release-acceptance.md");
+  const markdown = await createMarkdownRenderer(path.join(repoRoot, "docs"), { html: false });
+  const document = new Window().document;
+  document.body.innerHTML = markdown.render(source);
+  const row = [...document.querySelectorAll("tr")].find(row => row.cells[0]?.textContent === "CLI/runtime");
+  assert(row, "CLI/runtime row is missing");
+  assert.deepEqual([...row.cells].map(cell => cell.textContent), [
+    "CLI/runtime", "Node >=22.13.0 <23 || >=24", "macOS arm64, Node 24.19.0/npm 11.17.0 only",
+  ]);
+  const link = [...document.querySelectorAll("a")].find(link => link.textContent === "Local evidence");
+  assert(link, "Local evidence link is missing");
+  assert.equal(link.getAttribute("href"), "/evidence/telemetry-131-local-evidence.json");
+  const evidence = JSON.parse(await readProjectFile(`docs/public${link.getAttribute("href")}`));
+  assert.equal(evidence.status, "incomplete-release-acceptance");
+  assert.equal(evidence.productionCanaryClaimed, false);
+});
 
 test("Admission public types have committed API pages, module links, navigation and search entries", async () => {
   const names = ["AdmissionPolicy", "AdmissionCondition", "AdmissionAction", "AdmissionGeneration", "AdmissionHealth", "AdmissionPolicyConfig"];

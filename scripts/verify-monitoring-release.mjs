@@ -181,6 +181,23 @@ try {
   report.versions.pack = packed[0].version;
   assert.equal(report.versions.pack, report.versions.checkout, 'checkout and npm pack versions differ');
 
+  const npmListing = await capture('npm-archive-list', 'tar', ['-tzf', npmArtifact], { cwd: runDir });
+  const npmPaths = npmListing.split(/\r?\n/).filter(Boolean);
+  const expectedDirectories = new Set(['package']);
+  for (const file of shippedFiles) {
+    const parts = file.split('/');
+    for (let count = 1; count < parts.length; count++) expectedDirectories.add(`package/${parts.slice(0, count).join('/')}`);
+  }
+  for (const entry of npmPaths) {
+    assert(!path.isAbsolute(entry) && !entry.split('/').some(part => part === '..' || part === '.'), `Unsafe npm archive path: ${entry}`);
+    assert(entry.startsWith('package/'), `Unexpected npm archive root: ${entry}`);
+    if (entry.endsWith('/')) assert(expectedDirectories.has(entry.replace(/\/$/, '')), `Unexpected npm archive directory: ${entry}`);
+  }
+  const npmFiles = npmPaths.filter(entry => !entry.endsWith('/')).map(entry => entry.slice('package/'.length)).sort();
+  assert.deepEqual(npmFiles, shippedFiles, 'Npm archive files differ from expected shipped file set');
+  const npmTypes = await capture('npm-archive-types', 'tar', ['-tvzf', npmArtifact], { cwd: runDir });
+  for (const line of npmTypes.split(/\r?\n/).filter(Boolean)) assert(['-', 'd'].includes(line.trimStart()[0]), `Npm archive contains a non-regular entry: ${line}`);
+
   await capture('npm-install', 'npm', ['install', npmArtifact, '--prefix', installPrefix, '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund'], { cwd: runDir });
   const installedRoot = path.join(installPrefix, 'node_modules', 'sporades');
   const installedPackage = JSON.parse(await readFile(path.join(installedRoot, 'package.json'), 'utf8'));
@@ -193,7 +210,7 @@ try {
     assert(expected.equals(actual), `Installed package bytes differ from checkout: ${file}`);
     compared++;
   }
-  report.packageParity = { shippedFiles: compared, byteIdentical: true };
+  report.packageParity = { shippedFiles: compared, archiveMembershipMatches: true, byteIdentical: true };
 
   const listing = await capture('monitoring-archive-list', 'tar', ['-tzf', monitoringArtifact], { cwd: runDir });
   const paths = listing.split(/\r?\n/).filter(Boolean);

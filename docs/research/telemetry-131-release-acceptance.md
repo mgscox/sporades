@@ -17,7 +17,7 @@ Runtime sources and shipped files are from main at
 `ffa5eb6d517bdaa95a9f1542b9b6dcbb7811517a`. Parked [PR #225](https://github.com/mgscox/sporades/pull/225)
 was closed unmerged; its branch was fetched and merged to preserve its history.
 This change adds acceptance tooling/docs, with no runtime, public/configuration
-contract or packaged-payload change. [Local evidence](./telemetry-131-local-evidence.json)
+contract or packaged-payload change. [Local evidence](/evidence/telemetry-131-local-evidence.json)
 identifies exact archives, installed CLI/helper/manifest and generated Capsule.
 Preserve these archives for deployment: a new pack can have a different archive
 hash even when every shipped file matches. Record actual deployed image digests.
@@ -52,8 +52,9 @@ COPYFILE_DISABLE=1 node --test --test-concurrency=1 \
 npm run docs:check
 ```
 
-Do not run `npm run package`: it publishes and tags. The verifier checks all
-installed shipped bytes and monitoring-archive parity, invokes the installed
+Do not run `npm run package`: it publishes and tags. The verifier checks the complete npm
+archive file set before installation, all installed shipped bytes and
+monitoring-archive parity, invokes the installed
 CLI, scaffolds a Vanilla Capsule without app `node_modules`, and drives
 concurrent successful requests and a translated failure. It asserts authenticated
 OTLP trace/metric receipt, a known failure SERVER span before exception privacy
@@ -83,7 +84,7 @@ uses a receiver fixture. None alone fills final deployment gates. On this desk
 
 | Surface | Declared contract | Fresh evidence |
 | --- | --- | --- |
-| CLI/runtime | Node `>=22.13.0 <23 || >=24` | macOS arm64, Node 24.19.0/npm 11.17.0 only |
+| CLI/runtime | Node `>=22.13.0 <23 \|\| >=24` | macOS arm64, Node 24.19.0/npm 11.17.0 only |
 | Base | `node:22.14-alpine`, `0.2.0-node22-alpine` | Not run; digest/Node 22 evidence pending |
 | Monitoring | Linux amd64/arm64, Docker 29.x, Compose >=2.40.3 | Asset parity only; engine unavailable |
 | Gateway | `node:24.13.0-alpine3.23` | Packaged Dockerfile only |
@@ -98,6 +99,17 @@ capacity, retention safety, disk-headroom or memory-growth result is claimed.
 See packaged `monitoring/trace/README.md`, `OUTAGES.md` and `MAINTENANCE.md`.
 
 ## Fresh local outcome
+
+Poirot round 2 reproduced a parity pass with an added npm archive file. The
+verifier now rejects unexpected, missing or duplicate file membership before
+installation and parity credit. Its added-file regression reproduced the false
+pass and now rejects before Dev or npm installation. The public evidence JSON
+is served from VitePress public assets; a rendered-document regression checks
+the complete three-cell runtime row and evidence link. The ten verifier regressions pass with no skips. The initial ten-test run had
+one incorrect assertion about npm parity for a tampered monitoring archive;
+that test assertion was narrowed and the failed attempt is retained in the JSON.
+These fixes add no release deployment evidence.
+
 
 Poirot round 1 reproduced a false pass when failure spans were discarded, an
 early rejection of valid delayed request spans, and writes through a symlinked
@@ -116,17 +128,17 @@ The corrected verifier also passes against the same retained archives listed in
 the JSON record. This supersedes the earlier verifier result only; it establishes
 no additional deployment, recovery, alerting, performance or capacity gate.
 
-Build/typecheck and generated freshness passed. The subsequent fresh full suite passed (3,217
-tests: 2,989 passed, 228 skipped, zero failures/cancellations). Focused parity
+Build/typecheck and generated freshness passed. The fresh round-3 full suite passed (3,219
+tests: 2,991 passed, 228 skipped, zero failures/cancellations). Focused parity
 passed (8 passed, 3 Docker-matrix skips). Installed parity checked 494 files and
 36 monitoring assets. Altered-archive, outside-worktree configuration and SIGTERM
-cleanup checks passed. Documentation checks passed all 53 tests and the site
-build; desktop/phone rendering and the diagnostics link passed. The refreshed
-browser check recorded no console errors or warnings on the correct `/sporades/` routes (an
-initial navigation omitted that base and returned 404). Owned browser/server
-processes were stopped. Logs and screenshots remain under ignored
-`logs/issue-131/` and `logs/issue-131-round-2/`; the JSON record contains public
-hashes and outcomes.
+cleanup checks passed. Documentation checks passed all 54 tests and the site
+build; the built site rendered on desktop/phone with the complete runtime table.
+The evidence link opened JSON with HTTP 200 and byte parity to its canonical
+public asset. Direct JSON navigation recorded one missing `/favicon.ico` error
+and no warnings. Owned browser/server processes were stopped. Logs and
+screenshots remain under ignored `logs/issue-131/`, `logs/issue-131-round-2/` and
+`logs/issue-131-round-3/`; the public JSON record contains hashes and outcomes.
 
 ## Remaining authorized operator work
 

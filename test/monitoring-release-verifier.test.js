@@ -167,24 +167,26 @@ test('a required metric arriving seven seconds late is awaited despite other met
   assert(report.telemetry.metricNames.includes('process.memory.rss'));
 });
 
-for (const kind of ['monitoring', 'npm']) {
-  test(`tampered ${kind} archive is rejected before Dev starts`, { timeout: 180000 }, async () => {
+for (const kind of ['monitoring', 'npm', 'npm-added']) {
+  test(`${kind === 'npm-added' ? 'an npm archive with an unexpected file' : `tampered ${kind} archive`} is rejected before Dev starts`, { timeout: 180000 }, async () => {
     const dir = path.join(testRoot, `tampered-${kind}`);
     await mkdir(dir);
     const source = kind === 'monitoring' ? monitoringArtifact : npmArtifact;
     const extraction = await run('tar', ['-xzf', source, '-C', dir], { env: isolatedEnv() });
     assert.equal(extraction.code, 0, extraction.stderr);
     const archiveRoot = kind === 'monitoring' ? `sporades-monitoring-trace-${packageJson.version}` : 'package';
-    const altered = path.join(dir, archiveRoot, kind === 'monitoring' ? '.env.example' : 'README.md');
-    await writeFile(altered, `${await readFile(altered, 'utf8')}\n# altered after packaging\n`);
+    const altered = path.join(dir, archiveRoot, kind === 'monitoring' ? '.env.example' : kind === 'npm-added' ? 'unexpected-qa-seed.txt' : 'README.md');
+    await writeFile(altered, kind === 'npm-added' ? 'unexpected archive member\n' : `${await readFile(altered, 'utf8')}\n# altered after packaging\n`);
     const output = path.join(testRoot, `tampered-${kind}.tar.gz`);
     const packed = await run('tar', ['-czf', output, '-C', dir, archiveRoot], { env: isolatedEnv({ COPYFILE_DISABLE: '1' }) });
     assert.equal(packed.code, 0, packed.stderr);
-    const result = await run(process.execPath, [verifier, kind === 'npm' ? output : npmArtifact, kind === 'monitoring' ? output : monitoringArtifact], { env: isolatedEnv(), timeoutMs: 150000 });
+    const result = await run(process.execPath, [verifier, kind !== 'monitoring' ? output : npmArtifact, kind === 'monitoring' ? output : monitoringArtifact], { env: isolatedEnv(), timeoutMs: 150000 });
     const report = reportOf(result);
     assert.equal(result.code, 1);
     assert.equal(report.status, 'failed');
-    assert.match(report.error, kind === 'monitoring' ? /Monitoring archive hash mismatch: .env.example/ : /Installed package bytes differ from checkout: README.md/);
+    assert.match(report.error, kind === 'monitoring' ? /Monitoring archive hash mismatch: .env.example/ : kind === 'npm-added' ? /Npm archive files differ from expected shipped file set/ : /Installed package bytes differ from checkout: README.md/);
+    if (kind !== 'monitoring') assert.notEqual(report.packageParity?.byteIdentical, true);
+    if (kind === 'npm-added') assert(!report.commands.some(command => command.name === 'npm-install'), 'unexpected archive members must reject before installation');
     assert.equal(report.devProcess, null);
   });
 }

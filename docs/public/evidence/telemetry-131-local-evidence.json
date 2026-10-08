@@ -1,6 +1,6 @@
 {
-  "startedAt": "2026-10-08T20:01:33.931Z",
-  "finishedAt": "2026-10-08T20:01:46.435Z",
+  "startedAt": "2026-10-08T21:44:40.656Z",
+  "finishedAt": "2026-10-08T21:44:55.613Z",
   "evidenceLevel": "installed-package Dev acceptance with an explicitly fixture-only loopback OTLP receiver; no Docker Compose, stored-backend, separate-VM, or real Host acceptance",
   "runtime": "v24.19.0",
   "platform": "darwin",
@@ -30,12 +30,13 @@
       "sha256": "b99125c4ebb1d3883ee3cc8baa50cd2d7b3b251d9f64fce68d4189620d129de7"
     },
     "generatedCapsule": {
-      "path": ".sporades/monitoring-release-verification/run-1791489693930-89372-bvr4c5/monitoring-release-89372-d9ba37e2/.sporades/build/server.mjs",
-      "sha256": "45a0e97ed7b2827f7776636c594ea1f524e43bece3065e13e99b991c896e25d0"
+      "path": ".sporades/monitoring-release-verification/run-1791495880638-95529-61QfdU/monitoring-release-95529-1c34bf51/.sporades/build/server.mjs",
+      "sha256": "e89631caead553d8557c70c62f8a54ccdf2addfc452ee6c68c89a5df3eae3618"
     }
   },
   "packageParity": {
     "shippedFiles": 494,
+    "archiveMembershipMatches": true,
     "byteIdentical": true
   },
   "monitoringArchive": {
@@ -146,17 +147,17 @@
     "fullSuite": {
       "status": "passed",
       "exitCode": 0,
-      "tests": 3217,
-      "passed": 2989,
+      "tests": 3219,
+      "passed": 2991,
       "failed": 0,
       "skipped": 228,
       "cancelled": 0,
-      "durationMs": 1664922.400833
+      "durationMs": 1979914.737959
     },
     "documentation": {
       "status": "passed",
-      "tests": 53,
-      "passed": 53,
+      "tests": 54,
+      "passed": 54,
       "failed": 0,
       "exitCode": 0,
       "buildWarnings": [
@@ -181,6 +182,7 @@
     },
     "browser": {
       "status": "passed",
+      "builtSite": true,
       "desktop": [
         1440,
         1000
@@ -189,15 +191,23 @@
         390,
         844
       ],
-      "diagnosticsLink": "opened expected guide",
-      "consoleErrors": [],
+      "completeRuntimeCells": [
+        "CLI/runtime",
+        "Node >=22.13.0 <23 || >=24",
+        "macOS arm64, Node 24.19.0/npm 11.17.0 only"
+      ],
+      "evidenceLink": "opened public JSON successfully",
+      "evidenceHttpStatus": 200,
+      "evidenceBytesMatchCanonical": true,
+      "consoleErrors": [
+        "404 for /favicon.ico after direct JSON navigation"
+      ],
       "consoleWarnings": 0,
       "ownedBrowserAndServerStopped": true,
       "screenshots": [
-        "logs/issue-131-round-2/browser/issue-131-round2-desktop.png",
-        "logs/issue-131-round-2/browser/issue-131-round2-phone.png"
-      ],
-      "navigationNote": "Initial navigation omitted the /sporades/ base and returned 404; corrected page and diagnostics guide had no console errors or warnings."
+        "logs/issue-131-round-3/browser/issue-131-round3-desktop.png",
+        "logs/issue-131-round-3/browser/issue-131-round3-phone.png"
+      ]
     },
     "build": {
       "status": "passed",
@@ -214,18 +224,19 @@
     },
     "verifierRegressions": {
       "status": "passed",
-      "tests": 9,
-      "passed": 9,
+      "tests": 10,
+      "passed": 10,
       "failed": 0,
       "skipped": 0,
       "exitCode": 0,
-      "durationMs": 155273.052875,
+      "durationMs": 168339.243042,
       "coverage": [
         "missing failure SERVER span rejected before exception privacy credit",
         "required request spans and metric delayed seven seconds accepted within deadline",
         "symlinked runtime/evidence parents rejected before writes",
         "npm and monitoring archive tampering rejected before Dev",
-        "SIGTERM closes owned Dev and receiver listeners"
+        "SIGTERM closes owned Dev and receiver listeners",
+        "unexpected npm archive file rejected before installation and parity credit"
       ],
       "inheritedNpmAllowScripts": "present; removed from isolated install environment"
     },
@@ -239,6 +250,32 @@
       "cancelled": 0,
       "durationMs": 1520963.403458,
       "cause": "Inherited npm_config_allow_scripts rejected by npm 11 during isolated verifier install; fixed and explicitly covered by regression. This failed run is preserved separately."
+    },
+    "addedNpmFileRejectedBeforeInstall": {
+      "status": "passed",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "exitCode": 0
+    },
+    "renderedRunbook": {
+      "status": "passed",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "exitCode": 0,
+      "completeRuntimeCells": true,
+      "publicEvidenceAsset": true,
+      "builtEvidenceHttpStatus": 200
+    },
+    "earlierRound3VerifierAttempt": {
+      "status": "failed",
+      "tests": 10,
+      "passed": 9,
+      "failed": 1,
+      "exitCode": 1,
+      "durationMs": 172218.562208,
+      "cause": "New test incorrectly prohibited valid npm parity when only monitoring archive was tampered; assertion narrowed to npm archive cases and full regression file rerun."
     }
   },
   "pendingReleaseGates": [
@@ -257,6 +294,6 @@
   "productionCanaryClaimed": false,
   "verifier": {
     "path": "scripts/verify-monitoring-release.mjs",
-    "sha256": "8e2c62e9749f9cf56f9d5f6976e66312783790224a3f367467120c09314bc9d6"
+    "sha256": "aa74566f15af47fa6e5285182bc56db742c437bbeba631d4b59dcc1c2020ccff"
   }
 }
