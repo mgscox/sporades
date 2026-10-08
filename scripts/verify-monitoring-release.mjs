@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repository = await realpath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const [npmArtifactArg, monitoringArtifactArg, ...extraArgs] = process.argv.slice(2);
 if (!npmArtifactArg || !monitoringArtifactArg || extraArgs.length) {
   console.error('Usage: node scripts/verify-monitoring-release.mjs <npm-tarball> <monitoring-tar.gz>');
@@ -20,19 +20,21 @@ const monitoringArtifact = path.resolve(monitoringArtifactArg);
 assert(process.env.SPORADES_CONFIG_DIR, 'Set SPORADES_CONFIG_DIR to an existing worktree directory');
 const requestedConfig = await realpath(process.env.SPORADES_CONFIG_DIR);
 assert(within(await realpath(repository), requestedConfig), 'SPORADES_CONFIG_DIR must be inside the worktree');
-const ownedRoot = path.join(repository, '.sporades', 'monitoring-release-verification');
-await mkdir(ownedRoot, { recursive: true });
-const runDir = await mkdtemp(path.join(ownedRoot, `run-${Date.now()}-${process.pid}-`));
-const configDir = path.join(runDir, 'config');
-const commandDir = path.join(runDir, 'commands');
-const extractionDir = path.join(runDir, 'monitoring-archive');
+const runtimeRoot = await createWorktreeDirectory(repository, '.sporades');
+const ownedRoot = await createWorktreeDirectory(runtimeRoot, 'monitoring-release-verification');
+const runDir = await checkedDirectory(await mkdtemp(path.join(ownedRoot, `run-${Date.now()}-${process.pid}-`)), 'Run directory');
+const configDir = await createWorktreeDirectory(runDir, 'config');
+const commandDir = await createWorktreeDirectory(runDir, 'commands');
+const extractionDir = await createWorktreeDirectory(runDir, 'monitoring-archive');
 const installPrefix = path.join(runDir, 'installed');
 const appName = `monitoring-release-${process.pid}-${randomBytes(4).toString('hex')}`;
 const appDir = path.join(runDir, appName);
-await Promise.all([mkdir(configDir, { recursive: true }), mkdir(commandDir), mkdir(extractionDir)]);
 
 const token = `fixture-${randomBytes(24).toString('hex')}`;
 const env = { ...process.env, SPORADES_CONFIG_DIR: configDir, ACCEPTANCE_TOKEN: token, npm_config_cache: path.join(runDir, 'npm-cache'), npm_config_update_notifier: 'false' };
+// npm test forwards this root-project setting, which npm 11 rejects for a
+// different project. Artifact installation already disables lifecycle scripts.
+for (const key of Object.keys(env)) if (/^npm_config_allow_scripts$/i.test(key)) delete env[key];
 const commands = [];
 let child = null;
 let activeCommand = null;
@@ -61,13 +63,32 @@ function within(parent, target) {
   const relative = path.relative(parent, target);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
-function assertInsideWorktree(target, label) {
-  assert(within(repository, target), `${label} must be inside the worktree`);
+async function checkedDirectory(target, label) {
+  const resolved = await realpath(target);
+  assert(within(repository, resolved), `${label} must be inside the worktree`);
+  assert((await stat(resolved)).isDirectory(), `${label} must be a directory`);
+  return resolved;
 }
-assertInsideWorktree(configDir, 'SPORADES_CONFIG_DIR');
+async function createWorktreeDirectory(parent, name) {
+  const actualParent = await checkedDirectory(parent, 'Runtime/evidence parent');
+  const target = path.join(actualParent, name);
+  try { await realpath(target); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    await mkdir(target, { mode: 0o700 });
+  }
+  return checkedDirectory(target, 'Runtime/evidence directory');
+}
+async function assertStatePaths(commandEnv = env) {
+  for (const target of [runDir, commandDir, extractionDir]) await checkedDirectory(target, 'Evidence directory');
+  const actualConfig = await checkedDirectory(commandEnv.SPORADES_CONFIG_DIR, 'SPORADES_CONFIG_DIR');
+  assert.equal(actualConfig, configDir, 'CLI configuration must stay in its owned run directory');
+}
 
 async function capture(name, command, args, options = {}) {
   if (signal) throw new Error(`Interrupted by ${signal}`);
+  await assertStatePaths(options.env ?? env);
+  await checkedDirectory(options.cwd ?? runDir, 'Command working directory');
   const index = commands.length;
   const safeName = `${String(index).padStart(2, '0')}-${name}`;
   const outPath = path.join(commandDir, `${safeName}.stdout`);
@@ -107,6 +128,7 @@ async function capture(name, command, args, options = {}) {
       resolve({ code, signal: closeSignal, timedOut, stdout: out, stderr: err });
     });
   });
+  await assertStatePaths();
   await Promise.all([writeFile(outPath, result.stdout), writeFile(errPath, result.stderr)]);
   const entry = { name, command, args, cwd: options.cwd ?? runDir, startedAt, finishedAt: new Date().toISOString(), code: result.code, signal: result.signal, timedOut: result.timedOut, ...(result.error ? { error: result.error } : {}), stdout: path.relative(repository, outPath), stderr: path.relative(repository, errPath) };
   commands.push(entry);
@@ -240,6 +262,8 @@ try {
   devPortProbe.listen(5218, '127.0.0.1');
   await once(devPortProbe, 'listening');
   await new Promise((resolve, reject) => devPortProbe.close(error => error ? reject(error) : resolve()));
+  await assertStatePaths();
+  await checkedDirectory(appDir, 'Capsule working directory');
   child = spawn(process.execPath, [cli, 'dev', '--port', '5218', '--telemetry', 'monitoring-release-local'], { cwd: appDir, env, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', bytes => { stdout += bytes; });
   child.stderr.on('data', bytes => { stderr += bytes; });
@@ -262,24 +286,36 @@ try {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { label });
   }));
-  const failure = await deadlineFetch('http://127.0.0.1:5218/fail', {}, 10000);
+  const failureTraceId = '3'.repeat(32);
+  const failure = await deadlineFetch('http://127.0.0.1:5218/fail', { headers: { traceparent: `00-${failureTraceId}-${'a'.repeat(16)}-01` } }, 10000);
   assert.equal(failure.status, 500, 'synthetic endpoint failure should be translated to HTTP 500');
+  const requiredTraceIds = [...requests.map(([, traceId]) => traceId), failureTraceId];
+  const requiredMetricNames = ['http.server.request.count', 'http.server.request.duration', 'process.memory.rss', 'process.cpu.time'];
+  const receivedTelemetry = () => {
+    const spans = otlpPayloads.flatMap(item => item.body.resourceSpans ?? []).flatMap(resource => resource.scopeSpans ?? []).flatMap(scope => scope.spans ?? []);
+    const metricNames = [...new Set(otlpPayloads.flatMap(item => item.body.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []).map(metric => metric.name))].sort();
+    const missing = [
+      ...requiredTraceIds.filter(traceId => !spans.some(span => span.traceId === traceId && span.kind === 2)).map(traceId => `SERVER trace ${traceId}`),
+      ...requiredMetricNames.filter(name => !metricNames.includes(name)).map(name => `metric ${name}`),
+    ];
+    return { spans, metricNames, missing };
+  };
   const otlpUntil = Date.now() + 20000;
-  while ((!otlpPayloads.some(item => item.path === '/v1/metrics') || !otlpPayloads.some(item => item.path === '/v1/traces')) && Date.now() < otlpUntil) {
+  let received = receivedTelemetry();
+  while (received.missing.length && Date.now() < otlpUntil) {
     if (signal) throw new Error(`Interrupted by ${signal}`);
     await new Promise(resolve => setTimeout(resolve, 200));
+    received = receivedTelemetry();
   }
-  assert(otlpPayloads.some(item => item.path === '/v1/metrics'), 'fixture receiver did not receive metrics');
-  assert(otlpPayloads.some(item => item.path === '/v1/traces'), 'fixture receiver did not receive traces');
+  assert.equal(received.missing.length, 0, `Timed out waiting for required telemetry: ${received.missing.join(', ')}`);
+  const { spans, metricNames } = received;
+  assert.equal(spans.filter(span => span.traceId === failureTraceId && span.kind === 2).length, 1, `Expected exactly one failure SERVER span for trace ${failureTraceId}`);
   const otlpText = JSON.stringify(otlpPayloads);
   assert.doesNotMatch(otlpText, /fixture-private-(?:query|baggage|header|exception)/, 'private fixture data leaked into OTLP payloads');
   assert(!otlpText.includes(token), 'Ingestion credential leaked into OTLP payloads');
   const browserBundle = await readFile(path.join(appDir, '.sporades', 'build', 'client.js'), 'utf8');
   assert(!browserBundle.includes(token) && !browserBundle.includes('fixture-private-'), 'Server-only fixture material leaked into the browser Bundle');
-  const spans = otlpPayloads.flatMap(item => item.body.resourceSpans ?? []).flatMap(resource => resource.scopeSpans ?? []).flatMap(scope => scope.spans ?? []);
   for (const [, traceId] of requests) assert.equal(spans.filter(span => span.traceId === traceId && span.kind === 2).length, 1, `Expected exactly one SERVER span for trace ${traceId}`);
-  const metricNames = [...new Set(otlpPayloads.flatMap(item => item.body.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []).map(metric => metric.name))].sort();
-  for (const required of ['http.server.request.count', 'http.server.request.duration', 'process.memory.rss', 'process.cpu.time']) assert(metricNames.includes(required), `Missing metric: ${required}`);
 
   const logOutput = await capture('installed-cli-logs', process.execPath, [cli, 'logs', '--json', '--port', '5218'], { cwd: appDir });
   const logEntries = extractLogs(logOutput);
@@ -300,7 +336,7 @@ try {
   report.requestLogs = { labels: requests.map(([label, traceId]) => ({ label, traceId, paired: true })), requestIdsMatchWithinEachRequest: true };
   report.privacy = { privateQueryAbsentFromOtlp: !otlpText.includes('fixture-private-query'), privateBaggageAbsentFromOtlp: !otlpText.includes('fixture-private-baggage'), privateHeaderAbsentFromOtlp: !otlpText.includes('fixture-private-header'), privateExceptionAbsentFromOtlp: !otlpText.includes('fixture-private-exception'), credentialAbsentFromOtlp: true, serverMaterialAbsentFromBrowserBundle: true };
   report.http = { concurrentSuccesses: 2, translatedFailure: failure.status, appNodeModules: false };
-  report.telemetry = { receiver: '127.0.0.1:5219 fixture-only', authenticatedMetricsAndTracesReceived: true, spans: spans.length, metricNames, traceIds: requests.map(([, traceId]) => traceId) };
+  report.telemetry = { receiver: '127.0.0.1:5219 fixture-only', authenticatedMetricsAndTracesReceived: true, spans: spans.length, metricNames, traceIds: requests.map(([, traceId]) => traceId), failureTraceId, failureServerSpanVerified: true };
   report.artifacts.generatedCapsule = { path: path.relative(repository, path.join(appDir, '.sporades', 'build', 'server.mjs')), sha256: await digestFile(path.join(appDir, '.sporades', 'build', 'server.mjs')) };
   report.status = 'passed';
 } catch (error) {
@@ -327,6 +363,7 @@ try {
   report.devStdout = path.relative(repository, path.join(runDir, 'dev.stdout'));
   report.devStderr = path.relative(repository, path.join(runDir, 'dev.stderr'));
   report.otlpFixturePayloads = path.relative(repository, path.join(runDir, 'otlp-fixture-payloads.json'));
+  await assertStatePaths();
   await Promise.all([
     writeFile(path.join(runDir, 'dev.stdout'), stdout),
     writeFile(path.join(runDir, 'dev.stderr'), stderr),

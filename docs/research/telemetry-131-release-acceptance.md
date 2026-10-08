@@ -47,6 +47,8 @@ node scripts/verify-monitoring-release.mjs \
 COPYFILE_DISABLE=1 node --test --test-concurrency=1 \
   test/generated-source-manifest.test.js test/monitoring-stack-cli.test.js \
   test/telemetry-fetch-bundle.test.js
+COPYFILE_DISABLE=1 node --test --test-concurrency=1 \
+  test/monitoring-release-verifier.test.js
 npm run docs:check
 ```
 
@@ -54,9 +56,13 @@ Do not run `npm run package`: it publishes and tags. The verifier checks all
 installed shipped bytes and monitoring-archive parity, invokes the installed
 CLI, scaffolds a Vanilla Capsule without app `node_modules`, and drives
 concurrent successful requests and a translated failure. It asserts authenticated
-OTLP trace/metric receipt, distinct trace/request identities through existing
+OTLP trace/metric receipt, a known failure SERVER span before exception privacy
+credit, distinct trace/request identities through existing
 CLI log inspection and absence of its synthetic privacy seeds in OTLP. This
-loopback receiver is a fixture. Receipt does not establish stored traces, backend
+loopback receiver is a fixture. It waits up to 20 seconds for all required
+request SERVER spans and metric names, and validates physical runtime/evidence
+parents before writes and the actual configuration path before CLI calls. Receipt
+does not establish stored traces, backend
 queries, Compose, exhaustive privacy, performance or operator alert delivery.
 
 With a healthy **local** Docker engine, additionally run:
@@ -93,15 +99,34 @@ See packaged `monitoring/trace/README.md`, `OUTAGES.md` and `MAINTENANCE.md`.
 
 ## Fresh local outcome
 
-Build/typecheck and generated freshness passed. The full suite passed (3,208
-tests: 2,980 passed, 228 skipped, zero failures/cancellations). Focused parity
+Poirot round 1 reproduced a false pass when failure spans were discarded, an
+early rejection of valid delayed request spans, and writes through a symlinked
+evidence parent. These verifier defects are fixed. Nine external process/HTTP
+regressions pass against an installed CLI and actual generated Capsule: missing
+failure spans, seven-second delays of request spans and a required metric, both
+runtime/evidence symlink parents, normal failure evidence, both tampered archive
+types, and SIGTERM listener cleanup. No SDK or CLI implementation is mocked.
+The full-suite environment also exposed npm 11 rejecting inherited
+`npm_config_allow_scripts` during isolated installation. The verifier removes
+that root-project setting while retaining `--ignore-scripts`; the normal-path
+regression explicitly seeds it, and all nine pass with it inherited. The earlier
+full run is preserved as failed (3,217 tests: 2,982 passed, seven verifier-install
+failures, 228 skipped); isolated passes do not replace that failed run.
+The corrected verifier also passes against the same retained archives listed in
+the JSON record. This supersedes the earlier verifier result only; it establishes
+no additional deployment, recovery, alerting, performance or capacity gate.
+
+Build/typecheck and generated freshness passed. The subsequent fresh full suite passed (3,217
+tests: 2,989 passed, 228 skipped, zero failures/cancellations). Focused parity
 passed (8 passed, 3 Docker-matrix skips). Installed parity checked 494 files and
 36 monitoring assets. Altered-archive, outside-worktree configuration and SIGTERM
 cleanup checks passed. Documentation checks passed all 53 tests and the site
-build; desktop/phone rendering and the diagnostics link passed. The browser
-recorded one missing `/favicon.ico` error and no warnings. Owned browser/server
+build; desktop/phone rendering and the diagnostics link passed. The refreshed
+browser check recorded no console errors or warnings on the correct `/sporades/` routes (an
+initial navigation omitted that base and returned 404). Owned browser/server
 processes were stopped. Logs and screenshots remain under ignored
-`logs/issue-131/`; the JSON record contains public hashes and outcomes.
+`logs/issue-131/` and `logs/issue-131-round-2/`; the JSON record contains public
+hashes and outcomes.
 
 ## Remaining authorized operator work
 
