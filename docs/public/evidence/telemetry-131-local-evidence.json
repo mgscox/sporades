@@ -1,0 +1,299 @@
+{
+  "startedAt": "2026-10-08T21:44:40.656Z",
+  "finishedAt": "2026-10-08T21:44:55.613Z",
+  "evidenceLevel": "installed-package Dev acceptance with an explicitly fixture-only loopback OTLP receiver; no Docker Compose, stored-backend, separate-VM, or real Host acceptance",
+  "runtime": "v24.19.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "osVersion": "27.0.0",
+  "versions": {
+    "checkout": "0.9.31",
+    "pack": "0.9.31",
+    "installed": "0.9.31"
+  },
+  "artifacts": {
+    "npmTarball": {
+      "path": ".sporades/issue-131-release/sporades-0.9.31.tgz",
+      "sha256": "c80e94a30049bb7e5c409726179d3873ea63cccc20da6f88799b1d94e38193b5"
+    },
+    "monitoringArchive": {
+      "path": ".sporades/issue-131-release/sporades-monitoring-trace-0.9.31.tar.gz",
+      "sha256": "d2171e8b0eeced605c554f7bdb031bfc370ae655368df409206395530ecbc93b"
+    },
+    "installedBin": {
+      "sha256": "e10e270d3c20f7d237471c0d4fea280c95e02c4e16234979a44a0ca0ce173c5b"
+    },
+    "installedHostHelper": {
+      "sha256": "dd7e804f74ab193924092f966b2a972105b5ac121de45649c5424f8cb696f847"
+    },
+    "generatedSourceManifest": {
+      "sha256": "b99125c4ebb1d3883ee3cc8baa50cd2d7b3b251d9f64fce68d4189620d129de7"
+    },
+    "generatedCapsule": {
+      "path": ".sporades/monitoring-release-verification/run-1791495880638-95529-61QfdU/monitoring-release-95529-1c34bf51/.sporades/build/server.mjs",
+      "sha256": "e89631caead553d8557c70c62f8a54ccdf2addfc452ee6c68c89a5df3eae3618"
+    }
+  },
+  "packageParity": {
+    "shippedFiles": 494,
+    "archiveMembershipMatches": true,
+    "byteIdentical": true
+  },
+  "monitoringArchive": {
+    "manifestVersion": "0.9.31",
+    "schemaVersion": 4,
+    "verifiedAssets": 36,
+    "manifestHashesAndInstalledBytesMatch": true
+  },
+  "requestLogs": {
+    "labels": [
+      {
+        "label": "slow",
+        "traceId": "11111111111111111111111111111111",
+        "paired": true
+      },
+      {
+        "label": "fast",
+        "traceId": "22222222222222222222222222222222",
+        "paired": true
+      }
+    ],
+    "requestIdsMatchWithinEachRequest": true
+  },
+  "privacy": {
+    "privateQueryAbsentFromOtlp": true,
+    "privateBaggageAbsentFromOtlp": true,
+    "privateHeaderAbsentFromOtlp": true,
+    "privateExceptionAbsentFromOtlp": true,
+    "credentialAbsentFromOtlp": true,
+    "serverMaterialAbsentFromBrowserBundle": true
+  },
+  "http": {
+    "concurrentSuccesses": 2,
+    "translatedFailure": 500,
+    "appNodeModules": false
+  },
+  "telemetry": {
+    "receiver": "127.0.0.1:5219 fixture-only",
+    "authenticatedMetricsAndTracesReceived": true,
+    "spans": 50,
+    "metricNames": [
+      "http.server.active_requests",
+      "http.server.request.count",
+      "http.server.request.duration",
+      "otel.sdk.processor.span.processed",
+      "otel.sdk.processor.span.queue.capacity",
+      "otel.sdk.processor.span.queue.size",
+      "process.cpu.time",
+      "process.event_loop.delay.max",
+      "process.event_loop.delay.mean",
+      "process.event_loop.delay.p99",
+      "process.event_loop.utilization",
+      "process.gc.count",
+      "process.gc.duration",
+      "process.memory.array_buffers",
+      "process.memory.external",
+      "process.memory.heap.allocated",
+      "process.memory.heap.limit",
+      "process.memory.heap.used",
+      "process.memory.rss",
+      "process.uptime",
+      "sporades.job.queue.depth",
+      "sporades.job.queue.oldest_pending_age",
+      "sporades.telemetry.collection.time",
+      "sporades.telemetry.export.failure.count",
+      "sporades.telemetry.export.in_flight",
+      "sporades.telemetry.export.last_success",
+      "sporades.websocket.active_connections"
+    ],
+    "traceIds": [
+      "11111111111111111111111111111111",
+      "22222222222222222222222222222222"
+    ],
+    "failureTraceId": "33333333333333333333333333333333",
+    "failureServerSpanVerified": true
+  },
+  "devProcess": {
+    "exitCode": 0,
+    "signal": null
+  },
+  "status": "incomplete-release-acceptance",
+  "runtimeSourceCommit": "ffa5eb6d517bdaa95a9f1542b9b6dcbb7811517a",
+  "checks": {
+    "installedReleaseVerifier": {
+      "status": "passed",
+      "exitCode": 0
+    },
+    "tamperedArchiveRejectedBeforeDev": {
+      "status": "passed",
+      "rejectedExitCode": 1
+    },
+    "outsideWorktreeConfigRejected": {
+      "status": "passed",
+      "rejectedExitCode": 1
+    },
+    "typecheck": {
+      "status": "passed",
+      "exitCode": 0
+    },
+    "focusedParity": {
+      "status": "passed",
+      "tests": 11,
+      "passed": 8,
+      "skipped": 3,
+      "failed": 0,
+      "exitCode": 0
+    },
+    "fullSuite": {
+      "status": "passed",
+      "exitCode": 0,
+      "tests": 3219,
+      "passed": 2991,
+      "failed": 0,
+      "skipped": 228,
+      "cancelled": 0,
+      "durationMs": 1979914.737959
+    },
+    "documentation": {
+      "status": "passed",
+      "tests": 54,
+      "passed": 54,
+      "failed": 0,
+      "exitCode": 0,
+      "buildWarnings": [
+        "Existing missing promql highlighter fallback",
+        "Existing bundle chunk-size warning"
+      ]
+    },
+    "docker": {
+      "command": "docker info",
+      "status": "unavailable",
+      "reason": "timeout after 10 seconds",
+      "elapsedSeconds": 10.009
+    },
+    "interruptionCleanup": {
+      "status": "passed",
+      "signal": "SIGTERM",
+      "exitCode": 1,
+      "ownedPortsClosed": [
+        5218,
+        5219
+      ]
+    },
+    "browser": {
+      "status": "passed",
+      "builtSite": true,
+      "desktop": [
+        1440,
+        1000
+      ],
+      "phone": [
+        390,
+        844
+      ],
+      "completeRuntimeCells": [
+        "CLI/runtime",
+        "Node >=22.13.0 <23 || >=24",
+        "macOS arm64, Node 24.19.0/npm 11.17.0 only"
+      ],
+      "evidenceLink": "opened public JSON successfully",
+      "evidenceHttpStatus": 200,
+      "evidenceBytesMatchCanonical": true,
+      "consoleErrors": [
+        "404 for /favicon.ico after direct JSON navigation"
+      ],
+      "consoleWarnings": 0,
+      "ownedBrowserAndServerStopped": true,
+      "screenshots": [
+        "logs/issue-131-round-3/browser/issue-131-round3-desktop.png",
+        "logs/issue-131-round-3/browser/issue-131-round3-phone.png"
+      ]
+    },
+    "build": {
+      "status": "passed",
+      "exitCode": 0
+    },
+    "generatedFreshness": {
+      "status": "passed",
+      "exitCode": 0
+    },
+    "postBuildArtifactParity": {
+      "status": "passed",
+      "files": 494,
+      "byteIdentical": true
+    },
+    "verifierRegressions": {
+      "status": "passed",
+      "tests": 10,
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "durationMs": 168339.243042,
+      "coverage": [
+        "missing failure SERVER span rejected before exception privacy credit",
+        "required request spans and metric delayed seven seconds accepted within deadline",
+        "symlinked runtime/evidence parents rejected before writes",
+        "npm and monitoring archive tampering rejected before Dev",
+        "SIGTERM closes owned Dev and receiver listeners",
+        "unexpected npm archive file rejected before installation and parity credit"
+      ],
+      "inheritedNpmAllowScripts": "present; removed from isolated install environment"
+    },
+    "earlierFullSuiteAttempt": {
+      "status": "failed",
+      "exitCode": 1,
+      "tests": 3217,
+      "passed": 2982,
+      "failed": 7,
+      "skipped": 228,
+      "cancelled": 0,
+      "durationMs": 1520963.403458,
+      "cause": "Inherited npm_config_allow_scripts rejected by npm 11 during isolated verifier install; fixed and explicitly covered by regression. This failed run is preserved separately."
+    },
+    "addedNpmFileRejectedBeforeInstall": {
+      "status": "passed",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "exitCode": 0
+    },
+    "renderedRunbook": {
+      "status": "passed",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "exitCode": 0,
+      "completeRuntimeCells": true,
+      "publicEvidenceAsset": true,
+      "builtEvidenceHttpStatus": 200
+    },
+    "earlierRound3VerifierAttempt": {
+      "status": "failed",
+      "tests": 10,
+      "passed": 9,
+      "failed": 1,
+      "exitCode": 1,
+      "durationMs": 172218.562208,
+      "cause": "New test incorrectly prohibited valid npm parity when only monitoring archive was tampered; assertion narrowed to npm archive cases and full regression file rerun."
+    }
+  },
+  "pendingReleaseGates": [
+    "actual Compose acceptance",
+    "local Container and Hosted modes",
+    "real same-VM and separate-VM assembled topology acceptance",
+    "stored all-signal and success/failure log lookup",
+    "default Host coverage, opt-out and automatic lifecycle inventory",
+    "actual firing/resolved alert delivery",
+    "complete privacy/concurrency/authority drills",
+    "quota/unit/reset/pipeline outage/migration/lifecycle drills on identical artifacts",
+    "<=5% p95 and throughput gates; fixed/load-dependent memory and sustained growth",
+    "measured capacity, retention and disk headroom",
+    "operator sign-off and repeat package/build validation if the final deployed candidate changes"
+  ],
+  "productionCanaryClaimed": false,
+  "verifier": {
+    "path": "scripts/verify-monitoring-release.mjs",
+    "sha256": "aa74566f15af47fa6e5285182bc56db742c437bbeba631d4b59dcc1c2020ccff"
+  }
+}
