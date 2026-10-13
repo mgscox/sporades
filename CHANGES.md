@@ -1,90 +1,55 @@
 # Changes
 
-## Unreleased - 2026-10-02
+## Unreleased - 2026-10-13
 
-Changes since v0.9.30.
+Changes since v0.9.31.
 
 ### 🚀 Features
 
-- Notify operators about inventory-driven Capsule availability and missing telemetry, with independent application probes, grouped alerts, recovery messages, and timed silences (#120).
-- Expose bounded telemetry pipeline queues, losses and freshness, provision recovery diagnostics and optional quota-limited persistent Collector queues, and add isolated monitoring outage drills (#129).
-- Enforce trusted Hosted address/CIDR admission with authenticated proxy identity, mapped IPv6 normalization, and fail-closed missing identity in Dev and local Container sessions (#69).
-
-- Trace individual WebSocket query and mutation executions with isolated context, cancellation outcomes, independent operation metrics and active connections (#125).
-
-- Trace durable background Job attempts with causal enqueue links and independent queue pressure, execution duration, retry and failure metrics (#126).
-
-- Include optional project `public/` files in Dev, Container, and Hosted releases, with stable paths, Dev rebuilding, collision checks, and XML MIME handling (#187).
-- Open telemetry docs (a1ef804f).
-- Enable Host-owned telemetry coverage for Hosted Capsules (7b1af535).
-- Add shared remote Host telemetry relay transport (f13f233a).
-- Add GC and event-loop pressure telemetry (2d40feb9).
-- Add periodic Capsule process resource telemetry (372ea49c).
-- Add installed CLI generation for monitoring trace stack (6c17d973).
-- Add standalone authenticated trace Compose stack for telemetry (1f814483).
+- Add pinned monitoring release acceptance verifier (#229) (872f33866).
+- Add admission lifecycle proof harness and human verification handoff (#221) (9e4608535).
+- Add resource and API-performance alerts (#222) (0dc656b53).
+- Add inventory-driven availability alerts and recoveries (#204) (803ca6060).
+- Support validated Auto-Submitted on send (#220) (40d3317ec).
+- Add safe monitoring maintenance and fresh restore (#213) (6542368d1).
+- Add bounded telemetry outage recovery and pipeline visibility (#207) (fc04b41b3).
 
 ### 🐛 Bug Fixes
 
-- Bound ClamAV proxy Unix socket paths (#184) (a8369517).
-- Fix upload, billing, browser and Host recovery ownership (1c9c74cd).
-- Retain event loop stalls across metric collection (400f8961).
-- Report event loop lag beyond sampling interval (6da7bc39).
-- Fix bounded HTTP telemetry shutdown flush and 4xx span status (975fc10b).
-- Fix telemetry status on pre-header HTTP abort (5d3a5e73).
-- Reject normalized smoke origin inputs (dc1b6bc5).
-- Accept canonical smoke origin spellings (82e1a9d5).
-- Use certificate hostname for trace smoke origin (7c342a9f).
-- Fix monitoring UI proxy lifecycle and resource p95 abort filter (5fe52461).
-- Fix monitoring stack credentials, selectors, and trace retention (8cfb29d0).
+- Bump for vulns (f68221783).
+- Prevent favicon 404s in new scaffolds (#219) (d44aa0970).
+- Offer only supported OAuth sign-in actions (#215) (1977b8e49).
+- Cache hashed public assets immutably (#186) (871540c2f).
 
 ### 📝 Documentation
 
-- Resume Hosted Capsules after Host startup through shared bootstrap (66b3cfb2).
-- Monitor Host pressure and Caddy through the telemetry relay (a3cc4c6c).
-- Document Hosted telemetry opt-out in Host help (d2774a66).
-- Report unverified Hosted telemetry coverage separately (88f56f08).
-- Serialize relay reconciliation and retain Host telemetry settings (0c3bb23a).
-- Export reset-gap max when native histogram has no samples (c89fad6b).
-- Preserve event-loop pressure across histogram reset gap (22f78582).
-- Clarify local telemetry selection ownership (b4a52e9d).
-- Preserve legacy Container bundle during Dev and Host publication (140c2d6d).
-- Pin telemetry exporter policy to selected profile (66f43dc2).
-- Keep local Container telemetry across Dev bundle rebuilds (b643f0e2).
-- Reconcile staged telemetry CA after interrupted Container deploy (ea02a390).
-- Validate and stage Container telemetry CA before replacement (1db92c8a).
-- Detach runtime background logs from HTTP request identity (fe6101ff).
-- Harden telemetry gateway uploads and readiness (59863d33).
-- Report metric export failures through telemetry diagnostics (e7a8ac4d).
-- Keep telemetry dashboards readable at sparse export intervals (398ed840).
-- Correlate existing logs with HTTP trace identities (0fb9ccbd).
-- Clarify shipped API metrics in telemetry roadmap (09290f93).
-- Measure Capsule API traffic with portable Prometheus and Grafana stack (e96a84a5).
-- Report bounded local telemetry export failures (2a279361).
-- Trace local Container HTTP requests with explicit telemetry profiles (94fc09d0).
-- Trace Dev HTTP requests through operator Telemetry profiles (c8f34e4e).
-- Harden monitoring stack initialization and prerequisite checks (52fdd593).
-- Keep trace gateway non-root after root setup (44826c0f).
-- Constrain trace UI proxy and preserve literal stack credentials (ffcb64ea).
+- Complete admission lifecycle evidence and restore Hosted stats (#227) (ffa5eb6d5).
+- Preserve Collector asset modes under systemd umask (#224) (c3a6e6e65).
+- Diagnose and migrate Host monitoring connections (#212) (e9c635e6f).
+- Expose bounded, redacted admission evidence (#218) (4ac66e837).
+- Stabilize public-tree staging and PDF deadline tests (#217) (7753267cd).
+- Apply admission before WebSocket upgrades (#214) (1897d6932).
+- Stabilize Dev ClamAV framed readiness on macOS (#216) (312e55e26).
+- Scope Postgres and libsql live query refreshes by table (#202) (e23007e82).
+- Complete canonical non-address HTTP admission matching (#210) (bdfe6d872).
+- Enforce bounded fixed-window quotas for trusted admission clients (#211) (b7bbd3f13).
+- Rotate and revoke per-sender telemetry credentials (#203) (789b4862a).
+- Establish trusted Hosted client-address admission (#209) (b274551d2).
+- Trace outbound fetch dependency time (#199) (d243884f2).
+- Enforce exact-path HTTP denial before Capsule routing (#193) (3e59f8862).
+- Trace individual WebSocket operations and connection activity (#198) (4473caeac).
+- Complete malformed request liveness coverage (#201) (2e8c02038).
+- Automatically synchronize Host lifecycle inventory (#195) (f7b35cbbc).
+- Trace durable Job attempts and queue pressure (#200) (b4042ce8d).
+- Trace authentication and File operations within HTTP requests (#197) (d37a224fd).
+- Trace database time within Capsule requests (#196) (9e92f0fa0).
+- Publish deployer-owned read-only admission policy generations (#189) (45066b7a2).
+- Support project public assets across Capsule sessions (#188) (de6806ed3).
+- Verify multipart limit diagnostics over real HTTP (#185) (1b8dfd77f).
 
 ### 🧪 Tests
 
-- Expect Host-owned telemetry input in failed start fixture (c2d2b0b9).
-- Expect unverified coverage from legacy Host fixture (52c02c9c).
-- Flush telemetry after failed shutdown and classify CA chain errors (24d35576).
-- Clean up Dev startup when watcher setup fails (eb20c57d).
-- Clean up private Dev action bundles across session lifecycle (6c651120).
-- Prove Container identity after Dev rebuild in Docker acceptance (db9ea7e0).
-- Journal bound telemetry CA across forced replacement (f5e8ad8f).
-- Journal replacement when retiring a bound telemetry CA (d6678b9e).
-- Close incomplete UI upload sockets after proxy response (505642fc).
-- Account for request context in Bundle census (3a78fa47).
-- Support frozen injected runtime clocks (d6c51994).
-- Preserve injected runtime clock receivers (fece8d3d).
-- Guard Telemetry profile names and cover Bundle module census (1e9e3e61).
-
-### 📦 Packaging
-
-- Sync npm lock with telemetry metrics dependencies (3e706c67).
+- Make the connection-lost screen clear and actionable (#226) (6cf8993a9).
 
 ## v0.9.11 - 2026-09-02
 
@@ -173,6 +138,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
