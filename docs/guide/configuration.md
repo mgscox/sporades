@@ -23,6 +23,16 @@ selection export nothing. A local Container session can use `sporades deploy
 See [database configuration and local services](../reference/projects-and-configuration.md#configuration)
 to choose between embedded SQLite, libSQL, and PostgreSQL.
 
+## Required Server env
+
+Use `env.required` in `sporades.json` for values the Capsule needs, such as
+`TICKETS_INTAKE_URL`. Doctor reports missing names and Hosted push blocks unless
+you explicitly pass `--allow-missing-env`. Boot logs missing names and continues
+by default; set `env.failClosed: true` to refuse startup. Configured SMTP,
+enabled mail webhooks, and enabled Stripe credentials are included automatically.
+See [required Server env](../reference/projects-and-configuration.md#required-server-env)
+for presence rules and sealed-env precedence.
+
 ## Mail
 
 See the dedicated [Mail guide](./mail.md) for SMTP delivery, provider

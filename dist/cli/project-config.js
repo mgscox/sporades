@@ -1,3 +1,4 @@
+import { validateRequiredServerEnvConfig } from "../required-server-env.js";
 import { resolveRegistrationThrottle } from "../capsule-rate-limit.js";
 import { resolveAdmissionPolicy } from "../admission-policy.js";
 import { createHash } from "node:crypto";
@@ -35,6 +36,7 @@ const SUPPORTED_PROJECT_KEYS = new Set([
     "deploy",
     "dev",
     "files",
+    "env",
     "id",
     "logging",
     "logs",
@@ -62,6 +64,7 @@ export async function readProjectConfig(projectDir) {
     }
     resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
     validateLogConfig(config);
+    validateRequiredServerEnvConfig(config.env);
     validateSecurityConfig(config.security);
     validateClientConfig(config.client);
     validateSchedulingConfig(config.scheduling);

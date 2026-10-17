@@ -52,6 +52,7 @@
       "src/cli/monitoring-maintenance.ts",
       "src/cli/monitoring-stack.ts",
       "src/cli/project-config.ts",
+      "src/cli/required-server-env.ts",
       "src/cli/schedule-inspection-envelope.ts",
       "src/cli/sporades-host-helper.ts",
       "src/cli/sporades.ts",
@@ -90,6 +91,7 @@
       "src/promise-coordinator.ts",
       "src/public-tree-contract.ts",
       "src/public-tree.ts",
+      "src/required-server-env.ts",
       "src/resource-runtime.ts",
       "src/runtime-errors.ts",
       "src/runtime-fetch-telemetry.ts",
@@ -132,7 +134,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "9d7cf24380aff46c7ba6b0f8a604a01985ed1412c0f883eef65c219801e91e92"
+    "digest": "fbdf60bfb9f3131554c00863de024f3a3391b37916ecbd3864a6823025965997"
   },
   "outputs": {
     "files": [
@@ -310,6 +312,10 @@
       "dist/cli/project-config.d.ts.map",
       "dist/cli/project-config.js",
       "dist/cli/project-config.js.map",
+      "dist/cli/required-server-env.d.ts",
+      "dist/cli/required-server-env.d.ts.map",
+      "dist/cli/required-server-env.js",
+      "dist/cli/required-server-env.js.map",
       "dist/cli/schedule-inspection-envelope.d.ts",
       "dist/cli/schedule-inspection-envelope.d.ts.map",
       "dist/cli/schedule-inspection-envelope.js",
@@ -462,6 +468,10 @@
       "dist/public-tree.d.ts.map",
       "dist/public-tree.js",
       "dist/public-tree.js.map",
+      "dist/required-server-env.d.ts",
+      "dist/required-server-env.d.ts.map",
+      "dist/required-server-env.js",
+      "dist/required-server-env.js.map",
       "dist/resource-runtime.d.ts",
       "dist/resource-runtime.d.ts.map",
       "dist/resource-runtime.js",
@@ -592,6 +602,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "a2a5ae1056cf40756574d2682086ecf4412be3061e53eca66faf51c8b728971e"
+    "digest": "fe29cad90d98767734cbd3526912be216e37a451202e193e9af7a697d807c648"
   }
 }

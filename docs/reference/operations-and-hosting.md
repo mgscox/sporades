@@ -403,6 +403,11 @@ the Host-encrypted sealed envelope with the release. Host private keys stay in
 Host-owned persistent state and plaintext values do not cross the local-to-Host
 boundary.
 
+Push checks [required Server env](./projects-and-configuration.md#required-server-env)
+in the local sealed envelope before Host contact. Missing names block the push;
+`--allow-missing-env` explicitly bypasses the presence gate. It does not bypass
+provider credential validation or `env.failClosed` at runtime.
+
 For normal release updates:
 
 ```sh

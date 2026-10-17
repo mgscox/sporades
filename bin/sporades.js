@@ -23063,14 +23063,14 @@ var require_svgPath = __commonJS({
       ["Z", 0],
       ["z", 0]
     ]);
-    var parse6 = function(path22) {
+    var parse6 = function(path23) {
       var cmd;
       var ret = [];
       var args = [];
       var curArg = "";
       var foundDecimal = false;
       var params = 0;
-      for (var _i = 0, path_1 = path22; _i < path_1.length; _i++) {
+      for (var _i = 0, path_1 = path23; _i < path_1.length; _i++) {
         var c = path_1[_i];
         if (parameters.has(c)) {
           params = parameters.get(c);
@@ -23384,8 +23384,8 @@ var require_svgPath = __commonJS({
       ];
       return result;
     };
-    exports.svgPathToOperators = function(path22) {
-      return apply2(parse6(path22));
+    exports.svgPathToOperators = function(path23) {
+      return apply2(parse6(path23));
     };
   }
 });
@@ -23568,7 +23568,7 @@ var require_operations = __commonJS({
         operators_1.popGraphicsState()
       ]).filter(Boolean);
     };
-    exports.drawSvgPath = function(path22, options) {
+    exports.drawSvgPath = function(path23, options) {
       var _a, _b, _c;
       return tslib_1.__spreadArrays([
         operators_1.pushGraphicsState(),
@@ -23582,7 +23582,7 @@ var require_operations = __commonJS({
         options.borderWidth && operators_1.setLineWidth(options.borderWidth),
         options.borderLineCap && operators_1.setLineCap(options.borderLineCap),
         operators_1.setDashPattern((_b = options.borderDashArray) !== null && _b !== void 0 ? _b : [], (_c = options.borderDashPhase) !== null && _c !== void 0 ? _c : 0)
-      ], svgPath_1.svgPathToOperators(path22), [
+      ], svgPath_1.svgPathToOperators(path23), [
         // prettier-ignore
         options.color && options.borderWidth ? operators_1.fillAndStroke() : options.color ? operators_1.fill() : options.borderColor ? operators_1.stroke() : operators_1.closePath(),
         operators_1.popGraphicsState()
@@ -27880,12 +27880,12 @@ var require_PDFPage = __commonJS({
             graphicsState: graphicsStateKey
           }));
         };
-        PDFPage2.prototype.drawSvgPath = function(path22, options) {
+        PDFPage2.prototype.drawSvgPath = function(path23, options) {
           var _a, _b, _c, _d, _e2, _f, _g, _h, _j;
           if (options === void 0) {
             options = {};
           }
-          utils_1.assertIs(path22, "path", ["string"]);
+          utils_1.assertIs(path23, "path", ["string"]);
           utils_1.assertOrUndefined(options.x, "options.x", ["number"]);
           utils_1.assertOrUndefined(options.y, "options.y", ["number"]);
           utils_1.assertOrUndefined(options.scale, "options.scale", ["number"]);
@@ -27914,7 +27914,7 @@ var require_PDFPage = __commonJS({
             options.borderColor = colors_1.rgb(0, 0, 0);
           }
           var contentStream = this.getContentStream();
-          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path22, {
+          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path23, {
             x: (_a = options.x) !== null && _a !== void 0 ? _a : this.x,
             y: (_b = options.y) !== null && _b !== void 0 ? _b : this.y,
             scale: options.scale,
@@ -29990,9 +29990,9 @@ var require_decoder = __commonJS({
         return a2 < 0 ? 0 : a2 > 255 ? 255 : a2;
       }
       constructor.prototype = {
-        load: function load(path22) {
+        load: function load(path23) {
           var xhr = new XMLHttpRequest();
-          xhr.open("GET", path22, true);
+          xhr.open("GET", path23, true);
           xhr.responseType = "arraybuffer";
           xhr.onload = (function() {
             var data2 = new Uint8Array(xhr.response || xhr.mozResponseArrayBuffer);
@@ -33290,33 +33290,33 @@ function renderRichText({
   container.append(fragment2);
 }
 function makePathFromDrawOPS(data2) {
-  const path22 = new Path2D();
+  const path23 = new Path2D();
   if (!data2) {
-    return path22;
+    return path23;
   }
   for (let i = 0, ii = data2.length; i < ii; ) {
     switch (data2[i++]) {
       case DrawOPS.moveTo:
-        path22.moveTo(data2[i++], data2[i++]);
+        path23.moveTo(data2[i++], data2[i++]);
         break;
       case DrawOPS.lineTo:
-        path22.lineTo(data2[i++], data2[i++]);
+        path23.lineTo(data2[i++], data2[i++]);
         break;
       case DrawOPS.curveTo:
-        path22.bezierCurveTo(data2[i++], data2[i++], data2[i++], data2[i++], data2[i++], data2[i++]);
+        path23.bezierCurveTo(data2[i++], data2[i++], data2[i++], data2[i++], data2[i++], data2[i++]);
         break;
       case DrawOPS.quadraticCurveTo:
-        path22.quadraticCurveTo(data2[i++], data2[i++], data2[i++], data2[i++]);
+        path23.quadraticCurveTo(data2[i++], data2[i++], data2[i++], data2[i++]);
         break;
       case DrawOPS.closePath:
-        path22.closePath();
+        path23.closePath();
         break;
       default:
         warn(`Unrecognized drawing path operator: ${data2[i - 1]}`);
         break;
     }
   }
-  return path22;
+  return path23;
 }
 function bindEvents(obj, element, names) {
   for (const name2 of names) {
@@ -46075,11 +46075,11 @@ var init_pdf = __esm({
         } catch (ex) {
           warn(`getPathGenerator - ignoring character: "${ex}".`);
         }
-        const path22 = makePathFromDrawOPS(cmds?.path);
+        const path23 = makePathFromDrawOPS(cmds?.path);
         if (!this.fontExtraProperties) {
           objs.delete(objId);
         }
-        return this.compiledGlyphs[character] = path22;
+        return this.compiledGlyphs[character] = path23;
       }
       get black() {
         return this.#fontData.black;
@@ -47990,7 +47990,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         Util.singularValueDecompose2dScale(this.baseTransform, scale);
         return [matrixScaleX * scale[0], matrixScaleY * scale[1]];
       }
-      drawPattern(owner, path22, useEOFill = false, [n, m3], opIdx) {
+      drawPattern(owner, path23, useEOFill = false, [n, m3], opIdx) {
         const [x0, y0, x1, y1] = this.bbox;
         const dependencyTracker = owner.dependencyTracker;
         if (dependencyTracker) {
@@ -47998,9 +47998,9 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         }
         owner.save();
         if (useEOFill) {
-          owner.ctx.clip(path22, "evenodd");
+          owner.ctx.clip(path23, "evenodd");
         } else {
-          owner.ctx.clip(path22);
+          owner.ctx.clip(path23);
         }
         owner.ctx.setTransform(...this.patternBaseMatrix);
         owner.ctx.translate(n * this.xstep, m3 * this.ystep);
@@ -49091,15 +49091,15 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         if (hasInnerCutout && maskX0 === layerOffsetX && maskY0 === layerOffsetY && maskX1 === layerOffsetX + layerWidth && maskY1 === layerOffsetY + layerHeight) {
           return;
         }
-        const path22 = new Path2D();
-        path22.rect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
+        const path23 = new Path2D();
+        path23.rect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
         if (hasInnerCutout) {
-          path22.rect(maskX0, maskY0, maskX1 - maskX0, maskY1 - maskY0);
+          path23.rect(maskX0, maskY0, maskX1 - maskX0, maskY1 - maskY0);
         }
         layerCtx.save();
         layerCtx.globalAlpha = alpha / 255;
         layerCtx.setTransform(1, 0, 0, 1, 0, 0);
-        layerCtx.clip(path22, "evenodd");
+        layerCtx.clip(path23, "evenodd");
         layerCtx.globalCompositeOperation = "destination-in";
         layerCtx.fillStyle = "#000000";
         layerCtx.fillRect(layerOffsetX, layerOffsetY, layerWidth, layerHeight);
@@ -49157,21 +49157,21 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         this._cachedGetSinglePixelWidth = null;
       }
       constructPath(opIdx, op, data2, minMax) {
-        let [path22] = data2;
+        let [path23] = data2;
         if (!minMax) {
-          path22 ||= data2[0] = new Path2D();
+          path23 ||= data2[0] = new Path2D();
           if (op !== OPS.stroke && op !== OPS.closeStroke) {
             this.current.tilingPatternDims = null;
           }
-          this[op](opIdx, path22);
+          this[op](opIdx, path23);
           return;
         }
         if (this.dependencyTracker !== null) {
           const outerExtraSize = op === OPS.stroke ? this.current.lineWidth / 2 : 0;
           this.dependencyTracker.resetBBox(opIdx).recordBBox(opIdx, this.ctx, minMax[0] - outerExtraSize, minMax[2] + outerExtraSize, minMax[1] - outerExtraSize, minMax[3] + outerExtraSize).recordDependencies(opIdx, ["transform"]);
         }
-        if (!(path22 instanceof Path2D)) {
-          path22 = data2[0] = makePathFromDrawOPS(path22);
+        if (!(path23 instanceof Path2D)) {
+          path23 = data2[0] = makePathFromDrawOPS(path23);
         }
         Util.axialAlignedBoundingBox(minMax, getCurrentTransform(this.ctx), this.current.minMax);
         const tilingDims = this.current.tilingPatternDims;
@@ -49183,13 +49183,13 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             this.current.fillColor.updatePatternDims(clippedBBox, tilingDims);
           }
         }
-        this[op](opIdx, path22);
+        this[op](opIdx, path23);
         this._pathStartIdx = opIdx;
       }
       closePath(opIdx) {
         this.ctx.closePath();
       }
-      stroke(opIdx, path22, consumePath = true) {
+      stroke(opIdx, path23, consumePath = true) {
         const started = consumePath && this.#beginKnockoutElement(this.current.strokeAlpha);
         const ctx = this.ctx;
         const strokeColor = this.current.strokeColor;
@@ -49201,26 +49201,26 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             ctx.strokeStyle = strokeColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.STROKE, opIdx);
             if (baseTransform) {
               const newPath = new Path2D();
-              newPath.addPath(path22, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
-              path22 = newPath;
+              newPath.addPath(path23, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
+              path23 = newPath;
             }
-            this.rescaleAndStroke(path22, false);
+            this.rescaleAndStroke(path23, false);
             ctx.restore();
           } else {
-            this.rescaleAndStroke(path22, true);
+            this.rescaleAndStroke(path23, true);
           }
         }
         this.dependencyTracker?.recordDependencies(opIdx, Dependencies.stroke);
         if (consumePath) {
-          this.consumePath(opIdx, path22, this.current.getClippedPathBoundingBox(PathType.STROKE, getCurrentTransform(this.ctx)));
+          this.consumePath(opIdx, path23, this.current.getClippedPathBoundingBox(PathType.STROKE, getCurrentTransform(this.ctx)));
         }
         ctx.globalAlpha = this.current.fillAlpha;
         this.#endKnockoutElement(started);
       }
-      closeStroke(opIdx, path22) {
-        this.stroke(opIdx, path22);
+      closeStroke(opIdx, path23) {
+        this.stroke(opIdx, path23);
       }
-      fill(opIdx, path22, consumePath = true) {
+      fill(opIdx, path23, consumePath = true) {
         const started = consumePath && this.#beginKnockoutElement(this.current.fillAlpha);
         const ctx = this.ctx;
         const fillColor = this.current.fillColor;
@@ -49232,10 +49232,10 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           const dims = this.current.tilingPatternDims;
           const tileIdx = dims && fillColor.canSkipPatternCanvas(dims);
           if (tileIdx) {
-            fillColor.drawPattern(this, path22, this.pendingEOFill, tileIdx, opIdx);
+            fillColor.drawPattern(this, path23, this.pendingEOFill, tileIdx, opIdx);
             this.pendingEOFill = false;
             if (consumePath) {
-              this.consumePath(opIdx, path22, intersect);
+              this.consumePath(opIdx, path23, intersect);
             }
             this.current.tilingPatternDims = null;
             this.#endKnockoutElement(started);
@@ -49247,17 +49247,17 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           ctx.fillStyle = fillColor.getPattern(ctx, this, getCurrentTransformInverse(ctx), PathType.FILL, opIdx);
           if (baseTransform) {
             const newPath = new Path2D();
-            newPath.addPath(path22, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
-            path22 = newPath;
+            newPath.addPath(path23, ctx.getTransform().invertSelf().multiplySelf(baseTransform));
+            path23 = newPath;
           }
           needRestore = true;
         }
         if (this.contentVisible && intersect !== null) {
           if (this.pendingEOFill) {
-            ctx.fill(path22, "evenodd");
+            ctx.fill(path23, "evenodd");
             this.pendingEOFill = false;
           } else {
-            ctx.fill(path22);
+            ctx.fill(path23);
           }
         }
         if (needRestore) {
@@ -49265,38 +49265,38 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           this.dependencyTracker?.restore(opIdx);
         }
         if (consumePath) {
-          this.consumePath(opIdx, path22, intersect);
+          this.consumePath(opIdx, path23, intersect);
         }
         this.#endKnockoutElement(started);
       }
-      eoFill(opIdx, path22) {
+      eoFill(opIdx, path23) {
         this.pendingEOFill = true;
-        this.fill(opIdx, path22);
+        this.fill(opIdx, path23);
       }
-      fillStroke(opIdx, path22) {
+      fillStroke(opIdx, path23) {
         const started = this.#beginKnockoutElement(Math.min(this.current.fillAlpha, this.current.strokeAlpha));
-        this.fill(opIdx, path22, false);
-        this.stroke(opIdx, path22, false);
-        this.consumePath(opIdx, path22);
+        this.fill(opIdx, path23, false);
+        this.stroke(opIdx, path23, false);
+        this.consumePath(opIdx, path23);
         this.#endKnockoutElement(started);
       }
-      eoFillStroke(opIdx, path22) {
+      eoFillStroke(opIdx, path23) {
         this.pendingEOFill = true;
-        this.fillStroke(opIdx, path22);
+        this.fillStroke(opIdx, path23);
       }
-      closeFillStroke(opIdx, path22) {
-        this.fillStroke(opIdx, path22);
+      closeFillStroke(opIdx, path23) {
+        this.fillStroke(opIdx, path23);
       }
-      closeEOFillStroke(opIdx, path22) {
+      closeEOFillStroke(opIdx, path23) {
         this.pendingEOFill = true;
-        this.fillStroke(opIdx, path22);
+        this.fillStroke(opIdx, path23);
       }
-      endPath(opIdx, path22) {
-        this.consumePath(opIdx, path22);
+      endPath(opIdx, path23) {
+        this.consumePath(opIdx, path23);
       }
-      rawFillPath(opIdx, path22) {
+      rawFillPath(opIdx, path23) {
         const started = this.#beginKnockoutElement(this.current.fillAlpha);
-        this.ctx.fill(path22);
+        this.ctx.fill(path23);
         this.dependencyTracker?.recordDependencies(opIdx, Dependencies.rawFillPath).recordOperation(opIdx);
         this.#endKnockoutElement(started);
       }
@@ -49335,12 +49335,12 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             x: x2,
             y,
             fontSize,
-            path: path22
+            path: path23
           } of paths) {
-            if (!path22) {
+            if (!path23) {
               continue;
             }
-            newPath.addPath(path22, new DOMMatrix(transform).preMultiplySelf(invTransf).translate(x2, y).scale(fontSize, -fontSize));
+            newPath.addPath(path23, new DOMMatrix(transform).preMultiplySelf(invTransf).translate(x2, y).scale(fontSize, -fontSize));
           }
           ctx.clip(newPath);
         }
@@ -49428,9 +49428,9 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         this.moveText(opIdx, 0, this.current.leading);
         this.dependencyTracker?.recordIncrementalData("moveText", this.dependencyTracker.getSimpleIndex("leading") ?? opIdx);
       }
-      #getScaledPath(path22, currentTransform, transform) {
+      #getScaledPath(path23, currentTransform, transform) {
         const newPath = new Path2D();
-        newPath.addPath(path22, new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform));
+        newPath.addPath(path23, new DOMMatrix(transform).invertSelf().multiplySelf(currentTransform));
         return newPath;
       }
       paintChar(opIdx, character, x2, y, patternFillTransform, patternStrokeTransform) {
@@ -49443,11 +49443,11 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         const isAddToPathSet = !!(textRenderingMode & TextRenderingMode.ADD_TO_PATH_FLAG);
         const patternFill = current2.patternFill && !font.missingFile;
         const patternStroke = current2.patternStroke && !font.missingFile;
-        let path22;
+        let path23;
         if ((font.disableFontFace || isAddToPathSet || patternFill || patternStroke) && !font.missingFile) {
-          path22 = font.getPathGenerator(this.commonObjs, character);
+          path23 = font.getPathGenerator(this.commonObjs, character);
         }
-        if (path22 && (font.disableFontFace || patternFill || patternStroke)) {
+        if (path23 && (font.disableFontFace || patternFill || patternStroke)) {
           ctx.save();
           ctx.translate(x2, y);
           ctx.scale(fontSize, -fontSize);
@@ -49457,10 +49457,10 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             if (patternFillTransform) {
               currentTransform = ctx.getTransform();
               ctx.setTransform(...patternFillTransform);
-              const scaledPath = this.#getScaledPath(path22, currentTransform, patternFillTransform);
+              const scaledPath = this.#getScaledPath(path23, currentTransform, patternFillTransform);
               ctx.fill(scaledPath);
             } else {
-              ctx.fill(path22);
+              ctx.fill(path23);
             }
           }
           if (fillStrokeMode === TextRenderingMode.STROKE || fillStrokeMode === TextRenderingMode.FILL_STROKE) {
@@ -49477,10 +49477,10 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
               const transf = Util.transform([a2, b, c, d2, 0, 0], invPatternTransform);
               Util.singularValueDecompose2dScale(transf, XY);
               ctx.lineWidth *= Math.max(XY[0], XY[1]) / fontSize;
-              ctx.stroke(this.#getScaledPath(path22, currentTransform, patternStrokeTransform));
+              ctx.stroke(this.#getScaledPath(path23, currentTransform, patternStrokeTransform));
             } else {
               ctx.lineWidth /= fontSize;
-              ctx.stroke(path22);
+              ctx.stroke(path23);
             }
           }
           ctx.restore();
@@ -49503,7 +49503,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             x: x2,
             y,
             fontSize,
-            path: path22
+            path: path23
           });
           this.dependencyTracker?.recordCharacterBBox(opIdx, ctx, font, fontSize, x2, y);
         }
@@ -49893,9 +49893,9 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             const [x0, y0, x1, y1] = group.bbox;
             clip.rect(x0, y0, x1 - x0, y1 - y0);
             if (group.matrix) {
-              const path22 = new Path2D();
-              path22.addPath(clip, new DOMMatrix(group.matrix));
-              clip = path22;
+              const path23 = new Path2D();
+              path23.addPath(clip, new DOMMatrix(group.matrix));
+              clip = path23;
             }
             currentCtx.clip(clip);
           }
@@ -49954,9 +49954,9 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           const [x0, y0, x1, y1] = group.bbox;
           clip.rect(x0, y0, x1 - x0, y1 - y0);
           if (group.matrix) {
-            const path22 = new Path2D();
-            path22.addPath(clip, new DOMMatrix(group.matrix));
-            clip = path22;
+            const path23 = new Path2D();
+            path23.addPath(clip, new DOMMatrix(group.matrix));
+            clip = path23;
           }
           groupCtx.clip(clip);
         }
@@ -50478,7 +50478,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
       }
       endCompat(opIdx) {
       }
-      consumePath(opIdx, path22, clipBox) {
+      consumePath(opIdx, path23, clipBox) {
         const isEmpty = this.current.isEmptyClip();
         if (this.pendingClip) {
           this.current.updateClipFromPath();
@@ -50490,9 +50490,9 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         if (this.pendingClip) {
           if (!isEmpty) {
             if (this.pendingClip === EO_CLIP) {
-              ctx.clip(path22, "evenodd");
+              ctx.clip(path23, "evenodd");
             } else {
-              ctx.clip(path22);
+              ctx.clip(path23);
             }
           }
           this.pendingClip = null;
@@ -50565,7 +50565,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         }
         return this._cachedScaleForStroking;
       }
-      rescaleAndStroke(path22, saveRestore) {
+      rescaleAndStroke(path23, saveRestore) {
         const {
           ctx,
           current: {
@@ -50575,7 +50575,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         const [scaleX, scaleY] = this.getScaleForStroking();
         if (scaleX === scaleY) {
           ctx.lineWidth = (lineWidth || 1) * scaleX;
-          ctx.stroke(path22);
+          ctx.stroke(path23);
           return;
         }
         const SCALE_MATRIX = _CanvasGraphics.#SCALE_MATRIX ??= new DOMMatrix();
@@ -50587,7 +50587,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         SCALE_MATRIX.a = 1 / scaleX;
         SCALE_MATRIX.d = 1 / scaleY;
         const newPath = new Path2D();
-        newPath.addPath(path22, SCALE_MATRIX);
+        newPath.addPath(path23, SCALE_MATRIX);
         if (dashes.length > 0) {
           const scale = Math.max(scaleX, scaleY);
           ctx.setLineDash(dashes.map((x2) => x2 / scale));
@@ -61803,11 +61803,11 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
     };
     ContourDrawOutline = class extends InkDrawOutline {
       toSVGPath() {
-        let path22 = super.toSVGPath();
-        if (!path22.endsWith("Z")) {
-          path22 += "Z";
+        let path23 = super.toSVGPath();
+        if (!path23.endsWith("Z")) {
+          path23 += "Z";
         }
-        return path22;
+        return path23;
       }
     };
     es_uint8_array_from_base64 = __webpack_require__(5213);
@@ -64495,7 +64495,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           }
           const drawLayer = textLayerData.drawLayer;
           let div = textLayerData.selectionDiv;
-          let path22 = textLayerData.path;
+          let path23 = textLayerData.path;
           if (!div) {
             const clipPathId = `clip_selection_${_DrawLayer.#selectionId++}`;
             div = document.createElement("div");
@@ -64514,18 +64514,18 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             const clipPath = _DrawLayer._svgFactory.createElement("clipPath");
             clipPath.setAttribute("id", clipPathId);
             clipPath.setAttribute("clipPathUnits", "objectBoundingBox");
-            path22 = _DrawLayer._svgFactory.createElement("path");
-            clipPath.append(path22);
+            path23 = _DrawLayer._svgFactory.createElement("path");
+            clipPath.append(path23);
             svg.append(clipPath);
             div.append(svg);
-            textLayerData.path = path22;
+            textLayerData.path = path23;
             textLayerData.selectionDiv = div;
           }
           if (drawLayer.#parent && div.parentNode !== drawLayer.#parent) {
             drawLayer.#parent.append(div);
             this.#selections.add(div);
           }
-          path22.setAttribute("d", boxes.join(" "));
+          path23.setAttribute("d", boxes.join(" "));
         }
       }
       static get _svgFactory() {
@@ -64572,13 +64572,13 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         const root = this.#createSVG();
         const defs = _DrawLayer._svgFactory.createElement("defs");
         root.append(defs);
-        const path22 = _DrawLayer._svgFactory.createElement("path");
-        defs.append(path22);
+        const path23 = _DrawLayer._svgFactory.createElement("path");
+        defs.append(path23);
         const pathId = `path_${id2}`;
-        path22.setAttribute("id", pathId);
-        path22.setAttribute("vector-effect", "non-scaling-stroke");
+        path23.setAttribute("id", pathId);
+        path23.setAttribute("vector-effect", "non-scaling-stroke");
         if (isPathUpdatable) {
-          this.#toUpdate.set(id2, path22);
+          this.#toUpdate.set(id2, path23);
         }
         const clipPathId = hasClip ? this.#createClipPath(defs, pathId) : null;
         const use = _DrawLayer._svgFactory.createElement("use");
@@ -64596,11 +64596,11 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         const root = this.#createSVG();
         const defs = _DrawLayer._svgFactory.createElement("defs");
         root.append(defs);
-        const path22 = _DrawLayer._svgFactory.createElement("path");
-        defs.append(path22);
+        const path23 = _DrawLayer._svgFactory.createElement("path");
+        defs.append(path23);
         const pathId = `path_${id2}`;
-        path22.setAttribute("id", pathId);
-        path22.setAttribute("vector-effect", "non-scaling-stroke");
+        path23.setAttribute("id", pathId);
+        path23.setAttribute("vector-effect", "non-scaling-stroke");
         let maskId;
         if (mustRemoveSelfIntersections) {
           const mask = _DrawLayer._svgFactory.createElement("mask");
@@ -64647,7 +64647,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           root,
           bbox,
           rootClass,
-          path: path22
+          path: path23
         } = properties;
         const element = typeof elementOrId === "number" ? this.#mapping.get(elementOrId) : elementOrId;
         if (!element) {
@@ -64667,10 +64667,10 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             classList.toggle(className, value);
           }
         }
-        if (path22) {
+        if (path23) {
           const defs = element.firstElementChild;
           const pathElement = defs.firstElementChild;
-          this.#updateProperties(pathElement, path22);
+          this.#updateProperties(pathElement, path23);
         }
       }
       updateParent(id2, layer) {
@@ -74201,9 +74201,9 @@ var require_getMachineId_linux = __commonJS({
     var api_1 = (init_esm(), __toCommonJS(esm_exports));
     async function getMachineId() {
       const paths = ["/etc/machine-id", "/var/lib/dbus/machine-id"];
-      for (const path22 of paths) {
+      for (const path23 of paths) {
         try {
-          const result = await fs_1.promises.readFile(path22, { encoding: "utf8" });
+          const result = await fs_1.promises.readFile(path23, { encoding: "utf8" });
           return result.trim();
         } catch (e) {
           api_1.diag.debug(`error reading machine id: ${e}`);
@@ -78053,7 +78053,7 @@ var init_shared_env_configuration = __esm({
 
 // node_modules/@opentelemetry/otlp-exporter-base/build/esm/configuration/otlp-node-http-env-configuration.js
 import * as fs2 from "fs";
-import * as path14 from "path";
+import * as path15 from "path";
 function getStaticHeadersFromEnv(signalIdentifier) {
   const signalSpecificRawHeaders = (0, import_core4.getStringFromEnv)(`OTEL_EXPORTER_OTLP_${signalIdentifier}_HEADERS`);
   const nonSignalSpecificRawHeaders = (0, import_core4.getStringFromEnv)("OTEL_EXPORTER_OTLP_HEADERS");
@@ -78073,7 +78073,7 @@ function appendRootPathToUrlIfNeeded(url) {
     return void 0;
   }
 }
-function appendResourcePathToUrl(url, path22) {
+function appendResourcePathToUrl(url, path23) {
   try {
     new URL(url);
   } catch {
@@ -78083,11 +78083,11 @@ function appendResourcePathToUrl(url, path22) {
   if (!url.endsWith("/")) {
     url = url + "/";
   }
-  url += path22;
+  url += path23;
   try {
     new URL(url);
   } catch {
-    diag2.warn(`Configuration: Provided URL appended with '${path22}' is not a valid URL, using 'undefined' instead of '${url}'`);
+    diag2.warn(`Configuration: Provided URL appended with '${path23}' is not a valid URL, using 'undefined' instead of '${url}'`);
     return void 0;
   }
   return url;
@@ -78112,7 +78112,7 @@ function readFileFromEnv(signalSpecificEnvVar, nonSignalSpecificEnvVar, warningM
   const filePath = signalSpecificPath ?? nonSignalSpecificPath;
   if (filePath != null) {
     try {
-      return fs2.readFileSync(path14.resolve(process.cwd(), filePath));
+      return fs2.readFileSync(path15.resolve(process.cwd(), filePath));
     } catch {
       diag2.warn(warningMessage);
       return void 0;
@@ -80346,56 +80346,364 @@ var require_index_shim = __commonJS({
   }
 });
 
-// src/cli/cli-support.ts
-function errorDetails(error) {
-  if (error === null || error === void 0) {
-    return {};
-  }
-  return typeof error === "object" ? error : { message: String(error) };
-}
-function commandError(message, hint, diagnostics = null) {
+// src/mail-config-validation.ts
+function invalidMailConfig(message, hint) {
   const error = new Error(message);
+  error.code = "INVALID_MAIL_CONFIG";
   error.hint = hint;
-  if (diagnostics) {
-    error.diagnostics = diagnostics;
-  }
-  return error;
+  throw error;
 }
-function helperError(message, hint, diagnostics = null) {
-  const error = new Error(message);
-  error.hint = hint;
-  if (diagnostics) {
-    error.diagnostics = diagnostics;
+function captureMailConfigData(value, allowed, message, hint) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalidMailConfig(message, hint);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) invalidMailConfig(message, hint);
+  const entries = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") invalidMailConfig(message, hint);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+      invalidMailConfig(message, hint);
+    }
+    if (!allowed.includes(key)) invalidMailConfig(message, hint);
+    entries.push([key, descriptor.value]);
   }
-  return error;
+  return new Map(entries);
 }
-function readStdin() {
-  return new Promise((resolve2, reject) => {
-    let stdin = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => {
-      stdin += chunk;
-    });
-    process.stdin.on("end", () => resolve2(stdin));
-    process.stdin.on("error", reject);
-  });
-}
-function writeResult(result, failed = false) {
-  process.stdout.write(`${JSON.stringify(result)}
-`);
-  if (failed) {
-    process.exitCode = 1;
-  }
+function isServerEnvReference(value) {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
 }
 
-// src/cli/telemetry-diagnostics.ts
-function validateQueryCredential(value) {
-  if (value === void 0) return void 0;
-  if (typeof value !== "string" || value.length > 4096 || !/^[^:\x00-\x20\x7f]+:[^\x00-\x1f\x7f]+$/.test(value)) {
-    throw helperError("Invalid operator query credential.", "Supply a protected environment reference containing the Monitoring operator user:password; ingestion tokens cannot query.");
-  }
-  return value;
+// src/email-events-config.ts
+function sameOriginWebhookPath(value) {
+  return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !value.includes("?") && !value.includes("#") && !/\s/.test(value) && !value.split("/").includes("..");
 }
+function runtimeOwnedHttpPath(value) {
+  return /^\/__sporades\/(?:auth|debug|files|health|uploads)(?:\/|$)/.test(value);
+}
+function validateEmailWebhooksConfig(webhooks) {
+  if (webhooks === void 0) return void 0;
+  const webhooksData = captureMailConfigData(
+    webhooks,
+    ["mailjet", "smtp2go", "postmark", "mailgun"],
+    "Invalid email webhook configuration.",
+    "Configure only supported providers under `mail.webhooks`."
+  );
+  const result = {};
+  for (const [provider, defaultPath, defaultSecretEnv] of [
+    ["mailjet", "/__sporades/mail/webhooks/mailjet", "MAILJET_WEBHOOK_SECRET"],
+    ["smtp2go", "/__sporades/mail/webhooks/smtp2go", "SMTP2GO_WEBHOOK_SECRET"],
+    ["postmark", "/__sporades/mail/webhooks/postmark", "POSTMARK_WEBHOOK_SECRET"],
+    ["mailgun", "/__sporades/mail/webhooks/mailgun", "MAILGUN_WEBHOOK_KEY"]
+  ]) {
+    const input = webhooksData.get(provider);
+    if (input === void 0) continue;
+    const data2 = captureMailConfigData(
+      input,
+      ["enabled", "path", "secretEnv"],
+      `Invalid ${provider} webhook configuration.`,
+      `Configure \`mail.webhooks.${provider}\` with optional enabled, path, and secretEnv values.`
+    );
+    const enabled = data2.get("enabled") ?? true;
+    const path23 = data2.get("path") ?? defaultPath;
+    const secretEnv = data2.get("secretEnv") ?? defaultSecretEnv;
+    if (typeof enabled !== "boolean") {
+      invalidMailConfig(`Invalid ${provider} webhook enabled flag.`, `Set \`mail.webhooks.${provider}.enabled\` to true or false.`);
+    }
+    if (!sameOriginWebhookPath(path23) || runtimeOwnedHttpPath(path23)) {
+      invalidMailConfig(
+        `Invalid ${provider} webhook path.`,
+        `Set \`mail.webhooks.${provider}.path\` to a same-origin absolute path outside Sporades runtime-owned HTTP namespaces.`
+      );
+    }
+    if (!isServerEnvReference(secretEnv)) {
+      invalidMailConfig(
+        `Invalid ${provider} webhook Server env reference.`,
+        `Set \`mail.webhooks.${provider}.secretEnv\` to an uppercase Server env key without the reserved \`SPORADES_\` prefix.`
+      );
+    }
+    result[provider] = { enabled, path: path23, secretEnv };
+  }
+  return result;
+}
+
+// src/mail-config.ts
+function validateMailConfig(mail) {
+  const fail3 = invalidMailConfig;
+  const capture = captureMailConfigData;
+  const envReference = isServerEnvReference;
+  const optional = (target, name2, value) => {
+    if (value !== void 0) target[name2] = value;
+  };
+  if (mail === void 0) return void 0;
+  const mailData = capture(
+    mail,
+    ["smtp", "webhooks"],
+    "Invalid mail configuration.",
+    "Set `mail.smtp` in sporades.json, or omit `mail` to disable delivery."
+  );
+  const webhooks = validateEmailWebhooksConfig(mailData.get("webhooks"));
+  if (mailData.get("smtp") === void 0) return webhooks === void 0 ? {} : { webhooks };
+  const smtpData = capture(
+    mailData.get("smtp"),
+    ["vendor", "host", "port", "tls", "auth", "defaultFrom", "connectionTimeoutMs", "socketTimeoutMs"],
+    "Invalid SMTP configuration.",
+    "Configure only vendor, host, port, tls, auth, defaultFrom, connectionTimeoutMs, and socketTimeoutMs."
+  );
+  const vendor = smtpData.get("vendor");
+  const host = smtpData.get("host");
+  const port = smtpData.get("port");
+  if (typeof vendor !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(vendor)) {
+    fail3("Invalid SMTP vendor.", "Set `mail.smtp.vendor` to a lowercase provider identity such as `generic`.");
+  }
+  if (typeof host !== "string" || host.length < 1 || host.length > 253 || /[^\x21-\x7e]/.test(host)) {
+    fail3("Invalid SMTP host.", "Set `mail.smtp.host` to a non-empty DNS name or IP address.");
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    fail3("Invalid SMTP port.", "Set `mail.smtp.port` to an integer from 1 through 65535.");
+  }
+  const tlsData = capture(
+    smtpData.get("tls"),
+    ["mode", "rejectUnauthorized", "servername"],
+    "Invalid SMTP TLS configuration.",
+    "Set `mail.smtp.tls.mode` and optional `rejectUnauthorized` and `servername`; do not combine TLS modes or legacy secure flags."
+  );
+  const tlsMode = tlsData.get("mode");
+  const rejectUnauthorized = tlsData.get("rejectUnauthorized");
+  const servername = tlsData.get("servername");
+  if (!["implicit", "required-starttls", "opportunistic", "disabled"].includes(tlsMode)) {
+    fail3("Invalid SMTP TLS mode.", "Use `implicit`, `required-starttls`, `opportunistic`, or `disabled`.");
+  }
+  if (rejectUnauthorized !== void 0 && typeof rejectUnauthorized !== "boolean") {
+    fail3("Invalid SMTP TLS certificate policy.", "Set `mail.smtp.tls.rejectUnauthorized` to a boolean.");
+  }
+  if (servername !== void 0 && (typeof servername !== "string" || servername.length < 1 || servername.length > 253 || !/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(servername) || servername.split(".").some((label) => label.length < 1 || label.length > 63 || label.startsWith("-") || label.endsWith("-")))) {
+    fail3("Invalid SMTP TLS server name.", "Set `mail.smtp.tls.servername` to the DNS name on the SMTP certificate, especially when `host` is an IP address.");
+  }
+  const authData = capture(
+    smtpData.get("auth"),
+    ["method", "usernameEnv", "passwordEnv"],
+    "Invalid SMTP authentication configuration.",
+    'Use `PLAIN` or `LOGIN` with Server env references, or exactly `{ "method": "none" }` for an explicit unauthenticated relay.'
+  );
+  const authMethod = authData.get("method");
+  const usernameEnv = authData.get("usernameEnv");
+  const passwordEnv = authData.get("passwordEnv");
+  let auth;
+  if (authMethod === "none") {
+    if (authData.size !== 1) {
+      fail3("Invalid SMTP authentication configuration.", 'Set exactly `{ "method": "none" }` only for an explicitly trusted unauthenticated relay.');
+    }
+    auth = { method: "none" };
+  } else {
+    if (!["PLAIN", "LOGIN"].includes(authMethod) || typeof usernameEnv !== "string" || typeof passwordEnv !== "string") {
+      fail3("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
+    }
+    if (!envReference(usernameEnv) || !envReference(passwordEnv)) {
+      fail3("Invalid SMTP Server env reference.", "Use uppercase Server env key names without the reserved `SPORADES_` prefix.");
+    }
+    auth = { method: authMethod, usernameEnv, passwordEnv };
+  }
+  if (["opportunistic", "disabled"].includes(tlsMode) && authMethod !== "none") {
+    fail3(
+      "SMTP plaintext delivery requires an explicit unauthenticated relay.",
+      'Use required STARTTLS or implicit TLS with credentials; opportunistic and disabled TLS are allowed only with `{ "auth": { "method": "none" } }`.'
+    );
+  }
+  const defaultFrom = smtpData.get("defaultFrom");
+  if (defaultFrom !== void 0 && (typeof defaultFrom !== "string" || defaultFrom.length < 1 || defaultFrom.length > 320 || /[\r\n\0]/.test(defaultFrom))) {
+    fail3("Invalid SMTP default sender.", "Set `mail.smtp.defaultFrom` to one email address without control characters.");
+  }
+  const validateTimeout = (name2, value, maximum, label) => {
+    if (value !== void 0 && (!Number.isInteger(value) || value < 100 || value > maximum)) {
+      fail3(`Invalid SMTP ${label} timeout.`, `Set \`mail.smtp.${name2}\` to an integer from 100 through ${maximum} milliseconds.`);
+    }
+  };
+  const connectionTimeoutMs = smtpData.get("connectionTimeoutMs");
+  const socketTimeoutMs = smtpData.get("socketTimeoutMs");
+  validateTimeout("connectionTimeoutMs", connectionTimeoutMs, 6e4, "connection");
+  validateTimeout("socketTimeoutMs", socketTimeoutMs, 3e5, "socket");
+  const tls = { mode: tlsMode };
+  optional(tls, "rejectUnauthorized", rejectUnauthorized);
+  optional(tls, "servername", servername);
+  const smtp = { vendor, host, port, tls, auth };
+  optional(smtp, "defaultFrom", defaultFrom);
+  optional(smtp, "connectionTimeoutMs", connectionTimeoutMs);
+  optional(smtp, "socketTimeoutMs", socketTimeoutMs);
+  return { smtp, ...webhooks === void 0 ? {} : { webhooks } };
+}
+
+// src/stripe-payment-config.ts
+var STRIPE_API_VERSION = "2026-08-26.dahlia";
+var ENABLED_KEYS = [
+  "enabled",
+  "secretKeyEnv",
+  "webhookSecretEnv",
+  "publicOrigin",
+  "callbackPath",
+  "apiVersion",
+  "livemode",
+  "requestTimeoutMs"
+];
+function validatePaymentsConfig(payments) {
+  if (payments === void 0) return void 0;
+  if (!isPlainRecord(payments)) {
+    fail("Invalid payments configuration.", "Set `payments` to an object containing `stripe`.");
+  }
+  const unknownProviders = Object.keys(payments).filter((key) => key !== "stripe");
+  if (unknownProviders.length > 0) {
+    fail("Unsupported payment provider configuration.", "Configure only `payments.stripe`.");
+  }
+  if (payments.stripe === void 0) {
+    fail("Missing Stripe payments configuration.", "Configure `payments.stripe` with an explicit enabled flag.");
+  }
+  if (!isPlainRecord(payments.stripe)) {
+    fail("Invalid Stripe payments configuration.", "Set `payments.stripe` to an object with an explicit enabled flag.");
+  }
+  const stripe = payments.stripe;
+  if (stripe.enabled === false) {
+    if (Object.keys(stripe).some((key) => key !== "enabled")) {
+      fail("Unsupported dormant Stripe payments configuration.", "Configure only `payments.stripe.enabled` while Stripe payments are disabled.");
+    }
+    return { stripe: { enabled: false } };
+  }
+  if (stripe.enabled !== true) {
+    fail("Invalid Stripe payments enabled flag.", "Set `payments.stripe.enabled` to true or false.");
+  }
+  const unknownKeys = Object.keys(stripe).filter((key) => !ENABLED_KEYS.includes(key));
+  if (unknownKeys.length > 0) {
+    fail("Unsupported Stripe payments configuration.", `Configure only ${ENABLED_KEYS.map((key) => `payments.stripe.${key}`).join(", ")} when Stripe payments are enabled.`);
+  }
+  for (const key of ENABLED_KEYS) {
+    if (!(key in stripe)) {
+      fail("Incomplete Stripe payments configuration.", `Set \`payments.stripe.${key}\` before enabling Stripe payments.`);
+    }
+  }
+  if (!isServerEnvReference2(stripe.secretKeyEnv) || !isServerEnvReference2(stripe.webhookSecretEnv) || stripe.secretKeyEnv === stripe.webhookSecretEnv) {
+    fail("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
+  }
+  validatePublicOrigin(stripe.publicOrigin);
+  const callbackPath = canonicalSameOriginAbsolutePath(stripe.callbackPath);
+  if (callbackPath === null || callbackPath !== stripe.callbackPath || callbackPath === "/__sporades" || callbackPath.startsWith("/__sporades/")) {
+    fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path outside the reserved `__sporades` runtime namespace.");
+  }
+  if (stripe.apiVersion !== STRIPE_API_VERSION) {
+    fail("Unsupported Stripe API compatibility version.", `Set \`payments.stripe.apiVersion\` to \`${STRIPE_API_VERSION}\` for this Sporades release.`);
+  }
+  if (typeof stripe.livemode !== "boolean") {
+    fail("Invalid Stripe mode.", "Set `payments.stripe.livemode` to true for live credentials or false for test credentials.");
+  }
+  if (!Number.isInteger(stripe.requestTimeoutMs) || stripe.requestTimeoutMs < 1e3 || stripe.requestTimeoutMs > 3e4) {
+    fail("Invalid Stripe request timeout.", "Set `payments.stripe.requestTimeoutMs` to an integer from 1000 through 30000 milliseconds.");
+  }
+  return {
+    stripe: {
+      enabled: true,
+      secretKeyEnv: stripe.secretKeyEnv,
+      webhookSecretEnv: stripe.webhookSecretEnv,
+      publicOrigin: stripe.publicOrigin,
+      callbackPath,
+      apiVersion: STRIPE_API_VERSION,
+      livemode: stripe.livemode,
+      requestTimeoutMs: stripe.requestTimeoutMs
+    }
+  };
+}
+function validateStripePaymentsRuntimeConfig(payments, serverEnv) {
+  const normalized = validatePaymentsConfig(payments);
+  if (!normalized || normalized.stripe.enabled === false) return normalized;
+  const secretKey = serverEnv?.[normalized.stripe.secretKeyEnv];
+  const webhookSecret = serverEnv?.[normalized.stripe.webhookSecretEnv];
+  const expectedSecretPrefix = normalized.stripe.livemode ? "sk_live_" : "sk_test_";
+  if (typeof secretKey !== "string" || !secretKey.startsWith(expectedSecretPrefix) || secretKey.length <= expectedSecretPrefix.length) {
+    fail("Stripe secret key is unavailable or does not match the configured mode.", "Set the named Stripe secret key in Sealed Server env and make `payments.stripe.livemode` match it.");
+  }
+  if (typeof webhookSecret !== "string" || !webhookSecret.startsWith("whsec_") || webhookSecret.length <= "whsec_".length) {
+    fail("Stripe webhook signing secret is unavailable.", "Set the named Stripe webhook signing secret in Sealed Server env before enabling Stripe payments.");
+  }
+  return normalized;
+}
+function validateStripePaymentsSealedServerEnv(payments, hasSealedEnvelope) {
+  const normalized = validatePaymentsConfig(payments);
+  if (normalized?.stripe.enabled && !hasSealedEnvelope) {
+    fail("Enabled Stripe payments require Sealed Server env.", "Set both named Stripe credentials with `sporades env set` before building or starting the Capsule.");
+  }
+  return normalized;
+}
+function isPlainRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function isServerEnvReference2(value) {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
+}
+function validatePublicOrigin(value) {
+  if (typeof value !== "string") {
+    fail("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
+  }
+  let origin;
+  try {
+    origin = new URL(value);
+  } catch {
+    fail("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
+  }
+  const loopback = origin.hostname === "localhost" || origin.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(origin.hostname);
+  const secureHosted = origin.protocol === "https:";
+  const localHttp = origin.protocol === "http:" && loopback;
+  if (!secureHosted && !localHttp || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== "/" || origin.origin !== value.replace(/\/$/, "")) {
+    fail("Invalid Stripe public origin.", "Use an exact hosted HTTPS origin or explicit loopback HTTP origin without credentials, a path, query, or fragment.");
+  }
+}
+function canonicalSameOriginAbsolutePath(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || /\s/.test(value)) {
+    return null;
+  }
+  try {
+    return new URL(value, "https://sporades.invalid").pathname;
+  } catch {
+    return null;
+  }
+}
+function fail(message, hint) {
+  const error = new Error(message);
+  error.code = "INVALID_STRIPE_PAYMENTS_CONFIG";
+  error.hint = hint;
+  throw error;
+}
+
+// src/required-server-env.ts
+function validateRequiredServerEnvConfig(env) {
+  if (env === void 0) return;
+  if (!env || typeof env !== "object" || Array.isArray(env) || Object.keys(env).some((key) => key !== "required" && key !== "failClosed") || "failClosed" in env && typeof env.failClosed !== "boolean" || "required" in env && (!Array.isArray(env.required) || env.required.length > 64 || !env.required.every((key) => typeof key === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key) && key !== "__proto__" && !key.startsWith("SPORADES_")))) {
+    throw Object.assign(new Error("Invalid required Server env configuration."), {
+      code: "INVALID_ENV_CONFIG",
+      hint: "Set env.required to at most 64 Server env key names and env.failClosed to a boolean; SPORADES_ names are reserved."
+    });
+  }
+}
+function requiredServerEnvKeys(config) {
+  validateRequiredServerEnvConfig(config.env);
+  const keys = new Set(config.env?.required ?? []);
+  const mail = validateMailConfig(config.mail);
+  if (mail?.smtp?.auth.method !== "none") {
+    for (const key of [mail?.smtp?.auth.usernameEnv, mail?.smtp?.auth.passwordEnv]) if (key) keys.add(key);
+  }
+  for (const webhook of Object.values(mail?.webhooks ?? {})) {
+    if (webhook.enabled) keys.add(webhook.secretEnv);
+  }
+  const payments = validatePaymentsConfig(config.payments);
+  if (payments?.stripe.enabled) {
+    keys.add(payments.stripe.secretKeyEnv);
+    keys.add(payments.stripe.webhookSecretEnv);
+  }
+  return [...keys].sort();
+}
+function missingRequiredServerEnv(config, values) {
+  return requiredServerEnvKeys(config).filter((key) => !Object.hasOwn(values, key) || typeof values[key] !== "string" || !values[key].trim());
+}
+
+// src/cli/required-server-env.ts
+import path13 from "node:path";
 
 // src/admission-policy.ts
 import path2 from "node:path";
@@ -81283,30 +81591,6 @@ async function openAdmissionPolicy(root, relative, onHealth, options = {}) {
     }
   });
 }
-
-// src/cli/host-domain-aliases.ts
-function validateAliasDomains(value) {
-  if (value === void 0) return [];
-  if (!Array.isArray(value) || value.length > 20 || value.some((hostname) => typeof hostname !== "string" || hostname.length > 253 || !hostname.includes(".") || /^[0-9.]+$/.test(hostname) || !hostname.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))) {
-    throw helperError(
-      "Invalid Hosted Capsule alias domains.",
-      "Supply at most 20 unique lowercase DNS hostnames, without schemes, ports, paths, wildcards, or IP addresses."
-    );
-  }
-  if (new Set(value).size !== value.length) {
-    throw helperError("Duplicate Hosted Capsule alias domain.", "Supply each alias domain once.");
-  }
-  return [...value];
-}
-
-// src/cli/sporades.ts
-import { spawnSync as spawnSync4 } from "node:child_process";
-import { createHash as createHash18, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes10, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
-import { constants as fsConstants, lstatSync, readdirSync, readFileSync as readFileSync4, statSync as statSync2, watch } from "node:fs";
-import { createServer as createServer2 } from "node:http";
-import { appendFile, chmod as chmod5, cp as cp2, lstat as lstat13, mkdir as mkdir11, open as open5, readdir as readdir6, readFile as readFile14, rename as rename9, rm as rm10, writeFile as writeFile10 } from "node:fs/promises";
-import path21 from "node:path";
-import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL6 } from "node:url";
 
 // src/bundle-pipeline.ts
 import { lstat as lstat8, mkdir as mkdir5, readFile as readFile8, rename as rename6, rm as rm5, writeFile as writeFile4 } from "node:fs/promises";
@@ -99538,7 +99822,7 @@ async function findProjectViteConfig(projectRoot) {
       }
       return canonical;
     } catch (error) {
-      if (errorDetails2(error).code === "ENOENT") continue;
+      if (errorDetails(error).code === "ENOENT") continue;
       throw error;
     }
   }
@@ -99797,9 +100081,9 @@ function normalizeOutputPath(fileName) {
   return normalized;
 }
 function viteBuildError(error, projectRoots, framework) {
-  const details = errorDetails2(error);
+  const details = errorDetails(error);
   const message = boundedBuildMessage(error, projectRoots);
-  const loc = errorDetails2(details.loc);
+  const loc = errorDetails(details.loc);
   const rawFile = typeof loc.file === "string" ? loc.file : typeof details.id === "string" ? details.id : null;
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
@@ -99821,9 +100105,9 @@ function safeRelativeDiagnosticPath(projectRoots, fileName) {
   return path5.basename(fileName).slice(0, 120);
 }
 function boundedBuildMessage(error, projectRoots = []) {
-  const details = errorDetails2(error);
+  const details = errorDetails(error);
   const firstError = Array.isArray(details.errors) ? details.errors[0] : null;
-  let message = typeof errorDetails2(firstError).text === "string" ? String(errorDetails2(firstError).text) : typeof details.message === "string" ? details.message : "unknown error";
+  let message = typeof errorDetails(firstError).text === "string" ? String(errorDetails(firstError).text) : typeof details.message === "string" ? details.message : "unknown error";
   message = redactBuildProjectRoots(message, projectRoots);
   return message.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 1200);
 }
@@ -99833,7 +100117,7 @@ function clientToolchainError(message, hint, diagnostics) {
   if (diagnostics && Object.keys(diagnostics).length > 0) error.diagnostics = diagnostics;
   return error;
 }
-function errorDetails2(error) {
+function errorDetails(error) {
   return error && typeof error === "object" ? error : { message: String(error) };
 }
 function hasHint(error) {
@@ -100120,7 +100404,7 @@ function html(strings2, ...values) {
 })(html || (html = {}));
 
 // src/runtime-errors.ts
-function commandError2(message, hint, code = null) {
+function commandError(message, hint, code = null) {
   const error = new Error(message);
   error.hint = hint;
   if (code) {
@@ -100143,10 +100427,10 @@ function assertJsonCompatible(value) {
   }
 }
 function invalidReferenceError(field) {
-  return commandError2(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
+  return commandError(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
 }
 function invalidJsonFieldValueError() {
-  return commandError2(
+  return commandError(
     "Invalid JSON field value.",
     "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null."
   );
@@ -100157,7 +100441,7 @@ var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 var ACCESS_KEY_SCOPE_LIMIT = 1024;
 var ACCESS_KEY_SCOPE_BYTE_LIMIT = 256;
 function invalidAuthRequirements(hint) {
-  return commandError2("Invalid Auth requirements.", hint, "INVALID_AUTH_REQUIREMENTS");
+  return commandError("Invalid Auth requirements.", hint, "INVALID_AUTH_REQUIREMENTS");
 }
 function normalizeRequireUserAuthOptions(options = {}) {
   if (!isPlainObject(options) || Object.keys(options).some((key) => key !== "linked") || "linked" in options && typeof options.linked !== "boolean") {
@@ -100214,7 +100498,7 @@ function normalizeCapsuleAuthDefinition(definition) {
   if ("accessKeys" in definition && definition.accessKeys !== void 0) {
     const accessKeys = definition.accessKeys;
     if (!isPlainObject(accessKeys) || Object.keys(accessKeys).some((key) => key !== "scopes") || !("scopes" in accessKeys)) {
-      throw commandError2(
+      throw commandError(
         "Invalid Capsule Access-key declaration.",
         "Declare accessKeys as { scopes: readonly string[] } with no additional fields.",
         "INVALID_ACCESS_KEY_DECLARATION"
@@ -100234,9 +100518,9 @@ function normalizeCapsuleAuthDefinition(definition) {
     const registration = normalized.auth?.registration;
     const reauthentication = normalized.auth?.reauthentication;
     if (!isPlainObject(normalized.auth) || Object.keys(normalized.auth).some((key) => !["registration", "reauthentication"].includes(key)) || registration !== void 0 && (!isPlainObject(registration) || typeof registration.admit !== "function" || typeof registration.finalize !== "function" || Object.keys(registration).some((key) => key !== "admit" && key !== "finalize"))) {
-      throw commandError2("Invalid Capsule Registration Admission declaration.", "Declare auth.registration with both admit and finalize server functions.", "INVALID_REGISTRATION_ADMISSION");
+      throw commandError("Invalid Capsule Registration Admission declaration.", "Declare auth.registration with both admit and finalize server functions.", "INVALID_REGISTRATION_ADMISSION");
     }
-    if (reauthentication !== void 0 && (!isPlainObject(reauthentication) || Object.keys(reauthentication).some((key) => !["purposes", "authorize"].includes(key)) || reauthentication.authorize !== void 0 && typeof reauthentication.authorize !== "function" || !isPlainObject(reauthentication.purposes) || Object.keys(reauthentication.purposes).length < 1 || Object.entries(reauthentication.purposes).some(([purpose, policy]) => !/^[a-z][a-z0-9-]{0,63}$/.test(purpose) || !isPlainObject(policy) || Object.keys(policy).some((key) => key !== "maxAgeSeconds") || !Number.isInteger(policy.maxAgeSeconds) || policy.maxAgeSeconds < 1 || policy.maxAgeSeconds > 900))) throw commandError2("Invalid Reauthentication declaration.", "Declare concrete purposes with maxAgeSeconds from 1 through 900 and an optional authorize callback.", "INVALID_REAUTHENTICATION_DECLARATION");
+    if (reauthentication !== void 0 && (!isPlainObject(reauthentication) || Object.keys(reauthentication).some((key) => !["purposes", "authorize"].includes(key)) || reauthentication.authorize !== void 0 && typeof reauthentication.authorize !== "function" || !isPlainObject(reauthentication.purposes) || Object.keys(reauthentication.purposes).length < 1 || Object.entries(reauthentication.purposes).some(([purpose, policy]) => !/^[a-z][a-z0-9-]{0,63}$/.test(purpose) || !isPlainObject(policy) || Object.keys(policy).some((key) => key !== "maxAgeSeconds") || !Number.isInteger(policy.maxAgeSeconds) || policy.maxAgeSeconds < 1 || policy.maxAgeSeconds > 900))) throw commandError("Invalid Reauthentication declaration.", "Declare concrete purposes with maxAgeSeconds from 1 through 900 and an optional authorize callback.", "INVALID_REAUTHENTICATION_DECLARATION");
     normalized = { ...normalized, auth: Object.freeze({ ...registration ? { registration: Object.freeze(registration) } : {}, ...reauthentication ? { reauthentication: Object.freeze({ purposes: Object.freeze(Object.fromEntries(Object.entries(reauthentication.purposes).map(([purpose, policy]) => [purpose, Object.freeze({ maxAgeSeconds: policy.maxAgeSeconds })]))), ...reauthentication.authorize ? { authorize: reauthentication.authorize } : {} }) } : {} }) };
   }
   const declaredPurposes = new Set(Object.keys(normalized.auth?.reauthentication?.purposes ?? {}));
@@ -100250,7 +100534,7 @@ function normalizeFileAccessKeyPolicy(definition) {
   if (definition.files?.accessKeys === void 0) return definition;
   const policy = definition.files.accessKeys;
   if (!isPlainObject(policy) || Object.keys(policy).some((key) => key !== "read") || !("read" in policy)) {
-    throw commandError2(
+    throw commandError(
       "Invalid private File Access-key policy.",
       "Declare files.accessKeys as { read: { scopes?: readonly string[] } }.",
       "INVALID_FILE_ACCESS_KEY_POLICY"
@@ -100258,7 +100542,7 @@ function normalizeFileAccessKeyPolicy(definition) {
   }
   const read = policy.read;
   if (!isPlainObject(read) || Object.keys(read).some((key) => key !== "scopes")) {
-    throw commandError2(
+    throw commandError(
       "Invalid private File Access-key read policy.",
       "Declare files.accessKeys.read as { scopes?: readonly string[] }.",
       "INVALID_FILE_ACCESS_KEY_POLICY"
@@ -100271,7 +100555,7 @@ function normalizeFileAccessKeyPolicy(definition) {
   });
   const declaredScopes = new Set(definition.accessKeys?.scopes ?? []);
   if (scopes.some((scope) => !declaredScopes.has(scope))) {
-    throw commandError2(
+    throw commandError(
       "Invalid private File Access-key read policy.",
       "Every File read scope must be declared in capsule({ accessKeys: { scopes } }).",
       "INVALID_FILE_ACCESS_KEY_POLICY"
@@ -100352,12 +100636,12 @@ function normalizeConcreteScopes(value, options) {
     return [];
   }
   if (!Array.isArray(value) || options.allowOmission && value.length === 0 || value.length > ACCESS_KEY_SCOPE_LIMIT) {
-    throw commandError2("Invalid Access-key scope declaration.", options.hint, options.code);
+    throw commandError("Invalid Access-key scope declaration.", options.hint, options.code);
   }
   const scopes = [];
   for (const scope of value) {
     if (typeof scope !== "string" || scope.length === 0 || scope.includes("*") || Buffer.byteLength(scope, "utf8") > ACCESS_KEY_SCOPE_BYTE_LIMIT || scopes.includes(scope)) {
-      throw commandError2("Invalid Access-key scope declaration.", options.hint, options.code);
+      throw commandError("Invalid Access-key scope declaration.", options.hint, options.code);
     }
     scopes.push(scope);
   }
@@ -100793,6 +101077,48 @@ function validateTracePropagationOrigins(value) {
   }))];
 }
 
+// src/cli/cli-support.ts
+function errorDetails2(error) {
+  if (error === null || error === void 0) {
+    return {};
+  }
+  return typeof error === "object" ? error : { message: String(error) };
+}
+function commandError2(message, hint, diagnostics = null) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (diagnostics) {
+    error.diagnostics = diagnostics;
+  }
+  return error;
+}
+function helperError(message, hint, diagnostics = null) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (diagnostics) {
+    error.diagnostics = diagnostics;
+  }
+  return error;
+}
+function readStdin() {
+  return new Promise((resolve2, reject) => {
+    let stdin = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      stdin += chunk;
+    });
+    process.stdin.on("end", () => resolve2(stdin));
+    process.stdin.on("error", reject);
+  });
+}
+function writeResult(result, failed = false) {
+  process.stdout.write(`${JSON.stringify(result)}
+`);
+  if (failed) {
+    process.exitCode = 1;
+  }
+}
+
 // src/cli/inventory-contract.ts
 var INVENTORY_MAX_BYTES = 1024 * 1024;
 function inventoryHost(value) {
@@ -100807,7 +101133,7 @@ function profilePath() {
   return path9.join(configDir, "telemetry.json");
 }
 function invalid2(hint) {
-  throw commandError("Invalid Telemetry profile.", hint);
+  throw commandError2("Invalid Telemetry profile.", hint);
 }
 function validateTelemetryProjectConfig(value) {
   if (value === void 0) return;
@@ -100867,7 +101193,7 @@ async function readTelemetryProfiles() {
     value = JSON.parse(await readFile6(profilePath(), "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return {};
-    throw commandError("Invalid Telemetry profile configuration.", "Inspect or replace the Sporades telemetry.json profile file.");
+    throw commandError2("Invalid Telemetry profile configuration.", "Inspect or replace the Sporades telemetry.json profile file.");
   }
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => key !== "schemaVersion" && key !== "profiles") || value.schemaVersion !== 1) invalid2("Use a schemaVersion 1 Telemetry profile file.");
   const profiles = value.profiles;
@@ -100895,10 +101221,10 @@ async function changeTelemetryProfile(operation, name2, profile) {
   const profiles = await readTelemetryProfiles();
   if (operation === "add") {
     if (!profile) invalid2("Provide a Telemetry profile.");
-    if (Object.hasOwn(profiles, name2)) throw commandError("Telemetry profile already exists.", "Use another name or remove the existing profile first.");
+    if (Object.hasOwn(profiles, name2)) throw commandError2("Telemetry profile already exists.", "Use another name or remove the existing profile first.");
     profiles[name2] = validateTelemetryProfile(profile);
   } else {
-    if (!Object.hasOwn(profiles, name2)) throw commandError("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
+    if (!Object.hasOwn(profiles, name2)) throw commandError2("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
     delete profiles[name2];
   }
   await writeTelemetryProfiles(profiles);
@@ -100911,8 +101237,8 @@ async function resolveLocalTelemetryConfig(config, sessionProfile) {
   if (!aliasPattern.test(name2)) invalid2("Select a registered Telemetry profile name.");
   const profiles = await readTelemetryProfiles();
   const profile = Object.hasOwn(profiles, name2) ? profiles[name2] : void 0;
-  if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
-  if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name2}.`);
+  if (!profile) throw commandError2("Unknown Telemetry profile.", "Register the selected Telemetry profile before starting this session.");
+  if (profile.credentialEnv && !process.env[profile.credentialEnv]) throw commandError2("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${name2}.`);
   return { ...profile.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}, endpoint: profile.endpoint, tls: profile.tls, credentialEnv: profile.credentialEnv, serviceName: typeof config.name === "string" ? config.name : "sporades-capsule", environment: "dev", metricsIntervalMs: profile.metricsIntervalMs, eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs };
 }
 function toContainerTelemetryConfig(resolved) {
@@ -101774,145 +102100,6 @@ function invalid3(hint) {
   return Object.assign(new Error("Invalid public tree."), { hint });
 }
 
-// src/stripe-payment-config.ts
-var STRIPE_API_VERSION = "2026-08-26.dahlia";
-var ENABLED_KEYS = [
-  "enabled",
-  "secretKeyEnv",
-  "webhookSecretEnv",
-  "publicOrigin",
-  "callbackPath",
-  "apiVersion",
-  "livemode",
-  "requestTimeoutMs"
-];
-function validatePaymentsConfig(payments) {
-  if (payments === void 0) return void 0;
-  if (!isPlainRecord(payments)) {
-    fail("Invalid payments configuration.", "Set `payments` to an object containing `stripe`.");
-  }
-  const unknownProviders = Object.keys(payments).filter((key) => key !== "stripe");
-  if (unknownProviders.length > 0) {
-    fail("Unsupported payment provider configuration.", "Configure only `payments.stripe`.");
-  }
-  if (payments.stripe === void 0) {
-    fail("Missing Stripe payments configuration.", "Configure `payments.stripe` with an explicit enabled flag.");
-  }
-  if (!isPlainRecord(payments.stripe)) {
-    fail("Invalid Stripe payments configuration.", "Set `payments.stripe` to an object with an explicit enabled flag.");
-  }
-  const stripe = payments.stripe;
-  if (stripe.enabled === false) {
-    if (Object.keys(stripe).some((key) => key !== "enabled")) {
-      fail("Unsupported dormant Stripe payments configuration.", "Configure only `payments.stripe.enabled` while Stripe payments are disabled.");
-    }
-    return { stripe: { enabled: false } };
-  }
-  if (stripe.enabled !== true) {
-    fail("Invalid Stripe payments enabled flag.", "Set `payments.stripe.enabled` to true or false.");
-  }
-  const unknownKeys = Object.keys(stripe).filter((key) => !ENABLED_KEYS.includes(key));
-  if (unknownKeys.length > 0) {
-    fail("Unsupported Stripe payments configuration.", `Configure only ${ENABLED_KEYS.map((key) => `payments.stripe.${key}`).join(", ")} when Stripe payments are enabled.`);
-  }
-  for (const key of ENABLED_KEYS) {
-    if (!(key in stripe)) {
-      fail("Incomplete Stripe payments configuration.", `Set \`payments.stripe.${key}\` before enabling Stripe payments.`);
-    }
-  }
-  if (!isServerEnvReference(stripe.secretKeyEnv) || !isServerEnvReference(stripe.webhookSecretEnv) || stripe.secretKeyEnv === stripe.webhookSecretEnv) {
-    fail("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
-  }
-  validatePublicOrigin(stripe.publicOrigin);
-  const callbackPath = canonicalSameOriginAbsolutePath(stripe.callbackPath);
-  if (callbackPath === null || callbackPath !== stripe.callbackPath || callbackPath === "/__sporades" || callbackPath.startsWith("/__sporades/")) {
-    fail("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path outside the reserved `__sporades` runtime namespace.");
-  }
-  if (stripe.apiVersion !== STRIPE_API_VERSION) {
-    fail("Unsupported Stripe API compatibility version.", `Set \`payments.stripe.apiVersion\` to \`${STRIPE_API_VERSION}\` for this Sporades release.`);
-  }
-  if (typeof stripe.livemode !== "boolean") {
-    fail("Invalid Stripe mode.", "Set `payments.stripe.livemode` to true for live credentials or false for test credentials.");
-  }
-  if (!Number.isInteger(stripe.requestTimeoutMs) || stripe.requestTimeoutMs < 1e3 || stripe.requestTimeoutMs > 3e4) {
-    fail("Invalid Stripe request timeout.", "Set `payments.stripe.requestTimeoutMs` to an integer from 1000 through 30000 milliseconds.");
-  }
-  return {
-    stripe: {
-      enabled: true,
-      secretKeyEnv: stripe.secretKeyEnv,
-      webhookSecretEnv: stripe.webhookSecretEnv,
-      publicOrigin: stripe.publicOrigin,
-      callbackPath,
-      apiVersion: STRIPE_API_VERSION,
-      livemode: stripe.livemode,
-      requestTimeoutMs: stripe.requestTimeoutMs
-    }
-  };
-}
-function validateStripePaymentsRuntimeConfig(payments, serverEnv) {
-  const normalized = validatePaymentsConfig(payments);
-  if (!normalized || normalized.stripe.enabled === false) return normalized;
-  const secretKey = serverEnv?.[normalized.stripe.secretKeyEnv];
-  const webhookSecret = serverEnv?.[normalized.stripe.webhookSecretEnv];
-  const expectedSecretPrefix = normalized.stripe.livemode ? "sk_live_" : "sk_test_";
-  if (typeof secretKey !== "string" || !secretKey.startsWith(expectedSecretPrefix) || secretKey.length <= expectedSecretPrefix.length) {
-    fail("Stripe secret key is unavailable or does not match the configured mode.", "Set the named Stripe secret key in Sealed Server env and make `payments.stripe.livemode` match it.");
-  }
-  if (typeof webhookSecret !== "string" || !webhookSecret.startsWith("whsec_") || webhookSecret.length <= "whsec_".length) {
-    fail("Stripe webhook signing secret is unavailable.", "Set the named Stripe webhook signing secret in Sealed Server env before enabling Stripe payments.");
-  }
-  return normalized;
-}
-function validateStripePaymentsSealedServerEnv(payments, hasSealedEnvelope) {
-  const normalized = validatePaymentsConfig(payments);
-  if (normalized?.stripe.enabled && !hasSealedEnvelope) {
-    fail("Enabled Stripe payments require Sealed Server env.", "Set both named Stripe credentials with `sporades env set` before building or starting the Capsule.");
-  }
-  return normalized;
-}
-function isPlainRecord(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-function isServerEnvReference(value) {
-  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
-}
-function validatePublicOrigin(value) {
-  if (typeof value !== "string") {
-    fail("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
-  }
-  let origin;
-  try {
-    origin = new URL(value);
-  } catch {
-    fail("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
-  }
-  const loopback = origin.hostname === "localhost" || origin.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(origin.hostname);
-  const secureHosted = origin.protocol === "https:";
-  const localHttp = origin.protocol === "http:" && loopback;
-  if (!secureHosted && !localHttp || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== "/" || origin.origin !== value.replace(/\/$/, "")) {
-    fail("Invalid Stripe public origin.", "Use an exact hosted HTTPS origin or explicit loopback HTTP origin without credentials, a path, query, or fragment.");
-  }
-}
-function canonicalSameOriginAbsolutePath(value) {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || /\s/.test(value)) {
-    return null;
-  }
-  try {
-    return new URL(value, "https://sporades.invalid").pathname;
-  } catch {
-    return null;
-  }
-}
-function fail(message, hint) {
-  const error = new Error(message);
-  error.code = "INVALID_STRIPE_PAYMENTS_CONFIG";
-  error.hint = hint;
-  throw error;
-}
-
 // src/bundle-pipeline.ts
 var AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 var SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
@@ -102553,10 +102740,60 @@ function tagBuildError(error, phase, framework, toolchain) {
   return tagged;
 }
 
+// src/cli/required-server-env.ts
+async function readRequiredServerEnvValues(projectDir, sealedOnly = false) {
+  try {
+    const paths = sealedServerEnvPaths(projectDir);
+    const envelope = await readSealedServerEnv(paths);
+    if (!envelope) return sealedOnly ? {} : parseServerEnv(await readServerEnvFile(path13.join(projectDir, ".env.sporades.server")));
+    const keys = await readKeyPair(paths);
+    if (!keys) throw new Error("missing key");
+    return unsealServerEnv(envelope, keys.privateKey);
+  } catch {
+    throw Object.assign(new Error("Required Server env values are unavailable."), {
+      code: "SERVER_ENV_UNAVAILABLE",
+      hint: "Restore the local Sealed Server env key and envelope, or explicitly re-import source-of-truth values with sporades env import."
+    });
+  }
+}
+
+// src/cli/telemetry-diagnostics.ts
+function validateQueryCredential(value) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "string" || value.length > 4096 || !/^[^:\x00-\x20\x7f]+:[^\x00-\x1f\x7f]+$/.test(value)) {
+    throw helperError("Invalid operator query credential.", "Supply a protected environment reference containing the Monitoring operator user:password; ingestion tokens cannot query.");
+  }
+  return value;
+}
+
+// src/cli/host-domain-aliases.ts
+function validateAliasDomains(value) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value) || value.length > 20 || value.some((hostname) => typeof hostname !== "string" || hostname.length > 253 || !hostname.includes(".") || /^[0-9.]+$/.test(hostname) || !hostname.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))) {
+    throw helperError(
+      "Invalid Hosted Capsule alias domains.",
+      "Supply at most 20 unique lowercase DNS hostnames, without schemes, ports, paths, wildcards, or IP addresses."
+    );
+  }
+  if (new Set(value).size !== value.length) {
+    throw helperError("Duplicate Hosted Capsule alias domain.", "Supply each alias domain once.");
+  }
+  return [...value];
+}
+
+// src/cli/sporades.ts
+import { spawnSync as spawnSync4 } from "node:child_process";
+import { createHash as createHash18, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes10, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
+import { constants as fsConstants, lstatSync, readdirSync, readFileSync as readFileSync4, statSync as statSync2, watch } from "node:fs";
+import { createServer as createServer2 } from "node:http";
+import { appendFile, chmod as chmod5, cp as cp2, lstat as lstat13, mkdir as mkdir11, open as open5, readdir as readdir6, readFile as readFile14, rename as rename9, rm as rm10, writeFile as writeFile10 } from "node:fs/promises";
+import path22 from "node:path";
+import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL6 } from "node:url";
+
 // src/file-transaction.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
 import { lstat as lstat9, rename as rename7, rm as rm6, writeFile as writeFile5 } from "node:fs/promises";
-import path13 from "node:path";
+import path14 from "node:path";
 var defaultExecutor = async (_operation, action) => action();
 async function replaceFilesAtomically(replacements, options = {}) {
   if (replacements.length === 0) {
@@ -102568,9 +102805,9 @@ async function replaceFilesAtomically(replacements, options = {}) {
   const entries = [];
   try {
     for (const [index, replacement] of replacements.entries()) {
-      const directory = path13.dirname(replacement.path);
-      const basename = path13.basename(replacement.path);
-      const artifactStem = path13.join(directory, `.${basename}.sporades-tx-${token}-${index}`);
+      const directory = path14.dirname(replacement.path);
+      const basename = path14.basename(replacement.path);
+      const artifactStem = path14.join(directory, `.${basename}.sporades-tx-${token}-${index}`);
       const entry = {
         ...replacement,
         temporaryPath: `${artifactStem}.tmp`,
@@ -102768,7 +103005,7 @@ function recoveryFailure(action, label, cause) {
 function validateDistinctTargets(replacements) {
   const identities = /* @__PURE__ */ new Set();
   for (const replacement of replacements) {
-    const identity = path13.resolve(replacement.path);
+    const identity = path14.resolve(replacement.path);
     if (identities.has(identity)) {
       throw transactionError({
         operation: {
@@ -103049,7 +103286,7 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
         await emitOwnerAccessKeyAudit(database, "access-key.issued", context2, accessKey);
         return { accessKey, token: secret.token };
       }
-      throw commandError2(
+      throw commandError(
         "Could not generate a unique Access key.",
         "Retry Access-key issuance.",
         "ACCESS_KEY_SECRET_CONFLICT"
@@ -103089,7 +103326,7 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
       const context2 = requireOwnerSessionContext(contextGetter());
       if (typeof id2 !== "string" || !id2) throw accessKeyNotFoundError();
       if (!isPlainObject2(options) || Object.keys(options).some((key) => key !== "lifecycleRevision") || !Number.isInteger(options.lifecycleRevision) || options.lifecycleRevision < 1) {
-        throw commandError2("Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by list().", "ACCESS_KEY_REVISION_CONFLICT");
+        throw commandError("Invalid Access-key lifecycle revision.", "Pass the lifecycleRevision returned by list().", "ACCESS_KEY_REVISION_CONFLICT");
       }
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const secret = createAccessKeySecret();
@@ -103109,14 +103346,14 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
         if (outcome.status === "selector-conflict") continue;
         if (outcome.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("rotating");
         if (outcome.status === "not-found") throw accessKeyNotFoundError();
-        if (outcome.status === "not-active") throw commandError2("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
-        if (outcome.status === "revision-conflict") throw commandError2("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
+        if (outcome.status === "not-active") throw commandError("Access key is not active.", "Issue a new Access key.", "ACCESS_KEY_NOT_ACTIVE");
+        if (outcome.status === "revision-conflict") throw commandError("Access-key revision changed.", "Refresh the key list and retry rotation.", "ACCESS_KEY_REVISION_CONFLICT");
         const accessKey = accessKeySummary(outcome.record, database.accessKeyScopes ?? [], outcome.rotatedAt);
         accessKeySecretDisclosedContexts.add(context2);
         await emitOwnerAccessKeyAudit(database, "access-key.rotated", context2, accessKey);
         return { accessKey, token: secret.token };
       }
-      throw commandError2("Could not generate a unique Access key.", "Retry Access-key rotation.", "ACCESS_KEY_SECRET_CONFLICT");
+      throw commandError("Could not generate a unique Access key.", "Retry Access-key rotation.", "ACCESS_KEY_SECRET_CONFLICT");
     },
     async delete(id2) {
       const context2 = requireOwnerSessionContext(contextGetter());
@@ -103130,7 +103367,7 @@ function createCurrentUserAccessKeysApi(database, contextGetter) {
       if (outcome.status === "session-ineligible") throwAccessKeyOwnerSessionInactive("deleting");
       if (outcome.status === "not-found") throw accessKeyNotFoundError();
       if (outcome.status === "requires-revoked") {
-        throw commandError2("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+        throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
       }
       await emitOwnerAccessKeyAudit(database, "access-key.deleted", context2, { id: id2, name: outcome.record.name, grants: [] });
       return { id: id2, deleted: true };
@@ -103141,7 +103378,7 @@ function createPrivilegedAccessKeysApi(database, contextGetter, transactionDatab
   const requireContext = () => {
     const current2 = contextGetter();
     if (!current2 || !activePrivilegedAccessKeyContexts.has(current2) || current2.signal?.aborted) {
-      throw commandError2("Privileged Access-key access expired.", "Run the operation inside ctx.privileged.run(...).", "FORBIDDEN");
+      throw commandError("Privileged Access-key access expired.", "Run the operation inside ctx.privileged.run(...).", "FORBIDDEN");
     }
     return current2;
   };
@@ -103241,7 +103478,7 @@ function createPrivilegedAccessKeysApi(database, contextGetter, transactionDatab
         });
         if (outcome.status === "not-found") throw accessKeyNotFoundError();
         if (outcome.status === "requires-revoked") {
-          throw commandError2("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
+          throw commandError("Access key must be revoked before deletion.", "Revoke the key, then delete its history.", "ACCESS_KEY_DELETE_REQUIRES_REVOKED");
         }
         return { id: id2, ownerUserId: existing.ownerUserId, deleted: true };
       }, { atomicWrite: true, transactionDatabaseFactory });
@@ -103388,7 +103625,7 @@ async function resolveAccessKeyCredentialOperation(database, request, sessionTok
   };
 }
 function accessKeyAuthenticationError(reason, limited = false) {
-  const error = commandError2(
+  const error = commandError(
     limited ? "Too many authentication attempts." : "Unauthenticated.",
     limited ? "Retry the request later." : "Provide a valid Access key and retry the request.",
     limited ? "RATE_LIMITED" : "UNAUTHENTICATED"
@@ -103449,7 +103686,7 @@ function accessKeyVerifierDigest(selector, verifier) {
 }
 function requireOwnerSessionContext(context2) {
   if (!["query", "mutation", "endpoint", "message"].includes(context2?.kind) || context2?.credential?.kind !== "session" || !accessKeyOwnerSessionTokens.has(context2) || context2?.auth?.isAuthenticated !== true || context2?.auth?.isGuest === true) {
-    throw commandError2(
+    throw commandError(
       "Access-key owner approval requires a linked Session.",
       "Sign in interactively and retry the Access-key operation.",
       context2?.auth?.isAuthenticated === true ? "FORBIDDEN" : "UNAUTHENTICATED"
@@ -103459,18 +103696,18 @@ function requireOwnerSessionContext(context2) {
 }
 function normalizeAccessKeyIssue(input, declaredScopes, now2) {
   if (!isPlainObject2(input) || Object.keys(input).some((key) => !["name", "grants", "expiresAt"].includes(key))) {
-    throw commandError2("Invalid Access-key issuance input.", "Pass name with optional grants and expiresAt.", "INVALID_ACCESS_KEY_NAME");
+    throw commandError("Invalid Access-key issuance input.", "Pass name with optional grants and expiresAt.", "INVALID_ACCESS_KEY_NAME");
   }
   const name2 = typeof input.name === "string" ? input.name.trim() : "";
   if (!name2 || Array.from(name2).length > 128) {
-    throw commandError2("Invalid Access-key name.", "Use a non-empty name of at most 128 Unicode characters.", "INVALID_ACCESS_KEY_NAME");
+    throw commandError("Invalid Access-key name.", "Use a non-empty name of at most 128 Unicode characters.", "INVALID_ACCESS_KEY_NAME");
   }
   const grants = normalizeAccessKeyGrants(input.grants, declaredScopes);
   let expiresAt = null;
   if (input.expiresAt !== void 0 && input.expiresAt !== null) {
     const parsed = typeof input.expiresAt === "string" ? Date.parse(input.expiresAt) : Number.NaN;
     if (!Number.isFinite(parsed) || parsed <= now2.getTime()) {
-      throw commandError2("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
+      throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
     }
     expiresAt = new Date(parsed).toISOString();
   }
@@ -103494,14 +103731,14 @@ function normalizeAccessKeyGrants(value, declaredScopes) {
 }
 function normalizeAccessKeyListOptions(value) {
   if (!isPlainObject2(value) || Object.keys(value).some((key) => !["cursor", "limit", "status"].includes(key))) {
-    throw commandError2("Invalid Access-key list options.", "Use cursor, limit, and status only.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+    throw commandError("Invalid Access-key list options.", "Use cursor, limit, and status only.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
   }
   const limit = value.limit === void 0 ? 50 : value.limit;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-    throw commandError2("Invalid Access-key list limit.", "Use a limit from 1 through 100.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+    throw commandError("Invalid Access-key list limit.", "Use a limit from 1 through 100.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
   }
   if (value.status !== void 0 && !["active", "expired", "revoked"].includes(value.status)) {
-    throw commandError2("Invalid Access-key status filter.", "Use active, expired, or revoked.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+    throw commandError("Invalid Access-key status filter.", "Use active, expired, or revoked.", "INVALID_ACCESS_KEY_LIST_OPTIONS");
   }
   let cursor = null;
   if (value.cursor !== void 0) {
@@ -103511,7 +103748,7 @@ function normalizeAccessKeyListOptions(value) {
       cursor = null;
     }
     if (!isPlainObject2(cursor) || typeof cursor.createdAt !== "string" || typeof cursor.id !== "string") {
-      throw commandError2("Invalid Access-key list cursor.", "Use the opaque nextCursor returned by list().", "INVALID_ACCESS_KEY_LIST_OPTIONS");
+      throw commandError("Invalid Access-key list cursor.", "Use the opaque nextCursor returned by list().", "INVALID_ACCESS_KEY_LIST_OPTIONS");
     }
   }
   return { cursor, limit, status: value.status ?? null };
@@ -103657,7 +103894,7 @@ async function emitAccessKeyOwnerTransitionAudits(database, input) {
 function protectAccessKeyValue(value) {
   const target = Object.freeze({ ...value });
   const tampered = () => {
-    throw commandError2("Invalid Capsule context middleware result.", "Runtime-owned Auth and Credential values are immutable.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+    throw commandError("Invalid Capsule context middleware result.", "Runtime-owned Auth and Credential values are immutable.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
   };
   return new Proxy(target, { set: tampered, defineProperty: tampered, deleteProperty: tampered, setPrototypeOf: tampered });
 }
@@ -103686,35 +103923,35 @@ function clearAccessKeyFailure(database, kind, key) {
 }
 function throwAccessKeyIssueError(status) {
   if (status === "invalid-expiry") {
-    throw commandError2("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
+    throw commandError("Invalid Access-key expiry.", "Pass an ISO instant later than issuance.", "INVALID_ACCESS_KEY_EXPIRY");
   }
   if (status === "session-ineligible") {
-    throw commandError2(
+    throw commandError(
       "Access-key owner Session is no longer active.",
       "Sign in again before issuing an Access key.",
       "UNAUTHENTICATED"
     );
   }
   if (status === "owner-ineligible") {
-    throw commandError2("Access-key owner is not eligible.", "Use a currently linked non-guest user.", "FORBIDDEN");
+    throw commandError("Access-key owner is not eligible.", "Use a currently linked non-guest user.", "FORBIDDEN");
   }
   if (status === "name-conflict") {
-    throw commandError2("An Access key already uses that name.", "Choose a unique current Access-key name.", "ACCESS_KEY_NAME_CONFLICT");
+    throw commandError("An Access key already uses that name.", "Choose a unique current Access-key name.", "ACCESS_KEY_NAME_CONFLICT");
   }
-  throw commandError2("Access-key owner limit reached.", "Revoke or delete retained Access keys before issuing another.", "ACCESS_KEY_LIMIT_REACHED");
+  throw commandError("Access-key owner limit reached.", "Revoke or delete retained Access keys before issuing another.", "ACCESS_KEY_LIMIT_REACHED");
 }
 function throwAccessKeyOwnerSessionInactive(action) {
-  throw commandError2(
+  throw commandError(
     "Access-key owner Session is no longer active.",
     `Sign in again before ${action} Access keys.`,
     "UNAUTHENTICATED"
   );
 }
 function accessKeyNotFoundError() {
-  return commandError2("Access key not found.", "Refresh the current user's Access-key list.", "ACCESS_KEY_NOT_FOUND");
+  return commandError("Access key not found.", "Refresh the current user's Access-key list.", "ACCESS_KEY_NOT_FOUND");
 }
 function invalidAccessKeyGrantsError() {
-  return commandError2(
+  return commandError(
     "Invalid Access-key grants.",
     "Use 1 through 128 unique grant expressions that match the Capsule's declared scopes.",
     "INVALID_ACCESS_KEY_GRANTS"
@@ -104851,7 +105088,7 @@ function normalizeModeBinding(value) {
   return Object.freeze({ priceId: value.priceId, ...value.productId ? { productId: value.productId } : {}, ...value.portalConfigurationId ? { portalConfigurationId: value.portalConfigurationId } : {} });
 }
 function invalidDeclaration() {
-  return commandError2(
+  return commandError(
     "Invalid Team Billing declaration.",
     "Declare 1-32 lowercase products with exact sandbox/live Stripe Price bindings, a fixed or optionally floored Team-member quantity policy, and an authorize policy.",
     "INVALID_TEAM_BILLING_DECLARATION"
@@ -105404,14 +105641,14 @@ function createPrivilegedTeamBillingApi(database, contextGetter) {
 function assertActivePrivilegedTeamBillingAccess(contextGetter) {
   const context2 = contextGetter?.();
   if (context2?.__privilegedRunActive && !context2.signal?.aborted) return;
-  throw commandError2(
+  throw commandError(
     "Privileged Team Billing access is no longer active.",
     "Start a new ctx.privileged.run callback before inspecting Team Billing quarantine.",
     "PRIVILEGED_TEAM_BILLING_ACCESS_INACTIVE"
   );
 }
 function invalidTeamBillingInspection() {
-  return commandError2(
+  return commandError(
     "Invalid Team Billing inspection options.",
     "Pass only an integer limit from 1 through 100.",
     "INVALID_TEAM_BILLING_INSPECTION"
@@ -105601,17 +105838,17 @@ async function settleCheckoutFailure(database, operationId, safeFailureCode, sta
   )).run(status, safeFailureCode, database.clock.now().toISOString(), operationId);
 }
 function checkoutConflict() {
-  return commandError2("Team Checkout request conflicts with existing work.", "Use a new request identifier for a different product.", "TEAM_BILLING_REQUEST_CONFLICT");
+  return commandError("Team Checkout request conflicts with existing work.", "Use a new request identifier for a different product.", "TEAM_BILLING_REQUEST_CONFLICT");
 }
 function checkoutActive() {
-  return commandError2(
+  return commandError(
     "A Team Checkout is already active.",
     "Finish, abandon, or allow the current Team Checkout to expire before starting another.",
     "TEAM_BILLING_CHECKOUT_ACTIVE"
   );
 }
 function checkoutUnavailable() {
-  const error = commandError2("Team Checkout is unavailable.", "Retry from the Team billing settings later.", "TEAM_BILLING_CHECKOUT_UNAVAILABLE");
+  const error = commandError("Team Checkout is unavailable.", "Retry from the Team billing settings later.", "TEAM_BILLING_CHECKOUT_UNAVAILABLE");
   error.retryable = false;
   return error;
 }
@@ -105622,7 +105859,7 @@ function providerLaneBusy() {
   return error;
 }
 function teamBillingDenied() {
-  return commandError2(
+  return commandError(
     "Team Billing is unavailable.",
     "Sign in as the current policy-approved billing administrator for this Team and retry.",
     "TEAM_BILLING_DENIED"
@@ -106216,10 +106453,10 @@ function stopStripeEventPayloadCleanup(database) {
 function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
   const schedules = [];
   for (const [name2, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
-    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name2)) throw commandError2(`Invalid Schedule name: ${name2}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "payloadVersion", "retry", "missedRun", "enabled"].includes(key))) throw commandError2(`Invalid Schedule declaration: ${name2}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, payloadVersion?, retry?, missedRun?, enabled? }).");
-    if (schedules.some((candidate) => candidate.name === name2)) throw commandError2(`Duplicate Schedule declaration: ${name2}`, "Use one unique Schedule name per Capsule.");
-    if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError2(`Unknown Job handler for Schedule: ${name2}`, "Reference a Job declared in the Capsule jobs map.");
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name2)) throw commandError(`Invalid Schedule name: ${name2}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
+    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "payloadVersion", "retry", "missedRun", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name2}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, payloadVersion?, retry?, missedRun?, enabled? }).");
+    if (schedules.some((candidate) => candidate.name === name2)) throw commandError(`Duplicate Schedule declaration: ${name2}`, "Use one unique Schedule name per Capsule.");
+    if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError(`Unknown Job handler for Schedule: ${name2}`, "Reference a Job declared in the Capsule jobs map.");
     const expression = parseScheduleExpression(definition.expression);
     const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
     const payload = definition.payload === void 0 ? null : definition.payload;
@@ -106227,21 +106464,21 @@ function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
     let payloadVersion;
     if (typeof payload === "function") {
       if (definition.payloadVersion !== void 0 && (typeof definition.payloadVersion !== "string" || definition.payloadVersion.length < 1 || definition.payloadVersion.length > 128 || definition.payloadVersion.trim() !== definition.payloadVersion)) {
-        throw commandError2(`Invalid Schedule payloadVersion: ${name2}`, "When supplied, give a payload factory a stable non-empty payloadVersion of at most 128 characters, and change it whenever captured inputs change.");
+        throw commandError(`Invalid Schedule payloadVersion: ${name2}`, "When supplied, give a payload factory a stable non-empty payloadVersion of at most 128 characters, and change it whenever captured inputs change.");
       }
       payloadFingerprint = definition.payloadVersion === void 0 ? String(payload) : null;
       payloadVersion = definition.payloadVersion;
     } else {
       if (definition.payloadVersion !== void 0) {
-        throw commandError2(`Invalid Schedule payloadVersion: ${name2}`, "Use payloadVersion only with a Schedule payload factory; static payload values are fingerprinted directly.");
+        throw commandError(`Invalid Schedule payloadVersion: ${name2}`, "Use payloadVersion only with a Schedule payload factory; static payload values are fingerprinted directly.");
       }
       boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
       payloadFingerprint = payload;
     }
     const retry = normalizeJobRetry(definition.retry);
     const missedRun = definition.missedRun ?? "skip";
-    if (missedRun !== "skip" && missedRun !== "latest") throw commandError2(`Invalid missed-run policy for Schedule: ${name2}`, "Use `skip` or `latest`.");
-    if (definition.enabled !== void 0 && typeof definition.enabled !== "boolean") throw commandError2(`Invalid enabled value for Schedule: ${name2}`, "Pass true or false for enabled.");
+    if (missedRun !== "skip" && missedRun !== "latest") throw commandError(`Invalid missed-run policy for Schedule: ${name2}`, "Use `skip` or `latest`.");
+    if (definition.enabled !== void 0 && typeof definition.enabled !== "boolean") throw commandError(`Invalid enabled value for Schedule: ${name2}`, "Pass true or false for enabled.");
     const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
     const enabled = definition.enabled ?? true;
     const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: payloadFingerprint, retry, missedRun, ...payloadVersion === void 0 ? {} : { payloadVersion } });
@@ -106253,35 +106490,35 @@ function resolveSchedulePayloadFactoryTimeoutMs(config = {}) {
   const scheduling = config.scheduling;
   if (scheduling === void 0) return 3e4;
   if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
-    throw commandError2("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+    throw commandError("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
   }
   const seconds = scheduling.payloadFactoryTimeoutSeconds ?? 30;
   if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
-    throw commandError2("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+    throw commandError("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
   }
   return seconds * 1e3;
 }
 function parseScheduleExpression(value) {
-  if (typeof value !== "string") throw commandError2("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
+  if (typeof value !== "string") throw commandError("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
   const parts = value.trim().split(/\s+/);
-  if (parts.length !== 5) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
+  if (parts.length !== 5) throw commandError(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
   const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
   const fields = parts.map((part, index) => {
     const values = /* @__PURE__ */ new Set();
     for (const item of part.split(",")) {
       const [base, stepText] = item.split("/");
-      if (item.split("/").length > 2 || stepText !== void 0 && (!/^\d+$/.test(stepText) || Number(stepText) < 1)) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
+      if (item.split("/").length > 2 || stepText !== void 0 && (!/^\d+$/.test(stepText) || Number(stepText) < 1)) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
       const step = stepText === void 0 ? 1 : Number(stepText);
       let start, end;
       if (base === "*") [start, end] = ranges[index];
       else if (/^\d+$/.test(base)) start = end = Number(base);
       else {
         const match = /^(\d+)-(\d+)$/.exec(base);
-        if (!match) throw commandError2(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps.");
+        if (!match) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps.");
         start = Number(match[1]);
         end = Number(match[2]);
       }
-      if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError2(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
+      if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
       for (let current2 = start; current2 <= end; current2 += step) values.add(index === 4 && current2 === 7 ? 0 : current2);
     }
     return values;
@@ -106290,12 +106527,12 @@ function parseScheduleExpression(value) {
   return fields;
 }
 function resolveScheduleTimezone(value) {
-  if (value !== void 0 && (typeof value !== "string" || value.trim() === "")) throw commandError2("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
+  if (value !== void 0 && (typeof value !== "string" || value.trim() === "")) throw commandError("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
   const requested = value === void 0 ? Intl.DateTimeFormat().resolvedOptions().timeZone : value.trim();
   try {
     return new Intl.DateTimeFormat("en-US", { timeZone: requested }).resolvedOptions().timeZone;
   } catch {
-    throw commandError2(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
+    throw commandError(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
   }
 }
 function scheduleWallClockParts(formatter, instant) {
@@ -106327,7 +106564,7 @@ function nextScheduleOccurrence(fields, after, timezone) {
     if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) {
       const occurrence = new Date(candidate);
       if (!isCanonicalJobTimestamp(occurrence.toISOString())) {
-        throw commandError2(
+        throw commandError(
           "Stored Schedule state is invalid.",
           "Repair or remove the malformed Schedule before restarting the Capsule.",
           "SCHEDULE_STATE_INVALID"
@@ -106336,7 +106573,7 @@ function nextScheduleOccurrence(fields, after, timezone) {
       return occurrence;
     }
   }
-  throw commandError2("Schedule has no future occurrence.", "Check the Schedule cron expression.");
+  throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
 }
 async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
   const sql2 = sqlite.dialect.sql;
@@ -106647,17 +106884,17 @@ function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
   const handlers = [];
   for (const [name2, definition] of Object.entries(capsuleDefinition?.jobs ?? {})) {
     if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name2) || definition?.kind !== "job" || typeof definition.handler !== "function") {
-      throw commandError2("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
+      throw commandError("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
     }
     if (isReservedJobName(name2)) {
-      throw commandError2(
+      throw commandError(
         `Reserved Job handler name: ${name2}`,
         "Job names beginning with `_sporades` are reserved for the Sporades runtime. Rename this Job.",
         "RESERVED_JOB_NAME"
       );
     }
     if (handlers.some((handler) => handler.name === name2)) {
-      throw commandError2(`Duplicate Job handler: ${name2}`, "Use one unique Job handler name per Capsule.");
+      throw commandError(`Duplicate Job handler: ${name2}`, "Use one unique Job handler name per Capsule.");
     }
     handlers.push({ name: name2, handler: definition.handler });
   }
@@ -107596,9 +107833,9 @@ function bindOuterResources(database, context2, hooks) {
     return promise;
   };
   const actorDigest = resourceActorDigest(context2, false);
-  const guardCapability = (name2, value) => wrapCapability(value, (path22) => {
+  const guardCapability = (name2, value) => wrapCapability(value, (path23) => {
     if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
-    if (!["where", "orderBy", "limit"].includes(path22.at(-1))) touched = true;
+    if (!["where", "orderBy", "limit"].includes(path23.at(-1))) touched = true;
   });
   for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context2[name2]) continue;
@@ -107793,7 +108030,7 @@ function bindOuterResources(database, context2, hooks) {
   release.guardCapability = guardCapability;
   return release;
 }
-function wrapCapability(value, before, path22 = [], cache = /* @__PURE__ */ new WeakMap(), afterCall) {
+function wrapCapability(value, before, path23 = [], cache = /* @__PURE__ */ new WeakMap(), afterCall) {
   if (!value || typeof value !== "object") return value;
   if (cache.has(value)) return cache.get(value);
   const functions = /* @__PURE__ */ new Map();
@@ -107808,16 +108045,16 @@ function wrapCapability(value, before, path22 = [], cache = /* @__PURE__ */ new 
       if (typeof member === "function") {
         if (functions.has(key)) return functions.get(key);
         const wrapped = (...args) => {
-          const next = [...path22, key];
+          const next = [...path23, key];
           before(next);
           const invoke = () => Reflect.apply(member, value, args);
           const result = afterCall && !["where", "orderBy", "limit"].includes(key) ? afterCall(invoke) : invoke();
-          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path22, cache, afterCall) : result;
+          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path23, cache, afterCall) : result;
         };
         functions.set(key, wrapped);
         return wrapped;
       }
-      return wrapCapability(member, before, [...path22, key], cache, afterCall);
+      return wrapCapability(member, before, [...path23, key], cache, afterCall);
     }
   });
   cache.set(value, proxy);
@@ -107836,9 +108073,9 @@ function bindJobResources(database, context2, claim, hooks) {
   const actorDigest = resourceActorDigest(context2, privileged);
   for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context2[name2]) continue;
-    context2[name2] = wrapCapability(context2[name2], (path22) => {
+    context2[name2] = wrapCapability(context2[name2], (path23) => {
       if (used && (name2 !== "log" || scopeRunning || !invocationActive)) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
-      if (name2 !== "log" && !["where", "orderBy", "limit"].includes(path22.at(-1))) touched = true;
+      if (name2 !== "log" && !["where", "orderBy", "limit"].includes(path23.at(-1))) touched = true;
     });
   }
   const execute = async (options, callback, status) => {
@@ -108122,12 +108359,12 @@ function normalizeDateValue(value, fieldName) {
 }
 function toSqlNumber(value, fieldName) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw commandError2(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
+    throw commandError(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
   }
   return value;
 }
 function dateValueError(fieldName) {
-  return commandError2(
+  return commandError(
     `Invalid date value for field: ${fieldName}`,
     "Pass an ISO 8601 date string or JavaScript Date value."
   );
@@ -108353,7 +108590,7 @@ function normalizePrivilegedRunSignal(value) {
   return new AbortController().signal;
 }
 function createPrivilegedRunAbortError() {
-  return commandError2(
+  return commandError(
     "Privileged run aborted.",
     "Retry the privileged operation if cancellation was not intended.",
     "ABORTED"
@@ -108406,14 +108643,14 @@ function isPlainPrivilegedMetadata(value) {
   return prototype === Object.prototype || prototype === null;
 }
 function invalidPrivilegedRunMetadata(message) {
-  return commandError2(
+  return commandError(
     message,
     "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
     "INVALID_PRIVILEGED_RUN_METADATA"
   );
 }
 function createPrivilegedRunPublicError(cause) {
-  const error = commandError2(
+  const error = commandError(
     "Privileged run failed.",
     "Check the privileged audit events and server logs before exposing a safe response.",
     "PRIVILEGED_RUN_FAILED"
@@ -108422,7 +108659,7 @@ function createPrivilegedRunPublicError(cause) {
   return error;
 }
 function createPrivilegedAuditEmissionPublicError(cause, context2 = void 0) {
-  const error = commandError2(
+  const error = commandError(
     "Privileged audit emission failed.",
     "Check the server audit log configuration before retrying the privileged operation.",
     "PRIVILEGED_AUDIT_EMISSION_FAILED"
@@ -108521,13 +108758,13 @@ function createPrivilegedFileApi(database, contextGetter) {
     unsupported() {
       const active = activePrivilegedFileAccess(contextGetter);
       if (!active.ok) {
-        throw commandError2(
+        throw commandError(
           active.error?.message ?? "Privileged file access is no longer active.",
           active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
           "PRIVILEGED_FILE_ACCESS_INACTIVE"
         );
       }
-      throw commandError2(
+      throw commandError(
         "Unsupported privileged file operation.",
         "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
         "UNSUPPORTED_PRIVILEGED_FILE_OPERATION"
@@ -108625,7 +108862,7 @@ function normalizeTableAcl(tableName, aclRules) {
     };
   }
   if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
-    throw commandError2(
+    throw commandError(
       `Invalid Capsule table ACL: ${tableName}`,
       "Pass an object with function rules for read, write, insert, update, and delete."
     );
@@ -108635,13 +108872,13 @@ function normalizeTableAcl(tableName, aclRules) {
   };
   for (const [operation, rule] of Object.entries(aclRules)) {
     if (!supportedOperations.has(operation)) {
-      throw commandError2(
+      throw commandError(
         `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
         "Supported ACL operations are read, write, insert, update, and delete."
       );
     }
     if (typeof rule !== "function") {
-      throw commandError2(
+      throw commandError(
         `Invalid Capsule table ACL: ${tableName}.${operation}`,
         "ACL rules must be functions for read, write, insert, update, and delete."
       );
@@ -108663,7 +108900,7 @@ function normalizeFileAcl(aclRules) {
     };
   }
   if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
-    throw commandError2(
+    throw commandError(
       "Invalid Capsule File ACL.",
       "Declare files as { acl: { read?, publicUrl?, delete? } }.",
       "INVALID_FILE_ACL"
@@ -108672,14 +108909,14 @@ function normalizeFileAcl(aclRules) {
   const normalized = {};
   for (const [operation, rule] of Object.entries(aclRules)) {
     if (!supportedOperations.has(operation)) {
-      throw commandError2(
+      throw commandError(
         `Unsupported Capsule File ACL operation: ${operation}.`,
         "Supported File ACL operations are read, publicUrl, and delete.",
         "INVALID_FILE_ACL"
       );
     }
     if (typeof rule !== "function") {
-      throw commandError2(
+      throw commandError(
         `Invalid Capsule File ACL: ${operation}.`,
         "File ACL rules must be functions.",
         "INVALID_FILE_ACL"
@@ -109125,13 +109362,13 @@ function createAclStorageHelpers(database, state) {
 function resolveAclStorageFileReference(database, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path22;
+    let path23;
     try {
-      path22 = normalizeAbsoluteFilePath(value);
+      path23 = normalizeAbsoluteFilePath(value);
     } catch {
       return null;
     }
-    const selected2 = database.adapter.selectLiveFileByPath(path22);
+    const selected2 = database.adapter.selectLiveFileByPath(path23);
     return thenIfPromise(selected2, (rows) => {
       const resolved = rows.length > 1 ? { ambiguous: true } : rows[0] ?? null;
       return resolved?.ambiguous ? null : resolved;
@@ -109146,14 +109383,14 @@ function resolveAclStorageFileReference(database, reference) {
 function assertAclHelperReadAllowed(state) {
   state.readCount += 1;
   if (state.readCount > state.maxReads) {
-    throw commandError2("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
+    throw commandError("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
   }
 }
 function resolveAclAppTable(database, tableName) {
   const normalized = String(tableName ?? "");
   const table = database.schema.tables.find((candidate) => candidate.name === normalized);
   if (!table) {
-    throw commandError2("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
+    throw commandError("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
   }
   return table;
 }
@@ -109162,7 +109399,7 @@ function resolveAclStorageResource(resourceName) {
   if (normalized === "files") {
     return normalized;
   }
-  throw commandError2("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
+  throw commandError("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
 }
 function aclStorageMetadataFromFileRow(row) {
   const metadata2 = fileMetadataFromRow(row);
@@ -109258,7 +109495,7 @@ function aclVisibleFieldNames(row) {
   );
 }
 function createAclDeniedError(logData = null) {
-  const error = commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+  const error = commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
   if (logData) {
     error.sporadesAclDenialLogData = logData;
   }
@@ -109288,7 +109525,7 @@ async function drainPendingAclWrites(context2) {
 // src/file-storage-runtime.ts
 var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
-  const path22 = await import("node:path");
+  const path23 = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
     return createS3CompatibleFileStorageAdapter({
       endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
@@ -109300,7 +109537,7 @@ async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serv
     });
   }
   return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path22.join(path22.dirname(databasePath), "files")
+    storagePath: config.files?.storagePath ?? path23.join(path23.dirname(databasePath), "files")
   });
 }
 function createLocalFileStorageAdapter({ storagePath }) {
@@ -109347,9 +109584,9 @@ function createLocalFileStorageAdapter({ storagePath }) {
     },
     async checkHealth() {
       const { mkdir: mkdir12, rm: rm11, writeFile: writeFile11 } = await import("node:fs/promises");
-      const path22 = await import("node:path");
-      const probeDirectory = path22.join(storagePath, ".sporades-health");
-      const probeFile = path22.join(probeDirectory, `${nodeCryptoModule2.randomUUID()}.tmp`);
+      const path23 = await import("node:path");
+      const probeDirectory = path23.join(storagePath, ".sporades-health");
+      const probeFile = path23.join(probeDirectory, `${nodeCryptoModule2.randomUUID()}.tmp`);
       try {
         await mkdir12(probeDirectory, { recursive: true });
         await writeFile11(probeFile, "");
@@ -110599,9 +110836,9 @@ function fileMetadataFromUpload(upload) {
     version: upload.version
   };
 }
-async function withFileUploadPathLock(path22, fn2) {
+async function withFileUploadPathLock(path23, fn2) {
   const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
-  const key = String(path22);
+  const key = String(path23);
   const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
   let release;
   const current2 = new Promise((resolve2) => {
@@ -110622,11 +110859,11 @@ async function withFileUploadPathLock(path22, fn2) {
 }
 async function resolveFileWriteTarget(database, ownerId, input, now2) {
   const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path22 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
-  const firstSegment = path22.split("/").filter(Boolean)[0] ?? "default";
+  const path23 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+  const firstSegment = path23.split("/").filter(Boolean)[0] ?? "default";
   const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
   const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now2);
-  return { bucket, path: path22 };
+  return { bucket, path: path23 };
 }
 async function ensureFileBucket(database, ownerId, name2, now2) {
   const existing = await database.adapter.findFileBucket(ownerId, name2);
@@ -110665,13 +110902,13 @@ function isAbsoluteFilePath(value) {
 async function resolveLiveFileReference(database, ownerId, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path22;
+    let path23;
     try {
-      path22 = normalizeAbsoluteFilePath(value);
+      path23 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path22);
+    const resolved = await singleLiveFileRowByPath(database, path23);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -110709,13 +110946,13 @@ async function resolveLockedAccessibleFileReference(database, auth, reference, o
 async function resolvePrivilegedLiveFileReference(database, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path22;
+    let path23;
     try {
-      path22 = normalizeAbsoluteFilePath(value);
+      path23 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path22);
+    const resolved = await singleLiveFileRowByPath(database, path23);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -110727,14 +110964,14 @@ async function resolvePrivilegedLiveFileReference(database, reference) {
   }
   return { ok: true, row };
 }
-function singleLiveFileRowByPath(database, path22) {
-  return thenIfPromise(database.adapter.selectLiveFileByPath(path22), (rows) => {
+function singleLiveFileRowByPath(database, path23) {
+  return thenIfPromise(database.adapter.selectLiveFileByPath(path23), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
 }
-function singleActiveFileRowByPath(database, path22) {
-  return thenIfPromise(database.adapter.selectActiveFileByPath(path22), (rows) => {
+function singleActiveFileRowByPath(database, path23) {
+  return thenIfPromise(database.adapter.selectActiveFileByPath(path23), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
@@ -122780,11 +123017,11 @@ function clamavRemaining(database, deadline) {
 async function verifiedClamavSignature(database, deadline = Number.POSITIVE_INFINITY) {
   if (database.__clamavTest?.signature) return database.__clamavTest.signature;
   const sidecar = database.__clamavDevSidecar;
-  for (const path22 of ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
-    if (!sidecar && !fs.existsSync(path22)) continue;
+  for (const path23 of ["/app/data/clamav/daily.cld", "/app/data/clamav/daily.cvd"]) {
+    if (!sidecar && !fs.existsSync(path23)) continue;
     const remaining = clamavRemaining(database, deadline);
     if (remaining <= 0) return null;
-    const child = sidecar ? childProcess.spawn("docker", ["exec", sidecar.containerName, "/usr/bin/sigtool", "--info", path22], { stdio: ["ignore", "pipe", "ignore"] }) : childProcess.spawn("/usr/bin/sigtool", ["--info", path22], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = sidecar ? childProcess.spawn("docker", ["exec", sidecar.containerName, "/usr/bin/sigtool", "--info", path23], { stdio: ["ignore", "pipe", "ignore"] }) : childProcess.spawn("/usr/bin/sigtool", ["--info", path23], { stdio: ["ignore", "pipe", "ignore"] });
     const result = await collectBoundedToolOutput(child, Math.min(5e3, remaining));
     if (!result.ok) {
       await terminateChild(child, Math.min(clamavTerminateTimeout(database), clamavRemaining(database, deadline)), database);
@@ -123607,12 +123844,12 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context2)
         if (row.authorityId !== claimAuthorityId || row.endpointMethod !== String(endpoint.options.method) || row.endpointPath !== String(endpoint.options.path) || row.requestKey !== requestKey || expectedLease.leaseId !== lease?.leaseId || expectedLease.partId !== lease?.partId || expectedLease.fieldName !== lease?.fieldName || expectedLease.name !== lease?.name || expectedLease.type !== lease?.type || expectedLease.size !== lease?.size || expectedLease.expiresAt !== lease?.expiresAt) {
           throw ingressAuthorityDenied();
         }
-        const path22 = normalizeAbsoluteFilePath(options?.path);
-        if (!policy.allowedPathPrefixes.some((prefix) => path22 === prefix || path22.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
+        const path23 = normalizeAbsoluteFilePath(options?.path);
+        if (!policy.allowedPathPrefixes.some((prefix) => path23 === prefix || path23.startsWith(`${prefix}/`))) throw Object.assign(new Error("File path is outside the endpoint ingress policy."), { code: "INGRESS_PATH_DENIED" });
         const name2 = safeName(options?.name ?? row.name);
         const type = safeType(options?.type ?? row.type);
         if (inspectionPolicy && (name2 !== row.name || type !== row.type)) throw inspectionRequiredError();
-        const expectedFile = { id: row.fileId, ownerId: row.ownerId, path: path22, name: name2, type, size: row.size, version: row.version };
+        const expectedFile = { id: row.fileId, ownerId: row.ownerId, path: path23, name: name2, type, size: row.size, version: row.version };
         if (row.state === "complete") {
           if (!sameFileDescriptor(row.file, expectedFile)) throw idempotencyConflict();
           if (!inspectionEvidenceIsCurrent(database, row, inspectionPolicy)) throw inspectionRequiredError();
@@ -123623,7 +123860,7 @@ function createEndpointIngressApi(database, endpoint, endpointRequest, context2)
         if (row.state !== "leased") throw idempotencyConflict("Ingress lease is not claimable.");
         const now2 = (/* @__PURE__ */ new Date()).toISOString();
         const bucket = await ensureFileBucket(database, row.ownerId, "default", now2);
-        const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path: path22, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
+        const file = { id: row.fileId, ownerId: row.ownerId, bucketId: bucket.id, bucketName: bucket.name, path: path23, name: safeName(options?.name ?? row.name), type: safeType(options?.type ?? row.type), size: row.size, version: row.version, status: "uploaded", createdAt: now2, updatedAt: now2 };
         try {
           await database.adapter.insertFileRowIfAbsent(file);
         } catch (error) {
@@ -124028,8 +124265,8 @@ function boundedRequestTargetPath(target) {
   const absolute = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(withoutQuery);
   const afterAuthority = absolute ? withoutQuery.slice(absolute[0].length) : withoutQuery;
   const pathStart = absolute ? afterAuthority.indexOf("/") : 0;
-  const path22 = absolute ? pathStart === -1 ? "/" : afterAuthority.slice(pathStart) : withoutQuery;
-  return path22.replace(/[\u0000-\u001F\u007F]/g, "\uFFFD").slice(0, 1024) || "/";
+  const path23 = absolute ? pathStart === -1 ? "/" : afterAuthority.slice(pathStart) : withoutQuery;
+  return path23.replace(/[\u0000-\u001F\u007F]/g, "\uFFFD").slice(0, 1024) || "/";
 }
 function writeInvalidHttpRequestTarget(database, request, response) {
   const error = new Error("Invalid HTTP request target.");
@@ -124091,7 +124328,7 @@ function writeUnhandledHttpError(database, request, response, error) {
 function emitHttpFailureLog(database, request, error, context2 = {}) {
   try {
     const target = request.url ?? context2.path ?? "/";
-    const path22 = boundedRequestTargetPath(target);
+    const path23 = boundedRequestTargetPath(target);
     database.log?.emit?.({
       category: "platform",
       event: "http.request.failed",
@@ -124099,7 +124336,7 @@ function emitHttpFailureLog(database, request, error, context2 = {}) {
       message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
       request: {
         method: request.method ?? context2.method ?? null,
-        path: path22
+        path: path23
       },
       data: {
         code: error?.code ?? null,
@@ -124403,7 +124640,7 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
         admittedWithAccessKey = true;
         traceRuntimeOperation("sporades.auth.admit", () => {
           if (!accessKeyGrantsSatisfyScopes(admission.grants, accessKeyPolicy.scopes)) {
-            const error = commandError2("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
+            const error = commandError("Forbidden.", "Use an Access key permitted for this File operation.", "FORBIDDEN");
             error.sporadesAuthDenialLogData = {
               requirement: "file-access-key-scopes",
               handler: { kind: "file", path: target.pathname },
@@ -125133,7 +125370,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
           "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
         )).run(joiningUserId, TEAM_MEMBERSHIP_MAX);
         if (Number(claim?.changes ?? 0) !== 1) {
-          throw commandError2("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
+          throw commandError("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
         }
         await tx.prepare(sql2(
           "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)"
@@ -125194,7 +125431,7 @@ function registerTeamJoinCancellationBeforeCommit(transactionAdapter, signal) {
 function normalizeTeamJoinEmail(email) {
   const normalized = String(email ?? "").trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
-    throw commandError2("Email address is invalid.", "Provide a valid email address for the Join link.", "INVALID_EMAIL");
+    throw commandError("Email address is invalid.", "Provide a valid email address for the Join link.", "INVALID_EMAIL");
   }
   return normalized;
 }
@@ -125204,7 +125441,7 @@ function normalizeTeamJoinIdentityEmail(email) {
 function normalizeTeamJoinTtl(value) {
   if (value === void 0) return TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS;
   if (!Number.isInteger(value) || value < TEAM_JOIN_LINK_MIN_TTL_SECONDS || value > TEAM_JOIN_LINK_MAX_TTL_SECONDS) {
-    throw commandError2("Join link lifetime is invalid.", `Use an integer between ${TEAM_JOIN_LINK_MIN_TTL_SECONDS} and ${TEAM_JOIN_LINK_MAX_TTL_SECONDS} seconds.`, "INVALID_JOIN_LINK_TTL");
+    throw commandError("Join link lifetime is invalid.", `Use an integer between ${TEAM_JOIN_LINK_MIN_TTL_SECONDS} and ${TEAM_JOIN_LINK_MAX_TTL_SECONDS} seconds.`, "INVALID_JOIN_LINK_TTL");
   }
   return value;
 }
@@ -125306,19 +125543,19 @@ async function releaseTeamJoinLinkCapacity(tx, teamId) {
   )).run(teamId);
 }
 function teamJoinLinkThrottleError() {
-  return commandError2("Join link creation is temporarily limited.", "Wait before creating another Join link for this Team.", "JOIN_LINK_THROTTLED");
+  return commandError("Join link creation is temporarily limited.", "Wait before creating another Join link for this Team.", "JOIN_LINK_THROTTLED");
 }
 function teamJoinLinkLimitError() {
-  return commandError2("Too many Join links are outstanding for this Team.", "Revoke an unused link or wait for one to expire.", "JOIN_LINK_LIMIT_REACHED");
+  return commandError("Too many Join links are outstanding for this Team.", "Revoke an unused link or wait for one to expire.", "JOIN_LINK_LIMIT_REACHED");
 }
 function invalidTeamJoinLink() {
-  return commandError2("Join link is invalid.", "Use a current Join link for this linked account.", "INVALID_JOIN_LINK");
+  return commandError("Join link is invalid.", "Use a current Join link for this linked account.", "INVALID_JOIN_LINK");
 }
 function teamJoinDenied() {
-  return commandError2("Could not join this Team.", "Ask a Team administrator for access.", "TEAM_JOIN_DENIED");
+  return commandError("Could not join this Team.", "Ask a Team administrator for access.", "TEAM_JOIN_DENIED");
 }
 function teamMemberCountDenied() {
-  return commandError2("Could not read this Team's member count.", "Sign in as a current Team member and retry.", "DENIED");
+  return commandError("Could not read this Team's member count.", "Sign in as a current Team member and retry.", "DENIED");
 }
 async function listCurrentUserTeams(database, auth) {
   requireAuth({ auth }, { linked: true });
@@ -125347,7 +125584,7 @@ async function createAdditionalTeam(database, auth, name2, eventContext) {
       "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
     )).run(auth.userId, TEAM_MEMBERSHIP_MAX);
     if (Number(claim?.changes ?? 0) !== 1) {
-      throw commandError2(
+      throw commandError(
         "Team limit reached.",
         `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`,
         "TEAM_LIMIT_REACHED"
@@ -125607,7 +125844,7 @@ function encodeTeamMemberCursor(createdAt, userId) {
   return Buffer.from(JSON.stringify({ v: 1, createdAt, userId }), "utf8").toString("base64url");
 }
 function invalidTeamMemberPage() {
-  return commandError2("Team member page is invalid.", `Use a limit from 1 through ${TEAM_MEMBER_LIST_MAX} and a cursor returned by listMembers().`, "INVALID_TEAM_MEMBER_PAGE");
+  return commandError("Team member page is invalid.", `Use a limit from 1 through ${TEAM_MEMBER_LIST_MAX} and a cursor returned by listMembers().`, "INVALID_TEAM_MEMBER_PAGE");
 }
 async function ensureInitialTeam(database, auth) {
   if (database.__transactionActive) {
@@ -125697,11 +125934,11 @@ function safeTeamName(value) {
 }
 function normalizeTeamName(value) {
   if (typeof value !== "string") {
-    throw commandError2("Team name is required.", "Provide a non-empty Team name.", "INVALID_TEAM_NAME");
+    throw commandError("Team name is required.", "Provide a non-empty Team name.", "INVALID_TEAM_NAME");
   }
   const name2 = value.normalize("NFKC").replace(/\s+/gu, " ").trim();
   if (name2.length === 0 || Buffer.byteLength(name2, "utf8") > TEAM_NAME_MAX_BYTES) {
-    throw commandError2(
+    throw commandError(
       "Team name is invalid.",
       `Use a non-empty Team name up to ${TEAM_NAME_MAX_BYTES} UTF-8 bytes.`,
       "INVALID_TEAM_NAME"
@@ -125710,14 +125947,14 @@ function normalizeTeamName(value) {
   return name2;
 }
 function invalidTeamApplicationRoleDeclaration() {
-  return commandError2(
+  return commandError(
     "Invalid Team application-role declaration.",
     `Declare at most ${TEAM_APPLICATION_ROLE_MAX} unique lowercase roles using letters, digits, and hyphens; admin, member, and sporades-* are reserved.`,
     "INVALID_TEAM_APPLICATION_ROLES"
   );
 }
 function invalidTeamApplicationRolePatch() {
-  return commandError2(
+  return commandError(
     "Invalid Team application-role update.",
     `Use non-overlapping add and remove arrays of at most ${TEAM_APPLICATION_ROLE_PATCH_MAX} declared roles.`,
     "INVALID_APPLICATION_ROLES"
@@ -125767,21 +126004,21 @@ async function runPrivilegedTeamInspection(contextGetter, inspect) {
 function assertActivePrivilegedTeamAccess(contextGetter) {
   const context2 = contextGetter?.();
   if (context2?.__privilegedRunActive && !context2.signal?.aborted) return;
-  throw commandError2(
+  throw commandError(
     "Privileged Team access is no longer active.",
     "Start a new ctx.privileged.run callback before inspecting Team state.",
     "PRIVILEGED_TEAM_ACCESS_INACTIVE"
   );
 }
 function privilegedTeamNotFound() {
-  return commandError2(
+  return commandError(
     "Team was not found.",
     "Use an existing Team identifier and retry.",
     "TEAM_NOT_FOUND"
   );
 }
 function teamDenied() {
-  return commandError2("Team operation denied.", "Sign in with a Team administrator account and retry.", "DENIED");
+  return commandError("Team operation denied.", "Sign in with a Team administrator account and retry.", "DENIED");
 }
 function teamSummary(input) {
   return {
@@ -125901,7 +126138,7 @@ function assertNotReservedAuthUserId(userId) {
   if (!isReservedAuthUserId(userId)) {
     return;
   }
-  throw commandError2(
+  throw commandError(
     "Reserved auth user ID cannot be used for a real Sporades user.",
     "Use runtime-generated user IDs for sessions and auth provider links.",
     "RESERVED_AUTH_USER_ID"
@@ -125931,7 +126168,7 @@ function requireAuth(context2, options = {}) {
   return requireUserAuth(context2, options);
 }
 function createUnauthenticatedError(logData = null) {
-  const error = commandError2("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
+  const error = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
   if (logData) {
     error.sporadesAuthDenialLogData = logData;
   }
@@ -126069,7 +126306,7 @@ function parseOAuthFormBody(body) {
   const parameters = new URLSearchParams();
   let error = null;
   let stateTrustworthy = true;
-  const invalidCallback = () => commandError2(
+  const invalidCallback = () => commandError(
     "Invalid OAuth callback.",
     "Retry sign-in from the app.",
     "OAUTH_INVALID_CALLBACK"
@@ -126138,14 +126375,14 @@ function validateOAuthCallbackScalar(value) {
 function validateConsumedOAuthCallbackParameters(parameters) {
   for (const name2 of ["code", "error", "user"]) {
     if (parameters.getAll(name2).length > 1) {
-      throw commandError2("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+      throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
     }
   }
   if (parameters.has("code") && parameters.has("error")) {
-    throw commandError2("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
   }
   if (parameters.has("error") && parameters.has("user")) {
-    throw commandError2("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
   }
 }
 function normalizeReturnTo(returnTo, origin) {
@@ -126214,19 +126451,19 @@ async function fetchBoundedOAuthJson(database, url, request, policy) {
         await response?.body?.cancel?.();
       } catch {
       }
-      throw commandError2(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+      throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
     }
     try {
       return await readBoundedJsonBody(response, policy.maxBytes);
     } catch (error) {
       if (error?.name === "AbortError" || signal.aborted) {
-        throw commandError2(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+        throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
       }
-      throw commandError2(policy.invalidMessage, policy.invalidHint, policy.invalidCode);
+      throw commandError(policy.invalidMessage, policy.invalidHint, policy.invalidCode);
     }
   } catch (error) {
     if (error?.code === policy.unavailableCode || error?.code === policy.invalidCode) throw error;
-    throw commandError2(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+    throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
   } finally {
     clearTimeout(timeout);
   }
@@ -126247,7 +126484,7 @@ async function completeOpenIdOAuthCodeExchange(database, context2, contract) {
     });
   } catch (error) {
     const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
-    throw commandError2(
+    throw commandError(
       timedOut ? contract.timeoutMessage ?? contract.exchangeMessage : contract.exchangeMessage,
       contract.exchangeHint,
       timedOut ? timeoutCode : exchangeCode
@@ -126256,21 +126493,21 @@ async function completeOpenIdOAuthCodeExchange(database, context2, contract) {
   if (!tokenResponse.ok) {
     await tokenResponse.body?.cancel?.().catch?.(() => {
     });
-    throw commandError2(contract.exchangeMessage, contract.exchangeHint, exchangeCode);
+    throw commandError(contract.exchangeMessage, contract.exchangeHint, exchangeCode);
   }
   let token;
   try {
     token = await readBoundedJsonResponse(tokenResponse, 64 * 1024);
   } catch (error) {
     const timedOut = signal.aborted || error?.name === "TimeoutError" || error?.name === "AbortError";
-    throw commandError2(
+    throw commandError(
       timedOut ? contract.timeoutMessage ?? contract.exchangeMessage : contract.responseMessage,
       contract.exchangeHint,
       timedOut ? timeoutCode : exchangeCode
     );
   }
   if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
-    throw commandError2(contract.tokenMessage, contract.tokenHint, "OAUTH_ID_TOKEN_INVALID");
+    throw commandError(contract.tokenMessage, contract.tokenHint, "OAUTH_ID_TOKEN_INVALID");
   }
   return await contract.verify(database, token.id_token, context2.nonce);
 }
@@ -126336,7 +126573,7 @@ function createAppleOAuthProviderAdapter(database) {
     reauthenticationFreshness: null,
     begin(context2) {
       if (!appleOAuthOriginEligible(new URL(context2.redirectUri).origin)) {
-        throw commandError2(
+        throw commandError(
           "Apple sign-in requires an HTTPS domain origin.",
           "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain.",
           "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED"
@@ -126383,7 +126620,7 @@ async function completeAppleOAuth(database, context2) {
   try {
     clientSecret = createAppleClientSecret(database);
   } catch {
-    throw commandError2(
+    throw commandError(
       "Apple client credential could not be generated.",
       "Check the Apple Team ID, Key ID, Services ID, and private key, then retry sign-in.",
       "OAUTH_CLIENT_CREDENTIAL_INVALID"
@@ -126415,7 +126652,7 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
   const apple = database.authConfig.providers.apple;
   const privateKey = database.serverEnv[apple.privateKeyEnv];
   if (!privateKey || ![apple.clientId, apple.teamId, apple.keyId].every((value) => typeof value === "string" && /^[\x21-\x7e]{1,255}$/.test(value))) {
-    throw commandError2(
+    throw commandError(
       "Apple client credential is invalid.",
       "Configure a matching Apple Services ID, Team ID, Key ID, and unencrypted P-256 private key.",
       "OAUTH_CLIENT_CREDENTIAL_INVALID"
@@ -126425,14 +126662,14 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
   try {
     signingKey = nodeCryptoModule3.createPrivateKey(privateKey);
   } catch {
-    throw commandError2(
+    throw commandError(
       "Apple client credential is invalid.",
       "Configure an unencrypted Apple P-256 private key in PKCS#8 PEM format.",
       "OAUTH_CLIENT_CREDENTIAL_INVALID"
     );
   }
   if (signingKey.type !== "private" || signingKey.asymmetricKeyType !== "ec" || signingKey.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
-    throw commandError2(
+    throw commandError(
       "Apple client credential is invalid.",
       "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
       "OAUTH_CLIENT_CREDENTIAL_INVALID"
@@ -126452,7 +126689,7 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
     { key: signingKey, dsaEncoding: "ieee-p1363" }
   );
   if (signatureBytes.length !== 64) {
-    throw commandError2(
+    throw commandError(
       "Apple client credential is invalid.",
       "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
       "OAUTH_CLIENT_CREDENTIAL_INVALID"
@@ -126474,7 +126711,7 @@ function createFacebookOAuthProviderAdapter(database) {
     begin(context2) {
       const clientId = database.serverEnv[facebook.clientIdEnv];
       if (typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096) {
-        throw commandError2(
+        throw commandError(
           "Facebook App ID is invalid.",
           "Configure a valid Facebook App ID and retry sign-in.",
           "FACEBOOK_CONFIGURATION_INVALID"
@@ -126494,7 +126731,7 @@ function createFacebookOAuthProviderAdapter(database) {
       );
       authorizationUrl.search = params.toString();
       if (authorizationUrl.toString().length > 8192) {
-        throw commandError2(
+        throw commandError(
           "Facebook authorization URL is too large.",
           "Check the Facebook App ID and callback configuration.",
           "FACEBOOK_CONFIGURATION_INVALID"
@@ -126515,21 +126752,21 @@ function facebookOAuthCallbackError(parameters) {
   const code = parameters.get("error_code");
   const description = parameters.get("error_description")?.toLowerCase() ?? "";
   if (reason === "user_denied" || code === "200") {
-    return commandError2(
+    return commandError(
       "Facebook permissions were declined or are unavailable.",
       "Allow the requested public profile and email permissions, then retry sign-in.",
       "FACEBOOK_PERMISSION_DENIED"
     );
   }
   if (code === "191") {
-    return commandError2(
+    return commandError(
       "Facebook rejected the OAuth redirect URI.",
       "Register the exact Sporades callback URL in the Facebook app settings, then retry sign-in.",
       "FACEBOOK_REDIRECT_MISMATCH"
     );
   }
   if (description.includes("development mode") || description.includes("app is not set up") || description.includes("app not set up") || description.includes("app is not available")) {
-    return commandError2(
+    return commandError(
       "Facebook sign-in is unavailable for this account.",
       "Check the Facebook app mode and tester access, then retry sign-in.",
       "FACEBOOK_APP_RESTRICTED"
@@ -126540,7 +126777,7 @@ function facebookOAuthCallbackError(parameters) {
 function facebookOAuthEndpoint(configured, fallback) {
   const value = configured === void 0 ? fallback : configured;
   if (typeof value !== "string" || value.length < 1 || value.length > 2048) {
-    throw commandError2(
+    throw commandError(
       "Facebook OAuth endpoint is invalid.",
       "Use the built-in HTTPS Meta endpoint.",
       "FACEBOOK_ENDPOINT_UNSAFE"
@@ -126550,7 +126787,7 @@ function facebookOAuthEndpoint(configured, fallback) {
   try {
     url = new URL(value);
   } catch {
-    throw commandError2(
+    throw commandError(
       "Facebook OAuth endpoint is invalid.",
       "Use the built-in HTTPS Meta endpoint.",
       "FACEBOOK_ENDPOINT_UNSAFE"
@@ -126559,7 +126796,7 @@ function facebookOAuthEndpoint(configured, fallback) {
   const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
   const insecureTestEndpoint = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1" && url.protocol === "http:" && loopback;
   if (url.protocol !== "https:" && !insecureTestEndpoint || url.username || url.password || url.hash) {
-    throw commandError2(
+    throw commandError(
       "Facebook OAuth endpoint is unsafe.",
       "Use the built-in HTTPS Meta endpoint. Plain HTTP is limited to the explicit loopback test seam.",
       "FACEBOOK_ENDPOINT_UNSAFE"
@@ -126581,7 +126818,7 @@ async function cancelFacebookOAuthResponse(response) {
 async function readFacebookOAuthJson(response, signal, failureCode, failureMessage, failureHint, timeoutCode, timeoutMessage) {
   const reader = response.body?.getReader();
   if (!reader) {
-    throw commandError2(failureMessage, failureHint, failureCode);
+    throw commandError(failureMessage, failureHint, failureCode);
   }
   const chunks = [];
   let length = 0;
@@ -126610,9 +126847,9 @@ async function readFacebookOAuthJson(response, signal, failureCode, failureMessa
     } catch {
     }
     if (error === aborted || signal.aborted) {
-      throw commandError2(timeoutMessage, failureHint, timeoutCode);
+      throw commandError(timeoutMessage, failureHint, timeoutCode);
     }
-    throw commandError2(failureMessage, failureHint, failureCode);
+    throw commandError(failureMessage, failureHint, failureCode);
   } finally {
     if (onAbort) signal.removeEventListener("abort", onAbort);
     try {
@@ -126625,7 +126862,7 @@ async function completeFacebookOAuth(database, context2) {
   const facebook = database.authConfig.providers.facebook;
   const graphVersion = facebook.graphVersion;
   if (graphVersion !== "v23.0") {
-    throw commandError2(
+    throw commandError(
       "Facebook Graph API version is unsupported.",
       "Configure Facebook Graph API version v23.0 and retry sign-in.",
       "FACEBOOK_GRAPH_VERSION_UNSUPPORTED"
@@ -126634,7 +126871,7 @@ async function completeFacebookOAuth(database, context2) {
   const clientId = database.serverEnv[facebook.clientIdEnv];
   const clientSecret = database.serverEnv[facebook.clientSecretEnv];
   if (typeof context2.code !== "string" || context2.code.length < 1 || context2.code.length > 16 * 1024 || typeof context2.redirectUri !== "string" || context2.redirectUri.length < 1 || context2.redirectUri.length > 2048 || typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096 || typeof clientSecret !== "string" || clientSecret.length < 1 || clientSecret.length > 16 * 1024) {
-    throw commandError2(
+    throw commandError(
       "Facebook OAuth callback or configuration is invalid.",
       "Retry sign-in and check the Facebook App ID, App Secret, and callback configuration.",
       "FACEBOOK_CALLBACK_INVALID"
@@ -126660,7 +126897,7 @@ async function completeFacebookOAuth(database, context2) {
       signal: tokenSignal
     });
   } catch (error) {
-    throw commandError2(
+    throw commandError(
       error?.name === "TimeoutError" || error?.name === "AbortError" ? "Facebook OAuth code exchange timed out." : "Facebook OAuth code exchange failed.",
       "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
       error?.name === "TimeoutError" || error?.name === "AbortError" ? "FACEBOOK_EXCHANGE_TIMEOUT" : "FACEBOOK_EXCHANGE_FAILED"
@@ -126668,7 +126905,7 @@ async function completeFacebookOAuth(database, context2) {
   }
   if (!tokenResponse.ok) {
     await cancelFacebookOAuthResponse(tokenResponse);
-    throw commandError2(
+    throw commandError(
       "Facebook OAuth code exchange failed.",
       "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
       "FACEBOOK_EXCHANGE_FAILED"
@@ -126684,7 +126921,7 @@ async function completeFacebookOAuth(database, context2) {
     "Facebook OAuth response timed out."
   );
   if (typeof token?.access_token !== "string" || token.access_token.length < 1 || token.access_token.length > 16 * 1024) {
-    throw commandError2(
+    throw commandError(
       "Facebook OAuth response did not include a valid access token.",
       "Check the Facebook app configuration and retry sign-in.",
       "FACEBOOK_EXCHANGE_FAILED"
@@ -126704,7 +126941,7 @@ async function completeFacebookOAuth(database, context2) {
       signal: graphSignal
     });
   } catch (error) {
-    throw commandError2(
+    throw commandError(
       error?.name === "TimeoutError" || error?.name === "AbortError" ? "Facebook profile request timed out." : "Facebook profile could not be loaded.",
       "Check Facebook Graph API access and retry sign-in.",
       error?.name === "TimeoutError" || error?.name === "AbortError" ? "FACEBOOK_GRAPH_TIMEOUT" : "FACEBOOK_GRAPH_FAILED"
@@ -126712,7 +126949,7 @@ async function completeFacebookOAuth(database, context2) {
   }
   if (!graphResponse.ok) {
     await cancelFacebookOAuthResponse(graphResponse);
-    throw commandError2(
+    throw commandError(
       "Facebook profile could not be loaded.",
       "Check Facebook Graph API access and retry sign-in.",
       "FACEBOOK_GRAPH_FAILED"
@@ -126728,7 +126965,7 @@ async function completeFacebookOAuth(database, context2) {
     "Facebook profile response timed out."
   );
   if (typeof profile?.id !== "string" || profile.id.length < 1 || profile.id.length > 255 || !/^[\x21-\x7e]+$/.test(profile.id)) {
-    throw commandError2(
+    throw commandError(
       "Facebook profile is missing a stable identifier.",
       "Retry Facebook sign-in. Sporades requires the Facebook profile id.",
       "FACEBOOK_PROFILE_ID_MISSING"
@@ -126759,7 +126996,7 @@ async function completeFacebookOAuth(database, context2) {
 async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   const parts = token.split(".");
   if (parts.length !== 3) {
-    throw commandError2("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   let header2;
   let claims;
@@ -126767,10 +127004,10 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
     header2 = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
     claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
   } catch {
-    throw commandError2("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   if (header2.alg !== "RS256" || typeof header2.kid !== "string") {
-    throw commandError2("Google identity token used an unsupported signature.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Google identity token used an unsupported signature.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const jwksUrl = oauthProviderTestEndpoint(
     process.env.SPORADES_GOOGLE_JWKS_URL,
@@ -126791,15 +127028,15 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
     });
   } catch (error) {
     if (error?.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" || error?.code === "OAUTH_ID_TOKEN_KEYS_INVALID") throw error;
-    throw commandError2("Google signing keys could not be loaded.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
+    throw commandError("Google signing keys could not be loaded.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
   }
   const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
   if (!keys) {
-    throw commandError2("Google signing keys were invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+    throw commandError("Google signing keys were invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
   }
   const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header2.kid && candidate.kty === "RSA" && typeof candidate.n === "string" && typeof candidate.e === "string");
   if (!jwk) {
-    throw commandError2("Google identity token signing key was not recognized.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Google identity token signing key was not recognized.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   let signatureValid = false;
   let signatureCheckFailed = false;
@@ -126819,7 +127056,7 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   const validSubject = typeof claims.sub === "string" && claims.sub.length <= 255 && /^[\x21-\x7e]+$/.test(claims.sub);
   const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : !validIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1e3) ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID" : null;
   if (invalidCode) {
-    throw commandError2("Google identity token failed verification.", "Retry Google sign-in.", invalidCode);
+    throw commandError("Google identity token failed verification.", "Retry Google sign-in.", invalidCode);
   }
   return {
     subject: claims.sub,
@@ -126866,7 +127103,7 @@ function createMicrosoftOAuthProviderAdapter(database) {
 async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
   const selectedTenant = validMicrosoftTenant(tenant) ? tenant : null;
   if (!selectedTenant) {
-    throw commandError2(
+    throw commandError(
       "Microsoft tenant configuration is invalid.",
       "Use common, organizations, consumers, a tenant GUID, or a verified tenant domain.",
       "OAUTH_TENANT_INVALID"
@@ -126886,7 +127123,7 @@ async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
     if (!loopbackOverride && !microsoftDiscovery) throw new Error("untrusted discovery");
     discoveryOrigin = parsedDiscoveryUrl.origin;
   } catch {
-    throw commandError2(
+    throw commandError(
       "Microsoft OpenID discovery URL was invalid.",
       "Use the Microsoft identity platform discovery endpoint.",
       "OAUTH_DISCOVERY_INVALID"
@@ -126915,7 +127152,7 @@ async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
       lastAccess: cacheRoot.nextAccess++
     };
     if (cache.size >= 32) {
-      throw commandError2(
+      throw commandError(
         "Microsoft OpenID configuration could not be loaded.",
         "Retry Microsoft sign-in after other provider requests complete.",
         "OAUTH_DISCOVERY_UNAVAILABLE"
@@ -126941,7 +127178,7 @@ async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
     if (!isPlainRecord2(discovery) || !required.every(
       (key) => typeof discovery[key] === "string" && discovery[key].length > 0 && discovery[key].length <= 2048
     )) {
-      throw commandError2(
+      throw commandError(
         "Microsoft OpenID configuration was invalid.",
         "Check Microsoft tenant selection and retry sign-in.",
         "OAUTH_DISCOVERY_INVALID"
@@ -126954,7 +127191,7 @@ async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
       const issuerTrusted = issuerUrl.protocol === "https:" && issuerUrl.hostname === "login.microsoftonline.com";
       if (!endpointsTrusted || !issuerTrusted) throw new Error("untrusted endpoints");
     } catch {
-      throw commandError2(
+      throw commandError(
         "Microsoft OpenID configuration contained invalid endpoints.",
         "Check Microsoft tenant selection and retry sign-in.",
         "OAUTH_DISCOVERY_INVALID"
@@ -127080,14 +127317,14 @@ async function completeMicrosoftOAuth(database, context2) {
     invalidHint: "Check the Microsoft client configuration and retry sign-in."
   });
   if (!isPlainRecord2(token)) {
-    throw commandError2(
+    throw commandError(
       "Microsoft OAuth response was invalid.",
       "Check the Microsoft client configuration and retry sign-in.",
       "OAUTH_EXCHANGE_FAILED"
     );
   }
   if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
-    throw commandError2(
+    throw commandError(
       "Microsoft OAuth response did not include a valid identity token.",
       "Check the Microsoft client configuration and retry sign-in.",
       "OAUTH_ID_TOKEN_INVALID"
@@ -127097,11 +127334,11 @@ async function completeMicrosoftOAuth(database, context2) {
 }
 async function verifyMicrosoftIdentityToken(database, token, expectedNonce, discovery) {
   if (typeof token !== "string" || token.length > 16 * 1024 || typeof expectedNonce !== "string" || expectedNonce.length < 1 || expectedNonce.length > 512 || !isPlainRecord2(discovery) || typeof discovery.issuer !== "string" || discovery.issuer.length > 2048 || typeof discovery.jwks_uri !== "string" || discovery.jwks_uri.length > 2048) {
-    throw commandError2("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const parts = token.split(".");
   if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
-    throw commandError2("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   let header2;
   let claims;
@@ -127112,7 +127349,7 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
     signature = decodeJwtPart(parts[2]);
     if (signature.length < 128 || signature.length > 1024) throw new Error("signature size");
   } catch {
-    throw commandError2("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const visible = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max && /^[\x21-\x7e]+$/.test(value);
   const validAudience = typeof claims.aud === "string" ? visible(claims.aud, 512) : Array.isArray(claims.aud) && claims.aud.length > 0 && claims.aud.length <= 10 && claims.aud.every((value) => visible(value, 512));
@@ -127121,7 +127358,7 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
   const optionalProfile = (value, max) => value === void 0 || value === null || typeof value === "string" && value.length <= max;
   const structurallyValid = header2.alg === "RS256" && visible(header2.kid, 255) && visible(claims.iss, 2048) && validAudience && numericDate(claims.exp) && optionalNumericDate(claims.nbf) && optionalNumericDate(claims.iat) && optionalNumericDate(claims.auth_time) && visible(claims.nonce, 512) && typeof claims.tid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.tid) && visible(claims.sub, 255) && optionalProfile(claims.email, 1024) && optionalProfile(claims.name, 1024) && optionalProfile(claims.preferred_username, 1024);
   if (!structurallyValid) {
-    throw commandError2("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const jwk = await selectMicrosoftJwk(database, discovery, header2.kid);
   let signatureValid = false;
@@ -127146,7 +127383,7 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
   const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : claims.iss !== expectedIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : expectedKeyIssuer !== claims.iss ? "OAUTH_ID_TOKEN_KEY_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : claims.exp <= nowSeconds2 ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nbf !== void 0 && claims.nbf > nowSeconds2 + 60 ? "OAUTH_ID_TOKEN_NOT_YET_VALID" : claims.iat !== void 0 && claims.iat > nowSeconds2 + 5 * 60 ? "OAUTH_ID_TOKEN_ISSUED_AT_INVALID" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !tenantAllowed ? "OAUTH_TENANT_REJECTED" : null;
   if (invalidCode) {
     const tenantFailure = invalidCode === "OAUTH_TENANT_REJECTED";
-    throw commandError2(
+    throw commandError(
       tenantFailure ? "Microsoft account is not allowed by the configured tenant." : "Microsoft identity token failed verification.",
       tenantFailure ? "Use an account accepted by this Capsule's Microsoft tenant selection." : "Retry Microsoft sign-in.",
       invalidCode
@@ -127164,11 +127401,11 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
 }
 async function verifyAppleIdentityToken(database, token, expectedNonce) {
   if (typeof token !== "string" || token.length > 16 * 1024) {
-    throw commandError2("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const parts = token.split(".");
   if (parts.length !== 3) {
-    throw commandError2("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   let header2;
   let claims;
@@ -127176,10 +127413,10 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
     header2 = parseBoundedJwtObject(parts[0]);
     claims = parseBoundedJwtObject(parts[1]);
   } catch {
-    throw commandError2("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   if (header2.alg !== "RS256" || typeof header2.kid !== "string" || !/^[\x21-\x7e]{1,255}$/.test(header2.kid) || header2.typ !== void 0 && header2.typ !== "JWT") {
-    throw commandError2("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const jwksUrl = oauthProviderTestEndpoint(
     process.env.SPORADES_APPLE_JWKS_URL,
@@ -127200,15 +127437,15 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
     });
   } catch (error) {
     if (error?.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" || error?.code === "OAUTH_ID_TOKEN_KEYS_INVALID") throw error;
-    throw commandError2("Apple signing keys could not be loaded.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
+    throw commandError("Apple signing keys could not be loaded.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
   }
   const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
   if (!keys) {
-    throw commandError2("Apple signing keys were invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+    throw commandError("Apple signing keys were invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
   }
   const jwk = keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header2.kid && candidate.kty === "RSA" && candidate.use === "sig" && candidate.alg === "RS256" && typeof candidate.n === "string" && typeof candidate.e === "string");
   if (!jwk) {
-    throw commandError2("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   let signatureValid = false;
   let signatureCheckFailed = false;
@@ -127227,7 +127464,7 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
   const validSubject = typeof claims.sub === "string" && claims.sub.length <= 255 && /^[\x21-\x7e]+$/.test(claims.sub);
   const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : typeof claims.iss !== "string" || claims.iss !== "https://appleid.apple.com" ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : !Number.isSafeInteger(claims.exp) || claims.exp <= Math.floor(Date.now() / 1e3) ? "OAUTH_ID_TOKEN_EXPIRED" : typeof claims.nonce !== "string" || claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID" : null;
   if (invalidCode) {
-    throw commandError2("Apple identity token failed verification.", "Retry Apple sign-in.", invalidCode);
+    throw commandError("Apple identity token failed verification.", "Retry Apple sign-in.", invalidCode);
   }
   return {
     subject: claims.sub,
@@ -127292,16 +127529,16 @@ function isPlainJsonObject(value) {
 function parseAppleAuthorizationUser(value) {
   if (value === null || value === void 0 || value === "") return null;
   if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 8 * 1024) {
-    throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
   }
   let user;
   try {
     user = JSON.parse(value);
   } catch {
-    throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
   }
   if (!user || typeof user !== "object" || Array.isArray(user) || user.name !== void 0 && (!user.name || typeof user.name !== "object" || Array.isArray(user.name))) {
-    throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
   }
   const firstName = sanitizeAppleNamePart(user.name?.firstName);
   const lastName = sanitizeAppleNamePart(user.name?.lastName);
@@ -127311,12 +127548,12 @@ function parseAppleAuthorizationUser(value) {
 function sanitizeAppleNamePart(value) {
   if (value === null || value === void 0 || value === "") return null;
   if (typeof value !== "string") {
-    throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
   }
   const text3 = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   if (!text3) return null;
   if (text3.length > 128) {
-    throw commandError2("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
   }
   return text3;
 }
@@ -127346,7 +127583,7 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
       lastAccess: cacheRoot.nextAccess++
     };
     if (cache.size >= 32) {
-      throw commandError2(
+      throw commandError(
         "Microsoft signing keys could not be loaded.",
         "Retry Microsoft sign-in after other provider requests complete.",
         "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE"
@@ -127407,7 +127644,7 @@ async function loadMicrosoftJwks(database, discovery, forceRefresh = false, obse
       invalidHint: "Retry Microsoft sign-in."
     });
     if (!isPlainRecord2(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > 100) {
-      throw commandError2("Microsoft signing keys were invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+      throw commandError("Microsoft signing keys were invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
     }
     if (requestGeneration >= state.generation) {
       state.value = jwks;
@@ -127445,11 +127682,11 @@ async function selectMicrosoftJwk(database, discovery, kid) {
     candidate = jwks.keys.find((value) => isPlainRecord2(value) && value.kid === kid);
   }
   if (!candidate) {
-    throw commandError2("Microsoft identity token signing key was not recognized.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    throw commandError("Microsoft identity token signing key was not recognized.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const valid = candidate.kty === "RSA" && (candidate.alg === void 0 || candidate.alg === "RS256") && (candidate.use === void 0 || candidate.use === "sig") && typeof candidate.issuer === "string" && candidate.issuer.length > 0 && candidate.issuer.length <= 2048 && typeof candidate.n === "string" && /^[A-Za-z0-9_-]+$/.test(candidate.n) && candidate.n.length >= 256 && candidate.n.length <= 2048 && typeof candidate.e === "string" && /^[A-Za-z0-9_-]+$/.test(candidate.e) && candidate.e.length >= 2 && candidate.e.length <= 16;
   if (!valid) {
-    throw commandError2("Microsoft signing key was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+    throw commandError("Microsoft signing key was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
   }
   return candidate;
 }
@@ -127507,7 +127744,7 @@ function normalizePasswordResetPath(value) {
 function passwordResetCodeParts(database, requestedCode = null) {
   const [selector, verifier, ...rest] = typeof requestedCode === "string" ? requestedCode.split(".") : [nodeCryptoModule3.randomBytes(16).toString("base64url"), nodeCryptoModule3.randomBytes(32).toString("base64url")];
   if (!selector || !verifier || rest.length > 0 || !/^[A-Za-z0-9_-]{16,64}$/.test(selector) || !/^[A-Za-z0-9_-]{32,128}$/.test(verifier)) {
-    throw commandError2("Invalid password reset request.", "Request a new password reset link.", "INVALID_PASSWORD_RESET_REQUEST");
+    throw commandError("Invalid password reset request.", "Request a new password reset link.", "INVALID_PASSWORD_RESET_REQUEST");
   }
   return {
     selector,
@@ -127526,7 +127763,7 @@ async function issuePasswordResetCode(database, credential, requestedCode = null
     const existing = await database.adapter.findPasswordResetCode(selector);
     if (existing && Date.parse(existing.expiresAt) > now2.getTime()) {
       if (existing.email !== credential.email || existing.userId !== credential.userId || existing.verifierHash !== verifierHash) {
-        throw commandError2("Password reset request conflicted with existing state.", "Request a new password reset link.", "PASSWORD_RESET_REQUEST_CONFLICT");
+        throw commandError("Password reset request conflicted with existing state.", "Request a new password reset link.", "PASSWORD_RESET_REQUEST_CONFLICT");
       }
       const link3 = new URL(database.passwordResetConfig.path, database.passwordResetConfig.origin);
       link3.searchParams.set("code", code);
@@ -128019,7 +128256,7 @@ function normalizeAuthConfig2(authConfig) {
   const providerConfig = authConfig.providers ?? {};
   for (const provider of Object.keys(providerConfig)) {
     if (!["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
-      throw commandError2(
+      throw commandError(
         `Unsupported auth provider: ${provider}`,
         "Use supported auth providers: anonymous, email, google, microsoft, apple, facebook."
       );
@@ -128418,7 +128655,7 @@ async function routeSporadesAuth(database, request, response) {
   }
   const provider = match[1];
   if (!isSupportedOAuthProvider(database, provider)) {
-    writeEndpointError(response, commandError2("Unknown OAuth provider.", "Retry sign-in with a provider configured by this Capsule.", "OAUTH_UNKNOWN_PROVIDER"));
+    writeEndpointError(response, commandError("Unknown OAuth provider.", "Retry sign-in with a provider configured by this Capsule.", "OAUTH_UNKNOWN_PROVIDER"));
     return true;
   }
   let callbackParameters;
@@ -128432,12 +128669,12 @@ async function routeSporadesAuth(database, request, response) {
   const states = parameters.getAll("state");
   const state = states.length === 1 ? states[0] : null;
   if (!callbackParameters.stateTrustworthy || !state || states.length !== 1) {
-    writeEndpointError(response, commandError2("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
+    writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
     return true;
   }
   const stateRow = await database.adapter.consumeOAuthState(state);
   if (!stateRow) {
-    writeEndpointError(response, commandError2("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
+    writeEndpointError(response, commandError("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
     return true;
   }
   try {
@@ -128446,17 +128683,17 @@ async function routeSporadesAuth(database, request, response) {
     }
     validateConsumedOAuthCallbackParameters(parameters);
     if (stateRow.provider !== provider) {
-      throw commandError2("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
+      throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
     }
     if (!stateRow.expiresAt || Date.parse(stateRow.expiresAt) <= Date.now()) {
-      throw commandError2("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
+      throw commandError("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
     }
     const adapter = oauthProviderAdapter(database, provider);
     if (!adapter?.enabled) {
-      throw commandError2("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
+      throw commandError("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
     }
     if (adapter.responseMode === "form_post" && request.method !== "POST" || adapter.responseMode !== "form_post" && request.method !== "GET") {
-      throw commandError2("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
+      throw commandError("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
     }
     const providerError = parameters.get("error");
     if (providerError) {
@@ -128466,7 +128703,7 @@ async function routeSporadesAuth(database, request, response) {
       }
       const actionRequired = ["consent_required", "interaction_required", "login_required"].includes(providerError);
       const cancelled = ["access_denied", "user_cancelled", "user_cancelled_authorize"].includes(providerError);
-      throw commandError2(
+      throw commandError(
         actionRequired ? "OAuth provider requires additional user action." : cancelled ? "OAuth sign-in was cancelled or declined." : "OAuth provider rejected the sign-in request.",
         actionRequired ? "Retry sign-in and complete the provider's consent or account prompt." : cancelled ? "Retry sign-in when you are ready." : "Check the provider credentials, tenant, and callback URI, then retry sign-in.",
         actionRequired ? "OAUTH_PROVIDER_ACTION_REQUIRED" : cancelled ? "OAUTH_PROVIDER_CANCELLED" : "OAUTH_PROVIDER_REJECTED"
@@ -128474,7 +128711,7 @@ async function routeSporadesAuth(database, request, response) {
     }
     const code = parameters.get("code");
     if (!code) {
-      throw commandError2("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+      throw commandError("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
     }
     const profile = await adapter.complete({
       provider,
@@ -128508,9 +128745,9 @@ async function routeSporadesAuth(database, request, response) {
           await database.log?.emit?.({ category: "platform", event: "auth.reauthentication.authorization_failed", level: "error", message: "Reauthentication authorization policy failed.", data: { provider, purpose: stateRow.reauthPurpose } });
         } catch {
         }
-        throw commandError2("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
+        throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
       }
-      if (!authorized) throw commandError2("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
+      if (!authorized) throw commandError("Reauthentication failed.", "Verify the current linked identity and retry.", "REAUTHENTICATION_FAILED");
       writeRedirect(response, stateRow.returnTo);
       return true;
     }
@@ -128519,14 +128756,14 @@ async function routeSporadesAuth(database, request, response) {
     try {
       result = await linkProviderIdentity(database, session, provider, profile, stateRow.registrationCiphertext ? stateRow : void 0);
     } catch {
-      throw commandError2(
+      throw commandError(
         "OAuth account linking failed.",
         "Retry sign-in. If the problem persists, check the database connection.",
         "AUTH_TRANSACTION_FAILED"
       );
     }
     if (!result.ok) {
-      throw commandError2(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
+      throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
     }
     writeRedirect(response, stateRow.returnTo);
   } catch (error) {
@@ -128543,7 +128780,7 @@ async function readOAuthCallbackParameters(request, requestUrl) {
     };
   }
   if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
-    throw commandError2("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
   }
   const body = await readLimitedRequestBody(request, 16 * 1024);
   return parseOAuthFormBody(body);
@@ -129885,7 +130122,7 @@ function logPayloadMaxBytes(config = {}) {
 function validateLogConfig(config = {}) {
   const minimum = minimumLogPayloadMaxBytes(config);
   const fail3 = (key) => {
-    throw commandError2(
+    throw commandError(
       "Invalid log payload cap.",
       `Set \`${key}.payloadMaxBytes\` to an integer of at least ${minimum} bytes for this Capsule in sporades.json.`,
       "INVALID_LOG_CONFIG"
@@ -129896,192 +130133,6 @@ function validateLogConfig(config = {}) {
     if (value !== void 0 && (!Number.isSafeInteger(value) || value < minimum)) fail3(key);
   }
   if (logPayloadMaxBytes(config) < minimum) fail3("logs");
-}
-
-// src/mail-config-validation.ts
-function invalidMailConfig(message, hint) {
-  const error = new Error(message);
-  error.code = "INVALID_MAIL_CONFIG";
-  error.hint = hint;
-  throw error;
-}
-function captureMailConfigData(value, allowed, message, hint) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) invalidMailConfig(message, hint);
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) invalidMailConfig(message, hint);
-  const entries = [];
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string") invalidMailConfig(message, hint);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
-      invalidMailConfig(message, hint);
-    }
-    if (!allowed.includes(key)) invalidMailConfig(message, hint);
-    entries.push([key, descriptor.value]);
-  }
-  return new Map(entries);
-}
-function isServerEnvReference2(value) {
-  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
-}
-
-// src/email-events-config.ts
-function sameOriginWebhookPath(value) {
-  return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !value.includes("?") && !value.includes("#") && !/\s/.test(value) && !value.split("/").includes("..");
-}
-function runtimeOwnedHttpPath(value) {
-  return /^\/__sporades\/(?:auth|debug|files|health|uploads)(?:\/|$)/.test(value);
-}
-function validateEmailWebhooksConfig(webhooks) {
-  if (webhooks === void 0) return void 0;
-  const webhooksData = captureMailConfigData(
-    webhooks,
-    ["mailjet", "smtp2go", "postmark", "mailgun"],
-    "Invalid email webhook configuration.",
-    "Configure only supported providers under `mail.webhooks`."
-  );
-  const result = {};
-  for (const [provider, defaultPath, defaultSecretEnv] of [
-    ["mailjet", "/__sporades/mail/webhooks/mailjet", "MAILJET_WEBHOOK_SECRET"],
-    ["smtp2go", "/__sporades/mail/webhooks/smtp2go", "SMTP2GO_WEBHOOK_SECRET"],
-    ["postmark", "/__sporades/mail/webhooks/postmark", "POSTMARK_WEBHOOK_SECRET"],
-    ["mailgun", "/__sporades/mail/webhooks/mailgun", "MAILGUN_WEBHOOK_KEY"]
-  ]) {
-    const input = webhooksData.get(provider);
-    if (input === void 0) continue;
-    const data2 = captureMailConfigData(
-      input,
-      ["enabled", "path", "secretEnv"],
-      `Invalid ${provider} webhook configuration.`,
-      `Configure \`mail.webhooks.${provider}\` with optional enabled, path, and secretEnv values.`
-    );
-    const enabled = data2.get("enabled") ?? true;
-    const path22 = data2.get("path") ?? defaultPath;
-    const secretEnv = data2.get("secretEnv") ?? defaultSecretEnv;
-    if (typeof enabled !== "boolean") {
-      invalidMailConfig(`Invalid ${provider} webhook enabled flag.`, `Set \`mail.webhooks.${provider}.enabled\` to true or false.`);
-    }
-    if (!sameOriginWebhookPath(path22) || runtimeOwnedHttpPath(path22)) {
-      invalidMailConfig(
-        `Invalid ${provider} webhook path.`,
-        `Set \`mail.webhooks.${provider}.path\` to a same-origin absolute path outside Sporades runtime-owned HTTP namespaces.`
-      );
-    }
-    if (!isServerEnvReference2(secretEnv)) {
-      invalidMailConfig(
-        `Invalid ${provider} webhook Server env reference.`,
-        `Set \`mail.webhooks.${provider}.secretEnv\` to an uppercase Server env key without the reserved \`SPORADES_\` prefix.`
-      );
-    }
-    result[provider] = { enabled, path: path22, secretEnv };
-  }
-  return result;
-}
-
-// src/mail-config.ts
-function validateMailConfig(mail) {
-  const fail3 = invalidMailConfig;
-  const capture = captureMailConfigData;
-  const envReference = isServerEnvReference2;
-  const optional = (target, name2, value) => {
-    if (value !== void 0) target[name2] = value;
-  };
-  if (mail === void 0) return void 0;
-  const mailData = capture(
-    mail,
-    ["smtp", "webhooks"],
-    "Invalid mail configuration.",
-    "Set `mail.smtp` in sporades.json, or omit `mail` to disable delivery."
-  );
-  const webhooks = validateEmailWebhooksConfig(mailData.get("webhooks"));
-  if (mailData.get("smtp") === void 0) return webhooks === void 0 ? {} : { webhooks };
-  const smtpData = capture(
-    mailData.get("smtp"),
-    ["vendor", "host", "port", "tls", "auth", "defaultFrom", "connectionTimeoutMs", "socketTimeoutMs"],
-    "Invalid SMTP configuration.",
-    "Configure only vendor, host, port, tls, auth, defaultFrom, connectionTimeoutMs, and socketTimeoutMs."
-  );
-  const vendor = smtpData.get("vendor");
-  const host = smtpData.get("host");
-  const port = smtpData.get("port");
-  if (typeof vendor !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(vendor)) {
-    fail3("Invalid SMTP vendor.", "Set `mail.smtp.vendor` to a lowercase provider identity such as `generic`.");
-  }
-  if (typeof host !== "string" || host.length < 1 || host.length > 253 || /[^\x21-\x7e]/.test(host)) {
-    fail3("Invalid SMTP host.", "Set `mail.smtp.host` to a non-empty DNS name or IP address.");
-  }
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    fail3("Invalid SMTP port.", "Set `mail.smtp.port` to an integer from 1 through 65535.");
-  }
-  const tlsData = capture(
-    smtpData.get("tls"),
-    ["mode", "rejectUnauthorized", "servername"],
-    "Invalid SMTP TLS configuration.",
-    "Set `mail.smtp.tls.mode` and optional `rejectUnauthorized` and `servername`; do not combine TLS modes or legacy secure flags."
-  );
-  const tlsMode = tlsData.get("mode");
-  const rejectUnauthorized = tlsData.get("rejectUnauthorized");
-  const servername = tlsData.get("servername");
-  if (!["implicit", "required-starttls", "opportunistic", "disabled"].includes(tlsMode)) {
-    fail3("Invalid SMTP TLS mode.", "Use `implicit`, `required-starttls`, `opportunistic`, or `disabled`.");
-  }
-  if (rejectUnauthorized !== void 0 && typeof rejectUnauthorized !== "boolean") {
-    fail3("Invalid SMTP TLS certificate policy.", "Set `mail.smtp.tls.rejectUnauthorized` to a boolean.");
-  }
-  if (servername !== void 0 && (typeof servername !== "string" || servername.length < 1 || servername.length > 253 || !/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(servername) || servername.split(".").some((label) => label.length < 1 || label.length > 63 || label.startsWith("-") || label.endsWith("-")))) {
-    fail3("Invalid SMTP TLS server name.", "Set `mail.smtp.tls.servername` to the DNS name on the SMTP certificate, especially when `host` is an IP address.");
-  }
-  const authData = capture(
-    smtpData.get("auth"),
-    ["method", "usernameEnv", "passwordEnv"],
-    "Invalid SMTP authentication configuration.",
-    'Use `PLAIN` or `LOGIN` with Server env references, or exactly `{ "method": "none" }` for an explicit unauthenticated relay.'
-  );
-  const authMethod = authData.get("method");
-  const usernameEnv = authData.get("usernameEnv");
-  const passwordEnv = authData.get("passwordEnv");
-  let auth;
-  if (authMethod === "none") {
-    if (authData.size !== 1) {
-      fail3("Invalid SMTP authentication configuration.", 'Set exactly `{ "method": "none" }` only for an explicitly trusted unauthenticated relay.');
-    }
-    auth = { method: "none" };
-  } else {
-    if (!["PLAIN", "LOGIN"].includes(authMethod) || typeof usernameEnv !== "string" || typeof passwordEnv !== "string") {
-      fail3("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
-    }
-    if (!envReference(usernameEnv) || !envReference(passwordEnv)) {
-      fail3("Invalid SMTP Server env reference.", "Use uppercase Server env key names without the reserved `SPORADES_` prefix.");
-    }
-    auth = { method: authMethod, usernameEnv, passwordEnv };
-  }
-  if (["opportunistic", "disabled"].includes(tlsMode) && authMethod !== "none") {
-    fail3(
-      "SMTP plaintext delivery requires an explicit unauthenticated relay.",
-      'Use required STARTTLS or implicit TLS with credentials; opportunistic and disabled TLS are allowed only with `{ "auth": { "method": "none" } }`.'
-    );
-  }
-  const defaultFrom = smtpData.get("defaultFrom");
-  if (defaultFrom !== void 0 && (typeof defaultFrom !== "string" || defaultFrom.length < 1 || defaultFrom.length > 320 || /[\r\n\0]/.test(defaultFrom))) {
-    fail3("Invalid SMTP default sender.", "Set `mail.smtp.defaultFrom` to one email address without control characters.");
-  }
-  const validateTimeout = (name2, value, maximum, label) => {
-    if (value !== void 0 && (!Number.isInteger(value) || value < 100 || value > maximum)) {
-      fail3(`Invalid SMTP ${label} timeout.`, `Set \`mail.smtp.${name2}\` to an integer from 100 through ${maximum} milliseconds.`);
-    }
-  };
-  const connectionTimeoutMs = smtpData.get("connectionTimeoutMs");
-  const socketTimeoutMs = smtpData.get("socketTimeoutMs");
-  validateTimeout("connectionTimeoutMs", connectionTimeoutMs, 6e4, "connection");
-  validateTimeout("socketTimeoutMs", socketTimeoutMs, 3e5, "socket");
-  const tls = { mode: tlsMode };
-  optional(tls, "rejectUnauthorized", rejectUnauthorized);
-  optional(tls, "servername", servername);
-  const smtp = { vendor, host, port, tls, auth };
-  optional(smtp, "defaultFrom", defaultFrom);
-  optional(smtp, "connectionTimeoutMs", connectionTimeoutMs);
-  optional(smtp, "socketTimeoutMs", socketTimeoutMs);
-  return { smtp, ...webhooks === void 0 ? {} : { webhooks } };
 }
 
 // src/mail-runtime.ts
@@ -130765,26 +130816,26 @@ function normalizeMailgunProvider(provider) {
 }
 function serializeMailgunJson(value, label, maximumBytes) {
   const seen = /* @__PURE__ */ new Set();
-  const normalize = (candidate, path22) => {
+  const normalize = (candidate, path23) => {
     if (candidate === null || typeof candidate === "string" || typeof candidate === "boolean") return candidate;
     if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
     if (Array.isArray(candidate)) {
-      if (seen.has(candidate)) throw new Error(`${path22} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path23} is cyclic`);
       seen.add(candidate);
-      const result = captureMailProviderDataArray(candidate, path22).map((entry, index) => normalize(entry, `${path22}[${index}]`));
+      const result = captureMailProviderDataArray(candidate, path23).map((entry, index) => normalize(entry, `${path23}[${index}]`));
       seen.delete(candidate);
       return result;
     }
     if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error(`${path22} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path23} is cyclic`);
       seen.add(candidate);
-      const entries = captureMailProviderDataObject(candidate, path22, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+      const entries = captureMailProviderDataObject(candidate, path23, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
       const result = /* @__PURE__ */ Object.create(null);
-      for (const [key, entry] of entries) result[key] = normalize(entry, `${path22}.${key}`);
+      for (const [key, entry] of entries) result[key] = normalize(entry, `${path23}.${key}`);
       seen.delete(candidate);
       return result;
     }
-    throw new Error(`${path22} is not JSON-compatible`);
+    throw new Error(`${path23} is not JSON-compatible`);
   };
   let json;
   try {
@@ -131677,7 +131728,7 @@ function liveQueryNeedsRefresh(readTables, dirty) {
 // src/service-users-runtime.ts
 var SERVICE_USER_DISPLAY_NAME_BYTES = 160;
 function serviceUserError(code, message, hint) {
-  return commandError2(message, hint, code);
+  return commandError(message, hint, code);
 }
 function normalizeDisplayName(value) {
   if (typeof value !== "string") {
@@ -132816,7 +132867,7 @@ function createConnectionTransactionGate(engine) {
   };
 }
 async function rejectNestedTransactionScope() {
-  throw commandError2(
+  throw commandError(
     "Nested database transactions are not supported.",
     "Keep mutation work inside a single Sporades mutation transaction."
   );
@@ -132831,7 +132882,7 @@ function isActiveTransactionScopedAdapter(value, owner) {
 function createTransactionScopedAdapter(adapter, operations, owner, kind) {
   let active = true;
   const assertActive = () => {
-    if (!active) throw commandError2(
+    if (!active) throw commandError(
       "Transaction-scoped database access is no longer active.",
       "Do not retain ctx.db operations after the trusted handler has completed."
     );
@@ -132914,7 +132965,7 @@ function createDatabaseDialect(spec) {
   ];
   const missing = required.filter((key) => spec[key] == null);
   if (missing.length > 0) {
-    throw commandError2(
+    throw commandError(
       `Incomplete Database adapter dialect: ${missing.join(", ")}.`,
       "A Database engine supplies statement primitives, a dialect and row normalization. Answer every dialect entry."
     );
@@ -132927,7 +132978,7 @@ function quoteSqlIdentifiers(quoteIdentifier2, statement) {
 function createDatabaseNormalization(spec) {
   const missing = ["name", "columnName", "value"].filter((key) => spec[key] == null);
   if (missing.length > 0) {
-    throw commandError2(
+    throw commandError(
       `Incomplete Database adapter normalization: ${missing.join(", ")}.`,
       "A Database engine supplies statement primitives, a dialect and row normalization. Answer every normalization entry."
     );
@@ -133035,7 +133086,7 @@ function postgresDatabaseDialect() {
 }
 function assertAuthUserProvider(row) {
   if (Number(row.isAuthenticated) === 1 && (typeof row.provider !== "string" || !row.provider.trim() || ["anonymous", "guest"].includes(row.provider))) {
-    throw commandError2(
+    throw commandError(
       "Authenticated users require a non-anonymous provider label.",
       "Supply the authentication method used; historical missing evidence is labelled unknown.",
       "INVALID_AUTH_USER_PROVIDER"
@@ -133228,24 +133279,24 @@ function createSharedDatabaseAdapterMethods(dialect) {
         () => thenIfPromise(this.prepare(select).get(fileId), (row) => row ?? null)
       );
     },
-    selectLiveFileByPath(path22) {
+    selectLiveFileByPath(path23) {
       return this.prepare(
         sql2("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] = ?")
-      ).all(path22, "uploaded");
+      ).all(path23, "uploaded");
     },
-    selectActiveFileByPath(path22) {
+    selectActiveFileByPath(path23) {
       return this.prepare(
         sql2("SELECT * FROM [sporades_files] WHERE [path] = ? AND [deletedAt] IS NULL AND [status] IN (?, ?)")
       ).all(
-        path22,
+        path23,
         "pending",
         "uploaded"
       );
     },
-    selectPendingFileUploadByPath(path22) {
+    selectPendingFileUploadByPath(path23) {
       return this.prepare(
         sql2("SELECT * FROM [sporades_file_uploads] WHERE [path] = ? ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")
-      ).get(path22) ?? null;
+      ).get(path23) ?? null;
     },
     selectFileUpload(uploadId) {
       return this.prepare(sql2("SELECT * FROM [sporades_file_uploads] WHERE [id] = ?")).get(uploadId) ?? null;
@@ -133302,8 +133353,8 @@ function createSharedDatabaseAdapterMethods(dialect) {
         )
       );
     },
-    deleteFileUploadsForPath(path22) {
-      return this.prepare(sql2("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path22);
+    deleteFileUploadsForPath(path23) {
+      return this.prepare(sql2("DELETE FROM [sporades_file_uploads] WHERE [path] = ?")).run(path23);
     },
     deleteFileUploadsForFile(ownerId, fileId) {
       return this.prepare(sql2("DELETE FROM [sporades_file_uploads] WHERE [ownerId] = ? AND [fileId] = ?")).run(ownerId, fileId);
@@ -134073,8 +134124,8 @@ function createSharedDatabaseAdapterMethods(dialect) {
 }
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
-  const path22 = await import("node:path");
-  if (!options.readOnly) nodeFsModule.mkdirSync(path22.dirname(String(databasePath)), { recursive: true });
+  const path23 = await import("node:path");
+  if (!options.readOnly) nodeFsModule.mkdirSync(path23.dirname(String(databasePath)), { recursive: true });
   let connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   let resourceConnectionQuarantined = false;
   let resourceConnectionDisposed = false;
@@ -134289,7 +134340,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
 async function createPostgresDatabaseAdapter(options) {
   const url = typeof options === "string" ? options : options?.url;
   if (!url) {
-    throw commandError2(
+    throw commandError(
       "Missing Postgres database service URL.",
       "Start a Dev session or local Container session with services.database.engine set to postgres."
     );
@@ -134764,7 +134815,7 @@ async function createPostgresConnection(url, signal) {
       if (authType === 10) {
         const mechanisms = message.body.subarray(4).toString("utf8").split("\0").filter(Boolean);
         if (!mechanisms.includes("SCRAM-SHA-256")) {
-          throw commandError2(
+          throw commandError(
             "Unsupported Postgres SASL mechanism.",
             "Use the Sporades-managed Postgres Capsule service, which authenticates with SCRAM-SHA-256."
           );
@@ -134787,7 +134838,7 @@ async function createPostgresConnection(url, signal) {
         scram.verify(message.body.subarray(4).toString("utf8"));
         continue;
       }
-      throw commandError2(
+      throw commandError(
         "Unsupported Postgres authentication method.",
         "Use the Sporades-managed Postgres Capsule service with the generated Capsule service credentials."
       );
@@ -135167,7 +135218,7 @@ function postgresRowsFromResult(normalization, result) {
 async function createLibsqlDatabaseAdapter(options) {
   const url = typeof options === "string" ? options : options?.url;
   if (!url) {
-    throw commandError2(
+    throw commandError(
       "Missing libSQL database service URL.",
       "Start a Dev session or local Container session with services.database.engine set to libsql."
     );
@@ -135452,7 +135503,7 @@ function migrateAppSchemaInTransaction(sqlite, schema) {
       try {
         existingSchema = JSON.parse(existingSchemaRow.value);
       } catch {
-        throw commandError2(
+        throw commandError(
           "Invalid Sporades schema metadata.",
           "Delete the Runtime directory only if you can lose local data, then restart the Capsule."
         );
@@ -135500,7 +135551,7 @@ function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
   for (const existingTable of existingSchema.tables ?? []) {
     const nextTable = nextTables.get(existingTable.name);
     if (!nextTable) {
-      throw commandError2(
+      throw commandError(
         "Unsupported Capsule schema change.",
         "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
       );
@@ -135509,14 +135560,14 @@ function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
     for (const existingField of existingTable.fields ?? []) {
       const nextField = nextFields.get(existingField.name);
       if (!nextField || JSON.stringify(existingField) !== JSON.stringify(nextField)) {
-        throw commandError2(
+        throw commandError(
           "Unsupported Capsule schema change.",
           "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory."
         );
       }
     }
     if (!uniqueConstraintsAreAdditive(existingTable.uniqueConstraints ?? [], nextTable.uniqueConstraints ?? [])) {
-      throw commandError2(
+      throw commandError(
         "Unsupported Capsule schema change.",
         "Only adding new tables, fields, or unique constraints is supported right now. Revert changed constraints, or move data aside and recreate the Runtime directory."
       );
@@ -135537,7 +135588,7 @@ function translateUniqueConstraintMigrationError(error) {
   if (!isUniqueConstraintError3(error)) {
     return error;
   }
-  return commandError2(
+  return commandError(
     "Unable to apply unique constraint migration.",
     "Remove or resolve duplicate data, then restart the Capsule."
   );
@@ -135925,7 +135976,7 @@ function endpointIngressClaimAuthority(endpoint) {
   const declared = endpoint?.options?.body?.multipart?.claimAuthorities;
   if (declared === void 0) return "actor";
   if (!Array.isArray(declared) || declared.length !== 1 || !["actor", "capsule-principal"].includes(declared[0])) {
-    throw commandError2("Invalid multipart claim authority.", "Declare exactly one of actor or capsule-principal for this endpoint.", "INVALID_FILE_INGRESS_AUTHORITY");
+    throw commandError("Invalid multipart claim authority.", "Declare exactly one of actor or capsule-principal for this endpoint.", "INVALID_FILE_INGRESS_AUTHORITY");
   }
   return declared[0];
 }
@@ -135934,7 +135985,7 @@ function validateEndpointResponseDeclarations(capsuleDefinition) {
     const response = definition?.options?.response;
     if (response === void 0) continue;
     if (!response || typeof response !== "object" || Array.isArray(response) || Object.keys(response).length !== 1 || response.fileAttachment !== true) {
-      throw commandError2("Invalid endpoint response declaration.", "Declare response: { fileAttachment: true } only on endpoints whose trusted handler performs current domain authorization.", "INVALID_ENDPOINT_RESPONSE_DECLARATION");
+      throw commandError("Invalid endpoint response declaration.", "Declare response: { fileAttachment: true } only on endpoints whose trusted handler performs current domain authorization.", "INVALID_ENDPOINT_RESPONSE_DECLARATION");
     }
   }
 }
@@ -135944,10 +135995,10 @@ function normalizeCapsuleFileIngressDefinition(files, endpoints) {
   const ingress = files?.ingress;
   const namespaces = ingress?.principalNamespaces;
   if (!ingress || typeof ingress !== "object" || Array.isArray(ingress) || typeof ingress.admit !== "function" || !Array.isArray(namespaces) || namespaces.length === 0 || namespaces.length > 32 || namespaces.some((value) => typeof value !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value)) || new Set(namespaces).size !== namespaces.length) {
-    throw commandError2("Invalid Capsule File ingress admission.", "Declare files.ingress with unique principalNamespaces and an admit function.", "INVALID_FILE_INGRESS_ADMISSION");
+    throw commandError("Invalid Capsule File ingress admission.", "Declare files.ingress with unique principalNamespaces and an admit function.", "INVALID_FILE_INGRESS_ADMISSION");
   }
   if (typeof files?.acl?.read !== "function" || typeof files?.acl?.delete !== "function") {
-    throw commandError2("Capsule-principal File ingress requires explicit File ACL rules.", "Declare files.acl.read and files.acl.delete before enabling capsule-principal claims.", "FILE_INGRESS_ACL_REQUIRED");
+    throw commandError("Capsule-principal File ingress requires explicit File ACL rules.", "Declare files.acl.read and files.acl.delete before enabling capsule-principal claims.", "FILE_INGRESS_ACL_REQUIRED");
   }
   return Object.freeze({ principalNamespaces: Object.freeze([...namespaces]), admit: ingress.admit });
 }
@@ -135955,7 +136006,7 @@ function resolveFileMaxSizeBytes(config = {}) {
   const configured = config.files?.maxSizeBytes;
   if (configured === void 0) return 10 * 1024 * 1024;
   if (!Number.isInteger(configured) || configured <= 0) {
-    throw commandError2(
+    throw commandError(
       "Invalid File size configuration.",
       "Set `files.maxSizeBytes` to a positive integer byte count.",
       "INVALID_FILE_CONFIG"
@@ -135971,22 +136022,33 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
   validateLogConfig(config);
+  if (!options.runtimeActionOnly) {
+    const missingKeys = missingRequiredServerEnv(config, serverEnv);
+    if (missingKeys.length > 0) {
+      process.stderr.write(JSON.stringify({ schema: "sporades.env.v1", event: "runtime.env.missing", level: "error", missingKeys }) + "\n");
+      if (config.env?.failClosed === true) throw commandError(
+        "Required Server env is missing.",
+        "Set the named values with sporades env set or env import before starting the Capsule.",
+        "MISSING_REQUIRED_SERVER_ENV"
+      );
+    }
+  }
   const registrationThrottle = resolveRegistrationThrottle(config.auth);
   const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
-    throw commandError2("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
+    throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
   }
   if (capsuleDefinition?.teams?.admitJoin !== void 0 && typeof capsuleDefinition.teams.admitJoin !== "function") {
-    throw commandError2("Invalid Capsule Team admission policy.", "Declare teams.admitJoin as a server function.", "INVALID_TEAM_JOIN_ADMISSION");
+    throw commandError("Invalid Capsule Team admission policy.", "Declare teams.admitJoin as a server function.", "INVALID_TEAM_JOIN_ADMISSION");
   }
   const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
   const teamBillingDefinition = capsuleDefinition?.teamBilling === void 0 ? null : normalizeTeamBillingDefinition(capsuleDefinition.teamBilling);
   if (capsuleDefinition?.files !== void 0 && (!capsuleDefinition.files || typeof capsuleDefinition.files !== "object" || Array.isArray(capsuleDefinition.files))) {
-    throw commandError2("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete? } }.", "INVALID_FILE_ACL");
+    throw commandError("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete? } }.", "INVALID_FILE_ACL");
   }
   const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
-  const path22 = await import("node:path");
+  const path23 = await import("node:path");
   const mailConfig = validateMailConfig(config.mail);
   let mailLogSink;
   const mail = createMailRuntime(mailConfig, serverEnv, {
@@ -136002,7 +136064,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     options?.stripeCallbackAdmissionFault
   ) : null;
   if (paymentsConfig?.stripe.enabled && !stripeCallbackEndpoint) {
-    throw commandError2(
+    throw commandError(
       "Stripe callback integration is unavailable.",
       "Build and run this Capsule with matching Sporades generated runtime artifacts.",
       "STRIPE_CALLBACK_INTEGRATION_UNAVAILABLE"
@@ -136169,7 +136231,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       }) : null;
     },
     updateTeamBillingSubscription: async (context2, input) => {
-      if (typeof database.createStripeTeamBillingProvider !== "function") throw commandError2(
+      if (typeof database.createStripeTeamBillingProvider !== "function") throw commandError(
         "Team Billing provider is unavailable.",
         "Retry after the configured provider is available.",
         "TEAM_BILLING_PROVIDER_UNAVAILABLE"
@@ -136196,7 +136258,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       }));
     },
     quiesceTeamBillingProvider: async (context2, input) => {
-      if (typeof database.createStripeTeamBillingProvider !== "function") throw commandError2(
+      if (typeof database.createStripeTeamBillingProvider !== "function") throw commandError(
         "Team Billing provider is unavailable.",
         "Retry after the configured provider is available.",
         "TEAM_BILLING_PROVIDER_UNAVAILABLE"
@@ -136221,7 +136283,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       const reauthDatabase = createTransactionDatabase(database, transaction);
       let active = true;
       const assertActive = () => {
-        if (!active) throw commandError2("Reauthentication access is no longer active.", "Start a new reauthentication attempt.", "REAUTHENTICATION_ACCESS_INACTIVE");
+        if (!active) throw commandError("Reauthentication access is no longer active.", "Start a new reauthentication attempt.", "REAUTHENTICATION_ACCESS_INACTIVE");
       };
       const reauthContext = { purpose: "auth.reauthentication", auth };
       grantPrivilegedDbAccess(reauthContext);
@@ -136244,7 +136306,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       const registrationDatabase = createTransactionDatabase(rootDatabase, transaction);
       let active = true;
       const assertActive = () => {
-        if (!active) throw commandError2("Registration access is no longer active.", "Start a new registration callback.", "REGISTRATION_ACCESS_INACTIVE");
+        if (!active) throw commandError("Registration access is no longer active.", "Start a new registration callback.", "REGISTRATION_ACCESS_INACTIVE");
       };
       const readContext = { purpose: "auth.registration", evidence, admission };
       grantPrivilegedDbAccess(readContext);
@@ -136412,9 +136474,9 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   database.init = async () => {
     if (database.__runtimeInitialized) return;
     try {
-      if (!await initializeClamavRuntime(database)) throw commandError2("Required File inspection is unavailable.", "Check ClamAV signatures and the local daemon socket.", "FILE_INSPECTION_UNAVAILABLE");
+      if (!await initializeClamavRuntime(database)) throw commandError("Required File inspection is unavailable.", "Check ClamAV signatures and the local daemon socket.", "FILE_INSPECTION_UNAVAILABLE");
       if (database.lifecycleHooks.init !== void 0) {
-        if (typeof database.lifecycleHooks.init !== "function") throw commandError2("Invalid Capsule init hook.", "Declare hooks.init as a function.");
+        if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
         const context2 = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
         await runLifecycleHook(database.lifecycleHooks.init, context2);
       }
@@ -136552,7 +136614,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       }
       if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== void 0) {
         try {
-          if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError2("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
+          if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
           const context2 = createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }, { ordinaryCredential: false });
           await runLifecycleHook(database.lifecycleHooks.shutdown, context2);
         } catch (error) {
@@ -136583,7 +136645,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     database: sqlite,
     config,
     serverEnv,
-    dataDir: path22.dirname(databasePath)
+    dataDir: path23.dirname(databasePath)
   });
   mailLogSink = database.log;
   database.audit = createPrivilegedAuditEmitter(database.log);
@@ -136624,7 +136686,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
 }
 function validateStripeEventSubscription(subscription) {
   if (subscription === void 0) return;
-  const invalid4 = () => commandError2(
+  const invalid4 = () => commandError(
     "Invalid Stripe-event declaration.",
     'Use stripeEvent(handler) or stripeEvent({ consequence: "atomic" }, handler).',
     "INVALID_STRIPE_EVENT_DECLARATION"
@@ -136659,7 +136721,7 @@ async function reconcileSchedules(database) {
         const persisted = await transactionAdapter.prepare(sql2("SELECT * FROM [sporades_schedules]")).all();
         for (const row of persisted) {
           if (!scheduleCursorStateIsConsistent(row.enabled, row.exhausted, row.nextOccurrence) || row.nextOccurrence !== null && row.nextOccurrence !== void 0 && !isCanonicalJobTimestamp(row.nextOccurrence)) {
-            throw commandError2(
+            throw commandError(
               "Stored Schedule state is invalid.",
               "Repair or remove the malformed Schedule before restarting the Capsule.",
               "SCHEDULE_STATE_INVALID"
@@ -137024,7 +137086,7 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
   const fullLeaseExpiresAt = jobTimestampAfter(now2, RUNTIME_CLAIM_LEASE_MS);
   const expiresAt = fullLeaseExpiresAt ?? (isCanonicalJobTimestamp(nowIso2) ? new Date(MAX_JOB_TIMESTAMP_MS).toISOString() : null);
   if (expiresAt === null) {
-    throw commandError2("Schedule occurrence claim exceeds the runtime timestamp domain.", "Run the Schedule before the end of the supported four-digit UTC timestamp range.", "SCHEDULE_TIME_DOMAIN_EXHAUSTED");
+    throw commandError("Schedule occurrence claim exceeds the runtime timestamp domain.", "Run the Schedule before the end of the supported four-digit UTC timestamp range.", "SCHEDULE_TIME_DOMAIN_EXHAUSTED");
   }
   let recoveryAt = null;
   const claimed = await database.adapter.withTransaction(async (transactionAdapter) => {
@@ -137534,9 +137596,9 @@ function logRedactedValue() {
 }
 var transactionPendingLogWrites = Symbol("sporades.transactionPendingLogWrites");
 function createRuntimeLogSink(options) {
-  const path22 = requirePathModule();
-  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path22.join(options.dataDir, "logs", "events.jsonl");
-  mkdirSync(path22.dirname(logPath), { recursive: true });
+  const path23 = requirePathModule();
+  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path23.join(options.dataDir, "logs", "events.jsonl");
+  mkdirSync(path23.dirname(logPath), { recursive: true });
   return {
     path: logPath,
     withDatabase(database) {
@@ -137610,7 +137672,7 @@ function createContextPrivilegedApi(database, contextGetter) {
     async run(options, callback) {
       const context2 = contextGetter();
       if (context2?.__privilegedRunActive) {
-        throw commandError2(
+        throw commandError(
           "Nested privileged runs are not supported.",
           "Call separate top-level ctx.privileged.run operations instead of starting one privileged run from inside another.",
           "NESTED_PRIVILEGED_RUN"
@@ -137618,7 +137680,7 @@ function createContextPrivilegedApi(database, contextGetter) {
       }
       const auditDetails = createPrivilegedRunAuditDetails(context2, options);
       if (typeof callback !== "function") {
-        throw commandError2(
+        throw commandError(
           "Privileged run requires a callback.",
           "Pass a callback to ctx.privileged.run after the operation metadata.",
           "INVALID_PRIVILEGED_RUN_CALLBACK"
@@ -137846,7 +137908,7 @@ function readJsonlLogEvents(logPath, limit = 200) {
 function schemaFromCapsuleDefinition(definition) {
   const schema = definition?.schema ?? {};
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-    throw commandError2(
+    throw commandError(
       "Invalid Capsule schema.",
       "Pass an object whose values are table(...) declarations to capsule({ schema })."
     );
@@ -137858,7 +137920,7 @@ function schemaFromCapsuleDefinition(definition) {
 function schemaTableFromCapsuleTable(name2, table) {
   assertNotReservedTeamTableName(name2);
   if (!table || table.kind !== "table" || !table.fields || typeof table.fields !== "object" || Array.isArray(table.fields)) {
-    throw commandError2(
+    throw commandError(
       `Invalid Capsule table: ${name2}`,
       "Declare schema tables with table({ fieldName: FieldBuilder() })."
     );
@@ -137873,7 +137935,7 @@ function schemaTableFromCapsuleTable(name2, table) {
 function normalizeUniqueConstraints(tableName, fields, declarations) {
   if (declarations === void 0) return [];
   if (!Array.isArray(declarations)) {
-    throw commandError2(
+    throw commandError(
       `Invalid unique declaration on Capsule table: ${tableName}`,
       'Declare uniqueness with .unique("field") or .unique("firstField", "secondField").'
     );
@@ -137882,20 +137944,20 @@ function normalizeUniqueConstraints(tableName, fields, declarations) {
   const seen = /* @__PURE__ */ new Set();
   return declarations.map((declaration) => {
     if (!Array.isArray(declaration) || declaration.length === 0 || declaration.some((field) => typeof field !== "string" || !declaredFields.has(field))) {
-      throw commandError2(
+      throw commandError(
         `Invalid unique declaration on Capsule table: ${tableName}`,
         "Each unique declaration must name one or more declared Capsule fields."
       );
     }
     if (new Set(declaration).size !== declaration.length) {
-      throw commandError2(
+      throw commandError(
         `Invalid unique declaration on Capsule table: ${tableName}`,
         "A unique declaration cannot repeat a Capsule field."
       );
     }
     const identity = [...declaration].sort().join("\0");
     if (seen.has(identity)) {
-      throw commandError2(
+      throw commandError(
         `Duplicate unique declaration on Capsule table: ${tableName}`,
         "Declare each set of unique Capsule fields only once; field order does not make a new constraint."
       );
@@ -137907,14 +137969,14 @@ function normalizeUniqueConstraints(tableName, fields, declarations) {
 function assertNotReservedTeamTableName(name2) {
   const runtimeNamespace = ["sporades_resource_", "sporades_notification_"].find((prefix) => name2.toLowerCase().startsWith(prefix));
   if (runtimeNamespace) {
-    throw commandError2(
+    throw commandError(
       `Reserved runtime table name: ${name2}`,
       `Choose a Capsule table name outside the ${runtimeNamespace} runtime namespace.`,
       "RESERVED_TABLE_NAME"
     );
   }
   if (name2.toLowerCase().startsWith("sporades_team")) {
-    throw commandError2(
+    throw commandError(
       `Reserved runtime table name: ${name2}`,
       "Choose a Capsule table name outside the sporades_team runtime namespace.",
       "RESERVED_TABLE_NAME"
@@ -137923,21 +137985,21 @@ function assertNotReservedTeamTableName(name2) {
 }
 function schemaFieldFromCapsuleField(name2, field) {
   if (!field || typeof field !== "object" || typeof field.kind !== "string") {
-    throw commandError2(
+    throw commandError(
       `Invalid Capsule field: ${name2}`,
       "Use Sporades field builders such as String(), Boolean(), Number(), Date(), Json(), or Reference(...)."
     );
   }
   const supportedKinds = /* @__PURE__ */ new Set(["String", "Boolean", "Number", "Date", "Json", "Reference"]);
   if (!supportedKinds.has(field.kind)) {
-    throw commandError2(
+    throw commandError(
       `Unsupported Capsule field type: ${field.kind}`,
       "Use supported Sporades field builders: String, Boolean, Number, Date, Json, Reference."
     );
   }
   let defaultValue = field.defaultValue;
   if (field.kind === "Number" && defaultValue !== void 0 && !Number.isFinite(defaultValue)) {
-    throw commandError2("Invalid Number() default.", "Pass a finite JavaScript number to Number().default(...).");
+    throw commandError("Invalid Number() default.", "Pass a finite JavaScript number to Number().default(...).");
   }
   if (field.kind === "Date" && defaultValue !== void 0) {
     defaultValue = normalizeDateValue(defaultValue, "default");
@@ -137967,7 +138029,7 @@ function assertValidReferenceTargets(schema) {
   for (const table of schema.tables) {
     for (const field of table.fields) {
       if (field.kind === "Reference" && !tableNames.has(field.targetTable)) {
-        throw commandError2(
+        throw commandError(
           `Unknown reference target: ${field.targetTable}`,
           "Reference fields must point at another table in the Capsule schema."
         );
@@ -138501,7 +138563,7 @@ function multipartAdmissionFilePermission(decision, principalMode = false) {
 }
 async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, signal) {
   const definition = database.fileIngressDefinition;
-  if (!definition) throw commandError2("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+  if (!definition) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   const decision = await database.adapter.withTransaction((transaction) => withTrustedRead(database, {
     transaction,
     purpose: "files.ingress-admission",
@@ -138517,7 +138579,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
   try {
     allowFiles = multipartAdmissionFilePermission(decision, true);
   } catch {
-    throw commandError2("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+    throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
   const namespace = decision?.principal?.namespace;
   const key = decision?.principal?.key;
@@ -138529,18 +138591,18 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
     }
   })();
   if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
-    throw commandError2("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+    throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
   return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash13("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
 }
 var endpointMultipartAdmissionTimeoutMs = 5e3;
 function multipartAdmissionDenied() {
-  return commandError2("Multipart request was not admitted.", "Check the request conditions and retry.", "MULTIPART_ADMISSION_DENIED");
+  return commandError("Multipart request was not admitted.", "Check the request conditions and retry.", "MULTIPART_ADMISSION_DENIED");
 }
 async function admitEndpointMultipart(database, endpoint, endpointRequest, admission, signal) {
   const policy = endpoint.options?.body?.multipart;
   if (typeof policy?.admit !== "function") return;
-  if (!admission?.auth?.isAuthenticated || admission.auth.isGuest || isReservedAuthUserId(admission.auth.userId)) throw commandError2("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+  if (!admission?.auth?.isAuthenticated || admission.auth.isGuest || isReservedAuthUserId(admission.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   if (signal?.aborted) controller.abort();
@@ -138652,7 +138714,7 @@ async function runEndpoint(database, endpoint, requestUrl, request, requestPath 
         ingressAuthority = admission.authority;
         allowFiles = admission.allowFiles;
       } else {
-        if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError2("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
+        if (!admitted?.auth?.isAuthenticated || admitted.auth.isGuest || isReservedAuthUserId(admitted.auth.userId)) throw commandError("Unauthenticated.", "Sign in with a linked human or service User and retry.", "UNAUTHENTICATED");
         const endpointSignal = request.signal ?? request.__sporadesEndpointSignal;
         allowFiles = await admitEndpointMultipart(database, endpoint, endpointRequest, admitted, endpointSignal) !== false;
         if (endpointSignal?.aborted) throw multipartAdmissionDenied();
@@ -138714,7 +138776,7 @@ async function runEndpoint(database, endpoint, requestUrl, request, requestPath 
               },
               async authorize(_context, db, identity) {
                 const anchor = await db[identity.table].where("id", identity.id).get();
-                if (!anchor) throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+                if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
                 await db[identity.table].update(identity.id, {});
               },
               drain: drainPendingAclWrites,
@@ -138930,7 +138992,7 @@ function bindOrdinaryJobResourceContext(database, context2, claim, privileged = 
       ).get(identity.id) : await scopedDatabase.adapter.selectAppRowById(table, identity.id);
       const row = stored ? deserializeRow(table, stored) : null;
       if (!row || !await applyReadAcl(scopedDatabase, table, row, scoped)) {
-        throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+        throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
       }
       await runTableWriteWithAcl(scopedDatabase, table, "update", row, row, () => scoped, () => void 0);
     },
@@ -139160,7 +139222,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
   );
   context2.serverAuth = {
     revokeHumanSecurity(_userId) {
-      throw commandError2("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
+      throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
     },
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
@@ -139194,7 +139256,7 @@ function contextAuthIdentity(value) {
 function protectContextIdentity(value) {
   const target = Object.freeze({ ...value });
   const tampered = () => {
-    throw commandError2(
+    throw commandError(
       "Invalid Capsule context middleware result.",
       "Runtime-owned Auth and Credential values are immutable.",
       "INVALID_CONTEXT_MIDDLEWARE_RESULT"
@@ -139368,7 +139430,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
     const result = await runContextMiddleware(middlewareSource, context2);
     const middlewareContext = result ?? context2;
     if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
-      throw commandError2(
+      throw commandError(
         "Invalid Capsule context middleware result.",
         "Context middleware must preserve the runtime-owned Auth and Credential values.",
         "INVALID_CONTEXT_MIDDLEWARE_RESULT"
@@ -139406,13 +139468,13 @@ function admitCredentialHandlerOperation(handler, context2, kind) {
   const auth = context2?.auth;
   const credentialKind = context2?.credential?.kind ?? "session";
   if (auth?.isAuthenticated !== true || requirements.linked && auth?.isGuest === true) {
-    const error = commandError2("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
+    const error = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
     error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, requirements.linked ? "linked" : "authenticated");
     if (requirements.credentials.includes("access-key")) error.sporadesAccessKeyFailure = "missing";
     throw error;
   }
   if (!requirements.credentials.includes(credentialKind)) {
-    const error = commandError2(
+    const error = commandError(
       "Forbidden.",
       "The authenticated credential is not permitted for this operation.",
       "FORBIDDEN"
@@ -139424,7 +139486,7 @@ function admitCredentialHandlerOperation(handler, context2, kind) {
     throw error;
   }
   if (credentialKind === "access-key" && !accessKeyGrantsSatisfyScopes(context2.__sporadesAccessKeyGrants ?? [], requirements.scopes)) {
-    const error = commandError2("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
+    const error = commandError("Forbidden.", "The authenticated credential is not permitted for this operation.", "FORBIDDEN");
     error.sporadesAuthDenialLogData = createAuthDenialLogData({ auth, kind }, "scope");
     error.sporadesAccessKeyFailure = "forbidden";
     throw error;
@@ -139497,21 +139559,21 @@ function trustedReadResult(value, assertActive) {
 }
 async function withTrustedRead(database, options, callback) {
   if (!isActiveTransactionScopedAdapter(options?.transaction, database?.adapter)) {
-    throw commandError2(
+    throw commandError(
       "Trusted app-database reads require an active transaction.",
       "Start the trusted policy from the runtime-owned transition transaction.",
       "TRUSTED_READ_TRANSACTION_REQUIRED"
     );
   }
   if (!trustedReadPurposes.has(options?.purpose)) {
-    throw commandError2(
+    throw commandError(
       "Trusted app-database read purpose is invalid.",
       "Use a runtime-owned trusted policy purpose.",
       "INVALID_TRUSTED_READ_PURPOSE"
     );
   }
   const signal = options?.signal;
-  const abortError = () => commandError2(
+  const abortError = () => commandError(
     "Trusted app-database read was aborted.",
     "Retry the runtime-owned trusted policy if cancellation was not intended.",
     "TRUSTED_READ_ABORTED"
@@ -139521,7 +139583,7 @@ async function withTrustedRead(database, options, callback) {
   let active = true;
   const assertActive = () => {
     if (!active) {
-      throw commandError2(
+      throw commandError(
         "Trusted app-database read access is no longer active.",
         "Start a new runtime-owned trusted policy callback before reading app data.",
         "TRUSTED_READ_ACCESS_INACTIVE"
@@ -139544,7 +139606,7 @@ async function withTrustedRead(database, options, callback) {
       return result;
     } catch {
       if (signal?.aborted) throw abortError();
-      throw commandError2(
+      throw commandError(
         "Trusted app-database read failed.",
         "The runtime-owned trusted policy could not be evaluated.",
         "TRUSTED_READ_FAILED"
@@ -139770,7 +139832,7 @@ async function readEndpointPayload(request, headers, limitSource = null, parseJs
     try {
       return { body: JSON.parse(text3), bodyBytes };
     } catch {
-      throw commandError2("Invalid JSON request body.", "Send a valid JSON request body.", "INVALID_JSON_REQUEST");
+      throw commandError("Invalid JSON request body.", "Send a valid JSON request body.", "INVALID_JSON_REQUEST");
     }
   }
   return { body: text3, bodyBytes };
@@ -139807,7 +139869,7 @@ function parseFieldDefault(kind, rawDefault) {
   if (kind === "Number") {
     const value = Number(rawDefault.trim());
     if (!Number.isFinite(value)) {
-      throw commandError2("Invalid Number() default.", "Pass a finite JavaScript number to Number().default(...).");
+      throw commandError("Invalid Number() default.", "Pass a finite JavaScript number to Number().default(...).");
     }
     return value;
   }
@@ -139827,7 +139889,7 @@ function parseJsonFieldDefault(rawDefault) {
     assertJsonCompatible(value);
     return value;
   } catch {
-    throw commandError2(
+    throw commandError(
       "Invalid JSON field default.",
       "Use a JSON-compatible default value for Json().default(...)."
     );
@@ -139838,7 +139900,7 @@ function parseDateFieldDefault(rawDefault) {
     const createDefault = new Function(`return (${rawDefault});`);
     return normalizeDateValue(createDefault(), "default");
   } catch {
-    throw commandError2(
+    throw commandError(
       "Invalid Date() default.",
       "Pass an ISO 8601 date string or JavaScript Date value to Date().default(...)."
     );
@@ -139846,14 +139908,14 @@ function parseDateFieldDefault(rawDefault) {
 }
 function normalizeJourneyPolicy(value) {
   if (value == null) return null;
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.enabled !== true) throw commandError2("Invalid Journey declaration.", "Declare journey: { enabled: true } on capsule().");
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.enabled !== true) throw commandError("Invalid Journey declaration.", "Declare journey: { enabled: true } on capsule().");
   const ttlSeconds = value.ttlSeconds ?? 30;
-  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 300) throw commandError2("Invalid Journey TTL.", "Set journey.ttlSeconds to an integer from 1 through 300.");
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 300) throw commandError("Invalid Journey TTL.", "Set journey.ttlSeconds to an integer from 1 through 300.");
   const capture = {};
-  if (value.capture !== void 0 && (value.capture === null || typeof value.capture !== "object" || Array.isArray(value.capture) || Object.getPrototypeOf(value.capture) !== Object.prototype)) throw commandError2("Invalid Journey capture policy.", "Set journey.capture to a plain object of boolean source settings.");
+  if (value.capture !== void 0 && (value.capture === null || typeof value.capture !== "object" || Array.isArray(value.capture) || Object.getPrototypeOf(value.capture) !== Object.prototype)) throw commandError("Invalid Journey capture policy.", "Set journey.capture to a plain object of boolean source settings.");
   for (const key of ["navigation", "focus", "interactions"]) {
     const setting = value.capture?.[key];
-    if (setting !== void 0 && typeof setting !== "boolean") throw commandError2("Invalid Journey capture policy.", `Set journey.capture.${key} to true or false.`);
+    if (setting !== void 0 && typeof setting !== "boolean") throw commandError("Invalid Journey capture policy.", `Set journey.capture.${key} to true or false.`);
     capture[key] = setting ?? true;
   }
   return { ttlSeconds, capture };
@@ -141577,7 +141639,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
             },
             async authorize(_context, db, identity) {
               const anchor = await db[identity.table].where("id", identity.id).get();
-              if (!anchor) throw commandError2("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+              if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
               await db[identity.table].update(identity.id, {});
             },
             drain: drainPendingAclWrites,
@@ -141593,7 +141655,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
           const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
           if (reauthenticationPurpose) {
             const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
-            if (!consumed) throw commandError2("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
+            if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
           }
           context2 = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context2, "mutation"));
           for (const hookSource of database.mutationHooks.beforeMutation) {
@@ -141769,13 +141831,13 @@ function validateAppMessageType(type) {
   const reservedPrefixes = ["app.", "auth.", "query.", "mutation.", "file.", "files.", "runtime.", "teamBilling.", "upload."];
   const reservedExact = /* @__PURE__ */ new Set(["error", "refresh"]);
   if (reservedExact.has(value) || reservedPrefixes.some((prefix) => value.startsWith(prefix))) {
-    throw commandError2(
+    throw commandError(
       `Reserved app message type: ${value}`,
       "Use an unprefixed app message type that does not start with a Sporades platform namespace."
     );
   }
   if (!value || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(value)) {
-    throw commandError2(
+    throw commandError(
       `Invalid app message type: ${value}`,
       "Use an unprefixed app message type containing letters, numbers, underscores, or hyphens."
     );
@@ -141790,7 +141852,7 @@ function createMessageContext(database, auth, sendAppMessage, sessionToken) {
     send(appMessage) {
       validateAppMessageType(appMessage?.type);
       if (isAllAppMessageScope(appMessage?.scope)) {
-        throw commandError2(
+        throw commandError(
           "Client-origin app messages cannot broadcast to all clients.",
           "Use the default current-user scope or an explicit users scope authorized by the message handler."
         );
@@ -141895,17 +141957,17 @@ function createMutationContext(database, auth, options = {}) {
       assertLiveMutationInvocation(options);
       return trackMutationContextWork(context2, (async () => {
         if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof options.sessionToken !== "string" || typeof userId !== "string" || !userId || userId === "__privileged__") {
-          throw commandError2("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+          throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
         }
         const actorSession = await database.adapter.prepare(database.adapter.dialect.sql(
           "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0"
         )).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
-        if (!actorSession) throw commandError2("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+        if (!actorSession) throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
         const target = await database.adapter.prepare(database.adapter.dialect.sql(
           "SELECT [u].[id] FROM [sporades_auth_users] [u] WHERE [u].[id] = ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND (EXISTS (SELECT 1 FROM [sporades_auth_email_credentials] [c] WHERE [c].[userId] = [u].[id]) OR EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id]))"
         )).get(userId);
         if (!target) {
-          throw commandError2("Human security transition denied.", "Select one existing active human user.", "HUMAN_SECURITY_TRANSITION_DENIED");
+          throw commandError("Human security transition denied.", "Select one existing active human user.", "HUMAN_SECURITY_TRANSITION_DENIED");
         }
         const sessions = await database.adapter.prepare(database.adapter.dialect.sql(
           "SELECT COUNT(*) AS [count] FROM [sporades_auth_sessions] WHERE [userId] = ?"
@@ -141951,18 +142013,18 @@ function createMutationContext(database, auth, options = {}) {
     continue(operations, continuation) {
       const list = Array.isArray(operations) ? operations : [operations];
       if (list.length === 0 || typeof continuation !== "function") {
-        throw commandError2("Invalid lifecycle continuation.", "Return one or more reserved lifecycle operations with a continuation callback.", "INVALID_LIFECYCLE_CONTINUATION");
+        throw commandError("Invalid lifecycle continuation.", "Return one or more reserved lifecycle operations with a continuation callback.", "INVALID_LIFECYCLE_CONTINUATION");
       }
       const states = list.map((operation) => validatedLifecycleReservations.get(operation));
       if (states.some((state) => !state)) {
-        throw commandError2("Invalid lifecycle continuation.", "Use reservations created by this Mutation context.", "INVALID_LIFECYCLE_CONTINUATION");
+        throw commandError("Invalid lifecycle continuation.", "Use reservations created by this Mutation context.", "INVALID_LIFECYCLE_CONTINUATION");
       }
       const invocation = mutationExecution.getStore();
       if (!invocation || invocation.active !== true || states.some((state) => state?.invocation !== invocation || state?.consumed)) {
-        throw commandError2("Lifecycle continuation denied.", "Return fresh reservations from the owning Mutation exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+        throw commandError("Lifecycle continuation denied.", "Return fresh reservations from the owning Mutation exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
       }
       if (new Set(states).size !== states.length) {
-        throw commandError2("Lifecycle continuation denied.", "Each reserved lifecycle operation may appear exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+        throw commandError("Lifecycle continuation denied.", "Each reserved lifecycle operation may appear exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
       }
       const wrapper = Object.freeze({});
       validatedLifecycleContinuations.set(wrapper, { states, continuation });
@@ -141989,7 +142051,7 @@ async function resolveValidatedLifecycleContinuation(value) {
   if (!plan) return value;
   const invocation = mutationExecution.getStore();
   if (!invocation || invocation.active !== true || plan.states.some((state) => state.invocation !== invocation || state.consumed) || new Set(plan.states).size !== plan.states.length) {
-    throw commandError2("Lifecycle continuation denied.", "Return fresh reservations from the owning Mutation exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
+    throw commandError("Lifecycle continuation denied.", "Return fresh reservations from the owning Mutation exactly once.", "LIFECYCLE_CONTINUATION_DENIED");
   }
   for (const state of plan.states) state.consumed = true;
   const outcomes = [];
@@ -142002,9 +142064,9 @@ async function resolveValidatedLifecycleContinuation(value) {
 function assertLiveMutationInvocation(options, capability = "human-security") {
   if (options.serviceUserMutationAuthority !== serviceUserMutationAuthority || options.mutationInvocation?.active !== true || mutationExecution.getStore() !== options.mutationInvocation || options.mutationInvocation?.initiationOpen !== true) {
     if (capability === "service-user") {
-      throw commandError2("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
+      throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
     }
-    throw commandError2("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+    throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
   }
 }
 function invokeWithLifecycleInitiation(operation) {
@@ -142026,7 +142088,7 @@ function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, asser
     teamBilling: Object.freeze({
       async get(requestedTeamId) {
         assertActive();
-        if (requestedTeamId !== teamId) throw commandError2(
+        if (requestedTeamId !== teamId) throw commandError(
           "Team Billing operation denied.",
           "Use verified Team Billing state only for the Team whose Join is being admitted.",
           "TEAM_BILLING_DENIED"
@@ -142048,12 +142110,12 @@ function createTeamBillingAuthorityContext(database, auth, trustedDb, teamId, as
     teams: Object.freeze({
       async countMembers(requestedTeamId) {
         assertActive();
-        if (requestedTeamId !== teamId) throw commandError2(
+        if (requestedTeamId !== teamId) throw commandError(
           "Team Billing operation denied.",
           "Count accepted members only for the Team whose billing authority is being evaluated.",
           "TEAM_BILLING_DENIED"
         );
-        const totalCount = await countAcceptedTeamMembers(database.adapter, teamId, () => commandError2(
+        const totalCount = await countAcceptedTeamMembers(database.adapter, teamId, () => commandError(
           "Team Billing operation denied.",
           "Retry against the current Team state.",
           "TEAM_BILLING_DENIED"
@@ -145919,7 +145981,7 @@ import { createHash as createHash14, randomBytes as randomBytes7 } from "node:cr
 import { mkdir as mkdir6, mkdtemp, rm as rm7 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
-import path15 from "node:path";
+import path16 from "node:path";
 var DEV_CLAMAV_READY_MARKER = "sporades-clamav-ready-v1";
 var DEV_CLAMAV_HOST_READY_TIMEOUT_MS = 125e3;
 function devRuntimeRequiresClamav(database) {
@@ -146097,19 +146159,19 @@ async function devClamavContainerIsRunning(dockerCommand, containerName, deadlin
   return result.code === 0 && result.stdout.trim() === "true" && now2() <= deadline;
 }
 async function createDevClamavSocketDirectory() {
-  const socketDir = await mkdtemp(path15.join(tmpdir(), "sporades-dev-clamav-"));
+  const socketDir = await mkdtemp(path16.join(tmpdir(), "sporades-dev-clamav-"));
   const maxSocketBytes = process.platform === "linux" ? 107 : 103;
-  if (process.platform === "win32" || Buffer.byteLength(path15.join(socketDir, "clamd.sock")) <= maxSocketBytes) return socketDir;
+  if (process.platform === "win32" || Buffer.byteLength(path16.join(socketDir, "clamd.sock")) <= maxSocketBytes) return socketDir;
   await rm7(socketDir, { recursive: true, force: true });
   return await mkdtemp("/tmp/sporades-dev-clamav-");
 }
 async function startDevClamavSidecar(options) {
-  const dataRoot = path15.join(options.projectDir, ".sporades", "clamav");
-  await mkdir6(path15.join(dataRoot, "clamav"), { recursive: true });
+  const dataRoot = path16.join(options.projectDir, ".sporades", "clamav");
+  await mkdir6(path16.join(dataRoot, "clamav"), { recursive: true });
   const socketDir = await createDevClamavSocketDirectory();
-  const identity = createHash14("sha256").update(`${path15.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const identity = createHash14("sha256").update(`${path16.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
-  const socketPath = path15.join(socketDir, "clamd.sock");
+  const socketPath = path16.join(socketDir, "clamd.sock");
   let child;
   let proxy;
   const bridges = /* @__PURE__ */ new Set();
@@ -146299,7 +146361,7 @@ ${removed.stderr}`)) failures.push(new Error("Dev File inspection container clea
 // src/capsule-services.ts
 import { randomBytes as randomBytes8 } from "node:crypto";
 import { mkdir as mkdir7, readFile as readFile9, rm as rm8, writeFile as writeFile6 } from "node:fs/promises";
-import path16 from "node:path";
+import path17 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
 var SUPPORTED_STORAGE_ENGINES = /* @__PURE__ */ new Set(["minio"]);
@@ -146311,9 +146373,9 @@ var MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z";
 var MINIO_ROOT_USER = "sporades";
 var MINIO_BUCKET = "sporades-files";
 var MINIO_REGION = "us-east-1";
-var CAPSULE_SERVICES_COMPOSE_FILE = path16.join(".sporades", "compose", "capsule-services.compose.yml");
-var CAPSULE_SERVICES_STATE_DIR = path16.join(".sporades", "services");
-var CAPSULE_SERVICES_CREDENTIALS_FILE = path16.join(".sporades", "services", "credentials.json");
+var CAPSULE_SERVICES_COMPOSE_FILE = path17.join(".sporades", "compose", "capsule-services.compose.yml");
+var CAPSULE_SERVICES_STATE_DIR = path17.join(".sporades", "services");
+var CAPSULE_SERVICES_CREDENTIALS_FILE = path17.join(".sporades", "services", "credentials.json");
 function validateCapsuleServicesConfig(services) {
   if (services === void 0) {
     return null;
@@ -146338,13 +146400,13 @@ function validateCapsuleServicesConfig(services) {
   return services;
 }
 async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
-  const composePath = path16.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path17.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
     await rm8(composePath, { force: true });
     return null;
   }
   validateCapsuleServicesConfig(config.services);
-  await mkdir7(path16.dirname(composePath), { recursive: true });
+  await mkdir7(path17.dirname(composePath), { recursive: true });
   const credentials = await loadOrCreateCapsuleServiceCredentials(projectDir);
   const model = capsuleServicesComposeModel(config, projectDir, {
     credentials,
@@ -146360,7 +146422,7 @@ async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
   };
 }
 async function loadOrCreateCapsuleServiceCredentials(projectDir) {
-  const credentialsPath = path16.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
+  const credentialsPath = path17.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
   let existing = {};
   try {
     const parsed = JSON.parse(await readFile9(credentialsPath, "utf8"));
@@ -146376,7 +146438,7 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
     storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes8(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
-    await mkdir7(path16.dirname(credentialsPath), { recursive: true });
+    await mkdir7(path17.dirname(credentialsPath), { recursive: true });
     await writeFile6(credentialsPath, `${JSON.stringify(credentials, null, 2)}
 `, { mode: 384 });
   }
@@ -146424,7 +146486,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-database`,
       engine: engineModel.engine,
       image: engineModel.image,
-      stateDir: path16.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
+      stateDir: path17.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
       targetPort: engineModel.targetPort,
       volumeTarget: engineModel.volumeTarget,
       environment: engineModel.environment,
@@ -146442,7 +146504,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-storage`,
       engine: "minio",
       image: MINIO_IMAGE,
-      stateDir: path16.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
+      stateDir: path17.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
       targetPort: 9e3,
       volumeTarget: "/data",
       environment: {
@@ -146648,7 +146710,7 @@ function createHostReleaseRequest(options) {
     baseImage: baseImageMetadata(options.updatePolicyMode),
     inspection: options.requiredInspectors?.length ? { requiredInspectors: [...options.requiredInspectors] } : null,
     files,
-    deployFiles: (options.bundle.deployFiles ?? []).map(({ path: path22, update }) => ({ path: path22, update })),
+    deployFiles: (options.bundle.deployFiles ?? []).map(({ path: path23, update }) => ({ path: path23, update })),
     directories: {
       capsule: registration.directories.capsule,
       releases: registration.directories.releases,
@@ -147140,6 +147202,7 @@ Options:
   --subname <name>    Hosted Capsule subname
   --lines <n>, -n <n> Log line count
   --restart           Restart after host push
+  --allow-missing-env  Push despite missing required Server env
   --verify            Verify release health after host push
   --fallback-to-previous-release
                       Roll back when verified push fails
@@ -147210,36 +147273,36 @@ import { spawn as spawn2, spawnSync as spawnSync2 } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { createHash as createHash16, randomBytes as randomBytes9 } from "node:crypto";
 import { chown, chmod as chmod3, lstat as lstat11, mkdir as mkdir9, open as open4, readFile as readFile11, readdir as readdir5, rename as rename8, rm as rm9, writeFile as writeFile8 } from "node:fs/promises";
-import path18 from "node:path";
+import path19 from "node:path";
 import { pathToFileURL as pathToFileURL5 } from "node:url";
 
 // src/cli/monitoring-stack.ts
 import { spawnSync } from "node:child_process";
 import { createHash as createHash15 } from "node:crypto";
 import { chmod as chmod2, cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
-import path17 from "node:path";
+import path18 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
 var STACK_SCHEMA = 4;
 var ASSETS = [".dockerignore", ".env.example", ".gitignore", "Dockerfile.gateway", "README.md", "collector.yaml", "compose.yaml", "gateway.mjs", "sender-credentials.mjs", "inventory-contract.mjs", "inventory-store.mjs", "inventory.mjs", "jaeger.yaml", "prometheus.yaml", "grafana-datasource.yaml", "grafana-dashboard-provider.yaml", "api-dashboard.json", "resource-dashboard.json", "host-dashboard.json", "caddy-dashboard.json", "pipeline-dashboard.json", "pipeline-rules.yaml", "collector-persistent.yaml", "compose.queue.yaml", "OUTAGES.md", "MAINTENANCE.md", "setup.mjs", "smoke.mjs", "performance-policy.mjs", "performance-rules.yaml", "fleet-dashboard.json", "performance-policy.md", "availability.mjs", "availability-rules.yaml", "blackbox.yaml", "blackbox-config.mjs"];
 function prerequisite() {
   if (!["arm64", "x64"].includes(process.arch) || !["linux", "darwin"].includes(process.platform)) {
-    throw commandError("Unsupported monitoring stack architecture.", "Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.");
+    throw commandError2("Unsupported monitoring stack architecture.", "Use Linux amd64 or arm64; macOS with Docker Desktop is supported for local testing.");
   }
   const compose2 = spawnSync("docker", ["compose", "version", "--short"], { encoding: "utf8" });
   if (compose2.error || compose2.status !== 0) {
-    throw commandError("Docker Compose is unavailable.", "Install Docker Engine 29.x and Docker Compose 2.40.3 or later, then run this command again.");
+    throw commandError2("Docker Compose is unavailable.", "Install Docker Engine 29.x and Docker Compose 2.40.3 or later, then run this command again.");
   }
   const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(compose2.stdout.trim());
   if (!match || Number(match[1]) < 2 || Number(match[1]) === 2 && (Number(match[2]) < 40 || Number(match[2]) === 40 && Number(match[3]) < 3)) {
-    throw commandError("Unsupported Docker Compose version.", "Install Docker Compose 2.40.3 or later.");
+    throw commandError2("Unsupported Docker Compose version.", "Install Docker Compose 2.40.3 or later.");
   }
   const engine = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], { encoding: "utf8" });
   if (engine.error || engine.status !== 0) {
-    throw commandError("Docker Engine is unavailable.", "Start Docker Engine 29.x and check that the selected Docker context is reachable.");
+    throw commandError2("Docker Engine is unavailable.", "Start Docker Engine 29.x and check that the selected Docker context is reachable.");
   }
   const engineVersion = /^v?(\d+)\.(\d+)\.(\d+)/.exec(engine.stdout.trim());
   if (!engineVersion || Number(engineVersion[1]) !== 29) {
-    throw commandError("Unsupported Docker Engine version.", "Use Docker Engine 29.x on the selected Docker context.");
+    throw commandError2("Unsupported Docker Engine version.", "Use Docker Engine 29.x on the selected Docker context.");
   }
 }
 async function existingFile(filename) {
@@ -147252,13 +147315,13 @@ async function existingFile(filename) {
 }
 async function runMonitoringStack(action, directory, packageRoot) {
   prerequisite();
-  const source = path17.join(packageRoot, "monitoring", "trace");
-  const target = path17.resolve(directory);
-  const packageInfo = JSON.parse(await readFile10(path17.join(packageRoot, "package.json"), "utf8"));
+  const source = path18.join(packageRoot, "monitoring", "trace");
+  const target = path18.resolve(directory);
+  const packageInfo = JSON.parse(await readFile10(path18.join(packageRoot, "package.json"), "utf8"));
   const version3 = packageInfo.version;
-  const manifestPath = path17.join(target, "stack-manifest.json");
+  const manifestPath = path18.join(target, "stack-manifest.json");
   if (action === "init") await mkdir8(target, { recursive: true });
-  else if (!await existingFile(target)) throw commandError("Monitoring stack directory does not exist.", "Run `sporades monitoring stack init --dir <path>` first.");
+  else if (!await existingFile(target)) throw commandError2("Monitoring stack directory does not exist.", "Run `sporades monitoring stack init --dir <path>` first.");
   const preexistingContent = (await readdir4(target)).length > 0;
   const manifestStat = await existingFile(manifestPath);
   let prior = null;
@@ -147266,7 +147329,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
     try {
       prior = JSON.parse(await readFile10(manifestPath, "utf8"));
     } catch {
-      throw commandError("Invalid monitoring stack manifest.", "Back up the directory and inspect stack-manifest.json before continuing.");
+      throw commandError2("Invalid monitoring stack manifest.", "Back up the directory and inspect stack-manifest.json before continuing.");
     }
   }
   const versionDifference = !prior && preexistingContent ? { installed: "unknown", available: version3, schema: null } : prior && (prior.schemaVersion !== STACK_SCHEMA || prior.packageVersion !== version3) ? { installed: prior.packageVersion ?? "unknown", available: version3, schema: prior.schemaVersion ?? null } : null;
@@ -147274,8 +147337,8 @@ async function runMonitoringStack(action, directory, packageRoot) {
   const overrides2 = [];
   const missingAssets = [];
   for (const name2 of ASSETS) {
-    const sourcePath = path17.join(source, name2 === ".gitignore" ? "gitignore.template" : name2);
-    const destination = path17.join(target, name2);
+    const sourcePath = path18.join(source, name2 === ".gitignore" ? "gitignore.template" : name2);
+    const destination = path18.join(target, name2);
     const sourceBytes = await readFile10(sourcePath);
     const current2 = await existingFile(destination);
     if (!current2 && action === "init") {
@@ -147284,13 +147347,13 @@ async function runMonitoringStack(action, directory, packageRoot) {
       created.push(name2);
     } else if (!current2) missingAssets.push(name2);
     else {
-      if (!current2.isFile()) throw commandError(`Monitoring stack asset is not a regular file: ${name2}`, "Inspect the stack directory and remove unsafe links before continuing.");
+      if (!current2.isFile()) throw commandError2(`Monitoring stack asset is not a regular file: ${name2}`, "Inspect the stack directory and remove unsafe links before continuing.");
       const destinationBytes = await readFile10(destination);
       if (createHash15("sha256").update(sourceBytes).digest("hex") !== createHash15("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
     }
   }
   if (action === "init" && !manifestStat && !preexistingContent) {
-    await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash15("sha256").update(await readFile10(path17.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
+    await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash15("sha256").update(await readFile10(path18.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
 `, { flag: "wx", mode: 420 });
     await chmod2(manifestPath, 420);
     created.push("stack-manifest.json");
@@ -147298,13 +147361,13 @@ async function runMonitoringStack(action, directory, packageRoot) {
   let missing = [];
   let notificationDelivery = "disabled";
   if (action === "init") {
-    const setup = await import(pathToFileURL4(path17.join(source, "setup.mjs")).href);
-    ({ missing, notificationDelivery } = await setup.setupEnvironment(path17.join(target, ".env")));
+    const setup = await import(pathToFileURL4(path18.join(source, "setup.mjs")).href);
+    ({ missing, notificationDelivery } = await setup.setupEnvironment(path18.join(target, ".env")));
   } else {
-    const setup = await import(pathToFileURL4(path17.join(source, "setup.mjs")).href);
-    const env = await existingFile(path17.join(target, ".env"));
+    const setup = await import(pathToFileURL4(path18.join(source, "setup.mjs")).href);
+    const env = await existingFile(path18.join(target, ".env"));
     if (!env) missing = [".env"];
-    else ({ missing, notificationDelivery } = setup.inspectEnvironment(await readFile10(path17.join(target, ".env"), "utf8")));
+    else ({ missing, notificationDelivery } = setup.inspectEnvironment(await readFile10(path18.join(target, ".env"), "utf8")));
   }
   return {
     path: target,
@@ -147323,7 +147386,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
 // src/cli/monitoring-maintenance.ts
 var digest = (bytes) => createHash16("sha256").update(bytes).digest("hex");
 function fail2() {
-  throw commandError("Monitoring maintenance could not complete.", "Keep services stopped. Check protected paths, stack provenance, configuration and the maintenance guide; retry with the same inputs. No backend history or Capsule data is deleted.");
+  throw commandError2("Monitoring maintenance could not complete.", "Keep services stopped. Check protected paths, stack provenance, configuration and the maintenance guide; retry with the same inputs. No backend history or Capsule data is deleted.");
 }
 async function exists(file) {
   try {
@@ -147354,7 +147417,7 @@ async function atomic(file, bytes, mode = 384, owner) {
     await handle.close();
   }
   await rename8(temp, file);
-  const dir = await open4(path18.dirname(file), "r");
+  const dir = await open4(path19.dirname(file), "r");
   try {
     await dir.sync();
   } finally {
@@ -147379,52 +147442,52 @@ function manifest(bytes) {
 }
 async function sourceAssets(packageRoot) {
   const assets = {};
-  for (const name2 of ASSETS) assets[name2] = digest(await readFile11(path18.join(packageRoot, "monitoring/trace", name2 === ".gitignore" ? "gitignore.template" : name2)));
-  const version3 = JSON.parse(await readFile11(path18.join(packageRoot, "package.json"), "utf8")).version;
+  for (const name2 of ASSETS) assets[name2] = digest(await readFile11(path19.join(packageRoot, "monitoring/trace", name2 === ".gitignore" ? "gitignore.template" : name2)));
+  const version3 = JSON.parse(await readFile11(path19.join(packageRoot, "package.json"), "utf8")).version;
   return { schemaVersion: STACK_SCHEMA, packageVersion: version3, assets };
 }
 async function validateEnvironment(dir, packageRoot) {
-  const setup = await import(pathToFileURL5(path18.join(packageRoot, "monitoring/trace/setup.mjs")).href);
-  if (setup.inspectEnvironment((await regular(path18.join(dir, ".env"))).toString()).missing.length) fail2();
-  await regular(path18.join(dir, ".compose.env"));
+  const setup = await import(pathToFileURL5(path19.join(packageRoot, "monitoring/trace/setup.mjs")).href);
+  if (setup.inspectEnvironment((await regular(path19.join(dir, ".env"))).toString()).missing.length) fail2();
+  await regular(path19.join(dir, ".compose.env"));
 }
 async function generation(file) {
   const st = await exists(file);
   return st ? { hash: digest(await regular(file)), mode: st.mode & 511, uid: st.uid, gid: st.gid } : null;
 }
 function recoveryConflict() {
-  throw commandError("Monitoring maintenance could not complete.", "Interrupted publication recovery found operator edits or an unverifiable legacy journal. All files and the journal were preserved. Keep services stopped, save your overrides separately, and reconcile journalled files with the recorded original generation before retrying. Do not delete the journal.");
+  throw commandError2("Monitoring maintenance could not complete.", "Interrupted publication recovery found operator edits or an unverifiable legacy journal. All files and the journal were preserved. Keep services stopped, save your overrides separately, and reconcile journalled files with the recorded original generation before retrying. Do not delete the journal.");
 }
 async function apply(dir, stateDir, next, recordPrevious = true) {
   const before = {};
   const original = {}, intended = {};
   const parent = await lstat11(dir);
   for (const [name2, bytes] of Object.entries(next)) {
-    const f2 = path18.join(dir, name2);
+    const f2 = path19.join(dir, name2);
     before[name2] = await exists(f2) ? (await regular(f2)).toString("base64") : null;
     original[name2] = await generation(f2);
     intended[name2] = bytes === null ? null : { hash: digest(Buffer.from(bytes, "base64")), mode: 420, uid: process.geteuid(), gid: parent.mode & 1024 ? parent.gid : process.getegid() };
   }
-  await atomic(path18.join(stateDir, "journal.json"), JSON.stringify({ schemaVersion: 1, before, original, intended }));
+  await atomic(path19.join(stateDir, "journal.json"), JSON.stringify({ schemaVersion: 1, before, original, intended }));
   for (const [name2, bytes] of Object.entries(next)) {
-    if (bytes === null) await rm9(path18.join(dir, name2), { force: true });
-    else await atomic(path18.join(dir, name2), Buffer.from(bytes, "base64"), 420);
+    if (bytes === null) await rm9(path19.join(dir, name2), { force: true });
+    else await atomic(path19.join(dir, name2), Buffer.from(bytes, "base64"), 420);
   }
-  if (recordPrevious) await atomic(path18.join(stateDir, "previous.json"), JSON.stringify({ before, after: Object.fromEntries(Object.entries(next).map(([k, v2]) => [k, v2 === null ? null : digest(Buffer.from(v2, "base64"))])) }));
-  await rm9(path18.join(stateDir, "journal.json"));
+  if (recordPrevious) await atomic(path19.join(stateDir, "previous.json"), JSON.stringify({ before, after: Object.fromEntries(Object.entries(next).map(([k, v2]) => [k, v2 === null ? null : digest(Buffer.from(v2, "base64"))])) }));
+  await rm9(path19.join(stateDir, "journal.json"));
 }
 function validImage(image) {
   if (!image || typeof image !== "object" || Array.isArray(image) || Object.entries(image).some(([k, v2]) => !ASSETS.includes(k) && k !== "stack-manifest.json" || v2 !== null && (typeof v2 !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(v2)))) fail2();
   return image;
 }
 async function recover(dir, stateDir) {
-  const journal = path18.join(stateDir, "journal.json");
+  const journal = path19.join(stateDir, "journal.json");
   if (!await exists(journal)) return;
   const record = JSON.parse((await regular(journal)).toString());
   const before = validImage(record.schemaVersion === 1 ? record.before : record);
   if (record.schemaVersion !== 1) {
     for (const [name2, value] of Object.entries(before)) {
-      if ((await generation(path18.join(dir, name2)))?.hash !== (value === null ? void 0 : digest(Buffer.from(value, "base64")))) recoveryConflict();
+      if ((await generation(path19.join(dir, name2)))?.hash !== (value === null ? void 0 : digest(Buffer.from(value, "base64")))) recoveryConflict();
     }
     await rm9(journal);
     return;
@@ -147437,11 +147500,11 @@ async function recover(dir, stateDir) {
   }
   for (const [name2, value] of Object.entries(before)) {
     if ((record.original[name2]?.hash ?? null) !== (value === null ? null : digest(Buffer.from(value, "base64")))) fail2();
-    const current2 = await generation(path18.join(dir, name2));
+    const current2 = await generation(path19.join(dir, name2));
     if (!same({ current: current2 }, { current: record.original[name2] }) && !same({ current: current2 }, { current: record.intended[name2] })) recoveryConflict();
   }
   for (const [name2, value] of Object.entries(before)) {
-    const file = path18.join(dir, name2), original = record.original[name2];
+    const file = path19.join(dir, name2), original = record.original[name2];
     if (same({ current: await generation(file) }, { current: original })) continue;
     if (value === null) await rm9(file, { force: true });
     else {
@@ -147452,8 +147515,8 @@ async function recover(dir, stateDir) {
 }
 async function runMonitoringMaintenance(action, directory, packageRoot, options = {}) {
   prerequisite();
-  const dir = path18.resolve(directory);
-  const stateDir = path18.join(dir, ".maintenance");
+  const dir = path19.resolve(directory);
+  const stateDir = path19.join(dir, ".maintenance");
   let lock;
   try {
     await safeDirectory(dir);
@@ -147464,7 +147527,7 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
   try {
     if (!["upgrade", "rollback", "backup", "restore"].includes(action) || options.backup && !["backup", "restore"].includes(action) || options.baseline && action !== "upgrade") fail2();
     await safeDirectory(stateDir, true);
-    const lockPath = path18.join(stateDir, "lock.sqlite");
+    const lockPath = path19.join(stateDir, "lock.sqlite");
     const lockStat = await exists(lockPath);
     if (lockStat && (!lockStat.isFile() || lockStat.isSymbolicLink() || lockStat.mode & 63 || process.geteuid && lockStat.uid !== process.geteuid())) fail2();
     const { DatabaseSync } = await import("node:sqlite");
@@ -147481,56 +147544,56 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
     const overrides2 = [];
     const next = {};
     if (action === "rollback") {
-      const previous = JSON.parse((await regular(path18.join(stateDir, "previous.json"))).toString());
+      const previous = JSON.parse((await regular(path19.join(stateDir, "previous.json"))).toString());
       validImage(previous.before);
       if (!previous.after || Object.keys(previous.after).length !== Object.keys(previous.before).length || Object.keys(previous.before).some((k) => !(k in previous.after))) fail2();
       let alreadyRestored = true;
       for (const [name2, bytes] of Object.entries(previous.before)) {
-        const f2 = path18.join(dir, name2);
+        const f2 = path19.join(dir, name2);
         if ((await exists(f2) ? digest(await regular(f2)) : null) !== (bytes === null ? null : digest(Buffer.from(bytes, "base64")))) alreadyRestored = false;
       }
       if (alreadyRestored) return { path: dir, action, changed: false, overrides: overrides2 };
       for (const [name2, expected] of Object.entries(previous.after)) {
         if (!ASSETS.includes(name2) && name2 !== "stack-manifest.json") fail2();
-        const f2 = path18.join(dir, name2);
+        const f2 = path19.join(dir, name2);
         if ((await exists(f2) ? digest(await regular(f2)) : null) !== expected) fail2();
       }
       Object.assign(next, previous.before);
     } else {
-      const prior = manifest(await regular(path18.join(dir, "stack-manifest.json")));
+      const prior = manifest(await regular(path19.join(dir, "stack-manifest.json")));
       let baseline = prior.assets;
       if (!baseline) {
         if (!options.baseline) fail2();
-        const bdir = path18.resolve(options.baseline);
+        const bdir = path19.resolve(options.baseline);
         await safeDirectory(bdir);
-        const b = manifest(await regular(path18.join(bdir, "stack-manifest.json")));
+        const b = manifest(await regular(path19.join(bdir, "stack-manifest.json")));
         if (b.packageVersion !== prior.packageVersion || b.schemaVersion !== prior.schemaVersion) fail2();
         baseline = {};
-        for (const name2 of ASSETS) if (await exists(path18.join(bdir, name2))) baseline[name2] = digest(await regular(path18.join(bdir, name2)));
+        for (const name2 of ASSETS) if (await exists(path19.join(bdir, name2))) baseline[name2] = digest(await regular(path19.join(bdir, name2)));
       }
       const current2 = await sourceAssets(packageRoot);
       for (const name2 of ASSETS) {
-        const file = path18.join(dir, name2);
+        const file = path19.join(dir, name2);
         const bytes2 = await exists(file) ? await regular(file) : null;
         if (bytes2 && digest(bytes2) !== baseline[name2]) {
           overrides2.push(name2);
           continue;
         }
-        const fresh = await readFile11(path18.join(packageRoot, "monitoring/trace", name2 === ".gitignore" ? "gitignore.template" : name2));
+        const fresh = await readFile11(path19.join(packageRoot, "monitoring/trace", name2 === ".gitignore" ? "gitignore.template" : name2));
         if (!bytes2 || digest(bytes2) !== digest(fresh)) next[name2] = fresh.toString("base64");
       }
       const bytes = Buffer.from(JSON.stringify(current2, null, 2) + "\n");
-      if (digest(await regular(path18.join(dir, "stack-manifest.json"))) !== digest(bytes)) next["stack-manifest.json"] = bytes.toString("base64");
+      if (digest(await regular(path19.join(dir, "stack-manifest.json"))) !== digest(bytes)) next["stack-manifest.json"] = bytes.toString("base64");
     }
     if (!Object.keys(next).length) return { path: dir, action, changed: false, overrides: overrides2 };
-    const candidate = path18.join(stateDir, "candidate");
+    const candidate = path19.join(stateDir, "candidate");
     await rm9(candidate, { recursive: true, force: true });
     await mkdir9(candidate, { mode: 448 });
     await copyTree(dir, candidate, excluded);
     if (!same(inputs, await hashes(candidate))) fail2();
     for (const [name2, bytes] of Object.entries(next)) {
-      if (bytes === null) await rm9(path18.join(candidate, name2), { force: true });
-      else await atomic(path18.join(candidate, name2), Buffer.from(bytes, "base64"), 420);
+      if (bytes === null) await rm9(path19.join(candidate, name2), { force: true });
+      else await atomic(path19.join(candidate, name2), Buffer.from(bytes, "base64"), 420);
     }
     compose(candidate, ["config", "--quiet"]);
     await validateComponents(candidate, packageRoot);
@@ -147551,7 +147614,7 @@ function same(a2, b) {
 async function copyTree(source, target, exclude = /* @__PURE__ */ new Set()) {
   for (const entry of await readdir5(source, { withFileTypes: true })) {
     if (exclude.has(entry.name)) continue;
-    const from = path18.join(source, entry.name), to = path18.join(target, entry.name);
+    const from = path19.join(source, entry.name), to = path19.join(target, entry.name);
     if (entry.isSymbolicLink()) fail2();
     if (entry.isDirectory()) {
       await mkdir9(to, { mode: 448 });
@@ -147581,7 +147644,7 @@ async function hashes(dir, prefix = "", exclude = /* @__PURE__ */ new Set()) {
   const result = /* @__PURE__ */ Object.create(null);
   for (const e of await readdir5(dir, { withFileTypes: true })) {
     if (exclude.has(e.name)) continue;
-    const file = path18.join(dir, e.name), name2 = prefix + e.name;
+    const file = path19.join(dir, e.name), name2 = prefix + e.name;
     if (e.isSymbolicLink()) fail2();
     if (e.isDirectory()) Object.assign(result, await hashes(file, name2 + "/"));
     else if (e.isFile()) {
@@ -147718,15 +147781,15 @@ function ownedVolume(dir, name2, id2) {
 }
 async function storageMaintenance(action, dir, packageRoot, backup) {
   if (!backup) fail2();
-  const location = path18.resolve(backup);
-  if (location === dir || location.startsWith(dir + path18.sep) || dir.startsWith(location + path18.sep)) fail2();
-  await safeDirectory(path18.dirname(location));
+  const location = path19.resolve(backup);
+  if (location === dir || location.startsWith(dir + path19.sep) || dir.startsWith(location + path19.sep)) fail2();
+  await safeDirectory(path19.dirname(location));
   if (action === "backup") {
     await validateEnvironment(dir, packageRoot);
-    const stack = manifest(await regular(path18.join(dir, "stack-manifest.json")));
+    const stack = manifest(await regular(path19.join(dir, "stack-manifest.json")));
     const names2 = volumes(dir);
     idleVolumes(dir, names2);
-    if (await exists(path18.join(dir, ".private/senders/.lock"))) fail2();
+    if (await exists(path19.join(dir, ".private/senders/.lock"))) fail2();
     const excluded = /* @__PURE__ */ new Set([".maintenance", "backups", "data"]);
     const beforeFiles = await hashes(dir, "", excluded);
     const configMetadata = await metadata(dir, excluded);
@@ -147734,18 +147797,18 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
     const stage = `${location}.partial-${randomBytes9(8).toString("hex")}`;
     await mkdir9(stage, { mode: 448 });
     try {
-      await mkdir9(path18.join(stage, "config"), { mode: 448 });
-      await copyTree(dir, path18.join(stage, "config"), /* @__PURE__ */ new Set([".maintenance", "backups", "data"]));
+      await mkdir9(path19.join(stage, "config"), { mode: 448 });
+      await copyTree(dir, path19.join(stage, "config"), /* @__PURE__ */ new Set([".maintenance", "backups", "data"]));
       for (const [key, name2] of Object.entries(names2)) {
         docker(["volume", "inspect", name2], dir);
-        const file = await open4(path18.join(stage, `${key}.tar`), "wx", 384);
+        const file = await open4(path19.join(stage, `${key}.tar`), "wx", 384);
         await file.close();
         archive(dir, name2, stage, `${key}.tar`);
-        await chmod3(path18.join(stage, `${key}.tar`), 384);
+        await chmod3(path19.join(stage, `${key}.tar`), 384);
       }
       const files = await hashes(stage);
-      if (!same(beforeFiles, await hashes(path18.join(stage, "config"))) || !same(beforeFiles, await hashes(dir, "", excluded)) || !same(configMetadata, await metadata(dir, excluded)) || await exists(path18.join(dir, ".private/senders/.lock"))) fail2();
-      await atomic(path18.join(stage, "backup-manifest.json"), JSON.stringify({ schemaVersion: 1, stack, volumes: Object.keys(names2), files, configMetadata }));
+      if (!same(beforeFiles, await hashes(path19.join(stage, "config"))) || !same(beforeFiles, await hashes(dir, "", excluded)) || !same(configMetadata, await metadata(dir, excluded)) || await exists(path19.join(dir, ".private/senders/.lock"))) fail2();
+      await atomic(path19.join(stage, "backup-manifest.json"), JSON.stringify({ schemaVersion: 1, stack, volumes: Object.keys(names2), files, configMetadata }));
       await rename8(stage, location);
     } catch {
       await rm9(stage, { recursive: true, force: true });
@@ -147754,7 +147817,7 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
     return { path: dir, action, changed: true, overrides: [] };
   }
   await safeDirectory(location, true);
-  const bytes = await regular(path18.join(location, "backup-manifest.json"));
+  const bytes = await regular(path19.join(location, "backup-manifest.json"));
   const snapshot = JSON.parse(bytes.toString());
   if (snapshot.schemaVersion !== 1 || !snapshot.files || typeof snapshot.files !== "object" || Array.isArray(snapshot.files) || JSON.stringify(snapshot.volumes) !== JSON.stringify(Object.keys(STORAGE))) fail2();
   manifest(Buffer.from(JSON.stringify(snapshot.stack)));
@@ -147766,8 +147829,8 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
     if (!actual[`${name2}.tar`]) fail2();
     await checkArchive(dir, location, `${name2}.tar`);
   }
-  await validateEnvironment(path18.join(location, "config"), packageRoot);
-  const journal = path18.join(dir, ".maintenance/restore.json");
+  await validateEnvironment(path19.join(location, "config"), packageRoot);
+  const journal = path19.join(dir, ".maintenance/restore.json");
   const id2 = digest(bytes);
   const prior = await exists(journal) ? JSON.parse((await regular(journal)).toString()) : null;
   if (prior && prior.id !== id2) fail2();
@@ -147775,7 +147838,7 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
   if (!prior) await atomic(journal, JSON.stringify({ id: id2, complete: false }));
   async function install(from, to) {
     for (const e of await readdir5(from, { withFileTypes: true })) {
-      const src = path18.join(from, e.name), dst = path18.join(to, e.name);
+      const src = path19.join(from, e.name), dst = path19.join(to, e.name);
       if (e.isDirectory()) {
         if (!await exists(dst)) await mkdir9(dst, { mode: 448 });
         const st = await lstat11(dst);
@@ -147785,11 +147848,11 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
         const b = await regular(src);
         if (await exists(dst)) {
           if (digest(await regular(dst)) !== digest(b)) fail2();
-        } else await atomic(dst, b, snapshot.configMetadata?.[path18.relative(path18.join(location, "config"), src)]?.mode ?? 384);
+        } else await atomic(dst, b, snapshot.configMetadata?.[path19.relative(path19.join(location, "config"), src)]?.mode ?? 384);
       }
     }
   }
-  await install(path18.join(location, "config"), dir);
+  await install(path19.join(location, "config"), dir);
   await restoreMetadata(dir, snapshot.configMetadata);
   stopped(dir);
   const names = volumes(dir);
@@ -147821,7 +147884,7 @@ async function metadata(dir, exclude = /* @__PURE__ */ new Set(), prefix = "") {
   const values = /* @__PURE__ */ Object.create(null);
   for (const e of await readdir5(dir, { withFileTypes: true })) {
     if (exclude.has(e.name)) continue;
-    const file = path18.join(dir, e.name), st = await lstat11(file), name2 = prefix + e.name;
+    const file = path19.join(dir, e.name), st = await lstat11(file), name2 = prefix + e.name;
     if (!st.isFile() && !st.isDirectory() || st.isSymbolicLink() || st.mode & 18) fail2();
     values[name2] = { mode: st.mode & 511, uid: st.uid, gid: st.gid };
     if (st.isDirectory()) Object.assign(values, await metadata(file, /* @__PURE__ */ new Set(), name2 + "/"));
@@ -147831,12 +147894,12 @@ async function metadata(dir, exclude = /* @__PURE__ */ new Set(), prefix = "") {
 async function restoreMetadata(dir, values) {
   if (!values || typeof values !== "object" || Array.isArray(values)) fail2();
   for (const [name2, v2] of Object.entries(values)) {
-    if (path18.isAbsolute(name2) || name2.split("/").some((p2) => !p2 || p2 === "." || p2 === "..") || !Number.isSafeInteger(v2?.mode) || v2.mode < 0 || v2.mode > 511 || v2.mode & 18 || !Number.isSafeInteger(v2.uid) || v2.uid < 0 || v2.uid > 4294967295 || !Number.isSafeInteger(v2.gid) || v2.gid < 0 || v2.gid > 4294967295) fail2();
-    const file = path18.join(dir, name2), st = await lstat11(file);
+    if (path19.isAbsolute(name2) || name2.split("/").some((p2) => !p2 || p2 === "." || p2 === "..") || !Number.isSafeInteger(v2?.mode) || v2.mode < 0 || v2.mode > 511 || v2.mode & 18 || !Number.isSafeInteger(v2.uid) || v2.uid < 0 || v2.uid > 4294967295 || !Number.isSafeInteger(v2.gid) || v2.gid < 0 || v2.gid > 4294967295) fail2();
+    const file = path19.join(dir, name2), st = await lstat11(file);
     if (st.isSymbolicLink() || !st.isFile() && !st.isDirectory()) fail2();
   }
   for (const [name2, v2] of Object.entries(values).sort(([a2], [b]) => b.length - a2.length)) {
-    const file = path18.join(dir, name2);
+    const file = path19.join(dir, name2);
     const st = await lstat11(file);
     if (st.uid !== v2.uid || st.gid !== v2.gid) await chown(file, v2.uid, v2.gid);
     await chmod3(file, v2.mode);
@@ -147848,8 +147911,8 @@ async function validateComponents(dir, packageRoot) {
   for (const [name2, pattern] of Object.entries(expected)) {
     if (!pattern.test(config.services?.[name2]?.image ?? "")) fail2();
   }
-  const setup = await import(pathToFileURL5(path18.join(packageRoot, "monitoring/trace/setup.mjs")).href);
-  const env = setup.parseEnvironment((await regular(path18.join(dir, ".compose.env"))).toString());
+  const setup = await import(pathToFileURL5(path19.join(packageRoot, "monitoring/trace/setup.mjs")).href);
+  const env = setup.parseEnvironment((await regular(path19.join(dir, ".compose.env"))).toString());
   const commands = {
     collector: ["--config=/etc/otelcol/config.yaml"],
     jaeger: ["--config=/etc/jaeger/config.yaml"],
@@ -147872,12 +147935,12 @@ async function validateComponents(dir, packageRoot) {
     if (optional && !matches?.length) return [];
     if (matches?.length !== 1 || matches[0].type !== "bind" || matches[0].read_only !== true) fail2();
     const source = matches[0].source;
-    if (typeof source !== "string" || source.includes(",") || source !== path18.resolve(source) || !source.startsWith(dir + path18.sep)) fail2();
-    const relative = path18.relative(dir, source);
-    if (relative.split(path18.sep).some((p2) => !p2 || p2 === "." || p2 === "..")) fail2();
+    if (typeof source !== "string" || source.includes(",") || source !== path19.resolve(source) || !source.startsWith(dir + path19.sep)) fail2();
+    const relative = path19.relative(dir, source);
+    if (relative.split(path19.sep).some((p2) => !p2 || p2 === "." || p2 === "..")) fail2();
     let parent = dir;
-    for (const component of relative.split(path18.sep).slice(0, -1)) {
-      parent = path18.join(parent, component);
+    for (const component of relative.split(path19.sep).slice(0, -1)) {
+      parent = path19.join(parent, component);
       const st = await lstat11(parent);
       if (!st.isDirectory() || st.isSymbolicLink() || st.mode & 18) fail2();
     }
@@ -147897,9 +147960,9 @@ async function validateComponents(dir, packageRoot) {
   const retention = config.services.jaeger.environment?.TRACE_RETENTION ?? "72h";
   docker([...base, "--env", `TRACE_RETENTION=${retention}`, ...await mount("jaeger", "/etc/jaeger/config.yaml"), config.services.jaeger.image, "validate", "--config=/etc/jaeger/config.yaml"], dir);
   docker([...base, ...await mount("prometheus", "/etc/prometheus/prometheus.yml"), ...await mount("prometheus", "/etc/prometheus/pipeline-rules.yaml"), ...await mount("prometheus", "/etc/prometheus/availability-rules.yaml", true), ...await mount("prometheus", "/etc/prometheus/performance-rules.yaml", true), "--entrypoint", "/bin/promtool", config.services.prometheus.image, "check", "config", "/etc/prometheus/prometheus.yml"], dir);
-  for (const name2 of ASSETS.filter((n) => n.endsWith(".json"))) JSON.parse((await regular(path18.join(dir, name2))).toString());
+  for (const name2 of ASSETS.filter((n) => n.endsWith(".json"))) JSON.parse((await regular(path19.join(dir, name2))).toString());
   for (const name2 of ASSETS.filter((n) => n.endsWith(".mjs"))) {
-    const result = spawnSync2(process.execPath, ["--check", path18.join(dir, name2)], { encoding: "utf8", timeout: 1e4 });
+    const result = spawnSync2(process.execPath, ["--check", path19.join(dir, name2)], { encoding: "utf8", timeout: 1e4 });
     if (result.status !== 0) fail2();
   }
 }
@@ -147981,7 +148044,7 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid4) {
 import { spawn as spawn3, spawnSync as spawnSync3 } from "node:child_process";
 import { lstat as lstat12, readFile as readFile13, realpath as realpath5 } from "node:fs/promises";
 import { connect } from "node:net";
-import path20 from "node:path";
+import path21 from "node:path";
 
 // src/cli/admission-inspection.ts
 var ADMISSION_INSPECTION_SCRIPT = String.raw`const admissionInspection = true;
@@ -148020,7 +148083,7 @@ async function readAdmissionInspection(response) {
 // src/cli/project-config.ts
 import { createHash as createHash17 } from "node:crypto";
 import { chmod as chmod4, mkdir as mkdir10, readFile as readFile12, writeFile as writeFile9 } from "node:fs/promises";
-import path19 from "node:path";
+import path20 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -148042,6 +148105,7 @@ var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
   "deploy",
   "dev",
   "files",
+  "env",
   "id",
   "logging",
   "logs",
@@ -148058,7 +148122,7 @@ var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
   "telemetry"
 ]);
 async function readProjectConfig(projectDir) {
-  const configPath = path19.join(projectDir, "sporades.json");
+  const configPath = path20.join(projectDir, "sporades.json");
   const raw = await readRequiredFile2(
     configPath,
     "Missing project configuration: sporades.json",
@@ -148068,10 +148132,11 @@ async function readProjectConfig(projectDir) {
   try {
     config = JSON.parse(raw);
   } catch {
-    throw commandError("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
+    throw commandError2("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
   }
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   validateLogConfig(config);
+  validateRequiredServerEnvConfig(config.env);
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
@@ -148145,37 +148210,37 @@ function validateTeamsConfig(teams) {
 function validateClientConfig(client) {
   if (client === void 0) return;
   if (!client || typeof client !== "object" || Array.isArray(client) || Object.keys(client).some((key) => key !== "framework" && key !== "toolchain" && key !== "prerender")) {
-    throw commandError("Invalid client configuration.", "Set `client.framework`, optional `client.toolchain`, and optional `client.prerender` in sporades.json.");
+    throw commandError2("Invalid client configuration.", "Set `client.framework`, optional `client.toolchain`, and optional `client.prerender` in sporades.json.");
   }
   if (client.framework !== void 0 && !isClientFramework(client.framework)) {
-    throw commandError(`Unsupported framework: ${client.framework}`, CLIENT_FRAMEWORK_HINT);
+    throw commandError2(`Unsupported framework: ${client.framework}`, CLIENT_FRAMEWORK_HINT);
   }
   if (client.toolchain !== void 0 && !isClientToolchain(client.toolchain)) {
-    throw commandError(`Unsupported client toolchain: ${client.toolchain}`, CLIENT_TOOLCHAIN_HINT);
+    throw commandError2(`Unsupported client toolchain: ${client.toolchain}`, CLIENT_TOOLCHAIN_HINT);
   }
   const framework = client.framework ?? "react";
   const toolchain = client.toolchain ?? defaultClientToolchain(framework);
   if (isClientFramework(framework) && isClientToolchain(toolchain) && !supportsClientCapability(framework, toolchain)) {
     const details = clientCapabilityError(framework, toolchain);
-    throw commandError(details.message, details.hint);
+    throw commandError2(details.message, details.hint);
   }
   if (isClientToolchain(toolchain)) readClientPrerenderConfig(client.prerender, toolchain);
 }
 function validateSchedulingConfig(scheduling) {
   if (scheduling === void 0) return;
   if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
-    throw commandError("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+    throw commandError2("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
   }
   const seconds = scheduling.payloadFactoryTimeoutSeconds;
   if (seconds !== void 0 && (!Number.isInteger(seconds) || seconds < 1 || seconds > 300)) {
-    throw commandError("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+    throw commandError2("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
   }
 }
 async function readOptionalProjectSecurity(projectDir, session) {
   try {
     return resolveEffectiveSecurityPolicy(await readProjectConfig(projectDir), session);
   } catch (error) {
-    if (errorDetails(error).message === "Missing project configuration: sporades.json") {
+    if (errorDetails2(error).message === "Missing project configuration: sporades.json") {
       return null;
     }
     throw error;
@@ -148183,11 +148248,11 @@ async function readOptionalProjectSecurity(projectDir, session) {
 }
 function validateProjectConfigShape(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
-    throw commandError("Invalid project configuration: sporades.json", "Set sporades.json to a JSON object.");
+    throw commandError2("Invalid project configuration: sporades.json", "Set sporades.json to a JSON object.");
   }
   const unsupportedKeys = Object.keys(config).filter((key) => !SUPPORTED_PROJECT_KEYS.has(key)).sort();
   if (unsupportedKeys.length > 0) {
-    throw commandError(
+    throw commandError2(
       "Unsupported project configuration keys.",
       "Remove unsupported top-level keys from sporades.json or move Capsule-specific values into Server env or app code.",
       { unsupportedKeys }
@@ -148199,24 +148264,24 @@ function validateSecurityConfig(security) {
     return;
   }
   if (!security || typeof security !== "object" || Array.isArray(security)) {
-    throw commandError("Invalid security policy.", "Set `security` in sporades.json to an object.");
+    throw commandError2("Invalid security policy.", "Set `security` in sporades.json to an object.");
   }
   const cors = security.cors;
   if (cors !== void 0) {
     if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
-      throw commandError("Invalid CORS policy.", "Set `security.cors` to an object with `allowedOrigins`.");
+      throw commandError2("Invalid CORS policy.", "Set `security.cors` to an object with `allowedOrigins`.");
     }
     if (cors.allowedOrigins !== void 0 && (!Array.isArray(cors.allowedOrigins) || !cors.allowedOrigins.every((origin) => typeof origin === "string"))) {
-      throw commandError("Invalid CORS allowed origins.", "Set `security.cors.allowedOrigins` to an array of origin strings.");
+      throw commandError2("Invalid CORS allowed origins.", "Set `security.cors.allowedOrigins` to an array of origin strings.");
     }
   }
   const csp = security.csp;
   if (csp !== void 0) {
     if (!csp || typeof csp !== "object" || Array.isArray(csp)) {
-      throw commandError("Invalid CSP policy.", "Set `security.csp` to an object with `mode`.");
+      throw commandError2("Invalid CSP policy.", "Set `security.csp` to an object with `mode`.");
     }
     if (csp.mode !== void 0 && csp.mode !== "report-only" && csp.mode !== "enforce") {
-      throw commandError("Invalid CSP mode.", "Use `security.csp.mode` of `report-only` or `enforce`.");
+      throw commandError2("Invalid CSP mode.", "Use `security.csp.mode` of `report-only` or `enforce`.");
     }
   }
 }
@@ -148260,8 +148325,8 @@ async function resolveLocalContainerSshAccess(config, projectDir) {
   if (lines.length === 0) {
     return { enabled: false, authorizedKeysPath: null, keyCount: 0 };
   }
-  const sshDir = path19.join(projectDir, ".sporades", "ssh");
-  const authorizedKeysPath = path19.join(sshDir, "authorized_keys");
+  const sshDir = path20.join(projectDir, ".sporades", "ssh");
+  const authorizedKeysPath = path20.join(sshDir, "authorized_keys");
   await mkdir10(sshDir, { recursive: true });
   await writeFile9(authorizedKeysPath, `${lines.join("\n")}
 `, { mode: 420 });
@@ -148278,13 +148343,13 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
     return [];
   }
   if (!ssh || typeof ssh !== "object" || Array.isArray(ssh)) {
-    throw commandError("Invalid SSH access configuration.", "Set `ssh` in sporades.json to an object with `authorizedKeys`.");
+    throw commandError2("Invalid SSH access configuration.", "Set `ssh` in sporades.json to an object with `authorizedKeys`.");
   }
   if (ssh.authorizedKeys === void 0) {
     return [];
   }
   if (!Array.isArray(ssh.authorizedKeys)) {
-    throw commandError(
+    throw commandError2(
       "Invalid SSH authorized keys configuration.",
       "Set `ssh.authorizedKeys` to an array of objects with exactly one of `key` or `file`."
     );
@@ -148293,7 +148358,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
   for (let index = 0; index < ssh.authorizedKeys.length; index += 1) {
     const entry = ssh.authorizedKeys[index];
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      throw commandError(
+      throw commandError2(
         `Invalid SSH authorized key entry at ssh.authorizedKeys[${index}].`,
         "Use an object with exactly one of `key` or `file`."
       );
@@ -148301,7 +148366,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
     const hasKey = typeof entry.key === "string";
     const hasFile = typeof entry.file === "string";
     if (hasKey === hasFile) {
-      throw commandError(
+      throw commandError2(
         `Invalid SSH authorized key entry at ssh.authorizedKeys[${index}].`,
         "Use exactly one of `key` or `file` for each SSH authorized key entry."
       );
@@ -148330,8 +148395,8 @@ async function readRequiredFile2(filePath, message, hint) {
   try {
     return await readFile12(filePath, "utf8");
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
-      throw commandError(message, hint);
+    if (errorDetails2(error).code === "ENOENT") {
+      throw commandError2(message, hint);
     }
     throw error;
   }
@@ -148340,7 +148405,7 @@ async function readAuthorizedKeysFile(filePath, index) {
   try {
     return await readFile12(filePath, "utf8");
   } catch {
-    throw commandError(
+    throw commandError2(
       `Unable to read SSH authorized key file at ssh.authorizedKeys[${index}].`,
       "Check the `file` path is readable from this machine before running `sporades deploy`."
     );
@@ -148350,17 +148415,17 @@ function resolveProjectFileReference(filePath, projectDir) {
   if (filePath.startsWith("~/")) {
     const home = process.env.HOME;
     if (home) {
-      return path19.join(home, filePath.slice(2));
+      return path20.join(home, filePath.slice(2));
     }
   }
-  if (path19.isAbsolute(filePath)) {
+  if (path20.isAbsolute(filePath)) {
     return filePath;
   }
-  return path19.join(projectDir, filePath);
+  return path20.join(projectDir, filePath);
 }
 function normaliseAuthorizedKeyMaterial(material, source) {
   if (looksLikePrivateKey(material)) {
-    throw commandError(
+    throw commandError2(
       `SSH authorized key material at ${source} looks like a private key.`,
       "Provide public authorized_keys material only, such as an `id_ed25519.pub` file."
     );
@@ -148389,7 +148454,7 @@ function isOpenSshPublicKeyType(value) {
   return /^(ssh-(rsa|dss|ed25519)(-cert-v01@openssh\.com)?|ecdsa-sha2-nistp(256|384|521)(-cert-v01@openssh\.com)?|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)$/.test(value);
 }
 function malformedAuthorizedKeyError(source) {
-  return commandError(
+  return commandError2(
     `Malformed SSH authorized key material at ${source}.`,
     "Use OpenSSH authorized_keys-compatible public key lines."
   );
@@ -148484,6 +148549,7 @@ async function runDoctorChecks(options) {
   if (!project.config) {
     return checks;
   }
+  if (requiredServerEnvKeys(project.config).length > 0) checks.push(await requiredServerEnvCheck(project.config, options.projectDir));
   checks.push(await securityPolicyCheck(project.config, options));
   const publicDevCheck = await publicDevPostureCheck(options);
   if (publicDevCheck) {
@@ -148501,7 +148567,7 @@ async function runDoctorChecks(options) {
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "container") {
       checks.push(...await localContainerChecks(options));
-      const binding = await readOptionalJsonFile(path20.join(options.projectDir, ".sporades", "binding.json"));
+      const binding = await readOptionalJsonFile(path21.join(options.projectDir, ".sporades", "binding.json"));
       if (project.config.admissionPolicy || Array.isArray(binding?.deployFiles) && binding.deployFiles.some((file) => file.update === "admission")) checks.push(await localAdmissionCheck(options));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "hosted") {
@@ -148528,7 +148594,7 @@ async function projectConfigCheck(projectDir) {
       }
     };
   } catch (error) {
-    const details = errorDetails(error);
+    const details = errorDetails2(error);
     return {
       config: null,
       check: {
@@ -148617,7 +148683,7 @@ async function publicDevPostureCheck(options) {
 }
 async function readRunningPublicDevSession(projectDir) {
   try {
-    const session = JSON.parse(await readFile13(path20.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+    const session = JSON.parse(await readFile13(path21.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
     return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
   } catch {
     return false;
@@ -148649,7 +148715,7 @@ async function sshAuthorizedKeysCheck(config, options) {
       }
     };
   } catch (error) {
-    const details = errorDetails(error);
+    const details = errorDetails2(error);
     return {
       id: "doctor.ssh-authorized-keys",
       title: "SSH authorized keys",
@@ -148673,7 +148739,7 @@ async function sshFollowUpCommand(options) {
 }
 async function capsuleAuthoringAclPostureCheck(options) {
   const projectDir = typeof options.projectDir === "string" ? options.projectDir : process.cwd();
-  const serverEntry = path20.join(projectDir, "server", "index.ts");
+  const serverEntry = path21.join(projectDir, "server", "index.ts");
   try {
     const serverSource = await readFile13(serverEntry, "utf8");
     const serverModuleSource = await bundleServerCapsuleModule({
@@ -148690,7 +148756,7 @@ async function loadBundledCapsuleDefinition(serverModuleSource) {
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}#${Date.now()}`;
   const capsuleModule = await import(moduleUrl);
   if (!capsuleModule.default) {
-    throw commandError(
+    throw commandError2(
       "Capsule server entry did not export a default Capsule definition.",
       "Fix server/index.ts so it uses `export default capsule({ schema: { ... } })`, then rerun `sporades doctor`."
     );
@@ -148755,7 +148821,7 @@ function tableAclPosture(name2, table) {
   return { name: name2, missing };
 }
 function capsuleMetadataLoadFailureCheck(error) {
-  const details = errorDetails(error);
+  const details = errorDetails2(error);
   return {
     id: "doctor.capsule-authoring.metadata-load",
     title: "Capsule schema metadata",
@@ -148868,7 +148934,7 @@ async function resolveHostedDoctorTarget(options) {
 }
 async function readDoctorRemoteBinding(projectDir) {
   try {
-    const binding = JSON.parse(await readFile13(path20.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
+    const binding = JSON.parse(await readFile13(path21.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
     return binding && typeof binding === "object" && !Array.isArray(binding) ? binding : null;
   } catch {
     return null;
@@ -149142,7 +149208,7 @@ async function runHostJsonCommand(args, projectDir) {
   });
 }
 async function devSessionChecks(options) {
-  const session = await readOptionalJsonFile(path20.join(options.projectDir, ".sporades", "dev-session.json"));
+  const session = await readOptionalJsonFile(path21.join(options.projectDir, ".sporades", "dev-session.json"));
   if (!session) {
     return [
       {
@@ -149155,7 +149221,7 @@ async function devSessionChecks(options) {
         hint: "Run `sporades dev status` to inspect Dev session state, or start one with `sporades dev`.",
         commands: ["sporades dev status"],
         details: {
-          bindingPath: path20.join(".sporades", "dev-session.json"),
+          bindingPath: path21.join(".sporades", "dev-session.json"),
           exists: false
         }
       },
@@ -149184,7 +149250,7 @@ async function devSessionChecks(options) {
       hint: bindingValid ? "Inspect live Dev state with `sporades dev status`." : "Restart the Dev session with `sporades dev`.",
       commands: ["sporades dev status"],
       details: {
-        bindingPath: path20.join(".sporades", "dev-session.json"),
+        bindingPath: path21.join(".sporades", "dev-session.json"),
         exists: true,
         port: bindingValid ? port : null,
         pid: session.pid ?? null,
@@ -149225,7 +149291,7 @@ function admissionCheck(scope, value) {
 async function localAdmissionCheck(options) {
   let health = null;
   if (options.session === "container") {
-    const binding = await readOptionalJsonFile(path20.join(options.projectDir, ".sporades", "binding.json"));
+    const binding = await readOptionalJsonFile(path21.join(options.projectDir, ".sporades", "binding.json"));
     if (binding?.containerId) {
       const probe = spawnSync3("docker", ["exec", binding.containerId, "node", "--input-type=module", "--eval", ADMISSION_INSPECTION_SCRIPT], { cwd: options.projectDir, encoding: "utf8", timeout: 1500, maxBuffer: 128 * 1024 });
       if (probe.status === 0) {
@@ -149236,7 +149302,7 @@ async function localAdmissionCheck(options) {
       }
     }
   } else {
-    const session = await readOptionalJsonFile(path20.join(options.projectDir, ".sporades", "dev-session.json"));
+    const session = await readOptionalJsonFile(path21.join(options.projectDir, ".sporades", "dev-session.json"));
     if (Number.isInteger(session?.port) && session.port > 0 && session.port <= 65535 && /^[a-f0-9]{64}$/.test(session?.inspectionToken)) {
       try {
         health = await readAdmissionInspection(await fetch(`http://127.0.0.1:${session.port}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": session.inspectionToken }, signal: AbortSignal.timeout(1500), redirect: "error" }));
@@ -149247,7 +149313,7 @@ async function localAdmissionCheck(options) {
   return admissionCheck(options.session === "public-dev" ? "dev" : options.session, health);
 }
 async function localContainerChecks(options) {
-  const bindingPath = path20.join(options.projectDir, ".sporades", "binding.json");
+  const bindingPath = path21.join(options.projectDir, ".sporades", "binding.json");
   const binding = await readOptionalJsonFile(bindingPath);
   if (!binding?.containerId) {
     return [
@@ -149261,7 +149327,7 @@ async function localContainerChecks(options) {
         hint: "Run `sporades deploy status` to inspect local Container session state, or start one with `sporades deploy`.",
         commands: ["sporades deploy status"],
         details: {
-          bindingPath: path20.join(".sporades", "binding.json"),
+          bindingPath: path21.join(".sporades", "binding.json"),
           exists: false
         }
       }
@@ -149278,7 +149344,7 @@ async function localContainerChecks(options) {
       hint: "Inspect local Container state with `sporades deploy status`.",
       commands: ["sporades deploy status"],
       details: {
-        bindingPath: path20.join(".sporades", "binding.json"),
+        bindingPath: path21.join(".sporades", "binding.json"),
         exists: true,
         containerId: binding.containerId,
         containerName: binding.containerName ?? null
@@ -149393,7 +149459,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
       details: { framework: null, toolchain: null, htmlEntry: null, public: null }
     };
   }
-  const consumer = await readPublicTreeConsumer(path20.join(projectDir, ".sporades", "build"), "container").catch(() => null);
+  const consumer = await readPublicTreeConsumer(path21.join(projectDir, ".sporades", "build"), "container").catch(() => null);
   if (!consumer || consumer.tree !== release.publicTree || consumer.token !== release.consumerToken || consumer.identity !== binding.containerId) {
     return {
       id: "doctor.container.client-release",
@@ -149422,7 +149488,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
   }
   const source = publicMount.Source ?? publicMount.SourcePath;
   try {
-    const expected = path20.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
+    const expected = path21.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
     const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
       realpath5(source),
       realpath5(expected),
@@ -149444,7 +149510,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
       details: { framework, toolchain, htmlEntry: summary.htmlEntry, public: summary }
     };
   } catch (error) {
-    const details = errorDetails(error);
+    const details = errorDetails2(error);
     return {
       id: "doctor.container.client-release",
       title: "Container client release",
@@ -149539,18 +149605,18 @@ function localCapsuleServicesFromConfig(config, projectDir) {
     return null;
   }
   return {
-    path: path20.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path21.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
 }
 async function generatedComposeCheck(capsuleServices, projectDir, scope) {
-  const composePath = path20.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path21.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   let raw = "";
   try {
     raw = await readFile13(composePath, "utf8");
   } catch (error) {
-    if (errorDetails(error).code !== "ENOENT") {
+    if (errorDetails2(error).code !== "ENOENT") {
       throw error;
     }
   }
@@ -149599,7 +149665,7 @@ async function capsuleServicesRuntimeStateCheck(capsuleServices, projectDir, sco
       },
       volume: {
         type: "bind",
-        path: path20.join(CAPSULE_SERVICES_STATE_DIR, name2),
+        path: path21.join(CAPSULE_SERVICES_STATE_DIR, name2),
         exists: volumeExists
       },
       containerName: service.name,
@@ -149671,7 +149737,7 @@ function inspectDockerJson(args, cwd) {
   try {
     return { ok: true, value: JSON.parse(result.stdout.trim()) };
   } catch (error) {
-    return { ok: false, error: errorDetails(error).message ?? "Docker returned invalid JSON." };
+    return { ok: false, error: errorDetails2(error).message ?? "Docker returned invalid JSON." };
   }
 }
 function inspectComposeService(composePath, serviceName, cwd) {
@@ -149700,11 +149766,11 @@ async function readOptionalJsonFile(filePath) {
   try {
     return JSON.parse(await readFile13(filePath, "utf8"));
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
+    if (errorDetails2(error).code === "ENOENT") {
       return null;
     }
     if (error instanceof SyntaxError) {
-      throw commandError(`Invalid Runtime metadata: ${path20.basename(filePath)}`, `Delete or fix ${path20.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
+      throw commandError2(`Invalid Runtime metadata: ${path21.basename(filePath)}`, `Delete or fix ${path21.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
     }
     throw error;
   }
@@ -149714,7 +149780,7 @@ async function pathExists(targetPath) {
     await lstat12(targetPath);
     return true;
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
+    if (errorDetails2(error).code === "ENOENT") {
       return false;
     }
     throw error;
@@ -149831,6 +149897,28 @@ function renderDoctorHumanOutput(data2) {
   }
   lines.push("");
   return lines.join("\n");
+}
+async function requiredServerEnvCheck(config, projectDir) {
+  const base = { id: "doctor.required-server-env", title: "Required Server env", scope: "project" };
+  try {
+    const missingKeys = missingRequiredServerEnv(config, await readRequiredServerEnvValues(projectDir));
+    return {
+      ...base,
+      status: missingKeys.length ? "fail" : "pass",
+      severity: missingKeys.length ? "error" : "info",
+      message: missingKeys.length ? `Missing required Server env: ${missingKeys.join(", ")}.` : "Required Server env is present.",
+      details: { missingKeys },
+      ...missingKeys.length ? { hint: "Set the named values with sporades env set or env import." } : {}
+    };
+  } catch {
+    return {
+      ...base,
+      status: "fail",
+      severity: "error",
+      message: "Required Server env values are unavailable.",
+      hint: "Restore the local Sealed Server env key and envelope, or explicitly re-import source-of-truth values."
+    };
+  }
 }
 
 // src/cli/github-autodeploy-workflow.ts
@@ -150024,11 +150112,11 @@ var CLI_VERSION = "0.9.32";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
-var DEV_SESSION_FILE = path21.join(".sporades", "dev-session.json");
-var DEV_DATABASE_ENV_FILE = path21.join(".sporades", "dev-database-env.json");
+var DEV_SESSION_FILE = path22.join(".sporades", "dev-session.json");
+var DEV_DATABASE_ENV_FILE = path22.join(".sporades", "dev-database-env.json");
 var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
-var CONTAINER_BINDING_FILE = path21.join(".sporades", "binding.json");
-var REMOTE_BINDING_FILE = path21.join(".sporades", "remote-binding.json");
+var CONTAINER_BINDING_FILE = path22.join(".sporades", "binding.json");
+var REMOTE_BINDING_FILE = path22.join(".sporades", "remote-binding.json");
 var DEV_REBUILD_DEBOUNCE_MS = 100;
 var DEV_WATCH_SIGNATURE_POLL_MS = 250;
 var DEFAULT_HOST_SCHEME = "https";
@@ -150040,7 +150128,7 @@ var MAX_HOST_LOG_LINES = 1e4;
 var HOST_LOG_SOURCES = /* @__PURE__ */ new Set(["http", "stdout", "stderr"]);
 var HOST_HEALTH_PATH = "/__sporades/health";
 var DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW = ".github/workflows/sporades-autodeploy.yml";
-var CLI_ROOT = path21.resolve(path21.dirname(fileURLToPath3(import.meta.url)), "..");
+var CLI_ROOT = path22.resolve(path22.dirname(fileURLToPath3(import.meta.url)), "..");
 main().catch((error) => {
   writeResult(
     {
@@ -150142,7 +150230,7 @@ async function main() {
         return;
       }
       if (args[0] !== "stack" || !["init", "validate", "upgrade", "rollback", "backup", "restore"].includes(args[1] ?? "")) {
-        throw commandError("Unknown monitoring operation.", "Use `sporades monitoring stack init|validate|upgrade|rollback|backup|restore --dir <path>`.");
+        throw commandError2("Unknown monitoring operation.", "Use `sporades monitoring stack init|validate|upgrade|rollback|backup|restore --dir <path>`.");
       }
       let directory = process.cwd();
       let backup;
@@ -150153,7 +150241,7 @@ async function main() {
         else if (args[index] === "--backup") backup = readFlagValue(args, ++index, "--backup");
         else if (args[index] === "--baseline") baseline = readFlagValue(args, ++index, "--baseline");
         else if (args[index] === "--json") json = true;
-        else throw commandError("Unknown monitoring option.", "Use `--dir <path>` and optional `--json`.");
+        else throw commandError2("Unknown monitoring option.", "Use `--dir <path>` and optional `--json`.");
       }
       if (!["init", "validate"].includes(args[1])) {
         const data3 = await runMonitoringMaintenance(args[1], directory, resolveSporadesPackageRoot(), { backup, baseline });
@@ -150162,7 +150250,7 @@ async function main() {
 `);
         return;
       }
-      if (backup || baseline) throw commandError("Unexpected maintenance option.", "Use --backup for backup/restore and --baseline for legacy upgrades.");
+      if (backup || baseline) throw commandError2("Unexpected maintenance option.", "Use --backup for backup/restore and --baseline for legacy upgrades.");
       const data2 = await runMonitoringStack(args[1], directory, resolveSporadesPackageRoot());
       if (json) writeResult({ ok: true, data: data2, error: null });
       else {
@@ -150189,11 +150277,11 @@ async function main() {
       await manageLocalLifecycle("deploy", parseDeployArgs(args));
       return;
     case "jobs":
-      if (args.length) throw commandError("Unknown jobs argument.", "Use `sporades jobs`.");
+      if (args.length) throw commandError2("Unknown jobs argument.", "Use `sporades jobs`.");
       await inspectDevJobs({ projectDir: process.cwd() });
       return;
     case "schedules":
-      if (args.length) throw commandError("Unknown schedules argument.", "Use `sporades schedules`.");
+      if (args.length) throw commandError2("Unknown schedules argument.", "Use `sporades schedules`.");
       await inspectDevSchedules({ projectDir: process.cwd() });
       return;
     case "host":
@@ -150218,7 +150306,7 @@ async function main() {
       await inspectDatabase(parseDbArgs(args));
       return;
     default:
-      throw commandError(`Unknown command: ${command ?? ""}`.trim(), "Use `sporades create <name>`.");
+      throw commandError2(`Unknown command: ${command ?? ""}`.trim(), "Use `sporades create <name>`.");
   }
 }
 function printHelp(cmd) {
@@ -150240,7 +150328,7 @@ function parseVersionArgs(args) {
       hostAlias = readFlagValue(args, ++index, "--host");
       continue;
     }
-    throw commandError("Unknown version argument.", "Use `sporades --version` or `sporades --version --host <alias>`.");
+    throw commandError2("Unknown version argument.", "Use `sporades --version` or `sporades --version --host <alias>`.");
   }
   if (hostAlias) {
     validateHostAlias(hostAlias);
@@ -150270,7 +150358,7 @@ async function printVersion(options) {
     return;
   }
   if (!result.ok) {
-    throw commandError(result.error.message, result.error.hint);
+    throw commandError2(result.error.message, result.error.hint);
   }
   process.stdout.write(`${result.data.version}
 `);
@@ -150306,31 +150394,31 @@ function parseCreateArgs(args) {
         break;
       default:
         if (arg.startsWith("--")) {
-          throw commandError(`Unknown flag: ${arg}`, "Use `sporades create <name> --help` for supported flags.");
+          throw commandError2(`Unknown flag: ${arg}`, "Use `sporades create <name> --help` for supported flags.");
         }
         if (name2 !== null) {
-          throw commandError("Too many positional arguments.", "Use `sporades create <name>`.");
+          throw commandError2("Too many positional arguments.", "Use `sporades create <name>`.");
         }
         name2 = arg;
     }
   }
   if (!name2) {
-    throw commandError("Missing scaffold name.", "Use `sporades create <name>`.");
+    throw commandError2("Missing scaffold name.", "Use `sporades create <name>`.");
   }
   if (framework !== null && !isClientFramework(framework)) {
-    throw commandError(`Unsupported framework: ${framework}`, CLIENT_FRAMEWORK_HINT);
+    throw commandError2(`Unsupported framework: ${framework}`, CLIENT_FRAMEWORK_HINT);
   }
   toolchain ??= defaultClientToolchain(framework ?? "react");
   if (!isClientToolchain(toolchain)) {
-    throw commandError(`Unsupported client toolchain: ${toolchain}`, CLIENT_TOOLCHAIN_HINT);
+    throw commandError2(`Unsupported client toolchain: ${toolchain}`, CLIENT_TOOLCHAIN_HINT);
   }
   if (framework !== null && !supportsClientCapability(framework, toolchain)) {
     const details = clientCapabilityError(framework, toolchain);
-    throw commandError(details.message, details.hint);
+    throw commandError2(details.message, details.hint);
   }
-  const localTemplateDir = isLocalTemplateReference(template) ? path21.resolve(process.cwd(), template) : null;
+  const localTemplateDir = isLocalTemplateReference(template) ? path22.resolve(process.cwd(), template) : null;
   if (!SUPPORTED_TEMPLATES.has(template) && !localTemplateDir) {
-    throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
+    throw commandError2(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }
   return {
     name: name2,
@@ -150341,16 +150429,16 @@ function parseCreateArgs(args) {
     install,
     git,
     json,
-    projectDir: path21.resolve(process.cwd(), name2)
+    projectDir: path22.resolve(process.cwd(), name2)
   };
 }
 function isLocalTemplateReference(value) {
-  return path21.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
+  return path22.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
 }
 async function runMonitoringSenderCommand(args) {
   const action = args[1];
   if (!["issue", "rotate", "commit", "cancel", "revoke", "export", "status", "legacy-revoke"].includes(action ?? "")) {
-    throw commandError("Unknown sender operation.", "Run `sporades monitoring --help`.");
+    throw commandError2("Unknown sender operation.", "Run `sporades monitoring --help`.");
   }
   let directory = process.cwd();
   let json = false;
@@ -150364,30 +150452,30 @@ async function runMonitoringSenderCommand(args) {
     else if (arg === "--generation" && action === "commit") options.generation = Number(readFlagValue(args, ++index, arg));
     else if (arg === "--ingest" && action === "legacy-revoke") options.ingest = true;
     else if (arg === "--json") json = true;
-    else throw commandError("Unknown sender option.", "Run `sporades monitoring --help`.");
+    else throw commandError2("Unknown sender option.", "Run `sporades monitoring --help`.");
   }
   if (action === "legacy-revoke" && (options.sender || !!options.host === !!options.ingest)) {
-    throw commandError("Choose one legacy capability.", "Use exactly one of --host or --ingest without --sender.");
+    throw commandError2("Choose one legacy capability.", "Use exactly one of --host or --ingest without --sender.");
   }
-  const source = path21.join(resolveSporadesPackageRoot(), "monitoring", "trace");
-  const lifecycle = await import(pathToFileURL6(path21.join(source, "sender-credentials.mjs")).href);
-  const setup = await import(pathToFileURL6(path21.join(source, "setup.mjs")).href);
+  const source = path22.join(resolveSporadesPackageRoot(), "monitoring", "trace");
+  const lifecycle = await import(pathToFileURL6(path22.join(source, "sender-credentials.mjs")).href);
+  const setup = await import(pathToFileURL6(path22.join(source, "setup.mjs")).href);
   let data2;
   try {
-    data2 = await lifecycle.manageSenderCredentials(path21.join(path21.resolve(directory), ".private", "senders"), action, options, setup.gatewayRunIdentity());
+    data2 = await lifecycle.manageSenderCredentials(path22.join(path22.resolve(directory), ".private", "senders"), action, options, setup.gatewayRunIdentity());
   } catch (error) {
-    throw commandError("Sender credential operation failed.", error instanceof Error && !("code" in error) ? error.message : "Initialize the stack and inspect protected file permissions and output paths.");
+    throw commandError2("Sender credential operation failed.", error instanceof Error && !("code" in error) ? error.message : "Initialize the stack and inspect protected file permissions and output paths.");
   }
   if (json) writeResult({ ok: true, data: data2, error: null });
   else process.stdout.write(JSON.stringify(data2, null, 2) + "\n");
 }
 async function runTelemetryProfileCommand(args) {
   if (args[0] !== "profile" || !["add", "list", "show", "remove"].includes(args[1] ?? "")) {
-    throw commandError("Unknown Telemetry operation.", "Use `sporades telemetry profile add|list|show|remove`.");
+    throw commandError2("Unknown Telemetry operation.", "Use `sporades telemetry profile add|list|show|remove`.");
   }
   const operation = args[1];
   const name2 = operation === "list" ? null : args[2];
-  if (operation !== "list" && !name2) throw commandError("Missing Telemetry profile name.", "Pass a profile name after the operation.");
+  if (operation !== "list" && !name2) throw commandError2("Missing Telemetry profile name.", "Pass a profile name after the operation.");
   const rest = args.slice(operation === "list" ? 2 : 3);
   let json = false;
   const input = {};
@@ -150439,7 +150527,7 @@ async function runTelemetryProfileCommand(args) {
         continue;
       }
     }
-    throw commandError(`Unknown Telemetry option: ${arg}`, "Run `sporades telemetry --help` for supported profile options.");
+    throw commandError2(`Unknown Telemetry option: ${arg}`, "Run `sporades telemetry --help` for supported profile options.");
   }
   if (operation === "add") {
     const profile = {
@@ -150469,7 +150557,7 @@ async function runTelemetryProfileCommand(args) {
   const profiles = await readTelemetryProfiles();
   if (operation === "show") {
     const profile = Object.hasOwn(profiles, name2) ? profiles[name2] : void 0;
-    if (!profile) throw commandError("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
+    if (!profile) throw commandError2("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
     if (json) writeResult({ ok: true, data: { name: name2, profile }, error: null });
     else process.stdout.write(`${name2}	${profile.endpoint}
 `);
@@ -150492,11 +150580,11 @@ function parseDevArgs(args) {
     switch (arg) {
       case "--port": {
         if (subcommand !== "start") {
-          throw commandError(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
+          throw commandError2(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
         }
         const value = Number.parseInt(readFlagValue(rest, ++index, "--port"), 10);
         if (Number.isNaN(value) || value < 0) {
-          throw commandError("Invalid dev port.", "Pass --port <number>.");
+          throw commandError2("Invalid dev port.", "Pass --port <number>.");
         }
         port = value;
         break;
@@ -150506,16 +150594,16 @@ function parseDevArgs(args) {
         break;
       case "--public":
         if (subcommand !== "start") {
-          throw commandError(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
+          throw commandError2(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
         }
         publicDev = true;
         break;
       case "--telemetry":
-        if (subcommand !== "start") throw commandError(`Unknown flag: ${arg}`, "Use `sporades dev --telemetry <profile>` only when starting.");
+        if (subcommand !== "start") throw commandError2(`Unknown flag: ${arg}`, "Use `sporades dev --telemetry <profile>` only when starting.");
         telemetryProfile = readFlagValue(rest, ++index, "--telemetry");
         break;
       default:
-        throw commandError(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
+        throw commandError2(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
     }
   }
   return {
@@ -150529,13 +150617,13 @@ function parseDevArgs(args) {
 }
 function parsePolicyOperation(positional) {
   const [operation, source, ...extra] = positional;
-  if (extra.length || !["publish", "remove"].includes(operation) || (operation === "publish" ? !source : source !== void 0)) throw commandError("Invalid policy publication command.", "Use `policy publish <file>` or `policy remove`.");
+  if (extra.length || !["publish", "remove"].includes(operation) || (operation === "publish" ? !source : source !== void 0)) throw commandError2("Invalid policy publication command.", "Use `policy publish <file>` or `policy remove`.");
   return { operation, source };
 }
 async function policyPublicationBytes(options) {
   if (options.operation === "remove") return null;
-  const source = path21.resolve(options.projectDir, options.source);
-  const bytes = await readDeployFile(path21.dirname(source), path21.basename(source), ADMISSION_LIMITS.bytes);
+  const source = path22.resolve(options.projectDir, options.source);
+  const bytes = await readDeployFile(path22.dirname(source), path22.basename(source), ADMISSION_LIMITS.bytes);
   parseAdmissionPolicy(bytes);
   return bytes;
 }
@@ -150557,7 +150645,7 @@ function parseDeployArgs(args) {
     switch (arg) {
       case "--port":
         if (subcommand !== "start") {
-          throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
+          throw commandError2(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
         }
         port = readPort(readFlagValue(rest, ++index, "--port"));
         break;
@@ -150566,20 +150654,20 @@ function parseDeployArgs(args) {
         break;
       case "--force":
         if (subcommand !== "start") {
-          throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
+          throw commandError2(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
         }
         force = true;
         break;
       case "--telemetry":
-        if (subcommand !== "start") throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy --telemetry <profile>` only when starting.");
+        if (subcommand !== "start") throw commandError2(`Unknown flag: ${arg}`, "Use `sporades deploy --telemetry <profile>` only when starting.");
         telemetryProfile = readFlagValue(rest, ++index, "--telemetry");
         break;
       case "--no-telemetry":
-        if (subcommand !== "start") throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy --no-telemetry` only when starting.");
+        if (subcommand !== "start") throw commandError2(`Unknown flag: ${arg}`, "Use `sporades deploy --no-telemetry` only when starting.");
         telemetryProfile = null;
         break;
       default:
-        throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
+        throw commandError2(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reconcile|reset] --json`.");
     }
   }
   return {
@@ -150604,14 +150692,14 @@ function parseSecurityArgs(args) {
         json = true;
         break;
       default:
-        throw commandError(
+        throw commandError2(
           `Unknown flag: ${arg}`,
           "Use `sporades security --session dev|public-dev|container|hosted --json`."
         );
     }
   }
   if (!SECURITY_SESSIONS.has(session)) {
-    throw commandError(
+    throw commandError2(
       `Invalid security session: ${session}`,
       "Use one of: dev, public-dev, container, hosted."
     );
@@ -150625,7 +150713,7 @@ function parseSecurityArgs(args) {
 function parseAccessKeyOperatorArgs(args) {
   const [subcommand, ...rest] = args;
   if (!["list", "inspect", "revoke", "revoke-all", "delete"].includes(subcommand)) {
-    throw commandError("Unknown Access-key operator command.", "Use `sporades access-keys list|inspect|revoke|revoke-all|delete`.");
+    throw commandError2("Unknown Access-key operator command.", "Use `sporades access-keys list|inspect|revoke|revoke-all|delete`.");
   }
   let session = "dev";
   let userId = null;
@@ -150657,12 +150745,12 @@ function parseAccessKeyOperatorArgs(args) {
         break;
       case "--limit": {
         limit = Number(readFlagValue(rest, ++index, arg));
-        if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw commandError("Invalid Access-key list limit.", "Use `--limit` from 1 through 100.");
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw commandError2("Invalid Access-key list limit.", "Use `--limit` from 1 through 100.");
         break;
       }
       case "--status":
         status = readFlagValue(rest, ++index, arg);
-        if (!["active", "expired", "revoked"].includes(status)) throw commandError("Invalid Access-key status filter.", "Use active, expired, or revoked.");
+        if (!["active", "expired", "revoked"].includes(status)) throw commandError2("Invalid Access-key status filter.", "Use active, expired, or revoked.");
         break;
       case "--json":
         json = true;
@@ -150671,32 +150759,32 @@ function parseAccessKeyOperatorArgs(args) {
         yes = true;
         break;
       default:
-        if (arg.startsWith("--")) throw commandError(`Unknown flag: ${arg}`, "Use `sporades access-keys --help`.");
+        if (arg.startsWith("--")) throw commandError2(`Unknown flag: ${arg}`, "Use `sporades access-keys --help`.");
         positional.push(arg);
     }
   }
   if (!["dev", "container", "hosted"].includes(session)) {
-    throw commandError("Invalid Access-key operator session.", "Use `--session dev`, `--session container`, or `--session hosted`.");
+    throw commandError2("Invalid Access-key operator session.", "Use `--session dev`, `--session container`, or `--session hosted`.");
   }
   if (session === "hosted") {
-    if (!hostAlias || !subname) throw commandError("Hosted Access-key operation requires a Host and Capsule.", "Pass `--host <alias> --subname <name>`.");
+    if (!hostAlias || !subname) throw commandError2("Hosted Access-key operation requires a Host and Capsule.", "Pass `--host <alias> --subname <name>`.");
     validateHostAlias(hostAlias);
     validateCapsuleSubname(subname);
   } else if (hostAlias || subname) {
-    throw commandError("Host selection is only valid for Hosted Access-key operations.", "Remove `--host` and `--subname`, or use `--session hosted`.");
+    throw commandError2("Host selection is only valid for Hosted Access-key operations.", "Remove `--host` and `--subname`, or use `--session hosted`.");
   }
   const ownerCommand = subcommand === "list" || subcommand === "revoke-all";
   if (ownerCommand) {
-    if (!userId || positional.length) throw commandError("Access-key owner ID is required.", `Use \`sporades access-keys ${subcommand} --user-id <user-id>\`.`);
+    if (!userId || positional.length) throw commandError2("Access-key owner ID is required.", `Use \`sporades access-keys ${subcommand} --user-id <user-id>\`.`);
   } else if (positional.length !== 1 || userId) {
-    throw commandError("Exact Access-key ID is required.", `Use \`sporades access-keys ${subcommand} <key-id>\`.`);
+    throw commandError2("Exact Access-key ID is required.", `Use \`sporades access-keys ${subcommand} <key-id>\`.`);
   }
   const selectedId = ownerCommand ? userId : positional[0];
   if (Buffer.byteLength(String(selectedId), "utf8") > 256) {
-    throw commandError("Access-key operator identifier is too long.", "Pass the exact immutable user or Access-key ID.");
+    throw commandError2("Access-key operator identifier is too long.", "Pass the exact immutable user or Access-key ID.");
   }
   if (subcommand !== "list" && (cursor || limit || status)) {
-    throw commandError("List filters are only valid for Access-key listing.", "Remove `--cursor`, `--limit`, and `--status`.");
+    throw commandError2("List filters are only valid for Access-key listing.", "Remove `--cursor`, `--limit`, and `--status`.");
   }
   return {
     subcommand,
@@ -150718,10 +150806,10 @@ function parseAccessKeyOperatorProcess(result, options, hint) {
   try {
     envelope = JSON.parse(result.stdout.trim());
   } catch {
-    throw commandError("Runtime Access-key action returned invalid JSON.", hint);
+    throw commandError2("Runtime Access-key action returned invalid JSON.", hint);
   }
   return sanitizeAccessKeyOperatorEnvelope(envelope, `access-keys.${options.subcommand}`, accessKeyActionInput(options), () => {
-    throw commandError("Runtime Access-key action returned an invalid response.", hint);
+    throw commandError2("Runtime Access-key action returned an invalid response.", hint);
   });
 }
 function accessKeyActionInput(options) {
@@ -150751,7 +150839,7 @@ async function manageOperatorAccessKeys(options) {
     try {
       process.kill(Number(session.pid), 0);
     } catch {
-      throw commandError("No running Sporades dev session found.", "Start one with `sporades dev`, then retry the Access-key operation.");
+      throw commandError2("No running Sporades dev session found.", "Start one with `sporades dev`, then retry the Access-key operation.");
     }
     const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "access-keys");
     const bundle = await devActionBundlePath(options.projectDir, session);
@@ -150759,7 +150847,7 @@ async function manageOperatorAccessKeys(options) {
       cwd: options.projectDir,
       encoding: "utf8",
       maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER,
-      env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path21.join(options.projectDir, ".sporades", "data.db") }
+      env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path22.join(options.projectDir, ".sporades", "data.db") }
     });
     envelope = parseAccessKeyOperatorProcess(result, options, "Restart `sporades dev` to refresh the generated Bundle, then retry the Access-key operation.");
   } else if (options.session === "container") {
@@ -150770,7 +150858,7 @@ async function manageOperatorAccessKeys(options) {
       "Unable to inspect the local Container session.",
       "Check Docker and retry the Access-key operation."
     );
-    if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry the Access-key operation.");
+    if (running !== "true") throw commandError2("The local Container session is not running.", "Run `sporades deploy restart`, then retry the Access-key operation.");
     const result = spawnSync4("docker", ["exec", binding.containerId, "node", "/app/server.mjs", ...accessKeyActionArgs(options)], {
       cwd: options.projectDir,
       encoding: "utf8",
@@ -150796,11 +150884,11 @@ async function manageOperatorAccessKeys(options) {
       } };
     }
     envelope = sanitizeAccessKeyOperatorEnvelope(envelope, `access-keys.${options.subcommand}`, accessKeyActionInput(options), () => {
-      throw commandError("Hosted Access-key action returned an invalid response.", "Upgrade the Host helper and redeploy the Capsule.");
+      throw commandError2("Hosted Access-key action returned an invalid response.", "Upgrade the Host helper and redeploy the Capsule.");
     });
   }
   if (options.json) writeResult(envelope, !envelope.ok);
-  else if (!envelope.ok) throw commandError(envelope.error.message, envelope.error.hint, envelope.error);
+  else if (!envelope.ok) throw commandError2(envelope.error.message, envelope.error.hint, envelope.error);
   else process.stdout.write(`${JSON.stringify(envelope.data, null, 2)}
 `);
 }
@@ -150829,17 +150917,17 @@ function parseDoctorArgs(args) {
         json = true;
         break;
       default:
-        throw commandError(
+        throw commandError2(
           `Unknown flag: ${arg}`,
           "Use `sporades doctor --session dev|public-dev|container|hosted --strict --json`."
         );
     }
   }
   if (session !== null && !DOCTOR_SESSIONS.has(session)) {
-    throw commandError("Invalid doctor session.", "Use one of: dev, public-dev, container, hosted.", { session });
+    throw commandError2("Invalid doctor session.", "Use one of: dev, public-dev, container, hosted.", { session });
   }
   if ((host !== null || subname !== null) && session !== "hosted") {
-    throw commandError(
+    throw commandError2(
       "Hosted doctor options require the hosted session.",
       "Use `sporades doctor --session hosted --host <alias> --subname <name>`.",
       { session, host, subname }
@@ -150923,22 +151011,22 @@ function parseAuthArgs(args) {
       case "--client":
         client = readFlagValue(rest, ++index, "--client");
         if (!isValidAuthClientTarget(client)) {
-          throw commandError("Invalid auth client target.", "Use `--client current`, `--client all`, or a client id from `sporades auth clients`.");
+          throw commandError2("Invalid auth client target.", "Use `--client current`, `--client all`, or a client id from `sporades auth clients`.");
         }
         break;
       case "--registration": {
         const encoded = readFlagValue(rest, ++index, "--registration");
-        if (Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT) throw commandError("Registration admission input is too large.", `Pass a JSON object no larger than ${REGISTRATION_ADMISSION_BYTE_LIMIT} UTF-8 bytes.`, "INVALID_REGISTRATION_ADMISSION_INPUT");
+        if (Buffer.byteLength(encoded, "utf8") > REGISTRATION_ADMISSION_BYTE_LIMIT) throw commandError2("Registration admission input is too large.", `Pass a JSON object no larger than ${REGISTRATION_ADMISSION_BYTE_LIMIT} UTF-8 bytes.`, "INVALID_REGISTRATION_ADMISSION_INPUT");
         try {
           registration = JSON.parse(encoded);
         } catch {
-          throw commandError("Registration admission input is malformed.", "Pass a valid JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+          throw commandError2("Registration admission input is malformed.", "Pass a valid JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT");
         }
-        if (!registration || typeof registration !== "object" || Array.isArray(registration)) throw commandError("Registration admission input must be a JSON object.", "Pass a bounded JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT");
+        if (!registration || typeof registration !== "object" || Array.isArray(registration)) throw commandError2("Registration admission input must be a JSON object.", "Pass a bounded JSON object to `--registration`.", "INVALID_REGISTRATION_ADMISSION_INPUT");
         break;
       }
       default:
-        throw commandError(`Unknown flag: ${arg}`, "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
+        throw commandError2(`Unknown flag: ${arg}`, "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
     }
   }
   switch (subcommand) {
@@ -150948,7 +151036,7 @@ function parseAuthArgs(args) {
       return { subcommand, json, port, projectDir: process.cwd() };
     case "as":
       if (!simulatedProvider) {
-        throw commandError("Missing simulated auth provider.", "Use `sporades auth as email --email <address> --json`.");
+        throw commandError2("Missing simulated auth provider.", "Use `sporades auth as email --email <address> --json`.");
       }
       return { subcommand, provider: simulatedProvider, email, displayName, picture, registration, port, client, json, projectDir: process.cwd() };
     case "set":
@@ -150968,14 +151056,14 @@ function parseAuthArgs(args) {
       if (!disable && !["anonymous", "email"].includes(provider)) {
         const missing = provider === "apple" ? !clientId || !teamId || !keyId || !privateKey : !clientId || !clientSecret;
         if (missing) {
-          throw commandError(
+          throw commandError2(
             `Missing ${providerLabel2(provider)} OAuth credentials.`,
             provider === "apple" ? "Provide `--client-id`, `--team-id`, `--key-id`, and `--private-key`, or use `--client-json <path>`." : `Run \`sporades auth set ${provider} --client-id <id> --client-secret <secret>\` or use \`--client-json <path>\`.`
           );
         }
       }
       if (provider === "facebook" && graphVersion !== null && graphVersion !== "v23.0") {
-        throw commandError(
+        throw commandError2(
           "Unsupported Facebook Graph API version.",
           "Use `--graph-version v23.0`.",
           { graphVersion }
@@ -150984,7 +151072,7 @@ function parseAuthArgs(args) {
       if (provider === "microsoft" && !disable) {
         tenant ??= "common";
         if (!isValidMicrosoftTenantSelection(tenant)) {
-          throw commandError(
+          throw commandError2(
             "Invalid Microsoft tenant.",
             "Use common, organizations, consumers, a tenant GUID, or a verified tenant domain."
           );
@@ -150994,7 +151082,7 @@ function parseAuthArgs(args) {
     default:
       break;
   }
-  throw commandError(
+  throw commandError2(
     "Unknown auth command.",
     "Use `sporades auth status`, `sporades auth clients`, `sporades auth set <provider>`, or `sporades auth as email`."
   );
@@ -151041,7 +151129,7 @@ function parseEnvArgs(args) {
         break;
       default:
         if (arg.startsWith("--")) {
-          throw commandError(
+          throw commandError2(
             `Unknown flag: ${arg}`,
             "Use `sporades env set`, `sporades env has`, `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`."
           );
@@ -151052,16 +151140,16 @@ function parseEnvArgs(args) {
   switch (subcommand) {
     case "set":
       if (positional.length !== 1) {
-        throw commandError("Missing Server env key name.", "Use `sporades env set <name> --stdin`.");
+        throw commandError2("Missing Server env key name.", "Use `sporades env set <name> --stdin`.");
       }
       if (!stdin) {
-        throw commandError("Missing stdin input flag.", "Pipe the value to `sporades env set <name> --stdin`.");
+        throw commandError2("Missing stdin input flag.", "Pipe the value to `sporades env set <name> --stdin`.");
       }
       validateServerEnvKeyName(positional[0]);
       return { subcommand, name: positional[0], stdin, json, projectDir: process.cwd() };
     case "has":
       if (positional.length !== 1) {
-        throw commandError("Missing Server env key name.", "Use `sporades env has <name>`.");
+        throw commandError2("Missing Server env key name.", "Use `sporades env has <name>`.");
       }
       validateServerEnvKeyName(positional[0]);
       return { subcommand, name: positional[0], json, projectDir: process.cwd() };
@@ -151071,7 +151159,7 @@ function parseEnvArgs(args) {
     case "export":
     case "reencrypt":
       if (positional.length > 0) {
-        throw commandError("Too many positional arguments.", `Use \`sporades env ${subcommand} --json\`.`);
+        throw commandError2("Too many positional arguments.", `Use \`sporades env ${subcommand} --json\`.`);
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151081,7 +151169,7 @@ function parseEnvArgs(args) {
       }
       return { subcommand, file, hostAlias, subname, output, sealed, json, projectDir: process.cwd() };
     default:
-      throw commandError(
+      throw commandError2(
         `Unknown env command: ${subcommand ?? ""}`.trim(),
         "Use `sporades env set`, `sporades env has`, `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`."
       );
@@ -151089,10 +151177,10 @@ function parseEnvArgs(args) {
 }
 function validateServerEnvKeyName(name2) {
   if (!isValidServerEnvKeyName(name2)) {
-    throw commandError("Invalid Server env key name.", "Use letters, numbers, and underscores, starting with a letter or underscore.");
+    throw commandError2("Invalid Server env key name.", "Use letters, numbers, and underscores, starting with a letter or underscore.");
   }
   if (isReservedServerEnvKeyName(name2)) {
-    throw commandError("Reserved Server env key name.", "Choose a key name that does not start with SPORADES_.");
+    throw commandError2("Reserved Server env key name.", "Choose a key name that does not start with SPORADES_.");
   }
 }
 function parseHostArgs(args) {
@@ -151108,6 +151196,7 @@ function parseHostArgs(args) {
   let lines = null;
   let restart = false;
   let verify2 = false;
+  let allowMissingEnv = false;
   let fallbackToPreviousRelease = false;
   let branch = "main";
   let file = DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW;
@@ -151129,14 +151218,14 @@ function parseHostArgs(args) {
         queryCredentialEnv = readFlagValue(rest, ++index, "--query-credential-env");
         break;
       case "--profile":
-        if (subcommand !== "telemetry") throw commandError("--profile is only supported by host telemetry.", "Use `sporades host telemetry connect --profile <name>`.");
+        if (subcommand !== "telemetry") throw commandError2("--profile is only supported by host telemetry.", "Use `sporades host telemetry connect --profile <name>`.");
         telemetryProfileName = readFlagValue(rest, ++index, "--profile");
         break;
       case "--server":
         server = readFlagValue(rest, ++index, "--server");
         break;
       case "--alias-domain":
-        if (subcommand !== "register") throw commandError("--alias-domain is only supported by host register.", "Use `sporades host register <subname> --alias-domain <hostname>`.");
+        if (subcommand !== "register") throw commandError2("--alias-domain is only supported by host register.", "Use `sporades host register <subname> --alias-domain <hostname>`.");
         aliasDomains.push(readFlagValue(rest, ++index, "--alias-domain"));
         break;
       case "--domain":
@@ -151162,6 +151251,10 @@ function parseHostArgs(args) {
         verify2 = true;
         restart = true;
         break;
+      case "--allow-missing-env":
+        if (subcommand !== "push") throw commandError2("--allow-missing-env is only supported by host push.", "Use sporades host push --allow-missing-env.");
+        allowMissingEnv = true;
+        break;
       case "--fallback-to-previous-release":
         fallbackToPreviousRelease = true;
         break;
@@ -151179,7 +151272,7 @@ function parseHostArgs(args) {
         break;
       default:
         if (arg.startsWith("--")) {
-          throw commandError(
+          throw commandError2(
             `Unknown flag: ${arg}`,
             "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host reconcile`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`."
           );
@@ -151187,39 +151280,39 @@ function parseHostArgs(args) {
         positional.push(arg);
     }
   }
-  if (queryCredentialEnv && subcommand !== "telemetry") throw commandError("Unexpected operator query credential.", "Use host telemetry check or migrate.");
+  if (queryCredentialEnv && subcommand !== "telemetry") throw commandError2("Unexpected operator query credential.", "Use host telemetry check or migrate.");
   switch (subcommand) {
     case "telemetry": {
       const [operation, ...extra] = positional;
       if (!operation || !["connect", "migrate", "reconcile", "status", "check", "inventory-export", "inventory-reconcile", "enable", "disable", "resources-enable", "resources-disable", "resources-remove", "exports-disable", "remove-agents"].includes(operation) || extra.length > (operation === "enable" || operation === "disable" ? 1 : 0)) {
-        throw commandError("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
+        throw commandError2("Unknown Host Telemetry operation.", "Use `sporades host telemetry connect|reconcile|status|check` or `enable|disable <subname>`.");
       }
-      if ((operation === "enable" || operation === "disable") && extra.length !== 1) throw commandError("Missing Capsule subname.", `Use \`sporades host telemetry ${operation} <subname> --host <alias>\`.`);
+      if ((operation === "enable" || operation === "disable") && extra.length !== 1) throw commandError2("Missing Capsule subname.", `Use \`sporades host telemetry ${operation} <subname> --host <alias>\`.`);
       if (extra.length) validateCapsuleSubname(extra[0]);
-      if (["connect", "migrate"].includes(operation) && !telemetryProfileName) throw commandError("Missing Telemetry profile.", "Pass `--profile <name>` with a verified HTTPS destination.");
-      if (!["connect", "migrate"].includes(operation) && telemetryProfileName) throw commandError("Unexpected Telemetry profile.", "Use `--profile` only with `sporades host telemetry connect`.");
+      if (["connect", "migrate"].includes(operation) && !telemetryProfileName) throw commandError2("Missing Telemetry profile.", "Pass `--profile <name>` with a verified HTTPS destination.");
+      if (!["connect", "migrate"].includes(operation) && telemetryProfileName) throw commandError2("Unexpected Telemetry profile.", "Use `--profile` only with `sporades host telemetry connect`.");
       if (hostAlias) validateHostAlias(hostAlias);
-      if (queryCredentialEnv && !["check", "migrate"].includes(operation)) throw commandError("Unexpected operator query credential.", "Use --query-credential-env only with host telemetry check or migrate.");
-      if (queryCredentialEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(queryCredentialEnv)) throw commandError("Invalid query credential environment reference.", "Use an environment variable name.");
+      if (queryCredentialEnv && !["check", "migrate"].includes(operation)) throw commandError2("Unexpected operator query credential.", "Use --query-credential-env only with host telemetry check or migrate.");
+      if (queryCredentialEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(queryCredentialEnv)) throw commandError2("Invalid query credential environment reference.", "Use an environment variable name.");
       return { subcommand, operation, subname: extra[0], telemetryProfileName, queryCredentialEnv, hostAlias, json, projectDir: process.cwd() };
     }
     case "add": {
       const [alias, ...extra] = positional;
       if (!alias) {
-        throw commandError(
+        throw commandError2(
           "Missing Host profile alias.",
           "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`."
         );
       }
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`.");
       }
       validateHostAlias(alias);
       if (!server) {
-        throw commandError("Missing Host server.", "Pass `--server <ssh-target>`.");
+        throw commandError2("Missing Host server.", "Pass `--server <ssh-target>`.");
       }
       if (!domain) {
-        throw commandError("Missing Hosted domain.", "Pass `--domain <hosted-domain>`.");
+        throw commandError2("Missing Hosted domain.", "Pass `--domain <hosted-domain>`.");
       }
       validateHostedDomain(domain);
       validateHostRemoteRoot(remoteRoot);
@@ -151229,17 +151322,17 @@ function parseHostArgs(args) {
     case "use": {
       const [alias, ...extra] = positional;
       if (!alias) {
-        throw commandError("Missing Host profile alias.", "Use `sporades host use <alias>`.");
+        throw commandError2("Missing Host profile alias.", "Use `sporades host use <alias>`.");
       }
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host use <alias>`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host use <alias>`.");
       }
       validateHostAlias(alias);
       return { subcommand, alias, json, projectDir: process.cwd() };
     }
     case "current":
       if (positional.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host current --host <alias> --json`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host current --host <alias> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151248,7 +151341,7 @@ function parseHostArgs(args) {
     case "health": {
       const [positionalSubname, ...extra] = positional;
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host health [subname] --host <alias> --json`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host health [subname] --host <alias> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151261,10 +151354,10 @@ function parseHostArgs(args) {
     case "bind": {
       const [positionalSubname, ...extra] = positional;
       if (!positionalSubname) {
-        throw commandError("Missing Capsule subname.", "Use `sporades host bind <subname> --host <alias>`.");
+        throw commandError2("Missing Capsule subname.", "Use `sporades host bind <subname> --host <alias>`.");
       }
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host bind <subname> --host <alias>`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host bind <subname> --host <alias>`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151275,10 +151368,10 @@ function parseHostArgs(args) {
     case "register": {
       const [positionalSubname, ...extra] = positional;
       if (!positionalSubname) {
-        throw commandError("Missing Capsule subname.", "Use `sporades host register <subname> --host <alias>`.");
+        throw commandError2("Missing Capsule subname.", "Use `sporades host register <subname> --host <alias>`.");
       }
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host register <subname> --host <alias>`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host register <subname> --host <alias>`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151290,10 +151383,10 @@ function parseHostArgs(args) {
     case "rotate-key": {
       const [positionalSubname, ...extra] = positional;
       if (!positionalSubname) {
-        throw commandError("Missing Capsule subname.", "Use `sporades host rotate-key <subname> --host <alias>`.");
+        throw commandError2("Missing Capsule subname.", "Use `sporades host rotate-key <subname> --host <alias>`.");
       }
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host rotate-key <subname> --host <alias>`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host rotate-key <subname> --host <alias>`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151303,7 +151396,7 @@ function parseHostArgs(args) {
     }
     case "bootstrap":
       if (positional.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host bootstrap --host <alias> --json`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host bootstrap --host <alias> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151311,7 +151404,7 @@ function parseHostArgs(args) {
       return { subcommand, hostAlias, json, projectDir: process.cwd() };
     case "upgrade":
       if (positional.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host upgrade --host <alias> --json`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host upgrade --host <alias> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151319,7 +151412,7 @@ function parseHostArgs(args) {
       return { subcommand, hostAlias, json, projectDir: process.cwd() };
     case "list":
       if (positional.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host list --host <alias> --json`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host list --host <alias> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151328,7 +151421,7 @@ function parseHostArgs(args) {
     case "stats": {
       const [positionalSubname, ...extra] = positional;
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host stats [subname] --host <alias>`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host stats [subname] --host <alias>`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151339,29 +151432,29 @@ function parseHostArgs(args) {
       return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
     }
     case "policy": {
-      if (!hostAlias || !subname) throw commandError("Missing Host policy target.", "Pass --host <alias> --subname <name>.");
+      if (!hostAlias || !subname) throw commandError2("Missing Host policy target.", "Pass --host <alias> --subname <name>.");
       validateHostAlias(hostAlias);
       validateCapsuleSubname(subname);
       return { subcommand, ...parsePolicyOperation(positional), hostAlias, subname, json, projectDir: process.cwd() };
     }
     case "jobs":
-      if (positional.length > 0) throw commandError("Too many positional arguments.", "Use `sporades host jobs --host <alias> --subname <name>`.");
-      if (!hostAlias) throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
-      if (!subname) throw commandError("Missing Capsule subname.", "Pass `--subname <name>`.");
+      if (positional.length > 0) throw commandError2("Too many positional arguments.", "Use `sporades host jobs --host <alias> --subname <name>`.");
+      if (!hostAlias) throw commandError2("Missing Host profile alias.", "Pass `--host <alias>`.");
+      if (!subname) throw commandError2("Missing Capsule subname.", "Pass `--subname <name>`.");
       validateHostAlias(hostAlias);
       validateCapsuleSubname(subname);
       return { subcommand, subname, hostAlias, json: true, projectDir: process.cwd() };
     case "schedules":
-      if (positional.length > 0) throw commandError("Too many positional arguments.", "Use `sporades host schedules --host <alias> --subname <name>`.");
-      if (!hostAlias) throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
-      if (!subname) throw commandError("Missing Capsule subname.", "Pass `--subname <name>`.");
+      if (positional.length > 0) throw commandError2("Too many positional arguments.", "Use `sporades host schedules --host <alias> --subname <name>`.");
+      if (!hostAlias) throw commandError2("Missing Host profile alias.", "Pass `--host <alias>`.");
+      if (!subname) throw commandError2("Missing Capsule subname.", "Pass `--subname <name>`.");
       validateHostAlias(hostAlias);
       validateCapsuleSubname(subname);
       return { subcommand, subname, hostAlias, json: true, projectDir: process.cwd() };
     case "ssh": {
       const [positionalSubname, ...extra] = positional;
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host ssh [subname] --host <alias> --json`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host ssh [subname] --host <alias> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151380,10 +151473,10 @@ function parseHostArgs(args) {
     case "delete": {
       const [positionalSubname, ...extra] = positional;
       if (!positionalSubname) {
-        throw commandError("Missing Capsule subname.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
+        throw commandError2("Missing Capsule subname.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
       }
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
+        throw commandError2("Too many positional arguments.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151394,10 +151487,10 @@ function parseHostArgs(args) {
     case "releases": {
       const [positionalSubname, ...extra] = positional;
       if (!positionalSubname) {
-        throw commandError("Missing Capsule subname.", "Use `sporades host releases <subname> --host <alias>`.");
+        throw commandError2("Missing Capsule subname.", "Use `sporades host releases <subname> --host <alias>`.");
       }
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host releases <subname> --host <alias>`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host releases <subname> --host <alias>`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151408,13 +151501,13 @@ function parseHostArgs(args) {
     case "rollback": {
       const [positionalSubname, releaseId, ...extra] = positional;
       if (!positionalSubname) {
-        throw commandError("Missing Capsule subname.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+        throw commandError2("Missing Capsule subname.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
       }
       if (!releaseId) {
-        throw commandError("Missing Hosted Capsule release ID.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+        throw commandError2("Missing Hosted Capsule release ID.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
       }
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151425,7 +151518,7 @@ function parseHostArgs(args) {
     }
     case "push":
       if (positional.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host push --host <alias> --subname <capsule-subname> --json`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host push --host <alias> --subname <capsule-subname> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151434,31 +151527,31 @@ function parseHostArgs(args) {
         validateCapsuleSubname(subname);
       }
       if (fallbackToPreviousRelease && !verify2) {
-        throw commandError(
+        throw commandError2(
           "Release fallback requires verification.",
           "Use `sporades host push --verify --fallback-to-previous-release`."
         );
       }
-      return { subcommand, hostAlias, subname, restart, verify: verify2, fallbackToPreviousRelease, json, projectDir: process.cwd() };
+      return { subcommand, hostAlias, subname, restart, verify: verify2, allowMissingEnv, fallbackToPreviousRelease, json, projectDir: process.cwd() };
     case "github": {
       const [area, action, ...extra] = positional;
       if (area !== "workflow" || action !== "write") {
-        throw commandError(
+        throw commandError2(
           "Unknown GitHub Host command.",
           "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`."
         );
       }
       if (extra.length > 0) {
-        throw commandError(
+        throw commandError2(
           "Too many positional arguments.",
           "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`."
         );
       }
       if (!hostAlias) {
-        throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
+        throw commandError2("Missing Host profile alias.", "Pass `--host <alias>`.");
       }
       if (!subname) {
-        throw commandError("Missing Capsule subname.", "Pass `--subname <capsule-subname>`.");
+        throw commandError2("Missing Capsule subname.", "Pass `--subname <capsule-subname>`.");
       }
       validateHostAlias(hostAlias);
       validateCapsuleSubname(subname);
@@ -151469,7 +151562,7 @@ function parseHostArgs(args) {
     case "logs": {
       const [source = "http", ...extra] = positional;
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host logs [http|stdout|stderr] --host <alias> --subname <capsule-subname> -n <lines> --json`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host logs [http|stdout|stderr] --host <alias> --subname <capsule-subname> -n <lines> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151483,10 +151576,10 @@ function parseHostArgs(args) {
     case "invoke": {
       const [action, ...extra] = positional;
       if (!action) {
-        throw commandError("Missing remote Host helper action.", "Use `sporades host invoke <action> --host <alias> --json`.");
+        throw commandError2("Missing remote Host helper action.", "Use `sporades host invoke <action> --host <alias> --json`.");
       }
       if (extra.length > 0) {
-        throw commandError("Too many positional arguments.", "Use `sporades host invoke <action> --host <alias> --json`.");
+        throw commandError2("Too many positional arguments.", "Use `sporades host invoke <action> --host <alias> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -151498,19 +151591,19 @@ function parseHostArgs(args) {
       return { subcommand, action, subname, hostAlias, json, projectDir: process.cwd() };
     }
     default:
-      throw commandError(
+      throw commandError2(
         `Unknown host command: ${subcommand ?? ""}`.trim(),
         "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host reconcile`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`."
       );
   }
 }
 function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
-  const resolvedPath = path21.resolve(projectDir, clientJsonPath);
+  const resolvedPath = path22.resolve(projectDir, clientJsonPath);
   let raw;
   try {
     raw = readFileSync4(resolvedPath, "utf8");
   } catch {
-    throw commandError(
+    throw commandError2(
       `Unable to read OAuth client JSON: ${clientJsonPath}`,
       `Check the file path and retry \`sporades auth set ${provider} --client-json <path>\`.`
     );
@@ -151519,7 +151612,7 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw commandError(
+    throw commandError2(
       `Invalid OAuth client JSON: ${clientJsonPath}`,
       "Download a valid OAuth client credentials JSON file from the provider and retry."
     );
@@ -151527,12 +151620,12 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
   const credentials = parseProviderCredentialDocument(provider, parsed);
   if (!credentials) {
     if (provider === "google") {
-      throw commandError(
+      throw commandError2(
         "OAuth client JSON is missing Google client credentials.",
         "Use a Google OAuth Web application JSON file containing `web.client_id` and `web.client_secret`."
       );
     }
-    throw commandError(
+    throw commandError2(
       `OAuth client JSON is missing ${providerLabel2(provider)} credentials.`,
       `Use a ${providerLabel2(provider)} credentials JSON file with the fields documented by \`sporades auth --help\`.`
     );
@@ -151582,7 +151675,7 @@ function parseLogsArgs(args) {
         json = true;
         break;
       default:
-        throw commandError(`Unknown flag: ${arg}`, "Use `sporades logs [tail] --json`.");
+        throw commandError2(`Unknown flag: ${arg}`, "Use `sporades logs [tail] --json`.");
     }
   }
   return {
@@ -151614,16 +151707,16 @@ function parseDbArgs(args) {
     case "list":
     case "dump":
       if (positional.length > 0) {
-        throw commandError("Too many positional arguments.", `Use \`sporades db ${subcommand} --json\`.`);
+        throw commandError2("Too many positional arguments.", `Use \`sporades db ${subcommand} --json\`.`);
       }
       return { subcommand, json, port, projectDir: process.cwd() };
     case "query":
       if (positional.length === 0) {
-        throw commandError("Missing SQL query.", "Use `sporades db query <sql>`.");
+        throw commandError2("Missing SQL query.", "Use `sporades db query <sql>`.");
       }
       return { subcommand, sql: positional.join(" "), json, port, projectDir: process.cwd() };
     default:
-      throw commandError(
+      throw commandError2(
         `Unknown db command: ${subcommand ?? ""}`.trim(),
         "Use `sporades db list`, `sporades db dump`, or `sporades db query <sql>`."
       );
@@ -151632,20 +151725,20 @@ function parseDbArgs(args) {
 function readPort(value) {
   const port = Number.parseInt(value, 10);
   if (Number.isNaN(port) || port <= 0) {
-    throw commandError("Invalid port.", "Pass --port <number>.");
+    throw commandError2("Invalid port.", "Pass --port <number>.");
   }
   return port;
 }
 function readHostLogLineCount(value) {
   if (!/^\d+$/.test(value)) {
-    throw commandError(
+    throw commandError2(
       "Invalid Host log line count.",
       `Pass \`--lines <n>\` with a whole number between 1 and ${MAX_HOST_LOG_LINES}.`
     );
   }
   const lines = Number.parseInt(value, 10);
   if (lines < 1 || lines > MAX_HOST_LOG_LINES) {
-    throw commandError(
+    throw commandError2(
       "Invalid Host log line count.",
       `Pass \`--lines <n>\` with a whole number between 1 and ${MAX_HOST_LOG_LINES}.`
     );
@@ -151654,7 +151747,7 @@ function readHostLogLineCount(value) {
 }
 function validateHostLogSource(source) {
   if (!HOST_LOG_SOURCES.has(source)) {
-    throw commandError(
+    throw commandError2(
       "Invalid Host log source.",
       "Use `sporades host logs [http|stdout|stderr] --host <alias> --subname <capsule-subname> -n <lines>`."
     );
@@ -151663,7 +151756,7 @@ function validateHostLogSource(source) {
 function readFlagValue(args, index, flag) {
   const value = args[index];
   if (!value || value.startsWith("--")) {
-    throw commandError(`Missing value for ${flag}.`, `Pass ${flag} <value>.`);
+    throw commandError2(`Missing value for ${flag}.`, `Pass ${flag} <value>.`);
   }
   return value;
 }
@@ -151682,8 +151775,8 @@ async function createProject(options) {
   });
   await Promise.all(
     Object.entries(files).map(async ([relativePath, contents]) => {
-      const filePath = path21.join(options.projectDir, relativePath);
-      await mkdir11(path21.dirname(filePath), { recursive: true });
+      const filePath = path22.join(options.projectDir, relativePath);
+      await mkdir11(path22.dirname(filePath), { recursive: true });
       await writeFile10(filePath, contents);
     })
   );
@@ -151695,20 +151788,20 @@ async function createProject(options) {
   }
 }
 async function createProjectFromLocalTemplate(options) {
-  const sourceDir = path21.resolve(options.localTemplateDir);
-  const projectDir = path21.resolve(options.projectDir);
+  const sourceDir = path22.resolve(options.localTemplateDir);
+  const projectDir = path22.resolve(options.projectDir);
   let sourceStat;
   try {
     sourceStat = await lstat13(sourceDir);
   } catch {
-    throw commandError(`Local template not found: ${options.template}`, "Pass a readable template directory.");
+    throw commandError2(`Local template not found: ${options.template}`, "Pass a readable template directory.");
   }
   if (!sourceStat.isDirectory()) {
-    throw commandError(`Local template is not a directory: ${options.template}`, "Pass a readable template directory.");
+    throw commandError2(`Local template is not a directory: ${options.template}`, "Pass a readable template directory.");
   }
-  const relativeDestination = path21.relative(sourceDir, projectDir);
-  if (!relativeDestination || !relativeDestination.startsWith("..") && !path21.isAbsolute(relativeDestination)) {
-    throw commandError("The scaffold destination cannot be inside the local template.", "Choose a project name outside the template directory.");
+  const relativeDestination = path22.relative(sourceDir, projectDir);
+  if (!relativeDestination || !relativeDestination.startsWith("..") && !path22.isAbsolute(relativeDestination)) {
+    throw commandError2("The scaffold destination cannot be inside the local template.", "Choose a project name outside the template directory.");
   }
   const ignoreRules = await readLocalTemplateIgnoreRules(sourceDir);
   await mkdir11(projectDir, { recursive: false });
@@ -151732,7 +151825,7 @@ async function createProjectFromLocalTemplate(options) {
 async function readLocalTemplateIgnoreRules(sourceDir) {
   let contents = "";
   try {
-    contents = await readFile14(path21.join(sourceDir, ".gitignore"), "utf8");
+    contents = await readFile14(path22.join(sourceDir, ".gitignore"), "utf8");
   } catch {
     return [];
   }
@@ -151747,7 +151840,7 @@ async function readLocalTemplateIgnoreRules(sourceDir) {
   });
 }
 function shouldCopyLocalTemplatePath(sourceDir, sourcePath, rules) {
-  const relative = path21.relative(sourceDir, sourcePath).split(path21.sep).join("/");
+  const relative = path22.relative(sourceDir, sourcePath).split(path22.sep).join("/");
   if (!relative) return true;
   const first = relative.split("/")[0];
   if (first === ".git" || first === "node_modules" || first === ".sporades") return false;
@@ -151759,15 +151852,15 @@ function shouldCopyLocalTemplatePath(sourceDir, sourcePath, rules) {
   return !ignored;
 }
 async function finalizeLocalTemplateProject(options, projectDir) {
-  const packagePath = path21.join(projectDir, "package.json");
-  const configPath = path21.join(projectDir, "sporades.json");
+  const packagePath = path22.join(projectDir, "package.json");
+  const configPath = path22.join(projectDir, "sporades.json");
   let packageJson;
   let projectConfig;
   try {
     packageJson = JSON.parse(await readFile14(packagePath, "utf8"));
     projectConfig = JSON.parse(await readFile14(configPath, "utf8"));
   } catch {
-    throw commandError(
+    throw commandError2(
       "Local template must include valid package.json and sporades.json files.",
       "Add both metadata files to the template and try again."
     );
@@ -151820,7 +151913,7 @@ async function runDoctor(options) {
   }
 }
 function defaultSporadesDependency() {
-  const packageJsonPath = path21.join(CLI_ROOT, "package.json");
+  const packageJsonPath = path22.join(CLI_ROOT, "package.json");
   try {
     const packageJson = JSON.parse(readFileSync4(packageJsonPath, "utf8"));
     if (typeof packageJson.version === "string" && packageJson.version.trim()) {
@@ -151842,11 +151935,11 @@ async function manageLocalLifecycle(surface, options) {
 async function manageLocalLifecycleUnlocked(surface, options) {
   switch (options.subcommand) {
     case "policy": {
-      if (surface !== "deploy") throw commandError("Unsupported policy command.", "Use `sporades deploy policy`.");
+      if (surface !== "deploy") throw commandError2("Unsupported policy command.", "Use `sporades deploy policy`.");
       await assertNoLocalDeployFileAttempt(options, "policy");
       const { binding } = await requireLocalContainerBinding(options, "policy");
       const policy = resolveDeployFiles(binding.deployFiles, true).find((file) => file.update === "admission");
-      if (!policy) throw commandError("The deployed Capsule has no admission policy.", "Declare admissionPolicy.path and deploy it first.");
+      if (!policy) throw commandError2("The deployed Capsule has no admission policy.", "Declare admissionPolicy.path and deploy it first.");
       const bytes = await policyPublicationBytes(options);
       await publishAdmissionPolicy(admissionStorageRoot(localPreservedFilesRoot(options)), policy.path, bytes);
       const data2 = { published: true, removed: bytes === null, digest: bytes ? parseAdmissionPolicy(bytes).digest : null };
@@ -151872,33 +151965,33 @@ async function manageLocalLifecycleUnlocked(surface, options) {
       return;
     case "restart":
       if (surface !== "deploy") {
-        throw commandError("Unsupported lifecycle command: restart", "Use `sporades deploy restart`.");
+        throw commandError2("Unsupported lifecycle command: restart", "Use `sporades deploy restart`.");
       }
       await restartLocalContainerSession(options);
       return;
     case "ssh":
       if (surface !== "deploy") {
-        throw commandError("Unsupported lifecycle command: ssh", "Use `sporades deploy ssh`.");
+        throw commandError2("Unsupported lifecycle command: ssh", "Use `sporades deploy ssh`.");
       }
       await inspectLocalContainerSsh(options);
       return;
     case "jobs":
-      if (surface !== "deploy") throw commandError("Unsupported lifecycle command: jobs", "Use `sporades deploy jobs`.");
+      if (surface !== "deploy") throw commandError2("Unsupported lifecycle command: jobs", "Use `sporades deploy jobs`.");
       await inspectContainerJobs(options);
       return;
     case "schedules":
-      if (surface !== "deploy") throw commandError("Unsupported lifecycle command: schedules", "Use `sporades deploy schedules`.");
+      if (surface !== "deploy") throw commandError2("Unsupported lifecycle command: schedules", "Use `sporades deploy schedules`.");
       await inspectContainerSchedules(options);
       return;
     case "remove":
       if (surface !== "deploy") {
-        throw commandError("Unsupported lifecycle command: remove", "Use `sporades deploy remove`.");
+        throw commandError2("Unsupported lifecycle command: remove", "Use `sporades deploy remove`.");
       }
       await removeLocalContainerSession(options);
       return;
     case "reconcile": {
       if (surface !== "deploy") {
-        throw commandError("Unsupported lifecycle command: reconcile", "Use `sporades deploy reconcile`.");
+        throw commandError2("Unsupported lifecycle command: reconcile", "Use `sporades deploy reconcile`.");
       }
       const reconciled = await reconcileLocalContainerSession(options);
       if (options.json) {
@@ -151935,9 +152028,9 @@ function parseInspectionProcess(result, hint) {
   try {
     envelope = JSON.parse(result.stdout.trim());
   } catch {
-    throw commandError("Runtime inspection returned invalid JSON.", hint);
+    throw commandError2("Runtime inspection returned invalid JSON.", hint);
   }
-  if (!envelope?.ok) throw commandError(envelope?.error?.message ?? "Runtime inspection failed.", envelope?.error?.hint ?? hint, envelope?.error);
+  if (!envelope?.ok) throw commandError2(envelope?.error?.message ?? "Runtime inspection failed.", envelope?.error?.hint ?? hint, envelope?.error);
   writeResult(envelope);
 }
 async function inspectDevJobs(options) {
@@ -151945,14 +152038,14 @@ async function inspectDevJobs(options) {
   try {
     process.kill(Number(session.pid), 0);
   } catch {
-    throw commandError("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`.");
+    throw commandError2("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir);
   const bundle = await devActionBundlePath(options.projectDir, session);
   const result = spawnSync4(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path21.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path22.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
 }
@@ -151961,22 +152054,22 @@ async function inspectDevSchedules(options) {
   try {
     process.kill(Number(session.pid), 0);
   } catch {
-    throw commandError("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades schedules`.");
+    throw commandError2("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades schedules`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "schedules");
   const bundle = await devActionBundlePath(options.projectDir, session);
   const result = spawnSync4(process.execPath, [bundle, "--sporades-action", "schedules.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path21.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path22.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades schedules`.");
 }
 async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
   try {
-    return JSON.parse(await readFile14(path21.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+    return JSON.parse(await readFile14(path22.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
   } catch (error) {
-    if (errorDetails(error).code !== "ENOENT") throw commandError("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
+    if (errorDetails2(error).code !== "ENOENT") throw commandError2("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
   }
   const config = await readProjectConfig(projectDir);
   const capsuleServices = localCapsuleServicesFromConfig2(config, projectDir);
@@ -151987,10 +152080,10 @@ async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
 }
 async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
-  const filePath = path21.join(projectDir, DEV_DATABASE_ENV_FILE);
-  await mkdir11(path21.dirname(filePath), { recursive: true });
+  const filePath = path22.join(projectDir, DEV_DATABASE_ENV_FILE);
+  await mkdir11(path22.dirname(filePath), { recursive: true });
   const previous = await readFile14(filePath).catch((error) => {
-    if (errorDetails(error).code === "ENOENT") return null;
+    if (errorDetails2(error).code === "ENOENT") return null;
     throw error;
   });
   await replaceFileAtomically(filePath, `${JSON.stringify(databaseEnv)}
@@ -152017,7 +152110,7 @@ async function inspectContainerJobs(options) {
     "Unable to inspect the local Container session.",
     "Check Docker and retry `sporades deploy jobs`."
   );
-  if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy jobs`.");
+  if (running !== "true") throw commandError2("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy jobs`.");
   const result = spawnSync4("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "jobs.inspect"], { cwd: options.projectDir, encoding: "utf8" });
   parseInspectionProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy jobs`.");
 }
@@ -152029,18 +152122,18 @@ async function inspectContainerSchedules(options) {
     "Unable to inspect the local Container session.",
     "Check Docker and retry `sporades deploy schedules`."
   );
-  if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy schedules`.");
+  if (running !== "true") throw commandError2("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy schedules`.");
   const result = spawnSync4("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "schedules.inspect"], { cwd: options.projectDir, encoding: "utf8" });
   let envelope;
   try {
     envelope = JSON.parse(result.stdout.trim());
   } catch {
-    throw commandError("Runtime inspection returned invalid JSON.", "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
+    throw commandError2("Runtime inspection returned invalid JSON.", "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
   }
   const bounded = sanitizeScheduleInspectionEnvelope(envelope, () => {
-    throw commandError("Runtime Schedule inspection returned an invalid response.", "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
+    throw commandError2("Runtime Schedule inspection returned an invalid response.", "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
   });
-  if (!bounded.ok) throw commandError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+  if (!bounded.ok) throw commandError2(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
   writeResult(bounded);
 }
 function createDevRefreshController(timeoutMs = 1e3) {
@@ -152114,7 +152207,7 @@ function createDevRefreshController(timeoutMs = 1e3) {
   return { transport, broadcast };
 }
 async function mustPreserveLegacyContainerBundle(projectDir) {
-  const binding = await readContainerBinding(path21.join(projectDir, CONTAINER_BINDING_FILE));
+  const binding = await readContainerBinding(path22.join(projectDir, CONTAINER_BINDING_FILE));
   return Boolean(binding?.containerId && binding.telemetryDescriptorVersion !== 1);
 }
 async function startDevSession(options) {
@@ -152141,9 +152234,9 @@ async function startDevSession(options) {
   let runtimeServiceEnv = capsuleServiceEnv;
   const inspectionToken = createDevInspectionToken();
   const actionBundleId = randomBytes10(16).toString("hex");
-  const actionBundlePath = path21.join(options.projectDir, ".sporades", "build", ".dev-actions", actionBundleId, "server.mjs");
-  const sessionFilePath = path21.join(options.projectDir, DEV_SESSION_FILE);
-  const databasePath = path21.join(options.projectDir, ".sporades", "data.db");
+  const actionBundlePath = path22.join(options.projectDir, ".sporades", "build", ".dev-actions", actionBundleId, "server.mjs");
+  const sessionFilePath = path22.join(options.projectDir, DEV_SESSION_FILE);
+  const databasePath = path22.join(options.projectDir, ".sporades", "data.db");
   let runtime;
   const emitTelemetryDiagnostic = (diagnostic) => runtime?.database.log.emit({
     category: "platform",
@@ -152471,7 +152564,7 @@ async function startDevSession(options) {
         });
       } catch (restartError) {
         telemetry.bindJobQueue(runtime.database);
-        const details = errorDetails(restartError);
+        const details = errorDetails2(restartError);
         runtime.database.log.emit({
           category: "platform",
           event: "runtime.restart.failed",
@@ -152637,7 +152730,7 @@ async function startDevSession(options) {
           }
         }
         if (rebuild && rebuild !== bundle) {
-          if (errorDetails(rebuildError).diagnostics?.candidateDiscard === "forbidden") {
+          if (errorDetails2(rebuildError).diagnostics?.candidateDiscard === "forbidden") {
             await rebuild.releasePublicTreeLease().catch((cleanupError) => {
               reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
             });
@@ -152647,7 +152740,7 @@ async function startDevSession(options) {
             });
           }
         }
-        const details = errorDetails(rebuildError);
+        const details = errorDetails2(rebuildError);
         runtime.database.log.emit({
           category: "platform",
           event: "dev.rebuild.failed",
@@ -152688,7 +152781,7 @@ async function startDevSession(options) {
         if (!options.json) process.stdout.write(`Stopping Sporades dev session...
 `);
         for (const watcher of watchers) watcher.close();
-        rm10(path21.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
+        rm10(path22.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
         });
         websocketHub.disconnectAll();
         await shutdownHttpServerAndRuntime(server, async () => {
@@ -152714,7 +152807,7 @@ async function startDevSession(options) {
       if (onUnhandledRejection) process.off("unhandledRejection", onUnhandledRejection);
       if (onUncaughtException) process.off("uncaughtException", onUncaughtException);
       if (shutdown) process.off("SIGHUP", shutdown);
-      if (shutdownError) process.stderr.write(`${errorDetails(shutdownError).message}
+      if (shutdownError) process.stderr.write(`${errorDetails2(shutdownError).message}
 `);
       process.exit(shutdownError ? 1 : 0);
     };
@@ -152772,11 +152865,11 @@ async function startDevSession(options) {
   }
 }
 function tagDevRebuildError(error, phase, config, options = {}) {
-  const details = errorDetails(error);
+  const details = errorDetails2(error);
   if (options.preserveSchemaErrors && details.message === "Unsupported Capsule schema change.") {
     return error;
   }
-  const tagged = error instanceof Error ? error : commandError(String(error), "Fix the rebuild error and save again.");
+  const tagged = error instanceof Error ? error : commandError2(String(error), "Fix the rebuild error and save again.");
   tagged.phase = phase;
   tagged.framework = config.client?.framework ?? "react";
   tagged.toolchain = configuredClientToolchain(config);
@@ -152791,7 +152884,7 @@ function reportDevPublicCleanupDegradation(options, runtime, url, port, config, 
     event: "dev.public-tree.cleanup.degraded",
     level: "warn",
     message: "Public tree cleanup degraded",
-    data: { message: errorDetails(error).message }
+    data: { message: errorDetails2(error).message }
   });
   emitDevEvent(
     options,
@@ -152813,21 +152906,21 @@ var stripeTeamBillingProviderFactoryPromise;
 async function stripeCallbackFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
   stripeCallbackFactoryPromise ??= import(pathToFileURL6(
-    path21.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
+    path22.join(resolveSporadesPackageRoot(), "dist", "stripe-webhook-runtime.js")
   ).href).then((module) => module.createStripeCallbackEndpoint);
   return await stripeCallbackFactoryPromise;
 }
 async function stripeTeamBillingProviderFactory(config) {
   if (!config.payments?.stripe?.enabled) return void 0;
   stripeTeamBillingProviderFactoryPromise ??= import(pathToFileURL6(
-    path21.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js")
+    path22.join(resolveSporadesPackageRoot(), "dist", "stripe-team-billing-provider.js")
   ).href).then((module) => module.createStripeTeamBillingProvider);
   return await stripeTeamBillingProviderFactoryPromise;
 }
 async function createDevRuntime(options) {
   let clamavSidecar;
   const attachRequiredSidecar = async (candidate) => {
-    const attached = await attachRequiredDevClamavSidecar(clamavSidecar, candidate, async () => await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path21.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() }));
+    const attached = await attachRequiredDevClamavSidecar(clamavSidecar, candidate, async () => await startDevClamavSidecar({ projectDir: options.projectDir, dockerfile: path22.join(resolveSporadesPackageRoot(), "Dockerfile.base"), buildContext: resolveSporadesPackageRoot() }));
     clamavSidecar = attached.sidecar;
     return attached.attached;
   };
@@ -152984,16 +153077,16 @@ async function importCapsuleDefinition(moduleSource) {
 }
 function watchDevInputs(projectDir, onChange, clientDependencies = () => [], initialDependencySignatures = /* @__PURE__ */ new Map()) {
   const baseWatchedPaths = [
-    { path: path21.join(projectDir, "server"), affectsServerRuntime: true },
-    { path: path21.join(projectDir, "client"), affectsServerRuntime: false },
-    { path: path21.join(projectDir, "public"), affectsServerRuntime: false, publicFiles: true },
-    { path: path21.join(projectDir, "shared"), affectsServerRuntime: true },
-    { path: path21.join(projectDir, "index.html"), affectsServerRuntime: false },
-    { path: path21.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
+    { path: path22.join(projectDir, "server"), affectsServerRuntime: true },
+    { path: path22.join(projectDir, "client"), affectsServerRuntime: false },
+    { path: path22.join(projectDir, "public"), affectsServerRuntime: false, publicFiles: true },
+    { path: path22.join(projectDir, "shared"), affectsServerRuntime: true },
+    { path: path22.join(projectDir, "index.html"), affectsServerRuntime: false },
+    { path: path22.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
   ];
   const watchedPaths = () => [
     ...baseWatchedPaths,
-    ...clientDependencies().filter((file) => !baseWatchedPaths.some((base) => file === base.path || file.startsWith(`${base.path}${path21.sep}`))).map((file) => ({ path: file, affectsServerRuntime: false, dependency: true }))
+    ...clientDependencies().filter((file) => !baseWatchedPaths.some((base) => file === base.path || file.startsWith(`${base.path}${path22.sep}`))).map((file) => ({ path: file, affectsServerRuntime: false, dependency: true }))
   ];
   const watchers = [];
   let debounceTimer = null;
@@ -153060,7 +153153,7 @@ function watchDevInputs(projectDir, onChange, clientDependencies = () => [], ini
       try {
         watchers.push(watch(watchedPath.path, { recursive: true }, () => observe(watchedPath)));
       } catch (error) {
-        if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") {
+        if (errorDetails2(error).code !== "ENOENT" && errorDetails2(error).code !== "ENOTDIR") {
           throw error;
         }
       }
@@ -153107,12 +153200,12 @@ function collectPathSignature(filePath, entries, dependencyDirectories, publicFi
   try {
     stats = (publicFiles ? lstatSync : statSync2)(filePath, { bigint: true });
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT" || errorDetails(error).code === "ENOTDIR") {
+    if (errorDetails2(error).code === "ENOENT" || errorDetails2(error).code === "ENOTDIR") {
       entries.push(`${filePath}:missing`);
       return;
     }
     if (publicFiles) {
-      entries.push(`${filePath}:unreadable:${errorDetails(error).code}`);
+      entries.push(`${filePath}:unreadable:${errorDetails2(error).code}`);
       return;
     }
     throw error;
@@ -153131,7 +153224,7 @@ function collectPathSignature(filePath, entries, dependencyDirectories, publicFi
       children = readdirSync(filePath).filter((child) => !dependencyDirectories || child !== "node_modules" && child !== ".git").sort();
     } catch (error) {
       if (!publicFiles) throw error;
-      entries.push(`${filePath}:unreadable:${errorDetails(error).code}`);
+      entries.push(`${filePath}:unreadable:${errorDetails2(error).code}`);
       return;
     }
     if (children.length === 0) {
@@ -153139,13 +153232,13 @@ function collectPathSignature(filePath, entries, dependencyDirectories, publicFi
       return;
     }
     for (const child of children) {
-      const childPath = path21.join(filePath, child);
+      const childPath = path22.join(filePath, child);
       if (dependencyDirectories) {
         let link2;
         try {
           link2 = lstatSync(childPath, { bigint: true });
         } catch (error) {
-          if (errorDetails(error).code !== "ENOENT" && errorDetails(error).code !== "ENOTDIR") throw error;
+          if (errorDetails2(error).code !== "ENOENT" && errorDetails2(error).code !== "ENOTDIR") throw error;
         }
         if (link2?.isSymbolicLink()) {
           entries.push(`${childPath}:link:${link2.ino}:${link2.size}:${link2.mtimeNs}:${link2.ctimeNs}`);
@@ -153221,7 +153314,7 @@ async function manageAuth(options) {
   switch (options.subcommand) {
     case "status": {
       const config2 = await readProjectConfig(options.projectDir);
-      const envPath2 = path21.join(options.projectDir, ".env.sporades.server");
+      const envPath2 = path22.join(options.projectDir, ".env.sporades.server");
       const serverEnv = parseServerEnv(await readServerEnvFile(envPath2));
       const status2 = authStatus(config2, serverEnv);
       if (options.json) {
@@ -153251,7 +153344,7 @@ async function manageAuth(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(`Simulated ${result.data.auth.provider} identity: ${result.data.auth.email}
 `);
@@ -153274,7 +153367,7 @@ async function manageAuth(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       for (const client of result.data.clients) {
         process.stdout.write(`${client.id}	${client.auth.provider}	${client.auth.email ?? ""}
@@ -153285,7 +153378,7 @@ async function manageAuth(options) {
     default:
       break;
   }
-  const configPath = path21.join(options.projectDir, "sporades.json");
+  const configPath = path22.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
   const existingAuth = config.auth && typeof config.auth === "object" ? config.auth : {};
   const existingProviders = existingAuth.providers && typeof existingAuth.providers === "object" ? { ...existingAuth.providers } : {};
@@ -153326,7 +153419,7 @@ async function manageAuth(options) {
     mode: options.disable && existingAuth.mode === options.provider ? enabledSibling ?? "anonymous" : options.disable ? existingAuth.mode ?? "anonymous" : options.provider,
     providers: existingProviders
   };
-  const envPath = path21.join(options.projectDir, ".env.sporades.server");
+  const envPath = path22.join(options.projectDir, ".env.sporades.server");
   await writeAuthConfiguration(configPath, envPath, config, envValues);
   const status = authStatus(config, parseServerEnv(await readServerEnvFile(envPath)));
   if (options.json) {
@@ -153369,22 +153462,22 @@ async function manageEnv(options) {
         let values;
         if (existingEnvelope) {
           if (!keyPair) {
-            throw commandError(
+            throw commandError2(
               "Sealed Server env private key is missing.",
               "Restore .sporades/sealed-server-env/server-env.private.pem or re-import the Server env values."
             );
           }
           values = unsealServerEnv(existingEnvelope, keyPair.privateKey);
         } else {
-          values = parseServerEnv(await readServerEnvFile(path21.join(options.projectDir, ".env.sporades.server")));
+          values = parseServerEnv(await readServerEnvFile(path22.join(options.projectDir, ".env.sporades.server")));
           keyPair = await ensureSealedServerEnvKeyPair(paths);
         }
         values[options.name] = value;
         if (Object.keys(values).length > 64) {
-          throw commandError("Too many Server env keys.", "Sealed Server env can contain at most 64 keys.");
+          throw commandError2("Too many Server env keys.", "Sealed Server env can contain at most 64 keys.");
         }
         if (serverEnvPlaintextSize(values) > 64 * 1024) {
-          throw commandError("Server env is too large.", "Sealed Server env can contain at most 64KB total.");
+          throw commandError2("Server env is too large.", "Sealed Server env can contain at most 64KB total.");
         }
         const envelope = sealServerEnv(values, keyPair.publicKey, { source: "set", key: options.name });
         await writeSealedServerEnv(paths, envelope);
@@ -153400,7 +153493,7 @@ async function manageEnv(options) {
     case "has": {
       const envelope = await readSealedServerEnv(paths);
       const defined = envelope ? Object.hasOwn(envelope.entries, options.name) : Object.hasOwn(
-        parseServerEnv(await readServerEnvFile(path21.join(options.projectDir, ".env.sporades.server"))),
+        parseServerEnv(await readServerEnvFile(path22.join(options.projectDir, ".env.sporades.server"))),
         options.name
       );
       if (options.json) {
@@ -153428,7 +153521,7 @@ async function manageEnv(options) {
     }
     case "import": {
       await withSealedServerEnvMutationLock(paths, async () => {
-        const envPath = path21.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+        const envPath = path22.resolve(options.projectDir, options.file ?? ".env.sporades.server");
         if (options.sealed) {
           const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
           await writeSealedServerEnv(paths, envelope2);
@@ -153436,20 +153529,20 @@ async function manageEnv(options) {
             ...envelopeSummary(envelope2, paths),
             imported: true,
             sealed: true,
-            source: normalisePathForOutput(path21.relative(options.projectDir, envPath) || envPath)
+            source: normalisePathForOutput(path22.relative(options.projectDir, envPath) || envPath)
           });
           return;
         }
         const env = parseServerEnv(await readServerEnvFile(envPath));
         const keyPair = await ensureSealedServerEnvKeyPair(paths);
         const envelope = sealServerEnv(env, keyPair.publicKey, {
-          source: normalisePathForOutput(path21.relative(options.projectDir, envPath) || envPath)
+          source: normalisePathForOutput(path22.relative(options.projectDir, envPath) || envPath)
         });
         await writeSealedServerEnv(paths, envelope);
         await writeEnvResult(options, {
           ...envelopeSummary(envelope, paths),
           imported: true,
-          source: normalisePathForOutput(path21.relative(options.projectDir, envPath) || envPath),
+          source: normalisePathForOutput(path22.relative(options.projectDir, envPath) || envPath),
           privateKeyConfigured: true
         });
       });
@@ -153461,38 +153554,38 @@ async function manageEnv(options) {
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         privateKeyConfigured: Boolean(keyPair?.privateKey),
-        legacyServerEnvFilePresent: (await readServerEnvFile(path21.join(options.projectDir, ".env.sporades.server"))).exists
+        legacyServerEnvFilePresent: (await readServerEnvFile(path22.join(options.projectDir, ".env.sporades.server"))).exists
       });
       return;
     }
     case "export": {
       const envelope = await readSealedServerEnv(paths);
       if (!envelope) {
-        throw commandError("No Sealed Server env configured.", "Run `sporades env import --file .env.sporades.server` first.");
+        throw commandError2("No Sealed Server env configured.", "Run `sporades env import --file .env.sporades.server` first.");
       }
       const exported = exportedEnvelope(envelope);
       if (options.output) {
-        const outputPath = path21.resolve(options.projectDir, options.output);
-        await mkdir11(path21.dirname(outputPath), { recursive: true });
+        const outputPath = path22.resolve(options.projectDir, options.output);
+        await mkdir11(path22.dirname(outputPath), { recursive: true });
         await writeFile10(outputPath, `${JSON.stringify(exported, null, 2)}
 `, { mode: 384 });
       }
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         exported: true,
-        outputPath: options.output ? path21.resolve(options.projectDir, options.output) : null,
+        outputPath: options.output ? path22.resolve(options.projectDir, options.output) : null,
         envelope: options.output ? null : exported
       });
       return;
     }
     case "reencrypt": {
       if (!options.hostAlias) {
-        throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
+        throw commandError2("Missing Host profile alias.", "Pass `--host <alias>`.");
       }
       const envelope = await readSealedServerEnv(paths);
       const localKeyPair = await readKeyPair(paths);
       if (!envelope || !localKeyPair) {
-        throw commandError("No local Sealed Server env configured.", "Run `sporades env import --file .env.sporades.server` first.");
+        throw commandError2("No local Sealed Server env configured.", "Run `sporades env import --file .env.sporades.server` first.");
       }
       const values = unsealServerEnv(envelope, localKeyPair.privateKey);
       const hostConfig = await readHostConfig();
@@ -153504,11 +153597,11 @@ async function manageEnv(options) {
         hostDomain: profile.domain,
         ...options.subname ? { subname: options.subname } : {}
       });
-      const hostEnvelopePath = path21.join(
+      const hostEnvelopePath = path22.join(
         paths.hosts,
         options.subname ? `${options.hostAlias}.${options.subname}.server-env.sealed.json` : `${options.hostAlias}.server-env.sealed.json`
       );
-      await mkdir11(path21.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
+      await mkdir11(path22.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
       await writeFile10(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
 `, { mode: 384 });
       if (!options.subname) {
@@ -153537,25 +153630,25 @@ async function readPortableSealedServerEnvEnvelope(filePath) {
   try {
     envelope = JSON.parse(await readFile14(filePath, "utf8"));
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
-      throw commandError(
+    if (errorDetails2(error).code === "ENOENT") {
+      throw commandError2(
         "Sealed Server env export file was not found.",
         "Pass `--file <path>` pointing at a `sporades env export` JSON file."
       );
     }
-    throw commandError(
+    throw commandError2(
       "Invalid Sealed Server env export file.",
       "Pass a JSON file created by `sporades env export`."
     );
   }
   if (!envelope || typeof envelope !== "object" || envelope.version !== 1 || envelope.valueAlgorithm !== "aes-256-gcm" || !envelope.entries || typeof envelope.entries !== "object" || Array.isArray(envelope.entries)) {
-    throw commandError(
+    throw commandError2(
       "Invalid Sealed Server env export file.",
       "Pass a JSON file created by `sporades env export`."
     );
   }
   if (JSON.stringify(envelope).includes("PRIVATE KEY") || Object.hasOwn(envelope, "privateKey")) {
-    throw commandError(
+    throw commandError2(
       "Invalid Sealed Server env export file.",
       "Sealed envelope imports must not contain private keys."
     );
@@ -153597,10 +153690,10 @@ async function manageHost(options) {
       if (["connect", "migrate"].includes(options.operation)) {
         const profiles = await readTelemetryProfiles();
         const profile = Object.hasOwn(profiles, options.telemetryProfileName) ? profiles[options.telemetryProfileName] : void 0;
-        if (!profile) throw commandError("Unknown Telemetry profile.", "Register the selected Telemetry profile before connecting the Host.");
-        if (profile.tls.mode !== "verified" || !profile.credentialEnv) throw commandError("Host Telemetry requires a verified HTTPS profile with a scoped credential.", "Use a verified profile with --credential-env.");
+        if (!profile) throw commandError2("Unknown Telemetry profile.", "Register the selected Telemetry profile before connecting the Host.");
+        if (profile.tls.mode !== "verified" || !profile.credentialEnv) throw commandError2("Host Telemetry requires a verified HTTPS profile with a scoped credential.", "Use a verified profile with --credential-env.");
         const credential = process.env[profile.credentialEnv];
-        if (!credential) throw commandError("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${options.telemetryProfileName}.`);
+        if (!credential) throw commandError2("Telemetry ingestion credential is unavailable.", `Set the environment variable referenced by Telemetry profile ${options.telemetryProfileName}.`);
         let caPem;
         if (profile.tls.caFile) {
           try {
@@ -153608,19 +153701,19 @@ async function manageHost(options) {
             if (!details.isFile() || details.size > 1024 * 1024) throw new Error("invalid certificate");
             caPem = readFileSync4(profile.tls.caFile, "utf8");
           } catch {
-            throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB.");
+            throw commandError2("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB.");
           }
         }
         const inventoryCredential = profile.inventoryCredentialEnv ? process.env[profile.inventoryCredentialEnv] : void 0;
-        if (profile.inventoryCredentialEnv && !inventoryCredential) throw commandError("Telemetry inventory credential is unavailable.", "Set the inventory credential environment reference before connecting.");
+        if (profile.inventoryCredentialEnv && !inventoryCredential) throw commandError2("Telemetry inventory credential is unavailable.", "Set the inventory credential environment reference before connecting.");
         telemetry = { ...profile.tracePropagationOrigins !== void 0 ? { tracePropagationOrigins: profile.tracePropagationOrigins } : {}, endpoint: profile.endpoint, credential, ...inventoryCredential ? { inventoryCredential } : {}, ...profile.inventoryHost ? { inventoryHost: profile.inventoryHost } : {}, ...caPem ? { caPem } : {}, ...profile.metricsIntervalMs ? { metricsIntervalMs: profile.metricsIntervalMs } : {}, ...profile.eventLoopDelayResolutionMs ? { eventLoopDelayResolutionMs: profile.eventLoopDelayResolutionMs } : {} };
       }
       const queryCredential = options.queryCredentialEnv ? process.env[options.queryCredentialEnv] : void 0;
-      if (options.queryCredentialEnv && !queryCredential) throw commandError("Operator query credential is unavailable.", "Set the referenced environment variable to the Monitoring operator user:password.");
+      if (options.queryCredentialEnv && !queryCredential) throw commandError2("Operator query credential is unavailable.", "Set the referenced environment variable to the Monitoring operator user:password.");
       validateQueryCredential(queryCredential);
       const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.telemetry.${options.operation}`, subname: options.subname, telemetry, diagnostics: queryCredential ? { queryCredential } : void 0, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);
-      else if (!result.ok) throw commandError(result.error.message, result.error.hint);
+      else if (!result.ok) throw commandError2(result.error.message, result.error.hint);
       else process.stdout.write(`${JSON.stringify(result.data, null, 2)}
 `);
       return;
@@ -153630,7 +153723,7 @@ async function manageHost(options) {
       const resolved = resolveHostProfile(await readHostConfig(), options.hostAlias);
       const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: "capsule.admission.publish", subname: options.subname, admission: { contents: bytes ? bytes.toString("base64") : null }, projectDir: options.projectDir });
       if (options.json) writeResult(result, !result.ok);
-      else if (!result.ok) throw commandError(result.error.message, result.error.hint);
+      else if (!result.ok) throw commandError2(result.error.message, result.error.hint);
       else process.stdout.write("Admission policy publication committed.\n");
       return;
     }
@@ -153723,7 +153816,7 @@ async function manageHost(options) {
           return;
         }
         if (!result2.ok) {
-          throw commandError(result2.error.message, result2.error.hint);
+          throw commandError2(result2.error.message, result2.error.hint);
         }
         process.stdout.write(`Hosted Capsule runtime healthy: ${health.runtimeHealthUrl}
 `);
@@ -153735,7 +153828,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(`Host server healthy: ${result.data.healthUrl}
 `);
@@ -153746,8 +153839,8 @@ async function manageHost(options) {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
       const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
-      const bindingPath = path21.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir11(path21.dirname(bindingPath), { recursive: true });
+      const bindingPath = path22.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir11(path22.dirname(bindingPath), { recursive: true });
       await writeFile10(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       if (options.json) {
@@ -153777,17 +153870,17 @@ async function manageHost(options) {
           writeResult(result, true);
           return;
         }
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       const confirmedAliases = result.data?.capsule?.aliasDomains;
       if (options.aliasDomains.length && (!Array.isArray(confirmedAliases) || confirmedAliases.length !== options.aliasDomains.length || !options.aliasDomains.every((hostname) => confirmedAliases.includes(hostname)))) {
-        throw commandError(
+        throw commandError2(
           "Host helper did not confirm the requested alias domains.",
           "Upgrade the Host helper and inspect the remote registration before retrying. The canonical Capsule may have been registered, but alias ownership is unconfirmed; no local binding was written."
         );
       }
-      const bindingPath = path21.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir11(path21.dirname(bindingPath), { recursive: true });
+      const bindingPath = path22.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir11(path22.dirname(bindingPath), { recursive: true });
       await writeFile10(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       const data2 = {
@@ -153808,9 +153901,17 @@ async function manageHost(options) {
       return;
     }
     case "push": {
+      const projectConfig = await readProjectConfig(options.projectDir);
+      if (!options.allowMissingEnv && requiredServerEnvKeys(projectConfig).length > 0) {
+        const missingKeys = missingRequiredServerEnv(projectConfig, await readRequiredServerEnvValues(options.projectDir, true));
+        if (missingKeys.length > 0) throw commandError2(
+          `Missing required Server env: ${missingKeys.join(", ")}.`,
+          "Set the named values with sporades env set or env import, or explicitly push with --allow-missing-env.",
+          { missingKeys }
+        );
+      }
       const config = await readHostConfig();
       const target = await resolveHostPushTarget(config, options);
-      const projectConfig = await readProjectConfig(options.projectDir);
       const preserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
       const sshAccess = await resolveHostedCapsuleSshAccessForAudit(projectConfig, options.projectDir);
       const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
@@ -153864,7 +153965,7 @@ async function manageHost(options) {
         return;
       }
       if (!outputResult.ok) {
-        throw commandError(outputResult.error.message, outputResult.error.hint);
+        throw commandError2(outputResult.error.message, outputResult.error.hint);
       }
       process.stdout.write(`Hosted Capsule release pushed: ${target.binding.hostedUrl}
 `);
@@ -153889,7 +153990,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       const hostedUrl = result.data?.capsule?.hostedUrl ?? `${resolved.profile.scheme}://${options.subname}.${resolved.profile.domain}`;
       process.stdout.write(`Hosted Capsule sealed-env key rotated: ${hostedUrl}
@@ -153935,7 +154036,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(`Hosted Capsule ${options.subcommand} completed: ${lifecycle.hostedUrl}
 `);
@@ -153959,7 +154060,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(`Hosted Capsule rolled back: ${lifecycle.hostedUrl}
 `);
@@ -153982,7 +154083,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(result.data?.reconciled ? `Hosted Capsule interrupted release attempt reconciled: ${lifecycle.hostedUrl}
 ` : `No interrupted Hosted release attempt to reconcile: ${lifecycle.hostedUrl}
@@ -154006,7 +154107,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(`Hosted Capsule unregistered: ${unregister.hostedUrl}
 `);
@@ -154029,7 +154130,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(`Hosted Capsule storage deleted: ${deletion.hostedUrl}
 `);
@@ -154052,7 +154153,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(`${JSON.stringify(result.data, null, 2)}
 `);
@@ -154073,7 +154174,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       const data2 = result.data;
       if (!data2.enabled) {
@@ -154105,7 +154206,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(`${JSON.stringify(result.data, null, 2)}
 `);
@@ -154126,7 +154227,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(`Host server bootstrapped for ${resolved.profile.domain}
 `);
@@ -154162,7 +154263,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(formatHostedCapsuleList(result.data, resolved.profile));
       return;
@@ -154182,7 +154283,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       process.stdout.write(formatHostedCapsuleReleases(result.data));
       return;
@@ -154208,7 +154309,7 @@ async function manageHost(options) {
         return;
       }
       if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+        throw commandError2(result.error.message, result.error.hint);
       }
       for (const entry of normaliseHostLogEntries(result.data)) {
         process.stdout.write(`${entry}
@@ -154279,7 +154380,7 @@ async function resolveLocalContainerSshAccessForAudit(config, projectDir, surfac
 }
 async function emitCliSshAuditEvent(config, projectDir, details) {
   const logPath = projectLogPath(config, projectDir);
-  await mkdir11(path21.dirname(logPath), { recursive: true });
+  await mkdir11(path22.dirname(logPath), { recursive: true });
   const input = createPrivilegedAuditLogInput({
     actorKind: "platform",
     source: "cli",
@@ -154312,10 +154413,10 @@ function explicitSshConfigured(config) {
   return Boolean(config && typeof config === "object" && Object.hasOwn(config, "ssh"));
 }
 function projectLogPath(config, projectDir) {
-  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path21.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
+  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path22.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
 }
 function readProjectConfigSync(projectDir) {
-  const raw = readFileSync4(path21.join(projectDir, "sporades.json"), "utf8");
+  const raw = readFileSync4(path22.join(projectDir, "sporades.json"), "utf8");
   return JSON.parse(raw);
 }
 var TELEMETRY_CA_MAX_BYTES = 1024 * 1024;
@@ -154333,15 +154434,15 @@ async function readContainerTelemetryCa(caPath) {
     for (const block of blocks) new X509Certificate(block);
     return contents;
   } catch {
-    throw commandError("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB; the running Container was preserved.");
+    throw commandError2("Telemetry CA file is invalid.", "Use a readable regular PEM certificate file of at most 1 MiB; the running Container was preserved.");
   } finally {
     await file?.close();
   }
 }
 async function removeContainerTelemetryCaStage(runtimeDir, stagedPath) {
   if (typeof stagedPath !== "string") return;
-  const stageDir = path21.join(runtimeDir, "telemetry-ca");
-  if (path21.dirname(stagedPath) !== stageDir || !/^[0-9a-f]{32}\.pem$/.test(path21.basename(stagedPath))) return;
+  const stageDir = path22.join(runtimeDir, "telemetry-ca");
+  if (path22.dirname(stagedPath) !== stageDir || !/^[0-9a-f]{32}\.pem$/.test(path22.basename(stagedPath))) return;
   const directory = await lstat13(stageDir).catch(() => null);
   if (directory?.isDirectory() && !directory.isSymbolicLink()) await rm10(stagedPath, { force: true });
 }
@@ -154351,20 +154452,20 @@ function dockerMountField(value) {
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4e3;
-  const runtimeDir = path21.join(options.projectDir, ".sporades");
-  const containerName = `sporades-${config.name ?? path21.basename(options.projectDir)}`;
-  const bindingPath = path21.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const runtimeDir = path22.join(options.projectDir, ".sporades");
+  const containerName = `sporades-${config.name ?? path22.basename(options.projectDir)}`;
+  const bindingPath = path22.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
   const telemetryProfile = options.telemetryProfile === void 0 ? existingBinding?.telemetryProfile : options.telemetryProfile;
   const telemetrySource = telemetryProfile === null ? null : await resolveLocalTelemetryConfig(config, telemetryProfile);
   const telemetryConfig = telemetrySource ? toContainerTelemetryConfig(telemetrySource) : null;
   const telemetryCa = telemetrySource?.tls.caFile ? await readContainerTelemetryCa(telemetrySource.tls.caFile) : null;
-  const previousConsumer = await readPublicTreeConsumer(path21.join(runtimeDir, "build"), "container");
+  const previousConsumer = await readPublicTreeConsumer(path22.join(runtimeDir, "build"), "container");
   verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config, { publishLegacy: false, containerTelemetry: true });
-  const dataDir = path21.join(runtimeDir, "data");
+  const dataDir = path22.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
   await mkdir11(dataDir, { recursive: true });
   await prepareRuntimeDataPath(dataDir);
@@ -154383,14 +154484,14 @@ async function startContainerSession(options) {
     clientRelease = {
       framework: config.client?.framework ?? "react",
       toolchain: configuredClientToolchain(config),
-      publicTree: path21.basename(bundle.staticFiles.publicDir),
+      publicTree: path22.basename(bundle.staticFiles.publicDir),
       ...await summarizePublicTree(bundle.staticFiles.publicDir)
     };
   } catch (error) {
-    const details = errorDetails(error);
+    const details = errorDetails2(error);
     await discardPublicTree(bundle.staticFiles.publicTree).catch(() => {
     });
-    throw commandError(
+    throw commandError2(
       "Container public tree validation failed.",
       details.hint ?? "Rebuild the Capsule public output and retry deployment; the running Container was preserved.",
       { phase: "public", framework: config.client?.framework ?? "react", toolchain: configuredClientToolchain(config), cause: details.message }
@@ -154401,7 +154502,7 @@ async function startContainerSession(options) {
   if (existingBinding?.containerId && !existingContainer && !options.force) {
     await discardPublicTree(bundle.staticFiles.publicTree).catch(() => {
     });
-    throw commandError(
+    throw commandError2(
       "The existing Container binding is stale.",
       "Retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`."
     );
@@ -154433,18 +154534,18 @@ async function startContainerSession(options) {
     "127.0.0.1::22"
   ] : [];
   if (bundle.deployFiles.length) {
-    await mkdir11(path21.join(runtimeDir, "deploy-files"), { recursive: true, mode: 448 });
-    await chmod5(path21.join(runtimeDir, "deploy-files"), 448);
+    await mkdir11(path22.join(runtimeDir, "deploy-files"), { recursive: true, mode: 448 });
+    await chmod5(path22.join(runtimeDir, "deploy-files"), 448);
   }
-  const deployReleaseRoot = path21.join(runtimeDir, "deploy-files", randomBytes10(16).toString("hex"));
-  const telemetryCaStagePath = telemetryCa ? path21.join(runtimeDir, "telemetry-ca", `${randomBytes10(16).toString("hex")}.pem`) : null;
-  const preservedRoot = path21.join(runtimeDir, "preserved-files");
+  const deployReleaseRoot = path22.join(runtimeDir, "deploy-files", randomBytes10(16).toString("hex"));
+  const telemetryCaStagePath = telemetryCa ? path22.join(runtimeDir, "telemetry-ca", `${randomBytes10(16).toString("hex")}.pem`) : null;
+  const preservedRoot = path22.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
   const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0 || Boolean(telemetryCaStagePath || existingBinding?.telemetryCaStagePath));
   try {
     for (const file of bundle.deployFiles) {
-      const destination = path21.join(deployReleaseRoot, file.path);
-      await mkdir11(path21.dirname(destination), { recursive: true });
+      const destination = path22.join(deployReleaseRoot, file.path);
+      await mkdir11(path22.dirname(destination), { recursive: true });
       await writeFile10(destination, file.contents, { mode: 420 });
     }
     await preparePreservedFiles(bundle.deployFiles, deployReleaseRoot, preservedRoot, void 0, createdSeeds, seedJournal);
@@ -154543,7 +154644,7 @@ async function startContainerSession(options) {
   try {
     if (telemetryCaStagePath && telemetryCa) {
       await recordPreservedFileAttempt(seedJournal, { telemetryCaStagePath });
-      await mkdir11(path21.dirname(telemetryCaStagePath), { recursive: true, mode: 448 });
+      await mkdir11(path22.dirname(telemetryCaStagePath), { recursive: true, mode: 448 });
       await writeFile10(telemetryCaStagePath, telemetryCa, { flag: "wx", mode: 420 });
       await chmod5(telemetryCaStagePath, 420);
     }
@@ -154575,7 +154676,7 @@ async function startContainerSession(options) {
       candidateContainer?.Config?.Labels?.["com.sporades.container-transaction"] === containerTransactionToken && String(candidateContainer?.Name ?? "").replace(/^\//, "") === containerName
     );
     if (!candidateOwnershipProven) {
-      throw commandError("Container candidate ownership could not be verified.", "Inspect the returned Container ID before retrying deployment.");
+      throw commandError2("Container candidate ownership could not be verified.", "Inspect the returned Container ID before retrying deployment.");
     }
     if (requiresClamavReadiness) {
       await awaitContainerRuntimeReadiness({
@@ -154603,7 +154704,7 @@ async function startContainerSession(options) {
       ...telemetryCaStagePath ? { telemetryCaStagePath } : {},
       clientRelease,
       pendingDeployFileCleanup: [...existingBinding?.pendingDeployFileCleanup ?? [], ...existingBinding?.deployFilesRoot ? [existingBinding.deployFilesRoot] : []],
-      ...bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path: path22, update }) => ({ path: path22, update })) } : {},
+      ...bundle.deployFiles.length ? { deployFilesRoot: deployReleaseRoot, deployFiles: bundle.deployFiles.map(({ path: path23, update }) => ({ path: path23, update })) } : {},
       ...sshAccess.enabled ? {
         ssh: {
           enabled: true,
@@ -154711,15 +154812,15 @@ async function startContainerSession(options) {
       }
     }
     if (rollbackFailures.length > 0) {
-      throw commandError(
+      throw commandError2(
         "Container replacement recovery is incomplete.",
         "Inspect the retained Container, binding, and public-tree state before retrying deployment.",
-        { failures: rollbackFailures, cause: errorDetails(error).message }
+        { failures: rollbackFailures, cause: errorDetails2(error).message }
       );
     }
     throw error;
   }
-  if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");
+  if (!containerId || !binding) throw commandError2("Container replacement did not commit.", "Retry deployment.");
   if (existingBinding?.telemetryCaStagePath && existingBinding.telemetryCaStagePath !== telemetryCaStagePath) {
     await removeContainerTelemetryCaStage(runtimeDir, existingBinding.telemetryCaStagePath);
   }
@@ -154791,7 +154892,7 @@ async function awaitContainerRuntimeReadiness(options) {
       });
       if (response.status !== 200 && response.status !== 503) {
         await response.body?.cancel();
-        throw commandError(
+        throw commandError2(
           "Container candidate runtime readiness failed.",
           "Inspect the candidate Container logs and runtime probe configuration, then retry deployment.",
           { statusCode: response.status }
@@ -154801,7 +154902,7 @@ async function awaitContainerRuntimeReadiness(options) {
       try {
         body = JSON.parse(await response.text());
       } catch {
-        throw commandError(
+        throw commandError2(
           "Container candidate runtime readiness failed.",
           "The runtime health endpoint returned invalid JSON; inspect the candidate Container logs, then retry deployment."
         );
@@ -154809,7 +154910,7 @@ async function awaitContainerRuntimeReadiness(options) {
       const checks = body?.data?.checks;
       const valid = typeof body?.ok === "boolean" && typeof body?.data?.runtime?.ready === "boolean" && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && typeof checks?.fileInspection?.ok === "boolean";
       if (!valid) {
-        throw commandError(
+        throw commandError2(
           "Container candidate runtime readiness failed.",
           "The runtime health endpoint returned an unexpected result; update the Capsule runtime and retry deployment.",
           { statusCode: response.status, hasOk: typeof body?.ok, hasReady: typeof body?.data?.runtime?.ready, hasSqlite: typeof checks?.sqlite?.ok, hasFileStorage: typeof checks?.fileStorage?.ok, hasFileInspection: typeof checks?.fileInspection?.ok }
@@ -154828,7 +154929,7 @@ async function awaitContainerRuntimeReadiness(options) {
       await new Promise((resolve2) => setTimeout(resolve2, Math.min(250, remainingMs)));
     }
   }
-  throw commandError(
+  throw commandError2(
     "Container candidate runtime readiness failed.",
     "Inspect the candidate Container logs and managed ClamAV startup, then retry deployment; the previous working Container was restored.",
     { timeoutMs: options.timeoutMs, cause: lastFailure }
@@ -154836,7 +154937,7 @@ async function awaitContainerRuntimeReadiness(options) {
 }
 async function inspectLocalContainerSsh(options) {
   const config = await readProjectConfig(options.projectDir);
-  const bindingPath = path21.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path22.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     const data3 = localContainerSshState({
@@ -154935,7 +155036,7 @@ function inspectDockerContainerOptional(projectDir, containerId) {
   const result = spawnSync4("docker", ["inspect", "--format", "{{json .}}", containerId], { cwd: projectDir, encoding: "utf8" });
   if (result.status === 0) return JSON.parse(result.stdout.trim());
   if (isMissingDockerContainerError(result)) return null;
-  throw commandError("Failed to inspect the existing Container session.", "Check Docker is running, then retry deployment.");
+  throw commandError2("Failed to inspect the existing Container session.", "Check Docker is running, then retry deployment.");
 }
 function inspectedSshPort(inspected) {
   const entries = inspected?.NetworkSettings?.Ports?.["22/tcp"];
@@ -154950,7 +155051,7 @@ async function inspectDatabase(options) {
   if (options.subcommand === "query") {
     const validation = validateReadOnlyInspectionSql(options.sql);
     if (!validation.ok) {
-      throw commandError(validation.error.message, validation.error.hint);
+      throw commandError2(validation.error.message, validation.error.hint);
     }
   }
   const result = await fetchInspectionDatabase(options);
@@ -154959,7 +155060,7 @@ async function inspectDatabase(options) {
     return;
   }
   if (!result.ok) {
-    throw commandError(result.error.message, result.error.hint);
+    throw commandError2(result.error.message, result.error.hint);
   }
   switch (options.subcommand) {
     case "list":
@@ -154997,7 +155098,7 @@ async function printLogs(options) {
     return;
   }
   if (!result.ok) {
-    throw commandError(result.error.message, result.error.hint);
+    throw commandError2(result.error.message, result.error.hint);
   }
   for (const entry of result.data.entries) {
     process.stdout.write(`[${entry.level}] ${entry.message}
@@ -155016,7 +155117,7 @@ async function fetchInspectionDatabase(options) {
   ) ?? inspectContainerDatabase(options);
 }
 async function readDevSession(projectDir) {
-  const sessionPath = path21.join(projectDir, DEV_SESSION_FILE);
+  const sessionPath = path22.join(projectDir, DEV_SESSION_FILE);
   const raw = await readRequiredFile3(
     sessionPath,
     "No running Sporades dev session found.",
@@ -155025,70 +155126,70 @@ async function readDevSession(projectDir) {
   try {
     return JSON.parse(raw);
   } catch {
-    throw commandError(
+    throw commandError2(
       "Invalid Sporades dev session metadata.",
       "Restart the dev session with `sporades dev`, then retry the command."
     );
   }
 }
 async function createDevActionBundle(projectDir, id2, contents) {
-  const root = path21.join(projectDir, ".sporades", "build", ".dev-actions");
+  const root = path22.join(projectDir, ".sporades", "build", ".dev-actions");
   await mkdir11(root, { recursive: true, mode: 448 });
   const rootStat = await lstat13(root);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
-    throw commandError("Invalid Dev action Bundle directory.", "Remove the unsafe .sporades/build/.dev-actions entry and retry.");
+    throw commandError2("Invalid Dev action Bundle directory.", "Remove the unsafe .sporades/build/.dev-actions entry and retry.");
   }
-  const directory = path21.join(root, id2);
+  const directory = path22.join(root, id2);
   await mkdir11(directory, { mode: 448 });
   try {
-    await writeFile10(path21.join(directory, "owner.json"), `${JSON.stringify({
+    await writeFile10(path22.join(directory, "owner.json"), `${JSON.stringify({
       id: id2,
       pid: process.pid,
       processStart: await getProcessStartIdentity(process.pid)
     })}
 `, { flag: "wx", mode: 384 });
-    await writeFile10(path21.join(directory, "server.mjs"), contents, { flag: "wx", mode: 384 });
+    await writeFile10(path22.join(directory, "server.mjs"), contents, { flag: "wx", mode: 384 });
   } catch (error) {
     await rm10(directory, { recursive: true, force: true });
     throw error;
   }
 }
 async function removeOwnedDevActionBundle(projectDir, id2) {
-  const root = path21.join(projectDir, ".sporades", "build", ".dev-actions");
+  const root = path22.join(projectDir, ".sporades", "build", ".dev-actions");
   const rootStat = await lstat13(root).catch(() => null);
   if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) {
-    throw commandError("Dev action Bundle directory changed.", "Inspect the private Bundle directory before removing it.");
+    throw commandError2("Dev action Bundle directory changed.", "Inspect the private Bundle directory before removing it.");
   }
-  const directory = path21.join(root, id2);
+  const directory = path22.join(root, id2);
   const directoryStat = await lstat13(directory).catch(() => null);
   if (!directoryStat) return;
   if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
-    throw commandError("Dev action Bundle ownership changed.", "Preserve the unexpected entry for inspection.");
+    throw commandError2("Dev action Bundle ownership changed.", "Preserve the unexpected entry for inspection.");
   }
-  const ownerPath = path21.join(directory, "owner.json");
+  const ownerPath = path22.join(directory, "owner.json");
   const ownerStat = await lstat13(ownerPath).catch(() => null);
   const owner = ownerStat?.isFile() && !ownerStat.isSymbolicLink() && ownerStat.size <= 1024 ? await readFile14(ownerPath, "utf8").then(JSON.parse).catch(() => null) : null;
   if (owner?.id !== id2 || owner.pid !== process.pid) {
-    throw commandError("Dev action Bundle ownership changed.", "Preserve the unexpected entry for inspection.");
+    throw commandError2("Dev action Bundle ownership changed.", "Preserve the unexpected entry for inspection.");
   }
   await rm10(directory, { recursive: true, force: true });
 }
 async function reclaimStaleDevActionBundles(projectDir) {
-  const root = path21.join(projectDir, ".sporades", "build", ".dev-actions");
+  const root = path22.join(projectDir, ".sporades", "build", ".dev-actions");
   const rootStat = await lstat13(root).catch((error) => {
-    if (errorDetails(error).code === "ENOENT") return null;
+    if (errorDetails2(error).code === "ENOENT") return null;
     throw error;
   });
   if (!rootStat) return;
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
-    throw commandError("Invalid Dev action Bundle directory.", "Remove the unsafe .sporades/build/.dev-actions entry and retry.");
+    throw commandError2("Invalid Dev action Bundle directory.", "Remove the unsafe .sporades/build/.dev-actions entry and retry.");
   }
   for (const id2 of await readdir6(root)) {
     if (!/^[a-f0-9]{32}$/.test(id2)) continue;
-    const directory = path21.join(root, id2);
+    const directory = path22.join(root, id2);
     const directoryStat = await lstat13(directory).catch(() => null);
     if (!directoryStat?.isDirectory() || directoryStat.isSymbolicLink()) continue;
-    const ownerPath = path21.join(directory, "owner.json");
+    const ownerPath = path22.join(directory, "owner.json");
     const ownerStat = await lstat13(ownerPath).catch(() => null);
     if (!ownerStat?.isFile() || ownerStat.isSymbolicLink() || ownerStat.size > 1024) continue;
     const owner = await readFile14(ownerPath, "utf8").then(JSON.parse).catch(() => null);
@@ -155100,21 +155201,21 @@ async function reclaimStaleDevActionBundles(projectDir) {
 }
 async function devActionBundlePath(projectDir, session) {
   if (session.actionBundleId === void 0) {
-    return path21.join(projectDir, ".sporades", "build", "server.mjs");
+    return path22.join(projectDir, ".sporades", "build", "server.mjs");
   }
   if (typeof session.actionBundleId !== "string" || !/^[a-f0-9]{32}$/.test(session.actionBundleId)) {
-    throw commandError("Invalid Dev action Bundle metadata.", "Restart `sporades dev`, then retry the command.");
+    throw commandError2("Invalid Dev action Bundle metadata.", "Restart `sporades dev`, then retry the command.");
   }
-  const bundlePath = path21.join(projectDir, ".sporades", "build", ".dev-actions", session.actionBundleId, "server.mjs");
-  for (const directory of [path21.dirname(bundlePath), path21.dirname(path21.dirname(bundlePath))]) {
+  const bundlePath = path22.join(projectDir, ".sporades", "build", ".dev-actions", session.actionBundleId, "server.mjs");
+  for (const directory of [path22.dirname(bundlePath), path22.dirname(path22.dirname(bundlePath))]) {
     const metadata3 = await lstat13(directory).catch(() => null);
     if (!metadata3?.isDirectory() || metadata3.isSymbolicLink()) {
-      throw commandError("Dev action Bundle is unavailable.", "Restart `sporades dev`, then retry the command.");
+      throw commandError2("Dev action Bundle is unavailable.", "Restart `sporades dev`, then retry the command.");
     }
   }
   const metadata2 = await lstat13(bundlePath).catch(() => null);
   if (!metadata2?.isFile() || metadata2.isSymbolicLink()) {
-    throw commandError("Dev action Bundle is unavailable.", "Restart `sporades dev`, then retry the command.");
+    throw commandError2("Dev action Bundle is unavailable.", "Restart `sporades dev`, then retry the command.");
   }
   return bundlePath;
 }
@@ -155122,7 +155223,7 @@ async function readOptionalDevSession(projectDir) {
   try {
     return await readDevSession(projectDir);
   } catch (error) {
-    if (errorDetails(error).message === "No running Sporades dev session found.") {
+    if (errorDetails2(error).message === "No running Sporades dev session found.") {
       return null;
     }
     throw error;
@@ -155257,8 +155358,8 @@ async function inspectContainerDatabase(options) {
 function resolveLocalContainerDatabasePath(options) {
   const container = resolveLocalContainerTarget(options);
   const mount = container.mounts.find((entry) => entry.Destination === "/app/data");
-  const dataDir = mount?.Source ?? path21.join(options.projectDir, ".sporades", "data");
-  return path21.join(dataDir, "data.db");
+  const dataDir = mount?.Source ?? path22.join(options.projectDir, ".sporades", "data");
+  return path22.join(dataDir, "data.db");
 }
 function resolveLocalContainerTarget(options) {
   if (options.port) {
@@ -155271,17 +155372,17 @@ function resolveLocalContainerTarget(options) {
       return { containerId, mounts: inspectDockerMounts(options.projectDir, containerId) };
     }
   }
-  const bindingPath = path21.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path22.join(options.projectDir, CONTAINER_BINDING_FILE);
   let binding = null;
   try {
     binding = JSON.parse(readFileSync4(bindingPath, "utf8"));
   } catch (error) {
-    if (errorDetails(error).code !== "ENOENT") {
+    if (errorDetails2(error).code !== "ENOENT") {
       throw error;
     }
   }
   if (!binding?.containerId) {
-    throw commandError(
+    throw commandError2(
       "No running Sporades session found.",
       "Start `sporades dev`, run `sporades deploy`, or pass `--port <number>` for a running local Container session."
     );
@@ -155311,7 +155412,7 @@ async function fetchLocalIdentitySimulation(session, body) {
       body: JSON.stringify(body)
     }));
   } catch {
-    throw commandError(
+    throw commandError2(
       "Unable to reach the running Sporades dev session.",
       "Check that `sporades dev` is still running in this project, then retry the command."
     );
@@ -155337,7 +155438,7 @@ async function fetchAuthClients(session) {
   try {
     response = await fetch(new URL("/__sporades/debug/auth/clients", session.url), withDevInspectionTokenHeader(session));
   } catch {
-    throw commandError(
+    throw commandError2(
       "Unable to reach the running Sporades dev session.",
       "Check that `sporades dev` is still running in this project, then retry the command."
     );
@@ -155420,8 +155521,8 @@ async function readRequiredFile3(filePath, message, hint) {
   try {
     return await readFile14(filePath, "utf8");
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
-      throw commandError(message, hint);
+    if (errorDetails2(error).code === "ENOENT") {
+      throw commandError2(message, hint);
     }
     throw error;
   }
@@ -155430,11 +155531,11 @@ async function readContainerBinding(bindingPath) {
   try {
     return JSON.parse(await readFile14(bindingPath, "utf8"));
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
+    if (errorDetails2(error).code === "ENOENT") {
       return null;
     }
     if (error instanceof SyntaxError) {
-      throw commandError(
+      throw commandError2(
         "Invalid container binding metadata.",
         "Delete .sporades/binding.json or fix its JSON, then retry `sporades deploy`."
       );
@@ -155444,13 +155545,13 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile14(path21.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile14(path22.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
+    if (errorDetails2(error).code === "ENOENT") {
       return null;
     }
     if (error instanceof SyntaxError) {
-      throw commandError(
+      throw commandError2(
         "Invalid project remote binding metadata.",
         "Delete .sporades/remote-binding.json or fix its JSON, then retry the command."
       );
@@ -155463,7 +155564,7 @@ async function resolveHostPushTarget(config, options) {
   const resolved = resolveHostProfile(config, options.hostAlias ?? localBinding?.hostAlias ?? null);
   const subname = options.subname ?? localBinding?.subname;
   if (!subname) {
-    throw commandError(
+    throw commandError2(
       "No Hosted Capsule binding found.",
       "Run `sporades host register <subname> --host <alias>` or pass `--host <alias> --subname <subname>`."
     );
@@ -155477,11 +155578,11 @@ async function readHostConfig() {
     const parsed = JSON.parse(await readFile14(hostConfigPath(), "utf8"));
     return normaliseHostConfig(parsed);
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
+    if (errorDetails2(error).code === "ENOENT") {
       return { profiles: {}, currentHostAlias: null };
     }
     if (error instanceof SyntaxError) {
-      throw commandError(
+      throw commandError2(
         "Invalid Host profile configuration.",
         "Fix or delete the Sporades Host profile config, then retry the command."
       );
@@ -155491,13 +155592,13 @@ async function readHostConfig() {
 }
 async function writeHostConfig(config) {
   const filePath = hostConfigPath();
-  await mkdir11(path21.dirname(filePath), { recursive: true });
+  await mkdir11(path22.dirname(filePath), { recursive: true });
   await writeFile10(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}
 `);
 }
 function hostConfigPath() {
-  const configDir = process.env.SPORADES_CONFIG_DIR ?? path21.join(process.env.XDG_CONFIG_HOME ?? path21.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
-  return path21.join(configDir, "hosts.json");
+  const configDir = process.env.SPORADES_CONFIG_DIR ?? path22.join(process.env.XDG_CONFIG_HOME ?? path22.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
+  return path22.join(configDir, "hosts.json");
 }
 function normaliseHostConfig(value = {}) {
   return {
@@ -155526,7 +155627,7 @@ function normaliseHostTls2(value = {}) {
 function resolveHostProfile(config, explicitAlias) {
   const alias = explicitAlias ?? config.currentHostAlias;
   if (!alias) {
-    throw commandError(
+    throw commandError2(
       "No current Host profile selected.",
       "Run `sporades host use <alias>` or pass `--host <alias>`."
     );
@@ -155536,7 +155637,7 @@ function resolveHostProfile(config, explicitAlias) {
 function requireHostProfile(config, alias) {
   const profile = config.profiles[alias];
   if (!profile) {
-    throw commandError(
+    throw commandError2(
       `Unknown Host profile alias: ${alias}`,
       `Add it with \`sporades host add ${alias} --server <ssh-target> --domain <hosted-domain>\`.`
     );
@@ -155632,10 +155733,10 @@ async function prepareHostPushSealedServerEnv(options) {
   const paths = sealedServerEnvPaths(options.projectDir);
   const envelope = await readSealedServerEnv(paths);
   if (!envelope) {
-    const legacyEnvFile = await readServerEnvFile(path21.join(options.projectDir, ".env.sporades.server"));
+    const legacyEnvFile = await readServerEnvFile(path22.join(options.projectDir, ".env.sporades.server"));
     const legacyValues = legacyEnvFile.exists ? parseServerEnv(legacyEnvFile) : {};
     if (Object.keys(legacyValues).length > 0) {
-      throw commandError(
+      throw commandError2(
         "Hosted Capsule push requires Sealed Server env.",
         "Run `sporades env import --file .env.sporades.server --json` explicitly, then retry `sporades host push`.",
         {
@@ -155649,7 +155750,7 @@ async function prepareHostPushSealedServerEnv(options) {
     return null;
   }
   const keyPair = await readKeyPair(paths);
-  const legacyServerEnvFilePresent = (await readServerEnvFile(path21.join(options.projectDir, ".env.sporades.server"))).exists;
+  const legacyServerEnvFilePresent = (await readServerEnvFile(path22.join(options.projectDir, ".env.sporades.server"))).exists;
   if (!keyPair?.privateKey) {
     throw missingLocalSealedServerEnvSourceError({
       localPrivateKeyConfigured: false,
@@ -155679,7 +155780,7 @@ async function prepareHostPushSealedServerEnv(options) {
   };
 }
 function missingLocalSealedServerEnvSourceError(details = {}) {
-  return commandError(
+  return commandError2(
     "Local Sealed Server env source values are unavailable.",
     "Restore the local Sealed Server env private key, or run `sporades env import --file .env.sporades.server --json` explicitly from source-of-truth values, then retry. Legacy Server env files are imported only by that explicit command.",
     {
@@ -155699,12 +155800,12 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
     projectDir
   });
   if (!result.ok) {
-    throw commandError(result.error.message, result.error.hint);
+    throw commandError2(result.error.message, result.error.hint);
   }
   const capsule = (result.data?.capsules ?? []).find((entry) => entry?.subname === subname && entry?.domain === profile.domain);
   const sealedServerEnv = capsule?.sealedServerEnv;
   if (!sealedServerEnv?.publicKey || !sealedServerEnv?.publicKeyFingerprint) {
-    throw commandError(
+    throw commandError2(
       "Hosted Capsule Sealed Server env public key is unavailable.",
       `Run \`sporades host register ${subname} --host ${alias} --json\` or inspect \`sporades host list --host ${alias} --json\`, then retry.`,
       {
@@ -155732,11 +155833,11 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
 }
 async function createHostReleaseArchive(options) {
   const releaseId = createHostReleaseId();
-  const hostPushDir = path21.join(options.projectDir, ".sporades", "host-push");
+  const hostPushDir = path22.join(options.projectDir, ".sporades", "host-push");
   await mkdir11(hostPushDir, { recursive: true, mode: 448 });
   await chmod5(hostPushDir, 448);
-  const localArchive = path21.join(hostPushDir, `${releaseId}.tar.gz`);
-  const packageDir = path21.join(hostPushDir, `${releaseId}-files`);
+  const localArchive = path22.join(hostPushDir, `${releaseId}.tar.gz`);
+  const packageDir = path22.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin2(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
   const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
   const publicFiles = await listHostedPublicFiles(options.bundle.staticFiles.publicDir);
@@ -155759,32 +155860,32 @@ async function createHostReleaseArchive(options) {
   });
   await rm10(packageDir, { recursive: true, force: true });
   await mkdir11(packageDir, { mode: 448 });
-  await mkdir11(path21.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true, mode: 448 });
-  await mkdir11(path21.join(packageDir, ".sporades", "ssh"), { recursive: true, mode: 448 });
-  await cp2(options.bundle.staticFiles.publicDir, path21.join(packageDir, "public"), { recursive: true, errorOnExist: true });
+  await mkdir11(path22.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true, mode: 448 });
+  await mkdir11(path22.join(packageDir, ".sporades", "ssh"), { recursive: true, mode: 448 });
+  await cp2(options.bundle.staticFiles.publicDir, path22.join(packageDir, "public"), { recursive: true, errorOnExist: true });
   for (const file of options.bundle.deployFiles) {
-    const destination = path21.join(packageDir, file.path);
-    await mkdir11(path21.dirname(destination), { recursive: true, mode: 448 });
+    const destination = path22.join(packageDir, file.path);
+    await mkdir11(path22.dirname(destination), { recursive: true, mode: 448 });
     await writeFile10(destination, file.contents, { mode: 384 });
   }
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
-    writeFile10(path21.join(packageDir, "server.mjs"), options.bundle.serverBundle),
-    writeFile10(path21.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
+    writeFile10(path22.join(packageDir, "server.mjs"), options.bundle.serverBundle),
+    writeFile10(path22.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
 `)
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile10(path21.join(packageDir, ".env.sporades.server"), await readFile14(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile10(path22.join(packageDir, ".env.sporades.server"), await readFile14(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
     await writeFile10(
-      path21.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+      path22.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
       `${JSON.stringify(sealedServerEnv.envelope, null, 2)}
 `
     );
   }
   if (options.sshAccess?.enabled) {
-    const authorizedKeysPath = path21.join(packageDir, ".sporades", "ssh", "authorized_keys");
+    const authorizedKeysPath = path22.join(packageDir, ".sporades", "ssh", "authorized_keys");
     await writeFile10(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
 `, { mode: 420 });
     await chmod5(authorizedKeysPath, 420);
@@ -155812,7 +155913,7 @@ async function createHostReleaseArchive(options) {
     env: { ...process.env, COPYFILE_DISABLE: "1" }
   });
   if (result.error || result.status !== 0) {
-    throw commandError(
+    throw commandError2(
       "Failed to package Hosted Capsule release.",
       "Check that tar is available and the Capsule runtime files are readable, then retry `sporades host push`."
     );
@@ -155828,10 +155929,10 @@ async function createHostReleaseArchive(options) {
 async function listHostedPublicFiles(root, directory = root) {
   const files = [];
   for (const entry of await readdir6(directory, { withFileTypes: true })) {
-    const entryPath = path21.join(directory, entry.name);
+    const entryPath = path22.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await listHostedPublicFiles(root, entryPath));
-    else if (entry.isFile()) files.push(`public/${path21.relative(root, entryPath).split(path21.sep).join("/")}`);
-    else throw commandError("Invalid Hosted Capsule public tree.", "Rebuild a normalized public tree containing regular files only.");
+    else if (entry.isFile()) files.push(`public/${path22.relative(root, entryPath).split(path22.sep).join("/")}`);
+    else throw commandError2("Invalid Hosted Capsule public tree.", "Rebuild a normalized public tree containing regular files only.");
   }
   return files.sort();
 }
@@ -155913,7 +156014,7 @@ function uploadHostReleaseArchive(options) {
     encoding: "utf8"
   });
   if (result.error || result.status !== 0) {
-    throw commandError(
+    throw commandError2(
       "Failed to upload Hosted Capsule release archive.",
       "Check the Host profile SSH target, network connectivity, SSH key access, and remote incoming directory."
     );
@@ -156043,7 +156144,7 @@ async function checkHostServerHealth(alias, profile) {
       signal: AbortSignal.timeout(1e4)
     });
   } catch (error) {
-    const failure = classifyHostHealthFetchFailure(errorDetails(error));
+    const failure = classifyHostHealthFetchFailure(errorDetails2(error));
     if (failure === "unreachable") {
       return {
         ok: false,
@@ -156121,12 +156222,12 @@ function remoteHostHelperPath(profile) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
 }
 function localHostHelperPath() {
-  return path21.join(path21.dirname(fileURLToPath3(import.meta.url)), "sporades-host-helper.js");
+  return path22.join(path22.dirname(fileURLToPath3(import.meta.url)), "sporades-host-helper.js");
 }
 function upgradeHostHelper(options) {
   const localHelper = localHostHelperPath();
   const remoteHelper = remoteHostHelperPath(options.profile);
-  const remoteBin = path21.posix.dirname(remoteHelper);
+  const remoteBin = path22.posix.dirname(remoteHelper);
   let helperChecksum;
   try {
     if (!statSync2(localHelper).isFile()) {
@@ -156134,7 +156235,7 @@ function upgradeHostHelper(options) {
     }
     helperChecksum = createHash18("sha256").update(readFileSync4(localHelper)).digest("hex");
   } catch {
-    throw commandError(
+    throw commandError2(
       "Local Host helper file was not found.",
       "Run `npm run build` or reinstall Sporades, then retry `sporades host upgrade --host <alias>`."
     );
@@ -156145,7 +156246,7 @@ function upgradeHostHelper(options) {
     encoding: "utf8"
   });
   if (prepare.error || prepare.status !== 0) {
-    throw commandError(
+    throw commandError2(
       "Failed to prepare Host helper directory.",
       "Check the Host profile SSH target, network connectivity, SSH key access, and remote root permissions."
     );
@@ -156155,7 +156256,7 @@ function upgradeHostHelper(options) {
     encoding: "utf8"
   });
   if (upload.error || upload.status !== 0) {
-    throw commandError(
+    throw commandError2(
       "Failed to upload Host helper.",
       "Check the Host profile SSH target, network connectivity, SSH key access, and remote root permissions."
     );
@@ -156169,7 +156270,7 @@ function upgradeHostHelper(options) {
     encoding: "utf8"
   });
   if (chmod6.error || chmod6.status !== 0) {
-    throw commandError(
+    throw commandError2(
       "Failed to activate the Host helper upgrade.",
       "Check the Host profile SSH target, SSH key access, and remote root permissions."
     );
@@ -156194,10 +156295,10 @@ async function writeGithubAutodeployWorkflow(options) {
     subname: options.subname,
     branch: options.branch
   });
-  const outputPath = path21.resolve(options.projectDir, options.file);
-  const relativeFile = path21.relative(options.projectDir, outputPath) || options.file;
-  if (relativeFile === ".." || relativeFile.startsWith(`..${path21.sep}`) || path21.isAbsolute(relativeFile)) {
-    throw commandError(
+  const outputPath = path22.resolve(options.projectDir, options.file);
+  const relativeFile = path22.relative(options.projectDir, outputPath) || options.file;
+  if (relativeFile === ".." || relativeFile.startsWith(`..${path22.sep}`) || path22.isAbsolute(relativeFile)) {
+    throw commandError2(
       "Invalid GitHub workflow file path.",
       "Pass a relative path inside the project, such as `.github/workflows/sporades-autodeploy.yml`."
     );
@@ -156225,17 +156326,17 @@ async function writeGithubAutodeployWorkflow(options) {
   try {
     await readFile14(outputPath, "utf8");
     if (!options.force) {
-      throw commandError(
+      throw commandError2(
         "GitHub Actions workflow already exists.",
         "Pass `--force` to overwrite it, or choose another path with `--file <path>`."
       );
     }
   } catch (error) {
-    if (errorDetails(error).code !== "ENOENT") {
+    if (errorDetails2(error).code !== "ENOENT") {
       throw error;
     }
   }
-  await mkdir11(path21.dirname(outputPath), { recursive: true });
+  await mkdir11(path22.dirname(outputPath), { recursive: true });
   await writeFile10(outputPath, workflow);
   return {
     ok: true,
@@ -156249,7 +156350,7 @@ async function writeGithubAutodeployWorkflow(options) {
   };
 }
 function normalisePathForOutput(filePath) {
-  return filePath.split(path21.sep).join("/");
+  return filePath.split(path22.sep).join("/");
 }
 function posixJoin2(...segments) {
   return segments.map((segment, index) => {
@@ -156307,7 +156408,7 @@ function parseSporadesJsonEnvelope(raw) {
 }
 function validateHostAlias(alias) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(alias)) {
-    throw commandError(
+    throw commandError2(
       "Invalid Host profile alias.",
       "Use letters, numbers, dots, underscores, or dashes, starting with a letter or number."
     );
@@ -156317,7 +156418,7 @@ function validateHostedDomain(domain) {
   const labels = domain.split(".");
   const valid = domain.length <= 253 && labels.length >= 2 && labels.every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label));
   if (!valid) {
-    throw commandError(
+    throw commandError2(
       "Invalid Hosted domain.",
       "Pass a DNS domain such as `example.com` without a scheme, path, or wildcard."
     );
@@ -156327,12 +156428,12 @@ function validateHostRemoteRoot(remoteRoot) {
   const segments = remoteRoot.split("/").filter(Boolean);
   const valid = remoteRoot.startsWith("/") && remoteRoot !== "/" && !remoteRoot.includes("\0") && !remoteRoot.includes("\n") && segments.every((segment) => segment !== "." && segment !== ".." && /^[A-Za-z0-9._-]+$/.test(segment));
   if (!valid) {
-    throw commandError("Invalid Host remote root.", "Pass an absolute POSIX path such as `/srv/sporades`.");
+    throw commandError2("Invalid Host remote root.", "Pass an absolute POSIX path such as `/srv/sporades`.");
   }
 }
 function validateHostTlsMode(tlsMode) {
   if (!HOST_TLS_MODES2.has(tlsMode)) {
-    throw commandError(
+    throw commandError2(
       "Invalid Host TLS mode.",
       "Use `--tls automatic` for Caddy-managed certificates or `--tls cloudflare-origin` for preinstalled Cloudflare origin certificates."
     );
@@ -156340,7 +156441,7 @@ function validateHostTlsMode(tlsMode) {
 }
 function validateHostReleaseId(releaseId) {
   if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(releaseId)) {
-    throw commandError(
+    throw commandError2(
       "Invalid Hosted Capsule release ID.",
       "Use a recorded release ID from `sporades host releases <subname> --json`."
     );
@@ -156348,23 +156449,23 @@ function validateHostReleaseId(releaseId) {
 }
 function validateGithubWorkflowBranch(branch) {
   if (!branch || branch.length > 255 || branch.startsWith("-") || branch.includes("..") || branch.includes("\\") || /[\0\s~^:?*[\\\]]/.test(branch)) {
-    throw commandError("Invalid GitHub workflow branch.", "Pass a branch name such as `main` or `release/stable`.");
+    throw commandError2("Invalid GitHub workflow branch.", "Pass a branch name such as `main` or `release/stable`.");
   }
 }
 function validateGithubWorkflowFile(filePath) {
-  if (!filePath || path21.isAbsolute(filePath) || filePath.includes("\0")) {
-    throw commandError("Invalid GitHub workflow file path.", "Pass a relative path such as `.github/workflows/sporades-autodeploy.yml`.");
+  if (!filePath || path22.isAbsolute(filePath) || filePath.includes("\0")) {
+    throw commandError2("Invalid GitHub workflow file path.", "Pass a relative path such as `.github/workflows/sporades-autodeploy.yml`.");
   }
 }
 function validateCapsuleSubname(subname) {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(subname)) {
-    throw commandError(
+    throw commandError2(
       "Invalid Capsule subname.",
       "Use a lowercase DNS-safe label such as `notes` or `team-notes`."
     );
   }
   if (RESERVED_CAPSULE_SUBNAMES.has(subname)) {
-    throw commandError(
+    throw commandError2(
       "Reserved Capsule subname.",
       "Choose a Capsule subname other than www, api, admin, root, or host."
     );
@@ -156372,7 +156473,7 @@ function validateCapsuleSubname(subname) {
 }
 function validateRemoteHelperAction(action) {
   if (!/^[a-z][a-z0-9.-]*$/.test(action)) {
-    throw commandError(
+    throw commandError2(
       "Invalid remote Host helper action.",
       "Use a lowercase action name such as `contract.echo`."
     );
@@ -156381,20 +156482,20 @@ function validateRemoteHelperAction(action) {
 function run(command, args, cwd, message, hint) {
   const result = spawnSync4(command, args, { cwd, stdio: "inherit" });
   if (result.status !== 0) {
-    throw commandError(message, hint);
+    throw commandError2(message, hint);
   }
 }
 function runDocker(args, cwd, message, hint) {
   const result = spawnSync4("docker", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
-    throw commandError(message, hint);
+    throw commandError2(message, hint);
   }
   return result.stdout.trim();
 }
 async function printLocalCapsuleServiceStatus(options, surface) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = localCapsuleServicesFromConfig2(config, options.projectDir);
-  const binding = surface === "deploy" ? await readContainerBinding(path21.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
+  const binding = surface === "deploy" ? await readContainerBinding(path22.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
   const data2 = {
     ...binding?.containerId ? {
       container: {
@@ -156421,7 +156522,7 @@ function localCapsuleServicesFromConfig2(config, projectDir) {
   }
   validateCapsuleServicesConfig(config.services);
   return {
-    path: path21.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path22.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
@@ -156430,10 +156531,10 @@ function hasDeclaredLocalCapsuleServices(config) {
   return Boolean(config.services?.database || config.services?.storage);
 }
 async function requireLocalContainerBinding(options, action) {
-  const bindingPath = path21.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path22.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
-    throw commandError(
+    throw commandError2(
       "No local Container session binding found.",
       `Run \`sporades deploy\` before \`sporades deploy ${action}\`.`
     );
@@ -156464,33 +156565,33 @@ async function prepareLocalPreservedFiles(options, binding, hint = "Restore a re
     try {
       await preparePreservedFileStorage(preservedRoot, relative);
     } catch (error) {
-      throw commandError("Preserved deploy.files storage is not usable.", hint, { path: relative, cause: errorDetails(error).message });
+      throw commandError2("Preserved deploy.files storage is not usable.", hint, { path: relative, cause: errorDetails2(error).message });
     }
   }
 }
 function localPreservedFilesRoot(options) {
-  return path21.join(options.projectDir, ".sporades", "preserved-files");
+  return path22.join(options.projectDir, ".sporades", "preserved-files");
 }
 async function assertNoLocalDeployFileAttempt(options, action) {
   try {
     await assertNoPreservedFileAttempt(localPreservedFilesRoot(options));
   } catch (error) {
-    throw commandError(
+    throw commandError2(
       `Interrupted deploy.files attempt requires recovery before \`sporades deploy ${action}\`.`,
       "Run `sporades deploy reconcile` to settle the interrupted deployment, then retry.",
-      { journal: attemptJournalPath(localPreservedFilesRoot(options)), cause: errorDetails(error).message }
+      { journal: attemptJournalPath(localPreservedFilesRoot(options)), cause: errorDetails2(error).message }
     );
   }
 }
 async function reconcileLocalContainerSession(options) {
-  const runtimeDir = path21.join(options.projectDir, ".sporades");
+  const runtimeDir = path22.join(options.projectDir, ".sporades");
   const preservedRoot = localPreservedFilesRoot(options);
   const journal = attemptJournalPath(preservedRoot);
   const attempt = await readPreservedFileAttempt(journal);
   if (!attempt) {
     return { status: "clean", journal, committed: null, actions: [] };
   }
-  const bindingPath = path21.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path22.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   const candidateCaStagePath = attempt.records.find((record) => record.telemetryCaStagePath)?.telemetryCaStagePath;
   const candidate = attempt.records.find((record) => record.candidate)?.candidate;
@@ -156593,29 +156694,29 @@ async function restartLocalContainerSession(options) {
 }
 async function removeLocalContainerSession(options) {
   await assertNoLocalDeployFileAttempt(options, "remove");
-  const bindingPath = path21.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path22.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     if (options.missingOk) {
       return null;
     }
-    throw commandError(
+    throw commandError2(
       "No local Container session binding found.",
       "Run `sporades deploy` before `sporades deploy remove`."
     );
   }
-  const buildDir = path21.join(options.projectDir, ".sporades", "build");
+  const buildDir = path22.join(options.projectDir, ".sporades", "build");
   const currentConsumer = await readPublicTreeConsumer(buildDir, "container");
   const bindingExpectation = binding.clientRelease?.consumerToken ? { token: binding.clientRelease.consumerToken, identity: binding.containerId } : null;
   let claimedConsumer = null;
   if (currentConsumer || bindingExpectation) {
     if (!currentConsumer || !bindingExpectation) {
-      throw commandError("Container consumer ownership changed.", "Inspect the current binding and retry from its owning Container lifecycle.");
+      throw commandError2("Container consumer ownership changed.", "Inspect the current binding and retry from its owning Container lifecycle.");
     }
     claimedConsumer = await writePublicTreeConsumer(
       buildDir,
       "container",
-      path21.join(buildDir, ".public-trees", currentConsumer.tree),
+      path22.join(buildDir, ".public-trees", currentConsumer.tree),
       currentConsumer.identity,
       bindingExpectation
     );
@@ -156629,9 +156730,9 @@ async function removeLocalContainerSession(options) {
       true
     );
     for (const snapshot of [...binding.pendingDeployFileCleanup ?? [], binding.deployFilesRoot]) {
-      await removeDeployFileSnapshot(path21.join(options.projectDir, ".sporades"), snapshot);
+      await removeDeployFileSnapshot(path22.join(options.projectDir, ".sporades"), snapshot);
     }
-    await removeContainerTelemetryCaStage(path21.join(options.projectDir, ".sporades"), binding.telemetryCaStagePath);
+    await removeContainerTelemetryCaStage(path22.join(options.projectDir, ".sporades"), binding.telemetryCaStagePath);
   } catch (error) {
     if (claimedConsumer && currentConsumer) {
       await restorePublicTreeConsumer(
@@ -156746,7 +156847,7 @@ async function localCapsuleServicesStatus(capsuleServices, projectDir) {
       },
       volume: {
         type: "bind",
-        path: path21.join(CAPSULE_SERVICES_STATE_DIR, name2),
+        path: path22.join(CAPSULE_SERVICES_STATE_DIR, name2),
         exists: await pathExists2(service.stateDir)
       },
       containerName: service.name,
@@ -156800,7 +156901,7 @@ async function pathExists2(targetPath) {
     await lstat13(targetPath);
     return true;
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
+    if (errorDetails2(error).code === "ENOENT") {
       return false;
     }
     throw error;
@@ -156816,7 +156917,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name2,
       status: "starting",
       engine: service.engine,
-      statePath: path21.join(CAPSULE_SERVICES_STATE_DIR, name2)
+      statePath: path22.join(CAPSULE_SERVICES_STATE_DIR, name2)
     });
   }
   try {
@@ -156828,7 +156929,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
     );
   } catch (error) {
     if (options.connection === "container") {
-      const details = errorDetails(error);
+      const details = errorDetails2(error);
       details.diagnostics = {
         ...details.diagnostics ?? {},
         services: capsuleServicesJsonSummary(capsuleServices, "failed")
@@ -156846,7 +156947,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
     }
   } catch (error) {
     if (options.connection === "container") {
-      const details = errorDetails(error);
+      const details = errorDetails2(error);
       details.diagnostics = {
         ...details.diagnostics ?? {},
         services: capsuleServicesJsonSummary(capsuleServices, "failed")
@@ -156867,7 +156968,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name2,
       status: "ready",
       engine: service.engine,
-      statePath: path21.join(CAPSULE_SERVICES_STATE_DIR, name2),
+      statePath: path22.join(CAPSULE_SERVICES_STATE_DIR, name2),
       host: connection.host,
       port: connection.port
     });
@@ -156899,7 +157000,7 @@ function capsuleServicesLocalEnv(capsuleServices, connections) {
     const service = capsuleServices.services.database;
     const connection = connections.database;
     if (!connection?.url) {
-      throw commandError("Capsule database service connection is unavailable.", "Restart `sporades dev` so the service can publish a local URL.");
+      throw commandError2("Capsule database service connection is unavailable.", "Restart `sporades dev` so the service can publish a local URL.");
     }
     env.SPORADES_SERVICE_DATABASE_ENGINE = service.engine;
     env.SPORADES_SERVICE_DATABASE_URL = connection.url;
@@ -156908,7 +157009,7 @@ function capsuleServicesLocalEnv(capsuleServices, connections) {
     const service = capsuleServices.services.storage;
     const connection = connections.storage;
     if (!connection?.url) {
-      throw commandError("Capsule storage service connection is unavailable.", "Restart `sporades dev` so the service can publish a local URL.");
+      throw commandError2("Capsule storage service connection is unavailable.", "Restart `sporades dev` so the service can publish a local URL.");
     }
     env.SPORADES_SERVICE_STORAGE_ENGINE = service.engine;
     env.SPORADES_SERVICE_STORAGE_ENDPOINT = connection.url;
@@ -156929,7 +157030,7 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
         engine: service.engine,
         network: capsuleServices.networks.services,
         containerName: service.name,
-        statePath: path21.join(CAPSULE_SERVICES_STATE_DIR, name2)
+        statePath: path22.join(CAPSULE_SERVICES_STATE_DIR, name2)
       }
     ])
   );
@@ -156972,7 +157073,7 @@ async function waitForCapsuleService(capsuleServices, projectDir, name2, service
     status: lastError ?? lastStatus ?? { state: "unknown", health: null },
     probe: lastProbe
   };
-  const error = commandError(
+  const error = commandError2(
     "Capsule storage service did not become ready.",
     "Run `docker compose -f .sporades/compose/capsule-services.compose.yml ps` and inspect the service logs."
   );
@@ -157004,7 +157105,7 @@ async function waitForHealthyCapsuleService(capsuleServices, projectDir, name2, 
     status: lastError ?? lastStatus ?? { state: "unknown", health: null },
     probe: null
   };
-  const error = commandError(
+  const error = commandError2(
     `Capsule ${service.kind} service did not become ready.`,
     "Run `docker compose -f .sporades/compose/capsule-services.compose.yml ps` and inspect the service logs."
   );
@@ -157044,7 +157145,7 @@ async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
     status: lastError ?? lastStatus ?? { state: "unknown", health: null },
     probe: lastProbe
   };
-  const error = commandError(
+  const error = commandError2(
     "Capsule database service did not become ready.",
     "Run `docker compose -f .sporades/compose/capsule-services.compose.yml ps` and inspect the service logs."
   );
@@ -157070,7 +157171,7 @@ async function probeCapsuleDatabaseService(capsuleServices, url) {
       statusCode: response.status
     };
   } catch (error) {
-    const details = errorDetails(error);
+    const details = errorDetails2(error);
     return {
       ok: false,
       message: details.name === "AbortError" ? "probe timed out" : details.message
@@ -157089,7 +157190,7 @@ async function probeCapsuleStorageService(url) {
       statusCode: response.status
     };
   } catch (error) {
-    const details = errorDetails(error);
+    const details = errorDetails2(error);
     return {
       ok: false,
       message: details.name === "AbortError" ? "probe timed out" : details.message
@@ -157109,7 +157210,7 @@ async function probePostgresCapsuleDatabaseService(url) {
       });
     }
   } catch (error) {
-    const details = errorDetails(error);
+    const details = errorDetails2(error);
     return {
       ok: false,
       message: details.message
@@ -157147,7 +157248,7 @@ function capsuleServicePort(capsuleServices, projectDir, serviceName, targetPort
   );
   const match = output.match(/:(\d+)\s*$/);
   if (!match) {
-    throw commandError(
+    throw commandError2(
       `Capsule ${serviceKind} service port was not published.`,
       "Restart Docker and rerun `sporades dev` so Compose can publish the local service port."
     );
@@ -157174,14 +157275,14 @@ function ensureLocalBaseImage(cwd) {
   if (pull.status === 0) {
     return;
   }
-  const dockerfilePath = path21.join(CLI_ROOT, "Dockerfile.base");
+  const dockerfilePath = path22.join(CLI_ROOT, "Dockerfile.base");
   try {
     const stats = statSync2(dockerfilePath);
     if (!stats.isFile()) {
       throw new Error("Dockerfile.base is not a file.");
     }
   } catch {
-    throw commandError(
+    throw commandError2(
       "Unable to prepare the Sporades Base image.",
       `Check Docker can pull ${SPORADES_BASE_IMAGE.image}, then retry \`sporades deploy\`.`
     );
@@ -157191,7 +157292,7 @@ function ensureLocalBaseImage(cwd) {
     encoding: "utf8"
   });
   if (build2.status !== 0) {
-    throw commandError(
+    throw commandError2(
       "Unable to prepare the Sporades Base image.",
       "Check Docker is running and can build the local Sporades Base image, then retry `sporades deploy`."
     );
@@ -157205,7 +157306,7 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
   if (force && isMissingDockerContainerError(result)) {
     return "";
   }
-  throw commandError(message, hint);
+  throw commandError2(message, hint);
 }
 async function replaceContainerBinding(bindingPath, binding) {
   const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes10(8).toString("hex")}.tmp`;
@@ -157223,17 +157324,17 @@ function verifyContainerReplacementOwnership(binding, consumer, expectedContaine
     binding && consumer && typeof binding.containerId === "string" && binding.containerId.length > 0 && binding.containerName === expectedContainerName && typeof binding.clientRelease?.consumerToken === "string" && binding.clientRelease.consumerToken === consumer.token && binding.clientRelease.publicTree === consumer.tree && binding.containerId === consumer.identity
   );
   if (!owned) {
-    throw commandError(
+    throw commandError2(
       "Container replacement ownership could not be verified.",
       "Preserve the current Container state and reconcile its binding and public-tree consumer before retrying deployment."
     );
   }
 }
 async function acquireContainerLifecycleLock(projectDir) {
-  const lockDir = path21.join(projectDir, ".sporades", ".container-lifecycle-lock");
-  await mkdir11(path21.dirname(lockDir), { recursive: true });
+  const lockDir = path22.join(projectDir, ".sporades", ".container-lifecycle-lock");
+  await mkdir11(path22.dirname(lockDir), { recursive: true });
   const token = randomBytes10(16).toString("hex");
-  const ownerPath = path21.join(lockDir, "owner.json");
+  const ownerPath = path22.join(lockDir, "owner.json");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
       await mkdir11(lockDir);
@@ -157241,7 +157342,7 @@ async function acquireContainerLifecycleLock(projectDir) {
 `);
       return async () => {
         const owner = await readFile14(ownerPath, "utf8").then(JSON.parse).catch(() => null);
-        if (owner?.token !== token) throw commandError("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
+        if (owner?.token !== token) throw commandError2("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
         await rm10(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
@@ -157265,7 +157366,7 @@ async function acquireContainerLifecycleLock(projectDir) {
       await new Promise((resolve2) => setTimeout(resolve2, 10));
     }
   }
-  throw commandError("Container lifecycle is busy.", "Retry after the other Container operation completes.");
+  throw commandError2("Container lifecycle is busy.", "Retry after the other Container operation completes.");
 }
 function processIsLiveForContainerLock(pid) {
   try {
@@ -157277,7 +157378,7 @@ function processIsLiveForContainerLock(pid) {
 }
 function containerReplacementFault(event) {
   if (process.env.SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT === event) {
-    throw commandError(`Injected Container replacement ${event} failure.`, "Retry without the test fault.");
+    throw commandError2(`Injected Container replacement ${event} failure.`, "Retry without the test fault.");
   }
 }
 function formatMount(mount) {
@@ -157288,13 +157389,13 @@ async function prepareRuntimeDataPath(targetPath) {
   try {
     stats = await lstat13(targetPath);
   } catch (error) {
-    if (errorDetails(error).code === "ENOENT") {
+    if (errorDetails2(error).code === "ENOENT") {
       return;
     }
     throw error;
   }
   if (stats.isSymbolicLink()) {
-    throw commandError(
+    throw commandError2(
       "Container session data path contains a symbolic link.",
       `Remove the symbolic link at ${targetPath}, then retry \`sporades deploy\`.`
     );
@@ -157303,7 +157404,7 @@ async function prepareRuntimeDataPath(targetPath) {
     await chmod5(targetPath, 448);
     const entries = await readdir6(targetPath, { withFileTypes: true });
     for (const entry of entries) {
-      await prepareRuntimeDataPath(path21.join(targetPath, entry.name));
+      await prepareRuntimeDataPath(path22.join(targetPath, entry.name));
     }
     return;
   }

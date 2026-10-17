@@ -4619,6 +4619,7 @@ process.exit(0);
 
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.env = { required: ["MISSING_ENV"] };
     config.deploy.files = [{ path: "config/settings.json", update: "preserve" }, { path: "defaults.json" }];
     await writeFile(configPath, JSON.stringify(config));
     await mkdir(path.join(projectDir, "config"));
@@ -4651,7 +4652,12 @@ process.exit(0);
     const bind = await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env });
     assert.equal(bind.code, 0, bind.stderr);
 
-    const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
+    const denied = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
+    assert.equal(denied.code, 1);
+    assert.match(denied.stdout, /Missing required Server env: MISSING_ENV/);
+    await assert.rejects(readFile(fakeSsh.logPath), { code: "ENOENT" });
+    await assert.rejects(readFile(fakeScp.logPath), { code: "ENOENT" });
+    const push = await runCli(["host", "push", "--allow-missing-env", "--json"], { cwd: projectDir, env });
     assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);
     assert.deepEqual(await readFile(legacyBundle.paths.serverBundle), canonicalServer);
 
@@ -5116,6 +5122,10 @@ process.exit(0);
     );
     assert.equal((await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env })).code, 0);
     assert.equal((await runCli(["env", "import", "--json"], { cwd: projectDir, env })).code, 0);
+    const requiredConfigPath = path.join(projectDir, "sporades.json");
+    const requiredConfig = JSON.parse(await readFile(requiredConfigPath, "utf8"));
+    requiredConfig.env = { required: ["SECRET_TOKEN"] };
+    await writeFile(requiredConfigPath, JSON.stringify(requiredConfig));
 
     const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
     assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);

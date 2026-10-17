@@ -1,3 +1,4 @@
+import { missingRequiredServerEnv } from "./required-server-env.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { createCapsuleRateLimiter, resolveRegistrationThrottle } from "./capsule-rate-limit.js";
 import { CLIENT_ADDRESS_TOKEN_HEADER, trustedClientAddress } from "./client-address.js";
@@ -577,6 +578,16 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         validateEndpointResponseDeclarations(capsuleDefinition);
     }
     validateLogConfig(config);
+    if (!options.runtimeActionOnly) {
+        const missingKeys = missingRequiredServerEnv(config, serverEnv);
+        if (missingKeys.length > 0) {
+            // Before database/transport initialization, stderr is the only available boot sink.
+            // This bounded diagnostic contains validated key names, never env values.
+            process.stderr.write(JSON.stringify({ schema: "sporades.env.v1", event: "runtime.env.missing", level: "error", missingKeys }) + "\n");
+            if (config.env?.failClosed === true)
+                throw commandError("Required Server env is missing.", "Set the named values with sporades env set or env import before starting the Capsule.", "MISSING_REQUIRED_SERVER_ENV");
+        }
+    }
     const registrationThrottle = resolveRegistrationThrottle(config.auth);
     const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
     const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);

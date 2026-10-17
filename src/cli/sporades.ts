@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { missingRequiredServerEnv, requiredServerEnvKeys } from "../required-server-env.js";
+import { readRequiredServerEnvValues } from "./required-server-env.js";
 import { validateQueryCredential } from "./telemetry-diagnostics.js";
 import { openAdmissionPolicy, type AdmissionHealth, type AdmissionReloadEvent, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
 import { createAdmissionEvidence } from "../admission-evidence.js";
@@ -1276,6 +1278,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   let lines = null;
   let restart = false;
   let verify = false;
+  let allowMissingEnv = false;
   let fallbackToPreviousRelease = false;
   let branch = "main";
   let file = DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW;
@@ -1343,6 +1346,11 @@ function parseHostArgs(args: string[]): LooseRecord {
       case "--verify":
         verify = true;
         restart = true;
+        break;
+
+      case "--allow-missing-env":
+        if (subcommand !== "push") throw commandError("--allow-missing-env is only supported by host push.", "Use sporades host push --allow-missing-env.");
+        allowMissingEnv = true;
         break;
 
       case "--fallback-to-previous-release":
@@ -1642,7 +1650,7 @@ function parseHostArgs(args: string[]): LooseRecord {
           "Use `sporades host push --verify --fallback-to-previous-release`.",
         );
       }
-      return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, json, projectDir: process.cwd() };
+      return { subcommand, hostAlias, subname, restart, verify, allowMissingEnv, fallbackToPreviousRelease, json, projectDir: process.cwd() };
 
     case "github": {
       const [area, action, ...extra] = positional;
@@ -4183,9 +4191,17 @@ async function manageHost(options: LooseRecord) {
     }
 
     case "push": {
+      const projectConfig = await readProjectConfig(options.projectDir);
+      if (!options.allowMissingEnv && requiredServerEnvKeys(projectConfig).length > 0) {
+        const missingKeys = missingRequiredServerEnv(projectConfig, await readRequiredServerEnvValues(options.projectDir, true));
+        if (missingKeys.length > 0) throw commandError(
+          `Missing required Server env: ${missingKeys.join(", ")}.`,
+          "Set the named values with sporades env set or env import, or explicitly push with --allow-missing-env.",
+          { missingKeys },
+        );
+      }
       const config = await readHostConfig();
       const target = await resolveHostPushTarget(config, options);
-      const projectConfig = await readProjectConfig(options.projectDir);
       const preserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
       const sshAccess = await resolveHostedCapsuleSshAccessForAudit(projectConfig, options.projectDir);
       const hostSealedServerEnv = await prepareHostPushSealedServerEnv({

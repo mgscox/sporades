@@ -155,6 +155,7 @@ test("the walker guards' collector sees both forms a top-level function can take
 // show the census a function somebody had registered, and reading declarations shows it every
 // function in the file.
 const MIGRATED_RUNTIME_MODULES = [
+  { file: "required-server-env.js", atLeast: 2, sentinel: "missingRequiredServerEnv" },
   // Conservative label extraction reads SQL but never emits or rewrites it.
   { file: "database-telemetry.js", atLeast: 1, sentinel: "createDatabaseTelemetry" },
   // Admission generations carry their bounded validator and the shared no-follow

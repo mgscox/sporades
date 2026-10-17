@@ -1,3 +1,5 @@
+import { missingRequiredServerEnv, requiredServerEnvKeys } from "../required-server-env.js";
+import { readRequiredServerEnvValues } from "./required-server-env.js";
 import { spawn, spawnSync } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { connect } from "node:net";
@@ -46,6 +48,7 @@ export async function runDoctorChecks(options: LooseRecord) {
     return checks;
   }
 
+  if (requiredServerEnvKeys(project.config).length > 0) checks.push(await requiredServerEnvCheck(project.config, options.projectDir));
   checks.push(await securityPolicyCheck(project.config, options));
   const publicDevCheck = await publicDevPostureCheck(options);
   if (publicDevCheck) {
@@ -1556,4 +1559,17 @@ export function renderDoctorHumanOutput(data: LooseRecord) {
 
   lines.push("");
   return lines.join("\n");
+}
+
+async function requiredServerEnvCheck(config: LooseRecord, projectDir: string) {
+  const base = { id: "doctor.required-server-env", title: "Required Server env", scope: "project" };
+  try {
+    const missingKeys = missingRequiredServerEnv(config, await readRequiredServerEnvValues(projectDir));
+    return { ...base, status: missingKeys.length ? "fail" : "pass", severity: missingKeys.length ? "error" : "info",
+      message: missingKeys.length ? `Missing required Server env: ${missingKeys.join(", ")}.` : "Required Server env is present.",
+      details: { missingKeys }, ...(missingKeys.length ? { hint: "Set the named values with sporades env set or env import." } : {}) };
+  } catch {
+    return { ...base, status: "fail", severity: "error", message: "Required Server env values are unavailable.",
+      hint: "Restore the local Sealed Server env key and envelope, or explicitly re-import source-of-truth values." };
+  }
 }

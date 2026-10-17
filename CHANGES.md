@@ -6,6 +6,8 @@ Changes since v0.9.31.
 
 ### 🚀 Features
 
+- Declare required Server env with doctor checks, Hosted push refusal and override, and names-only boot diagnostics with opt-in startup refusal (#236).
+
 - Add shared Capsule rate limits and trusted-address authentication throttles (#232).
 - Export HTML-safe mail helpers and support password-reset body placeholders (#230).
 - Add pinned monitoring release acceptance verifier (#229) (872f33866).

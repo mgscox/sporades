@@ -944,6 +944,7 @@ export type CapsuleContext<
   rateLimit(key: string, options: RateLimitOptions): RateLimitResult;
   auth: AuthContext;
   credential: Credential;
+  /** Server-only values. sporades.json env.required checks presence at boot; failClosed opts into startup refusal. */
   env: Record<string, string>;
   /** Normalized non-secret payment configuration. Secret values remain in `env` and are resolved only by the server integration. */
   payments: Readonly<{ stripe: Readonly<{ enabled: false }> | StripeEnabledPaymentsConfig }> | undefined;

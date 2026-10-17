@@ -258,6 +258,7 @@ Options:
   --subname <name>    Hosted Capsule subname
   --lines <n>, -n <n> Log line count
   --restart           Restart after host push
+  --allow-missing-env  Push despite missing required Server env
   --verify            Verify release health after host push
   --fallback-to-previous-release
                       Roll back when verified push fails

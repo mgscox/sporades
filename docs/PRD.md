@@ -1430,6 +1430,13 @@ sealed envelope exists. The CLI accepts a single value over stdin with
 `sporades env set <name> --stdin`, preserving and re-sealing sibling values,
 and exposes value-safe presence checks through `sporades env has <name>`.
 
+Optional `env.required` declares required Server env names, supplemented by
+configured authenticated SMTP, enabled email webhook, and enabled Stripe env
+references. Doctor checks local sealed-first values; Hosted push blocks missing
+sealed values unless `--allow-missing-env` is explicit. Boot emits one names-only
+stderr error and continues by default. `env.failClosed: true` refuses before
+opening the database. See the [required Server env contract](reference/projects-and-configuration.md#required-server-env).
+
 ## Non-Goals
 
 - Being an interpreted IR sandbox.

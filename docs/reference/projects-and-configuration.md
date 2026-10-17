@@ -555,6 +555,55 @@ SQLite data, uploaded files, and local binding metadata. Do not edit it by hand.
 For exact paths and mount layouts, see
 [runtime layout](../runtime-layout.md#project-runtime-directory).
 
+### Required Server env
+
+Declare server-only requirements in `sporades.json`:
+
+```json
+{
+  "env": {
+    "required": ["TICKETS_INTAKE_URL", "PUBLIC_ORIGIN"],
+    "failClosed": true
+  }
+}
+```
+
+Both fields are optional. `required` accepts at most 64 names matching
+`[A-Za-z_][A-Za-z0-9_]{0,127}`; `__proto__` and the `SPORADES_` prefix are reserved.
+Duplicate names are checked once. Missing, empty, and whitespace-only values count
+as missing. Values are never copied into this declaration or diagnostics.
+
+Sporades automatically includes `mail.smtp.auth.usernameEnv` and `passwordEnv`
+for authenticated SMTP, each enabled `mail.webhooks.<provider>.secretEnv`
+(including provider defaults), and `payments.stripe.secretKeyEnv` and
+`webhookSecretEnv` when Stripe is enabled. This applies even without an `env`
+block. Unauthenticated SMTP and disabled webhooks/payments imply no keys.
+
+`sporades doctor --json` reports `doctor.required-server-env` as a failure with
+sorted `details.missingKeys`. It checks the local project's decrypted Sealed
+Server env, using legacy `.env.sporades.server` only when no sealed envelope
+exists. Shell environment variables do not satisfy Capsule requirements. An
+unreadable envelope or missing private key fails opaquely without falling back.
+This project check also runs with `--session hosted`; it describes the local
+candidate, not the env of an already installed remote release.
+
+`sporades host push` checks the local Sealed Server env before contacting a Host
+server or building/uploading the candidate. Missing requirements block push;
+`--allow-missing-env` explicitly bypasses this presence gate. Legacy plaintext
+still requires explicit `sporades env import` before push. The override does not
+bypass sealed-env decryption, provider credential validation, or runtime
+`failClosed` checks.
+
+At each runtime boot with missing requirements, one JSON error is written to
+stderr with `schema: "sporades.env.v1"`, `event: "runtime.env.missing"`, and
+`missingKeys` containing names only. It is emitted before the database/log sinks
+open, so it is available in process/Container logs rather than the durable
+`sporades logs` index. `env.failClosed: true` refuses startup before database
+creation or serving requests with `MISSING_REQUIRED_SERVER_ENV`. Omission or
+`false` preserves startup behavior; existing provider validation still applies.
+Capsules without declared or implied requirements have no new diagnostics or
+gates. One-shot operator inspection actions do not perform boot presence checks.
+
 ### Configuration
 
 A typical `sporades.json` looks like this:
