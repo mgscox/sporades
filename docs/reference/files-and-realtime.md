@@ -1024,7 +1024,10 @@ policy for SDK upload negotiation, including replacement. `ctx` is the constrain
 `FileAclContext`, with frozen Auth/Credential snapshots and read-only ACL helpers;
 it has no database, request, mutable Teams, or Privileged capability. `meta` is a
 frozen `{ sizeBytes, mimeType, name }` object. MIME is normalized to lowercase
-without parameters; name is the normalized display filename. The default is
+without parameters; name is the normalized display filename that will be stored.
+When the name is omitted, it is derived from the validated, normalized File path,
+including an inherited replacement path. Denial creates no bucket or pending
+upload and leaves an existing File unchanged. The default is
 allow. With a hook, only `true` admits the upload, and the received byte count
 must match the declared `sizeBytes`. Synchronous errors and rejected Promises
 deny opaquely. The hook does not replace multipart endpoint admission.

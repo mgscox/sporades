@@ -109816,11 +109816,22 @@ async function createPendingFileUploadOperation(database, auth, message) {
         error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
       };
     }
-    const policyPath = input.path ?? existingByReference?.path;
+    let normalizedPath;
+    try {
+      const effectivePath = input.path ?? existingByReference?.path;
+      normalizedPath = effectivePath == null ? null : normalizeAbsoluteFilePath(effectivePath);
+    } catch (error) {
+      return {
+        ok: false,
+        error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
+      };
+    }
+    const name2 = normalizeFileName(input.name, normalizedPath);
+    const targetPath = normalizedPath ?? `/default/${name2}`;
     if (database.fileAcl?.resolve?.("upload") && !await allowFileUpload(database, auth, {
       sizeBytes: size,
       mimeType: normalizeFileMimeType(input.type),
-      name: normalizeFileName(input.name, typeof policyPath === "string" ? policyPath : null)
+      name: name2
     })) {
       return { ok: false, error: { ...createStructuredFileError("File upload denied.", "The Capsule upload policy denied this file."), code: "FILE_UPLOAD_DENIED" } };
     }
@@ -109828,7 +109839,7 @@ async function createPendingFileUploadOperation(database, auth, message) {
       const transactionDatabase = { ...database, sqlite, adapter: sqlite };
       let target;
       try {
-        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path } : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now2);
+        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: targetPath } : await resolveFileWriteTarget(transactionDatabase, auth.userId, targetPath, now2);
       } catch (error) {
         return {
           ok: false,
@@ -109853,7 +109864,6 @@ async function createPendingFileUploadOperation(database, auth, message) {
       const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule2.randomUUID();
       const uploadId = nodeCryptoModule2.randomUUID();
       const version3 = nodeCryptoModule2.randomUUID();
-      const name2 = normalizeFileName(input.name, target.path);
       const type = database.fileAllowedMimeTypes ? normalizeFileMimeType(input.type) : String(input.type ?? "application/octet-stream");
       await sqlite.deleteFileUploadsForPath(target.path);
       try {
@@ -110710,9 +110720,7 @@ async function withFileUploadPathLock(path22, fn2) {
     }
   }
 }
-async function resolveFileWriteTarget(database, ownerId, input, now2) {
-  const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path22 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+async function resolveFileWriteTarget(database, ownerId, path22, now2) {
   const firstSegment = path22.split("/").filter(Boolean)[0] ?? "default";
   const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
   const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now2);

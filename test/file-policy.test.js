@@ -211,3 +211,69 @@ test("replacement upload policy sees the filename that will actually be stored w
     assert.deepEqual(seen, ["retained.txt", "retained.txt"]);
   });
 });
+
+test("raw upload policy denies the canonical filename before creating a bucket or pending upload", async () => {
+  const seen = [];
+  await fixture({ files: { acl: { upload: (_ctx, meta) => {
+    seen.push(meta.name);
+    return meta.name !== "blocked.txt";
+  } } } }, {}, async db => {
+    const result = await createPendingFileUpload(db, guest, {
+      file: { path: "/default/blocked.txt ", type: "text/plain", size: 5 },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "FILE_UPLOAD_DENIED");
+    assert.equal(result.data?.uploadUrl, undefined);
+    assert.deepEqual(seen, ["blocked.txt"]);
+    assert.equal(await db.adapter.findFileBucket(guest.userId, "default"), null);
+    assert.equal(await db.adapter.selectPendingFileUploadByPath("/default/blocked.txt"), null);
+  });
+});
+
+test("raw replacement policy denies the canonical filename and preserves the existing File", async () => {
+  let denyBlocked = false;
+  const seen = [];
+  await fixture({ files: { acl: { upload: (_ctx, meta) => {
+    seen.push(meta.name);
+    return !denyBlocked || meta.name !== "blocked.txt";
+  } } } }, {}, async db => {
+    const file = await storedFile(db, guest, "blocked.txt");
+    const original = await db.adapter.selectFileById(file.id);
+    denyBlocked = true;
+    const result = await createPendingFileUpload(db, guest, {
+      replace: true, fileId: file.id,
+      file: { path: "/default/blocked.txt \t", type: "text/plain", size: 5 },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "FILE_UPLOAD_DENIED");
+    assert.equal(result.data?.uploadUrl, undefined);
+    assert.deepEqual(seen, ["blocked.txt", "blocked.txt"]);
+    assert.equal(await db.adapter.selectPendingFileUploadByPath(file.path), null);
+    assert.deepEqual(await db.adapter.selectFileById(file.id), original);
+    assert.equal((await db.fileStorage.readFileVersion({ fileId: file.id, version: file.version })).toString(), "hello");
+  });
+});
+
+test("raw upload validates paths before policy and stores the admitted canonical filename", async () => {
+  const seen = [];
+  await fixture({ files: { acl: { upload: (_ctx, meta) => { seen.push(meta.name); return true; } } } }, {}, async db => {
+    for (const filePath of ["relative.txt ", " / "]) {
+      const invalid = await createPendingFileUpload(db, guest, { file: { path: filePath, type: "text/plain", size: 5 } });
+      assert.equal(invalid.ok, false);
+      assert.equal(invalid.error.message, "Invalid File path.");
+      assert.equal(invalid.data?.uploadUrl, undefined);
+    }
+    assert.deepEqual(seen, []);
+    assert.equal(await db.adapter.findFileBucket(guest.userId, "default"), null);
+    const pending = await createPendingFileUpload(db, guest, { file: { path: " /default//allowed.txt/ \t", type: "text/plain", size: 5 } });
+    assert.equal(pending.ok, true);
+    assert.deepEqual(seen, ["allowed.txt"]);
+    const row = await db.adapter.selectFileUpload(pending.data.uploadUrl.split("/").pop());
+    assert.equal(row.name, seen[0]);
+    assert.equal(row.path, "/default/allowed.txt");
+    const completed = await completePendingFileUpload(db, row.id, Readable.from([Buffer.from("hello")]));
+    assert.equal(completed.ok, true);
+    assert.equal(completed.data.file.name, seen[0]);
+    assert.equal(completed.data.file.path, row.path);
+  });
+});

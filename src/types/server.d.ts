@@ -172,7 +172,7 @@ export type FileAclRuleInput = {
 
 export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
 
-/** Metadata supplied before an SDK upload URL is issued. */
+/** Metadata supplied before an SDK upload URL is issued; name is the stored display filename, falling back to the normalized File path. */
 export type FileUploadMetadata = Readonly<{ sizeBytes: number; mimeType: string; name: string }>;
 /** Opt-in policy for SDK uploads and replacements; absence allows existing behavior. */
 export type FileUploadAclRule = (ctx: FileAclContext, meta: FileUploadMetadata) => MaybePromise<boolean>;
