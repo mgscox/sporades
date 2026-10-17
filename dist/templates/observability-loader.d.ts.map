@@ -1,1 +1,1 @@
-{"version":3,"file":"observability-loader.d.ts","sourceRoot":"","sources":["../../src/templates/observability-loader.ts"],"names":[],"mappings":"AAAA,8FAA8F;AAC9F,wBAAgB,sBAAsB,CAAC,MAAM,EAAE,OAAO,EAAE,SAAS,EAAE,OAAO,UAEzE"}
+{"version":3,"file":"observability-loader.d.ts","sourceRoot":"","sources":["../../src/templates/observability-loader.ts"],"names":[],"mappings":"AAEA,8FAA8F;AAC9F,wBAAgB,sBAAsB,CAAC,MAAM,EAAE,OAAO,EAAE,SAAS,EAAE,OAAO,UAEzE"}

@@ -1,10 +1,12 @@
+import { expectedDiagnosticErrorCodes } from "../runtime-errors.js";
+
 /** First-party browser source. Provider identities and Server env never enter this script. */
 export function collectionLoaderSource(errors: boolean, analytics: boolean) {
-  return `(${collectionLoader.toString()})(${JSON.stringify({ errors, analytics })});`;
+  return `(${collectionLoader.toString()})(${JSON.stringify({ errors, analytics, expectedErrorCodes: expectedDiagnosticErrorCodes })});`;
 }
 
 // This function is serialized, never called in Node. Keep it self-contained.
-function collectionLoader(options: { errors: boolean; analytics: boolean }) {
+function collectionLoader(options: { errors: boolean; analytics: boolean; expectedErrorCodes: string[] }) {
   // DOM types are deliberately local: the server runtime graph is checked without DOM globals.
   const browser = (globalThis as any).window;
   if (!browser || browser.__sporadesCollectionInstalled) return;
@@ -14,9 +16,10 @@ function collectionLoader(options: { errors: boolean; analytics: boolean }) {
   let count = 0, start = Date.now();
   const error = (value: any) => {
     try {
+      if (options.expectedErrorCodes.includes(value?.code)) return;
       if (Date.now() - start > 60000) { start = Date.now(); count = 0; }
       if (++count > 20) return;
-      send({ type: "error", message: String(value?.message ?? value ?? "Client error").slice(0, 2048).replace(/[?#][^\r\n]*/g, ""), stack: typeof value?.stack === "string" ? value.stack.slice(0, 8192).replace(/[?#][^\r\n]*/g, "") : undefined });
+      send({ type: "error", message: String(value?.message ?? value ?? "Client error").slice(0, 2048), stack: typeof value?.stack === "string" ? value.stack.slice(0, 8192) : undefined });
     } catch {}
   };
   if (options.errors) {

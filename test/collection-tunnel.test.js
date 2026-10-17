@@ -65,6 +65,44 @@ test('Sentry envelopes contain redacted errors, stack frames and Capsule/release
   assert.doesNotMatch(JSON.stringify(event), /sealed-secret|capability-secret|fragment-secret|stack-secret|public-key|ERROR_DSN/);
 });
 
+const credentialDiagnostics = [
+  ['JSON token', '{"token":"json-credential-marker","access_token":"json-access-marker"}', /json-credential-marker|json-access-marker/],
+  ['nested JSON token', 'Failure: {"details":{"token":"nested-credential-marker"}}', /nested-credential-marker/],
+  ['single quoted password', "password='first-single-marker second-single-marker'", /first-single-marker|second-single-marker/],
+  ['unterminated password', 'password="truncated-credential-marker remaining-truncated-marker', /truncated-credential-marker|remaining-truncated-marker/],
+  ['Basic authorization', 'Authorization: Basic dXNlcjpwYXNz', /dXNlcjpwYXNz/],
+  ['quoted password', 'password="first-password-marker second-password-marker"', /first-password-marker|second-password-marker/],
+  ['escaped JSON password', JSON.stringify({ password: 'escaped-credential-marker "remaining-password-marker"' }), /escaped-credential-marker|remaining-password-marker/],
+  ['cookie header', 'Cookie: first=cookie-one-marker; second=cookie-two-marker', /cookie-one-marker|cookie-two-marker/],
+];
+
+test('diagnostic credentials are redacted at the receiver for server and browser tunnel errors', async t => {
+  const received = [];
+  const receiver = await listen(t, async (request, response) => {
+    let body = ''; for await (const part of request) body += part;
+    received.push(JSON.parse(body.trim().split('\n')[2])); response.end();
+  });
+  const config = { observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } };
+  const observability = createRuntimeObservability(config, { DSN: receiver.replace('http://', 'http://key@') + '/1' });
+  t.after(() => observability.close());
+  const database = { observability };
+  const origin = await listen(t, (request, response) => routeCollection(database, request, response));
+  for (const [name, message, leaked] of credentialDiagnostics) {
+    await t.test(name, async () => {
+      const before = received.length;
+      observability.capture(new Error(message), 'mutation');
+      await observability.flush();
+      assert.equal((await fetch(origin + '/__sporades/collect', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'error', message }) })).status, 204);
+      await observability.flush();
+      assert.equal(received.length, before + 2);
+      for (const event of received.slice(before)) {
+        assert.match(event.exception.values[0].value, /REDACTED/);
+        assert.doesNotMatch(JSON.stringify(event), leaked);
+      }
+    });
+  }
+});
+
 test('runtime captures query, mutation, endpoint and Job failures without changing rollback or retries', async t => {
   const { mkdtemp, rm } = await import('node:fs/promises');
   const path = await import('node:path');
@@ -129,7 +167,9 @@ test('disabled, missing env, sampled-out, denied and closed integrations make no
     [{}, {}, new Error('disabled')],
     [{ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN' } } }, {}, new Error('missing')],
     [{ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', sampleRate: 0 } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1' }, new Error('sampled')],
-    [{ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN' } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1' }, Object.assign(new Error('denied'), { code: 'DENIED' })],
+    ...['DENIED', 'UNAUTHENTICATED', 'FORBIDDEN', 'REAUTHENTICATION_REQUIRED', 'JOB_CANCELLED', 'RESOURCE_CANCELLED'].map(code => [
+      { observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN' } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1' }, Object.assign(new Error('denied'), { code }),
+    ]),
   ]) {
     const observability = createRuntimeObservability(config, env);
     observability.capture(error, 'query'); await observability.flush();
@@ -200,6 +240,15 @@ test('generated Capsule serves the loader under self CSP and collects client err
   const sends = [];
   window.fetch = (url, options) => { const promise = fetch(new URL(url, origin), { ...options, headers: { ...options.headers, origin } }); sends.push(promise); return promise; };
   window.eval(script);
+  for (let i = 0; i < 20; i++) {
+    for (const code of ['DENIED', 'UNAUTHENTICATED', 'FORBIDDEN', 'REAUTHENTICATION_REQUIRED', 'JOB_CANCELLED', 'RESOURCE_CANCELLED']) {
+      window.dispatchEvent(new window.CustomEvent('sporades:error', { detail: { code, message: 'expected denial' } }));
+    }
+  }
+  for (const [, message] of credentialDiagnostics) {
+    window.dispatchEvent(new window.ErrorEvent('error', { error: new Error(message) }));
+    await Promise.all(sends);
+  }
   window.dispatchEvent(new window.ErrorEvent('error', { error: new Error('browser failure?request=token-error#fragment') }));
   const rejection = new window.Event('unhandledrejection');
   Object.defineProperty(rejection, 'reason', { value: new Error('unhandled server-only-secret') });
@@ -209,7 +258,8 @@ test('generated Capsule serves the loader under self CSP and collects client err
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await Promise.all(sends);
   for (let i = 0; i < 100 && received.length < 5; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope').length, 3);
+  assert.equal(received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope').length, 3 + credentialDiagnostics.length);
+  for (const [, , leaked] of credentialDiagnostics) assert.doesNotMatch(received.map(event => event.body).join('\n'), leaked);
   assert.equal(received.filter(event => event.headers['content-type'] === 'application/json').length, 2);
   assert.doesNotMatch(received.map(event => event.body).join('\n'), /server-only-secret|client-secret|client-fragment|token-error|token-transport|route-token|second-route/);
 });

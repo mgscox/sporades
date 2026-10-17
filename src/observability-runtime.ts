@@ -1,6 +1,7 @@
 import { collectionLoaderSource } from "./templates/observability-loader.js";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { expectedDiagnosticErrorCodes } from "./runtime-errors.js";
 import { redactDiagnosticText } from "./runtime-log-policy.js";
 import { trustedClientAddress } from "./client-address.js";
 
@@ -96,7 +97,7 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
     capture(error: any, surface: string, address?: string | null) {
       try {
         if (!sentryUrl || error?.sporadesAuthDenialLogData || error?.sporadesAclDenialLogData
-          || ["DENIED", "UNAUTHENTICATED", "JOB_CANCELLED", "RESOURCE_CANCELLED"].includes(error?.code)
+          || expectedDiagnosticErrorCodes.includes(error?.code)
           || Math.random() >= (errors.sampleRate ?? 1)) return;
         const frames = typeof error?.stack === "string" ? error.stack.slice(0, 8192).split("\n").slice(1, 21).flatMap((line: string) => {
           const match = line.match(/^\s*at\s+(?:(.*?)\s+\()?(.+?):(\d+):(\d+)\)?$/);

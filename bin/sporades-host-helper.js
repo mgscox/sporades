@@ -28520,7 +28520,17 @@ function redactDiagnosticText(value, serverEnv = {}) {
     if (typeof secret === "string" && secret.length > 0) safe = safe.split(secret).join("[REDACTED]");
   }
   if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
-  return safe.replace(/[?#][^\r\n]*/g, "").replace(/\b(?:password|passwd|token|secret|authorization|cookie|api[_-]?key|request)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED]").replace(/\bBearer\s+[^\s]+/gi, "[REDACTED]").replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+  safe = safe.replace(/\b(?:authorization|cookie)\s*[:=](?![ \t]*["'])[^\r\n]*/gi, "[REDACTED]");
+  let redacted = "", cursor = 0;
+  for (const match of safe.matchAll(/(["']?)([\w-]+)\1\s*[:=]\s*/g)) {
+    if (match.index < cursor || !(isSensitiveLogKey(match[2]) || /^(?:api[_-]?key|request)$/i.test(match[2]))) continue;
+    const start = match.index + match[0].length;
+    const value2 = safe.slice(start).match(/^(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|(?=\r?$))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|(?=\r?$))|[^\s,;]+)/m);
+    redacted += safe.slice(cursor, match.index) + "[REDACTED]";
+    cursor = start + (value2?.[0].length ?? 0);
+  }
+  safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
+  return safe.replace(/((?:https?:\/\/|file:\/\/\/|(?:^|[\s("'])\/(?!\/))[^\s?#<>"']*)[?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*/gi, "$1").replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
 }
 
 // src/runtime-request-context.ts

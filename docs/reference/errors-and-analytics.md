@@ -44,7 +44,9 @@ No requests are sent when neither integration is active.
 Uncaught query, mutation, Custom endpoint and Job failures produce envelopes
 with redacted messages and parsed stack frames, tagged with Capsule, release
 (`SPORADES_RELEASE_ID` when available), environment and runtime surface.
-Expected auth/ACL denials do not create error events. Job
+Expected auth/ACL denials (`DENIED`, `UNAUTHENTICATED`, `FORBIDDEN`, and
+`REAUTHENTICATION_REQUIRED`) and Job/resource cancellations do not create error
+events. The browser filters these codes before counting its error budget. Job
 attempt failures may each create an event; reporting never changes rollback,
 commit or retry decisions. `sampleRate` is an error probability from 0 to 1,
 defaulting to 1. Set 0 to suppress errors.
@@ -86,7 +88,11 @@ for callers bypassing the loader. `redactQuery` defaults to true and cannot be
 set to false. Capability links such as `?request=<token>` never reach providers.
 Do not put capabilities in URL path segments or ordinary diagnostic prose.
 Messages and frames reuse the log diagnostic redaction policy for Server env
-values and recognizable credentials. There are no custom analytics properties,
+values and recognizable credentials, including quoted JSON fields, quoted
+passwords with spaces, Basic/Bearer credentials and complete Cookie headers.
+URL queries/fragments are stripped while ordinary prose such as `Investigate
+#234 collection` and `Ready? Continue debugging.` is preserved.
+There are no custom analytics properties,
 page titles, request bodies, cookies or authorization headers in provider events.
 
 The tunnel accepts only same-origin JSON requests and a fixed event schema.
