@@ -66,6 +66,7 @@
 // `test/server-bundle-free-bindings.test.js` refuses it by name.
 
 import { traceRuntimeOperation } from "./runtime-request-context.js";
+import { escapeHtml } from "./html.js";
 import type { WithImplicitCoercion } from "buffer";
 import type { BinaryLike } from "node:crypto";
 // Batch 8's riders. Types only, so they are erased before either bundle is built — a *value* import
@@ -2144,11 +2145,15 @@ export async function prepareEmailPasswordResetDelivery(database: LooseRecord, p
   const issued = await issuePasswordResetCode(database, credential, payload?.code ?? null, attempt === 1);
   if (!issued) return null;
   const body = passwordResetMailBody(issued.link);
+  const customBody = (template: string, html: boolean) => template.replace(/\{\{(link|expiresAt)\}\}/g, (_match, key: string) => {
+    const value = key === "link" ? issued.link : issued.expiresAt;
+    return html ? escapeHtml(value) : value;
+  });
   return {
     to: credential.email,
     subject: typeof payload?.subject === "string" ? payload.subject : "Reset your password",
-    textBody: typeof payload?.textBody === "string" ? payload.textBody : body.textBody,
-    htmlBody: typeof payload?.htmlBody === "string" ? payload.htmlBody : body.htmlBody,
+    textBody: typeof payload?.textBody === "string" ? customBody(payload.textBody, false) : body.textBody,
+    htmlBody: typeof payload?.htmlBody === "string" ? customBody(payload.htmlBody, true) : body.htmlBody,
   };
 }
 
@@ -2331,13 +2336,9 @@ export function passwordResetMailBody(link: string) {
       "If you did not request this, you can ignore this message and your password will stay the same.\n",
     htmlBody:
       "<p>We received a request to reset your password.</p>" +
-      `<p><a href="${escapeHtmlAttribute(link)}">Choose a new password</a></p>` +
+      `<p><a href="${escapeHtml(link)}">Choose a new password</a></p>` +
       "<p>If you did not request this, you can ignore this message and your password will stay the same.</p>",
   };
-}
-
-function escapeHtmlAttribute(value: string) {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 export function mailNotConfiguredError() {

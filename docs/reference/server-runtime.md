@@ -866,6 +866,19 @@ but its named credentials are absent from Server env, the Capsule still starts,
 `ctx.mail.enabled` is `false`, and calls fail with `MAIL_CREDENTIAL_MISSING`;
 neither failure names a Server env key.
 
+::: v-pre
+
+`sporades/server` exports `escapeHtml(value)` and the `html` tagged template for
+HTML text and quoted attributes. Nested `Html` fragments and joined arrays
+compose safely; `html.raw(trusted)` explicitly bypasses escaping. `htmlBody`
+accepts either a string or an `Html` fragment. Custom password-reset bodies
+support `{{link}}` and `{{expiresAt}}`, with HTML-escaped substitution and a
+redacted warning for custom bodies missing `{{link}}`. See
+[HTML-safe mail bodies](../guide/mail.md#html-safe-mail-bodies) and
+[custom password-reset bodies](../guide/mail.md#custom-password-reset-bodies).
+
+:::
+
 The same Server Bundle and configuration run unchanged in Dev sessions, local
 Container sessions, and Hosted Capsules. Credential values remain in Sealed
 Server env; configuration stores only their key names. Connection and socket
