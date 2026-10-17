@@ -124,6 +124,7 @@ test('first-party loader captures navigation, errors, rejection and Sporades err
 test('disabled, missing env, sampled-out, denied and closed integrations make no outbound request', async t => {
   const received = [];
   const receiver = await listen(t, async (request, response) => { received.push(request.url); response.end(); });
+  const providerFetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('Unexpected outbound collection'); });
   for (const [config, env, error] of [
     [{}, {}, new Error('disabled')],
     [{ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN' } } }, {}, new Error('missing')],
@@ -136,6 +137,8 @@ test('disabled, missing env, sampled-out, denied and closed integrations make no
   }
   const observability = createRuntimeObservability({ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1' });
   observability.close(); observability.capture(new Error('closed'), 'query'); await observability.flush();
+  assert.equal(providerFetch.mock.callCount(), 0, 'dormant or revoked collection cannot call fetch for any destination');
+  providerFetch.mock.restore();
   const database = { observability: createRuntimeObservability() };
   const origin = await listen(t, (request, response) => routeCollection(database, request, response).then(handled => { if (!handled) response.writeHead(404).end(); }));
   assert.equal((await fetch(origin + '/__sporades/observe.js')).status, 404);
