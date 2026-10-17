@@ -16,7 +16,7 @@ import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, cl
 import { resolveSporadesPackageRoot } from "./package-root.js";
 import { validateStripePaymentsRuntimeConfig, validateStripePaymentsSealedServerEnv } from "./stripe-payment-config.js";
 import { readClientPrerenderConfig, type ClientPrerenderFragment } from "./client-prerender.js";
-import type { SecurityConfig } from "./types/server.js";
+import type { SecurityConfig } from "../src/types/server.js";
 import { validateHttpHardening } from "./http-security-config.js";
 
 export type JsonRecord = Record<string, unknown>;
