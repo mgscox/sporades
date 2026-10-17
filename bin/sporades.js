@@ -109800,13 +109800,6 @@ async function createPendingFileUploadOperation(database, auth, message) {
   } catch (error) {
     return { ok: false, error: { message: error.message, hint: error.hint, code: error.code } };
   }
-  if (database.fileAcl?.resolve?.("upload") && !await allowFileUpload(database, auth, {
-    sizeBytes: size,
-    mimeType: normalizeFileMimeType(input.type),
-    name: normalizeFileName(input.name, typeof input.path === "string" ? input.path : null)
-  })) {
-    return { ok: false, error: { ...createStructuredFileError("File upload denied.", "The Capsule upload policy denied this file."), code: "FILE_UPLOAD_DENIED" } };
-  }
   return await withFileUploadPathLock("capsule", async () => {
     const now2 = (/* @__PURE__ */ new Date()).toISOString();
     const replacing = message.replace === true;
@@ -109821,6 +109814,14 @@ async function createPendingFileUploadOperation(database, auth, message) {
         ok: false,
         error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
       };
+    }
+    const policyPath = input.path ?? existingByReference?.path;
+    if (database.fileAcl?.resolve?.("upload") && !await allowFileUpload(database, auth, {
+      sizeBytes: size,
+      mimeType: normalizeFileMimeType(input.type),
+      name: normalizeFileName(input.name, typeof policyPath === "string" ? policyPath : null)
+    })) {
+      return { ok: false, error: { ...createStructuredFileError("File upload denied.", "The Capsule upload policy denied this file."), code: "FILE_UPLOAD_DENIED" } };
     }
     return await database.adapter.withTransaction(async (sqlite) => {
       const transactionDatabase = { ...database, sqlite, adapter: sqlite };

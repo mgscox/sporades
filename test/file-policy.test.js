@@ -201,3 +201,13 @@ test("schedule-owned Jobs receive privileged File listing directly", async () =>
     assert.deepEqual(pages[0].data.files.map(item => item.id), [file.id]);
   }, { clock });
 });
+
+test("replacement upload policy sees the filename that will actually be stored when a raw request omits it", async () => {
+  const seen = [];
+  await fixture({ files: { acl: { upload: (_ctx, meta) => { seen.push(meta.name); return true; } } } }, {}, async db => {
+    const file = await storedFile(db, guest, "retained.txt");
+    const replacement = await createPendingFileUpload(db, guest, { replace: true, fileId: file.id, file: { type: "text/plain", size: 5 } });
+    assert.equal(replacement.ok, true);
+    assert.deepEqual(seen, ["retained.txt", "retained.txt"]);
+  });
+});

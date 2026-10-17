@@ -682,13 +682,6 @@ async function createPendingFileUploadOperation(database: LooseRecord, auth: Loo
 
   try { assertAllowedFileMimeType(database.fileAllowedMimeTypes, input.type); }
   catch (error: any) { return { ok: false, error: { message: error.message, hint: error.hint, code: error.code } }; }
-  if (database.fileAcl?.resolve?.("upload") && !await allowFileUpload(database, auth, {
-    sizeBytes: size,
-    mimeType: normalizeFileMimeType(input.type),
-    name: normalizeFileName(input.name, typeof input.path === "string" ? input.path : null),
-  })) {
-    return { ok: false, error: { ...createStructuredFileError("File upload denied.", "The Capsule upload policy denied this file."), code: "FILE_UPLOAD_DENIED" } };
-  }
 
   return await withFileUploadPathLock("capsule", async () => {
     const now = new Date().toISOString();
@@ -704,6 +697,16 @@ async function createPendingFileUploadOperation(database: LooseRecord, auth: Loo
         ok: false,
         error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
       };
+    }
+    // A replacement may inherit its path. Decide using the actual fallback filename,
+    // under the same path lock as pending-state publication, before creating a bucket.
+    const policyPath = input.path ?? existingByReference?.path;
+    if (database.fileAcl?.resolve?.("upload") && !await allowFileUpload(database, auth, {
+      sizeBytes: size,
+      mimeType: normalizeFileMimeType(input.type),
+      name: normalizeFileName(input.name, typeof policyPath === "string" ? policyPath : null),
+    })) {
+      return { ok: false, error: { ...createStructuredFileError("File upload denied.", "The Capsule upload policy denied this file."), code: "FILE_UPLOAD_DENIED" } };
     }
     return await database.adapter.withTransaction(async (sqlite: { selectPendingFileUploadByPath: (arg0: any) => any; deleteFileUploadsForPath: (arg0: any) => any; insertFileUpload: (arg0: { id: `${string}-${string}-${string}-${string}-${string}`; fileId: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: string; version: `${string}-${string}-${string}-${string}-${string}`; expectedSize: number; createdAt: string; }) => any; }) => {
       const transactionDatabase = { ...database, sqlite, adapter: sqlite };
