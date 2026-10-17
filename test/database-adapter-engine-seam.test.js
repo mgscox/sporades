@@ -155,6 +155,9 @@ test("the walker guards' collector sees both forms a top-level function can take
 // show the census a function somebody had registered, and reading declarations shows it every
 // function in the file.
 const MIGRATED_RUNTIME_MODULES = [
+  // Same-origin collection and its serialized first-party browser loader are carried together.
+  { file: "observability-runtime.js", atLeast: 3, sentinel: "routeCollection" },
+  { file: "templates/observability-loader.js", atLeast: 1, sentinel: "collectionLoader" },
   // Conservative label extraction reads SQL but never emits or rewrites it.
   { file: "database-telemetry.js", atLeast: 1, sentinel: "createDatabaseTelemetry" },
   // Admission generations carry their bounded validator and the shared no-follow
@@ -1338,6 +1341,8 @@ const namesRunDelimiters = (source) => {
 // distinguish these languages, which share quote characters. Listing each non-SQL purpose keeps
 // the detector broad instead of hiding new walkers behind language-specific exclusions.
 const RUN_LEXER_CENSUS = {
+  createRuntimeObservability: "not a SQL lexer: removes UUID hyphens for Sentry event IDs",
+  redactDiagnosticText: "not a SQL lexer: strips capability URL suffixes and recognizable credentials from diagnostic text",
   resolveDeployFiles: "not a lexer: rejects deployment path segments starting with a hyphen",
   skipSqlQuotedOrCommented: "the one tokenizer every read-only inspection consumer asks a dialect of",
   // On the inspection path — every Postgres inspection query passes through it twice — and left

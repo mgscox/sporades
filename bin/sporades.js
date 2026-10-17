@@ -80346,60 +80346,87 @@ var require_index_shim = __commonJS({
   }
 });
 
-// src/cli/cli-support.ts
-function errorDetails(error) {
-  if (error === null || error === void 0) {
-    return {};
+// src/templates/observability-loader.ts
+function collectionLoaderSource(errors, analytics) {
+  return `(${collectionLoader.toString()})(${JSON.stringify({ errors, analytics })});`;
+}
+function collectionLoader(options) {
+  const browser = globalThis.window;
+  if (!browser || browser.__sporadesCollectionInstalled) return;
+  browser.__sporadesCollectionInstalled = true;
+  const clean = (value) => {
+    try {
+      if (!value) return "";
+      const url = new browser.URL(value, browser.location.origin);
+      return url.origin + url.pathname;
+    } catch {
+      return "";
+    }
+  };
+  const send = (event) => {
+    try {
+      browser.fetch("/__sporades/collect", { method: "POST", credentials: "omit", keepalive: true, headers: { "content-type": "application/json" }, body: JSON.stringify(event) }).catch(() => {
+      });
+    } catch {
+    }
+  };
+  let count = 0, start = Date.now();
+  const error = (value) => {
+    try {
+      if (Date.now() - start > 6e4) {
+        start = Date.now();
+        count = 0;
+      }
+      if (++count > 20) return;
+      send({ type: "error", message: String(value?.message ?? value ?? "Client error").slice(0, 2048).replace(/[?#][^\r\n]*/g, ""), stack: typeof value?.stack === "string" ? value.stack.slice(0, 8192).replace(/[?#][^\r\n]*/g, "") : void 0 });
+    } catch {
+    }
+  };
+  if (options.errors) {
+    browser.addEventListener("error", (event) => error(event.error ?? event.message));
+    browser.addEventListener("unhandledrejection", (event) => error(event.reason));
+    browser.addEventListener("sporades:error", (event) => error(event.detail));
   }
-  return typeof error === "object" ? error : { message: String(error) };
-}
-function commandError(message, hint, diagnostics = null) {
-  const error = new Error(message);
-  error.hint = hint;
-  if (diagnostics) {
-    error.diagnostics = diagnostics;
-  }
-  return error;
-}
-function helperError(message, hint, diagnostics = null) {
-  const error = new Error(message);
-  error.hint = hint;
-  if (diagnostics) {
-    error.diagnostics = diagnostics;
-  }
-  return error;
-}
-function readStdin() {
-  return new Promise((resolve2, reject) => {
-    let stdin = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => {
-      stdin += chunk;
-    });
-    process.stdin.on("end", () => resolve2(stdin));
-    process.stdin.on("error", reject);
-  });
-}
-function writeResult(result, failed = false) {
-  process.stdout.write(`${JSON.stringify(result)}
-`);
-  if (failed) {
-    process.exitCode = 1;
+  if (options.analytics) {
+    let last = "";
+    const pageview = () => {
+      if (last === browser.location.href) return;
+      last = browser.location.href;
+      send({ type: "pageview", url: clean(browser.location.href), referrer: clean(browser.document.referrer) });
+    };
+    for (const name2 of ["pushState", "replaceState"]) {
+      const original = browser.history[name2];
+      browser.history[name2] = function(...args) {
+        const result = original.apply(this, args);
+        pageview();
+        return result;
+      };
+    }
+    browser.addEventListener("popstate", pageview);
+    browser.addEventListener("hashchange", pageview);
+    pageview();
   }
 }
 
-// src/cli/telemetry-diagnostics.ts
-function validateQueryCredential(value) {
-  if (value === void 0) return void 0;
-  if (typeof value !== "string" || value.length > 4096 || !/^[^:\x00-\x20\x7f]+:[^\x00-\x1f\x7f]+$/.test(value)) {
-    throw helperError("Invalid operator query credential.", "Supply a protected environment reference containing the Monitoring operator user:password; ingestion tokens cannot query.");
-  }
-  return value;
-}
+// src/observability-runtime.ts
+import { randomUUID } from "node:crypto";
 
-// src/admission-policy.ts
-import path2 from "node:path";
-import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
+// src/runtime-log-policy.ts
+function logIndexLimit(config = {}) {
+  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
+  return Number.isInteger(configured) && configured > 0 ? configured : 500;
+}
+function isSensitiveLogKey(key) {
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
+}
+function redactDiagnosticText(value, serverEnv = {}) {
+  let safe = value;
+  for (const secret of Object.values(serverEnv)) {
+    if (typeof secret === "string" && secret.length > 0) safe = safe.split(secret).join("[REDACTED]");
+  }
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
+  return safe.replace(/[?#][^\r\n]*/g, "").replace(/\b(?:password|passwd|token|secret|authorization|cookie|api[_-]?key|request)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED]").replace(/\bBearer\s+[^\s]+/gi, "[REDACTED]").replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+}
 
 // src/client-address.ts
 import { isIP } from "node:net";
@@ -80495,6 +80522,279 @@ function trustedClientAddress(database, request) {
   if (!token || !/^[a-f0-9]{64}$/.test(token) || !timingSafeEqual(Buffer.from(token, "hex"), Buffer.from(clientAddressBoundaryToken(database.runtimeProbeToken), "hex"))) return null;
   return canonicalClientAddress(singleHeader(request, ACCESS_KEY_CLIENT_ADDRESS_HEADER));
 }
+
+// src/observability-runtime.ts
+function validateObservabilityConfig(config) {
+  const fail3 = () => {
+    const error = new Error("Invalid observability or analytics configuration.");
+    Object.assign(error, { code: "INVALID_OBSERVABILITY_CONFIG" });
+    throw error;
+  };
+  const object2 = (value, keys) => {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key))) fail3();
+  };
+  const envName = (value) => typeof value === "string" && /^[A-Z_][A-Z0-9_]*$/i.test(value);
+  if (config.observability !== void 0) {
+    object2(config.observability, ["errors"]);
+    if (config.observability.errors !== void 0) {
+      const errors = config.observability.errors;
+      object2(errors, ["protocol", "dsnEnv", "environment", "sampleRate", "client"]);
+      if (errors.protocol !== "sentry" || !envName(errors.dsnEnv) || errors.client !== void 0 && typeof errors.client !== "boolean" || errors.environment !== void 0 && (typeof errors.environment !== "string" || !/^[\w.-]{1,64}$/.test(errors.environment)) || errors.sampleRate !== void 0 && (typeof errors.sampleRate !== "number" || !Number.isFinite(errors.sampleRate) || errors.sampleRate < 0 || errors.sampleRate > 1)) fail3();
+    }
+  }
+  if (config.analytics !== void 0) {
+    const analytics = config.analytics;
+    object2(analytics, ["provider", "endpointEnv", "websiteIdEnv", "redactQuery"]);
+    if (!["umami", "plausible"].includes(analytics.provider) || !envName(analytics.endpointEnv) || !envName(analytics.websiteIdEnv) || analytics.redactQuery !== void 0 && analytics.redactQuery !== true) fail3();
+  }
+}
+function providerUrl(value) {
+  try {
+    if (typeof value !== "string" || value.length > 2048) throw new Error();
+    const url = new URL(value);
+    if (url.username || url.password || url.search || url.hash || url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error();
+    return url;
+  } catch {
+    throw Object.assign(new Error("Invalid collection provider configuration."), { code: "INVALID_OBSERVABILITY_CONFIG" });
+  }
+}
+function pageUrl(value, origin) {
+  if (typeof value !== "string" || value.length > 4096) throw new Error();
+  const url = new URL(value, origin);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error();
+  url.search = "";
+  url.hash = "";
+  return url;
+}
+function createRuntimeObservability(config = {}, env = {}) {
+  validateObservabilityConfig(config);
+  const analytics = config.analytics;
+  const analyticsUrl = analytics && env[analytics.endpointEnv] && env[analytics.websiteIdEnv] ? providerUrl(env[analytics.endpointEnv]) : null;
+  const website = analyticsUrl ? env[analytics.websiteIdEnv] : null;
+  if (website && (typeof website !== "string" || website.length > 255 || /[\s?#\/]/.test(website))) throw new Error("Invalid collection provider configuration.");
+  const errors = config.observability?.errors;
+  let sentryUrl = null;
+  let dsn = null;
+  if (errors && env[errors.dsnEnv]) {
+    try {
+      const parsed = new URL(env[errors.dsnEnv]);
+      const key = parsed.username;
+      if (!key || !/^[a-zA-Z0-9_-]+$/.test(key) || parsed.password || parsed.search || parsed.hash) throw new Error();
+      parsed.username = "";
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      const project = segments.pop();
+      if (!project || !/^\d+$/.test(project)) throw new Error();
+      sentryUrl = providerUrl(parsed.href);
+      sentryUrl.pathname = `/${[...segments, "api", project, "envelope", ""].join("/")}`;
+      dsn = String(env[errors.dsnEnv]);
+    } catch {
+      throw Object.assign(new Error("Invalid collection provider configuration."), { code: "INVALID_OBSERVABILITY_CONFIG" });
+    }
+  }
+  const stopped2 = new AbortController();
+  const pending = /* @__PURE__ */ new Set();
+  let active = 0, count = 0, windowStart = performance.now();
+  const enter = () => {
+    const now2 = performance.now();
+    if (now2 - windowStart >= 6e4) {
+      count = 0;
+      windowStart = now2;
+    }
+    if (stopped2.signal.aborted || active >= 8 || count >= 120) return false;
+    active++;
+    count++;
+    return true;
+  };
+  const safeText = (value, limit) => redactDiagnosticText(typeof value === "string" ? value : "Error", env).slice(0, limit);
+  const send = async (url, body, headers) => {
+    const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped2.signal, AbortSignal.timeout(2e3)]) });
+    await response.body?.cancel();
+  };
+  return {
+    enabled: !!analyticsUrl || !!(sentryUrl && errors.client),
+    clientErrors: !!(sentryUrl && errors.client),
+    analytics: !!analyticsUrl,
+    capture(error, surface, address) {
+      try {
+        if (!sentryUrl || error?.sporadesAuthDenialLogData || error?.sporadesAclDenialLogData || ["DENIED", "UNAUTHENTICATED", "JOB_CANCELLED", "RESOURCE_CANCELLED"].includes(error?.code) || Math.random() >= (errors.sampleRate ?? 1)) return;
+        const frames = typeof error?.stack === "string" ? error.stack.slice(0, 8192).split("\n").slice(1, 21).flatMap((line) => {
+          const match = line.match(/^\s*at\s+(?:(.*?)\s+\()?(.+?):(\d+):(\d+)\)?$/);
+          return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
+        }).reverse() : [];
+        const event = {
+          event_id: randomUUID().replaceAll("-", ""),
+          timestamp: Date.now() / 1e3,
+          platform: surface === "client" ? "javascript" : "node",
+          level: "error",
+          environment: errors.environment,
+          release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : void 0,
+          tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
+          exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
+          ...address ? { user: { ip_address: address } } : {}
+        };
+        const payload = JSON.stringify(event);
+        const body = `${JSON.stringify({ event_id: event.event_id, dsn })}
+${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}
+${payload}
+`;
+        if (!enter()) return;
+        const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope" }).catch(() => {
+        }).finally(() => {
+          active--;
+          pending.delete(task);
+        });
+        pending.add(task);
+      } catch {
+      }
+    },
+    close() {
+      stopped2.abort();
+    },
+    async flush() {
+      await Promise.allSettled([...pending]);
+    },
+    async collect(input, origin, request, database) {
+      if (input.type === "error") {
+        if (!sentryUrl || !errors.client || typeof input.message !== "string" || input.stack !== void 0 && typeof input.stack !== "string") throw new Error();
+        this.capture({ message: input.message, stack: input.stack }, "client", trustedClientAddress(database, request));
+        return;
+      }
+      if (!analyticsUrl || input.type !== "pageview") throw new Error();
+      const url = pageUrl(input.url, origin);
+      if (url.origin !== origin) throw new Error();
+      const referrer = input.referrer ? pageUrl(input.referrer, origin).href : "";
+      const address = trustedClientAddress(database, request);
+      const headers = { "content-type": "application/json", "user-agent": safeText(request.headers["user-agent"] ?? "Sporades", 512) };
+      if (address) headers["x-forwarded-for"] = address;
+      const body = analytics.provider === "umami" ? { type: "event", payload: { website, hostname: url.hostname, url: url.pathname, referrer } } : { name: "pageview", domain: website, url: url.href, referrer };
+      await send(analyticsUrl, JSON.stringify(body), headers);
+    },
+    enter,
+    leave() {
+      active--;
+    }
+  };
+}
+async function routeCollection(database, request, response) {
+  if (!database.observability?.enabled) return false;
+  const pathname = request.url?.split("?")[0];
+  if (pathname === "/__sporades/observe.js" && request.method === "GET") {
+    response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+    response.end(collectionLoaderSource(database.observability.clientErrors, database.observability.analytics));
+    return true;
+  }
+  if (pathname !== "/__sporades/collect") return false;
+  const reply = (code) => {
+    response.writeHead(code, { "cache-control": "no-store" });
+    response.end();
+  };
+  const origin = request.headers.origin;
+  try {
+    if (request.method !== "POST" || typeof origin !== "string" || new URL(origin).origin !== origin || !["http:", "https:"].includes(new URL(origin).protocol) || new URL(origin).host !== request.headers.host || request.headers["sec-fetch-site"] === "cross-site" || !String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+      reply(403);
+      return true;
+    }
+    const allowed = database.securityPolicy?.cors?.publicOrigin;
+    if (allowed && ![allowed, ...database.securityPolicy.cors.publicAliases ?? []].includes(origin)) {
+      reply(403);
+      return true;
+    }
+  } catch {
+    reply(403);
+    return true;
+  }
+  if (!database.observability.enter()) {
+    reply(429);
+    return true;
+  }
+  let timer;
+  try {
+    const body = await Promise.race([
+      (async () => {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += Buffer.byteLength(chunk);
+          if (size > 16384) throw new Error();
+          chunks.push(Buffer.from(chunk));
+        }
+        return Buffer.concat(chunks).toString("utf8");
+      })(),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error());
+          request.destroy();
+        }, 2e3);
+      })
+    ]);
+    clearTimeout(timer);
+    const input = JSON.parse(body);
+    if (!input || Array.isArray(input) || typeof input !== "object") throw new Error();
+    await database.observability.collect(input, origin, request, database);
+    reply(204);
+  } catch {
+    if (!response.destroyed) reply(400);
+  } finally {
+    clearTimeout(timer);
+    database.observability.leave();
+  }
+  return true;
+}
+
+// src/cli/cli-support.ts
+function errorDetails(error) {
+  if (error === null || error === void 0) {
+    return {};
+  }
+  return typeof error === "object" ? error : { message: String(error) };
+}
+function commandError(message, hint, diagnostics = null) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (diagnostics) {
+    error.diagnostics = diagnostics;
+  }
+  return error;
+}
+function helperError(message, hint, diagnostics = null) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (diagnostics) {
+    error.diagnostics = diagnostics;
+  }
+  return error;
+}
+function readStdin() {
+  return new Promise((resolve2, reject) => {
+    let stdin = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      stdin += chunk;
+    });
+    process.stdin.on("end", () => resolve2(stdin));
+    process.stdin.on("error", reject);
+  });
+}
+function writeResult(result, failed = false) {
+  process.stdout.write(`${JSON.stringify(result)}
+`);
+  if (failed) {
+    process.exitCode = 1;
+  }
+}
+
+// src/cli/telemetry-diagnostics.ts
+function validateQueryCredential(value) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "string" || value.length > 4096 || !/^[^:\x00-\x20\x7f]+:[^\x00-\x1f\x7f]+$/.test(value)) {
+    throw helperError("Invalid operator query credential.", "Supply a protected environment reference containing the Monitoring operator user:password; ingestion tokens cannot query.");
+  }
+  return value;
+}
+
+// src/admission-policy.ts
+import path2 from "node:path";
+import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
 
 // src/bounded-fixed-window.ts
 import { performance as performance2 } from "node:perf_hooks";
@@ -80635,7 +80935,7 @@ import { lstat as lstat2, open as open2, rename as rename2, rm as rm2 } from "no
 
 // src/deploy-files.ts
 import path from "node:path";
-import { createHash as createHash2, randomUUID } from "node:crypto";
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, link, rename, rm, realpath } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
@@ -80914,7 +81214,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
       if (error.code !== "ENOENT") throw error;
     }
     let handle;
-    const temporary = path.join(path.dirname(destination), `.seed-${randomUUID()}`);
+    const temporary = path.join(path.dirname(destination), `.seed-${randomUUID2()}`);
     try {
       await recordPreservedFileAttempt(journal, { temporary: path.relative(journalRoot, temporary) });
       const contents = await readDeployFile(releaseRoot, file.path);
@@ -80946,7 +81246,7 @@ async function rollbackPreservedFiles(created, hooks = {}) {
       if (info2.dev !== seed.dev || info2.ino !== seed.ino || info2.nlink !== 1) continue;
       if (createHash2("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
       await hooks.beforeClaim?.(target);
-      const claimed = path.join(seed.root, `.rollback-${randomUUID()}`);
+      const claimed = path.join(seed.root, `.rollback-${randomUUID2()}`);
       await rename(target, claimed);
       const captured = await lstat(claimed);
       const sameSeed = captured.isFile() && captured.dev === info2.dev && captured.ino === info2.ino && createHash2("sha256").update(await readFile(claimed)).digest("hex") === seed.sha256;
@@ -81182,7 +81482,7 @@ async function publishAdmissionPolicy(root, relative, bytes) {
   const directory = await lstat2(root);
   if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Unsafe admission storage.");
   const handle = await open2(root, constants2.O_RDONLY | constants2.O_DIRECTORY | constants2.O_NOFOLLOW);
-  const temporary = `.publish-${randomUUID2()}`;
+  const temporary = `.publish-${randomUUID3()}`;
   const anchored = process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : root;
   const target = path2.join(anchored, path2.basename(preservedDeployFilePath(root, relative)));
   let output;
@@ -82218,6 +82518,9 @@ function createConnection() {
         }
         return;
       }` : ""}
+      if (message.error && typeof window !== "undefined" && typeof window.CustomEvent === "function") {
+        window.dispatchEvent(new window.CustomEvent("sporades:error", { detail: message.error }));
+      }
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message, openedSocket);
       }
@@ -102886,7 +103189,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash11, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { createHash as createHash11, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID9, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -103689,7 +103992,7 @@ function isPlainObject2(value) {
 }
 
 // src/team-billing-runtime.ts
-import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash7, randomUUID as randomUUID6 } from "node:crypto";
 
 // src/team-billing-subscription-semantics.ts
 function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
@@ -103716,10 +104019,10 @@ function teamBillingQuantityPolicyFingerprint(policy) {
 }
 
 // src/team-billing-convergence.ts
-import { createHash as createHash6, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID5 } from "node:crypto";
 
 // src/team-billing-management.ts
-import { createHash as createHash5, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash5, randomUUID as randomUUID4 } from "node:crypto";
 var TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 var TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 var CLAIM_TTL_MS = 5 * 60 * 1e3;
@@ -103745,7 +104048,7 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
     assertCurrentModeAndCatalogue(database, subscription, currentProduct);
     if (!currentProduct || sameQuantityPolicy(currentProduct.quantity, targetProduct.quantity)) throw transitionNotRequired();
     const quantity = await targetQuantity(transaction, teamId, targetProduct);
-    const operationId = randomUUID3();
+    const operationId = randomUUID4();
     const now2 = nowIso(database);
     const effectiveAt = nowSeconds(database);
     const staged = await stageDesired(transaction, database, {
@@ -103812,7 +104115,7 @@ async function performTeamBillingSeatConvergence(database, context2, payload) {
 }
 async function performDesired(database, _context, payload, kind) {
   if (typeof payload?.intentId !== "string" || typeof payload?.generationId !== "string") return { superseded: true };
-  const claimToken = randomUUID3();
+  const claimToken = randomUUID4();
   const snapshot = await inTransaction(database, async (transaction) => {
     const desired = await desiredByIntent(transaction, payload.intentId);
     if (!desired || desired.kind !== kind || desired.activeJobGenerationId !== payload.generationId || !["queued", "running", "awaiting-observation"].includes(desired.status)) return { superseded: true };
@@ -104109,7 +104412,7 @@ async function stageDesired(transaction, database, input) {
       enqueue
     };
   }
-  const intentId = randomUUID3();
+  const intentId = randomUUID4();
   const idempotencyKey = intentIdempotency(database, input.teamId, intentId);
   const now2 = nowIso(database);
   if (existing) {
@@ -104127,7 +104430,7 @@ async function stageDesired(transaction, database, input) {
 async function enqueueIntent(database, transaction, desired, availableAt) {
   const callback = desired.kind === "plan-transition" ? database.enqueueTeamBillingPlanTransitionJob : database.enqueueTeamBillingSeatConvergenceJob;
   if (typeof callback !== "function") throw retryable("TEAM_BILLING_PROVIDER_UNAVAILABLE");
-  const generationId = randomUUID3();
+  const generationId = randomUUID4();
   const activated = await transaction.prepare(transaction.dialect.sql(
     "UPDATE [sporades_team_billing_desired_state] SET [activeJobGenerationId] = ?, [updatedAt] = ? WHERE [intentId] = ?"
   )).run(generationId, nowIso(database), desired.intentId);
@@ -104467,7 +104770,7 @@ async function applySubscription(database, event, mode) {
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )).run(
-      randomUUID4(),
+      randomUUID5(),
       teamId,
       mode,
       subscriptionId,
@@ -104639,7 +104942,7 @@ async function recordObservation(database, event, digest2, teamId, objectId, ran
   await database.adapter.prepare(database.adapter.dialect.sql(
     "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt], [eventType], [eventRank], [outcome], [safeReason]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING"
   )).run(
-    randomUUID4(),
+    randomUUID5(),
     teamId,
     event.livemode ? "live" : "sandbox",
     event.providerEventId,
@@ -104877,7 +105180,7 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
     } else if (active) {
       throw checkoutActive();
     }
-    const operationId = randomUUID5();
+    const operationId = randomUUID6();
     const idempotencyKey = checkoutIdempotencyKey(database.capsuleIdentity, teamId, requestId);
     const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1e3) / 1e3);
     await transaction.prepare(sql2(
@@ -104920,7 +105223,7 @@ async function startTeamBillingPortal(database, auth, teamId, requestId) {
         "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
       )).run(now2, active.id);
     } else if (active) throw checkoutActive();
-    const operationId = randomUUID5();
+    const operationId = randomUUID6();
     const idempotencyKey = teamBillingOperationIdempotencyKey(database.capsuleIdentity, "portal", teamId, requestId);
     await transaction.prepare(sql2(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'portal' AND [status] = 'queued' AND [providerObjectId] IS NULL"
@@ -104995,7 +105298,7 @@ async function performTeamBillingCheckout(database, context2, payload, attempt =
       )).get(operation.teamId);
       if (customer && customer.mode !== desired.mode) throw checkoutUnavailable();
       const attemptedAt = database.clock.now().toISOString();
-      const claimToken = randomUUID5();
+      const claimToken = randomUUID6();
       const claimExpiresAt = new Date(database.clock.now().getTime() + 5 * 6e4).toISOString();
       await transaction.prepare(sql2(
         "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
@@ -105592,7 +105895,7 @@ function teamBillingDenied() {
 }
 
 // src/team-billing-erasure.ts
-import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash8, randomUUID as randomUUID7 } from "node:crypto";
 var TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
 var TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var CHECKOUT_ID2 = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
@@ -105612,8 +105915,8 @@ async function prepareTeamBillingErasure(database, auth, teamId, requestId) {
     if (existing) {
       return Object.freeze({ state: "pending", teamId, requestId, requestedAt: existing.createdAt });
     }
-    const operationId = randomUUID6();
-    const generationId = randomUUID6();
+    const operationId = randomUUID7();
+    const generationId = randomUUID7();
     const now2 = database.clock.now().toISOString();
     await transaction.prepare(transaction.dialect.sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'ERASURE_REQUESTED', [updatedAt] = ? WHERE [teamId] = ? AND [kind] <> 'checkout' AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')"
@@ -105641,7 +105944,7 @@ async function prepareTeamBillingErasure(database, auth, teamId, requestId) {
 }
 async function performTeamBillingErasure(database, context2, payload) {
   if (!exactPayload(payload)) return { superseded: true };
-  const claimToken = randomUUID6();
+  const claimToken = randomUUID7();
   const snapshot = await database.adapter.withTransaction(async (transaction) => {
     const state = await transaction.prepare(transaction.dialect.sql(
       "SELECT [e].*, [o].[actorUserId] FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[operationId] = ?"
@@ -105767,7 +106070,7 @@ async function repairTeamBillingErasureStateAtStartup(database) {
       "SELECT [operationId] FROM [sporades_team_billing_erasure_state] WHERE [status] IN ('queued', 'running', 'failed') ORDER BY [operationId]"
     )).all();
     for (const row of rows) {
-      const generationId = randomUUID6();
+      const generationId = randomUUID7();
       const changed = await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ?"
       )).run(generationId, now(database), row.operationId);
@@ -105797,7 +106100,7 @@ async function settleExhaustedTeamBillingErasureJob(database, payload, safeFailu
     )).get(state.teamId);
     const liveClaimExpiry = lane?.claimToken && canonicalTimestamp3(lane.claimExpiresAt) && lane.claimExpiresAt > now(database) ? lane.claimExpiresAt : null;
     if (liveClaimExpiry || failureCode === "TEAM_BILLING_PROVIDER_LANE_BUSY") {
-      const generationId = randomUUID6();
+      const generationId = randomUUID7();
       const availableAt = liveClaimExpiry ?? now(database);
       const changed = await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
@@ -107047,7 +107350,7 @@ function safeJobFailure(error) {
 import { createHash as createHash10 } from "node:crypto";
 
 // src/notification-intent-runtime.ts
-import { createHash as createHash9, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID7, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash9, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 var NOTIFICATION_RESERVATION_MS = 3e4;
 var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
 var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
@@ -107152,7 +107455,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
     return { id: input.id, state: "staged" };
   }
   const acceptedAt = database.clock.now().toISOString();
-  const messageId = `<${randomUUID7()}@sporades.local>`;
+  const messageId = `<${randomUUID8()}@sporades.local>`;
   const inserted = await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
   if (inserted.changes === 0) {
     const raced = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
@@ -107193,7 +107496,7 @@ var recipientKey = (row) => [
   row.intentId ?? row.intentid,
   row.recipient
 ];
-function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID7()) {
+function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID8()) {
   const authenticator = createHmac("sha256", attemptKey).update([...key, String(sequence), messageId, nonce].join("\0")).digest("hex");
   return `${nonce}.${authenticator}`;
 }
@@ -108000,15 +108303,6 @@ function bindJobResources(database, context2, claim, hooks) {
   return () => {
     invocationActive = false;
   };
-}
-
-// src/runtime-log-policy.ts
-function logIndexLimit(config = {}) {
-  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
-  return Number.isInteger(configured) && configured > 0 ? configured : 500;
-}
-function isSensitiveLogKey(key) {
-  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
 
 // src/stored-value-coding.ts
@@ -124180,8 +124474,8 @@ function defaultRuntimeCspDirectives() {
 function serializeCspDirectives(directives) {
   return Object.entries(directives).map(([name2, values]) => `${name2} ${Array.isArray(values) ? values.join(" ") : String(values)}`).join("; ");
 }
-function injectPageConnectionToken(html, token) {
-  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
+function injectPageConnectionToken(html, token, database) {
+  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? '<script src="/__sporades/observe.js"></script>' : ""}`;
   if (/<head(\s[^>]*)?>/i.test(html)) {
     return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
 ${script}`);
@@ -124829,7 +125123,7 @@ async function createTeamJoinLink(database, auth, teamId, email, options = {}, e
       await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso2);
       await claimTeamJoinLinkCapacity(tx, teamId, nowIso2);
       const secret = await teamJoinSigningSecret(tx, nowIso2);
-      const id2 = randomUUID8();
+      const id2 = randomUUID9();
       const selector = randomBytes5(16).toString("base64url");
       const verifier = randomBytes5(32).toString("base64url");
       const expiresAt = new Date(now2.getTime() + ttlSeconds * 1e3).toISOString();
@@ -125312,7 +125606,7 @@ async function createAdditionalTeam(database, auth, name2, eventContext) {
         "TEAM_LIMIT_REACHED"
       );
     }
-    const id2 = randomUUID8();
+    const id2 = randomUUID9();
     const now2 = (/* @__PURE__ */ new Date()).toISOString();
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)"
@@ -125629,7 +125923,7 @@ async function bootstrapInitialTeamForLinkedUser(tx, userId) {
 }
 async function ensureInitialTeamOnAdapter(tx, userId) {
   const sql2 = tx.dialect.sql;
-  const id2 = randomUUID8();
+  const id2 = randomUUID9();
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const claim = await tx.prepare(sql2(
     "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
@@ -128982,11 +129276,11 @@ function restartPolicyStatus(mode, overrides2 = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash13, randomBytes as randomBytes6, randomUUID as randomUUID12 } from "node:crypto";
+import { createHash as createHash13, randomBytes as randomBytes6, randomUUID as randomUUID13 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync as readFileSync3 } from "node:fs";
 
 // src/log-envelope.ts
-import { randomUUID as randomUUID10 } from "node:crypto";
+import { randomUUID as randomUUID11 } from "node:crypto";
 
 // src/runtime-telemetry.ts
 init_esm();
@@ -128995,7 +129289,7 @@ var import_exporter_metrics_otlp_http = __toESM(require_src7(), 1);
 var import_resources = __toESM(require_src3(), 1);
 var import_sdk_metrics = __toESM(require_src4(), 1);
 var import_sdk_trace_base = __toESM(require_index_shim(), 1);
-import { randomUUID as randomUUID9 } from "node:crypto";
+import { randomUUID as randomUUID10 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
 import { constants as performanceConstants, monitorEventLoopDelay, performance as performance4, PerformanceObserver } from "node:perf_hooks";
@@ -129188,7 +129482,7 @@ function safeMethod(method) {
   const value = typeof method === "string" ? method.toUpperCase() : "OTHER";
   return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
 }
-var processInstanceId = randomUUID9();
+var processInstanceId = randomUUID10();
 function activeRuntimeLogIdentity() {
   const scope = runtimeRequestScope.getStore();
   if (!scope) return void 0;
@@ -129249,7 +129543,7 @@ function createProfileExporters(traceOptions, metricOptions) {
 }
 function createHttpRequestTelemetry(config, onDiagnostic) {
   if (!config) return { websocket: disabledWebSocketTelemetry, bindJobQueue: (_database) => {
-  }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID9() }, handle), shutdown: async () => {
+  }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID10() }, handle), shutdown: async () => {
   } };
   const propagationOrigins = new Set(validateTracePropagationOrigins(config.tracePropagationOrigins));
   if (config.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1e3)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
@@ -129540,7 +129834,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
         }
       };
       websocketEnds.add(end);
-      const scope = { requestId: randomUUID9(), span, tracer: websocketTracer, isOpen: () => !ended && !closing };
+      const scope = { requestId: randomUUID10(), span, tracer: websocketTracer, isOpen: () => !ended && !closing };
       return { run: (handle) => runtimeRequestScope.run(scope, handle), end };
     }
   };
@@ -129714,7 +130008,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       request.once("aborted", () => end("abort"));
       try {
         const isOpen = () => !ended && !closing;
-        const result = runtimeRequestScope.run({ requestId: randomUUID9(), span, operation, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
+        const result = runtimeRequestScope.run({ requestId: randomUUID10(), span, operation, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
         if (result && typeof result.then === "function") {
           return Promise.resolve(result).catch((error) => {
             end("error");
@@ -129767,7 +130061,7 @@ function uncappedLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request || identity ? {
-      id: input.request?.id ?? identity?.requestId ?? randomUUID10(),
+      id: input.request?.id ?? identity?.requestId ?? randomUUID11(),
       method: input.request?.method ?? null,
       path: input.request?.path ?? null
     } : null,
@@ -131997,7 +132291,7 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid4) {
 }
 
 // src/database-runtime.ts
-import { randomUUID as randomUUID11 } from "node:crypto";
+import { randomUUID as randomUUID12 } from "node:crypto";
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql2) {
@@ -135482,7 +135776,7 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     const occupiedNames = new Set(tableNames);
     let tempTableName;
     do {
-      tempTableName = `__sporades_migrating_${randomUUID11().replaceAll("-", "")}`;
+      tempTableName = `__sporades_migrating_${randomUUID12().replaceAll("-", "")}`;
     } while (occupiedNames.has(tempTableName));
     return chainMaybePromise([
       ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
@@ -135883,6 +136177,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
   validateLogConfig(config);
+  const observability = createRuntimeObservability({ ...config, release: process.env.SPORADES_RELEASE_ID ?? config.release }, serverEnv);
   const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -136052,6 +136347,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     __handlerContextMappingCount: 0,
     rowCache,
     serverEnv,
+    observability,
     paymentsConfig,
     createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
     stripeApiBaseUrl: options?.stripeApiBaseUrl,
@@ -136244,6 +136540,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         const failures = [];
         const pending = [];
         const resources = [
+          () => database.observability.close(),
           () => shutdownClamavRuntime(database),
           () => {
             if (mailStartError !== void 0) throw mailStartError;
@@ -136615,7 +136912,7 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID12() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID13() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
@@ -136926,7 +137223,7 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id2 = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID12();
+  const token = randomUUID13();
   const now2 = database.clock.now();
   const nowIso2 = now2.toISOString();
   const fullLeaseExpiresAt = jobTimestampAfter(now2, RUNTIME_CLAIM_LEASE_MS);
@@ -137667,7 +137964,7 @@ function redactLogData(value, serverEnv) {
     return null;
   }
   if (typeof value === "string") {
-    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : value;
+    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : redactDiagnosticText(value, serverEnv);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return value;
@@ -138691,6 +138988,7 @@ async function runEndpoint(database, endpoint, requestUrl, request, requestPath 
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
+    database.observability?.capture(error, "endpoint");
     if (outerCommitted) throw error;
     if (endpointRequest.multipart) {
       try {
@@ -139463,7 +139761,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID12(),
+        id: randomUUID13(),
         createdAt: now2,
         updatedAt: now2
       };
@@ -139500,7 +139798,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID12(),
+        id: randomUUID13(),
         createdAt: now2,
         updatedAt: now2
       };
@@ -140313,7 +140611,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
               const currentAuth = { userId: current2.userId, displayName: current2.displayName, email: current2.email, picture: current2.picture, isAuthenticated: Boolean(current2.isAuthenticated), isGuest: Boolean(current2.isGuest), provider: current2.provider };
               if (!await tx.claimEmailCredentialVersion(normalized.email, credential.passwordHash, credential.passwordSalt)) return;
               if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
-              await tx.replaceReauthenticationProof({ id: randomUUID12(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
+              await tx.replaceReauthenticationProof({ id: randomUUID13(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
               ok = true;
               await tx.clearEmailReauthenticationAttempts(reauthenticationThrottleKeys);
             });
@@ -141101,7 +141399,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor], [enqueueTraceContext]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL, ?)"
     )
   ).run(
-    randomUUID12(),
+    randomUUID13(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
@@ -141262,6 +141560,7 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
         if (queryHandler) admitCredentialHandler(queryHandler, context2, "query");
         context2 = await applyContextMiddleware(database, context2, "query");
       } catch (error) {
+        database.observability?.capture(error, "query");
         if (error?.sporadesAuthDenialLogData) {
           emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         }
@@ -141309,6 +141608,7 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
       return { rows, error: null };
     })();
   } catch (error) {
+    database.observability?.capture(error, "query");
     primaryError = error;
     throw error;
   } finally {
@@ -141350,6 +141650,7 @@ async function runCustomQuery(database, context2, queryName, args, resolvedHandl
     assertJsonCompatible(data2);
     return { data: data2, error: null };
   } catch (error) {
+    database.observability?.capture(error, "query");
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -141530,6 +141831,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
   } catch (error) {
+    database.observability?.capture(error, "mutation");
     if (outerCommitted) return createHookErrorResult(error);
     dropPendingCurrentUserFileByteDeletes(context2);
     dropPendingJobCancellationAborts(context2);
@@ -142274,7 +142576,7 @@ async function runCurrentUserJobWorker(database) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;
       }
-      const claimToken = randomUUID12();
+      const claimToken = randomUUID13();
       const claimed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')"
       )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
@@ -142394,6 +142696,7 @@ async function runCurrentUserJobWorker(database) {
             error = atomicStripeAbortError();
           }
         }
+        if (handlerStarted) database.observability?.capture(error, "job");
         const handlerFailure = safeJobFailure(error);
         const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
         const failedAt = database.clock.now().toISOString();
@@ -142468,7 +142771,7 @@ async function runInsertMutation(database, context2, mutationName, args) {
   }
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID12(),
+    id: randomUUID13(),
     createdAt: now2,
     updatedAt: now2
   };
@@ -147916,6 +148219,8 @@ var DEFAULT_CSP_DIRECTIVES = {
 };
 var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
   "admissionPolicy",
+  "analytics",
+  "observability",
   "auth",
   "baseImage",
   "capsule",
@@ -147953,6 +148258,7 @@ async function readProjectConfig(projectDir) {
   }
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   validateLogConfig(config);
+  validateObservabilityConfig(config);
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
@@ -152200,7 +152506,7 @@ async function startDevSession(options) {
           });
           return;
       }
-      if (await routeSporadesAuth(runtime.database, request, response) || await handleFileHttpRoute(runtime.database, request, response, websocketHub) || await routeEndpoint(runtime.database, request, response)) {
+      if (await routeCollection(runtime.database, request, response) || await routeSporadesAuth(runtime.database, request, response) || await handleFileHttpRoute(runtime.database, request, response, websocketHub) || await routeEndpoint(runtime.database, request, response)) {
         return;
       }
       const publicAsset2 = await readPublicAsset(bundle.staticFiles.publicTree, requestPath);
@@ -152209,7 +152515,7 @@ async function startDevSession(options) {
           "content-type": publicAsset2.contentType,
           ...publicAsset2.html ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }
         });
-        response.end(publicAsset2.html && isDocumentNavigationRequest(request) ? injectPageConnectionToken(publicAsset2.body.toString("utf8"), websocketHub.createConnectionToken()) : publicAsset2.body);
+        response.end(publicAsset2.html && isDocumentNavigationRequest(request) ? injectPageConnectionToken(publicAsset2.body.toString("utf8"), websocketHub.createConnectionToken(), runtime.database) : publicAsset2.body);
         return;
       }
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });

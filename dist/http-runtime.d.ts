@@ -45,7 +45,7 @@ export declare function prepareHttpSecurity(database: {
     req: IncomingMessage;
 }, admitPreflight?: () => boolean): boolean;
 export declare function resolveRuntimeSecurityPolicy(config?: RuntimeConfig): RuntimeSecurityPolicy;
-export declare function injectPageConnectionToken(html: string, token: string): string;
+export declare function injectPageConnectionToken(html: string, token: string, database?: LooseRecord): string;
 export declare function isDocumentNavigationRequest(request: Pick<IncomingMessage, "headers">): boolean;
 export declare function routeConnectionToken(request: Pick<IncomingMessage, "method" | "url" | "headers" | "socket">, response: Pick<ServerResponse, "writeHead" | "end">, createConnectionToken: (currentToken?: string) => string): boolean;
 export declare function websocketOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeRequestLike): boolean;

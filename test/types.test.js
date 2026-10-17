@@ -69,6 +69,11 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
 import * as publicServerApi from "sporades/server";
+const errorCollection: publicServerApi.ObservabilityConfig = { errors: { protocol: "sentry", dsnEnv: "ERROR_DSN", client: true, sampleRate: 0.25 } };
+const pageviews: publicServerApi.AnalyticsConfig = { provider: "umami", endpointEnv: "ANALYTICS_ENDPOINT", websiteIdEnv: "WEBSITE_ID", redactQuery: true };
+// @ts-expect-error capability URL redaction cannot be disabled.
+const unsafePageviews: publicServerApi.AnalyticsConfig = { provider: "plausible", endpointEnv: "URL", websiteIdEnv: "ID", redactQuery: false };
+void errorCollection; void pageviews; void unsafePageviews;
 const admissionConfig: publicServerApi.AdmissionPolicyConfig = { path: "config/admission.json" };
 const admissionPolicy: publicServerApi.AdmissionPolicy = { version: 1, rules: [{ id: "blocked-path", enabled: true, conditions: [{ kind: "pathname", exact: "/blocked" }, { kind: "method", value: "GET" }], action: { kind: "deny" } }] };
 const quotaPolicy: publicServerApi.AdmissionAction = { kind: "rate-limit", limit: 5, windowMs: 60000 };

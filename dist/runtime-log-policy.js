@@ -47,4 +47,18 @@ export function isSensitiveLogKey(key) {
     return (/(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) ||
         /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key)));
 }
+/** Shared diagnostic text policy. Stack frames are admitted separately by error collection. */
+export function redactDiagnosticText(value, serverEnv = {}) {
+    let safe = value;
+    for (const secret of Object.values(serverEnv)) {
+        if (typeof secret === "string" && secret.length > 0)
+            safe = safe.split(secret).join("[REDACTED]");
+    }
+    if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe))
+        return "[REDACTED]";
+    return safe.replace(/[?#][^\r\n]*/g, "")
+        .replace(/\b(?:password|passwd|token|secret|authorization|cookie|api[_-]?key|request)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED]")
+        .replace(/\bBearer\s+[^\s]+/gi, "[REDACTED]")
+        .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+}
 //# sourceMappingURL=runtime-log-policy.js.map

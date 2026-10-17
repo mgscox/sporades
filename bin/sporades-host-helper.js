@@ -28510,6 +28510,19 @@ function validatePublicTreeFileSet(files) {
   return { ok: true, fileCount: files.length, totalBytes };
 }
 
+// src/runtime-log-policy.ts
+function isSensitiveLogKey(key) {
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
+}
+function redactDiagnosticText(value, serverEnv = {}) {
+  let safe = value;
+  for (const secret of Object.values(serverEnv)) {
+    if (typeof secret === "string" && secret.length > 0) safe = safe.split(secret).join("[REDACTED]");
+  }
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
+  return safe.replace(/[?#][^\r\n]*/g, "").replace(/\b(?:password|passwd|token|secret|authorization|cookie|api[_-]?key|request)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED]").replace(/\bBearer\s+[^\s]+/gi, "[REDACTED]").replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+}
+
 // src/runtime-request-context.ts
 import { AsyncLocalStorage } from "node:async_hooks";
 var runtimeRequestScope = new AsyncLocalStorage();
@@ -28589,11 +28602,6 @@ var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
 var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
 var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
 var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
-
-// src/runtime-log-policy.ts
-function isSensitiveLogKey(key) {
-  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
-}
 
 // src/promise-coordinator.ts
 var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
@@ -44635,7 +44643,7 @@ function redactLogData(value, serverEnv) {
     return null;
   }
   if (typeof value === "string") {
-    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : value;
+    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : redactDiagnosticText(value, serverEnv);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return value;

@@ -55,3 +55,16 @@ export function isSensitiveLogKey(key: string) {
     /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key))
   );
 }
+
+/** Shared diagnostic text policy. Stack frames are admitted separately by error collection. */
+export function redactDiagnosticText(value: string, serverEnv: LooseRecord = {}) {
+  let safe = value;
+  for (const secret of Object.values(serverEnv)) {
+    if (typeof secret === "string" && secret.length > 0) safe = safe.split(secret).join("[REDACTED]");
+  }
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
+  return safe.replace(/[?#][^\r\n]*/g, "")
+    .replace(/\b(?:password|passwd|token|secret|authorization|cookie|api[_-]?key|request)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED]")
+    .replace(/\bBearer\s+[^\s]+/gi, "[REDACTED]")
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+}

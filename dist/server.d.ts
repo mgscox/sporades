@@ -332,4 +332,5 @@ export declare function Date(): FieldBuilder<string | globalThis.Date | null>;
 export declare function Json<Value extends JsonValue = JsonValue>(): FieldBuilder<Value>;
 export declare function Reference(targetTable: string): ReferenceFieldBuilder;
 export declare function serverRuntimeModuleSource(): string;
+export type { ObservabilityConfig, AnalyticsConfig } from "../src/types/observability.js";
 //# sourceMappingURL=server.d.ts.map

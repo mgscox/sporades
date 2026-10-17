@@ -1452,3 +1452,5 @@ export type CapsuleFileAccessKeyPolicy = { read: { scopes?: readonly string[] } 
  * share complete generations, canonical conditions, trusted Hosted identity and per-process quotas before Capsule code or protocol switching.
  * Client resets during opaque 403/429 upgrade denials close only the affected connection. */
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "./admission-policy.js";
+
+export type { ObservabilityConfig, AnalyticsConfig } from "./observability.js";
