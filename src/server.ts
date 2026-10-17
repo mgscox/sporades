@@ -3,6 +3,7 @@ export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGen
 export type { ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceNotificationIntentStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 export { escapeHtml, html, type Html } from "./html.js";
 import type {
+  AppContext as CanonicalAppContext,
   EndpointBodyBytes as CanonicalEndpointBodyBytes,
   EndpointContext as CanonicalEndpointContext,
   EndpointFileAttachmentApi as CanonicalEndpointFileAttachmentApi,
@@ -18,6 +19,8 @@ import type {
   FileIngressOptions as CanonicalFileIngressOptions,
   SchemaDefinition as CanonicalSchemaDefinition,
 } from "../src/types/server.js";
+
+export type AppContext = CanonicalAppContext;
 
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
 export type UnknownRecord = Record<string, unknown>;
@@ -66,11 +69,11 @@ export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
 export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
 export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal; allowFiles?: boolean }>;
-export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** Shared immutable request head supplied to endpoint multipart admission. */
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
 /** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
-export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** The endpoint policy may prohibit file parts before staging; it cannot widen limits or provide file claim authority. */
 export type EndpointMultipartAdmissionDecision = Readonly<{ allow: true; allowFiles?: boolean } | { allow: false }>;
 /** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. File bytes use the smaller of maxFileBytes and files.maxSizeBytes. A malformed filename can be classified as a field; file allowances never raise maxFieldBytes. MULTIPART_LIMIT_EXCEEDED errors may include safe details: { partType: "file" | "field", limitKind, limit }. Byte limits report bytes; maxFiles and maxFieldCount report counts. */

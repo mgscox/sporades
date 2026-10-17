@@ -80346,6 +80346,29 @@ var require_index_shim = __commonJS({
   }
 });
 
+// src/public-origin.ts
+function normalizePublicOrigin(value) {
+  if (typeof value !== "string" || value.length > 2048 || !/^https?:\/\//i.test(value) || /[\\\s]/.test(value)) return null;
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash || value.includes("?") || value.includes("#")) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+function resolvePublicOrigin(config) {
+  const session = config?.__sporadesSession;
+  const dev = session === "dev" || session === "public-dev";
+  const configured = dev ? config?.__sporadesDevOrigin : session === "hosted" ? config?.__sporadesPublicOrigin : config?.deploy?.publicOrigin ?? config?.__sporadesPublicOrigin;
+  const port = dev ? config?.dev?.port ?? config?.deploy?.port ?? 4e3 : config?.deploy?.port ?? (session ? 4e3 : config?.dev?.port ?? 4e3);
+  return normalizePublicOrigin(configured) ?? `http://localhost:${port}`;
+}
+function isLocalPublicOrigin(origin) {
+  const hostname = new URL(origin).hostname.toLowerCase();
+  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "[::1]" || hostname === "0.0.0.0" || /^127\./.test(hostname) || hostname === "[::]";
+}
+
 // src/cli/cli-support.ts
 function errorDetails(error) {
   if (error === null || error === void 0) {
@@ -81297,6 +81320,11 @@ function validateAliasDomains(value) {
     throw helperError("Duplicate Hosted Capsule alias domain.", "Supply each alias domain once.");
   }
   return [...value];
+}
+function validateCanonicalDomain(value) {
+  if (value === void 0 || value === null) return null;
+  validateAliasDomains([value]);
+  return value;
 }
 
 // src/cli/sporades.ts
@@ -102924,7 +102952,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash11, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { createHash as createHash5, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID3, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -102947,9 +102975,6 @@ function chainMaybePromise(steps) {
   }
   return pending ?? void 0;
 }
-
-// src/http-runtime.ts
-import { ServerResponse } from "node:http";
 
 // src/access-keys-runtime.ts
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
@@ -103726,8 +103751,1181 @@ function isPlainObject2(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
+// src/teams-runtime.ts
+var INITIAL_TEAM_NAME = "My Team";
+var TEAM_NAME_MAX_BYTES = 80;
+var TEAM_MEMBER_COUNT_MAX = 99;
+var TEAM_MEMBER_LIST_MAX = 100;
+var TEAM_MEMBER_LIST_DEFAULT = TEAM_MEMBER_LIST_MAX;
+var TEAM_MEMBERSHIP_MAX = 25;
+var TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
+var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
+var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
+var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
+var TEAM_JOIN_LINK_MAX_OUTSTANDING = 20;
+var TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR = 10;
+var TEAM_JOIN_LINK_PRUNE_LIMIT = 100;
+var TEAM_JOIN_LINK_SECRET_ID = "v1";
+var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+var TEAM_APPLICATION_ROLE_MAX = 32;
+var TEAM_APPLICATION_ROLE_PATCH_MAX = 16;
+var TEAM_APPLICATION_ROLE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+function createTeamTables(adapter) {
+  const sql2 = adapter.dialect.sql;
+  return chainMaybePromise([
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId]))"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_membership_application_roles] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId], [role]))"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] ([userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_membership_counters] ([userId] TEXT PRIMARY KEY, [membershipCount] INTEGER NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_secrets] ([id] TEXT PRIMARY KEY, [secret] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_join_links] ([id] TEXT PRIMARY KEY, [selector] TEXT NOT NULL UNIQUE, [verifierHash] TEXT NOT NULL, [teamId] TEXT NOT NULL, [email] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [consumedAt] TEXT NULL, [revokedAt] TEXT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_throttles] ([teamId] TEXT NOT NULL, [adminUserId] TEXT NOT NULL, [windowStartedAt] TEXT NOT NULL, [count] INTEGER NOT NULL, PRIMARY KEY ([teamId], [adminUserId]))"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_counters] ([teamId] TEXT PRIMARY KEY, [activeCount] INTEGER NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_redemptions] ([joinLinkId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+    ))
+  ]);
+}
+function createCurrentUserTeamsApi(database, auth, contextGetter) {
+  return {
+    async list() {
+      requireAuth({ auth }, { linked: true });
+      return listCurrentUserTeams(database, auth);
+    },
+    async create(name2) {
+      requireAuth({ auth }, { linked: true });
+      return createAdditionalTeam(database, auth, name2, contextGetter?.());
+    },
+    async rename(teamId, name2) {
+      requireAuth({ auth }, { linked: true });
+      return renameCurrentUserTeam(database, auth, teamId, name2, contextGetter?.());
+    },
+    async listMembers(teamId, options = {}) {
+      requireAuth({ auth }, { linked: true });
+      return listTeamMembers(database, auth, teamId, options);
+    },
+    async countMembers(teamId) {
+      requireAuth({ auth }, { linked: true });
+      return countTeamMembers(database, auth, teamId);
+    },
+    async updateApplicationRoles(teamId, userId, changes) {
+      requireAuth({ auth }, { linked: true });
+      return updateTeamMemberApplicationRoles(database, auth, teamId, userId, changes, contextGetter?.());
+    },
+    async createJoinLink(teamId, email, options = {}) {
+      requireAuth({ auth }, { linked: true });
+      return createTeamJoinLink(database, auth, teamId, email, options, contextGetter?.());
+    },
+    async listJoinLinks(teamId) {
+      requireAuth({ auth }, { linked: true });
+      return listTeamJoinLinks(database, auth, teamId);
+    },
+    async revokeJoinLink(teamId, joinLinkId) {
+      requireAuth({ auth }, { linked: true });
+      return revokeTeamJoinLink(database, auth, teamId, joinLinkId, contextGetter?.());
+    },
+    async inspectJoinLink(code) {
+      return inspectTeamJoinLink(database, code);
+    },
+    async validateJoinLink(code) {
+      return validateTeamJoinLink(database, auth, code);
+    },
+    async join(code) {
+      return joinCurrentUserTeam(database, auth, code, contextGetter?.());
+    },
+    async promote(teamId, userId) {
+      requireAuth({ auth }, { linked: true });
+      return promoteTeamMember(database, auth, teamId, userId, contextGetter?.());
+    },
+    async demote(teamId, userId) {
+      requireAuth({ auth }, { linked: true });
+      return demoteTeamMember(database, auth, teamId, userId, contextGetter?.());
+    },
+    async removeMember(teamId, userId) {
+      requireAuth({ auth }, { linked: true });
+      return removeTeamMember(database, auth, teamId, userId, contextGetter?.());
+    },
+    async leave(teamId) {
+      requireAuth({ auth }, { linked: true });
+      return leaveCurrentUserTeam(database, auth, teamId, contextGetter?.());
+    },
+    async delete(teamId) {
+      requireAuth({ auth }, { linked: true });
+      return deleteCurrentUserTeam(database, auth, teamId, contextGetter?.());
+    }
+  };
+}
+function createPrivilegedTeamsApi(database, contextGetter) {
+  return Object.freeze({
+    async countMembers(teamId) {
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => countPrivilegedTeamMembers(database, teamId, assertActive));
+    },
+    async listMembers(teamId, options = {}) {
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamMembers(database, teamId, options, assertActive));
+    },
+    async listJoinLinks(teamId) {
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamJoinLinks(database, teamId, assertActive));
+    },
+    async inspectJoinLink(code) {
+      return runPrivilegedTeamInspection(contextGetter, (assertActive) => inspectTeamJoinLinkWithActivity(database, code, assertActive));
+    }
+  });
+}
+function resolveTeamJoinLinkConfig(config) {
+  const join = config?.teams?.join ?? {};
+  return {
+    path: normalizeTeamJoinPath(join.path) ?? "/join",
+    origin: resolvePublicOrigin(config)
+  };
+}
+function normalizeTeamJoinPath(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return null;
+  if (value.includes("\\") || value.includes("?") || value.includes("#") || value.split("/").includes("..")) return null;
+  return value;
+}
+function normalizeTeamApplicationRoles(value) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value) || value.length > TEAM_APPLICATION_ROLE_MAX) throw invalidTeamApplicationRoleDeclaration();
+  const roles = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const role of value) {
+    if (typeof role !== "string" || !TEAM_APPLICATION_ROLE_PATTERN.test(role) || role === "admin" || role === "member" || role.startsWith("sporades-")) {
+      throw invalidTeamApplicationRoleDeclaration();
+    }
+    if (seen.has(role)) throw invalidTeamApplicationRoleDeclaration();
+    seen.add(role);
+    roles.push(role);
+  }
+  return roles;
+}
+async function createTeamJoinLink(database, auth, teamId, email, options = {}, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  let created;
+  try {
+    if (!isOpaqueTeamId(teamId)) throw teamDenied();
+    const normalizedEmail = normalizeTeamJoinEmail(email);
+    const ttlSeconds = normalizeTeamJoinTtl(options?.ttlSeconds);
+    created = await withTeamTransaction(database, async (tx) => {
+      await lockTeamLifecycle(tx, teamId);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+      const now2 = database.clock?.now?.() ?? /* @__PURE__ */ new Date();
+      const nowIso2 = now2.toISOString();
+      await pruneExpiredTeamJoinLinks(tx, nowIso2);
+      await reconcileTeamJoinLinkCapacity(tx, teamId, nowIso2);
+      await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso2);
+      await claimTeamJoinLinkCapacity(tx, teamId, nowIso2);
+      const secret = await teamJoinSigningSecret(tx, nowIso2);
+      const id2 = randomUUID3();
+      const selector = randomBytes4(16).toString("base64url");
+      const verifier = randomBytes4(32).toString("base64url");
+      const expiresAt = new Date(now2.getTime() + ttlSeconds * 1e3).toISOString();
+      const signature = teamJoinSignature(secret, id2, selector, verifier, expiresAt);
+      await tx.prepare(tx.dialect.sql(
+        "INSERT INTO [sporades_team_join_links] ([id], [selector], [verifierHash], [teamId], [email], [createdByUserId], [createdAt], [expiresAt], [consumedAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)"
+      )).run(id2, selector, hashTeamJoinVerifier(verifier), teamId, normalizedEmail, auth.userId, nowIso2, expiresAt);
+      return { id: id2, code: `v1.${selector}.${verifier}.${signature}`, createdAt: nowIso2, expiresAt };
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.create", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  const link2 = new URL(database.teamJoinLinkConfig.path, database.teamJoinLinkConfig.origin);
+  link2.searchParams.set("code", created.code);
+  emitTeamSecurityEvent(database, eventContext, "teams.joinLink.created", auth.userId, teamId, "succeeded", "TEAM_JOIN_LINK_CREATED");
+  return { id: created.id, link: link2.toString(), createdAt: created.createdAt, expiresAt: created.expiresAt };
+}
+async function listTeamJoinLinks(database, auth, teamId) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId)) throw teamDenied();
+  return withTeamTransaction(database, async (tx) => {
+    await lockTeamLifecycle(tx, teamId);
+    if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+    const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+    await pruneExpiredTeamJoinLinks(tx, now2);
+    const rows = await tx.prepare(tx.dialect.sql(
+      "SELECT [id], [email], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?"
+    )).all(teamId, now2, TEAM_JOIN_LINK_MAX_OUTSTANDING);
+    return { links: rows.map((row) => ({ id: String(row.id), email: String(row.email), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
+  });
+}
+async function revokeTeamJoinLink(database, auth, teamId, joinLinkId, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(joinLinkId)) {
+    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoke", auth.userId, null, "denied", "DENIED");
+    throw teamDenied();
+  }
+  await withTeamTransaction(database, async (tx) => {
+    await lockTeamLifecycle(tx, teamId);
+    if (!await currentTeamAdmin(tx, teamId, auth.userId)) {
+      emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoke", auth.userId, teamId, "denied", "DENIED");
+      throw teamDenied();
+    }
+    const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+    const changed = await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_join_links] SET [revokedAt] = ? WHERE [id] = ? AND [teamId] = ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL AND [expiresAt] > ?"
+    )).run(now2, joinLinkId, teamId, now2);
+    if (Number(changed?.changes ?? 0) === 1) await releaseTeamJoinLinkCapacity(tx, teamId);
+  });
+  emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoked", auth.userId, teamId, "succeeded", "TEAM_JOIN_LINK_REVOKED");
+  return { revoked: true };
+}
+async function inspectTeamJoinLink(database, code) {
+  return inspectTeamJoinLinkWithActivity(database, code);
+}
+async function inspectTeamJoinLinkWithActivity(database, code, assertActive = void 0) {
+  const parsed = parseTeamJoinCode(code);
+  if (!parsed) return { team: null, expiresAt: null, usable: false };
+  return withTeamTransaction(database, async (tx) => {
+    const readCapability = () => tx.prepare(tx.dialect.sql(
+      "SELECT [id], [selector], [verifierHash], [teamId], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
+    )).get(parsed.selector);
+    const row = await readCapability();
+    assertActive?.();
+    const secretRow = await tx.prepare(tx.dialect.sql(
+      "SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?"
+    )).get(TEAM_JOIN_LINK_SECRET_ID);
+    assertActive?.();
+    const usable = (candidate) => {
+      const expectedVerifier = Buffer.from(candidate?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
+      const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
+      const expectedSignature = Buffer.from(candidate && secretRow ? teamJoinSignature(String(secretRow.secret), String(candidate.id), parsed.selector, parsed.verifier, String(candidate.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
+      const actualSignature = Buffer.from(parsed.signature, "base64url");
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
+      return Boolean(candidate && verifierMatches && signatureMatches && !candidate.consumedAt && !candidate.revokedAt && Date.parse(candidate.expiresAt) > (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime());
+    };
+    if (!usable(row)) return { team: null, expiresAt: null, usable: false };
+    if (!await tryLockTeamLifecycle(tx, String(row.teamId))) {
+      return { team: null, expiresAt: null, usable: false };
+    }
+    assertActive?.();
+    const lockedRow = await readCapability();
+    assertActive?.();
+    if (!usable(lockedRow) || String(lockedRow.teamId) !== String(row.teamId)) return { team: null, expiresAt: null, usable: false };
+    const team = await tx.prepare(tx.dialect.sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(lockedRow.teamId);
+    assertActive?.();
+    if (!team) return { team: null, expiresAt: null, usable: false };
+    return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(lockedRow.expiresAt), usable: true };
+  });
+}
+async function countPrivilegedTeamMembers(database, teamId, assertActive) {
+  return withTeamTransaction(database, async (tx) => {
+    assertActive();
+    const totalCount = await countAcceptedTeamMembers(tx, teamId, privilegedTeamNotFound);
+    assertActive();
+    return { totalCount };
+  });
+}
+async function countAcceptedTeamMembers(transaction, teamId, denied2 = privilegedTeamNotFound) {
+  await lockTeamLifecycle(transaction, teamId, denied2);
+  const total = await transaction.prepare(transaction.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+  )).get(teamId);
+  const count = Number(total?.count ?? 0);
+  if (!Number.isSafeInteger(count) || count < 1 || count > 999999) throw denied2();
+  return count;
+}
+async function listPrivilegedTeamMembers(database, teamId, options = {}, assertActive) {
+  return withTeamTransaction(database, async (tx) => {
+    const sql2 = tx.dialect.sql;
+    assertActive();
+    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
+    assertActive();
+    const page = normalizeTeamMemberPage(options);
+    const total = await tx.prepare(sql2(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+    )).get(teamId);
+    assertActive();
+    const cursorClause = page.cursor ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) " : "";
+    const params = page.cursor ? [teamId, page.cursor.createdAt, page.cursor.createdAt, page.cursor.userId, page.limit + 1] : [teamId, page.limit + 1];
+    const rows = await tx.prepare(sql2(
+      "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role], [m].[createdAt] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? " + cursorClause + "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
+    )).all(...params);
+    assertActive();
+    const hasMore = rows.length > page.limit;
+    const pageRows = hasMore ? rows.slice(0, page.limit) : rows;
+    const last = pageRows.at(-1);
+    return {
+      members: await Promise.all(pageRows.map(async (row) => ({
+        userId: String(row.userId),
+        displayName: String(row.displayName),
+        picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
+        role: row.role === "admin" ? "admin" : "member",
+        applicationRoles: await activeTeamApplicationRoles(tx, database.teamApplicationRoles, teamId, row.userId)
+      }))),
+      ...hasMore && last ? { nextCursor: encodeTeamMemberCursor(String(last.createdAt), String(last.userId)) } : {},
+      totalCount: Number(total?.count ?? 0)
+    };
+  });
+}
+async function listPrivilegedTeamJoinLinks(database, teamId, assertActive) {
+  return withTeamTransaction(database, async (tx) => {
+    assertActive();
+    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
+    assertActive();
+    const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+    const rows = await tx.prepare(tx.dialect.sql(
+      "SELECT [id], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?"
+    )).all(teamId, now2, TEAM_JOIN_LINK_MAX_OUTSTANDING);
+    assertActive();
+    return { links: rows.map((row) => ({ id: String(row.id), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
+  });
+}
+async function validateTeamJoinLink(database, auth, code) {
+  if (!auth?.isAuthenticated || auth?.isGuest || typeof auth.userId !== "string" || !auth.userId) return { valid: false };
+  const parsed = parseTeamJoinCode(code);
+  if (!parsed) return { valid: false };
+  const row = await database.adapter.prepare(database.adapter.dialect.sql(
+    "SELECT [id], [teamId], [verifierHash], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
+  )).get(parsed.selector);
+  const secretRow = await database.adapter.prepare(database.adapter.dialect.sql(
+    "SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?"
+  )).get(TEAM_JOIN_LINK_SECRET_ID);
+  const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
+  const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
+  const expectedSignature = Buffer.from(
+    row && secretRow ? teamJoinSignature(String(secretRow.secret), String(row.id), parsed.selector, parsed.verifier, String(row.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"),
+    "base64url"
+  );
+  const actualSignature = Buffer.from(parsed.signature, "base64url");
+  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
+  const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime();
+  const expiresAt = Date.parse(row?.expiresAt ?? "");
+  if (!row || !verifierMatches || !signatureMatches || row.consumedAt || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= now2) return { valid: false };
+  const team = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
+  if (!team) return { valid: false };
+  const attachedEmails = await database.adapter.prepare(database.adapter.dialect.sql(
+    "SELECT [email] FROM [sporades_auth_email_credentials] WHERE [userId] = ? UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL"
+  )).all(auth.userId, auth.userId);
+  const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
+  const valid = attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail);
+  return { valid };
+}
+async function joinCurrentUserTeam(database, auth, code, eventContext) {
+  let joined;
+  let deniedTeamId = null;
+  let auditUserId = null;
+  try {
+    requireAuth({ auth }, { linked: true });
+    const joiningUserId = String(auth.userId);
+    auditUserId = joiningUserId;
+    const parsed = parseTeamJoinCode(code);
+    if (!parsed) throw invalidTeamJoinLink();
+    joined = await withTeamTransaction(database, async (tx) => {
+      const sql2 = tx.dialect.sql;
+      let row = await tx.prepare(sql2(
+        "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
+      )).get(parsed.selector);
+      if (!row) throw invalidTeamJoinLink();
+      await lockTeamLifecycle(tx, String(row.teamId));
+      row = await tx.prepare(sql2(
+        "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
+      )).get(parsed.selector);
+      const secretRow = await tx.prepare(sql2("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
+      const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
+      const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
+      const expectedSignature = Buffer.from(
+        row && secretRow ? teamJoinSignature(String(secretRow.secret), String(row.id), parsed.selector, parsed.verifier, String(row.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"),
+        "base64url"
+      );
+      const actualSignature = Buffer.from(parsed.signature, "base64url");
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
+      const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+      const expiresAt = Date.parse(row?.expiresAt ?? "");
+      if (!row || !verifierMatches || !signatureMatches || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= Date.parse(now2)) throw invalidTeamJoinLink();
+      const team = await tx.prepare(sql2("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
+      if (!team) throw invalidTeamJoinLink();
+      const attachedEmails = await tx.prepare(sql2(
+        "SELECT [email] FROM [sporades_auth_email_credentials] WHERE [userId] = ? UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL"
+      )).all(joiningUserId, joiningUserId);
+      const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
+      if (!attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) {
+        deniedTeamId = String(team.id);
+        throw invalidTeamJoinLink();
+      }
+      const redemption = await tx.prepare(sql2(
+        "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?"
+      )).get(row.id);
+      if (row.consumedAt) {
+        if (redemption?.userId !== joiningUserId) throw invalidTeamJoinLink();
+        const membership2 = await tx.prepare(sql2(
+          "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+        )).get(row.teamId, joiningUserId);
+        if (!membership2) throw invalidTeamJoinLink();
+        await ensureInitialTeamOnAdapter(tx, joiningUserId);
+        const count2 = await tx.prepare(sql2("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
+        return teamSummary({ id: team.id, name: team.name, role: membership2.role, memberCount: Number(count2?.count ?? 0) });
+      }
+      if (redemption) throw invalidTeamJoinLink();
+      const consumed = await tx.prepare(sql2(
+        "UPDATE [sporades_team_join_links] SET [consumedAt] = ? WHERE [id] = ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL AND [expiresAt] > ?"
+      )).run(now2, row.id, now2);
+      if (Number(consumed?.changes ?? 0) !== 1) throw invalidTeamJoinLink();
+      await tx.prepare(sql2(
+        "INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)"
+      )).run(row.id, row.teamId, joiningUserId, now2);
+      await ensureInitialTeamOnAdapter(tx, joiningUserId);
+      let membership = await tx.prepare(sql2(
+        "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+      )).get(row.teamId, joiningUserId);
+      if (!membership) {
+        await enforceTeamJoinAdmission(database, tx, auth, joiningUserId, String(row.teamId), eventContext?.signal);
+        registerTeamJoinCancellationBeforeCommit(tx, eventContext?.signal);
+        await ensureMembershipCounterOnAdapter(tx, joiningUserId);
+        const claim = await tx.prepare(sql2(
+          "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
+        )).run(joiningUserId, TEAM_MEMBERSHIP_MAX);
+        if (Number(claim?.changes ?? 0) !== 1) {
+          throw commandError2("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
+        }
+        await tx.prepare(sql2(
+          "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)"
+        )).run(row.teamId, joiningUserId, now2);
+        membership = { role: "member" };
+      }
+      await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
+      const count = await tx.prepare(sql2("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
+      return teamSummary({ id: team.id, name: team.name, role: membership.role, memberCount: Number(count?.count ?? 0) });
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auditUserId ?? auth?.userId, deniedTeamId, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
+    throw error;
+  }
+  await stageTeamBillingAfterMembershipCommit(database, joined.id);
+  emitTeamSecurityEvent(database, eventContext, "teams.joined", auditUserId, joined.id, "succeeded", "TEAM_JOINED");
+  return { team: joined };
+}
+async function stageTeamBillingAfterMembershipCommit(database, teamId) {
+  if (typeof database.stageTeamBillingMembershipChange !== "function") return;
+  try {
+    await database.stageTeamBillingMembershipChange(teamId);
+  } catch (error) {
+    database.log?.warn?.("Team Billing seat convergence staging deferred.", {
+      event: "team-billing.membership-staging-deferred",
+      data: { teamId, code: String(error?.code ?? "UNAVAILABLE") }
+    });
+  }
+}
+async function enforceTeamJoinAdmission(database, tx, auth, joiningUserId, teamId, signal) {
+  if (typeof database.runTeamJoinAdmission !== "function") return;
+  const count = await tx.prepare(tx.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+  )).get(teamId);
+  try {
+    const decision = await database.runTeamJoinAdmission(tx, auth, {
+      teamId,
+      userId: joiningUserId,
+      currentMemberCount: Number(count?.count ?? 0)
+    }, signal);
+    if (decision?.allow !== true) throw teamJoinDenied();
+  } catch {
+    throw teamJoinDenied();
+  }
+}
+function throwIfTeamJoinCancelled(signal) {
+  if (signal?.aborted) throw teamJoinDenied();
+}
+function registerTeamJoinCancellationBeforeCommit(transactionAdapter, signal) {
+  if (!signal) return;
+  let checks = transactionAdapter[transactionBeforeCommitChecks];
+  if (!Object.prototype.hasOwnProperty.call(transactionAdapter, transactionBeforeCommitChecks)) {
+    checks = [];
+    Object.defineProperty(transactionAdapter, transactionBeforeCommitChecks, { value: checks });
+  }
+  checks.push(() => throwIfTeamJoinCancelled(signal));
+}
+function normalizeTeamJoinEmail(email) {
+  const normalized = String(email ?? "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    throw commandError2("Email address is invalid.", "Provide a valid email address for the Join link.", "INVALID_EMAIL");
+  }
+  return normalized;
+}
+function normalizeTeamJoinIdentityEmail(email) {
+  return String(email ?? "").trim().toLowerCase();
+}
+function normalizeTeamJoinTtl(value) {
+  if (value === void 0) return TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS;
+  if (!Number.isInteger(value) || value < TEAM_JOIN_LINK_MIN_TTL_SECONDS || value > TEAM_JOIN_LINK_MAX_TTL_SECONDS) {
+    throw commandError2("Join link lifetime is invalid.", `Use an integer between ${TEAM_JOIN_LINK_MIN_TTL_SECONDS} and ${TEAM_JOIN_LINK_MAX_TTL_SECONDS} seconds.`, "INVALID_JOIN_LINK_TTL");
+  }
+  return value;
+}
+function parseTeamJoinCode(code) {
+  const [version3, selector, verifier, signature, ...rest] = typeof code === "string" ? code.split(".") : [];
+  if (version3 !== "v1" || rest.length > 0 || !/^[A-Za-z0-9_-]{16,64}$/.test(selector ?? "") || !/^[A-Za-z0-9_-]{32,128}$/.test(verifier ?? "") || !/^[A-Za-z0-9_-]{32,128}$/.test(signature ?? "")) return null;
+  return { selector, verifier, signature };
+}
+function hashTeamJoinVerifier(verifier) {
+  return createHash5("sha256").update(verifier).digest("base64url");
+}
+function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
+  return createHmac("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
+}
+async function teamJoinSigningSecret(tx, createdAt) {
+  const existing = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
+  if (existing?.secret) return String(existing.secret);
+  const secret = randomBytes4(32).toString("base64url");
+  await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_link_secrets] ([id], [secret], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([id]) DO NOTHING")).run(TEAM_JOIN_LINK_SECRET_ID, secret, createdAt);
+  const claimed = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
+  return String(claimed?.secret ?? secret);
+}
+async function currentTeamAdmin(tx, teamId, userId) {
+  const membership = await tx.prepare(tx.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+  return membership?.role === "admin";
+}
+async function countTeamAdmins(tx, teamId) {
+  const row = await tx.prepare(tx.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [role] = 'admin'"
+  )).get(teamId);
+  return Number(row?.count ?? 0);
+}
+async function lockTeamLifecycle(tx, teamId, missingTeamError = teamDenied) {
+  if (!isOpaqueTeamId(teamId) || !await tryLockTeamLifecycle(tx, teamId)) throw missingTeamError();
+}
+async function tryLockTeamLifecycle(tx, teamId) {
+  const claimed = await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_teams] SET [name] = [name] WHERE [id] = ?"
+  )).run(teamId);
+  return Number(claimed?.changes ?? 0) === 1;
+}
+async function releaseTeamMembershipSlot(tx, userId) {
+  await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] - 1 WHERE [userId] = ? AND [membershipCount] > 0"
+  )).run(userId);
+}
+async function pruneExpiredTeamJoinLinks(tx, now2) {
+  const rows = await tx.prepare(tx.dialect.sql("SELECT [id], [teamId] FROM [sporades_team_join_links] WHERE [expiresAt] <= ? LIMIT ?")).all(now2, TEAM_JOIN_LINK_PRUNE_LIMIT);
+  for (const row of rows) {
+    const deleted = await deleteExpiredTeamJoinLink(tx, String(row.id), String(row.teamId), now2);
+    if (Number(deleted?.changes ?? 0) === 1) await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
+  }
+}
+async function claimTeamJoinLinkCreationSlot(tx, teamId, adminUserId, now2) {
+  const windowStart = new Date(Date.parse(now2) - 60 * 60 * 1e3).toISOString();
+  await tx.prepare(tx.dialect.sql(
+    "INSERT INTO [sporades_team_join_link_throttles] ([teamId], [adminUserId], [windowStartedAt], [count]) VALUES (?, ?, ?, 0) ON CONFLICT ([teamId], [adminUserId]) DO NOTHING"
+  )).run(teamId, adminUserId, now2);
+  await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_join_link_throttles] SET [windowStartedAt] = ?, [count] = 0 WHERE [teamId] = ? AND [adminUserId] = ? AND [windowStartedAt] <= ?"
+  )).run(now2, teamId, adminUserId, windowStart);
+  const claimed = await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_join_link_throttles] SET [count] = [count] + 1 WHERE [teamId] = ? AND [adminUserId] = ? AND [windowStartedAt] > ? AND [count] < ?"
+  )).run(teamId, adminUserId, windowStart, TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR);
+  if (Number(claimed?.changes ?? 0) !== 1) throw teamJoinLinkThrottleError();
+}
+async function claimTeamJoinLinkCapacity(tx, teamId, now2) {
+  await tx.prepare(tx.dialect.sql(
+    "INSERT INTO [sporades_team_join_link_counters] ([teamId], [activeCount]) SELECT ?, COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ON CONFLICT ([teamId]) DO NOTHING"
+  )).run(teamId, teamId, now2);
+  const claimed = await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_join_link_counters] SET [activeCount] = [activeCount] + 1 WHERE [teamId] = ? AND [activeCount] < ?"
+  )).run(teamId, TEAM_JOIN_LINK_MAX_OUTSTANDING);
+  if (Number(claimed?.changes ?? 0) !== 1) throw teamJoinLinkLimitError();
+}
+async function reconcileTeamJoinLinkCapacity(tx, teamId, now2) {
+  const expired = await tx.prepare(tx.dialect.sql(
+    "SELECT [id] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] <= ? LIMIT ?"
+  )).all(teamId, now2, TEAM_JOIN_LINK_PRUNE_LIMIT);
+  for (const row of expired) await deleteExpiredTeamJoinLink(tx, String(row.id), teamId, now2);
+  await tx.prepare(tx.dialect.sql(
+    "INSERT INTO [sporades_team_join_link_counters] ([teamId], [activeCount]) SELECT ?, COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ON CONFLICT ([teamId]) DO NOTHING"
+  )).run(teamId, teamId, now2);
+  await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_join_link_counters] SET [activeCount] = (SELECT COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL) WHERE [teamId] = ?"
+  )).run(teamId, now2, teamId);
+}
+async function deleteExpiredTeamJoinLink(tx, joinLinkId, teamId, now2) {
+  await tx.prepare(tx.dialect.sql(
+    "DELETE FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ? AND [teamId] = ?"
+  )).run(joinLinkId, teamId);
+  return tx.prepare(tx.dialect.sql(
+    "DELETE FROM [sporades_team_join_links] WHERE [id] = ? AND [teamId] = ? AND [expiresAt] <= ?"
+  )).run(joinLinkId, teamId, now2);
+}
+async function releaseTeamJoinLinkCapacity(tx, teamId) {
+  await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_join_link_counters] SET [activeCount] = [activeCount] - 1 WHERE [teamId] = ? AND [activeCount] > 0"
+  )).run(teamId);
+}
+function teamJoinLinkThrottleError() {
+  return commandError2("Join link creation is temporarily limited.", "Wait before creating another Join link for this Team.", "JOIN_LINK_THROTTLED");
+}
+function teamJoinLinkLimitError() {
+  return commandError2("Too many Join links are outstanding for this Team.", "Revoke an unused link or wait for one to expire.", "JOIN_LINK_LIMIT_REACHED");
+}
+function invalidTeamJoinLink() {
+  return commandError2("Join link is invalid.", "Use a current Join link for this linked account.", "INVALID_JOIN_LINK");
+}
+function teamJoinDenied() {
+  return commandError2("Could not join this Team.", "Ask a Team administrator for access.", "TEAM_JOIN_DENIED");
+}
+function teamMemberCountDenied() {
+  return commandError2("Could not read this Team's member count.", "Sign in as a current Team member and retry.", "DENIED");
+}
+async function listCurrentUserTeams(database, auth) {
+  requireAuth({ auth }, { linked: true });
+  await ensureInitialTeam(database, auth);
+  const sql2 = database.adapter.dialect.sql;
+  const rows = await database.adapter.prepare(sql2(
+    "SELECT [t].[id], [t].[name], [m].[role], CASE WHEN (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) > ? THEN ? ELSE (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) END AS [memberCount] FROM [sporades_team_memberships] [m] JOIN [sporades_teams] [t] ON [t].[id] = [m].[teamId] WHERE [m].[userId] = ? ORDER BY [t].[createdAt] ASC, [t].[id] ASC"
+  )).all(TEAM_MEMBER_COUNT_MAX, TEAM_MEMBER_COUNT_MAX, auth.userId);
+  return {
+    teams: await Promise.all(rows.map(async (row) => ({
+      id: String(row.id),
+      name: safeTeamName(row.name),
+      role: row.role === "admin" ? "admin" : "member",
+      applicationRoles: await activeTeamApplicationRoles(database.adapter, database.teamApplicationRoles, row.id, auth.userId),
+      memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(row.memberCount) || 0))
+    })))
+  };
+}
+async function createAdditionalTeam(database, auth, name2, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  const normalizedName = normalizeTeamName(name2);
+  const team = await withTeamTransaction(database, async (tx) => {
+    await ensureInitialTeamOnAdapter(tx, auth.userId);
+    await ensureMembershipCounterOnAdapter(tx, auth.userId);
+    const claim = await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
+    )).run(auth.userId, TEAM_MEMBERSHIP_MAX);
+    if (Number(claim?.changes ?? 0) !== 1) {
+      throw commandError2(
+        "Team limit reached.",
+        `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`,
+        "TEAM_LIMIT_REACHED"
+      );
+    }
+    const id2 = randomUUID3();
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
+    await tx.prepare(tx.dialect.sql(
+      "INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)"
+    )).run(id2, normalizedName, now2, auth.userId);
+    await tx.prepare(tx.dialect.sql(
+      "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)"
+    )).run(id2, auth.userId, now2);
+    return teamSummary({ id: id2, name: normalizedName, role: "admin", memberCount: 1 });
+  });
+  emitTeamSecurityEvent(database, eventContext, "teams.created", auth.userId, team.id, "succeeded", "TEAM_CREATED");
+  return { team };
+}
+async function renameCurrentUserTeam(database, auth, teamId, name2, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId)) {
+    emitTeamSecurityEvent(database, eventContext, "teams.rename", auth.userId, null, "denied", "DENIED");
+    throw teamDenied();
+  }
+  const normalizedName = normalizeTeamName(name2);
+  const team = await withTeamTransaction(database, async (tx) => {
+    await lockTeamLifecycle(tx, teamId);
+    const membership = await tx.prepare(tx.dialect.sql(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+    )).get(teamId, auth.userId);
+    if (membership?.role !== "admin") {
+      emitTeamSecurityEvent(database, eventContext, "teams.rename", auth.userId, teamId, "denied", "DENIED");
+      throw teamDenied();
+    }
+    const changed = await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_teams] SET [name] = ? WHERE [id] = ?"
+    )).run(normalizedName, teamId);
+    if (Number(changed?.changes ?? 0) !== 1) throw teamDenied();
+    const count = await tx.prepare(tx.dialect.sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+    )).get(teamId);
+    return teamSummary({ id: teamId, name: normalizedName, role: "admin", memberCount: Number(count?.count ?? 0) });
+  });
+  emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id, "succeeded", "TEAM_RENAMED");
+  return { team };
+}
+async function updateTeamMemberApplicationRoles(database, auth, teamId, userId, changes, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  let patch;
+  try {
+    if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId)) throw teamDenied();
+    patch = normalizeTeamApplicationRolePatch(changes, database.teamApplicationRoles ?? []);
+    await withTeamTransaction(database, async (tx) => {
+      const sql2 = tx.dialect.sql;
+      await lockTeamLifecycle(tx, teamId);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+      const target = await tx.prepare(sql2("SELECT [userId] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+      if (!target) throw teamDenied();
+      for (const role of patch.remove) {
+        await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ? AND [role] = ?")).run(teamId, userId, role);
+      }
+      const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+      for (const role of patch.add) {
+        await tx.prepare(sql2("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?) ON CONFLICT ([teamId], [userId], [role]) DO NOTHING")).run(teamId, userId, role, now2);
+      }
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.updateApplicationRoles", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  emitTeamSecurityEvent(database, eventContext, "teams.applicationRolesUpdated", auth.userId, teamId, "succeeded", "TEAM_APPLICATION_ROLES_UPDATED", {
+    targetUserId: String(userId).slice(0, 128),
+    add: patch.add,
+    remove: patch.remove
+  });
+  return { updated: true };
+}
+async function promoteTeamMember(database, auth, teamId, userId, eventContext) {
+  return changeTeamMemberRole(database, auth, teamId, userId, "admin", eventContext);
+}
+async function demoteTeamMember(database, auth, teamId, userId, eventContext) {
+  return changeTeamMemberRole(database, auth, teamId, userId, "member", eventContext);
+}
+async function changeTeamMemberRole(database, auth, teamId, userId, role, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  const operation = role === "admin" ? "teams.promote" : "teams.demote";
+  const event = role === "admin" ? "teams.promoted" : "teams.demoted";
+  try {
+    if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId)) throw teamDenied();
+    await withTeamTransaction(database, async (tx) => {
+      const sql2 = tx.dialect.sql;
+      await lockTeamLifecycle(tx, teamId);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+      const target = await tx.prepare(sql2("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+      if (!target) throw teamDenied();
+      if (role === "member" && target.role === "admin") {
+        const admins = await countTeamAdmins(tx, teamId);
+        if (admins < 2) throw teamDenied();
+      }
+      await tx.prepare(sql2("UPDATE [sporades_team_memberships] SET [role] = ? WHERE [teamId] = ? AND [userId] = ?")).run(role, teamId, userId);
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, operation, auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  emitTeamSecurityEvent(database, eventContext, event, auth.userId, teamId, "succeeded", role === "admin" ? "TEAM_MEMBER_PROMOTED" : "TEAM_MEMBER_DEMOTED");
+  return { updated: true };
+}
+async function removeTeamMember(database, auth, teamId, userId, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  try {
+    if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId) || userId === auth.userId) throw teamDenied();
+    await withTeamTransaction(database, async (tx) => {
+      const sql2 = tx.dialect.sql;
+      await lockTeamLifecycle(tx, teamId);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+      const target = await tx.prepare(sql2("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
+      if (!target) throw teamDenied();
+      if (target.role === "admin" && await countTeamAdmins(tx, teamId) < 2) throw teamDenied();
+      await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
+      const removed = await tx.prepare(sql2("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
+      if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
+      await releaseTeamMembershipSlot(tx, userId);
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.removeMember", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  await stageTeamBillingAfterMembershipCommit(database, teamId);
+  emitTeamSecurityEvent(database, eventContext, "teams.memberRemoved", auth.userId, teamId, "succeeded", "TEAM_MEMBER_REMOVED");
+  return { removed: true };
+}
+async function leaveCurrentUserTeam(database, auth, teamId, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  try {
+    if (!isOpaqueTeamId(teamId)) throw teamDenied();
+    await withTeamTransaction(database, async (tx) => {
+      const sql2 = tx.dialect.sql;
+      await lockTeamLifecycle(tx, teamId);
+      const membership = await tx.prepare(sql2("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
+      if (!membership || membership.role === "admin") throw teamDenied();
+      await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
+      const removed = await tx.prepare(sql2("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
+      if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
+      await releaseTeamMembershipSlot(tx, auth.userId);
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.leave", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  await stageTeamBillingAfterMembershipCommit(database, teamId);
+  emitTeamSecurityEvent(database, eventContext, "teams.left", auth.userId, teamId, "succeeded", "TEAM_LEFT");
+  return { left: true };
+}
+async function deleteCurrentUserTeam(database, auth, teamId, eventContext) {
+  requireAuth({ auth }, { linked: true });
+  try {
+    if (!isOpaqueTeamId(teamId)) throw teamDenied();
+    await withTeamTransaction(database, async (tx) => {
+      const sql2 = tx.dialect.sql;
+      await lockTeamLifecycle(tx, teamId);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
+      const members = await tx.prepare(sql2("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
+      if (Number(members?.count ?? 0) !== 1) throw teamDenied();
+      const links = await tx.prepare(sql2("SELECT [id] FROM [sporades_team_join_links] WHERE [teamId] = ?")).all(teamId);
+      for (const link2 of links) {
+        await tx.prepare(sql2("DELETE FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?")).run(link2.id);
+      }
+      await tx.prepare(sql2("DELETE FROM [sporades_team_join_links] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_join_link_throttles] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_join_link_counters] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ?")).run(teamId);
+      await tx.prepare(sql2("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
+      const deleted = await tx.prepare(sql2("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
+      if (Number(deleted?.changes ?? 0) !== 1) throw teamDenied();
+      await releaseTeamMembershipSlot(tx, auth.userId);
+    });
+  } catch (error) {
+    emitTeamSecurityEvent(database, eventContext, "teams.delete", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
+    throw error;
+  }
+  emitTeamSecurityEvent(database, eventContext, "teams.deleted", auth.userId, teamId, "succeeded", "TEAM_DELETED");
+  return { deleted: true };
+}
+async function listTeamMembers(database, auth, teamId, options = {}) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId)) throw teamDenied();
+  return withTeamTransaction(database, async (tx) => {
+    const sql2 = tx.dialect.sql;
+    await lockTeamLifecycle(tx, teamId);
+    const callerMembership = await tx.prepare(sql2(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+    )).get(teamId, auth.userId);
+    if (callerMembership?.role !== "admin") throw teamDenied();
+    const page = normalizeTeamMemberPage(options);
+    const total = await tx.prepare(sql2(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+    )).get(teamId);
+    const cursorClause = page.cursor ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) " : "";
+    const params = page.cursor ? [teamId, page.cursor.createdAt, page.cursor.createdAt, page.cursor.userId, page.limit + 1] : [teamId, page.limit + 1];
+    const rows = await tx.prepare(sql2(
+      "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role] , [m].[createdAt] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? " + cursorClause + "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
+    )).all(...params);
+    const hasMore = rows.length > page.limit;
+    const pageRows = hasMore ? rows.slice(0, page.limit) : rows;
+    const last = pageRows.at(-1);
+    return {
+      members: await Promise.all(pageRows.map(async (row) => ({
+        userId: String(row.userId),
+        displayName: String(row.displayName),
+        picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
+        role: row.role === "admin" ? "admin" : "member",
+        applicationRoles: await activeTeamApplicationRoles(tx, database.teamApplicationRoles, teamId, row.userId)
+      }))),
+      ...hasMore && last ? { nextCursor: encodeTeamMemberCursor(String(last.createdAt), String(last.userId)) } : {},
+      totalCount: Number(total?.count ?? 0)
+    };
+  });
+}
+async function countTeamMembers(database, auth, teamId) {
+  requireAuth({ auth }, { linked: true });
+  if (!isOpaqueTeamId(teamId)) throw teamMemberCountDenied();
+  return withTeamTransaction(database, async (tx) => {
+    const sql2 = tx.dialect.sql;
+    await lockTeamLifecycle(tx, teamId, teamMemberCountDenied);
+    const callerMembership = await tx.prepare(sql2(
+      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+    )).get(teamId, auth.userId);
+    if (!callerMembership) throw teamMemberCountDenied();
+    const total = await tx.prepare(sql2(
+      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+    )).get(teamId);
+    return { totalCount: Number(total?.count ?? 0) };
+  });
+}
+function normalizeTeamMemberPage(options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) throw invalidTeamMemberPage();
+  const limit = options.limit === void 0 ? TEAM_MEMBER_LIST_DEFAULT : options.limit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > TEAM_MEMBER_LIST_MAX) throw invalidTeamMemberPage();
+  if (options.cursor === void 0) return { cursor: null, limit };
+  if (typeof options.cursor !== "string" || options.cursor.length < 1 || options.cursor.length > 512) throw invalidTeamMemberPage();
+  try {
+    if (!/^[A-Za-z0-9_-]+$/.test(options.cursor)) throw invalidTeamMemberPage();
+    const cursorBytes = Buffer.from(options.cursor, "base64url");
+    if (cursorBytes.toString("base64url") !== options.cursor) throw invalidTeamMemberPage();
+    const decoded = JSON.parse(cursorBytes.toString("utf8"));
+    if (decoded?.v !== 1 || typeof decoded.createdAt !== "string" || !Number.isFinite(Date.parse(decoded.createdAt)) || typeof decoded.userId !== "string" || decoded.userId.length < 1 || decoded.userId.length > 256) {
+      throw invalidTeamMemberPage();
+    }
+    return { cursor: { createdAt: decoded.createdAt, userId: decoded.userId }, limit };
+  } catch (error) {
+    if (error?.code === "INVALID_TEAM_MEMBER_PAGE") throw error;
+    throw invalidTeamMemberPage();
+  }
+}
+function encodeTeamMemberCursor(createdAt, userId) {
+  return Buffer.from(JSON.stringify({ v: 1, createdAt, userId }), "utf8").toString("base64url");
+}
+function invalidTeamMemberPage() {
+  return commandError2("Team member page is invalid.", `Use a limit from 1 through ${TEAM_MEMBER_LIST_MAX} and a cursor returned by listMembers().`, "INVALID_TEAM_MEMBER_PAGE");
+}
+async function ensureInitialTeam(database, auth) {
+  if (database.__transactionActive) {
+    return ensureInitialTeamOnAdapter(database.adapter, auth.userId);
+  }
+  const root = database.__rootDatabase ?? database;
+  root.__teamBootstrapByUser ??= /* @__PURE__ */ new Map();
+  const running = root.__teamBootstrapByUser.get(auth.userId);
+  if (running) return running;
+  const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
+  const work = previous.catch(() => void 0).then(() => bootstrapWithRetry(database.adapter, auth.userId));
+  root.__runtimeTransactionQueue = work;
+  root.__teamBootstrapByUser.set(auth.userId, work);
+  try {
+    return await work;
+  } finally {
+    if (root.__teamBootstrapByUser.get(auth.userId) === work) root.__teamBootstrapByUser.delete(auth.userId);
+    if (root.__runtimeTransactionQueue === work) root.__runtimeTransactionQueue = null;
+  }
+}
+async function withTeamTransaction(database, callback) {
+  if (database.__transactionActive) return callback(database.adapter);
+  const root = database.__rootDatabase ?? database;
+  const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
+  const work = previous.catch(() => void 0).then(() => teamTransactionWithRetry(database.adapter, callback));
+  root.__runtimeTransactionQueue = work;
+  try {
+    return await work;
+  } finally {
+    if (root.__runtimeTransactionQueue === work) root.__runtimeTransactionQueue = null;
+  }
+}
+async function teamTransactionWithRetry(adapter, callback) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await adapter.withTransaction(callback);
+    } catch (error) {
+      if (attempt >= TEAM_BOOTSTRAP_RETRY_LIMIT - 1 || !isTransientTeamBootstrapError(error)) throw error;
+      await new Promise((resolve2) => setTimeout(resolve2, (attempt + 1) * 10));
+    }
+  }
+}
+async function bootstrapWithRetry(adapter, userId) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, userId));
+    } catch (error) {
+      if (attempt >= TEAM_BOOTSTRAP_RETRY_LIMIT - 1 || !isTransientTeamBootstrapError(error)) throw error;
+      await new Promise((resolve2) => setTimeout(resolve2, (attempt + 1) * 10));
+    }
+  }
+}
+function isTransientTeamBootstrapError(error) {
+  const text3 = String(error?.message ?? error?.errstr ?? "").toLowerCase();
+  const code = String(error?.code ?? "").toUpperCase();
+  return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") && (text3.includes("locked") || text3.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
+}
+async function bootstrapInitialTeamForLinkedUser(tx, userId) {
+  return ensureInitialTeamOnAdapter(tx, userId);
+}
+async function ensureInitialTeamOnAdapter(tx, userId) {
+  const sql2 = tx.dialect.sql;
+  const id2 = randomUUID3();
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
+  const claim = await tx.prepare(sql2(
+    "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
+  )).run(userId, id2, now2);
+  if (Number(claim?.changes ?? 0) === 0) {
+    const existing = await tx.prepare(sql2("SELECT [teamId] FROM [sporades_team_bootstrap] WHERE [userId] = ?")).get(userId);
+    if (existing?.teamId) return String(existing.teamId);
+    throw new Error("Team bootstrap claim was not committed.");
+  }
+  await tx.prepare(sql2("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id2, INITIAL_TEAM_NAME, now2, userId);
+  await tx.prepare(sql2("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id2, userId, now2);
+  await tx.prepare(sql2("INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) VALUES (?, 1)")).run(userId);
+  return id2;
+}
+async function ensureMembershipCounterOnAdapter(tx, userId) {
+  const sql2 = tx.dialect.sql;
+  await tx.prepare(sql2(
+    "INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) SELECT ?, COUNT(*) FROM [sporades_team_memberships] WHERE [userId] = ? ON CONFLICT ([userId]) DO NOTHING"
+  )).run(userId, userId);
+}
+function safeTeamName(value) {
+  const name2 = typeof value === "string" ? value.trim() : "";
+  return Buffer.byteLength(name2, "utf8") <= TEAM_NAME_MAX_BYTES && name2.length > 0 ? name2 : INITIAL_TEAM_NAME;
+}
+function normalizeTeamName(value) {
+  if (typeof value !== "string") {
+    throw commandError2("Team name is required.", "Provide a non-empty Team name.", "INVALID_TEAM_NAME");
+  }
+  const name2 = value.normalize("NFKC").replace(/\s+/gu, " ").trim();
+  if (name2.length === 0 || Buffer.byteLength(name2, "utf8") > TEAM_NAME_MAX_BYTES) {
+    throw commandError2(
+      "Team name is invalid.",
+      `Use a non-empty Team name up to ${TEAM_NAME_MAX_BYTES} UTF-8 bytes.`,
+      "INVALID_TEAM_NAME"
+    );
+  }
+  return name2;
+}
+function invalidTeamApplicationRoleDeclaration() {
+  return commandError2(
+    "Invalid Team application-role declaration.",
+    `Declare at most ${TEAM_APPLICATION_ROLE_MAX} unique lowercase roles using letters, digits, and hyphens; admin, member, and sporades-* are reserved.`,
+    "INVALID_TEAM_APPLICATION_ROLES"
+  );
+}
+function invalidTeamApplicationRolePatch() {
+  return commandError2(
+    "Invalid Team application-role update.",
+    `Use non-overlapping add and remove arrays of at most ${TEAM_APPLICATION_ROLE_PATCH_MAX} declared roles.`,
+    "INVALID_APPLICATION_ROLES"
+  );
+}
+function normalizeTeamApplicationRolePatch(value, declared) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.add) || !Array.isArray(value.remove) || value.add.length > TEAM_APPLICATION_ROLE_PATCH_MAX || value.remove.length > TEAM_APPLICATION_ROLE_PATCH_MAX) throw invalidTeamApplicationRolePatch();
+  const allowed = new Set(Array.isArray(declared) ? declared : []);
+  const normalize = (roles) => {
+    const seen = /* @__PURE__ */ new Set();
+    for (const role of roles) {
+      if (typeof role !== "string" || !allowed.has(role) || seen.has(role)) throw invalidTeamApplicationRolePatch();
+      seen.add(role);
+    }
+    return [...seen];
+  };
+  const add = normalize(value.add);
+  const remove = normalize(value.remove);
+  if (add.some((role) => remove.includes(role))) throw invalidTeamApplicationRolePatch();
+  return { add, remove };
+}
+async function activeTeamApplicationRoles(adapter, declared, teamId, userId) {
+  const active = Array.isArray(declared) ? declared : [];
+  if (active.length === 0) return [];
+  const rows = await adapter.prepare(adapter.dialect.sql(
+    "SELECT [role] FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?"
+  )).all(String(teamId), String(userId));
+  const assigned = new Set(rows.map((row) => String(row.role)));
+  return active.filter((role) => assigned.has(role));
+}
+function isOpaqueTeamId(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+async function runPrivilegedTeamInspection(contextGetter, inspect) {
+  const assertActive = () => assertActivePrivilegedTeamAccess(contextGetter);
+  assertActive();
+  let result;
+  try {
+    result = await inspect(assertActive);
+  } catch (error) {
+    assertActive();
+    throw error;
+  }
+  assertActive();
+  return result;
+}
+function assertActivePrivilegedTeamAccess(contextGetter) {
+  const context2 = contextGetter?.();
+  if (context2?.__privilegedRunActive && !context2.signal?.aborted) return;
+  throw commandError2(
+    "Privileged Team access is no longer active.",
+    "Start a new ctx.privileged.run callback before inspecting Team state.",
+    "PRIVILEGED_TEAM_ACCESS_INACTIVE"
+  );
+}
+function privilegedTeamNotFound() {
+  return commandError2(
+    "Team was not found.",
+    "Use an existing Team identifier and retry.",
+    "TEAM_NOT_FOUND"
+  );
+}
+function teamDenied() {
+  return commandError2("Team operation denied.", "Sign in with a Team administrator account and retry.", "DENIED");
+}
+function teamSummary(input) {
+  return {
+    id: String(input.id),
+    name: safeTeamName(input.name),
+    role: input.role === "admin" ? "admin" : "member",
+    applicationRoles: [],
+    memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(input.memberCount) || 0))
+  };
+}
+function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamId, outcome, code, extra = {}) {
+  const input = {
+    category: "audit",
+    event,
+    level: "info",
+    message: teamSecurityMessage(event, outcome),
+    data: {
+      operation: teamSecurityOperation(event),
+      outcome,
+      code: code.slice(0, 80),
+      actorUserId: String(actorUserId).slice(0, 128),
+      teamId: teamId === null ? null : String(teamId).slice(0, 64),
+      ...extra,
+      ...accessKeyCredentialLogAttribution(eventContext)
+    },
+    request: null,
+    release: null,
+    correlation: null
+  };
+  if (database.__transactionActive && eventContext) {
+    eventContext.__teamSecurityEvents ??= [];
+    eventContext.__teamSecurityEvents.push(input);
+    return;
+  }
+  database.log?.emit?.(input);
+}
+function teamSecurityOperation(event) {
+  if (event === "teams.created") return "teams.create";
+  if (event === "teams.renamed" || event === "teams.rename") return "teams.rename";
+  if (event === "teams.joined" || event === "teams.joinLink.join") return "teams.join";
+  if (event === "teams.joinLink.created" || event === "teams.joinLink.create") return "teams.createJoinLink";
+  if (event === "teams.joinLink.revoked" || event === "teams.joinLink.revoke") return "teams.revokeJoinLink";
+  if (event === "teams.promoted" || event === "teams.promote") return "teams.promote";
+  if (event === "teams.demoted" || event === "teams.demote") return "teams.demote";
+  if (event === "teams.applicationRolesUpdated" || event === "teams.updateApplicationRoles") return "teams.updateApplicationRoles";
+  if (event === "teams.memberRemoved" || event === "teams.removeMember") return "teams.removeMember";
+  if (event === "teams.left" || event === "teams.leave") return "teams.leave";
+  return "teams.delete";
+}
+function teamSecurityMessage(event, outcome) {
+  if (outcome === "denied") return "Team lifecycle operation denied.";
+  if (event === "teams.created") return "Team created.";
+  if (event === "teams.renamed") return "Team renamed.";
+  if (event === "teams.joined") return "Joined Team.";
+  if (event === "teams.joinLink.created") return "Team Join link created.";
+  if (event === "teams.joinLink.revoked") return "Team Join link revoked.";
+  if (event === "teams.promoted") return "Team member promoted.";
+  if (event === "teams.demoted") return "Team admin demoted.";
+  if (event === "teams.applicationRolesUpdated") return "Team application roles updated.";
+  if (event === "teams.memberRemoved") return "Team member removed.";
+  if (event === "teams.left") return "Left Team.";
+  if (event === "teams.deleted") return "Team deleted.";
+  return "Team operation completed.";
+}
+function flushTeamSecurityEvents(database, context2, options = {}) {
+  const events = context2?.__teamSecurityEvents;
+  if (!Array.isArray(events)) return;
+  if (!context2) return;
+  delete context2.__teamSecurityEvents;
+  for (const event of events) {
+    if (options.deniedOnly && event?.data?.outcome !== "denied") continue;
+    database.log?.emit?.(event);
+  }
+}
+
+// src/http-runtime.ts
+import { ServerResponse } from "node:http";
+
 // src/team-billing-runtime.ts
-import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
 
 // src/team-billing-subscription-semantics.ts
 function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
@@ -103754,10 +104952,10 @@ function teamBillingQuantityPolicyFingerprint(policy) {
 }
 
 // src/team-billing-convergence.ts
-import { createHash as createHash6, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
 
 // src/team-billing-management.ts
-import { createHash as createHash5, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID4 } from "node:crypto";
 var TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 var TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 var CLAIM_TTL_MS = 5 * 60 * 1e3;
@@ -103783,7 +104981,7 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
     assertCurrentModeAndCatalogue(database, subscription, currentProduct);
     if (!currentProduct || sameQuantityPolicy(currentProduct.quantity, targetProduct.quantity)) throw transitionNotRequired();
     const quantity = await targetQuantity(transaction, teamId, targetProduct);
-    const operationId = randomUUID3();
+    const operationId = randomUUID4();
     const now2 = nowIso(database);
     const effectiveAt = nowSeconds(database);
     const staged = await stageDesired(transaction, database, {
@@ -103850,7 +105048,7 @@ async function performTeamBillingSeatConvergence(database, context2, payload) {
 }
 async function performDesired(database, _context, payload, kind) {
   if (typeof payload?.intentId !== "string" || typeof payload?.generationId !== "string") return { superseded: true };
-  const claimToken = randomUUID3();
+  const claimToken = randomUUID4();
   const snapshot = await inTransaction(database, async (transaction) => {
     const desired = await desiredByIntent(transaction, payload.intentId);
     if (!desired || desired.kind !== kind || desired.activeJobGenerationId !== payload.generationId || !["queued", "running", "awaiting-observation"].includes(desired.status)) return { superseded: true };
@@ -104147,7 +105345,7 @@ async function stageDesired(transaction, database, input) {
       enqueue
     };
   }
-  const intentId = randomUUID3();
+  const intentId = randomUUID4();
   const idempotencyKey = intentIdempotency(database, input.teamId, intentId);
   const now2 = nowIso(database);
   if (existing) {
@@ -104165,7 +105363,7 @@ async function stageDesired(transaction, database, input) {
 async function enqueueIntent(database, transaction, desired, availableAt) {
   const callback = desired.kind === "plan-transition" ? database.enqueueTeamBillingPlanTransitionJob : database.enqueueTeamBillingSeatConvergenceJob;
   if (typeof callback !== "function") throw retryable("TEAM_BILLING_PROVIDER_UNAVAILABLE");
-  const generationId = randomUUID3();
+  const generationId = randomUUID4();
   const activated = await transaction.prepare(transaction.dialect.sql(
     "UPDATE [sporades_team_billing_desired_state] SET [activeJobGenerationId] = ?, [updatedAt] = ? WHERE [intentId] = ?"
   )).run(generationId, nowIso(database), desired.intentId);
@@ -104290,10 +105488,10 @@ function sameQuantityPolicy(left, right) {
   return left?.kind === right?.kind && teamBillingQuantityPolicyFingerprint(left) === teamBillingQuantityPolicyFingerprint(right);
 }
 function intentIdempotency(database, teamId, intentId) {
-  return `sporades-team-billing-${createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
+  return `sporades-team-billing-${createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
 }
 function operationIdempotency(database, operationId) {
-  return `sporades-team-billing-operation-${createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
+  return `sporades-team-billing-operation-${createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
 }
 async function inTransaction(database, callback) {
   if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
@@ -104505,7 +105703,7 @@ async function applySubscription(database, event, mode) {
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )).run(
-      randomUUID4(),
+      randomUUID5(),
       teamId,
       mode,
       subscriptionId,
@@ -104677,7 +105875,7 @@ async function recordObservation(database, event, digest2, teamId, objectId, ran
   await database.adapter.prepare(database.adapter.dialect.sql(
     "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt], [eventType], [eventRank], [outcome], [safeReason]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING"
   )).run(
-    randomUUID4(),
+    randomUUID5(),
     teamId,
     event.livemode ? "live" : "sandbox",
     event.providerEventId,
@@ -104712,7 +105910,7 @@ function boundedObjectId(value) {
 }
 function safeDigest(raw) {
   try {
-    return createHash6("sha256").update(JSON.stringify(raw)).digest("hex");
+    return createHash7("sha256").update(JSON.stringify(raw)).digest("hex");
   } catch {
     return null;
   }
@@ -104915,7 +106113,7 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
     } else if (active) {
       throw checkoutActive();
     }
-    const operationId = randomUUID5();
+    const operationId = randomUUID6();
     const idempotencyKey = checkoutIdempotencyKey(database.capsuleIdentity, teamId, requestId);
     const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1e3) / 1e3);
     await transaction.prepare(sql2(
@@ -104958,7 +106156,7 @@ async function startTeamBillingPortal(database, auth, teamId, requestId) {
         "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
       )).run(now2, active.id);
     } else if (active) throw checkoutActive();
-    const operationId = randomUUID5();
+    const operationId = randomUUID6();
     const idempotencyKey = teamBillingOperationIdempotencyKey(database.capsuleIdentity, "portal", teamId, requestId);
     await transaction.prepare(sql2(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'portal' AND [status] = 'queued' AND [providerObjectId] IS NULL"
@@ -105033,7 +106231,7 @@ async function performTeamBillingCheckout(database, context2, payload, attempt =
       )).get(operation.teamId);
       if (customer && customer.mode !== desired.mode) throw checkoutUnavailable();
       const attemptedAt = database.clock.now().toISOString();
-      const claimToken = randomUUID5();
+      const claimToken = randomUUID6();
       const claimExpiresAt = new Date(database.clock.now().getTime() + 5 * 6e4).toISOString();
       await transaction.prepare(sql2(
         "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
@@ -105268,10 +106466,10 @@ async function admitTeamBillingActor(database, transaction, auth, input) {
   return Object.freeze({ admitted: true });
 }
 function teamBillingErasureKey(database, teamId) {
-  return createHash7("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
+  return createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
 }
 function teamBillingErasureObjectKey(database, providerObjectId) {
-  return createHash7("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
+  return createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
 }
 async function assertTeamBillingErasureInactive(database, transaction, teamId) {
   const active = await transaction.prepare(transaction.dialect.sql(
@@ -105534,7 +106732,7 @@ function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
   return teamBillingOperationIdempotencyKey(capsuleIdentity, "checkout", teamId, requestId);
 }
 function teamBillingOperationIdempotencyKey(capsuleIdentity, kind, teamId, requestId) {
-  const digest2 = createHash7("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
+  const digest2 = createHash8("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
   return `sporades:team-${kind}:${digest2}`;
 }
 function exactOperationId(payload) {
@@ -105630,7 +106828,7 @@ function teamBillingDenied() {
 }
 
 // src/team-billing-erasure.ts
-import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash9, randomUUID as randomUUID7 } from "node:crypto";
 var TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
 var TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var CHECKOUT_ID2 = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
@@ -105650,8 +106848,8 @@ async function prepareTeamBillingErasure(database, auth, teamId, requestId) {
     if (existing) {
       return Object.freeze({ state: "pending", teamId, requestId, requestedAt: existing.createdAt });
     }
-    const operationId = randomUUID6();
-    const generationId = randomUUID6();
+    const operationId = randomUUID7();
+    const generationId = randomUUID7();
     const now2 = database.clock.now().toISOString();
     await transaction.prepare(transaction.dialect.sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'ERASURE_REQUESTED', [updatedAt] = ? WHERE [teamId] = ? AND [kind] <> 'checkout' AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')"
@@ -105679,7 +106877,7 @@ async function prepareTeamBillingErasure(database, auth, teamId, requestId) {
 }
 async function performTeamBillingErasure(database, context2, payload) {
   if (!exactPayload(payload)) return { superseded: true };
-  const claimToken = randomUUID6();
+  const claimToken = randomUUID7();
   const snapshot = await database.adapter.withTransaction(async (transaction) => {
     const state = await transaction.prepare(transaction.dialect.sql(
       "SELECT [e].*, [o].[actorUserId] FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[operationId] = ?"
@@ -105758,7 +106956,7 @@ async function performTeamBillingErasure(database, context2, payload) {
         )).run(now(database), snapshot.teamId, claimToken);
         return false;
       }
-      const digest2 = createHash8("sha256").update(JSON.stringify(canonical)).digest("hex");
+      const digest2 = createHash9("sha256").update(JSON.stringify(canonical)).digest("hex");
       await transaction.prepare(transaction.dialect.sql(
         "INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)"
       )).run(current2.erasureKey, digest2, canonical.providerObservedAt, now(database));
@@ -105805,7 +107003,7 @@ async function repairTeamBillingErasureStateAtStartup(database) {
       "SELECT [operationId] FROM [sporades_team_billing_erasure_state] WHERE [status] IN ('queued', 'running', 'failed') ORDER BY [operationId]"
     )).all();
     for (const row of rows) {
-      const generationId = randomUUID6();
+      const generationId = randomUUID7();
       const changed = await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ?"
       )).run(generationId, now(database), row.operationId);
@@ -105835,7 +107033,7 @@ async function settleExhaustedTeamBillingErasureJob(database, payload, safeFailu
     )).get(state.teamId);
     const liveClaimExpiry = lane?.claimToken && canonicalTimestamp3(lane.claimExpiresAt) && lane.claimExpiresAt > now(database) ? lane.claimExpiresAt : null;
     if (liveClaimExpiry || failureCode === "TEAM_BILLING_PROVIDER_LANE_BUSY") {
-      const generationId = randomUUID6();
+      const generationId = randomUUID7();
       const availableAt = liveClaimExpiry ?? now(database);
       const changed = await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
@@ -105919,7 +107117,7 @@ function validateEvidence(value, expected) {
   return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions };
 }
 function providerIdempotency(database, key) {
-  return `sporades-team-billing-erasure-${createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
+  return `sporades-team-billing-erasure-${createHash9("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
 }
 function exactPayload(value) {
   return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "generationId\0operationId" && TEAM_ID.test(value.operationId) && TEAM_ID.test(value.generationId);
@@ -106543,7 +107741,11 @@ async function resolveSchedulePayload(database, definition, scheduledFor, contex
   controllers.add(controller);
   database.schedulePayloadFactoryControllers.set(definition.name, controllers);
   const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
-  const factoryContext = Object.freeze({ signal: controller.signal, privileged: context2.privileged });
+  const factoryContext = Object.freeze({
+    app: database.app,
+    signal: controller.signal,
+    privileged: context2.privileged
+  });
   let timeout;
   let removeAbortListener;
   try {
@@ -107082,10 +108284,10 @@ function safeJobFailure(error) {
 }
 
 // src/resource-runtime.ts
-import { createHash as createHash10 } from "node:crypto";
+import { createHash as createHash11 } from "node:crypto";
 
 // src/notification-intent-runtime.ts
-import { createHash as createHash9, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID7, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash10, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 var NOTIFICATION_RESERVATION_MS = 3e4;
 var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
 var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
@@ -107181,7 +108383,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
   };
   const payloadJson = canonicalJson(payload);
   if (Buffer.byteLength(payloadJson, "utf8") > 65536) invalid4();
-  const payloadDigest = createHash9("sha256").update(payloadJson).digest("hex");
+  const payloadDigest = createHash10("sha256").update(payloadJson).digest("hex");
   const key = [identity.table, identity.id, identity.operationId, input.id];
   const existing = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
   if (existing) {
@@ -107190,7 +108392,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
     return { id: input.id, state: "staged" };
   }
   const acceptedAt = database.clock.now().toISOString();
-  const messageId = `<${randomUUID7()}@sporades.local>`;
+  const messageId = `<${randomUUID8()}@sporades.local>`;
   const inserted = await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
   if (inserted.changes === 0) {
     const raced = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
@@ -107198,7 +108400,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
     if (digest2 !== payloadDigest) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_OPERATION_CONFLICT" });
     return { id: input.id, state: "staged" };
   }
-  await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?)")).run(...key, randomBytes4(32).toString("hex"));
+  await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?)")).run(...key, randomBytes5(32).toString("hex"));
   for (const recipient of payload.to) {
     await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_recipients] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[state],[attemptCount],[currentAttemptToken],[currentAttemptDeadline],[nextAttemptAt],[lastOutcomeCategory],[updatedAt]) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")).run(...key, recipient, "accepted", "0", "", "", acceptedAt, "", acceptedAt);
   }
@@ -107231,8 +108433,8 @@ var recipientKey = (row) => [
   row.intentId ?? row.intentid,
   row.recipient
 ];
-function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID7()) {
-  const authenticator = createHmac("sha256", attemptKey).update([...key, String(sequence), messageId, nonce].join("\0")).digest("hex");
+function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID8()) {
+  const authenticator = createHmac2("sha256", attemptKey).update([...key, String(sequence), messageId, nonce].join("\0")).digest("hex");
   return `${nonce}.${authenticator}`;
 }
 function notificationAttemptTokenIsValid(attemptKey, reservation, messageId) {
@@ -107243,13 +108445,13 @@ function notificationAttemptTokenIsValid(attemptKey, reservation, messageId) {
   const actual = token.slice(separator + 1);
   if (!/^[0-9a-f-]{36}$/.test(nonce) || !/^[0-9a-f]{64}$/.test(actual)) return false;
   const expected = notificationAttemptToken(attemptKey, reservation.key, reservation.sequence, messageId, nonce).slice(separator + 1);
-  return timingSafeEqual2(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
+  return timingSafeEqual3(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
 }
 async function notificationAttemptKey(adapter, key) {
   const select = () => adapter.prepare(sql(adapter, "SELECT [attemptKey] FROM [sporades_notification_attempt_keys] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
   let row = await select();
   if (!row) {
-    await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key.slice(0, 4), randomBytes4(32).toString("hex"));
+    await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key.slice(0, 4), randomBytes5(32).toString("hex"));
     row = await select();
   }
   const attemptKey = row?.attemptKey ?? row?.attemptkey;
@@ -107483,7 +108685,7 @@ function optionsSnapshot(options, status) {
   const table = boundedIdentity(options.resource.table);
   const id2 = boundedIdentity(options.resource.id);
   const operationId = boundedIdentity(options.operationId);
-  return { table, id: id2, operationId, digest: status ? null : createHash10("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
+  return { table, id: id2, operationId, digest: status ? null : createHash11("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
 }
 function resourceReceiptRow(adapter, row) {
   if (!row || adapter.engine !== "postgres") return row;
@@ -107716,6 +108918,7 @@ function bindOuterResources(database, context2, hooks) {
       const logs = [];
       const intentIds = [];
       const scope = Object.freeze({
+        app: database.app,
         db: scopeDb,
         jobs: Object.freeze({ enqueue: (...args) => track(() => {
           assertLive(true);
@@ -107825,7 +109028,7 @@ function wrapCapability(value, before, path22 = [], cache = /* @__PURE__ */ new 
 }
 function resourceActorDigest(context2, privileged) {
   const { clientAddress: _requestAddress, ...auth } = context2.auth;
-  return createHash10("sha256").update(resourceCanonicalJson({ auth, credential: context2.credential ?? null, privileged })).digest("hex");
+  return createHash11("sha256").update(resourceCanonicalJson({ auth, credential: context2.credential ?? null, privileged })).digest("hex");
 }
 function bindJobResources(database, context2, claim, hooks) {
   let invocationActive = true;
@@ -107962,6 +109165,7 @@ function bindJobResources(database, context2, claim, hooks) {
         }));
         const intentIds = [];
         const scope = Object.freeze({
+          app: database.app,
           db: Object.freeze(db),
           signal: controller.signal,
           jobs: Object.freeze({ enqueue: (...args) => track(() => scopeContext.jobs.enqueue(...args)) }),
@@ -108703,6 +109907,7 @@ function resolveEffectiveAclRule(aclRules, operation) {
 }
 function createTableAclContext(context2, database) {
   return {
+    app: database.app,
     auth: context2?.auth,
     credential: context2?.credential,
     acl: createAclHelpers(database, context2)
@@ -108730,6 +109935,7 @@ function createFileAclContext(auth, database, credential = { kind: "session" }) 
     credential: Object.freeze({ ...credential })
   };
   return Object.freeze({
+    app: database.app,
     auth: context2.auth,
     credential: context2.credential,
     acl: createAclHelpers(database, context2)
@@ -124509,6 +125715,7 @@ async function createRuntimeHealthResult(database) {
     data: {
       runtime: {
         ready,
+        publicOrigin: database.app?.publicOrigin,
         fileMaxSizeBytes: database.fileMaxSizeBytes,
         httpMaxBodyBytes: database.httpMaxBodyBytes,
         ...database.runtimeTelemetry ? { telemetry: database.runtimeTelemetry } : {},
@@ -124684,1177 +125891,6 @@ function endpointResponseError() {
   const error = new Error("Invalid endpoint response.");
   error.sporadesEndpointResponse = true;
   return error;
-}
-
-// src/teams-runtime.ts
-var INITIAL_TEAM_NAME = "My Team";
-var TEAM_NAME_MAX_BYTES = 80;
-var TEAM_MEMBER_COUNT_MAX = 99;
-var TEAM_MEMBER_LIST_MAX = 100;
-var TEAM_MEMBER_LIST_DEFAULT = TEAM_MEMBER_LIST_MAX;
-var TEAM_MEMBERSHIP_MAX = 25;
-var TEAM_BOOTSTRAP_RETRY_LIMIT = 5;
-var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
-var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
-var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
-var TEAM_JOIN_LINK_MAX_OUTSTANDING = 20;
-var TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR = 10;
-var TEAM_JOIN_LINK_PRUNE_LIMIT = 100;
-var TEAM_JOIN_LINK_SECRET_ID = "v1";
-var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
-var TEAM_APPLICATION_ROLE_MAX = 32;
-var TEAM_APPLICATION_ROLE_PATCH_MAX = 16;
-var TEAM_APPLICATION_ROLE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
-function createTeamTables(adapter) {
-  const sql2 = adapter.dialect.sql;
-  return chainMaybePromise([
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId]))"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_membership_application_roles] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL, [createdAt] TEXT NOT NULL, PRIMARY KEY ([teamId], [userId], [role]))"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_bootstrap] ([userId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_membership_counters] ([userId] TEXT PRIMARY KEY, [membershipCount] INTEGER NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_secrets] ([id] TEXT PRIMARY KEY, [secret] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_join_links] ([id] TEXT PRIMARY KEY, [selector] TEXT NOT NULL UNIQUE, [verifierHash] TEXT NOT NULL, [teamId] TEXT NOT NULL, [email] TEXT NOT NULL, [createdByUserId] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [expiresAt] TEXT NOT NULL, [consumedAt] TEXT NULL, [revokedAt] TEXT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_throttles] ([teamId] TEXT NOT NULL, [adminUserId] TEXT NOT NULL, [windowStartedAt] TEXT NOT NULL, [count] INTEGER NOT NULL, PRIMARY KEY ([teamId], [adminUserId]))"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_counters] ([teamId] TEXT PRIMARY KEY, [activeCount] INTEGER NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_join_link_redemptions] ([joinLinkId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
-    ))
-  ]);
-}
-function createCurrentUserTeamsApi(database, auth, contextGetter) {
-  return {
-    async list() {
-      requireAuth({ auth }, { linked: true });
-      return listCurrentUserTeams(database, auth);
-    },
-    async create(name2) {
-      requireAuth({ auth }, { linked: true });
-      return createAdditionalTeam(database, auth, name2, contextGetter?.());
-    },
-    async rename(teamId, name2) {
-      requireAuth({ auth }, { linked: true });
-      return renameCurrentUserTeam(database, auth, teamId, name2, contextGetter?.());
-    },
-    async listMembers(teamId, options = {}) {
-      requireAuth({ auth }, { linked: true });
-      return listTeamMembers(database, auth, teamId, options);
-    },
-    async countMembers(teamId) {
-      requireAuth({ auth }, { linked: true });
-      return countTeamMembers(database, auth, teamId);
-    },
-    async updateApplicationRoles(teamId, userId, changes) {
-      requireAuth({ auth }, { linked: true });
-      return updateTeamMemberApplicationRoles(database, auth, teamId, userId, changes, contextGetter?.());
-    },
-    async createJoinLink(teamId, email, options = {}) {
-      requireAuth({ auth }, { linked: true });
-      return createTeamJoinLink(database, auth, teamId, email, options, contextGetter?.());
-    },
-    async listJoinLinks(teamId) {
-      requireAuth({ auth }, { linked: true });
-      return listTeamJoinLinks(database, auth, teamId);
-    },
-    async revokeJoinLink(teamId, joinLinkId) {
-      requireAuth({ auth }, { linked: true });
-      return revokeTeamJoinLink(database, auth, teamId, joinLinkId, contextGetter?.());
-    },
-    async inspectJoinLink(code) {
-      return inspectTeamJoinLink(database, code);
-    },
-    async validateJoinLink(code) {
-      return validateTeamJoinLink(database, auth, code);
-    },
-    async join(code) {
-      return joinCurrentUserTeam(database, auth, code, contextGetter?.());
-    },
-    async promote(teamId, userId) {
-      requireAuth({ auth }, { linked: true });
-      return promoteTeamMember(database, auth, teamId, userId, contextGetter?.());
-    },
-    async demote(teamId, userId) {
-      requireAuth({ auth }, { linked: true });
-      return demoteTeamMember(database, auth, teamId, userId, contextGetter?.());
-    },
-    async removeMember(teamId, userId) {
-      requireAuth({ auth }, { linked: true });
-      return removeTeamMember(database, auth, teamId, userId, contextGetter?.());
-    },
-    async leave(teamId) {
-      requireAuth({ auth }, { linked: true });
-      return leaveCurrentUserTeam(database, auth, teamId, contextGetter?.());
-    },
-    async delete(teamId) {
-      requireAuth({ auth }, { linked: true });
-      return deleteCurrentUserTeam(database, auth, teamId, contextGetter?.());
-    }
-  };
-}
-function createPrivilegedTeamsApi(database, contextGetter) {
-  return Object.freeze({
-    async countMembers(teamId) {
-      return runPrivilegedTeamInspection(contextGetter, (assertActive) => countPrivilegedTeamMembers(database, teamId, assertActive));
-    },
-    async listMembers(teamId, options = {}) {
-      return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamMembers(database, teamId, options, assertActive));
-    },
-    async listJoinLinks(teamId) {
-      return runPrivilegedTeamInspection(contextGetter, (assertActive) => listPrivilegedTeamJoinLinks(database, teamId, assertActive));
-    },
-    async inspectJoinLink(code) {
-      return runPrivilegedTeamInspection(contextGetter, (assertActive) => inspectTeamJoinLinkWithActivity(database, code, assertActive));
-    }
-  });
-}
-function resolveTeamJoinLinkConfig(config) {
-  const join = config?.teams?.join ?? {};
-  const port = typeof config?.dev?.port === "number" ? config.dev.port : typeof config?.deploy?.port === "number" ? config.deploy.port : 4e3;
-  return {
-    path: normalizeTeamJoinPath(join.path) ?? "/join",
-    origin: normalizeOrigin(config?.__sporadesPublicOrigin) ?? `http://localhost:${port}`
-  };
-}
-function normalizeTeamJoinPath(value) {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return null;
-  if (value.includes("\\") || value.includes("?") || value.includes("#") || value.split("/").includes("..")) return null;
-  return value;
-}
-function normalizeTeamApplicationRoles(value) {
-  if (value === void 0) return [];
-  if (!Array.isArray(value) || value.length > TEAM_APPLICATION_ROLE_MAX) throw invalidTeamApplicationRoleDeclaration();
-  const roles = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const role of value) {
-    if (typeof role !== "string" || !TEAM_APPLICATION_ROLE_PATTERN.test(role) || role === "admin" || role === "member" || role.startsWith("sporades-")) {
-      throw invalidTeamApplicationRoleDeclaration();
-    }
-    if (seen.has(role)) throw invalidTeamApplicationRoleDeclaration();
-    seen.add(role);
-    roles.push(role);
-  }
-  return roles;
-}
-async function createTeamJoinLink(database, auth, teamId, email, options = {}, eventContext) {
-  requireAuth({ auth }, { linked: true });
-  let created;
-  try {
-    if (!isOpaqueTeamId(teamId)) throw teamDenied();
-    const normalizedEmail = normalizeTeamJoinEmail(email);
-    const ttlSeconds = normalizeTeamJoinTtl(options?.ttlSeconds);
-    created = await withTeamTransaction(database, async (tx) => {
-      await lockTeamLifecycle(tx, teamId);
-      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-      const now2 = database.clock?.now?.() ?? /* @__PURE__ */ new Date();
-      const nowIso2 = now2.toISOString();
-      await pruneExpiredTeamJoinLinks(tx, nowIso2);
-      await reconcileTeamJoinLinkCapacity(tx, teamId, nowIso2);
-      await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso2);
-      await claimTeamJoinLinkCapacity(tx, teamId, nowIso2);
-      const secret = await teamJoinSigningSecret(tx, nowIso2);
-      const id2 = randomUUID8();
-      const selector = randomBytes5(16).toString("base64url");
-      const verifier = randomBytes5(32).toString("base64url");
-      const expiresAt = new Date(now2.getTime() + ttlSeconds * 1e3).toISOString();
-      const signature = teamJoinSignature(secret, id2, selector, verifier, expiresAt);
-      await tx.prepare(tx.dialect.sql(
-        "INSERT INTO [sporades_team_join_links] ([id], [selector], [verifierHash], [teamId], [email], [createdByUserId], [createdAt], [expiresAt], [consumedAt], [revokedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)"
-      )).run(id2, selector, hashTeamJoinVerifier(verifier), teamId, normalizedEmail, auth.userId, nowIso2, expiresAt);
-      return { id: id2, code: `v1.${selector}.${verifier}.${signature}`, createdAt: nowIso2, expiresAt };
-    });
-  } catch (error) {
-    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.create", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
-    throw error;
-  }
-  const link2 = new URL(database.teamJoinLinkConfig.path, database.teamJoinLinkConfig.origin);
-  link2.searchParams.set("code", created.code);
-  emitTeamSecurityEvent(database, eventContext, "teams.joinLink.created", auth.userId, teamId, "succeeded", "TEAM_JOIN_LINK_CREATED");
-  return { id: created.id, link: link2.toString(), createdAt: created.createdAt, expiresAt: created.expiresAt };
-}
-async function listTeamJoinLinks(database, auth, teamId) {
-  requireAuth({ auth }, { linked: true });
-  if (!isOpaqueTeamId(teamId)) throw teamDenied();
-  return withTeamTransaction(database, async (tx) => {
-    await lockTeamLifecycle(tx, teamId);
-    if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-    const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
-    await pruneExpiredTeamJoinLinks(tx, now2);
-    const rows = await tx.prepare(tx.dialect.sql(
-      "SELECT [id], [email], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?"
-    )).all(teamId, now2, TEAM_JOIN_LINK_MAX_OUTSTANDING);
-    return { links: rows.map((row) => ({ id: String(row.id), email: String(row.email), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
-  });
-}
-async function revokeTeamJoinLink(database, auth, teamId, joinLinkId, eventContext) {
-  requireAuth({ auth }, { linked: true });
-  if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(joinLinkId)) {
-    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoke", auth.userId, null, "denied", "DENIED");
-    throw teamDenied();
-  }
-  await withTeamTransaction(database, async (tx) => {
-    await lockTeamLifecycle(tx, teamId);
-    if (!await currentTeamAdmin(tx, teamId, auth.userId)) {
-      emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoke", auth.userId, teamId, "denied", "DENIED");
-      throw teamDenied();
-    }
-    const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
-    const changed = await tx.prepare(tx.dialect.sql(
-      "UPDATE [sporades_team_join_links] SET [revokedAt] = ? WHERE [id] = ? AND [teamId] = ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL AND [expiresAt] > ?"
-    )).run(now2, joinLinkId, teamId, now2);
-    if (Number(changed?.changes ?? 0) === 1) await releaseTeamJoinLinkCapacity(tx, teamId);
-  });
-  emitTeamSecurityEvent(database, eventContext, "teams.joinLink.revoked", auth.userId, teamId, "succeeded", "TEAM_JOIN_LINK_REVOKED");
-  return { revoked: true };
-}
-async function inspectTeamJoinLink(database, code) {
-  return inspectTeamJoinLinkWithActivity(database, code);
-}
-async function inspectTeamJoinLinkWithActivity(database, code, assertActive = void 0) {
-  const parsed = parseTeamJoinCode(code);
-  if (!parsed) return { team: null, expiresAt: null, usable: false };
-  return withTeamTransaction(database, async (tx) => {
-    const readCapability = () => tx.prepare(tx.dialect.sql(
-      "SELECT [id], [selector], [verifierHash], [teamId], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
-    )).get(parsed.selector);
-    const row = await readCapability();
-    assertActive?.();
-    const secretRow = await tx.prepare(tx.dialect.sql(
-      "SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?"
-    )).get(TEAM_JOIN_LINK_SECRET_ID);
-    assertActive?.();
-    const usable = (candidate) => {
-      const expectedVerifier = Buffer.from(candidate?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
-      const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
-      const expectedSignature = Buffer.from(candidate && secretRow ? teamJoinSignature(String(secretRow.secret), String(candidate.id), parsed.selector, parsed.verifier, String(candidate.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
-      const actualSignature = Buffer.from(parsed.signature, "base64url");
-      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual3(actualVerifier, expectedVerifier);
-      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual3(actualSignature, expectedSignature);
-      return Boolean(candidate && verifierMatches && signatureMatches && !candidate.consumedAt && !candidate.revokedAt && Date.parse(candidate.expiresAt) > (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime());
-    };
-    if (!usable(row)) return { team: null, expiresAt: null, usable: false };
-    if (!await tryLockTeamLifecycle(tx, String(row.teamId))) {
-      return { team: null, expiresAt: null, usable: false };
-    }
-    assertActive?.();
-    const lockedRow = await readCapability();
-    assertActive?.();
-    if (!usable(lockedRow) || String(lockedRow.teamId) !== String(row.teamId)) return { team: null, expiresAt: null, usable: false };
-    const team = await tx.prepare(tx.dialect.sql("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(lockedRow.teamId);
-    assertActive?.();
-    if (!team) return { team: null, expiresAt: null, usable: false };
-    return { team: { id: String(team.id), name: safeTeamName(team.name) }, expiresAt: String(lockedRow.expiresAt), usable: true };
-  });
-}
-async function countPrivilegedTeamMembers(database, teamId, assertActive) {
-  return withTeamTransaction(database, async (tx) => {
-    assertActive();
-    const totalCount = await countAcceptedTeamMembers(tx, teamId, privilegedTeamNotFound);
-    assertActive();
-    return { totalCount };
-  });
-}
-async function countAcceptedTeamMembers(transaction, teamId, denied2 = privilegedTeamNotFound) {
-  await lockTeamLifecycle(transaction, teamId, denied2);
-  const total = await transaction.prepare(transaction.dialect.sql(
-    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-  )).get(teamId);
-  const count = Number(total?.count ?? 0);
-  if (!Number.isSafeInteger(count) || count < 1 || count > 999999) throw denied2();
-  return count;
-}
-async function listPrivilegedTeamMembers(database, teamId, options = {}, assertActive) {
-  return withTeamTransaction(database, async (tx) => {
-    const sql2 = tx.dialect.sql;
-    assertActive();
-    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
-    assertActive();
-    const page = normalizeTeamMemberPage(options);
-    const total = await tx.prepare(sql2(
-      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-    )).get(teamId);
-    assertActive();
-    const cursorClause = page.cursor ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) " : "";
-    const params = page.cursor ? [teamId, page.cursor.createdAt, page.cursor.createdAt, page.cursor.userId, page.limit + 1] : [teamId, page.limit + 1];
-    const rows = await tx.prepare(sql2(
-      "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role], [m].[createdAt] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? " + cursorClause + "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
-    )).all(...params);
-    assertActive();
-    const hasMore = rows.length > page.limit;
-    const pageRows = hasMore ? rows.slice(0, page.limit) : rows;
-    const last = pageRows.at(-1);
-    return {
-      members: await Promise.all(pageRows.map(async (row) => ({
-        userId: String(row.userId),
-        displayName: String(row.displayName),
-        picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
-        role: row.role === "admin" ? "admin" : "member",
-        applicationRoles: await activeTeamApplicationRoles(tx, database.teamApplicationRoles, teamId, row.userId)
-      }))),
-      ...hasMore && last ? { nextCursor: encodeTeamMemberCursor(String(last.createdAt), String(last.userId)) } : {},
-      totalCount: Number(total?.count ?? 0)
-    };
-  });
-}
-async function listPrivilegedTeamJoinLinks(database, teamId, assertActive) {
-  return withTeamTransaction(database, async (tx) => {
-    assertActive();
-    await lockTeamLifecycle(tx, teamId, privilegedTeamNotFound);
-    assertActive();
-    const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
-    const rows = await tx.prepare(tx.dialect.sql(
-      "SELECT [id], [createdAt], [expiresAt] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ORDER BY [createdAt] ASC, [id] ASC LIMIT ?"
-    )).all(teamId, now2, TEAM_JOIN_LINK_MAX_OUTSTANDING);
-    assertActive();
-    return { links: rows.map((row) => ({ id: String(row.id), createdAt: String(row.createdAt), expiresAt: String(row.expiresAt) })) };
-  });
-}
-async function validateTeamJoinLink(database, auth, code) {
-  if (!auth?.isAuthenticated || auth?.isGuest || typeof auth.userId !== "string" || !auth.userId) return { valid: false };
-  const parsed = parseTeamJoinCode(code);
-  if (!parsed) return { valid: false };
-  const row = await database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [id], [teamId], [verifierHash], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
-  )).get(parsed.selector);
-  const secretRow = await database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?"
-  )).get(TEAM_JOIN_LINK_SECRET_ID);
-  const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
-  const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
-  const expectedSignature = Buffer.from(
-    row && secretRow ? teamJoinSignature(String(secretRow.secret), String(row.id), parsed.selector, parsed.verifier, String(row.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"),
-    "base64url"
-  );
-  const actualSignature = Buffer.from(parsed.signature, "base64url");
-  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual3(actualVerifier, expectedVerifier);
-  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual3(actualSignature, expectedSignature);
-  const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime();
-  const expiresAt = Date.parse(row?.expiresAt ?? "");
-  if (!row || !verifierMatches || !signatureMatches || row.consumedAt || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= now2) return { valid: false };
-  const team = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
-  if (!team) return { valid: false };
-  const attachedEmails = await database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [email] FROM [sporades_auth_email_credentials] WHERE [userId] = ? UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL"
-  )).all(auth.userId, auth.userId);
-  const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
-  const valid = attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail);
-  return { valid };
-}
-async function joinCurrentUserTeam(database, auth, code, eventContext) {
-  let joined;
-  let deniedTeamId = null;
-  let auditUserId = null;
-  try {
-    requireAuth({ auth }, { linked: true });
-    const joiningUserId = String(auth.userId);
-    auditUserId = joiningUserId;
-    const parsed = parseTeamJoinCode(code);
-    if (!parsed) throw invalidTeamJoinLink();
-    joined = await withTeamTransaction(database, async (tx) => {
-      const sql2 = tx.dialect.sql;
-      let row = await tx.prepare(sql2(
-        "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
-      )).get(parsed.selector);
-      if (!row) throw invalidTeamJoinLink();
-      await lockTeamLifecycle(tx, String(row.teamId));
-      row = await tx.prepare(sql2(
-        "SELECT [id], [selector], [verifierHash], [teamId], [email], [expiresAt], [consumedAt], [revokedAt] FROM [sporades_team_join_links] WHERE [selector] = ?"
-      )).get(parsed.selector);
-      const secretRow = await tx.prepare(sql2("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
-      const expectedVerifier = Buffer.from(row?.verifierHash ?? hashTeamJoinVerifier("\0absent"), "base64url");
-      const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
-      const expectedSignature = Buffer.from(
-        row && secretRow ? teamJoinSignature(String(secretRow.secret), String(row.id), parsed.selector, parsed.verifier, String(row.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"),
-        "base64url"
-      );
-      const actualSignature = Buffer.from(parsed.signature, "base64url");
-      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual3(actualVerifier, expectedVerifier);
-      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual3(actualSignature, expectedSignature);
-      const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
-      const expiresAt = Date.parse(row?.expiresAt ?? "");
-      if (!row || !verifierMatches || !signatureMatches || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= Date.parse(now2)) throw invalidTeamJoinLink();
-      const team = await tx.prepare(sql2("SELECT [id], [name] FROM [sporades_teams] WHERE [id] = ?")).get(row.teamId);
-      if (!team) throw invalidTeamJoinLink();
-      const attachedEmails = await tx.prepare(sql2(
-        "SELECT [email] FROM [sporades_auth_email_credentials] WHERE [userId] = ? UNION ALL SELECT [email] FROM [sporades_auth_identities] WHERE [userId] = ? AND [email] IS NOT NULL"
-      )).all(joiningUserId, joiningUserId);
-      const targetEmail = normalizeTeamJoinIdentityEmail(row.email);
-      if (!attachedEmails.some((identity) => normalizeTeamJoinIdentityEmail(identity.email) === targetEmail)) {
-        deniedTeamId = String(team.id);
-        throw invalidTeamJoinLink();
-      }
-      const redemption = await tx.prepare(sql2(
-        "SELECT [userId] FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?"
-      )).get(row.id);
-      if (row.consumedAt) {
-        if (redemption?.userId !== joiningUserId) throw invalidTeamJoinLink();
-        const membership2 = await tx.prepare(sql2(
-          "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-        )).get(row.teamId, joiningUserId);
-        if (!membership2) throw invalidTeamJoinLink();
-        await ensureInitialTeamOnAdapter(tx, joiningUserId);
-        const count2 = await tx.prepare(sql2("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
-        return teamSummary({ id: team.id, name: team.name, role: membership2.role, memberCount: Number(count2?.count ?? 0) });
-      }
-      if (redemption) throw invalidTeamJoinLink();
-      const consumed = await tx.prepare(sql2(
-        "UPDATE [sporades_team_join_links] SET [consumedAt] = ? WHERE [id] = ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL AND [expiresAt] > ?"
-      )).run(now2, row.id, now2);
-      if (Number(consumed?.changes ?? 0) !== 1) throw invalidTeamJoinLink();
-      await tx.prepare(sql2(
-        "INSERT INTO [sporades_team_join_link_redemptions] ([joinLinkId], [teamId], [userId], [createdAt]) VALUES (?, ?, ?, ?)"
-      )).run(row.id, row.teamId, joiningUserId, now2);
-      await ensureInitialTeamOnAdapter(tx, joiningUserId);
-      let membership = await tx.prepare(sql2(
-        "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-      )).get(row.teamId, joiningUserId);
-      if (!membership) {
-        await enforceTeamJoinAdmission(database, tx, auth, joiningUserId, String(row.teamId), eventContext?.signal);
-        registerTeamJoinCancellationBeforeCommit(tx, eventContext?.signal);
-        await ensureMembershipCounterOnAdapter(tx, joiningUserId);
-        const claim = await tx.prepare(sql2(
-          "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
-        )).run(joiningUserId, TEAM_MEMBERSHIP_MAX);
-        if (Number(claim?.changes ?? 0) !== 1) {
-          throw commandError2("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
-        }
-        await tx.prepare(sql2(
-          "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)"
-        )).run(row.teamId, joiningUserId, now2);
-        membership = { role: "member" };
-      }
-      await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
-      const count = await tx.prepare(sql2("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(row.teamId);
-      return teamSummary({ id: team.id, name: team.name, role: membership.role, memberCount: Number(count?.count ?? 0) });
-    });
-  } catch (error) {
-    emitTeamSecurityEvent(database, eventContext, "teams.joinLink.join", auditUserId ?? auth?.userId, deniedTeamId, "denied", String(error?.code ?? "INVALID_JOIN_LINK"));
-    throw error;
-  }
-  await stageTeamBillingAfterMembershipCommit(database, joined.id);
-  emitTeamSecurityEvent(database, eventContext, "teams.joined", auditUserId, joined.id, "succeeded", "TEAM_JOINED");
-  return { team: joined };
-}
-async function stageTeamBillingAfterMembershipCommit(database, teamId) {
-  if (typeof database.stageTeamBillingMembershipChange !== "function") return;
-  try {
-    await database.stageTeamBillingMembershipChange(teamId);
-  } catch (error) {
-    database.log?.warn?.("Team Billing seat convergence staging deferred.", {
-      event: "team-billing.membership-staging-deferred",
-      data: { teamId, code: String(error?.code ?? "UNAVAILABLE") }
-    });
-  }
-}
-async function enforceTeamJoinAdmission(database, tx, auth, joiningUserId, teamId, signal) {
-  if (typeof database.runTeamJoinAdmission !== "function") return;
-  const count = await tx.prepare(tx.dialect.sql(
-    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-  )).get(teamId);
-  try {
-    const decision = await database.runTeamJoinAdmission(tx, auth, {
-      teamId,
-      userId: joiningUserId,
-      currentMemberCount: Number(count?.count ?? 0)
-    }, signal);
-    if (decision?.allow !== true) throw teamJoinDenied();
-  } catch {
-    throw teamJoinDenied();
-  }
-}
-function throwIfTeamJoinCancelled(signal) {
-  if (signal?.aborted) throw teamJoinDenied();
-}
-function registerTeamJoinCancellationBeforeCommit(transactionAdapter, signal) {
-  if (!signal) return;
-  let checks = transactionAdapter[transactionBeforeCommitChecks];
-  if (!Object.prototype.hasOwnProperty.call(transactionAdapter, transactionBeforeCommitChecks)) {
-    checks = [];
-    Object.defineProperty(transactionAdapter, transactionBeforeCommitChecks, { value: checks });
-  }
-  checks.push(() => throwIfTeamJoinCancelled(signal));
-}
-function normalizeTeamJoinEmail(email) {
-  const normalized = String(email ?? "").trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
-    throw commandError2("Email address is invalid.", "Provide a valid email address for the Join link.", "INVALID_EMAIL");
-  }
-  return normalized;
-}
-function normalizeTeamJoinIdentityEmail(email) {
-  return String(email ?? "").trim().toLowerCase();
-}
-function normalizeTeamJoinTtl(value) {
-  if (value === void 0) return TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS;
-  if (!Number.isInteger(value) || value < TEAM_JOIN_LINK_MIN_TTL_SECONDS || value > TEAM_JOIN_LINK_MAX_TTL_SECONDS) {
-    throw commandError2("Join link lifetime is invalid.", `Use an integer between ${TEAM_JOIN_LINK_MIN_TTL_SECONDS} and ${TEAM_JOIN_LINK_MAX_TTL_SECONDS} seconds.`, "INVALID_JOIN_LINK_TTL");
-  }
-  return value;
-}
-function parseTeamJoinCode(code) {
-  const [version3, selector, verifier, signature, ...rest] = typeof code === "string" ? code.split(".") : [];
-  if (version3 !== "v1" || rest.length > 0 || !/^[A-Za-z0-9_-]{16,64}$/.test(selector ?? "") || !/^[A-Za-z0-9_-]{32,128}$/.test(verifier ?? "") || !/^[A-Za-z0-9_-]{32,128}$/.test(signature ?? "")) return null;
-  return { selector, verifier, signature };
-}
-function hashTeamJoinVerifier(verifier) {
-  return createHash11("sha256").update(verifier).digest("base64url");
-}
-function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
-  return createHmac2("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
-}
-async function teamJoinSigningSecret(tx, createdAt) {
-  const existing = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
-  if (existing?.secret) return String(existing.secret);
-  const secret = randomBytes5(32).toString("base64url");
-  await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_link_secrets] ([id], [secret], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([id]) DO NOTHING")).run(TEAM_JOIN_LINK_SECRET_ID, secret, createdAt);
-  const claimed = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
-  return String(claimed?.secret ?? secret);
-}
-async function currentTeamAdmin(tx, teamId, userId) {
-  const membership = await tx.prepare(tx.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
-  return membership?.role === "admin";
-}
-async function countTeamAdmins(tx, teamId) {
-  const row = await tx.prepare(tx.dialect.sql(
-    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [role] = 'admin'"
-  )).get(teamId);
-  return Number(row?.count ?? 0);
-}
-async function lockTeamLifecycle(tx, teamId, missingTeamError = teamDenied) {
-  if (!isOpaqueTeamId(teamId) || !await tryLockTeamLifecycle(tx, teamId)) throw missingTeamError();
-}
-async function tryLockTeamLifecycle(tx, teamId) {
-  const claimed = await tx.prepare(tx.dialect.sql(
-    "UPDATE [sporades_teams] SET [name] = [name] WHERE [id] = ?"
-  )).run(teamId);
-  return Number(claimed?.changes ?? 0) === 1;
-}
-async function releaseTeamMembershipSlot(tx, userId) {
-  await tx.prepare(tx.dialect.sql(
-    "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] - 1 WHERE [userId] = ? AND [membershipCount] > 0"
-  )).run(userId);
-}
-async function pruneExpiredTeamJoinLinks(tx, now2) {
-  const rows = await tx.prepare(tx.dialect.sql("SELECT [id], [teamId] FROM [sporades_team_join_links] WHERE [expiresAt] <= ? LIMIT ?")).all(now2, TEAM_JOIN_LINK_PRUNE_LIMIT);
-  for (const row of rows) {
-    const deleted = await deleteExpiredTeamJoinLink(tx, String(row.id), String(row.teamId), now2);
-    if (Number(deleted?.changes ?? 0) === 1) await releaseTeamJoinLinkCapacity(tx, String(row.teamId));
-  }
-}
-async function claimTeamJoinLinkCreationSlot(tx, teamId, adminUserId, now2) {
-  const windowStart = new Date(Date.parse(now2) - 60 * 60 * 1e3).toISOString();
-  await tx.prepare(tx.dialect.sql(
-    "INSERT INTO [sporades_team_join_link_throttles] ([teamId], [adminUserId], [windowStartedAt], [count]) VALUES (?, ?, ?, 0) ON CONFLICT ([teamId], [adminUserId]) DO NOTHING"
-  )).run(teamId, adminUserId, now2);
-  await tx.prepare(tx.dialect.sql(
-    "UPDATE [sporades_team_join_link_throttles] SET [windowStartedAt] = ?, [count] = 0 WHERE [teamId] = ? AND [adminUserId] = ? AND [windowStartedAt] <= ?"
-  )).run(now2, teamId, adminUserId, windowStart);
-  const claimed = await tx.prepare(tx.dialect.sql(
-    "UPDATE [sporades_team_join_link_throttles] SET [count] = [count] + 1 WHERE [teamId] = ? AND [adminUserId] = ? AND [windowStartedAt] > ? AND [count] < ?"
-  )).run(teamId, adminUserId, windowStart, TEAM_JOIN_LINK_CREATION_MAX_PER_HOUR);
-  if (Number(claimed?.changes ?? 0) !== 1) throw teamJoinLinkThrottleError();
-}
-async function claimTeamJoinLinkCapacity(tx, teamId, now2) {
-  await tx.prepare(tx.dialect.sql(
-    "INSERT INTO [sporades_team_join_link_counters] ([teamId], [activeCount]) SELECT ?, COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ON CONFLICT ([teamId]) DO NOTHING"
-  )).run(teamId, teamId, now2);
-  const claimed = await tx.prepare(tx.dialect.sql(
-    "UPDATE [sporades_team_join_link_counters] SET [activeCount] = [activeCount] + 1 WHERE [teamId] = ? AND [activeCount] < ?"
-  )).run(teamId, TEAM_JOIN_LINK_MAX_OUTSTANDING);
-  if (Number(claimed?.changes ?? 0) !== 1) throw teamJoinLinkLimitError();
-}
-async function reconcileTeamJoinLinkCapacity(tx, teamId, now2) {
-  const expired = await tx.prepare(tx.dialect.sql(
-    "SELECT [id] FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] <= ? LIMIT ?"
-  )).all(teamId, now2, TEAM_JOIN_LINK_PRUNE_LIMIT);
-  for (const row of expired) await deleteExpiredTeamJoinLink(tx, String(row.id), teamId, now2);
-  await tx.prepare(tx.dialect.sql(
-    "INSERT INTO [sporades_team_join_link_counters] ([teamId], [activeCount]) SELECT ?, COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL ON CONFLICT ([teamId]) DO NOTHING"
-  )).run(teamId, teamId, now2);
-  await tx.prepare(tx.dialect.sql(
-    "UPDATE [sporades_team_join_link_counters] SET [activeCount] = (SELECT COUNT(*) FROM [sporades_team_join_links] WHERE [teamId] = ? AND [expiresAt] > ? AND [consumedAt] IS NULL AND [revokedAt] IS NULL) WHERE [teamId] = ?"
-  )).run(teamId, now2, teamId);
-}
-async function deleteExpiredTeamJoinLink(tx, joinLinkId, teamId, now2) {
-  await tx.prepare(tx.dialect.sql(
-    "DELETE FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ? AND [teamId] = ?"
-  )).run(joinLinkId, teamId);
-  return tx.prepare(tx.dialect.sql(
-    "DELETE FROM [sporades_team_join_links] WHERE [id] = ? AND [teamId] = ? AND [expiresAt] <= ?"
-  )).run(joinLinkId, teamId, now2);
-}
-async function releaseTeamJoinLinkCapacity(tx, teamId) {
-  await tx.prepare(tx.dialect.sql(
-    "UPDATE [sporades_team_join_link_counters] SET [activeCount] = [activeCount] - 1 WHERE [teamId] = ? AND [activeCount] > 0"
-  )).run(teamId);
-}
-function teamJoinLinkThrottleError() {
-  return commandError2("Join link creation is temporarily limited.", "Wait before creating another Join link for this Team.", "JOIN_LINK_THROTTLED");
-}
-function teamJoinLinkLimitError() {
-  return commandError2("Too many Join links are outstanding for this Team.", "Revoke an unused link or wait for one to expire.", "JOIN_LINK_LIMIT_REACHED");
-}
-function invalidTeamJoinLink() {
-  return commandError2("Join link is invalid.", "Use a current Join link for this linked account.", "INVALID_JOIN_LINK");
-}
-function teamJoinDenied() {
-  return commandError2("Could not join this Team.", "Ask a Team administrator for access.", "TEAM_JOIN_DENIED");
-}
-function teamMemberCountDenied() {
-  return commandError2("Could not read this Team's member count.", "Sign in as a current Team member and retry.", "DENIED");
-}
-async function listCurrentUserTeams(database, auth) {
-  requireAuth({ auth }, { linked: true });
-  await ensureInitialTeam(database, auth);
-  const sql2 = database.adapter.dialect.sql;
-  const rows = await database.adapter.prepare(sql2(
-    "SELECT [t].[id], [t].[name], [m].[role], CASE WHEN (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) > ? THEN ? ELSE (SELECT COUNT(*) FROM [sporades_team_memberships] [counted] WHERE [counted].[teamId] = [t].[id]) END AS [memberCount] FROM [sporades_team_memberships] [m] JOIN [sporades_teams] [t] ON [t].[id] = [m].[teamId] WHERE [m].[userId] = ? ORDER BY [t].[createdAt] ASC, [t].[id] ASC"
-  )).all(TEAM_MEMBER_COUNT_MAX, TEAM_MEMBER_COUNT_MAX, auth.userId);
-  return {
-    teams: await Promise.all(rows.map(async (row) => ({
-      id: String(row.id),
-      name: safeTeamName(row.name),
-      role: row.role === "admin" ? "admin" : "member",
-      applicationRoles: await activeTeamApplicationRoles(database.adapter, database.teamApplicationRoles, row.id, auth.userId),
-      memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(row.memberCount) || 0))
-    })))
-  };
-}
-async function createAdditionalTeam(database, auth, name2, eventContext) {
-  requireAuth({ auth }, { linked: true });
-  const normalizedName = normalizeTeamName(name2);
-  const team = await withTeamTransaction(database, async (tx) => {
-    await ensureInitialTeamOnAdapter(tx, auth.userId);
-    await ensureMembershipCounterOnAdapter(tx, auth.userId);
-    const claim = await tx.prepare(tx.dialect.sql(
-      "UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 WHERE [userId] = ? AND [membershipCount] < ?"
-    )).run(auth.userId, TEAM_MEMBERSHIP_MAX);
-    if (Number(claim?.changes ?? 0) !== 1) {
-      throw commandError2(
-        "Team limit reached.",
-        `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`,
-        "TEAM_LIMIT_REACHED"
-      );
-    }
-    const id2 = randomUUID8();
-    const now2 = (/* @__PURE__ */ new Date()).toISOString();
-    await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)"
-    )).run(id2, normalizedName, now2, auth.userId);
-    await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)"
-    )).run(id2, auth.userId, now2);
-    return teamSummary({ id: id2, name: normalizedName, role: "admin", memberCount: 1 });
-  });
-  emitTeamSecurityEvent(database, eventContext, "teams.created", auth.userId, team.id, "succeeded", "TEAM_CREATED");
-  return { team };
-}
-async function renameCurrentUserTeam(database, auth, teamId, name2, eventContext) {
-  requireAuth({ auth }, { linked: true });
-  if (!isOpaqueTeamId(teamId)) {
-    emitTeamSecurityEvent(database, eventContext, "teams.rename", auth.userId, null, "denied", "DENIED");
-    throw teamDenied();
-  }
-  const normalizedName = normalizeTeamName(name2);
-  const team = await withTeamTransaction(database, async (tx) => {
-    await lockTeamLifecycle(tx, teamId);
-    const membership = await tx.prepare(tx.dialect.sql(
-      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-    )).get(teamId, auth.userId);
-    if (membership?.role !== "admin") {
-      emitTeamSecurityEvent(database, eventContext, "teams.rename", auth.userId, teamId, "denied", "DENIED");
-      throw teamDenied();
-    }
-    const changed = await tx.prepare(tx.dialect.sql(
-      "UPDATE [sporades_teams] SET [name] = ? WHERE [id] = ?"
-    )).run(normalizedName, teamId);
-    if (Number(changed?.changes ?? 0) !== 1) throw teamDenied();
-    const count = await tx.prepare(tx.dialect.sql(
-      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-    )).get(teamId);
-    return teamSummary({ id: teamId, name: normalizedName, role: "admin", memberCount: Number(count?.count ?? 0) });
-  });
-  emitTeamSecurityEvent(database, eventContext, "teams.renamed", auth.userId, team.id, "succeeded", "TEAM_RENAMED");
-  return { team };
-}
-async function updateTeamMemberApplicationRoles(database, auth, teamId, userId, changes, eventContext) {
-  requireAuth({ auth }, { linked: true });
-  let patch;
-  try {
-    if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId)) throw teamDenied();
-    patch = normalizeTeamApplicationRolePatch(changes, database.teamApplicationRoles ?? []);
-    await withTeamTransaction(database, async (tx) => {
-      const sql2 = tx.dialect.sql;
-      await lockTeamLifecycle(tx, teamId);
-      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-      const target = await tx.prepare(sql2("SELECT [userId] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
-      if (!target) throw teamDenied();
-      for (const role of patch.remove) {
-        await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ? AND [role] = ?")).run(teamId, userId, role);
-      }
-      const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
-      for (const role of patch.add) {
-        await tx.prepare(sql2("INSERT INTO [sporades_team_membership_application_roles] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?) ON CONFLICT ([teamId], [userId], [role]) DO NOTHING")).run(teamId, userId, role, now2);
-      }
-    });
-  } catch (error) {
-    emitTeamSecurityEvent(database, eventContext, "teams.updateApplicationRoles", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
-    throw error;
-  }
-  emitTeamSecurityEvent(database, eventContext, "teams.applicationRolesUpdated", auth.userId, teamId, "succeeded", "TEAM_APPLICATION_ROLES_UPDATED", {
-    targetUserId: String(userId).slice(0, 128),
-    add: patch.add,
-    remove: patch.remove
-  });
-  return { updated: true };
-}
-async function promoteTeamMember(database, auth, teamId, userId, eventContext) {
-  return changeTeamMemberRole(database, auth, teamId, userId, "admin", eventContext);
-}
-async function demoteTeamMember(database, auth, teamId, userId, eventContext) {
-  return changeTeamMemberRole(database, auth, teamId, userId, "member", eventContext);
-}
-async function changeTeamMemberRole(database, auth, teamId, userId, role, eventContext) {
-  requireAuth({ auth }, { linked: true });
-  const operation = role === "admin" ? "teams.promote" : "teams.demote";
-  const event = role === "admin" ? "teams.promoted" : "teams.demoted";
-  try {
-    if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId)) throw teamDenied();
-    await withTeamTransaction(database, async (tx) => {
-      const sql2 = tx.dialect.sql;
-      await lockTeamLifecycle(tx, teamId);
-      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-      const target = await tx.prepare(sql2("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
-      if (!target) throw teamDenied();
-      if (role === "member" && target.role === "admin") {
-        const admins = await countTeamAdmins(tx, teamId);
-        if (admins < 2) throw teamDenied();
-      }
-      await tx.prepare(sql2("UPDATE [sporades_team_memberships] SET [role] = ? WHERE [teamId] = ? AND [userId] = ?")).run(role, teamId, userId);
-    });
-  } catch (error) {
-    emitTeamSecurityEvent(database, eventContext, operation, auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
-    throw error;
-  }
-  emitTeamSecurityEvent(database, eventContext, event, auth.userId, teamId, "succeeded", role === "admin" ? "TEAM_MEMBER_PROMOTED" : "TEAM_MEMBER_DEMOTED");
-  return { updated: true };
-}
-async function removeTeamMember(database, auth, teamId, userId, eventContext) {
-  requireAuth({ auth }, { linked: true });
-  try {
-    if (!isOpaqueTeamId(teamId) || !isOpaqueTeamId(userId) || userId === auth.userId) throw teamDenied();
-    await withTeamTransaction(database, async (tx) => {
-      const sql2 = tx.dialect.sql;
-      await lockTeamLifecycle(tx, teamId);
-      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-      const target = await tx.prepare(sql2("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
-      if (!target) throw teamDenied();
-      if (target.role === "admin" && await countTeamAdmins(tx, teamId) < 2) throw teamDenied();
-      await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
-      const removed = await tx.prepare(sql2("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
-      if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
-      await releaseTeamMembershipSlot(tx, userId);
-    });
-  } catch (error) {
-    emitTeamSecurityEvent(database, eventContext, "teams.removeMember", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
-    throw error;
-  }
-  await stageTeamBillingAfterMembershipCommit(database, teamId);
-  emitTeamSecurityEvent(database, eventContext, "teams.memberRemoved", auth.userId, teamId, "succeeded", "TEAM_MEMBER_REMOVED");
-  return { removed: true };
-}
-async function leaveCurrentUserTeam(database, auth, teamId, eventContext) {
-  requireAuth({ auth }, { linked: true });
-  try {
-    if (!isOpaqueTeamId(teamId)) throw teamDenied();
-    await withTeamTransaction(database, async (tx) => {
-      const sql2 = tx.dialect.sql;
-      await lockTeamLifecycle(tx, teamId);
-      const membership = await tx.prepare(sql2("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
-      if (!membership || membership.role === "admin") throw teamDenied();
-      await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
-      const removed = await tx.prepare(sql2("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
-      if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
-      await releaseTeamMembershipSlot(tx, auth.userId);
-    });
-  } catch (error) {
-    emitTeamSecurityEvent(database, eventContext, "teams.leave", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
-    throw error;
-  }
-  await stageTeamBillingAfterMembershipCommit(database, teamId);
-  emitTeamSecurityEvent(database, eventContext, "teams.left", auth.userId, teamId, "succeeded", "TEAM_LEFT");
-  return { left: true };
-}
-async function deleteCurrentUserTeam(database, auth, teamId, eventContext) {
-  requireAuth({ auth }, { linked: true });
-  try {
-    if (!isOpaqueTeamId(teamId)) throw teamDenied();
-    await withTeamTransaction(database, async (tx) => {
-      const sql2 = tx.dialect.sql;
-      await lockTeamLifecycle(tx, teamId);
-      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
-      const members = await tx.prepare(sql2("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
-      if (Number(members?.count ?? 0) !== 1) throw teamDenied();
-      const links = await tx.prepare(sql2("SELECT [id] FROM [sporades_team_join_links] WHERE [teamId] = ?")).all(teamId);
-      for (const link2 of links) {
-        await tx.prepare(sql2("DELETE FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?")).run(link2.id);
-      }
-      await tx.prepare(sql2("DELETE FROM [sporades_team_join_links] WHERE [teamId] = ?")).run(teamId);
-      await tx.prepare(sql2("DELETE FROM [sporades_team_join_link_throttles] WHERE [teamId] = ?")).run(teamId);
-      await tx.prepare(sql2("DELETE FROM [sporades_team_join_link_counters] WHERE [teamId] = ?")).run(teamId);
-      await tx.prepare(sql2("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ?")).run(teamId);
-      await tx.prepare(sql2("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
-      const deleted = await tx.prepare(sql2("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
-      if (Number(deleted?.changes ?? 0) !== 1) throw teamDenied();
-      await releaseTeamMembershipSlot(tx, auth.userId);
-    });
-  } catch (error) {
-    emitTeamSecurityEvent(database, eventContext, "teams.delete", auth.userId, isOpaqueTeamId(teamId) ? teamId : null, "denied", String(error?.code ?? "DENIED"));
-    throw error;
-  }
-  emitTeamSecurityEvent(database, eventContext, "teams.deleted", auth.userId, teamId, "succeeded", "TEAM_DELETED");
-  return { deleted: true };
-}
-async function listTeamMembers(database, auth, teamId, options = {}) {
-  requireAuth({ auth }, { linked: true });
-  if (!isOpaqueTeamId(teamId)) throw teamDenied();
-  return withTeamTransaction(database, async (tx) => {
-    const sql2 = tx.dialect.sql;
-    await lockTeamLifecycle(tx, teamId);
-    const callerMembership = await tx.prepare(sql2(
-      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-    )).get(teamId, auth.userId);
-    if (callerMembership?.role !== "admin") throw teamDenied();
-    const page = normalizeTeamMemberPage(options);
-    const total = await tx.prepare(sql2(
-      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-    )).get(teamId);
-    const cursorClause = page.cursor ? "AND ([m].[createdAt] > ? OR ([m].[createdAt] = ? AND [m].[userId] > ?)) " : "";
-    const params = page.cursor ? [teamId, page.cursor.createdAt, page.cursor.createdAt, page.cursor.userId, page.limit + 1] : [teamId, page.limit + 1];
-    const rows = await tx.prepare(sql2(
-      "SELECT [m].[userId], [u].[displayName], [u].[picture], [m].[role] , [m].[createdAt] FROM [sporades_team_memberships] [m] JOIN [sporades_auth_users] [u] ON [u].[id] = [m].[userId] WHERE [m].[teamId] = ? " + cursorClause + "ORDER BY [m].[createdAt] ASC, [m].[userId] ASC LIMIT ?"
-    )).all(...params);
-    const hasMore = rows.length > page.limit;
-    const pageRows = hasMore ? rows.slice(0, page.limit) : rows;
-    const last = pageRows.at(-1);
-    return {
-      members: await Promise.all(pageRows.map(async (row) => ({
-        userId: String(row.userId),
-        displayName: String(row.displayName),
-        picture: typeof row.picture === "string" && row.picture.length > 0 ? row.picture : null,
-        role: row.role === "admin" ? "admin" : "member",
-        applicationRoles: await activeTeamApplicationRoles(tx, database.teamApplicationRoles, teamId, row.userId)
-      }))),
-      ...hasMore && last ? { nextCursor: encodeTeamMemberCursor(String(last.createdAt), String(last.userId)) } : {},
-      totalCount: Number(total?.count ?? 0)
-    };
-  });
-}
-async function countTeamMembers(database, auth, teamId) {
-  requireAuth({ auth }, { linked: true });
-  if (!isOpaqueTeamId(teamId)) throw teamMemberCountDenied();
-  return withTeamTransaction(database, async (tx) => {
-    const sql2 = tx.dialect.sql;
-    await lockTeamLifecycle(tx, teamId, teamMemberCountDenied);
-    const callerMembership = await tx.prepare(sql2(
-      "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-    )).get(teamId, auth.userId);
-    if (!callerMembership) throw teamMemberCountDenied();
-    const total = await tx.prepare(sql2(
-      "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-    )).get(teamId);
-    return { totalCount: Number(total?.count ?? 0) };
-  });
-}
-function normalizeTeamMemberPage(options) {
-  if (!options || typeof options !== "object" || Array.isArray(options)) throw invalidTeamMemberPage();
-  const limit = options.limit === void 0 ? TEAM_MEMBER_LIST_DEFAULT : options.limit;
-  if (!Number.isInteger(limit) || limit < 1 || limit > TEAM_MEMBER_LIST_MAX) throw invalidTeamMemberPage();
-  if (options.cursor === void 0) return { cursor: null, limit };
-  if (typeof options.cursor !== "string" || options.cursor.length < 1 || options.cursor.length > 512) throw invalidTeamMemberPage();
-  try {
-    if (!/^[A-Za-z0-9_-]+$/.test(options.cursor)) throw invalidTeamMemberPage();
-    const cursorBytes = Buffer.from(options.cursor, "base64url");
-    if (cursorBytes.toString("base64url") !== options.cursor) throw invalidTeamMemberPage();
-    const decoded = JSON.parse(cursorBytes.toString("utf8"));
-    if (decoded?.v !== 1 || typeof decoded.createdAt !== "string" || !Number.isFinite(Date.parse(decoded.createdAt)) || typeof decoded.userId !== "string" || decoded.userId.length < 1 || decoded.userId.length > 256) {
-      throw invalidTeamMemberPage();
-    }
-    return { cursor: { createdAt: decoded.createdAt, userId: decoded.userId }, limit };
-  } catch (error) {
-    if (error?.code === "INVALID_TEAM_MEMBER_PAGE") throw error;
-    throw invalidTeamMemberPage();
-  }
-}
-function encodeTeamMemberCursor(createdAt, userId) {
-  return Buffer.from(JSON.stringify({ v: 1, createdAt, userId }), "utf8").toString("base64url");
-}
-function invalidTeamMemberPage() {
-  return commandError2("Team member page is invalid.", `Use a limit from 1 through ${TEAM_MEMBER_LIST_MAX} and a cursor returned by listMembers().`, "INVALID_TEAM_MEMBER_PAGE");
-}
-async function ensureInitialTeam(database, auth) {
-  if (database.__transactionActive) {
-    return ensureInitialTeamOnAdapter(database.adapter, auth.userId);
-  }
-  const root = database.__rootDatabase ?? database;
-  root.__teamBootstrapByUser ??= /* @__PURE__ */ new Map();
-  const running = root.__teamBootstrapByUser.get(auth.userId);
-  if (running) return running;
-  const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
-  const work = previous.catch(() => void 0).then(() => bootstrapWithRetry(database.adapter, auth.userId));
-  root.__runtimeTransactionQueue = work;
-  root.__teamBootstrapByUser.set(auth.userId, work);
-  try {
-    return await work;
-  } finally {
-    if (root.__teamBootstrapByUser.get(auth.userId) === work) root.__teamBootstrapByUser.delete(auth.userId);
-    if (root.__runtimeTransactionQueue === work) root.__runtimeTransactionQueue = null;
-  }
-}
-async function withTeamTransaction(database, callback) {
-  if (database.__transactionActive) return callback(database.adapter);
-  const root = database.__rootDatabase ?? database;
-  const previous = root.__runtimeTransactionQueue ?? Promise.resolve();
-  const work = previous.catch(() => void 0).then(() => teamTransactionWithRetry(database.adapter, callback));
-  root.__runtimeTransactionQueue = work;
-  try {
-    return await work;
-  } finally {
-    if (root.__runtimeTransactionQueue === work) root.__runtimeTransactionQueue = null;
-  }
-}
-async function teamTransactionWithRetry(adapter, callback) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await adapter.withTransaction(callback);
-    } catch (error) {
-      if (attempt >= TEAM_BOOTSTRAP_RETRY_LIMIT - 1 || !isTransientTeamBootstrapError(error)) throw error;
-      await new Promise((resolve2) => setTimeout(resolve2, (attempt + 1) * 10));
-    }
-  }
-}
-async function bootstrapWithRetry(adapter, userId) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await adapter.withTransaction((tx) => ensureInitialTeamOnAdapter(tx, userId));
-    } catch (error) {
-      if (attempt >= TEAM_BOOTSTRAP_RETRY_LIMIT - 1 || !isTransientTeamBootstrapError(error)) throw error;
-      await new Promise((resolve2) => setTimeout(resolve2, (attempt + 1) * 10));
-    }
-  }
-}
-function isTransientTeamBootstrapError(error) {
-  const text3 = String(error?.message ?? error?.errstr ?? "").toLowerCase();
-  const code = String(error?.code ?? "").toUpperCase();
-  return (code === "ERR_SQLITE_ERROR" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") && (text3.includes("locked") || text3.includes("busy") || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
-}
-async function bootstrapInitialTeamForLinkedUser(tx, userId) {
-  return ensureInitialTeamOnAdapter(tx, userId);
-}
-async function ensureInitialTeamOnAdapter(tx, userId) {
-  const sql2 = tx.dialect.sql;
-  const id2 = randomUUID8();
-  const now2 = (/* @__PURE__ */ new Date()).toISOString();
-  const claim = await tx.prepare(sql2(
-    "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
-  )).run(userId, id2, now2);
-  if (Number(claim?.changes ?? 0) === 0) {
-    const existing = await tx.prepare(sql2("SELECT [teamId] FROM [sporades_team_bootstrap] WHERE [userId] = ?")).get(userId);
-    if (existing?.teamId) return String(existing.teamId);
-    throw new Error("Team bootstrap claim was not committed.");
-  }
-  await tx.prepare(sql2("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id2, INITIAL_TEAM_NAME, now2, userId);
-  await tx.prepare(sql2("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id2, userId, now2);
-  await tx.prepare(sql2("INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) VALUES (?, 1)")).run(userId);
-  return id2;
-}
-async function ensureMembershipCounterOnAdapter(tx, userId) {
-  const sql2 = tx.dialect.sql;
-  await tx.prepare(sql2(
-    "INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) SELECT ?, COUNT(*) FROM [sporades_team_memberships] WHERE [userId] = ? ON CONFLICT ([userId]) DO NOTHING"
-  )).run(userId, userId);
-}
-function safeTeamName(value) {
-  const name2 = typeof value === "string" ? value.trim() : "";
-  return Buffer.byteLength(name2, "utf8") <= TEAM_NAME_MAX_BYTES && name2.length > 0 ? name2 : INITIAL_TEAM_NAME;
-}
-function normalizeTeamName(value) {
-  if (typeof value !== "string") {
-    throw commandError2("Team name is required.", "Provide a non-empty Team name.", "INVALID_TEAM_NAME");
-  }
-  const name2 = value.normalize("NFKC").replace(/\s+/gu, " ").trim();
-  if (name2.length === 0 || Buffer.byteLength(name2, "utf8") > TEAM_NAME_MAX_BYTES) {
-    throw commandError2(
-      "Team name is invalid.",
-      `Use a non-empty Team name up to ${TEAM_NAME_MAX_BYTES} UTF-8 bytes.`,
-      "INVALID_TEAM_NAME"
-    );
-  }
-  return name2;
-}
-function invalidTeamApplicationRoleDeclaration() {
-  return commandError2(
-    "Invalid Team application-role declaration.",
-    `Declare at most ${TEAM_APPLICATION_ROLE_MAX} unique lowercase roles using letters, digits, and hyphens; admin, member, and sporades-* are reserved.`,
-    "INVALID_TEAM_APPLICATION_ROLES"
-  );
-}
-function invalidTeamApplicationRolePatch() {
-  return commandError2(
-    "Invalid Team application-role update.",
-    `Use non-overlapping add and remove arrays of at most ${TEAM_APPLICATION_ROLE_PATCH_MAX} declared roles.`,
-    "INVALID_APPLICATION_ROLES"
-  );
-}
-function normalizeTeamApplicationRolePatch(value, declared) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.add) || !Array.isArray(value.remove) || value.add.length > TEAM_APPLICATION_ROLE_PATCH_MAX || value.remove.length > TEAM_APPLICATION_ROLE_PATCH_MAX) throw invalidTeamApplicationRolePatch();
-  const allowed = new Set(Array.isArray(declared) ? declared : []);
-  const normalize = (roles) => {
-    const seen = /* @__PURE__ */ new Set();
-    for (const role of roles) {
-      if (typeof role !== "string" || !allowed.has(role) || seen.has(role)) throw invalidTeamApplicationRolePatch();
-      seen.add(role);
-    }
-    return [...seen];
-  };
-  const add = normalize(value.add);
-  const remove = normalize(value.remove);
-  if (add.some((role) => remove.includes(role))) throw invalidTeamApplicationRolePatch();
-  return { add, remove };
-}
-async function activeTeamApplicationRoles(adapter, declared, teamId, userId) {
-  const active = Array.isArray(declared) ? declared : [];
-  if (active.length === 0) return [];
-  const rows = await adapter.prepare(adapter.dialect.sql(
-    "SELECT [role] FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?"
-  )).all(String(teamId), String(userId));
-  const assigned = new Set(rows.map((row) => String(row.role)));
-  return active.filter((role) => assigned.has(role));
-}
-function isOpaqueTeamId(value) {
-  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-async function runPrivilegedTeamInspection(contextGetter, inspect) {
-  const assertActive = () => assertActivePrivilegedTeamAccess(contextGetter);
-  assertActive();
-  let result;
-  try {
-    result = await inspect(assertActive);
-  } catch (error) {
-    assertActive();
-    throw error;
-  }
-  assertActive();
-  return result;
-}
-function assertActivePrivilegedTeamAccess(contextGetter) {
-  const context2 = contextGetter?.();
-  if (context2?.__privilegedRunActive && !context2.signal?.aborted) return;
-  throw commandError2(
-    "Privileged Team access is no longer active.",
-    "Start a new ctx.privileged.run callback before inspecting Team state.",
-    "PRIVILEGED_TEAM_ACCESS_INACTIVE"
-  );
-}
-function privilegedTeamNotFound() {
-  return commandError2(
-    "Team was not found.",
-    "Use an existing Team identifier and retry.",
-    "TEAM_NOT_FOUND"
-  );
-}
-function teamDenied() {
-  return commandError2("Team operation denied.", "Sign in with a Team administrator account and retry.", "DENIED");
-}
-function teamSummary(input) {
-  return {
-    id: String(input.id),
-    name: safeTeamName(input.name),
-    role: input.role === "admin" ? "admin" : "member",
-    applicationRoles: [],
-    memberCount: Math.min(TEAM_MEMBER_COUNT_MAX, Math.max(0, Number(input.memberCount) || 0))
-  };
-}
-function emitTeamSecurityEvent(database, eventContext, event, actorUserId, teamId, outcome, code, extra = {}) {
-  const input = {
-    category: "audit",
-    event,
-    level: "info",
-    message: teamSecurityMessage(event, outcome),
-    data: {
-      operation: teamSecurityOperation(event),
-      outcome,
-      code: code.slice(0, 80),
-      actorUserId: String(actorUserId).slice(0, 128),
-      teamId: teamId === null ? null : String(teamId).slice(0, 64),
-      ...extra,
-      ...accessKeyCredentialLogAttribution(eventContext)
-    },
-    request: null,
-    release: null,
-    correlation: null
-  };
-  if (database.__transactionActive && eventContext) {
-    eventContext.__teamSecurityEvents ??= [];
-    eventContext.__teamSecurityEvents.push(input);
-    return;
-  }
-  database.log?.emit?.(input);
-}
-function teamSecurityOperation(event) {
-  if (event === "teams.created") return "teams.create";
-  if (event === "teams.renamed" || event === "teams.rename") return "teams.rename";
-  if (event === "teams.joined" || event === "teams.joinLink.join") return "teams.join";
-  if (event === "teams.joinLink.created" || event === "teams.joinLink.create") return "teams.createJoinLink";
-  if (event === "teams.joinLink.revoked" || event === "teams.joinLink.revoke") return "teams.revokeJoinLink";
-  if (event === "teams.promoted" || event === "teams.promote") return "teams.promote";
-  if (event === "teams.demoted" || event === "teams.demote") return "teams.demote";
-  if (event === "teams.applicationRolesUpdated" || event === "teams.updateApplicationRoles") return "teams.updateApplicationRoles";
-  if (event === "teams.memberRemoved" || event === "teams.removeMember") return "teams.removeMember";
-  if (event === "teams.left" || event === "teams.leave") return "teams.leave";
-  return "teams.delete";
-}
-function teamSecurityMessage(event, outcome) {
-  if (outcome === "denied") return "Team lifecycle operation denied.";
-  if (event === "teams.created") return "Team created.";
-  if (event === "teams.renamed") return "Team renamed.";
-  if (event === "teams.joined") return "Joined Team.";
-  if (event === "teams.joinLink.created") return "Team Join link created.";
-  if (event === "teams.joinLink.revoked") return "Team Join link revoked.";
-  if (event === "teams.promoted") return "Team member promoted.";
-  if (event === "teams.demoted") return "Team admin demoted.";
-  if (event === "teams.applicationRolesUpdated") return "Team application roles updated.";
-  if (event === "teams.memberRemoved") return "Team member removed.";
-  if (event === "teams.left") return "Left Team.";
-  if (event === "teams.deleted") return "Team deleted.";
-  return "Team operation completed.";
-}
-function flushTeamSecurityEvents(database, context2, options = {}) {
-  const events = context2?.__teamSecurityEvents;
-  if (!Array.isArray(events)) return;
-  if (!context2) return;
-  delete context2.__teamSecurityEvents;
-  for (const event of events) {
-    if (options.deniedOnly && event?.data?.outcome !== "denied") continue;
-    database.log?.emit?.(event);
-  }
 }
 
 // src/auth-runtime.ts
@@ -128808,11 +128844,10 @@ async function unsealOAuthRegistration(database, row, transactionAdapter = datab
 }
 function resolvePasswordResetConfig(config) {
   const passwordReset = config.auth?.email?.passwordReset ?? {};
-  const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4e3;
   const ttlMs = typeof passwordReset.ttlMs === "number" && Number.isFinite(passwordReset.ttlMs) ? Math.min(Math.max(passwordReset.ttlMs, PASSWORD_RESET_MIN_TTL_MS), PASSWORD_RESET_MAX_TTL_MS) : PASSWORD_RESET_DEFAULT_TTL_MS;
   return {
     path: normalizePasswordResetPath(passwordReset.path) ?? PASSWORD_RESET_DEFAULT_PATH,
-    origin: normalizeOrigin(config.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
+    origin: resolvePublicOrigin(config),
     ttlMs
   };
 }
@@ -136106,6 +136141,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     schedules,
     accessKeyScopes: capsuleDefinition?.accessKeys?.scopes ?? [],
     securitySession: config.__sporadesSession ?? "container",
+    publicOrigin: resolvePublicOrigin(config),
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
     capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
@@ -136227,7 +136263,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       grantPrivilegedDbAccess(reauthContext);
       const holder = createContextHolder(reauthContext);
       try {
-        return await capsuleDefinition.auth.reauthentication.authorize({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, purpose) === true;
+        return await capsuleDefinition.auth.reauthentication.authorize({ app: database.app, db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, purpose) === true;
       } finally {
         active = false;
         revokePrivilegedDbAccess(reauthContext);
@@ -136252,7 +136288,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       try {
         let decision = null;
         try {
-          decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+          decision = await capsuleDefinition.auth.registration.admit({ app: rootDatabase.app, db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
         } finally {
           active = false;
           revokePrivilegedDbAccess(readContext);
@@ -136262,7 +136298,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         grantPrivilegedDbAccess(finalizeContext);
         const finalizeHolder = createContextHolder(finalizeContext);
         try {
-          await capsuleDefinition.auth.registration.finalize({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state });
+          await capsuleDefinition.auth.registration.finalize({ app: rootDatabase.app, db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state });
         } finally {
           revokePrivilegedDbAccess(finalizeContext);
         }
@@ -136585,6 +136621,18 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     serverEnv,
     dataDir: path22.dirname(databasePath)
   });
+  database.app = Object.freeze({ get publicOrigin() {
+    return database.publicOrigin;
+  } });
+  if (["hosted", "container"].includes(config.__sporadesSession) && isLocalPublicOrigin(database.publicOrigin) && !options?.runtimeActionOnly) {
+    database.log.emit({
+      category: "platform",
+      event: "app.publicOrigin.unresolved",
+      level: "error",
+      message: "No non-local public origin resolved. Configure deploy.publicOrigin or SPORADES_PUBLIC_ORIGIN for Container sessions, or the Hosted canonical domain.",
+      data: null
+    });
+  }
   mailLogSink = database.log;
   database.audit = createPrivilegedAuditEmitter(database.log);
   await sqlite.ensureSystemTable();
@@ -137694,6 +137742,7 @@ function createContextPrivilegedApi(database, contextGetter) {
 }
 function createPrivilegedHandlerContext(database, context2, signal) {
   const privilegedContext = {
+    app: database.app,
     rateLimit: database.capsuleRateLimiter.consume,
     env: context2.env,
     payments: context2.payments,
@@ -138509,6 +138558,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
     signal
   }, (db) => definition.admit(Object.freeze({
     db,
+    app: database.app,
     env: database.serverEnv,
     signal,
     request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) })
@@ -138560,6 +138610,7 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
         auth: Object.freeze({ ...admission.auth }),
         credential: Object.freeze({ ...admission.credential ?? { kind: "session" } }),
         db,
+        app: database.app,
         env: database.serverEnv,
         signal: controller.signal,
         request: requestHead
@@ -138966,6 +139017,7 @@ function createAtomicStripeConsequenceContext(database, parent) {
   const context2 = {
     rateLimit: database.capsuleRateLimiter.consume,
     auth: parent.auth,
+    app: database.app,
     env: database.serverEnv,
     signal: parent.signal,
     log: createEndpointLogger(database),
@@ -139095,6 +139147,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
   const context2 = {
     auth,
     ...credential ? { credential } : {},
+    app: database.app,
     rateLimit: database.capsuleRateLimiter.consume,
     env: database.serverEnv,
     payments: database.paymentsConfig,
@@ -139208,6 +139261,7 @@ function protectContextIdentity(value) {
   });
 }
 function createContextHolder(context2) {
+  if (context2.app) Object.defineProperty(context2, "app", { value: context2.app, enumerable: true, writable: false, configurable: false });
   context2.resources = unsupportedResources;
   const holder = { current: context2 };
   Object.defineProperty(context2, "__sporadesContextHolder", {
@@ -139350,6 +139404,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
     ...baseContext,
     kind
   };
+  Object.defineProperty(context2, "app", { value: database.app, enumerable: true });
   bindPendingAclWrites(context2, baseContext);
   bindCurrentUserFileDeleteState(context2, baseContext);
   bindMutationSecretState(context2, baseContext);
@@ -139367,14 +139422,15 @@ async function applyContextMiddleware(database, baseContext, kind) {
     const previousContext = context2;
     const result = await runContextMiddleware(middlewareSource, context2);
     const middlewareContext = result ?? context2;
-    if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
+    if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential || middlewareContext.app !== void 0 && middlewareContext.app !== database.app) {
       throw commandError2(
         "Invalid Capsule context middleware result.",
-        "Context middleware must preserve the runtime-owned Auth and Credential values.",
+        "Context middleware must preserve the runtime-owned Auth, Credential and app values.",
         "INVALID_CONTEXT_MIDDLEWARE_RESULT"
       );
     }
     context2 = { ...middlewareContext, auth: canonicalAuth };
+    Object.defineProperty(context2, "app", { value: database.app, enumerable: true });
     if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
       context2.credential = canonicalCredential;
     } else {
@@ -141821,6 +141877,7 @@ function createMutationContext(database, auth, options = {}) {
   const context2 = {
     auth,
     ...credential ? { credential } : {},
+    app: database.app,
     env: database.serverEnv,
     payments: database.paymentsConfig,
     rateLimit: database.capsuleRateLimiter.consume,
@@ -142020,6 +142077,7 @@ function invokeWithLifecycleInitiation(operation) {
 function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, assertActive) {
   const context2 = {
     auth: Object.freeze({ ...auth }),
+    app: database.app,
     env: database.serverEnv,
     log: createEndpointLogger(database),
     db: trustedDb,
@@ -142042,6 +142100,7 @@ function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, asser
 function createTeamBillingAuthorityContext(database, auth, trustedDb, teamId, assertActive) {
   return {
     auth: Object.freeze({ ...auth }),
+    app: database.app,
     env: database.serverEnv,
     log: createEndpointLogger(database),
     db: trustedDb,
@@ -146782,11 +146841,12 @@ function createHostBootstrapRequest(profile) {
     }
   };
 }
-function createHostRegistrationRequest(alias, profile, subname, aliasDomains = []) {
+function createHostRegistrationRequest(alias, profile, subname, aliasDomains = [], canonicalDomain = null) {
   const bootstrap = createHostBootstrapRequest(profile);
   const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
   const capsuleLog = posixJoin(capsuleDirectory, "logs", "http.log");
   return {
+    ...canonicalDomain ? { canonicalDomain } : {},
     ...aliasDomains.length ? { aliasDomains } : {},
     subname,
     domain: profile.domain,
@@ -147100,6 +147160,8 @@ Profile commands:
 Capsule commands:
   bind <subname>      Bind this project to a Hosted Capsule
   register <subname>  Register a Hosted Capsule
+  canonical set <subname> <alias>|clear <subname>
+                      Select the public origin; restart a running Capsule
   push                Push and install a Hosted Capsule release
   start <subname>     Start a Hosted Capsule
   stop <subname>      Stop a Hosted Capsule
@@ -147132,6 +147194,8 @@ Options:
                       Ephemeral operator user:password for check or migrate
   --server <target>   SSH target for host add
   --domain <domain>   Hosted domain for host add
+  --canonical-domain <hostname>
+                      Public HTTPS link origin for register
   --alias-domain <hostname>
                       Custom HTTPS domain for register (repeatable)
   --remote-root <path>
@@ -148071,6 +148135,7 @@ async function readProjectConfig(projectDir) {
     throw commandError("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
   }
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
+  validatePublicOriginConfig(config);
   validateLogConfig(config);
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);
@@ -148181,10 +148246,16 @@ async function readOptionalProjectSecurity(projectDir, session) {
     throw error;
   }
 }
+function validatePublicOriginConfig(config) {
+  if (config.deploy?.publicOrigin !== void 0 && !normalizePublicOrigin(config.deploy.publicOrigin)) {
+    throw Object.assign(commandError("Invalid deploy.publicOrigin.", "Set an HTTP(S) origin without credentials, path, query or fragment."), { code: "INVALID_PUBLIC_ORIGIN" });
+  }
+}
 function validateProjectConfigShape(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     throw commandError("Invalid project configuration: sporades.json", "Set sporades.json to a JSON object.");
   }
+  validatePublicOriginConfig(config);
   const unsupportedKeys = Object.keys(config).filter((key) => !SUPPORTED_PROJECT_KEYS.has(key)).sort();
   if (unsupportedKeys.length > 0) {
     throw commandError(
@@ -148485,6 +148556,7 @@ async function runDoctorChecks(options) {
     return checks;
   }
   checks.push(await securityPolicyCheck(project.config, options));
+  if (options.session !== "hosted") checks.push(await localPublicOriginCheck(project.config, options));
   const publicDevCheck = await publicDevPostureCheck(options);
   if (publicDevCheck) {
     checks.push(publicDevCheck);
@@ -148511,6 +148583,30 @@ async function runDoctorChecks(options) {
     }
   }
   return checks;
+}
+function publicOriginCheck(origin, session, source) {
+  const warn2 = source !== "configuration" && ["container", "hosted"].includes(session) && isLocalPublicOrigin(origin);
+  return {
+    id: "doctor.public-origin",
+    title: "Capsule public origin",
+    scope: doctorScope(session),
+    status: warn2 ? "warn" : "pass",
+    severity: warn2 ? "warning" : "info",
+    message: `Public origin: ${origin}`,
+    ...warn2 ? { hint: "Configure a non-local public origin before sending application links." } : {},
+    details: { publicOrigin: origin, source }
+  };
+}
+async function localPublicOriginCheck(config, options) {
+  const session = options.session ?? "dev";
+  const file = session === "container" ? "binding.json" : "dev-session.json";
+  const state = await readOptionalJsonFile(path20.join(options.projectDir, ".sporades", file));
+  const recorded = session === "container" ? normalizePublicOrigin(state?.publicOrigin) : typeof state?.port === "number" ? `http://localhost:${state.port}` : null;
+  return publicOriginCheck(recorded ?? resolvePublicOrigin({
+    ...config,
+    __sporadesSession: session,
+    __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN
+  }), session, recorded ? "session" : "configuration");
 }
 async function projectConfigCheck(projectDir) {
   try {
@@ -148792,6 +148888,17 @@ async function hostedCapsuleDoctorChecks(options) {
   if (!capsule) {
     return checks;
   }
+  const origin = normalizePublicOrigin(runtimeHealth.data?.runtime?.publicOrigin) ?? normalizePublicOrigin(capsule.publicOrigin);
+  if (origin) checks.push(publicOriginCheck(origin, "hosted", runtimeHealth.data?.runtime?.publicOrigin ? "runtime" : "registry"));
+  else checks.push({
+    id: "doctor.public-origin",
+    title: "Capsule public origin",
+    scope: "hosted",
+    status: "skip",
+    severity: "info",
+    message: "The Host helper did not report a public origin.",
+    hint: "Upgrade the Host helper and Capsule Bundle to report the effective origin."
+  });
   checks.push(hostedReleaseCheck(capsule, commands));
   checks.push(hostedRuntimeHealthCheck(runtimeHealth, commands));
   if (Object.hasOwn(runtimeHealth.data?.runtime ?? {}, "admissionPolicy") || Object.hasOwn(capsuleStats.data ?? {}, "admissionPolicy")) {
@@ -151102,6 +151209,7 @@ function parseHostArgs(args) {
   let server = null;
   let domain = null;
   const aliasDomains = [];
+  let canonicalDomain = null;
   let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
   let tlsMode = DEFAULT_HOST_TLS_MODE2;
   let subname = null;
@@ -151134,6 +151242,10 @@ function parseHostArgs(args) {
         break;
       case "--server":
         server = readFlagValue(rest, ++index, "--server");
+        break;
+      case "--canonical-domain":
+        if (subcommand !== "register") throw commandError("--canonical-domain is only supported by host register.", "Use host canonical set to change an existing registration.");
+        canonicalDomain = validateCanonicalDomain(readFlagValue(rest, ++index, "--canonical-domain"));
         break;
       case "--alias-domain":
         if (subcommand !== "register") throw commandError("--alias-domain is only supported by host register.", "Use `sporades host register <subname> --alias-domain <hostname>`.");
@@ -151272,6 +151384,15 @@ function parseHostArgs(args) {
       validateCapsuleSubname(positionalSubname);
       return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
+    case "canonical": {
+      const [operation, name2, domain2, ...extra] = positional;
+      if (!["set", "clear"].includes(operation) || !name2 || extra.length || (operation === "set" ? !domain2 : domain2 !== void 0)) {
+        throw commandError("Invalid canonical domain command.", "Use host canonical set <subname> <alias> or host canonical clear <subname>.");
+      }
+      validateCapsuleSubname(name2);
+      if (hostAlias) validateHostAlias(hostAlias);
+      return { subcommand, subname: name2, canonicalDomain: operation === "set" ? validateCanonicalDomain(domain2) : null, hostAlias, json, projectDir: process.cwd() };
+    }
     case "register": {
       const [positionalSubname, ...extra] = positional;
       if (!positionalSubname) {
@@ -151284,8 +151405,9 @@ function parseHostArgs(args) {
         validateHostAlias(hostAlias);
       }
       validateCapsuleSubname(positionalSubname);
+      if (canonicalDomain && !aliasDomains.includes(canonicalDomain)) aliasDomains.push(canonicalDomain);
       validateAliasDomains(aliasDomains);
-      return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, canonicalDomain, json, projectDir: process.cwd() };
     }
     case "rotate-key": {
       const [positionalSubname, ...extra] = positional;
@@ -152153,6 +152275,21 @@ async function startDevSession(options) {
     data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null
   });
   let telemetry;
+  const starting = (_request, response) => {
+    response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Dev session is starting.");
+  };
+  const server = createServer2(starting);
+  await new Promise((resolve2, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve2();
+    });
+  });
+  const address = server.address();
+  const actualPort = typeof address === "object" && address ? address.port : port;
+  const url = `http://localhost:${actualPort}`;
   try {
     runtime = await createDevRuntime({
       projectDir: options.projectDir,
@@ -152161,25 +152298,28 @@ async function startDevSession(options) {
       serverEnv: bundle.serverRuntime.env,
       serviceEnv: capsuleServiceEnv,
       capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-      config: withRuntimeSecuritySession(config, session),
+      config: { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: url },
       runtimeProbeToken: inspectionToken,
       onJobQueueReady(queueDatabase) {
         telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
         telemetry.bindJobQueue(queueDatabase);
       }
     });
+    await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
+    runtime.database.log.emit({
+      category: "platform",
+      event: "dev.session.started",
+      level: "info",
+      message: "Dev session started",
+      data: { diagnostics: runtime.database.runtimeDiagnostics }
+    });
   } catch (error) {
+    server.closeAllConnections();
+    await new Promise((resolve2) => server.close(() => resolve2()));
+    await runtime?.shutdown();
     await telemetry?.shutdown();
     throw error;
   }
-  await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
-  runtime.database.log.emit({
-    category: "platform",
-    event: "dev.session.started",
-    level: "info",
-    message: "Dev session started",
-    data: { diagnostics: runtime.database.runtimeDiagnostics }
-  });
   const devRefresh = createDevRefreshController();
   const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport, {
     // Resolve the current adapter at dispatch/accept time. Operations and close
@@ -152189,7 +152329,8 @@ async function startDevSession(options) {
       connectionOpened: () => telemetry.websocket.connectionOpened()
     }
   });
-  const server = createServer2(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
+  server.removeListener("request", starting);
+  server.on("request", async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
     try {
       if (prepareHttpSecurity(runtime.database, request, response, () => routeHttpAdmission(runtime.database, request, response))) {
         return;
@@ -152354,13 +152495,6 @@ async function startDevSession(options) {
   server.on("connect", (_request, socket) => {
     socket.destroy();
   });
-  await new Promise((resolve2, reject) => {
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => resolve2());
-  });
-  const address = server.address();
-  const actualPort = typeof address === "object" && address ? address.port : port;
-  const url = `http://localhost:${actualPort}`;
   let actionBundleCreated = false;
   let watchers = [];
   let onUnhandledRejection = null;
@@ -152450,7 +152584,7 @@ async function startDevSession(options) {
           bundle.serverRuntime.env,
           runtimeServiceEnv,
           bundle.serverRuntime.capsuleModuleSource,
-          withRuntimeSecuritySession(config, session),
+          { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: url },
           telemetry
         );
         websocketHub.disconnectAll();
@@ -152554,7 +152688,7 @@ async function startDevSession(options) {
             rebuild.serverRuntime.env,
             nextCapsuleServiceEnv,
             rebuild.serverRuntime.capsuleModuleSource,
-            withRuntimeSecuritySession(nextConfig, session),
+            { ...withRuntimeSecuritySession(nextConfig, session), __sporadesDevOrigin: url },
             nextTelemetry ?? telemetry
           ).catch(async (error) => {
             telemetry.bindJobQueue(runtime.database);
@@ -153759,6 +153893,23 @@ async function manageHost(options) {
       }
       return;
     }
+    case "canonical": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "capsule.canonical.set",
+        subname: options.subname,
+        canonical: { domain: options.canonicalDomain },
+        projectDir: options.projectDir
+      });
+      if (options.json) writeResult(result, !result.ok);
+      else if (!result.ok) throw commandError(result.error.message, result.error.hint);
+      else process.stdout.write(`Public origin: ${result.data.publicOrigin}
+`);
+      return;
+    }
     case "register": {
       await readProjectConfig(options.projectDir);
       const config = await readHostConfig();
@@ -153769,7 +153920,7 @@ async function manageHost(options) {
         profile: resolved.profile,
         action: "capsule.register",
         subname: options.subname,
-        registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname, options.aliasDomains),
+        registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname, options.aliasDomains, options.canonicalDomain),
         projectDir: options.projectDir
       });
       if (!result.ok) {
@@ -153778,6 +153929,9 @@ async function manageHost(options) {
           return;
         }
         throw commandError(result.error.message, result.error.hint);
+      }
+      if (options.canonicalDomain && (result.data?.capsule?.canonicalDomain !== options.canonicalDomain || result.data?.capsule?.publicOrigin !== `https://${options.canonicalDomain}`)) {
+        throw commandError("Host helper did not confirm the canonical domain.", "Upgrade the Host helper and inspect the registration; no local binding was written.");
       }
       const confirmedAliases = result.data?.capsule?.aliasDomains;
       if (options.aliasDomains.length && (!Array.isArray(confirmedAliases) || confirmedAliases.length !== options.aliasDomains.length || !options.aliasDomains.every((hostname) => confirmedAliases.includes(hostname)))) {
@@ -154351,6 +154505,7 @@ function dockerMountField(value) {
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4e3;
+  const publicOrigin = resolvePublicOrigin({ ...config, deploy: { ...config.deploy, port }, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN });
   const runtimeDir = path21.join(options.projectDir, ".sporades");
   const containerName = `sporades-${config.name ?? path21.basename(options.projectDir)}`;
   const bindingPath = path21.join(options.projectDir, CONTAINER_BINDING_FILE);
@@ -154525,6 +154680,10 @@ async function startContainerSession(options) {
     "--env",
     "SPORADES_SECURITY_SESSION=container",
     "--env",
+    `SPORADES_PUBLIC_ORIGIN=${publicOrigin}`,
+    "--env",
+    `SPORADES_CONTAINER_PUBLIC_ORIGIN=${publicOrigin}`,
+    "--env",
     `SPORADES_ADMISSION_POLICY_PATH=${bundle.deployFiles.find((file) => file.update === "admission")?.path ?? ""}`,
     "--env",
     `SPORADES_CONTAINER_TELEMETRY_CONFIG=${JSON.stringify(telemetryConfig)}`,
@@ -154598,6 +154757,7 @@ async function startContainerSession(options) {
       containerId,
       containerName,
       containerTransactionToken,
+      publicOrigin,
       telemetryDescriptorVersion: 1,
       ...telemetryProfile !== void 0 ? { telemetryProfile } : {},
       ...telemetryCaStagePath ? { telemetryCaStagePath } : {},
@@ -155579,6 +155739,7 @@ function invokeRemoteHostHelper(options) {
     capsule: options.subname ? { subname: options.subname } : null
   };
   if (options.admission) request.admission = options.admission;
+  if (options.canonical) request.canonical = options.canonical;
   if (options.bootstrap) {
     request.bootstrap = options.bootstrap;
   }

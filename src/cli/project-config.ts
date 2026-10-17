@@ -1,3 +1,4 @@
+import { normalizePublicOrigin } from "../public-origin.js";
 import { resolveRegistrationThrottle } from "../capsule-rate-limit.js";
 import { resolveAdmissionPolicy } from "../admission-policy.js";
 import { createHash } from "node:crypto";
@@ -70,6 +71,7 @@ export async function readProjectConfig(projectDir: string) {
     throw commandError("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
   }
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
+  validatePublicOriginConfig(config);
   validateLogConfig(config);
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);
@@ -196,11 +198,18 @@ export async function readOptionalProjectSecurity(projectDir: string, session: s
   }
 }
 
+export function validatePublicOriginConfig(config: any) {
+  if (config.deploy?.publicOrigin !== undefined && !normalizePublicOrigin(config.deploy.publicOrigin)) {
+    throw Object.assign(commandError("Invalid deploy.publicOrigin.", "Set an HTTP(S) origin without credentials, path, query or fragment."), { code: "INVALID_PUBLIC_ORIGIN" });
+  }
+}
+
 export function validateProjectConfigShape(config: unknown) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     throw commandError("Invalid project configuration: sporades.json", "Set sporades.json to a JSON object.");
   }
 
+  validatePublicOriginConfig(config);
   const unsupportedKeys = Object.keys(config).filter((key) => !SUPPORTED_PROJECT_KEYS.has(key)).sort();
   if (unsupportedKeys.length > 0) {
     throw commandError(

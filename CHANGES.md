@@ -6,6 +6,7 @@ Changes since v0.9.31.
 
 ### 🚀 Features
 
+- Add `ctx.app.publicOrigin`, canonical Hosted alias selection, and origin diagnostics (#231).
 - Add shared Capsule rate limits and trusted-address authentication throttles (#232).
 - Export HTML-safe mail helpers and support password-reset body placeholders (#230).
 - Add pinned monitoring release acceptance verifier (#229) (872f33866).

@@ -12,6 +12,10 @@ _Avoid_: app (too generic), project (the scaffold), deployment (the act)
 A local Node process running the bundled app with file watching, hot rebuild, and SQLite persistence. For iteration speed.
 _Avoid_: dev server (it's more than a server — it's a whole feedback loop)
 
+**AppContext**:
+The immutable, runtime-resolved application identity exposed as `ctx.app`. Its `publicOrigin` is the trusted base URL for Capsule-generated links: local HTTP for Dev and Container, and the canonical HTTPS alias or Host subdomain for Hosted.
+_Avoid_: request origin, Host header, hostedUrl (which continues to identify the Host subdomain)
+
 **Public Dev session**:
 A Dev session mode that deliberately relaxes local access defaults for temporary demos, device testing, or public tunneling. It is never the default and does not apply to Container sessions or Hosted Capsules.
 _Avoid_: open dev, unsafe mode, fully accessible dev

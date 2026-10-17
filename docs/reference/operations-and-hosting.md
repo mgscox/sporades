@@ -391,6 +391,13 @@ sporades host push --host personal --subname team-notes --json
 sporades host start team-notes --host personal --json
 ```
 
+Use `host register <subname> --canonical-domain <hostname>` to reserve and
+select a custom HTTPS origin for `ctx.app.publicOrigin` and built-in links.
+`host canonical set <subname> <registered-alias>` changes the choice;
+`host canonical clear <subname>` restores the Host subdomain. Changing the choice
+restarts a running Capsule; stopped Capsules stay stopped. The stable `hostedUrl`
+identity remains the Host subdomain.
+
 For apex/custom domains, add repeatable `--alias-domain <hostname>` options to
 `host register`. The original subdomain remains available. See
 [custom domain setup and lifecycle](../guide/hosting.md) for DNS, automatic TLS,

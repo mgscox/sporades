@@ -1,3 +1,4 @@
+import { isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { createCapsuleRateLimiter, resolveRegistrationThrottle } from "./capsule-rate-limit.js";
 import { CLIENT_ADDRESS_TOKEN_HEADER, trustedClientAddress } from "./client-address.js";
@@ -867,6 +868,7 @@ export async function openDevDatabase(
     schedules,
     accessKeyScopes: capsuleDefinition?.accessKeys?.scopes ?? [],
     securitySession: config.__sporadesSession ?? "container",
+    publicOrigin: resolvePublicOrigin(config),
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
     capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
@@ -978,7 +980,7 @@ export async function openDevDatabase(
     authorizeReauthentication: typeof capsuleDefinition?.auth?.reauthentication?.authorize === "function" ? async function (transaction: LooseRecord, auth: LooseRecord, purpose: string) {
       const reauthDatabase = createTransactionDatabase(database, transaction); let active = true; const assertActive = () => { if (!active) throw commandError("Reauthentication access is no longer active.", "Start a new reauthentication attempt.", "REAUTHENTICATION_ACCESS_INACTIVE"); };
       const reauthContext: LooseRecord = { purpose: "auth.reauthentication", auth }; grantPrivilegedDbAccess(reauthContext); const holder = createContextHolder(reauthContext);
-      try { return (await capsuleDefinition.auth.reauthentication.authorize({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, purpose)) === true; }
+      try { return (await capsuleDefinition.auth.reauthentication.authorize({ app: database.app, db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, purpose)) === true; }
       finally { active = false; revokePrivilegedDbAccess(reauthContext); }
     } : async () => true,
     passwordResetConfig: resolvePasswordResetConfig(config),
@@ -997,12 +999,12 @@ export async function openDevDatabase(
         grantPrivilegedDbAccess(readContext); const readHolder = createContextHolder(readContext);
         try {
           let decision: LooseRecord | null = null;
-          try { decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission }); }
+          try { decision = await capsuleDefinition.auth.registration.admit({ app: rootDatabase.app, db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission }); }
           finally { active = false; revokePrivilegedDbAccess(readContext); }
           if (!decision || decision.allow !== true) return false;
           const finalizeContext: LooseRecord = { purpose: "auth.registration-finalize", evidence };
           grantPrivilegedDbAccess(finalizeContext); const finalizeHolder = createContextHolder(finalizeContext);
-          try { await capsuleDefinition.auth.registration.finalize({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state }); }
+          try { await capsuleDefinition.auth.registration.finalize({ app: rootDatabase.app, db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state }); }
           finally { revokePrivilegedDbAccess(finalizeContext); }
           return true;
         } finally { active = false; revokePrivilegedDbAccess(readContext); await drainPendingLogWrites(registrationDatabase); }
@@ -1316,6 +1318,11 @@ export async function openDevDatabase(
     serverEnv,
     dataDir: path.dirname(databasePath),
   });
+  database.app = Object.freeze({ get publicOrigin() { return database.publicOrigin; } });
+  if (["hosted", "container"].includes(config.__sporadesSession) && isLocalPublicOrigin(database.publicOrigin) && !options?.runtimeActionOnly) {
+    database.log.emit({ category: "platform", event: "app.publicOrigin.unresolved", level: "error",
+      message: "No non-local public origin resolved. Configure deploy.publicOrigin or SPORADES_PUBLIC_ORIGIN for Container sessions, or the Hosted canonical domain.", data: null });
+  }
   mailLogSink = database.log;
   database.audit = createPrivilegedAuditEmitter(database.log);
   await sqlite.ensureSystemTable();
@@ -2619,6 +2626,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   // let middleware smuggle lifecycle APIs across this userless boundary under
   // aliases or closures.
   const privilegedContext: LooseRecord = {
+    app: database.app,
     rateLimit: database.capsuleRateLimiter.consume,
     env: context.env,
     payments: context.payments,
@@ -3631,6 +3639,7 @@ async function admitCapsuleIngressPrincipal(database: LooseRecord, endpoint: Loo
     signal,
   }, (db) => definition.admit(Object.freeze({
     db,
+    app: database.app,
     env: database.serverEnv,
     signal,
     request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
@@ -3674,6 +3683,7 @@ async function admitEndpointMultipart(database: LooseRecord, endpoint: LooseReco
         auth: Object.freeze({ ...admission.auth }),
         credential: Object.freeze({ ...(admission.credential ?? { kind: "session" }) }),
         db,
+        app: database.app,
         env: database.serverEnv,
         signal: controller.signal,
         request: requestHead,
@@ -4104,6 +4114,7 @@ function createAtomicStripeConsequenceContext(database: LooseRecord, parent: Loo
   const context: LooseRecord = {
     rateLimit: database.capsuleRateLimiter.consume,
     auth: parent.auth,
+    app: database.app,
     env: database.serverEnv,
     signal: parent.signal,
     log: createEndpointLogger(database),
@@ -4251,6 +4262,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   const context: LooseRecord = {
     auth,
     ...(credential ? { credential } : {}),
+    app: database.app,
     rateLimit: database.capsuleRateLimiter.consume,
     env: database.serverEnv,
     payments: database.paymentsConfig,
@@ -4367,6 +4379,7 @@ function protectContextIdentity(value: LooseRecord) {
 }
 
 function createContextHolder(context: LooseRecord) {
+  if (context.app) Object.defineProperty(context, "app", { value: context.app, enumerable: true, writable: false, configurable: false });
   context.resources = unsupportedResources;
   const holder = { current: context };
   Object.defineProperty(context, "__sporadesContextHolder", {
@@ -4530,6 +4543,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     ...baseContext,
     kind,
   };
+  Object.defineProperty(context, "app", { value: database.app, enumerable: true });
   bindPendingAclWrites(context, baseContext);
   bindCurrentUserFileDeleteState(context, baseContext);
   bindMutationSecretState(context, baseContext);
@@ -4547,14 +4561,15 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     const previousContext = context;
     const result = await runContextMiddleware(middlewareSource, context);
     const middlewareContext = result ?? context;
-    if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
+    if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential || (middlewareContext.app !== undefined && middlewareContext.app !== database.app)) {
       throw commandError(
         "Invalid Capsule context middleware result.",
-        "Context middleware must preserve the runtime-owned Auth and Credential values.",
+        "Context middleware must preserve the runtime-owned Auth, Credential and app values.",
         "INVALID_CONTEXT_MIDDLEWARE_RESULT",
       );
     }
     context = { ...middlewareContext, auth: canonicalAuth };
+    Object.defineProperty(context, "app", { value: database.app, enumerable: true });
     if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
       context.credential = canonicalCredential;
     } else {
@@ -7201,6 +7216,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
   const context: LooseRecord = {
     auth,
     ...(credential ? { credential } : {}),
+    app: database.app,
     env: database.serverEnv,
     payments: database.paymentsConfig,
     rateLimit: database.capsuleRateLimiter.consume,
@@ -7415,6 +7431,7 @@ function invokeWithLifecycleInitiation(operation: () => any) {
 function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord, teamId: string, assertActive: () => void) {
   const context: LooseRecord = {
     auth: Object.freeze({ ...auth }),
+    app: database.app,
     env: database.serverEnv,
     log: createEndpointLogger(database),
     db: trustedDb,
@@ -7440,6 +7457,7 @@ function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord
 function createTeamBillingAuthorityContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord, teamId: string, assertActive: () => void) {
   return {
     auth: Object.freeze({ ...auth }),
+    app: database.app,
     env: database.serverEnv,
     log: createEndpointLogger(database),
     db: trustedDb,
