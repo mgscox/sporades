@@ -741,6 +741,9 @@ function sporadesServerPlugin(): import("esbuild").Plugin {
       build.onResolve({ filter: /^sporades\/server\/stripe$/ }, () => ({
         path: path.join(resolveSporadesPackageRoot(), "dist", "stripe-payment-integration.js"),
       }));
+      build.onResolve({ filter: /^sporades:html$/ }, () => ({
+        path: path.join(resolveSporadesPackageRoot(), "dist", "html.js"),
+      }));
     },
   };
 }

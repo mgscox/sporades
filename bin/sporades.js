@@ -33262,15 +33262,15 @@ function findContrastColor(baseColor, fixedColor) {
   return cachedValue;
 }
 function renderRichText({
-  html,
+  html: html2,
   dir,
   className
 }, container) {
-  const fragment = document.createDocumentFragment();
-  if (typeof html === "string") {
+  const fragment2 = document.createDocumentFragment();
+  if (typeof html2 === "string") {
     const p2 = document.createElement("p");
     p2.dir = dir || "auto";
-    const lines = html.split(/\r\n?|\n/);
+    const lines = html2.split(/\r\n?|\n/);
     for (let i = 0, ii = lines.length; i < ii; ++i) {
       const line = lines[i];
       p2.append(document.createTextNode(line));
@@ -33278,16 +33278,16 @@ function renderRichText({
         p2.append(document.createElement("br"));
       }
     }
-    fragment.append(p2);
+    fragment2.append(p2);
   } else {
     XfaLayer.render({
-      xfaHtml: html,
-      div: fragment,
+      xfaHtml: html2,
+      div: fragment2,
       intent: "richText"
     });
   }
-  fragment.firstElementChild.classList.add("richText", className);
-  container.append(fragment);
+  fragment2.firstElementChild.classList.add("richText", className);
+  container.append(fragment2);
 }
 function makePathFromDrawOPS(data2) {
   const path22 = new Path2D();
@@ -35979,7 +35979,7 @@ var init_pdf = __esm({
         var definePropertiesModule = __webpack_require__2(6801);
         var enumBugKeys = __webpack_require__2(8727);
         var hiddenKeys = __webpack_require__2(421);
-        var html = __webpack_require__2(397);
+        var html2 = __webpack_require__2(397);
         var documentCreateElement = __webpack_require__2(4055);
         var sharedKey = __webpack_require__2(6119);
         var GT = ">";
@@ -36004,7 +36004,7 @@ var init_pdf = __esm({
           var JS = "java" + SCRIPT + ":";
           var iframeDocument;
           iframe.style.display = "none";
-          html.appendChild(iframe);
+          html2.appendChild(iframe);
           iframe.src = String(JS);
           iframeDocument = iframe.contentWindow.document;
           iframeDocument.open();
@@ -39366,19 +39366,19 @@ var init_pdf = __esm({
       static get _allowedRichTextStyles() {
         return shadow(this, "_allowedRichTextStyles", /* @__PURE__ */ new Set(["color", "font", "fontFamily", "fontSize", "fontStretch", "fontStyle", "fontWeight", "kerningMode", "letterSpacing", "lineHeight", "margin", "marginBottom", "marginLeft", "marginRight", "marginTop", "orphans", "paddingLeft", "paddingRight", "breakAfter", "breakBefore", "breakInside", "tabInterval", "tabStop", "textAlign", "textDecoration", "textIndent", "transform", "verticalAlign", "widows"]));
       }
-      static setupStorage(html, id2, element, storage, intent) {
+      static setupStorage(html2, id2, element, storage, intent) {
         const storedData = storage.getValue(id2, {
           value: null
         });
         switch (element.name) {
           case "textarea":
             if (storedData.value !== null) {
-              html.textContent = storedData.value;
+              html2.textContent = storedData.value;
             }
             if (intent === "print") {
               break;
             }
-            html.addEventListener("input", (event) => {
+            html2.addEventListener("input", (event) => {
               storage.setValue(id2, {
                 value: event.target.value
               });
@@ -39387,26 +39387,26 @@ var init_pdf = __esm({
           case "input":
             if (element.attributes.type === "radio" || element.attributes.type === "checkbox") {
               if (storedData.value === element.attributes.xfaOn) {
-                html.setAttribute("checked", true);
+                html2.setAttribute("checked", true);
               } else if (storedData.value === element.attributes.xfaOff) {
-                html.removeAttribute("checked");
+                html2.removeAttribute("checked");
               }
               if (intent === "print") {
                 break;
               }
-              html.addEventListener("change", (event) => {
+              html2.addEventListener("change", (event) => {
                 storage.setValue(id2, {
                   value: event.target.checked ? event.target.getAttribute("xfaOn") : event.target.getAttribute("xfaOff")
                 });
               });
             } else {
               if (storedData.value !== null) {
-                html.setAttribute("value", storedData.value);
+                html2.setAttribute("value", storedData.value);
               }
               if (intent === "print") {
                 break;
               }
-              html.addEventListener("input", (event) => {
+              html2.addEventListener("input", (event) => {
                 storage.setValue(id2, {
                   value: event.target.value
                 });
@@ -39415,7 +39415,7 @@ var init_pdf = __esm({
             break;
           case "select":
             if (storedData.value !== null) {
-              html.setAttribute("value", storedData.value);
+              html2.setAttribute("value", storedData.value);
               for (const option of element.children) {
                 if (option.attributes.value === storedData.value) {
                   option.attributes.selected = true;
@@ -39424,7 +39424,7 @@ var init_pdf = __esm({
                 }
               }
             }
-            html.addEventListener("input", (event) => {
+            html2.addEventListener("input", (event) => {
               const options = event.target.options;
               const value = options.selectedIndex === -1 ? "" : options[options.selectedIndex].value;
               storage.setValue(id2, {
@@ -39435,7 +39435,7 @@ var init_pdf = __esm({
         }
       }
       static setAttributes({
-        html,
+        html: html2,
         element,
         storage = null,
         intent,
@@ -39444,7 +39444,7 @@ var init_pdf = __esm({
         const {
           attributes
         } = element;
-        const isHTMLAnchorElement = html instanceof HTMLAnchorElement;
+        const isHTMLAnchorElement = html2 instanceof HTMLAnchorElement;
         if (attributes.type === "radio") {
           attributes.name = `${attributes.name}-${intent}`;
         }
@@ -39461,40 +39461,40 @@ var init_pdf = __esm({
           switch (key) {
             case "class":
               if (value.length) {
-                html.setAttribute(key, value.join(" "));
+                html2.setAttribute(key, value.join(" "));
               }
               break;
             case "dataId":
               break;
             case "id":
-              html.setAttribute("data-element-id", value);
+              html2.setAttribute("data-element-id", value);
               break;
             case "style":
               if (intent === "richText") {
                 const allowedStyles = this._allowedRichTextStyles;
                 for (const [styleName, styleValue] of Object.entries(value)) {
                   if (allowedStyles.has(styleName) && !disallowedRichTextStyleRegExp.test(styleValue)) {
-                    html.style[styleName] = styleValue;
+                    html2.style[styleName] = styleValue;
                   }
                 }
               } else {
-                Object.assign(html.style, value);
+                Object.assign(html2.style, value);
               }
               break;
             case "textContent":
-              html.textContent = value;
+              html2.textContent = value;
               break;
             default:
               if (!isHTMLAnchorElement || key !== "href" && key !== "newWindow") {
-                html.setAttribute(key, value);
+                html2.setAttribute(key, value);
               }
           }
         }
         if (isHTMLAnchorElement) {
-          linkService?.addLinkAttributes(html, attributes.href, attributes.newWindow);
+          linkService?.addLinkAttributes(html2, attributes.href, attributes.newWindow);
         }
         if (storage && attributes.dataId) {
-          this.setupStorage(html, attributes.dataId, element, storage);
+          this.setupStorage(html2, attributes.dataId, element, storage);
         }
       }
       static #createElement(name2, xmlns, intent) {
@@ -39545,7 +39545,7 @@ var init_pdf = __esm({
         }
         const stack = [[root, -1, rootHtml]];
         while (stack.length > 0) {
-          const [parent, i, html] = stack.at(-1);
+          const [parent, i, html2] = stack.at(-1);
           if (i + 1 === parent.children.length) {
             stack.pop();
             continue;
@@ -39560,14 +39560,14 @@ var init_pdf = __esm({
           if (name2 === "#text") {
             const node = document.createTextNode(child.value);
             textDivs.push(node);
-            html.append(node);
+            html2.append(node);
             continue;
           }
           const childHtml = this.#createElement(name2, child.attributes?.xmlns, intent);
           if (!childHtml) {
             continue;
           }
-          html.append(childHtml);
+          html2.append(childHtml);
           if (child.attributes) {
             this.setAttributes({
               html: childHtml,
@@ -57855,16 +57855,16 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           const centerX2 = (b0 + b2) / 2;
           return centerX1 - centerX2;
         });
-        const fragment = document.createDocumentFragment();
+        const fragment2 = document.createDocumentFragment();
         for (const element of this.#elements) {
-          fragment.append(element.container);
+          fragment2.append(element.container);
           if (this._commentManager) {
             (element.extraPopupElement?.popup || element.popup)?.renderCommentButton();
           } else if (element.extraPopupElement) {
-            fragment.append(element.extraPopupElement.render());
+            fragment2.append(element.extraPopupElement.render());
           }
         }
-        this.div.append(fragment);
+        this.div.append(fragment2);
         await Promise.all(promises);
         if (this.#accessibilityManager) {
           const annotationIds = await this.#structTreeLayer?.getAnnotationIds();
@@ -95157,9 +95157,9 @@ var Parser3 = class {
     this.openElements = new OpenElementStack(this.document, this.treeAdapter, this);
   }
   // API
-  static parse(html, options) {
+  static parse(html2, options) {
     const parser2 = new this(options);
-    parser2.tokenizer.write(html, true);
+    parser2.tokenizer.write(html2, true);
     return parser2.document;
   }
   static getFragmentParser(fragmentContext, options) {
@@ -95181,9 +95181,9 @@ var Parser3 = class {
   }
   getFragment() {
     const rootElement = this.treeAdapter.getFirstChild(this.document);
-    const fragment = this.treeAdapter.createDocumentFragment();
-    this._adoptNodes(rootElement, fragment);
-    return fragment;
+    const fragment2 = this.treeAdapter.createDocumentFragment();
+    this._adoptNodes(rootElement, fragment2);
+    return fragment2;
   }
   //Errors
   /** @internal */
@@ -98165,15 +98165,15 @@ function serialize(node, options) {
   return serializeChildNodes(node, opts);
 }
 function serializeChildNodes(parentNode, options) {
-  let html = "";
+  let html2 = "";
   const container = options.treeAdapter.isElementNode(parentNode) && options.treeAdapter.getTagName(parentNode) === TAG_NAMES.TEMPLATE && options.treeAdapter.getNamespaceURI(parentNode) === NS.HTML ? options.treeAdapter.getTemplateContent(parentNode) : parentNode;
   const childNodes = options.treeAdapter.getChildNodes(container);
   if (childNodes) {
     for (const currentNode of childNodes) {
-      html += serializeNode(currentNode, options);
+      html2 += serializeNode(currentNode, options);
     }
   }
-  return html;
+  return html2;
 }
 function serializeNode(node, options) {
   if (options.treeAdapter.isElementNode(node)) {
@@ -98195,36 +98195,36 @@ function serializeElement(node, options) {
   return `<${tn2}${serializeAttributes(node, options)}>${isVoidElement(node, options) ? "" : `${serializeChildNodes(node, options)}</${tn2}>`}`;
 }
 function serializeAttributes(node, { treeAdapter }) {
-  let html = "";
+  let html2 = "";
   for (const attr of treeAdapter.getAttrList(node)) {
-    html += " ";
+    html2 += " ";
     if (attr.namespace) {
       switch (attr.namespace) {
         case NS.XML: {
-          html += `xml:${attr.name}`;
+          html2 += `xml:${attr.name}`;
           break;
         }
         case NS.XMLNS: {
           if (attr.name !== "xmlns") {
-            html += "xmlns:";
+            html2 += "xmlns:";
           }
-          html += attr.name;
+          html2 += attr.name;
           break;
         }
         case NS.XLINK: {
-          html += `xlink:${attr.name}`;
+          html2 += `xlink:${attr.name}`;
           break;
         }
         default: {
-          html += `${attr.prefix}:${attr.name}`;
+          html2 += `${attr.prefix}:${attr.name}`;
         }
       }
     } else {
-      html += attr.name;
+      html2 += attr.name;
     }
-    html += `="${escapeAttribute(attr.value)}"`;
+    html2 += `="${escapeAttribute(attr.value)}"`;
   }
-  return html;
+  return html2;
 }
 function serializeTextNode(node, options) {
   const { treeAdapter } = options;
@@ -98241,8 +98241,8 @@ function serializeDocumentTypeNode(node, { treeAdapter }) {
 }
 
 // node_modules/parse5/dist/index.js
-function parse4(html, options) {
-  return Parser3.parse(html, options);
+function parse4(html2, options) {
+  return Parser3.parse(html2, options);
 }
 
 // src/build-diagnostics.ts
@@ -98335,8 +98335,8 @@ function readClientPrerenderConfig(value, toolchain) {
   });
   return fragments;
 }
-async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots = [projectRoot], onDependency) {
-  const modulePath = path4.resolve(projectRoot, ...fragment.module.split("/"));
+async function renderClientPrerenderFragment(projectRoot, fragment2, projectRoots = [projectRoot], onDependency) {
+  const modulePath = path4.resolve(projectRoot, ...fragment2.module.split("/"));
   onDependency?.(modulePath);
   let canonicalModulePath;
   try {
@@ -98346,9 +98346,9 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     if (!isCanonicalDescendant(projectRoot, canonicalModulePath)) throw new Error("escaped the Capsule project");
   } catch (error) {
     throw prerenderError(
-      `Could not load client prerender module for ${fragment.name}.`,
-      `Restore the regular project-owned module at ${fragment.module}, then retry.`,
-      { fragment: fragment.name, module: fragment.module }
+      `Could not load client prerender module for ${fragment2.name}.`,
+      `Restore the regular project-owned module at ${fragment2.module}, then retry.`,
+      { fragment: fragment2.name, module: fragment2.module }
     );
   }
   let bundledSource;
@@ -98373,14 +98373,14 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     bundledSource = javascript[0].text;
   } catch (error) {
     throw prerenderError(
-      `Could not build client prerender module for ${fragment.name}: ${boundedMessage(error, [...projectRoots, ...rendererDependencyRoots], [...rendererDependencyAliases])}`,
-      `Fix ${fragment.module}, then retry.`,
-      { fragment: fragment.name, module: fragment.module }
+      `Could not build client prerender module for ${fragment2.name}: ${boundedMessage(error, [...projectRoots, ...rendererDependencyRoots], [...rendererDependencyAliases])}`,
+      `Fix ${fragment2.module}, then retry.`,
+      { fragment: fragment2.name, module: fragment2.module }
     );
   }
   const boundedRendererRoots = [...projectRoots, ...rendererDependencyRoots];
   {
-    const outcome = await executeBundledRenderer(bundledSource, bundleFormat, canonicalModulePath, fragment.module, boundedRendererRoots);
+    const outcome = await executeBundledRenderer(bundledSource, bundleFormat, canonicalModulePath, fragment2.module, boundedRendererRoots);
     for (const dependency of outcome.dependencies ?? []) {
       if (typeof dependency === "string" && path4.isAbsolute(dependency)) {
         onDependency?.(dependency);
@@ -98396,22 +98396,22 @@ async function renderClientPrerenderFragment(projectRoot, fragment, projectRoots
     }
     if (outcome.kind === "not-function") {
       throw prerenderError(
-        `Client prerender module for ${fragment.name} must default-export a zero-argument renderer.`,
-        `Default-export a function from ${fragment.module} that returns an HTML string or Promise<string>.`
+        `Client prerender module for ${fragment2.name} must default-export a zero-argument renderer.`,
+        `Default-export a function from ${fragment2.module} that returns an HTML string or Promise<string>.`
       );
     }
     if (outcome.kind === "non-string") {
       throw prerenderError(
-        `Client prerender renderer for ${fragment.name} returned a non-string result.`,
-        `Return an HTML string or Promise<string> from ${fragment.module}.`,
-        { fragment: fragment.name, resultType: outcome.resultType }
+        `Client prerender renderer for ${fragment2.name} returned a non-string result.`,
+        `Return an HTML string or Promise<string> from ${fragment2.module}.`,
+        { fragment: fragment2.name, resultType: outcome.resultType }
       );
     }
     if (outcome.kind === "failure") {
       throw prerenderError(
-        `Client prerender renderer for ${fragment.name} failed: ${outcome.message}`,
-        `Fix the renderer in ${fragment.module}, then retry.`,
-        { fragment: fragment.name, module: fragment.module }
+        `Client prerender renderer for ${fragment2.name} failed: ${outcome.message}`,
+        `Fix the renderer in ${fragment2.module}, then retry.`,
+        { fragment: fragment2.name, module: fragment2.module }
       );
     }
     return outcome.rendered;
@@ -99165,22 +99165,22 @@ function forEachRendererChild(node, visit) {
 function isRendererSyntaxNode(value) {
   return Boolean(value && typeof value === "object" && typeof value.type === "string");
 }
-function validateClientPrerenderSourceHtml(html) {
-  if (hasReservedPrerenderBoundary(html)) {
+function validateClientPrerenderSourceHtml(html2) {
+  if (hasReservedPrerenderBoundary(html2)) {
     throw prerenderError("Client index.html contains a reserved prerender boundary comment.", "Remove Sporades private boundary comments from index.html and HTML plugins; the Bundle pipeline supplies them.");
   }
 }
-function validateClientPrerenderOutputHtml(html, expectedBoundaries) {
-  if (expectedBoundaries.length === 0) validateClientPrerenderSourceHtml(html);
+function validateClientPrerenderOutputHtml(html2, expectedBoundaries) {
+  if (expectedBoundaries.length === 0) validateClientPrerenderSourceHtml(html2);
   else {
-    const actual = validatePrerenderDomBoundaries(html, expectedBoundaries.length);
+    const actual = validatePrerenderDomBoundaries(html2, expectedBoundaries.length);
     if (JSON.stringify(actual) !== JSON.stringify(expectedBoundaries)) {
       throw prerenderError("Final Vite HTML replaced a reserved prerender boundary or its content.", "Keep Sporades-owned fragment ranges unchanged after transformIndexHtml; render final fragment content through its renderer.");
     }
   }
 }
-function hasReservedPrerenderBoundary(html) {
-  return countReservedPrerenderBoundaries(parse4(html, { scriptingEnabled: true })) > 0;
+function hasReservedPrerenderBoundary(html2) {
+  return countReservedPrerenderBoundaries(parse4(html2, { scriptingEnabled: true })) > 0;
 }
 function countReservedPrerenderBoundaries(root) {
   const pending = [root];
@@ -99196,29 +99196,29 @@ function countReservedPrerenderBoundaries(root) {
 function unknownPrerenderMarkerWarning(name2) {
   const normalized = name2.replace(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/gu, " ").replace(/\s+/g, " ").trim();
   const characters = Array.from(normalized || "[empty]");
-  const fragment = characters.length > 64 ? `${characters.slice(0, 63).join("")}\u2026` : characters.join("");
-  return { code: "PRERENDER_UNKNOWN_MARKER", fragment, message: `Unknown prerender marker "${fragment}" remains a comment in index.html.` };
+  const fragment2 = characters.length > 64 ? `${characters.slice(0, 63).join("")}\u2026` : characters.join("");
+  return { code: "PRERENDER_UNKNOWN_MARKER", fragment: fragment2, message: `Unknown prerender marker "${fragment2}" remains a comment in index.html.` };
 }
-function placeClientPrerenderFragments(html, fragments) {
+function placeClientPrerenderFragments(html2, fragments) {
   const warnings = [];
-  validateClientPrerenderSourceHtml(html);
-  for (const fragment of fragments) {
-    if (hasReservedPrerenderBoundary(fragment.html)) {
-      throw prerenderError(`Prerender fragment "${fragment.name}" contains a reserved prerender boundary comment.`, "Remove Sporades private boundary comments from renderer output; the Bundle pipeline supplies them.");
+  validateClientPrerenderSourceHtml(html2);
+  for (const fragment2 of fragments) {
+    if (hasReservedPrerenderBoundary(fragment2.html)) {
+      throw prerenderError(`Prerender fragment "${fragment2.name}" contains a reserved prerender boundary comment.`, "Remove Sporades private boundary comments from renderer output; the Bundle pipeline supplies them.");
     }
   }
-  const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
-  const counts = new Map(fragments.map((fragment) => [fragment.name, 0]));
-  const expand = (fragment) => {
-    counts.set(fragment.name, counts.get(fragment.name) + 1);
-    return `<!-- sporades:prerender-boundary-start ${fragment.name} -->${fragment.html}<!-- sporades:prerender-boundary-end ${fragment.name} -->`;
+  const byName = new Map(fragments.map((fragment2) => [fragment2.name, fragment2]));
+  const counts = new Map(fragments.map((fragment2) => [fragment2.name, 0]));
+  const expand = (fragment2) => {
+    counts.set(fragment2.name, counts.get(fragment2.name) + 1);
+    return `<!-- sporades:prerender-boundary-start ${fragment2.name} -->${fragment2.html}<!-- sporades:prerender-boundary-end ${fragment2.name} -->`;
   };
-  const placement = scanClientPrerenderHtml(html);
+  const placement = scanClientPrerenderHtml(html2);
   if (fragments.length === 0) {
     for (const name2 of new Set(placement.markers.flatMap((marker) => marker.name ? [marker.name] : []))) {
       warnings.push(unknownPrerenderMarkerWarning(name2));
     }
-    return { html, warnings, placements: 0, boundaries: [] };
+    return { html: html2, warnings, placements: 0, boundaries: [] };
   }
   if (placement.problem) {
     throw prerenderError(
@@ -99231,11 +99231,11 @@ function placeClientPrerenderFragments(html, fragments) {
     let cursor = 0;
     const unknownNames = /* @__PURE__ */ new Set();
     for (const marker of placement.markers) {
-      replaced += html.slice(cursor, marker.start);
+      replaced += html2.slice(cursor, marker.start);
       if (marker.name === void 0) replaced += fragments.map(expand).join("");
       else if (byName.has(marker.name)) replaced += expand(byName.get(marker.name));
       else {
-        replaced += html.slice(marker.start, marker.end);
+        replaced += html2.slice(marker.start, marker.end);
         if (!unknownNames.has(marker.name)) {
           warnings.push(unknownPrerenderMarkerWarning(marker.name));
           unknownNames.add(marker.name);
@@ -99243,7 +99243,7 @@ function placeClientPrerenderFragments(html, fragments) {
       }
       cursor = marker.end;
     }
-    replaced += html.slice(cursor);
+    replaced += html2.slice(cursor);
   } else {
     if (placement.bodyEnd === void 0) {
       throw prerenderError(
@@ -99251,7 +99251,7 @@ function placeClientPrerenderFragments(html, fragments) {
         "Add an opening `<body>` element or a `<!-- sporades:prerender -->` marker to index.html."
       );
     }
-    replaced = `${html.slice(0, placement.bodyEnd)}${fragments.map(expand).join("")}${html.slice(placement.bodyEnd)}`;
+    replaced = `${html2.slice(0, placement.bodyEnd)}${fragments.map(expand).join("")}${html2.slice(placement.bodyEnd)}`;
   }
   for (const { name: name2 } of fragments) {
     const count = counts.get(name2);
@@ -99260,10 +99260,10 @@ function placeClientPrerenderFragments(html, fragments) {
   }
   const placements = [...counts.values()].reduce((sum, count) => sum + count, 0);
   const boundaries = validatePrerenderDomBoundaries(replaced, placements);
-  if (prerenderDocumentRootAttributes(html) !== prerenderDocumentRootAttributes(replaced)) {
+  if (prerenderDocumentRootAttributes(html2) !== prerenderDocumentRootAttributes(replaced)) {
     throw prerenderError("Client prerender fragments mutate author-owned document-root attributes.", "Return fragment content rather than html or body elements; browsers merge their attributes into the existing document roots.");
   }
-  validatePrerenderAuthorDom(html, replaced, new Set(placement.markers.filter((marker) => marker.name === void 0 || byName.has(marker.name)).map((marker) => marker.start)));
+  validatePrerenderAuthorDom(html2, replaced, new Set(placement.markers.filter((marker) => marker.name === void 0 || byName.has(marker.name)).map((marker) => marker.start)));
   return { html: replaced, warnings, placements, boundaries };
 }
 function validatePrerenderAuthorDom(source, output, consumedMarkers) {
@@ -99306,7 +99306,7 @@ function validatePrerenderAuthorDom(source, output, consumedMarkers) {
     throw prerenderError("Client prerender placement is not stable in the parsed HTML document.", "Fragment dismissal must restore the author-owned DOM. Use explicit containers where HTML parsing would otherwise reparent author content.");
   }
 }
-function validatePrerenderDomBoundaries(html, expectedPlacements) {
+function validatePrerenderDomBoundaries(html2, expectedPlacements) {
   if (expectedPlacements === 0) return [];
   const nodes = [];
   const implicitNodes = [];
@@ -99334,7 +99334,7 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
     if (located) located.after = order;
     if (implicit) implicit.after = order;
   };
-  const document2 = parse4(html, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+  const document2 = parse4(html2, { sourceCodeLocationInfo: true, scriptingEnabled: true });
   visit(document2);
   const invalid4 = () => prerenderError(
     "Client prerender placement is not stable in the parsed HTML document.",
@@ -99347,7 +99347,7 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
     const start = boundaries[index];
     const end = boundaries[index + 1];
     if (start.kind !== "start" || end.kind !== "end" || start.name !== end.name || start.order >= end.order) throw invalid4();
-    ownedRanges.push(html.slice(start.start, end.end));
+    ownedRanges.push(html2.slice(start.start, end.end));
     for (const node of nodes) {
       if (node.order === start.order || node.order === end.order) continue;
       const fromFragment = node.start < end.start && node.end > start.end;
@@ -99367,9 +99367,9 @@ function validatePrerenderDomBoundaries(html, expectedPlacements) {
   }
   return ownedRanges;
 }
-function prerenderDocumentRootAttributes(html) {
+function prerenderDocumentRootAttributes(html2) {
   const roots = /* @__PURE__ */ new Map();
-  const pending = [parse4(html, { scriptingEnabled: true })];
+  const pending = [parse4(html2, { scriptingEnabled: true })];
   while (pending.length) {
     const node = pending.pop();
     if ("tagName" in node && node.namespaceURI === "http://www.w3.org/1999/xhtml" && (node.tagName === "html" || node.tagName === "body")) {
@@ -99379,9 +99379,9 @@ function prerenderDocumentRootAttributes(html) {
   }
   return JSON.stringify([...roots].sort());
 }
-function scanClientPrerenderHtml(html) {
+function scanClientPrerenderHtml(html2) {
   const errors = [];
-  const document2 = parse4(html, { scriptingEnabled: true, sourceCodeLocationInfo: true, onParseError: (error) => errors.push(error) });
+  const document2 = parse4(html2, { scriptingEnabled: true, sourceCodeLocationInfo: true, onParseError: (error) => errors.push(error) });
   const markers = [];
   let bodyEnd;
   let problem;
@@ -99390,7 +99390,7 @@ function scanClientPrerenderHtml(html) {
   const visit = (node) => {
     const location = node.sourceCodeLocation;
     if (node.nodeName === "#comment" && "data" in node && location) {
-      const source = html.slice(location.startOffset, location.endOffset);
+      const source = html2.slice(location.startOffset, location.endOffset);
       if (!source.startsWith("<!--") && !source.endsWith(">")) problem = "unterminated HTML declaration";
       const marker = /^\s*sporades:prerender(?:\s+([\s\S]*?))?\s*$/.exec(node.data);
       if (marker) markers.push({ start: location.startOffset, end: location.endOffset, name: marker[1]?.trim() || void 0 });
@@ -99852,12 +99852,12 @@ function sporadesVitePrerenderPlugin(projectRoot, projectRoots, fragments, warni
     enforce: "post",
     transformIndexHtml: {
       order: "post",
-      async handler(html) {
+      async handler(html2) {
         const rendered = [];
-        for (const fragment of fragments) {
-          rendered.push({ name: fragment.name, html: await renderClientPrerenderFragment(projectRoot, fragment, projectRoots, onDependency) });
+        for (const fragment2 of fragments) {
+          rendered.push({ name: fragment2.name, html: await renderClientPrerenderFragment(projectRoot, fragment2, projectRoots, onDependency) });
         }
-        const placed = placeClientPrerenderFragments(html, rendered);
+        const placed = placeClientPrerenderFragments(html2, rendered);
         state.boundaries = placed.boundaries;
         if (diagnoseMarkers) warnings.push(...placed.warnings);
         return placed.html;
@@ -100139,12 +100139,12 @@ function sporadesViteBuildInvariants(indexHtmlPath, frameworkConfig) {
     }
   };
 }
-function referencesLegacyClientShell(html) {
-  return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\.js(?:\?[^"']*)?["'][^>]*>/i.test(html);
+function referencesLegacyClientShell(html2) {
+  return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\.js(?:\?[^"']*)?["'][^>]*>/i.test(html2);
 }
-function referencesFrameworkSourceEntry(html, entry) {
+function referencesFrameworkSourceEntry(html2, entry) {
   const escapedEntry = entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`<script\\b[^>]*\\bsrc\\s*=\\s*["']\\/?client/${escapedEntry}(?:\\?[^"']*)?["'][^>]*>`, "i").test(html);
+  return new RegExp(`<script\\b[^>]*\\bsrc\\s*=\\s*["']\\/?client/${escapedEntry}(?:\\?[^"']*)?["'][^>]*>`, "i").test(html2);
 }
 function normalizeOutputPath(fileName) {
   const normalized = fileName.replaceAll("\\", "/").replace(/^\.\//, "");
@@ -100440,6 +100440,40 @@ function processIsLive(pid) {
   }
 }
 
+// src/html.ts
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[character]);
+}
+var fragmentKey = Symbol.for("sporades.html.fragment");
+function htmlString(value) {
+  if (value === null || typeof value !== "object") return void 0;
+  const descriptor = Object.getOwnPropertyDescriptor(value, fragmentKey);
+  return descriptor && "value" in descriptor && typeof descriptor.value === "string" ? descriptor.value : void 0;
+}
+function fragment(value) {
+  const result = Object.freeze(Object.defineProperty({ toString: () => value }, fragmentKey, { value }));
+  return result;
+}
+function interpolation(value) {
+  if (Array.isArray(value)) return value.map(interpolation).join("");
+  return htmlString(value) ?? escapeHtml(value);
+}
+function html(strings2, ...values) {
+  return fragment(strings2.reduce((result, part, index) => result + part + (index < values.length ? interpolation(values[index]) : ""), ""));
+}
+((html2) => {
+  function raw(trusted) {
+    return fragment(String(trusted));
+  }
+  html2.raw = raw;
+})(html || (html = {}));
+
 // src/auth-admission.ts
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 var ACCESS_KEY_SCOPE_LIMIT = 1024;
@@ -100662,7 +100696,8 @@ function isPlainObject(value) {
 // src/server.ts
 var atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 function serverRuntimeModuleSource() {
-  return `const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+  return `export { escapeHtml, html } from "sporades:html";
+const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
 function authRequirementsError(hint) {
@@ -102798,6 +102833,9 @@ function sporadesServerPlugin() {
       }));
       build2.onResolve({ filter: /^sporades\/server\/stripe$/ }, () => ({
         path: path12.join(resolveSporadesPackageRoot(), "dist", "stripe-payment-integration.js")
+      }));
+      build2.onResolve({ filter: /^sporades:html$/ }, () => ({
+        path: path12.join(resolveSporadesPackageRoot(), "dist", "html.js")
       }));
     }
   };
@@ -124493,14 +124531,14 @@ function defaultRuntimeCspDirectives() {
 function serializeCspDirectives(directives) {
   return Object.entries(directives).map(([name2, values]) => `${name2} ${Array.isArray(values) ? values.join(" ") : String(values)}`).join("; ");
 }
-function injectPageConnectionToken(html, token, database) {
+function injectPageConnectionToken(html2, token, database) {
   const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? '<script src="/__sporades/observe.js"></script>' : ""}`;
-  if (/<head(\s[^>]*)?>/i.test(html)) {
-    return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
+  if (/<head(\s[^>]*)?>/i.test(html2)) {
+    return html2.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
 ${script}`);
   }
   return `${script}
-${html}`;
+${html2}`;
 }
 function isDocumentNavigationRequest(request) {
   return request.headers["sec-fetch-dest"] === "document";
@@ -127831,11 +127869,15 @@ async function prepareEmailPasswordResetDelivery(database, payload, attempt = 1)
   const issued = await issuePasswordResetCode(database, credential, payload?.code ?? null, attempt === 1);
   if (!issued) return null;
   const body = passwordResetMailBody(issued.link);
+  const customBody = (template, html2) => template.replace(/\{\{(link|expiresAt)\}\}/g, (_match, key) => {
+    const value = key === "link" ? issued.link : issued.expiresAt;
+    return html2 ? escapeHtml(value) : value;
+  });
   return {
     to: credential.email,
     subject: typeof payload?.subject === "string" ? payload.subject : "Reset your password",
-    textBody: typeof payload?.textBody === "string" ? payload.textBody : body.textBody,
-    htmlBody: typeof payload?.htmlBody === "string" ? payload.htmlBody : body.htmlBody
+    textBody: typeof payload?.textBody === "string" ? customBody(payload.textBody, false) : body.textBody,
+    htmlBody: typeof payload?.htmlBody === "string" ? customBody(payload.htmlBody, true) : body.htmlBody
   };
 }
 async function createEmailPasswordResetLink(database, _session, email) {
@@ -127950,11 +127992,8 @@ ${link2}
 
 If you did not request this, you can ignore this message and your password will stay the same.
 `,
-    htmlBody: `<p>We received a request to reset your password.</p><p><a href="${escapeHtmlAttribute(link2)}">Choose a new password</a></p><p>If you did not request this, you can ignore this message and your password will stay the same.</p>`
+    htmlBody: `<p>We received a request to reset your password.</p><p><a href="${escapeHtml(link2)}">Choose a new password</a></p><p>If you did not request this, you can ignore this message and your password will stay the same.</p>`
   };
-}
-function escapeHtmlAttribute(value) {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 function mailNotConfiguredError() {
   return {
@@ -130537,8 +130576,9 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
     invalid4("Pass a non-empty subject that normalizes to at most 998 characters without prohibited control characters.");
   }
   if (input.textBody === void 0 && input.htmlBody === void 0) invalid4("Pass at least one of `textBody` or `htmlBody`.");
+  const htmlBody = htmlString(input.htmlBody) ?? input.htmlBody;
   for (const field of ["textBody", "htmlBody"]) {
-    const value = input[field];
+    const value = field === "htmlBody" ? htmlBody : input[field];
     if (value !== void 0 && (typeof value !== "string" || value.length > 1024 * 1024 || /\0/.test(value))) {
       invalid4(`Pass \`${field}\` as a string of at most 1 MiB without null characters.`);
     }
@@ -130567,7 +130607,7 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
     subject,
     ...autoSubmitted !== void 0 ? { autoSubmitted } : {},
     ...input.textBody !== void 0 ? { textBody: input.textBody } : {},
-    ...input.htmlBody !== void 0 ? { htmlBody: input.htmlBody } : {},
+    ...htmlBody !== void 0 ? { htmlBody } : {},
     ...providerHeaders?.length ? { providerHeaders } : {},
     ...provider !== void 0 ? { provider } : {}
   };
@@ -131393,11 +131433,11 @@ Content-Transfer-Encoding: base64\r
 ${encodeMimeBase64(message.htmlBody)}\r
 --${boundary}--`;
   }
-  const html = message.htmlBody !== void 0;
-  headers.push(`Content-Type: ${html ? "text/html" : "text/plain"}; charset=utf-8`, "Content-Transfer-Encoding: base64");
+  const html2 = message.htmlBody !== void 0;
+  headers.push(`Content-Type: ${html2 ? "text/html" : "text/plain"}; charset=utf-8`, "Content-Transfer-Encoding: base64");
   return `${headers.join("\r\n")}\r
 \r
-${encodeMimeBase64(html ? message.htmlBody : message.textBody)}`;
+${encodeMimeBase64(html2 ? message.htmlBody : message.textBody)}`;
 }
 function encodeMimeHeaderValue(value, quoteAscii = false) {
   const text3 = String(value);
@@ -141448,13 +141488,30 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   }
   recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
   const code = `${randomBytes6(16).toString("base64url")}.${randomBytes6(32).toString("base64url")}`;
+  const htmlBody = htmlString(options.htmlBody) ?? options.htmlBody;
   await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
     email: cleanEmail,
     code,
     subject: typeof options.subject === "string" ? options.subject : "Reset your password",
     textBody: typeof options.textBody === "string" ? options.textBody : null,
-    htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : null
+    htmlBody: typeof htmlBody === "string" ? htmlBody : null
   }, `password-reset-request:${code.split(".")[0]}`, PASSWORD_RESET_REQUEST_RETRY);
+  const fields = ["textBody", "htmlBody"].filter((field) => {
+    const value = field === "htmlBody" ? htmlBody : options.textBody;
+    return typeof value === "string" && !value.includes("{{link}}");
+  });
+  if (fields.length) {
+    try {
+      await database.log?.emit?.({
+        category: "platform",
+        event: "auth.password-reset.missing-link-placeholder",
+        level: "warn",
+        message: "Custom password-reset bodies should contain {{link}}.",
+        data: { fields }
+      });
+    } catch {
+    }
+  }
   return { ok: true };
 }
 function createWebSocketAccept(key) {
@@ -143057,7 +143114,7 @@ function scaffoldFiles(options) {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
-    <title>${escapeHtml(options.name)}</title>${framework === "inferno" && toolchain === "esbuild" ? `
+    <title>${escapeHtml2(options.name)}</title>${framework === "inferno" && toolchain === "esbuild" ? `
     <link rel="stylesheet" href="/assets/client.css" />` : ""}${options.template === "campfire" && !["inferno", "lit", "solid", "vue", "svelte"].includes(framework) ? `
     <script src="https://cdn.tailwindcss.com"></script>` : ""}
   </head>
@@ -146105,7 +146162,7 @@ ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}
 - \`sporades.json\` - project configuration
 `;
 }
-function escapeHtml(value) {
+function escapeHtml2(value) {
   const replacements = {
     "&": "&amp;",
     "<": "&lt;",

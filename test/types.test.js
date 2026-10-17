@@ -74,6 +74,14 @@ const pageviews: publicServerApi.AnalyticsConfig = { provider: "umami", endpoint
 // @ts-expect-error capability URL redaction cannot be disabled.
 const unsafePageviews: publicServerApi.AnalyticsConfig = { provider: "plausible", endpointEnv: "URL", websiteIdEnv: "ID", redactQuery: false };
 void errorCollection; void pageviews; void unsafePageviews;
+const safeHtml: publicServerApi.Html = publicServerApi.html\`<p title="\${'"<&'}">\${[publicServerApi.html\`<b>nested</b>\`, null, undefined, publicServerApi.html.raw('<br>')]}</p>\`;
+const safeMail: publicServerApi.MailSendInput = { to: 'recipient@example.com', subject: 'Welcome', htmlBody: safeHtml };
+const resetCopy: publicServerApi.PasswordResetMailOptions = { textBody: 'Reset: {{link}} before {{expiresAt}}', htmlBody: safeHtml };
+const escapedText: string = publicServerApi.escapeHtml({ name: 'unknown' });
+const renderedHtml: string = globalThis.String(safeHtml);
+// @ts-expect-error arbitrary objects are not trusted fragments.
+const forgedHtml: publicServerApi.Html = { toString: () => '<b>unsafe</b>' };
+void safeMail; void resetCopy; void escapedText; void renderedHtml; void forgedHtml;
 const admissionConfig: publicServerApi.AdmissionPolicyConfig = { path: "config/admission.json" };
 const admissionPolicy: publicServerApi.AdmissionPolicy = { version: 1, rules: [{ id: "blocked-path", enabled: true, conditions: [{ kind: "pathname", exact: "/blocked" }, { kind: "method", value: "GET" }], action: { kind: "deny" } }] };
 const quotaPolicy: publicServerApi.AdmissionAction = { kind: "rate-limit", limit: 5, windowMs: 60000 };

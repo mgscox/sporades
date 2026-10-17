@@ -509,6 +509,9 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     // Shared HTTP AsyncLocalStorage identity and its runtime-owned detachment seam;
     // no SQL walker, dialect, emitted statement, or normalization behavior.
     "runtime-request-context.js",
+    // HTML escaping and immutable mail fragments; no SQL walker, dialect,
+    // emitted statement, adapter primitive, or database normalization behavior.
+    "html.js",
   ]);
 
   const carried = runtimeGraphModules();
