@@ -37,7 +37,7 @@ export function createBoundedFixedWindow(options = {}) {
             }
             catch { /* Diagnostics never alter quotas. */ }
         }
-        return { count: bucket.count, remainingSeconds: Math.ceil((windowMs - (elapsed - bucket.startedAt)) / 1000) };
+        return { count: bucket.count, remainingMs: Math.ceil(windowMs - (elapsed - bucket.startedAt)), remainingSeconds: Math.ceil((windowMs - (elapsed - bucket.startedAt)) / 1000) };
     }
     return Object.freeze({ retryAfter, record,
         delete: (key) => buckets.delete(key),
