@@ -914,6 +914,14 @@ is omitted, the limit defaults to 10 MiB (10 * 1024 * 1024 bytes). An explicit
 value must be a positive integer byte count. `0`, fractions, non-numeric
 values, and `null` are rejected at startup with `INVALID_FILE_CONFIG`.
 
+`files.allowedMimeTypes` optionally restricts SDK uploads/replacements and
+multipart file ingress to exact lowercase MIME types, for example
+`["image/png", "application/pdf"]`. Omission preserves existing behavior; `[]`
+denies all new uploads. Wildcards, parameters, and non-array values fail with
+`INVALID_FILE_CONFIG`. Signature checks run before publishing bytes for supported
+formats; other types rely on the declared MIME. See [File policy](./files-and-realtime.md#upload-policy-and-mime-validation)
+for typed errors and validation limits. Existing Files are unchanged.
+
 The first Docker Compose Capsule service implementation is local-only. Dev
 sessions and local Container sessions can start, inspect, stop, and reset
 declared local service state. Hosted Capsule service orchestration is deferred:

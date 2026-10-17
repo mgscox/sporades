@@ -1,3 +1,4 @@
+export type { FileUploadError, FileUploadErrorCode } from "../src/types/client.js";
 export declare const auth: import("../src/types/client.js").AuthApi;
 export declare const prerender: import("../src/types/client.js").PrerenderApi;
 export declare const accessKeys: any;

@@ -113,8 +113,9 @@
 // sees only builtins behind `kind: "dynamic-import"` — which is the one external ADR-0041 allows,
 // and the route the SMTP transport has always taken.
 import { traceRuntimeOperation } from "./runtime-request-context.js";
+import { assertAllowedFileMimeType, normalizeFileMimeType } from "./file-policy.js";
 import { chainMaybePromise, thenIfPromise } from "./maybe-promise.js";
-import { applyFileAcl, bindPostgresAclDependencyLocking } from "./acl-runtime.js";
+import { allowFileUpload, applyFileAcl, bindPostgresAclDependencyLocking } from "./acl-runtime.js";
 import { enclosingPromiseCombinatorRoot, promiseCompositionRootCandidate, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
 // Synchronous access to a Node builtin without an import — see the header. `process` is a global in
 // both places this module runs: `dist/file-storage-runtime.js` loaded as an ES module, and the
@@ -469,6 +470,7 @@ export function createFileStorageTables(sqlite) {
             ")")),
         () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
         () => sqlite.exec(sql(filePathBackfillSql())),
+        () => sqlite.exec(sql("CREATE INDEX IF NOT EXISTS [sporades_files_created_live] ON [sporades_files] ([createdAt], [id]) WHERE [deletedAt] IS NULL AND [status] = 'uploaded'")),
         () => sqlite.exec(sql(activeFilePathDedupeSql())),
         () => sqlite.exec(sql("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])")),
         () => sqlite.exec(sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] " +
@@ -550,6 +552,12 @@ async function createPendingFileUploadOperation(database, auth, message) {
             error: createStructuredFileError("File is too large.", `Choose a file at or below ${database.fileMaxSizeBytes} bytes, or raise files.maxSizeBytes in sporades.json.`),
         };
     }
+    try {
+        assertAllowedFileMimeType(database.fileAllowedMimeTypes, input.type);
+    }
+    catch (error) {
+        return { ok: false, error: { message: error.message, hint: error.hint, code: error.code } };
+    }
     return await withFileUploadPathLock("capsule", async () => {
         const now = new Date().toISOString();
         const replacing = message.replace === true;
@@ -565,14 +573,37 @@ async function createPendingFileUploadOperation(database, auth, message) {
                 error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
             };
         }
+        // Canonicalize before deriving the filename so policy and publication agree,
+        // including raw requests and replacements that inherit their path. This must
+        // happen before resolving a bucket or publishing any pending upload state.
+        let normalizedPath;
+        try {
+            const effectivePath = input.path ?? existingByReference?.path;
+            normalizedPath = effectivePath == null ? null : normalizeAbsoluteFilePath(effectivePath);
+        }
+        catch (error) {
+            return {
+                ok: false,
+                error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path."),
+            };
+        }
+        const name = normalizeFileName(input.name, normalizedPath);
+        const targetPath = normalizedPath ?? `/default/${name}`;
+        if (database.fileAcl?.resolve?.("upload") && !await allowFileUpload(database, auth, {
+            sizeBytes: size,
+            mimeType: normalizeFileMimeType(input.type),
+            name,
+        })) {
+            return { ok: false, error: { ...createStructuredFileError("File upload denied.", "The Capsule upload policy denied this file."), code: "FILE_UPLOAD_DENIED" } };
+        }
         return await database.adapter.withTransaction(async (sqlite) => {
             const transactionDatabase = { ...database, sqlite, adapter: sqlite };
             let target;
             try {
                 target =
                     replacing && existingByReference && (input.path === undefined || input.path === null)
-                        ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path }
-                        : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now);
+                        ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: targetPath }
+                        : await resolveFileWriteTarget(transactionDatabase, auth.userId, targetPath, now);
             }
             catch (error) {
                 return {
@@ -597,8 +628,7 @@ async function createPendingFileUploadOperation(database, auth, message) {
             const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule.randomUUID();
             const uploadId = nodeCryptoModule.randomUUID();
             const version = nodeCryptoModule.randomUUID();
-            const name = normalizeFileName(input.name, target.path);
-            const type = String(input.type ?? "application/octet-stream");
+            const type = database.fileAllowedMimeTypes ? normalizeFileMimeType(input.type) : String(input.type ?? "application/octet-stream");
             await sqlite.deleteFileUploadsForPath(target.path);
             try {
                 await sqlite.insertFileUpload({
@@ -674,6 +704,12 @@ async function completePendingFileUploadOperation(database, uploadId, request, w
             total: upload.expectedSize,
         });
         const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
+        if (database.fileAcl?.resolve?.("upload") && bytes.length !== upload.expectedSize) {
+            throw Object.assign(new Error("File size differs from the admitted upload metadata."), {
+                code: "FILE_UPLOAD_SIZE_MISMATCH", hint: "Request a fresh upload URL with the actual file size.",
+            });
+        }
+        assertAllowedFileMimeType(database.fileAllowedMimeTypes, upload.type, bytes);
         const now = new Date().toISOString();
         const completion = await database.adapter.withTransaction(async (sqlite) => {
             const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
@@ -716,6 +752,7 @@ async function completePendingFileUploadOperation(database, uploadId, request, w
             : {
                 message: error.message,
                 hint: error.hint ?? "Request a fresh upload URL and retry.",
+                ...(error.code ? { code: error.code } : {}),
             };
         websocketHub?.notifyFileEvent?.(upload.ownerId, {
             type: "file.upload.failed",
@@ -1542,9 +1579,7 @@ async function withFileUploadPathLock(path, fn) {
         }
     }
 }
-async function resolveFileWriteTarget(database, ownerId, input, now) {
-    const explicitPath = input.path === undefined || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-    const path = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+async function resolveFileWriteTarget(database, ownerId, path, now) {
     const firstSegment = path.split("/").filter(Boolean)[0] ?? "default";
     const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
     const bucket = existingBucket ?? (await ensureFileBucket(database, ownerId, "default", now));

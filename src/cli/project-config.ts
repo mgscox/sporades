@@ -1,3 +1,4 @@
+import { resolveFileAllowedMimeTypes } from "../file-policy.js";
 import { resolveRegistrationThrottle } from "../capsule-rate-limit.js";
 import { resolveAdmissionPolicy } from "../admission-policy.js";
 import { createHash } from "node:crypto";
@@ -71,6 +72,7 @@ export async function readProjectConfig(projectDir: string) {
   }
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   validateLogConfig(config);
+  resolveFileAllowedMimeTypes(config.files);
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);

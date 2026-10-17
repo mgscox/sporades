@@ -69,6 +69,28 @@ async function prepareFileMetadataStorage(adapter) {
 
 const FILE_METADATA_CONFORMANCE_CASES = [
   {
+    name: "selectLiveFilesPage uses exclusive cutoff, stable ID ties, bounded pages and live rows only",
+    async run(adapter) {
+      const createdAt = "2001-01-01T00:00:00.000Z";
+      for (let index = 0; index < 103; index++) {
+        const id = `page-${String(index).padStart(3, "0")}`;
+        await adapter.insertFileRow(fileRow({ id, path: `/media/${id}.txt`, name: `${id}.txt`, createdAt }));
+      }
+      await adapter.insertFileRow(fileRow({ id: "page-deleted", path: "/media/page-deleted.txt", name: "deleted.txt", createdAt }));
+      await adapter.markFileDeleted("page-deleted", LATER);
+      await adapter.insertFileRow(fileRow({ id: "page-pending", path: "/media/page-pending.txt", name: "pending.txt", createdAt, status: "pending" }));
+      assert.deepEqual(await adapter.selectLiveFilesPage(createdAt, null), []);
+      const cutoff = "2001-01-02T00:00:00.000Z";
+      const first = await adapter.selectLiveFilesPage(cutoff, null);
+      assert.equal(first.length, 101);
+      assert.equal(first[0].id, "page-000");
+      assert.equal(first[100].id, "page-100");
+      assert.deepEqual(fileIdsOf(await adapter.selectLiveFilesPage(cutoff, { createdAt, id: "page-099" })), ["page-100", "page-101", "page-102"]);
+      for (let index = 0; index < 103; index++) await adapter.markFileDeleted(`page-${String(index).padStart(3, "0")}`, LATER);
+      await adapter.markFileDeleted("page-pending", LATER);
+    },
+  },
+  {
     name: "findFileBucket answers for a stored bucket and an absent one, and createFileBucket makes one findable",
     async run(adapter) {
       const seeded = await adapter.findFileBucket(OWNER_ID, BUCKET_NAME);

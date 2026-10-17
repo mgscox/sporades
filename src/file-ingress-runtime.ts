@@ -1,6 +1,7 @@
 // Runtime-owned endpoint multipart ingress. Leases deliberately have no File row, URL or ACL
 // visibility: only claim() creates an ordinary File in the handler transaction.
 /// <reference path="./vendor-decoders.d.ts" />
+import { assertAllowedFileMimeType } from "./file-policy.js";
 import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { ensureFileBucket, fileMetadataFromRow, normalizeAbsoluteFilePath } from "./file-storage-runtime.js";
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, PDFStream } from "pdf-lib";
@@ -1610,6 +1611,7 @@ async function stageMultipartIngressOperation(database: RecordLike, endpoint: Re
     if (policy.allowedMimeTypes && !policy.allowedMimeTypes.map(safeType).includes(type)) throw Object.assign(new Error("Multipart file type is not allowed."), { code: "MULTIPART_TYPE_DENIED" });
     const stablePartKey = partKey ?? crypto.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex"); const actorId = String(actor.userId ?? "");
     const authority = admittedAuthority ?? { kind: "actor", actorId, ownerId: actorId };
+    assertAllowedFileMimeType(database.fileAllowedMimeTypes, type, body);
     const authorityId = authority.kind === "capsule-principal" ? `capsule:${authority.namespace}:${authority.keyDigest}` : `actor:${authority.actorId}`;
     const key = keyFor(endpoint, requestKey, stablePartKey, authorityId);
     const digest = crypto.createHash("sha256").update(body).digest("hex");
