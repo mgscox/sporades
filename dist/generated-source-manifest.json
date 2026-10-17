@@ -86,6 +86,7 @@
       "src/package-root.ts",
       "src/project-public.ts",
       "src/promise-coordinator.ts",
+      "src/public-origin.ts",
       "src/public-tree-contract.ts",
       "src/public-tree.ts",
       "src/resource-runtime.ts",
@@ -130,7 +131,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "4374b31d36cd48f23eb471e294a7656a76b8bd55cef34c55feb7abc60b078542"
+    "digest": "c58e3a52b0f513d227a99925677ef8022efd23f56c619144c140a5c2b65b66b6"
   },
   "outputs": {
     "files": [
@@ -444,6 +445,10 @@
       "dist/promise-coordinator.d.ts.map",
       "dist/promise-coordinator.js",
       "dist/promise-coordinator.js.map",
+      "dist/public-origin.d.ts",
+      "dist/public-origin.d.ts.map",
+      "dist/public-origin.js",
+      "dist/public-origin.js.map",
       "dist/public-tree-contract.d.ts",
       "dist/public-tree-contract.d.ts.map",
       "dist/public-tree-contract.js",
@@ -582,6 +587,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "f293f680533be59d2640f2fe5825200bb9e21db6d1ffde2123e4b6da77f93b3a"
+    "digest": "362cf88b2d573d7a554747b4e59e1d95269034c2678304148ea09a5c6d5d6ac7"
   }
 }

@@ -492,6 +492,7 @@ export function createTableAclContext(context, database) {
     // bootstrap durable state, so policy callbacks receive only constrained
     // membership decisions rather than the normal Team management API.
     return {
+        app: database.app,
         auth: context?.auth,
         credential: context?.credential,
         acl: createAclHelpers(database, context),
@@ -528,6 +529,7 @@ export function createFileAclContext(auth, database, credential = { kind: "sessi
         credential: Object.freeze({ ...credential }),
     };
     return Object.freeze({
+        app: database.app,
         auth: context.auth,
         credential: context.credential,
         acl: createAclHelpers(database, context),

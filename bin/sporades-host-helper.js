@@ -28319,6 +28319,18 @@ async function publishAdmissionPolicy(root, relative, bytes) {
   }
 }
 
+// src/public-origin.ts
+function normalizePublicOrigin(value) {
+  if (typeof value !== "string" || value.length > 2048 || !/^https?:\/\//i.test(value) || /[\\\s]/.test(value)) return null;
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash || value.includes("?") || value.includes("#")) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
 // src/cli/admission-inspection.ts
 var ADMISSION_INSPECTION_SCRIPT = String.raw`const admissionInspection = true;
 try {
@@ -28394,6 +28406,18 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
       }
     }
   }
+}
+function validateCanonicalDomain(value) {
+  if (value === void 0 || value === null) return null;
+  validateAliasDomains([value]);
+  return value;
+}
+function hostedPublicOrigin(record) {
+  const domain = validateCanonicalDomain(record.canonicalDomain);
+  if (domain && !validateAliasDomains(record.aliasDomains).includes(domain)) {
+    throw helperError("Canonical domain is not a registered alias.", "Select one of this Capsule's registered alias domains.");
+  }
+  return domain ? `https://${domain}` : record.hostedUrl;
 }
 
 // src/cli/sporades-host-helper.ts
@@ -45440,6 +45464,7 @@ function validateRegisterRequest(request2) {
   }
   const registration = request2.registration ?? {};
   validateAliasDomains(registration.aliasDomains);
+  validateCanonicalDomain(registration.canonicalDomain);
   const mismatchedIdentity = registration.subname && registration.subname !== request2.capsule.subname || registration.domain && registration.domain !== request2.host.domain || registration.remoteCapsuleId && registration.remoteCapsuleId !== `${request2.host.domain}/${request2.capsule.subname}`;
   if (mismatchedIdentity) {
     throw helperError(
@@ -45989,6 +46014,7 @@ function managedRouteMutationLockIdentity(request2) {
     case "capsule.shutdown.checkpoint":
     case "capsule.start":
     case "capsule.stop":
+    case "capsule.canonical.set":
     case "capsule.restart":
       validateLifecycleRequest(request2);
       break;
@@ -46042,7 +46068,7 @@ function managedRouteMutationLockIdentity(request2) {
   };
 }
 function actionCanProvisionCapsuleHttpLog(action) {
-  return action === "capsule.register" || action === "capsule.release.install" || action === "capsule.release.rollback" || action === "capsule.resume" || action === "capsule.start" || action === "capsule.stop" || action === "capsule.restart" || action === "capsule.sealed-env.rotate-key" || action === "capsule.health";
+  return action === "capsule.register" || action === "capsule.release.install" || action === "capsule.release.rollback" || action === "capsule.resume" || action === "capsule.start" || action === "capsule.stop" || action === "capsule.canonical.set" || action === "capsule.restart" || action === "capsule.sealed-env.rotate-key" || action === "capsule.health";
 }
 function validateCanonicalHostRouteRoot(request2) {
   const remoteRoot = request2.host.remoteRoot;
@@ -46297,7 +46323,7 @@ async function main(request2) {
   try {
     await dispatchMain(request2);
   } finally {
-    const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.migrate", "host.telemetry.reconcile", "host.telemetry.exports-disable", "host.telemetry.enable", "host.telemetry.disable"];
+    const mutations = ["capsule.canonical.set", "capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.migrate", "host.telemetry.reconcile", "host.telemetry.exports-disable", "host.telemetry.enable", "host.telemetry.disable"];
     if (mutations.includes(request2.action)) {
       try {
         if (await queueHostInventory(request2.host.remoteRoot)) kickHostInventory(request2.host.remoteRoot);
@@ -46354,6 +46380,10 @@ async function dispatchMain(request2) {
     if (await readPreservedFileAttempt(attemptJournalPath(hostedPreservedFilesRoot(paths2)))) throw helperError("Interrupted deployment requires recovery.", "Run sporades host reconcile first.");
     await publishAdmissionPolicy(admissionStorageRoot(hostedPreservedFilesRoot(paths2)), policy.path, bytes);
     writeEnvelope({ ok: true, data: { published: true, removed: bytes === null, digest: bytes ? parseAdmissionPolicy(bytes).digest : null }, error: null });
+    return;
+  }
+  if (request2.action === "capsule.canonical.set") {
+    await setCapsuleCanonicalDomain(request2);
     return;
   }
   if (request2.action === "capsule.register") {
@@ -46548,6 +46578,31 @@ async function bootstrapHost(request2) {
     error: null
   });
 }
+async function setCapsuleCanonicalDomain(request2) {
+  validateLifecycleRequest(request2);
+  await assertRegistrationRecoveryComplete(request2);
+  if (!request2.canonical || !Object.hasOwn(request2.canonical, "domain")) throw helperError("Missing canonical domain.", "Use host canonical set or clear.");
+  const canonicalDomain = validateCanonicalDomain(request2.canonical.domain);
+  let restart = false;
+  let publicOrigin = "";
+  await withRegistryLock(request2, async () => {
+    const record = await verifyRegisteredCapsule(request2, "lifecycle");
+    const aliases = validateAliasDomains(record.aliasDomains);
+    if (canonicalDomain && !aliases.includes(canonicalDomain)) throw helperError("Canonical domain is not a registered alias.", "Select one of this Capsule's registered alias domains.");
+    const next = { ...record, canonicalDomain, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    publicOrigin = hostedPublicOrigin(next);
+    if ((record.canonicalDomain ?? null) === canonicalDomain) return;
+    restart = record.status === "running";
+    const registryPath2 = normaliseRegistration(request2, record).registryRecord;
+    await writeRegistryRecordAtomic(registryPath2, next);
+  });
+  const restarted = restart ? await restartCapsule(request2, { write: false, trustedRegistryLifecycle: true }) : null;
+  writeEnvelope({
+    ok: !restart || Boolean(restarted),
+    data: { publicOrigin, canonicalDomain, restarted: Boolean(restarted) },
+    error: restart && !restarted ? { message: "Canonical domain saved; Capsule restart failed.", hint: "Inspect Capsule logs and run host start after repair. The saved origin will be used." } : null
+  });
+}
 async function registerCapsule(request2) {
   validateRegisterRequest(request2);
   const claimPath = path11.join(request2.host.remoteRoot, "hosts", request2.host.domain, "registry", "registration-claims", `${request2.capsule.subname}.json`);
@@ -46557,10 +46612,13 @@ async function registerCapsule(request2) {
   });
   if (pendingClaim) {
     const aliases = validateAliasDomains(pendingClaim.aliasDomains);
+    if (request2.registration?.canonicalDomain !== void 0 && request2.registration.canonicalDomain !== (pendingClaim.canonicalDomain ?? null)) {
+      throw helperError("Hosted Capsule registration recovery is required.", "Retry the original canonical domain before changing it.");
+    }
     if (pendingClaim.domain !== request2.host.domain || pendingClaim.subname !== request2.capsule.subname || request2.registration?.aliasDomains !== void 0 && !isDeepStrictEqual([...request2.registration.aliasDomains].sort(), [...aliases].sort())) {
       throw helperError("Hosted Capsule registration recovery is required.", "Repair Caddy and retry the original registration with the same alias domains before changing its aliases.");
     }
-    request2 = { ...request2, registration: { ...request2.registration, aliasDomains: aliases } };
+    request2 = { ...request2, registration: { ...request2.registration, aliasDomains: aliases, canonicalDomain: pendingClaim.canonicalDomain ?? null } };
   }
   let registration = normaliseRegistration(request2);
   await ensureHostedDomainBootstrapped(request2, registration);
@@ -46580,6 +46638,7 @@ async function registerCapsule(request2) {
       domain: registration.domain,
       subname: registration.subname,
       aliasDomains: registration.aliasDomains,
+      canonicalDomain: registration.canonicalDomain,
       previousAliasDomains: validateAliasDomains(previous?.aliasDomains)
     })), claimPath, 384);
     claimWritten = true;
@@ -46602,7 +46661,7 @@ async function registerCapsule(request2) {
           routeAttempted = true;
           await writeUnavailableRoute(registration.lifecycle);
           sealedServerEnv = await ensureHostSealedEnvKeyPair(registration, existing);
-          await writeRegistryRecordAtomic(registration.registryRecord, { ...reactivateRegistrationRecord(existing, sealedServerEnv), aliasDomains: registration.aliasDomains, route: { tls: registration.route.tls } });
+          await writeRegistryRecordAtomic(registration.registryRecord, { ...reactivateRegistrationRecord(existing, sealedServerEnv), aliasDomains: registration.aliasDomains, canonicalDomain: registration.canonicalDomain, route: { tls: registration.route.tls } });
           registrationCommitted = true;
           reactivated = true;
           return;
@@ -46668,6 +46727,8 @@ async function registerCapsule(request2) {
         domain: registration.domain,
         hostedUrl: registration.hostedUrl,
         aliasDomains: registration.aliasDomains,
+        canonicalDomain: registration.canonicalDomain,
+        publicOrigin: hostedPublicOrigin(registration),
         aliasUrls: registration.aliasDomains.map((hostname) => `https://${hostname}`),
         remoteCapsuleId: registration.remoteCapsuleId
       },
@@ -48252,6 +48313,8 @@ async function listReleases(request2) {
         subname: record.subname,
         domain: record.domain,
         hostedUrl: record.hostedUrl ?? `${request2.host.scheme ?? "https"}://${record.subname}.${request2.host.domain}`,
+        canonicalDomain: record.canonicalDomain ?? null,
+        publicOrigin: hostedPublicOrigin({ ...record, hostedUrl: record.hostedUrl ?? `${request2.host.scheme ?? "https"}://${record.subname}.${request2.host.domain}` }),
         aliasDomains: validateAliasDomains(record.aliasDomains),
         remoteCapsuleId: record.remoteCapsuleId ?? `${request2.host.domain}/${record.subname}`
       },
@@ -48400,6 +48463,8 @@ async function listCapsules(request2) {
       subname: record.subname,
       domain: record.domain,
       hostedUrl: record.hostedUrl ?? `${request2.host.scheme ?? "https"}://${record.subname}.${request2.host.domain}`,
+      canonicalDomain: record.canonicalDomain ?? null,
+      publicOrigin: hostedPublicOrigin({ ...record, hostedUrl: record.hostedUrl ?? `${request2.host.scheme ?? "https"}://${record.subname}.${request2.host.domain}` }),
       aliasDomains: validateAliasDomains(record.aliasDomains),
       registry: {
         remoteCapsuleId: record.remoteCapsuleId ?? `${request2.host.domain}/${record.subname}`,
@@ -48638,6 +48703,7 @@ function normaliseLifecycle(request2, registryRecord = null, options = {}) {
     routes: canonicalRoutes
   });
   return {
+    publicOrigin: hostedPublicOrigin({ ...registryRecord, hostedUrl }),
     admissionPolicyPath,
     subname,
     domain,
@@ -48871,6 +48937,7 @@ function normaliseRuntimeHealthBody(body) {
   const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean" && validBounds && (fileInspection === void 0 || typeof fileInspection?.ok === "boolean");
   const safe = {
     ready: ready === true,
+    ...normalizePublicOrigin(body?.data?.runtime?.publicOrigin) ? { publicOrigin: normalizePublicOrigin(body.data.runtime.publicOrigin) } : {},
     ...inspectAdmissionHealth(body?.data?.runtime?.admissionPolicy) ? { admissionPolicy: inspectAdmissionHealth(body.data.runtime.admissionPolicy) } : {},
     ...validBounds && hasFileMaxSizeBytes ? { fileMaxSizeBytes, httpMaxBodyBytes } : {},
     checks: {
@@ -49157,6 +49224,9 @@ function normaliseProvidedBaseImage(value) {
 }
 function normaliseRegistration(request2, existing = null) {
   const aliasDomains = validateAliasDomains(request2.registration?.aliasDomains ?? existing?.aliasDomains);
+  const canonicalDomain = validateCanonicalDomain(request2.registration?.canonicalDomain !== void 0 ? request2.registration.canonicalDomain : request2.registration?.aliasDomains !== void 0 && !aliasDomains.includes(existing?.canonicalDomain) ? null : existing?.canonicalDomain);
+  if (canonicalDomain && !aliasDomains.includes(canonicalDomain)) aliasDomains.push(canonicalDomain);
+  validateAliasDomains(aliasDomains);
   const subname = request2.capsule.subname;
   const domain = request2.host.domain;
   const remoteRoot = request2.host.remoteRoot;
@@ -49183,6 +49253,7 @@ function normaliseRegistration(request2, existing = null) {
     hostedUrl,
     remoteCapsuleId,
     aliasDomains,
+    canonicalDomain,
     registryRecord: path11.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
     directories: {
       capsule: capsuleDirectory,
@@ -49294,6 +49365,7 @@ function createRegistrationRecord(registration, sealedServerEnv = null) {
     remoteCapsuleId: registration.remoteCapsuleId,
     hostedUrl: registration.hostedUrl,
     aliasDomains: registration.aliasDomains,
+    canonicalDomain: registration.canonicalDomain,
     status: "registered",
     createdAt: now,
     updatedAt: now,
@@ -50187,9 +50259,9 @@ async function dockerRunArgs(lifecycle, releaseId, runtimeProbe, hostedTelemetry
     "--env",
     `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbe.token}`,
     "--env",
-    `SPORADES_PUBLIC_ORIGIN=${lifecycle.hostedUrl}`,
+    `SPORADES_PUBLIC_ORIGIN=${lifecycle.publicOrigin ?? lifecycle.hostedUrl}`,
     "--env",
-    `SPORADES_PUBLIC_ALIASES=${JSON.stringify(validateAliasDomains(lifecycle.routes.running.aliasDomains).map((hostname) => `https://${hostname}`))}`,
+    `SPORADES_PUBLIC_ALIASES=${JSON.stringify([.../* @__PURE__ */ new Set([...lifecycle.publicOrigin && lifecycle.publicOrigin !== lifecycle.hostedUrl ? [lifecycle.hostedUrl] : [], ...validateAliasDomains(lifecycle.routes.running.aliasDomains).map((hostname) => `https://${hostname}`)])])}`,
     "--env",
     `SPORADES_RELEASE_ID=${releaseId}`,
     "--env",

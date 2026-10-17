@@ -30,6 +30,7 @@ export declare function readOptionalProjectSecurity(projectDir: string, session:
         directives: any;
     };
 } | null>;
+export declare function validatePublicOriginConfig(config: any): void;
 export declare function validateProjectConfigShape(config: unknown): void;
 export declare function validateSecurityConfig(security: LooseRecord): void;
 export declare function resolveEffectiveSecurityPolicy(config: LooseRecord, session: string): {

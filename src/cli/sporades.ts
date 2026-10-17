@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { resolvePublicOrigin } from "../public-origin.js";
 import { validateQueryCredential } from "./telemetry-diagnostics.js";
 import { openAdmissionPolicy, type AdmissionHealth, type AdmissionReloadEvent, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
 import { createAdmissionEvidence } from "../admission-evidence.js";
 import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
-import { validateAliasDomains } from "./host-domain-aliases.js";
+import { validateAliasDomains, validateCanonicalDomain } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync, statSync, watch } from "node:fs";
@@ -1270,6 +1271,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   let server = null;
   let domain = null;
   const aliasDomains: string[] = [];
+  let canonicalDomain: string | null = null;
   let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
   let tlsMode = DEFAULT_HOST_TLS_MODE;
   let subname = null;
@@ -1308,6 +1310,11 @@ function parseHostArgs(args: string[]): LooseRecord {
 
       case "--server":
         server = readFlagValue(rest, ++index, "--server");
+        break;
+
+      case "--canonical-domain":
+        if (subcommand !== "register") throw commandError("--canonical-domain is only supported by host register.", "Use host canonical set to change an existing registration.");
+        canonicalDomain = validateCanonicalDomain(readFlagValue(rest, ++index, "--canonical-domain"));
         break;
 
       case "--alias-domain":
@@ -1466,6 +1473,16 @@ function parseHostArgs(args: string[]): LooseRecord {
       return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
 
+    case "canonical": {
+      const [operation, name, domain, ...extra] = positional;
+      if (!["set", "clear"].includes(operation) || !name || extra.length || (operation === "set" ? !domain : domain !== undefined)) {
+        throw commandError("Invalid canonical domain command.", "Use host canonical set <subname> <alias> or host canonical clear <subname>.");
+      }
+      validateCapsuleSubname(name);
+      if (hostAlias) validateHostAlias(hostAlias);
+      return { subcommand, subname: name, canonicalDomain: operation === "set" ? validateCanonicalDomain(domain) : null, hostAlias, json, projectDir: process.cwd() };
+    }
+
     case "register": {
       const [positionalSubname, ...extra] = positional;
       if (!positionalSubname) {
@@ -1478,8 +1495,9 @@ function parseHostArgs(args: string[]): LooseRecord {
         validateHostAlias(hostAlias);
       }
       validateCapsuleSubname(positionalSubname);
+      if (canonicalDomain && !aliasDomains.includes(canonicalDomain)) aliasDomains.push(canonicalDomain);
       validateAliasDomains(aliasDomains);
-      return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, canonicalDomain, json, projectDir: process.cwd() };
     }
 
     case "rotate-key": {
@@ -2436,7 +2454,7 @@ async function startDevSession(options: LooseRecord) {
       serverEnv: bundle.serverRuntime.env,
       serviceEnv: capsuleServiceEnv,
       capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-      config: withRuntimeSecuritySession(config, session),
+      config: { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: `http://localhost:${port}` },
       runtimeProbeToken: inspectionToken,
       onJobQueueReady(queueDatabase: any) {
         telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
@@ -2656,6 +2674,9 @@ async function startDevSession(options: LooseRecord) {
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
   const url = `http://localhost:${actualPort}`;
+  runtime.database.publicOrigin = url;
+  runtime.database.passwordResetConfig.origin = url;
+  runtime.database.teamJoinLinkConfig.origin = url;
   let actionBundleCreated = false;
   let watchers: ReturnType<typeof watchDevInputs> = [];
   let onUnhandledRejection: ((reason: any) => void) | null = null;
@@ -2744,7 +2765,7 @@ async function startDevSession(options: LooseRecord) {
         bundle.serverRuntime.env,
         runtimeServiceEnv,
         bundle.serverRuntime.capsuleModuleSource,
-        withRuntimeSecuritySession(config, session),
+        { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: url },
         telemetry,
       );
       websocketHub.disconnectAll();
@@ -2844,7 +2865,7 @@ async function startDevSession(options: LooseRecord) {
           rebuild.serverRuntime.env,
           nextCapsuleServiceEnv,
           rebuild.serverRuntime.capsuleModuleSource,
-          withRuntimeSecuritySession(nextConfig, session),
+          { ...withRuntimeSecuritySession(nextConfig, session), __sporadesDevOrigin: url },
           nextTelemetry ?? telemetry,
         ).catch(async (error: unknown) => {
           telemetry.bindJobQueue(runtime.database);
@@ -4130,6 +4151,17 @@ async function manageHost(options: LooseRecord) {
       return;
     }
 
+    case "canonical": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile,
+        action: "capsule.canonical.set", subname: options.subname, canonical: { domain: options.canonicalDomain }, projectDir: options.projectDir });
+      if (options.json) writeResult(result, !result.ok);
+      else if (!result.ok) throw commandError(result.error.message, result.error.hint);
+      else process.stdout.write(`Public origin: ${result.data.publicOrigin}\n`);
+      return;
+    }
+
     case "register": {
       await readProjectConfig(options.projectDir);
       const config = await readHostConfig();
@@ -4140,7 +4172,7 @@ async function manageHost(options: LooseRecord) {
         profile: resolved.profile,
         action: "capsule.register",
         subname: options.subname,
-        registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname, options.aliasDomains),
+        registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname, options.aliasDomains, options.canonicalDomain),
         projectDir: options.projectDir,
       });
 
@@ -4152,6 +4184,10 @@ async function manageHost(options: LooseRecord) {
         throw commandError(result.error.message, result.error.hint);
       }
 
+      if (options.canonicalDomain && (result.data?.capsule?.canonicalDomain !== options.canonicalDomain
+        || result.data?.capsule?.publicOrigin !== `https://${options.canonicalDomain}`)) {
+        throw commandError("Host helper did not confirm the canonical domain.", "Upgrade the Host helper and inspect the registration; no local binding was written.");
+      }
       const confirmedAliases = result.data?.capsule?.aliasDomains;
       if (options.aliasDomains.length && (!Array.isArray(confirmedAliases)
         || confirmedAliases.length !== options.aliasDomains.length
@@ -4959,6 +4995,10 @@ async function startContainerSession(options: LooseRecord) {
       "--env",
       "SPORADES_SECURITY_SESSION=container",
       "--env",
+      `SPORADES_PUBLIC_ORIGIN=${resolvePublicOrigin({ ...config, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN })}`,
+      "--env",
+      `SPORADES_CONTAINER_PUBLIC_ORIGIN=${resolvePublicOrigin({ ...config, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN })}`,
+      "--env",
       `SPORADES_ADMISSION_POLICY_PATH=${bundle.deployFiles.find(file => file.update === "admission")?.path ?? ""}`,
       "--env",
       `SPORADES_CONTAINER_TELEMETRY_CONFIG=${JSON.stringify(telemetryConfig)}`,
@@ -5037,6 +5077,7 @@ async function startContainerSession(options: LooseRecord) {
       containerId,
       containerName,
       containerTransactionToken,
+      publicOrigin: resolvePublicOrigin({ ...config, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN }),
       telemetryDescriptorVersion: 1,
       ...(telemetryProfile !== undefined ? { telemetryProfile } : {}),
       ...(telemetryCaStagePath ? { telemetryCaStagePath } : {}),
@@ -6079,6 +6120,7 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
     capsule: options.subname ? { subname: options.subname } : null,
   };
   if (options.admission) request.admission = options.admission;
+  if (options.canonical) request.canonical = options.canonical;
   if (options.bootstrap) {
     request.bootstrap = options.bootstrap;
   }

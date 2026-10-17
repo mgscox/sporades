@@ -113,6 +113,9 @@ export type AclHelpers = {
   teams: AclTeamHelpers;
 };
 
+/** Public, non-secret application identity available to server code. */
+export type AppContext = Readonly<{ publicOrigin: string }>;
+
 /**
  * Runtime context available while evaluating table ACL rules.
  *
@@ -122,6 +125,7 @@ export type AclHelpers = {
  * decisions.
  */
 export type TableAclContext = {
+  readonly app: AppContext;
   auth: AuthContext;
   credential: CredentialProvenance;
   acl: AclHelpers;
@@ -158,6 +162,7 @@ export type FileAclOperation = "read" | "publicUrl" | "delete";
  * explicit Team ID stored in the Capsule's own File-policy model.
  */
 export type FileAclContext = {
+  readonly app: AppContext;
   auth: AuthContext;
   credential: CredentialProvenance;
   acl: AclHelpers;
@@ -186,9 +191,9 @@ export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: 
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
 /** Shared immutable request head supplied to endpoint multipart admission. */
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
-export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
-export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** The endpoint policy may prohibit file parts before staging; it cannot widen limits or provide file claim authority. */
 export type EndpointMultipartAdmissionDecision = Readonly<{ allow: true; allowFiles?: boolean } | { allow: false }>;
 /** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. File bytes use the smaller of maxFileBytes and files.maxSizeBytes. A malformed filename can be classified as a field; file allowances never raise maxFieldBytes. MULTIPART_LIMIT_EXCEEDED errors may include safe details: { partType: "file" | "field", limitKind, limit }. Byte limits report bytes; maxFiles and maxFieldCount report counts. */
@@ -589,7 +594,7 @@ export type TeamJoinLinkValidation = { valid: boolean };
 export type TeamApplicationRoleChanges = { add: string[]; remove: string[] };
 export type TeamJoinAdmissionInput = { teamId: string; userId: string; currentMemberCount: number };
 export type TeamJoinAdmissionDecision = { allow: boolean };
-export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "auth" | "env" | "log"> & {
+export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "app" | "auth" | "env" | "log"> & {
   /** Transaction-bound app-table reads that bypass the joining user's ordinary row ACLs. Runtime tables and mutations are unavailable. */
   db: ReadOnlyDatabaseFromSchema<Schema>;
   /** Provider-free verified billing state for the exact Team whose Join is being admitted. */
@@ -628,7 +633,7 @@ export type CurrentUserTeamBillingApi = {
   /** Admits only the app's separate local deletion transaction after provider quiescence is durably proven. */
   admitLocalErasure(teamId: string): Promise<{ allowed: true }>;
 };
-export type TeamBillingAuthorityContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "auth" | "env" | "log"> & {
+export type TeamBillingAuthorityContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "app" | "auth" | "env" | "log"> & {
   /** Transaction-bound app-table reads. Runtime billing tables and mutations are unavailable. */
   db: ReadOnlyDatabaseFromSchema<Schema>;
   /** Transaction-bound exact accepted-member count for the Team under authority evaluation. */
@@ -895,6 +900,7 @@ export type ResourceNotificationIntentStatus = Readonly<{
   recipients: readonly ResourceNotificationRecipientStatus[];
 }>;
 export type ResourceScope<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+  app: AppContext;
   db: DatabaseFromSchema<Schema>;
   jobs: Pick<JobApi, "enqueue">;
   log: Logger;
@@ -920,6 +926,7 @@ export type CapsuleContext<
   Schema extends SchemaDefinition = SchemaDefinition,
   Credential extends CredentialProvenance = CredentialProvenance,
 > = {
+  readonly app: AppContext;
   db: DatabaseFromSchema<Schema>;
   resources: ResourcesApi<Schema>;
   auth: AuthContext;
@@ -1037,7 +1044,7 @@ export type StripeEventHandler<Schema extends SchemaDefinition = SchemaDefinitio
 /** Narrow transaction-owned context for one atomic Stripe consequence. */
 export type AtomicStripeConsequenceContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<
   PrivilegedContext<Schema>,
-  "auth" | "signal" | "db" | "env" | "log"
+  "app" | "auth" | "signal" | "db" | "env" | "log"
 > & {
   /** Jobs persist with the consequence and are dispatched only after commit. */
   jobs: Pick<JobApi, "enqueue">;
@@ -1223,7 +1230,7 @@ export type ScheduleInspectionApi = {
   list(): Promise<ScheduleSummary[]>;
 };
 export type ScheduleOccurrence = Readonly<{ scheduleName: string; scheduledFor: string }>;
-export type ScheduleContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ signal: AbortSignal; privileged: PrivilegedApi<Schema> }>;
+export type ScheduleContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; signal: AbortSignal; privileged: PrivilegedApi<Schema> }>;
 /**
  * Calculates ordinary Job input for one occurrence. Factories are for dynamic
  * data population, may run more than once during recovery, and should avoid
@@ -1271,7 +1278,7 @@ export type ScheduleDefinition = {
  */
 export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   name: string;
-  auth?: { registration?: RegistrationAdmission<Schema>; reauthentication?: { purposes: Record<string, { maxAgeSeconds: number }>; authorize?: (ctx: { db: ReadOnlyDatabaseFromSchema<Schema>; auth: AuthContext }, purpose: string) => MaybePromise<boolean> } };
+  auth?: { registration?: RegistrationAdmission<Schema>; reauthentication?: { purposes: Record<string, { maxAgeSeconds: number }>; authorize?: (ctx: { readonly app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; auth: AuthContext }, purpose: string) => MaybePromise<boolean> } };
   accessKeys?: { scopes: readonly string[] };
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
@@ -1299,8 +1306,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
 };
 export type RegistrationEvidence = Readonly<{ userId: string; provider: string; email: string | null; displayName: string; picture: string | null; kind: "email" | "oauth" | "local" }>;
 export type RegistrationAdmission<Schema extends SchemaDefinition> = {
-  admit(ctx: { db: ReadOnlyDatabaseFromSchema<Schema>; evidence: RegistrationEvidence; admission: unknown }): MaybePromise<{ allow: false } | { allow: true; state?: unknown }>;
-  finalize(ctx: { db: DatabaseFromSchema<Schema>; evidence: RegistrationEvidence }, input: RegistrationEvidence & { state?: unknown }): MaybePromise<void>;
+  admit(ctx: { readonly app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; evidence: RegistrationEvidence; admission: unknown }): MaybePromise<{ allow: false } | { allow: true; state?: unknown }>;
+  finalize(ctx: { readonly app: AppContext; db: DatabaseFromSchema<Schema>; evidence: RegistrationEvidence }, input: RegistrationEvidence & { state?: unknown }): MaybePromise<void>;
 };
 
 export type Capsule<Definition extends object = CapsuleDefinition> = Definition & {

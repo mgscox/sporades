@@ -396,6 +396,7 @@ export function bindOuterResources(database, context, hooks) {
             const logs = [];
             const intentIds = [];
             const scope = Object.freeze({
+                app: database.app,
                 db: scopeDb,
                 jobs: Object.freeze({ enqueue: (...args) => track(() => { assertLive(true); return parentJobs.enqueue(...args); }) }),
                 log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
@@ -663,6 +664,7 @@ export function bindJobResources(database, context, claim, hooks) {
                 }));
                 const intentIds = [];
                 const scope = Object.freeze({
+                    app: database.app,
                     db: Object.freeze(db), signal: controller.signal,
                     jobs: Object.freeze({ enqueue: (...args) => track(() => scopeContext.jobs.enqueue(...args)) }),
                     log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {

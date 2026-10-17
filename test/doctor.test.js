@@ -691,11 +691,11 @@ test("sporades doctor --json returns a stable diagnostic envelope", async () => 
     assert.equal(envelope.data.strict, false);
     assert.equal(envelope.data.session, null);
     assert.deepEqual(envelope.data.summary, {
-      pass: 5,
+      pass: 6,
       warn: 0,
       fail: 0,
       skip: 0,
-      info: 5,
+      info: 6,
       warning: 0,
       error: 0,
     });

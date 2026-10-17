@@ -737,7 +737,9 @@ export async function resolveSchedulePayload(database, definition, scheduledFor,
     controllers.add(controller);
     database.schedulePayloadFactoryControllers.set(definition.name, controllers);
     const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
-    const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
+    const factoryContext = Object.freeze({
+        app: database.app, signal: controller.signal, privileged: context.privileged,
+    });
     let timeout;
     let removeAbortListener;
     try {
