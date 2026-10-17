@@ -1347,6 +1347,7 @@ const namesRunDelimiters = (source) => {
 const RUN_LEXER_CENSUS = {
   createRuntimeObservability: "not a SQL lexer: removes UUID hyphens for Sentry event IDs",
   redactDiagnosticText: "not a SQL lexer: strips capability URL suffixes and recognizable credentials from diagnostic text",
+  structuredCredentialEnd: "not a SQL lexer: balances nested diagnostic credential values and escaped JSON-style strings for whole-value redaction",
   resolveDeployFiles: "not a lexer: rejects deployment path segments starting with a hyphen",
   skipSqlQuotedOrCommented: "the one tokenizer every read-only inspection consumer asks a dialect of",
   // On the inspection path — every Postgres inspection query passes through it twice — and left
