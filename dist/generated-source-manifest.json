@@ -71,6 +71,7 @@
       "src/file-ingress-runtime.ts",
       "src/file-storage-runtime.ts",
       "src/file-transaction.ts",
+      "src/html.ts",
       "src/http-runtime.ts",
       "src/inspection-sql.ts",
       "src/jobs-runtime.ts",
@@ -130,7 +131,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "4374b31d36cd48f23eb471e294a7656a76b8bd55cef34c55feb7abc60b078542"
+    "digest": "3255707f7c5924ab14f9953b757f9261ece34bd29e291f3f989c702f16bf45df"
   },
   "outputs": {
     "files": [
@@ -384,6 +385,10 @@
       "dist/file-transaction.d.ts.map",
       "dist/file-transaction.js",
       "dist/file-transaction.js.map",
+      "dist/html.d.ts",
+      "dist/html.d.ts.map",
+      "dist/html.js",
+      "dist/html.js.map",
       "dist/http-runtime.d.ts",
       "dist/http-runtime.d.ts.map",
       "dist/http-runtime.js",
@@ -582,6 +587,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "f293f680533be59d2640f2fe5825200bb9e21db6d1ffde2123e4b6da77f93b3a"
+    "digest": "cd83c6e3fdf3edc7a502c7b9a12392cf6aa1abf5ad9c3c4c73213838f5ea6053"
   }
 }

@@ -97,6 +97,76 @@ important notifications, enqueue a durable Job, send from its handler, and use
 an application-level idempotency key or delivery record. Job execution and SMTP
 delivery are at least once rather than exactly once.
 
+### HTML-safe mail bodies
+
+Import `escapeHtml` and the `html` tag from `sporades/server`. `escapeHtml(value)`
+converts a value to text and escapes `&`, `<`, `>`, `"`, and `'`, so it works in
+HTML text and quoted attributes. `null` and `undefined` become empty strings.
+
+```ts
+import { escapeHtml, html } from "sporades/server";
+
+const greeting = html`<p>Hello ${displayName}</p>`;
+await ctx.mail.send({
+  to: email,
+  subject: "Welcome",
+  htmlBody: html`${greeting}<pre>${reminderBody}</pre>`,
+});
+
+// For an existing string template:
+const body = `<p title="${escapeHtml(displayName)}">Welcome</p>`;
+```
+
+Every interpolation is escaped. Nested `html` fragments preserve their markup;
+arrays are recursively joined without separators, escaping each ordinary value.
+Nullish interpolations contribute nothing. The result is an immutable `Html`
+fragment accepted directly by `ctx.mail.send` and password-reset `htmlBody`.
+Use `String(fragment)` when another API requires a string; converting a fragment
+to a string before nesting makes the tag escape it again.
+
+`html.raw(trusted)` explicitly preserves trusted HTML, for example:
+
+```ts
+const divider = html`${html.raw("<hr>")}`;
+```
+
+Only use it for markup controlled by Capsule code.
+This helper is not a sanitizer: do not pass user HTML to `html.raw`. Use
+interpolations only as text or inside quoted attributes, never as tag/attribute
+names, unquoted attributes, script, style, or event-handler code. Escaping does
+not validate URL schemes; independently validate user-supplied `href` and `src`
+values before interpolation. Template literals themselves are trusted markup.
+Existing string bodies continue to be sent as supplied.
+
+### Custom password-reset bodies
+
+::: v-pre
+
+Each custom body passed to `ctx.serverAuth.sendEmailPasswordResetLink` supports
+`{{link}}` and `{{expiresAt}}`. The durable delivery Job replaces every occurrence
+with the issued Reset URL and its ISO 8601 expiry. In `htmlBody`, both values are
+escaped for HTML text and quoted attributes, including single-quoted `href`.
+The subject is supplied as-is and does not support placeholders.
+
+```ts
+await ctx.serverAuth.sendEmailPasswordResetLink(email, {
+  subject: "Choose a new password",
+  textBody: "Reset your password: {{link}}\nThis link expires at {{expiresAt}}.",
+  htmlBody: html`<p>Hello ${displayName}</p>
+    <p><a href="{{link}}">Choose a new password</a></p>
+    <p>Expires at {{expiresAt}}.</p>`,
+});
+```
+
+Omitted bodies keep the built-in copy. A custom body without `{{link}}` still
+sends unchanged, with a warning naming only the affected body fields. The
+warning never contains the recipient, Reset link, or custom copy, and does not
+depend on whether the account exists. An unknown address still completes
+without sending mail. Existing custom copy remains valid; add `{{link}}` to
+each custom body so that recipients can reset their password.
+
+:::
+
 ### Automated responses
 
 Set the optional top-level `autoSubmitted` field to emit exactly one standard
