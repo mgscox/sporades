@@ -1,4 +1,5 @@
 import { resolveFileAllowedMimeTypes } from "../file-policy.js";
+import { resolveRegistrationThrottle } from "../capsule-rate-limit.js";
 import { resolveAdmissionPolicy } from "../admission-policy.js";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -71,6 +72,7 @@ export async function readProjectConfig(projectDir) {
     if (config.mail !== undefined)
         config.mail = validateMailConfig(config.mail);
     validatePasswordResetConfig(config.auth);
+    resolveRegistrationThrottle(config.auth);
     validateTeamsConfig(config.teams);
     validateCapsuleServicesConfig(config.services);
     validateTelemetryProjectConfig(config.telemetry);

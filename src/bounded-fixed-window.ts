@@ -36,7 +36,7 @@ export function createBoundedFixedWindow(options: {
       evictions = Math.min(Number.MAX_SAFE_INTEGER, evictions + 1);
       try { options.onEviction?.(); } catch { /* Diagnostics never alter quotas. */ }
     }
-    return { count: bucket.count, remainingSeconds: Math.ceil((windowMs - (elapsed - bucket.startedAt)) / 1000) };
+    return { count: bucket.count, remainingMs: Math.ceil(windowMs - (elapsed - bucket.startedAt)), remainingSeconds: Math.ceil((windowMs - (elapsed - bucket.startedAt)) / 1000) };
   }
   return Object.freeze({ retryAfter, record,
     delete: (key: string) => buckets.delete(key),

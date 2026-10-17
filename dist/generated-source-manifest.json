@@ -21,6 +21,7 @@
       "src/bounded-fixed-window.ts",
       "src/build-diagnostics.ts",
       "src/bundle-pipeline.ts",
+      "src/capsule-rate-limit.ts",
       "src/capsule-services.ts",
       "src/cli/access-key-operator-envelope.ts",
       "src/cli/admission-inspection.ts",
@@ -132,7 +133,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "0c9b3370516132b1a55a2353bc09ce1704b884ffea89f64b8351659ce274207c"
+    "digest": "7402fbf6ffd1aa8160595a335ed4eba9a11a7882329ae6eae644707c55965fed"
   },
   "outputs": {
     "files": [
@@ -186,6 +187,10 @@
       "dist/bundle-pipeline.d.ts.map",
       "dist/bundle-pipeline.js",
       "dist/bundle-pipeline.js.map",
+      "dist/capsule-rate-limit.d.ts",
+      "dist/capsule-rate-limit.d.ts.map",
+      "dist/capsule-rate-limit.js",
+      "dist/capsule-rate-limit.js.map",
       "dist/capsule-services.d.ts",
       "dist/capsule-services.d.ts.map",
       "dist/capsule-services.js",
@@ -592,6 +597,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "5e444ce74edc41045c62cfecd7a3b5c06f7b4ef3a923865bbe1dbf175cfdb6c6"
+    "digest": "fcd0bfe2b9576de7187d5c786238484c03b4a7553b94461b16f199240f15d247"
   }
 }

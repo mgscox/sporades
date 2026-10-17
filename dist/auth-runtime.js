@@ -1,3 +1,4 @@
+import { canonicalClientAddress } from "./client-address.js";
 // The Capsule runtime's auth domain: sessions, the four OAuth providers and their identity-token
 // verification, password reset, the email sign-in throttles, and the credential hashing that
 // travels with them. Batch 3 of the migration ADR-0041 records — the region moved out of
@@ -2136,22 +2137,24 @@ export async function setEmailPassword(database, _session, email, newPassword) {
 // Sign-in, password-change, and reset requests share this throttle shape but
 // never share a bucket: one auth action must not lock out another.
 function createEmailSignInThrottleState(database, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
-    const existing = database[scope];
+    const owner = database.__rootDatabase ?? database;
+    const existing = owner[scope];
     if (existing instanceof Map) {
         return existing;
     }
     const next = new Map();
-    database[scope] = next;
+    owner[scope] = next;
     return next;
 }
-function emailSignInThrottleKeys(email, session) {
-    return [`email\0${email}`, `caller\0${callerContextKey(session)}`];
+function emailSignInThrottleKeys(database, email, session) {
+    const address = database.securitySession === "hosted" ? canonicalClientAddress(session?.clientAddress ?? session?.auth?.clientAddress) : null;
+    return [`email\0${email}`, `caller\0${callerContextKey(session)}`, ...(address ? [`caller\0address:${address}`] : [])];
 }
 export function currentEmailSignInThrottleState(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
     const attempts = createEmailSignInThrottleState(database, scope);
     const now = Date.now();
     pruneEmailSignInThrottleState(attempts, now);
-    const keys = emailSignInThrottleKeys(email, session);
+    const keys = emailSignInThrottleKeys(database, email, session);
     const entries = keys.map((key) => {
         const current = attempts.get(key);
         return {
@@ -2180,7 +2183,10 @@ export function recordFailedEmailSignInAttempt(database, email, session, scope =
 }
 export function resetEmailSignInAttempts(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
     const attempts = createEmailSignInThrottleState(database, scope);
-    for (const key of emailSignInThrottleKeys(email, session)) {
+    for (const key of emailSignInThrottleKeys(database, email, session)) {
+        // Success for one account cannot refund failures against other accounts.
+        if (key.startsWith("caller\0address:"))
+            continue;
         attempts.delete(key);
     }
 }
@@ -2544,6 +2550,16 @@ export async function signUpWithEmail(database, session, provider, credentials, 
     }
     if (!database.authConfig.providers.email.enabled) {
         return { ok: false, error: emailAuthDisabledError() };
+    }
+    if (database.registrationThrottle) {
+        const { email, address } = database.registrationThrottle;
+        const normalizedEmail = String(credentials?.email ?? "").trim().toLowerCase();
+        const identity = nodeCryptoModule.createHash("sha256").update(normalizedEmail).digest("hex");
+        const emailResult = database.registrationRateLimiter.consume(`email:${identity}`, email);
+        const clientAddress = database.securitySession === "hosted" ? canonicalClientAddress(session?.clientAddress ?? session?.auth?.clientAddress) : null;
+        const addressResult = clientAddress ? database.registrationRateLimiter.consume(`address:${clientAddress}`, address) : { ok: true, retryAfterMs: 0 };
+        if (!emailResult.ok || !addressResult.ok)
+            return { ok: false, error: { code: "REGISTRATION_THROTTLED", message: "Registration is temporarily unavailable. Try again later.", retryAfterMs: Math.max(emailResult.retryAfterMs, addressResult.retryAfterMs) } };
     }
     const normalized = normalizeEmailCredentials(credentials);
     if (!normalized.ok) {
