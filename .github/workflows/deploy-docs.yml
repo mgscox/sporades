@@ -43,7 +43,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 'lts/*'
+          check-latest: true
       - run: npm ci
       - run: npm run docs:check
       - if: github.event_name != 'pull_request'
