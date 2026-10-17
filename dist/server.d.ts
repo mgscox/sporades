@@ -1,6 +1,7 @@
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceNotificationIntentStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
-import type { EndpointBodyBytes as CanonicalEndpointBodyBytes, EndpointContext as CanonicalEndpointContext, EndpointFileAttachmentApi as CanonicalEndpointFileAttachmentApi, EndpointFileAttachmentContext as CanonicalEndpointFileAttachmentContext, EndpointFileAttachmentOptions as CanonicalEndpointFileAttachmentOptions, EndpointFileAttachmentReference as CanonicalEndpointFileAttachmentReference, EndpointFileAttachmentResponse as CanonicalEndpointFileAttachmentResponse, EndpointFileIngressApi as CanonicalEndpointFileIngressApi, EndpointFileIngressInspection as CanonicalEndpointFileIngressInspection, EndpointFileIngressLease as CanonicalEndpointFileIngressLease, EndpointFileMetadata as CanonicalEndpointFileMetadata, EndpointRequest as CanonicalEndpointRequest, FileIngressOptions as CanonicalFileIngressOptions, SchemaDefinition as CanonicalSchemaDefinition } from "../src/types/server.js";
+import type { AppContext as CanonicalAppContext, EndpointBodyBytes as CanonicalEndpointBodyBytes, EndpointContext as CanonicalEndpointContext, EndpointFileAttachmentApi as CanonicalEndpointFileAttachmentApi, EndpointFileAttachmentContext as CanonicalEndpointFileAttachmentContext, EndpointFileAttachmentOptions as CanonicalEndpointFileAttachmentOptions, EndpointFileAttachmentReference as CanonicalEndpointFileAttachmentReference, EndpointFileAttachmentResponse as CanonicalEndpointFileAttachmentResponse, EndpointFileIngressApi as CanonicalEndpointFileIngressApi, EndpointFileIngressInspection as CanonicalEndpointFileIngressInspection, EndpointFileIngressLease as CanonicalEndpointFileIngressLease, EndpointFileMetadata as CanonicalEndpointFileMetadata, EndpointRequest as CanonicalEndpointRequest, FileIngressOptions as CanonicalFileIngressOptions, SchemaDefinition as CanonicalSchemaDefinition } from "../src/types/server.js";
+export type AppContext = CanonicalAppContext;
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
 export type UnknownRecord = Record<string, unknown>;
 export type Handler<Args extends unknown[] = any[], Result = unknown> = (...args: Args) => Result | Promise<Result>;
@@ -59,6 +60,7 @@ export type FileIngressAdmissionDecision = Readonly<{
     allowFiles?: boolean;
 }>;
 export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+    app: AppContext;
     db: ReadOnlyDatabaseFromSchema<Schema>;
     env: Readonly<Record<string, string | undefined>>;
     signal?: AbortSignal;
@@ -68,6 +70,7 @@ export type FileIngressAdmissionContext<Schema extends SchemaDefinition = Schema
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
 /** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
 export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+    app: AppContext;
     auth: AuthContext;
     credential: CredentialProvenance;
     db: ReadOnlyDatabaseFromSchema<Schema>;
