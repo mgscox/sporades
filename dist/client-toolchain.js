@@ -126,6 +126,7 @@ async function buildVite(options) {
             base: "/",
             publicDir: false,
             configFile: projectConfigFile,
+            ...(options.cspNonce ? { html: { cspNonce: "%SPORADES_NONCE%" } } : {}),
             envFile: false,
             envPrefix: "\0",
             mode: "production",

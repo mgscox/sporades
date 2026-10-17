@@ -991,6 +991,82 @@ directives that differ for the Capsule:
 }
 ```
 
+### Opt-in CSP nonces, HSTS and reports (0.9.x)
+
+Existing Capsules keep their current headers and scripts unless these options
+are enabled. To remove broad script permissions, start in `report-only`, add
+nonce placeholders to **every trusted authored script** (including the external
+client entry), and then switch to `enforce`:
+
+```json
+{
+  "security": {
+    "csp": {
+      "mode": "enforce",
+      "nonce": true,
+      "directives": { "script-src": ["'self'"] },
+      "reportTo": "/csp-reports"
+    },
+    "hsts": {
+      "maxAgeSeconds": 31536000,
+      "includeSubDomains": true,
+      "preload": false
+    }
+  }
+}
+```
+
+```html
+<script nonce="%SPORADES_NONCE%" type="module" src="/client.js"></script>
+<script nonce="%SPORADES_NONCE%">/* trusted initialization */</script>
+```
+
+For Vite, keep the client source entry such as `/client/index.tsx` in your HTML;
+Vite still owns the emitted script URL. The nonce placeholder survives the build.
+The runtime replaces `%SPORADES_NONCE%` throughout served HTML, including
+`index.html`, prerender fragments and public HTML pages, with one fresh
+cryptographically random 256-bit nonce per response. Its connection-token script
+uses the same nonce. HTML is served with `Cache-Control: no-store`; nonces are
+never stored in the public tree or shared security policy. Dev, Container and
+Hosted use the same behavior. Nonce substitution applies to the runtime's public
+HTML path; Custom endpoint responses remain Capsule-owned.
+
+The response CSP appends `'nonce-…' 'strict-dynamic'` to `script-src` and to an
+explicit `script-src-elem` override. With strict-dynamic, modern browsers require
+a nonce or hash on parser-inserted scripts even when their URL matches `'self'`.
+Do not add nonce placeholders to untrusted content or automatically authorize
+all script tags. `sporades security --json` reports `csp.nonce: true` but never
+generates or exposes a response nonce. See the [CSP specification](https://www.w3.org/TR/CSP/#strict-dynamic-usage).
+
+**Inline event handlers such as `onload="..."` stop working under enforced nonce
+mode.** Move handlers into a trusted script and use `addEventListener`. Nonces
+on elements do not authorize event-handler attributes. Report-only mode reports
+violations without blocking them. Doctor warns about `https:` and
+`'unsafe-inline'` in Container/Hosted `script-src` and recommends this migration.
+Style policy is independent and retains its existing defaults.
+
+`security.hsts` is opt-in and emitted **only in Hosted Capsules**, independent of
+request forwarding headers. `maxAgeSeconds` must be a non-negative safe integer;
+zero emits `max-age=0` to clear a previously cached policy. Optional
+`includeSubDomains` and `preload` are booleans defaulting to false. Choose them
+only when the affected domains support HTTPS; the preload token does not submit
+the domain to a browser preload list. Dev and local Container sessions never
+emit runtime HSTS from this configuration.
+
+`security.csp.reportTo` is a public same-origin absolute path or a credential-free
+HTTPS URL (up to 2048 ASCII characters; percent-encode non-ASCII). It emits the
+browser's `report-uri` directive in either CSP mode and takes precedence over a
+raw `directives.report-uri` override. It is a URI, not a Reporting API group name;
+no `Reporting-Endpoints` header is implied. The destination must already accept
+browser CSP reports. Reports can contain document URLs and other sensitive
+browser context, so choose a trusted collector. Sporades does not receive or log
+reports merely because this option is set. Automatic forwarding through
+`observability.errors` and its same-origin collection tunnel belongs to the
+related [observability integration (#234)](https://github.com/mgscox/sporades/issues/234);
+until that integration ships, configure a working report URI explicitly.
+
+### Inspect security policy
+
 Inspect the effective policy without starting the server Bundle:
 
 ```sh

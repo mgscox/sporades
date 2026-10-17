@@ -25,10 +25,12 @@ export declare function readOptionalProjectSecurity(projectDir: string, session:
         suppressTechnologyHeaders: boolean;
     };
     csp: {
+        directives: any;
+        nonce?: boolean | undefined;
         mode: any;
         header: string;
-        directives: any;
     };
+    hsts?: string | undefined;
 } | null>;
 export declare function validateProjectConfigShape(config: unknown): void;
 export declare function validateSecurityConfig(security: LooseRecord): void;
@@ -49,10 +51,12 @@ export declare function resolveEffectiveSecurityPolicy(config: LooseRecord, sess
         suppressTechnologyHeaders: boolean;
     };
     csp: {
+        directives: any;
+        nonce?: boolean | undefined;
         mode: any;
         header: string;
-        directives: any;
     };
+    hsts?: string | undefined;
 };
 export declare function resolveLocalContainerSshAccess(config: LooseRecord, projectDir: string): Promise<{
     enabled: boolean;

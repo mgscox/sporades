@@ -488,6 +488,8 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     // The normalized public-tree contract, shared with the client build. Path normalization for
     // static assets, and nothing these guards read.
     "public-tree-contract.js",
+    // Shared CSP/HSTS option validation and header formatting. No database or SQL semantics.
+    "http-security-config.js",
     // Runtime-owned validation for the five bounded operator action envelopes. It is carried by
     // the boot program but owns no database statement, SQL walker, dialect, or normalization.
     "cli/access-key-operator-envelope.js",

@@ -11,6 +11,7 @@ import { validatePaymentsConfig } from "../stripe-payment-config.js";
 import { validateTelemetryProjectConfig } from "./telemetry-profile.js";
 import { commandError, errorDetails } from "./cli-support.js";
 import { readClientPrerenderConfig } from "../client-prerender.js";
+import { hstsHeader, validateHttpHardening } from "../http-security-config.js";
 export { validateMailConfig } from "../mail-config.js";
 export { validatePaymentsConfig } from "../stripe-payment-config.js";
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
@@ -193,6 +194,7 @@ export function validateSecurityConfig(security) {
     if (!security || typeof security !== "object" || Array.isArray(security)) {
         throw commandError("Invalid security policy.", "Set `security` in sporades.json to an object.");
     }
+    validateHttpHardening(security);
     const cors = security.cors;
     if (cors !== undefined) {
         if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
@@ -215,6 +217,7 @@ export function validateSecurityConfig(security) {
 }
 export function resolveEffectiveSecurityPolicy(config, session) {
     const security = config.security ?? {};
+    validateHttpHardening(security);
     const cors = security.cors ?? {};
     const csp = security.csp ?? {};
     const publicDev = session === "public-dev";
@@ -223,6 +226,7 @@ export function resolveEffectiveSecurityPolicy(config, session) {
     const devOrigins = dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [];
     const allowedOrigins = publicDev ? ["*"] : configuredOrigins;
     return {
+        ...(session === "hosted" && security.hsts ? { hsts: hstsHeader(security.hsts) } : {}),
         cors: {
             sameOrigin: !publicDev,
             publicDev,
@@ -241,9 +245,11 @@ export function resolveEffectiveSecurityPolicy(config, session) {
         csp: {
             mode: csp.mode ?? "report-only",
             header: (csp.mode ?? "report-only") === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
+            ...(csp.nonce === true ? { nonce: true } : {}),
             directives: {
                 ...DEFAULT_CSP_DIRECTIVES,
                 ...(csp.directives ?? {}),
+                ...(csp.reportTo ? { "report-uri": [csp.reportTo] } : {}),
             },
         },
     };
