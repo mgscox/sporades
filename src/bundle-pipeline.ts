@@ -16,12 +16,15 @@ import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, cl
 import { resolveSporadesPackageRoot } from "./package-root.js";
 import { validateStripePaymentsRuntimeConfig, validateStripePaymentsSealedServerEnv } from "./stripe-payment-config.js";
 import { readClientPrerenderConfig, type ClientPrerenderFragment } from "./client-prerender.js";
+import type { SecurityConfig } from "./types/server.js";
+import { validateHttpHardening } from "./http-security-config.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type ServerEnv = Record<string, string>;
 type HelperError = Error & { hint?: string; diagnostics?: unknown; phase?: string; framework?: string; toolchain?: string };
 export type ServerEnvFile = { exists: boolean; raw: string };
 export type ProjectConfig = JsonRecord & {
+  security?: SecurityConfig;
   auth?: AuthConfig;
   client?: { framework?: unknown; toolchain?: unknown; prerender?: readonly ClientPrerenderFragment[] };
 };
@@ -73,6 +76,7 @@ export async function createBundle(
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
   } = {},
 ) {
+  validateHttpHardening(config.security);
   resolveAdmissionPolicy(config.admissionPolicy, (config.deploy as { files?: unknown } | undefined)?.files);
   const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, (config.deploy as { files?: unknown } | undefined)?.files);
   if (options.deployFiles !== false) deployFiles.push(...await buildAdmissionPolicy(projectDir, config.admissionPolicy, (config.deploy as { files?: unknown } | undefined)?.files));
@@ -135,6 +139,7 @@ export async function createBundle(
     clientSourcePath: paths.clientEntry,
     frameworkConfig: frameworkBundleConfig,
     devRefresh: options.devClientRefresh === true,
+    cspNonce: config.security?.csp?.nonce === true,
   }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); });
   const clientBundle = clientOutput.legacyClientBundle;
   const serverBundleInputs = {

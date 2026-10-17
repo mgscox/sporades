@@ -104,6 +104,8 @@
 // Static builtin imports are supported by the module graph (ADR-0042's constraint has expired).
 
 import { ServerResponse, type IncomingHttpHeaders, type IncomingMessage, type OutgoingHttpHeaders } from "node:http";
+import { randomBytes } from "node:crypto";
+import { hstsHeader, validateHttpHardening } from "./http-security-config.js";
 import type { Duplex } from "node:stream";
 import type { Socket } from "node:net";
 import { traceRuntimeOperation } from "./runtime-request-context.js";
@@ -144,6 +146,7 @@ const CLIENT_REQUEST_ERROR_CODES = new Set([
 // `RuntimeRequestLike` by the three origin predicates and `resolveOAuthRequestOrigin`. Exported
 // because `declaration: true` will not emit a signature that names a private type.
 export type RuntimeSecurityPolicy = {
+  hsts?: string;
   cors: {
     sameOrigin: boolean;
     publicDev: boolean;
@@ -157,6 +160,7 @@ export type RuntimeSecurityPolicy = {
     mode: string;
     header: string;
     directives: Record<string, string[] | string>;
+    nonce?: boolean;
   };
 };
 export type RuntimeRequestLike = {
@@ -415,8 +419,21 @@ export function emitHttpFailureLog(database: LooseRecord, request: IncomingMessa
   }
 }
 
+const pageNonces = new WeakMap<object, string>();
+
 export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurityPolicy }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }, admitPreflight?: () => boolean) {
   const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
+  const directives = { ...policy.csp.directives };
+  if (policy.csp.nonce) {
+    const nonce = randomBytes(32).toString("base64");
+    pageNonces.set(response, nonce);
+    for (const name of ["script-src", "script-src-elem"]) {
+      if (name === "script-src-elem" && directives[name] === undefined) continue;
+      const values = directives[name] ?? [];
+      const sources = Array.isArray(values) ? values : values.split(/\s+/);
+      directives[name] = [...sources.filter(value => value !== "'none'"), `'nonce-${nonce}'`, "'strict-dynamic'"];
+    }
+  }
   const originalWriteHead = response.writeHead.bind(response);
   response.writeHead = ((statusCode: number, statusMessageOrHeaders?: string | OutgoingHttpHeaders, maybeHeaders?: OutgoingHttpHeaders) => {
     const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : undefined;
@@ -428,7 +445,8 @@ export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurity
       "x-frame-options": "DENY",
       "permissions-policy": "camera=(), microphone=(), geolocation=()",
       "cross-origin-opener-policy": "same-origin",
-      [policy.csp.header]: serializeCspDirectives(policy.csp.directives),
+      [policy.csp.header]: serializeCspDirectives(directives),
+      ...(policy.hsts ? { "strict-transport-security": policy.hsts } : {}),
     };
     if (isGuardedAttachmentHttpResponse(response)) {
       delete headers["content-security-policy-report-only"];
@@ -483,6 +501,7 @@ export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurity
 
 export function resolveRuntimeSecurityPolicy(config: RuntimeConfig = {}): RuntimeSecurityPolicy {
   const security = config.security ?? {};
+  validateHttpHardening(security);
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
   const session = config.__sporadesSession ?? "container";
@@ -493,10 +512,14 @@ export function resolveRuntimeSecurityPolicy(config: RuntimeConfig = {}): Runtim
   const directives = {
     ...defaultRuntimeCspDirectives(),
     ...(csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}),
+    ...(csp.reportTo ? { "report-uri": [csp.reportTo] } : {}),
   };
   const mode = csp.mode === "enforce" ? "enforce" : "report-only";
 
   return {
+    ...(session === "hosted" && security.hsts ? {
+      hsts: hstsHeader(security.hsts),
+    } : {}),
     cors: {
       sameOrigin: !publicDev,
       publicDev,
@@ -512,6 +535,7 @@ export function resolveRuntimeSecurityPolicy(config: RuntimeConfig = {}): Runtim
       mode,
       header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
       directives,
+      ...(csp.nonce === true ? { nonce: true } : {}),
     },
   };
 }
@@ -536,8 +560,16 @@ function serializeCspDirectives(directives: Record<string, unknown>) {
     .join("; ");
 }
 
-export function injectPageConnectionToken(html: string, token: string) {
-  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
+export function renderPageHtml(html: string | Buffer, response: object, token?: string) {
+  const nonce = pageNonces.get(response);
+  if (!nonce && token === undefined) return html;
+  const source = typeof html === "string" ? html : html.toString("utf8");
+  const rendered = nonce ? source.replaceAll("%SPORADES_NONCE%", nonce) : source;
+  return token === undefined ? rendered : injectPageConnectionToken(rendered, token, nonce);
+}
+
+export function injectPageConnectionToken(html: string, token: string, nonce?: string) {
+  const script = `<script${nonce ? ` nonce="${nonce}"` : ""}>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
   if (/<head(\s[^>]*)?>/i.test(html)) {
     return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
   }

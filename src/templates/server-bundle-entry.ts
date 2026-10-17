@@ -25,7 +25,7 @@ import {
   createRuntimeInspectionAdapter,
   createWebSocketHub,
   handleFileHttpRoute,
-  injectPageConnectionToken,
+  renderPageHtml,
   isDocumentNavigationRequest,
   inspectRuntimeJobs,
   inspectRuntimeSchedules,
@@ -344,8 +344,8 @@ async function routePublicAsset(request: IncomingMessage, response: ServerRespon
     ...(htmlAsset ? { "cache-control": "no-store", pragma: "no-cache" }
       : { "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache" }),
   });
-  response.end(html && isDocumentNavigationRequest(request)
-    ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken())
+  response.end(htmlAsset
+    ? renderPageHtml(body, response, html && isDocumentNavigationRequest(request) ? hub.createConnectionToken() : undefined)
     : body);
   return true;
 }

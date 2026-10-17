@@ -12,6 +12,7 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cli = path.join(repo, 'bin/sporades.js');
 const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(repo, '.sporades', 'test-public-assets-config') };
 const assets = [
+  ['binary.html', Buffer.from([0xff, 0xfe, 0x3c, 0x62, 0x3e]), 'text/html; charset=utf-8'],
   ['favicon.ico', Buffer.from([0, 0, 1, 0, 255, 128]), 'image/x-icon'],
   ['sitemap.xml', Buffer.from('<?xml version="1.0"?><urlset/>\n'), 'application/xml; charset=utf-8'],
   ['robots.txt', Buffer.from('User-agent: *\nSitemap: /sitemap.xml\n'), 'text/plain; charset=utf-8'],
@@ -71,7 +72,7 @@ async function assertAssets(url) {
       const response = await fetch(`${url}/${name}`, { method });
       assert.equal(response.status, 200, `${method} ${name}`);
       assert.equal(response.headers.get('content-type'), type, name);
-      assert.equal(response.headers.get('cache-control'), 'no-cache', name);
+      assert.equal(response.headers.get('cache-control'), name.endsWith('.html') ? 'no-store' : 'no-cache', name);
       assert.deepEqual(Buffer.from(await response.arrayBuffer()), method === 'HEAD' ? Buffer.alloc(0) : bytes, name);
     }
   }
@@ -107,6 +108,49 @@ for (const toolchain of ['esbuild', 'vite']) test(`scaffold favicon declaration 
     } finally { child.kill('SIGTERM'); await once(child, 'exit'); }
     const bundle = await createBundle(project, config);
     await withGeneratedServer(project, bundle, assertIcon);
+  });
+});
+
+for (const toolchain of ['esbuild', 'vite']) test(`nonce HTML and runtime injection agree in Dev and generated ${toolchain} releases`, async () => {
+  await fixture(toolchain, async (project, config) => {
+    config.security = { csp: { mode: 'enforce', nonce: true, directives: { 'script-src': ["'self'"] } } };
+    if (toolchain === 'vite') {
+      config.client.prerender = [{ name: 'nonce-fragment', module: 'render.mjs' }];
+      await writeFile(path.join(project, 'render.mjs'), `export default () => '<section data-prerender-nonce="%SPORADES_NONCE%">Prerendered</section>';`);
+    }
+    await writeFile(path.join(project, 'sporades.json'), JSON.stringify(config));
+    const html = '<!doctype html><html><head><script nonce="%SPORADES_NONCE%">window.authored=true;</script></head><body><script type="module" nonce="%SPORADES_NONCE%" src="' + (toolchain === 'vite' ? '/client/index.tsx' : '/client.js') + '"></script></body></html>';
+    await writeFile(path.join(project, 'index.html'), html);
+    await mkdir(path.join(project, 'public'), { recursive: true });
+    await writeFile(path.join(project, 'public', 'landing.html'), '<head><script nonce="%SPORADES_NONCE%">window.landing=true;</script></head>');
+    const assertNonce = async url => {
+      const nonces = [];
+      for (const pathname of ['/', '/index.html', '/landing.html']) {
+        for (const navigation of [true, false]) {
+          const response = await fetch(url + pathname, { headers: navigation ? { 'sec-fetch-dest': 'document' } : {} });
+          assert.equal(response.status, 200);
+          assert.equal(response.headers.get('cache-control'), 'no-store');
+          const policy = response.headers.get('content-security-policy');
+          const nonce = policy.match(/'nonce-([^']+)'/)[1];
+          const body = await response.text();
+          assert.ok(!body.includes('%SPORADES_NONCE%'), pathname);
+          assert.ok(body.includes(`nonce="${nonce}"`), pathname);
+          if (toolchain === 'vite' && pathname !== '/landing.html') assert.ok(body.includes(`data-prerender-nonce="${nonce}"`));
+          for (const script of body.matchAll(/<script\b[^>]*>/g)) assert.ok(script[0].includes(`nonce="${nonce}"`), script[0]);
+          assert.equal(body.includes(`nonce="${nonce}">window.__SPORADES_CONNECTION_TOKEN=`), navigation && pathname !== '/landing.html');
+          nonces.push(nonce);
+        }
+      }
+      assert.equal(new Set(nonces).size, nonces.length);
+    };
+    const child = spawn(process.execPath, [cli, 'dev', '--json'], { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const next = events(child);
+    try {
+      const started = await next(event => event.data?.event === 'started');
+      await assertNonce(started.data.url);
+    } finally { child.kill('SIGTERM'); await once(child, 'exit'); }
+    const bundle = await createBundle(project, config);
+    await withGeneratedServer(project, bundle, assertNonce);
   });
 });
 

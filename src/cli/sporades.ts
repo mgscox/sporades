@@ -60,7 +60,7 @@ import {
   createWebSocketHub,
   dumpDatabase,
   handleFileHttpRoute,
-  injectPageConnectionToken,
+  renderPageHtml,
   interpretHttpRequestTarget,
   isDocumentNavigationRequest,
   listDatabaseTables,
@@ -2615,12 +2615,13 @@ async function startDevSession(options: LooseRecord) {
 
       const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, requestPath);
       if (publicAsset) {
+        const htmlAsset = publicAsset.contentType === "text/html; charset=utf-8";
         response.writeHead(200, {
           "content-type": publicAsset.contentType,
-          ...(publicAsset.html ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }),
+          ...(htmlAsset ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }),
         });
-        response.end(publicAsset.html && isDocumentNavigationRequest(request)
-          ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken())
+        response.end(htmlAsset
+          ? renderPageHtml(publicAsset.body, response, publicAsset.html && isDocumentNavigationRequest(request) ? websocketHub.createConnectionToken() : undefined)
           : publicAsset.body);
         return;
       }

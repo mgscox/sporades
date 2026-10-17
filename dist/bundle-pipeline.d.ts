@@ -1,6 +1,7 @@
 import type { PathLike } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { type ClientPrerenderFragment } from "./client-prerender.js";
+import type { SecurityConfig } from "./types/server.js";
 export type JsonRecord = Record<string, unknown>;
 export type ServerEnv = Record<string, string>;
 export type ServerEnvFile = {
@@ -8,6 +9,7 @@ export type ServerEnvFile = {
     raw: string;
 };
 export type ProjectConfig = JsonRecord & {
+    security?: SecurityConfig;
     auth?: AuthConfig;
     client?: {
         framework?: unknown;

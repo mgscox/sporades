@@ -44,6 +44,7 @@ export async function buildClientToolchain(options: {
   prerender?: readonly ClientPrerenderFragment[];
   onDependency?: (file: string) => void;
   devRefresh?: boolean;
+  cspNonce?: boolean;
 }): Promise<ClientToolchainOutput> {
   validateClientToolchainInput(options);
   if (options.toolchain === "vite") return buildVite(options);
@@ -160,6 +161,7 @@ async function buildVite(options: {
   prerender?: readonly ClientPrerenderFragment[];
   onDependency?: (file: string) => void;
   devRefresh?: boolean;
+  cspNonce?: boolean;
 }) {
   const { build } = await import("vite");
   const frameworkPlugins: VitePlugin[] = [];
@@ -187,6 +189,7 @@ async function buildVite(options: {
       base: "/",
       publicDir: false,
       configFile: projectConfigFile,
+      ...(options.cspNonce ? { html: { cspNonce: "%SPORADES_NONCE%" } } : {}),
       envFile: false,
       envPrefix: "\0",
       mode: "production",

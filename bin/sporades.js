@@ -81301,7 +81301,7 @@ function validateAliasDomains(value) {
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
-import { createHash as createHash18, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes10, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
+import { createHash as createHash18, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes11, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync as readFileSync4, statSync as statSync2, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod5, cp as cp2, lstat as lstat13, mkdir as mkdir11, open as open5, readdir as readdir6, readFile as readFile14, rename as rename9, rm as rm10, writeFile as writeFile10 } from "node:fs/promises";
@@ -99426,6 +99426,7 @@ async function buildVite(options) {
       base: "/",
       publicDir: false,
       configFile: projectConfigFile,
+      ...options.cspNonce ? { html: { cspNonce: "%SPORADES_NONCE%" } } : {},
       envFile: false,
       envPrefix: "\0",
       mode: "production",
@@ -101913,11 +101914,53 @@ function fail(message, hint) {
   throw error;
 }
 
+// src/http-security-config.ts
+function validateHttpHardening(security = {}) {
+  const fail3 = (hint) => {
+    throw commandError2("Invalid HTTP security configuration.", hint, "INVALID_SECURITY_CONFIG");
+  };
+  const csp = security.csp ?? {};
+  if (csp.nonce !== void 0 && typeof csp.nonce !== "boolean") {
+    fail3("Set security.csp.nonce to a boolean.");
+  }
+  if (csp.nonce === true) {
+    for (const name2 of ["script-src", "script-src-elem"]) {
+      const value = csp.directives?.[name2];
+      if (value !== void 0 && typeof value !== "string" && !(Array.isArray(value) && value.every((item) => typeof item === "string"))) {
+        fail3("Set CSP script directives to a string or an array of strings.");
+      }
+    }
+  }
+  if (csp.reportTo !== void 0) {
+    const value = csp.reportTo;
+    let valid = typeof value === "string" && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]|[;#\\]/.test(value);
+    if (valid) {
+      try {
+        const url = new URL(value, "https://sporades.invalid");
+        valid = (value.startsWith("/") && !value.startsWith("//") || value.startsWith("https://")) && url.protocol === "https:" && !url.username && !url.password;
+      } catch {
+        valid = false;
+      }
+    }
+    if (!valid) fail3("Set security.csp.reportTo to a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.");
+  }
+  const hsts = security.hsts;
+  if (hsts !== void 0) {
+    if (!hsts || typeof hsts !== "object" || Array.isArray(hsts) || !Number.isSafeInteger(hsts.maxAgeSeconds) || hsts.maxAgeSeconds < 0 || hsts.includeSubDomains !== void 0 && typeof hsts.includeSubDomains !== "boolean" || hsts.preload !== void 0 && typeof hsts.preload !== "boolean") {
+      fail3("Set security.hsts to an object with a non-negative safe integer maxAgeSeconds and optional boolean includeSubDomains and preload.");
+    }
+  }
+}
+function hstsHeader(hsts) {
+  return `max-age=${hsts.maxAgeSeconds}${hsts.includeSubDomains ? "; includeSubDomains" : ""}${hsts.preload ? "; preload" : ""}`;
+}
+
 // src/bundle-pipeline.ts
 var AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 var SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
 var RUNTIME_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 async function createBundle(projectDir, config, options = {}) {
+  validateHttpHardening(config.security);
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, config.deploy?.files);
   if (options.deployFiles !== false) deployFiles.push(...await buildAdmissionPolicy(projectDir, config.admissionPolicy, config.deploy?.files));
@@ -101978,7 +102021,8 @@ async function createBundle(projectDir, config, options = {}) {
     clientSource,
     clientSourcePath: paths.clientEntry,
     frameworkConfig: frameworkBundleConfig,
-    devRefresh: options.devClientRefresh === true
+    devRefresh: options.devClientRefresh === true,
+    cspNonce: config.security?.csp?.nonce === true
   }).catch((error) => {
     throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
   });
@@ -102924,7 +102968,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash11, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { createHash as createHash11, createHmac as createHmac2, randomBytes as randomBytes6, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -102950,6 +102994,7 @@ function chainMaybePromise(steps) {
 
 // src/http-runtime.ts
 import { ServerResponse } from "node:http";
+import { randomBytes as randomBytes5 } from "node:crypto";
 
 // src/access-keys-runtime.ts
 var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
@@ -124109,8 +124154,20 @@ function emitHttpFailureLog(database, request, error, context2 = {}) {
   } catch {
   }
 }
+var pageNonces = /* @__PURE__ */ new WeakMap();
 function prepareHttpSecurity(database, request, response, admitPreflight) {
   const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
+  const directives = { ...policy.csp.directives };
+  if (policy.csp.nonce) {
+    const nonce = randomBytes5(32).toString("base64");
+    pageNonces.set(response, nonce);
+    for (const name2 of ["script-src", "script-src-elem"]) {
+      if (name2 === "script-src-elem" && directives[name2] === void 0) continue;
+      const values = directives[name2] ?? [];
+      const sources = Array.isArray(values) ? values : values.split(/\s+/);
+      directives[name2] = [...sources.filter((value) => value !== "'none'"), `'nonce-${nonce}'`, "'strict-dynamic'"];
+    }
+  }
   const originalWriteHead = response.writeHead.bind(response);
   response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
     const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : void 0;
@@ -124122,7 +124179,8 @@ function prepareHttpSecurity(database, request, response, admitPreflight) {
       "x-frame-options": "DENY",
       "permissions-policy": "camera=(), microphone=(), geolocation=()",
       "cross-origin-opener-policy": "same-origin",
-      [policy.csp.header]: serializeCspDirectives(policy.csp.directives)
+      [policy.csp.header]: serializeCspDirectives(directives),
+      ...policy.hsts ? { "strict-transport-security": policy.hsts } : {}
     };
     if (isGuardedAttachmentHttpResponse(response)) {
       delete headers["content-security-policy-report-only"];
@@ -124173,6 +124231,7 @@ function prepareHttpSecurity(database, request, response, admitPreflight) {
 }
 function resolveRuntimeSecurityPolicy(config = {}) {
   const security = config.security ?? {};
+  validateHttpHardening(security);
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
   const session = config.__sporadesSession ?? "container";
@@ -124182,10 +124241,14 @@ function resolveRuntimeSecurityPolicy(config = {}) {
   const publicOrigin = normalizeOrigin(config.__sporadesPublicOrigin);
   const directives = {
     ...defaultRuntimeCspDirectives(),
-    ...csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}
+    ...csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {},
+    ...csp.reportTo ? { "report-uri": [csp.reportTo] } : {}
   };
   const mode = csp.mode === "enforce" ? "enforce" : "report-only";
   return {
+    ...session === "hosted" && security.hsts ? {
+      hsts: hstsHeader(security.hsts)
+    } : {},
     cors: {
       sameOrigin: !publicDev,
       publicDev,
@@ -124198,7 +124261,8 @@ function resolveRuntimeSecurityPolicy(config = {}) {
     csp: {
       mode,
       header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
-      directives
+      directives,
+      ...csp.nonce === true ? { nonce: true } : {}
     }
   };
 }
@@ -124218,8 +124282,15 @@ function defaultRuntimeCspDirectives() {
 function serializeCspDirectives(directives) {
   return Object.entries(directives).map(([name2, values]) => `${name2} ${Array.isArray(values) ? values.join(" ") : String(values)}`).join("; ");
 }
-function injectPageConnectionToken(html2, token) {
-  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
+function renderPageHtml(html2, response, token) {
+  const nonce = pageNonces.get(response);
+  if (!nonce && token === void 0) return html2;
+  const source = typeof html2 === "string" ? html2 : html2.toString("utf8");
+  const rendered = nonce ? source.replaceAll("%SPORADES_NONCE%", nonce) : source;
+  return token === void 0 ? rendered : injectPageConnectionToken(rendered, token, nonce);
+}
+function injectPageConnectionToken(html2, token, nonce) {
+  const script = `<script${nonce ? ` nonce="${nonce}"` : ""}>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
   if (/<head(\s[^>]*)?>/i.test(html2)) {
     return html2.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
 ${script}`);
@@ -124868,8 +124939,8 @@ async function createTeamJoinLink(database, auth, teamId, email, options = {}, e
       await claimTeamJoinLinkCapacity(tx, teamId, nowIso2);
       const secret = await teamJoinSigningSecret(tx, nowIso2);
       const id2 = randomUUID8();
-      const selector = randomBytes5(16).toString("base64url");
-      const verifier = randomBytes5(32).toString("base64url");
+      const selector = randomBytes6(16).toString("base64url");
+      const verifier = randomBytes6(32).toString("base64url");
       const expiresAt = new Date(now2.getTime() + ttlSeconds * 1e3).toISOString();
       const signature = teamJoinSignature(secret, id2, selector, verifier, expiresAt);
       await tx.prepare(tx.dialect.sql(
@@ -125219,7 +125290,7 @@ function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
 async function teamJoinSigningSecret(tx, createdAt) {
   const existing = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
   if (existing?.secret) return String(existing.secret);
-  const secret = randomBytes5(32).toString("base64url");
+  const secret = randomBytes6(32).toString("base64url");
   await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_link_secrets] ([id], [secret], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([id]) DO NOTHING")).run(TEAM_JOIN_LINK_SECRET_ID, secret, createdAt);
   const claimed = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
   return String(claimed?.secret ?? secret);
@@ -129021,7 +129092,7 @@ function restartPolicyStatus(mode, overrides2 = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash13, randomBytes as randomBytes6, randomUUID as randomUUID12 } from "node:crypto";
+import { createHash as createHash13, randomBytes as randomBytes7, randomUUID as randomUUID12 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync as readFileSync3 } from "node:fs";
 
 // src/log-envelope.ts
@@ -139911,7 +139982,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         if (typeof oldestToken !== "string") break;
         connectionTokens.delete(oldestToken);
       }
-      const token = randomBytes6(32).toString("base64url");
+      const token = randomBytes7(32).toString("base64url");
       connectionTokens.set(token, Date.now() + connectionTokenTtlMs);
       return token;
     },
@@ -140803,7 +140874,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         const nowDate = database.clock.now();
         const inactivityMs = database.journeySessionInactivityMinutes * 6e4;
         if (!client.journey.sessionId || client.journey.lastActivityAt !== null && nowDate.getTime() - client.journey.lastActivityAt >= inactivityMs) {
-          client.journey.sessionId = randomBytes6(24).toString("base64url");
+          client.journey.sessionId = randomBytes7(24).toString("base64url");
           client.journey.sessionIds.add(client.journey.sessionId);
         }
         const previous = journeys.get(client.journey.sessionId);
@@ -141170,7 +141241,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
     return { ok: true };
   }
   recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
-  const code = `${randomBytes6(16).toString("base64url")}.${randomBytes6(32).toString("base64url")}`;
+  const code = `${randomBytes7(16).toString("base64url")}.${randomBytes7(32).toString("base64url")}`;
   const htmlBody = htmlString(options.htmlBody) ?? options.htmlBody;
   await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
     email: cleanEmail,
@@ -145853,7 +145924,7 @@ function escapeHtml2(value) {
 
 // src/dev-clamav-sidecar.ts
 import { spawn } from "node:child_process";
-import { createHash as createHash14, randomBytes as randomBytes7 } from "node:crypto";
+import { createHash as createHash14, randomBytes as randomBytes8 } from "node:crypto";
 import { mkdir as mkdir6, mkdtemp, rm as rm7 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -146045,7 +146116,7 @@ async function startDevClamavSidecar(options) {
   const dataRoot = path15.join(options.projectDir, ".sporades", "clamav");
   await mkdir6(path15.join(dataRoot, "clamav"), { recursive: true });
   const socketDir = await createDevClamavSocketDirectory();
-  const identity = createHash14("sha256").update(`${path15.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const identity = createHash14("sha256").update(`${path15.resolve(options.projectDir)}\0${process.pid}\0${randomBytes8(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
   const socketPath = path15.join(socketDir, "clamd.sock");
   let child;
@@ -146235,7 +146306,7 @@ ${removed.stderr}`)) failures.push(new Error("Dev File inspection container clea
 }
 
 // src/capsule-services.ts
-import { randomBytes as randomBytes8 } from "node:crypto";
+import { randomBytes as randomBytes9 } from "node:crypto";
 import { mkdir as mkdir7, readFile as readFile9, rm as rm8, writeFile as writeFile6 } from "node:fs/promises";
 import path16 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
@@ -146309,9 +146380,9 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   }
   const credentials = {
     databaseUser: typeof existing.databaseUser === "string" && existing.databaseUser ? existing.databaseUser : POSTGRES_USER,
-    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes8(24).toString("base64url"),
+    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes9(24).toString("base64url"),
     storageAccessKey: typeof existing.storageAccessKey === "string" && existing.storageAccessKey ? existing.storageAccessKey : MINIO_ROOT_USER,
-    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes8(24).toString("base64url")
+    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes9(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
     await mkdir7(path16.dirname(credentialsPath), { recursive: true });
@@ -147146,7 +147217,7 @@ function renderCliHelp(command) {
 // src/cli/monitoring-maintenance.ts
 import { spawn as spawn2, spawnSync as spawnSync2 } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { createHash as createHash16, randomBytes as randomBytes9 } from "node:crypto";
+import { createHash as createHash16, randomBytes as randomBytes10 } from "node:crypto";
 import { chown, chmod as chmod3, lstat as lstat11, mkdir as mkdir9, open as open4, readFile as readFile11, readdir as readdir5, rename as rename8, rm as rm9, writeFile as writeFile8 } from "node:fs/promises";
 import path18 from "node:path";
 import { pathToFileURL as pathToFileURL5 } from "node:url";
@@ -147281,7 +147352,7 @@ async function safeDirectory(dir, privateMode = false) {
   if (!st.isDirectory() || st.isSymbolicLink() || st.mode & (privateMode ? 63 : 18) || process.geteuid && st.uid !== process.geteuid()) fail2();
 }
 async function atomic(file, bytes, mode = 384, owner) {
-  const temp = `${file}.${randomBytes9(8).toString("hex")}.tmp`;
+  const temp = `${file}.${randomBytes10(8).toString("hex")}.tmp`;
   const handle = await open4(temp, "wx", mode);
   try {
     await handle.writeFile(bytes);
@@ -147566,7 +147637,7 @@ async function checkArchive(dir, backup, file) {
   if (run2("-tvf").split("\n").some((line) => !/^[-d]/.test(line))) fail2();
 }
 async function storageGuards(dir, names) {
-  const owner = randomBytes9(16).toString("hex");
+  const owner = randomBytes10(16).toString("hex");
   const guards = [];
   const release = async () => {
     for (const guard of guards.reverse()) {
@@ -147669,7 +147740,7 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
     const beforeFiles = await hashes(dir, "", excluded);
     const configMetadata = await metadata(dir, excluded);
     if (await exists(location)) fail2();
-    const stage = `${location}.partial-${randomBytes9(8).toString("hex")}`;
+    const stage = `${location}.partial-${randomBytes10(8).toString("hex")}`;
     await mkdir9(stage, { mode: 448 });
     try {
       await mkdir9(path18.join(stage, "config"), { mode: 448 });
@@ -148138,6 +148209,7 @@ function validateSecurityConfig(security) {
   if (!security || typeof security !== "object" || Array.isArray(security)) {
     throw commandError("Invalid security policy.", "Set `security` in sporades.json to an object.");
   }
+  validateHttpHardening(security);
   const cors = security.cors;
   if (cors !== void 0) {
     if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
@@ -148159,6 +148231,7 @@ function validateSecurityConfig(security) {
 }
 function resolveEffectiveSecurityPolicy(config, session) {
   const security = config.security ?? {};
+  validateHttpHardening(security);
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
   const publicDev = session === "public-dev";
@@ -148167,6 +148240,7 @@ function resolveEffectiveSecurityPolicy(config, session) {
   const devOrigins = dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [];
   const allowedOrigins = publicDev ? ["*"] : configuredOrigins;
   return {
+    ...session === "hosted" && security.hsts ? { hsts: hstsHeader(security.hsts) } : {},
     cors: {
       sameOrigin: !publicDev,
       publicDev,
@@ -148185,9 +148259,11 @@ function resolveEffectiveSecurityPolicy(config, session) {
     csp: {
       mode: csp.mode ?? "report-only",
       header: (csp.mode ?? "report-only") === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
+      ...csp.nonce === true ? { nonce: true } : {},
       directives: {
         ...DEFAULT_CSP_DIRECTIVES,
-        ...csp.directives ?? {}
+        ...csp.directives ?? {},
+        ...csp.reportTo ? { "report-uri": [csp.reportTo] } : {}
       }
     }
   };
@@ -148511,6 +148587,11 @@ function securityPostureWarnings(security, session) {
   if (security.cors.allowedOrigins.includes("*")) {
     warnings.push("CORS allows every origin");
   }
+  const scriptSources = security.csp.directives["script-src"] ?? [];
+  const sources = Array.isArray(scriptSources) ? scriptSources : String(scriptSources).split(/\s+/);
+  if (sources.some((value) => value === "https:" || value === "'unsafe-inline'")) {
+    warnings.push("CSP script-src permits https: or 'unsafe-inline'; nonce mode is available");
+  }
   const permissiveDirectives = Object.entries(security.csp.directives).filter(([, values]) => Array.isArray(values) && values.some((value) => value === "*" || value === "'unsafe-eval'")).map(([name2]) => name2);
   if (permissiveDirectives.length > 0) {
     warnings.push(`CSP directives are broad (${permissiveDirectives.join(", ")})`);
@@ -148527,6 +148608,9 @@ function securityPolicyHint(warnings) {
   }
   if (warnings.some((warning) => warning.includes("CSP"))) {
     hints.push("Tighten security.csp.directives and use security.csp.mode `enforce` when the policy is ready.");
+  }
+  if (warnings.some((warning) => warning.includes("nonce mode"))) {
+    hints.push('Enable security.csp.nonce, add nonce="%SPORADES_NONCE%" to authored scripts, and remove https: and unsafe-inline from script-src. Replace inline event handlers with addEventListener.');
   }
   return hints.join(" ");
 }
@@ -152077,7 +152161,7 @@ async function startDevSession(options) {
   });
   let runtimeServiceEnv = capsuleServiceEnv;
   const inspectionToken = createDevInspectionToken();
-  const actionBundleId = randomBytes10(16).toString("hex");
+  const actionBundleId = randomBytes11(16).toString("hex");
   const actionBundlePath = path21.join(options.projectDir, ".sporades", "build", ".dev-actions", actionBundleId, "server.mjs");
   const sessionFilePath = path21.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path21.join(options.projectDir, ".sporades", "data.db");
@@ -152262,11 +152346,12 @@ async function startDevSession(options) {
       }
       const publicAsset2 = await readPublicAsset(bundle.staticFiles.publicTree, requestPath);
       if (publicAsset2) {
+        const htmlAsset = publicAsset2.contentType === "text/html; charset=utf-8";
         response.writeHead(200, {
           "content-type": publicAsset2.contentType,
-          ...publicAsset2.html ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }
+          ...htmlAsset ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }
         });
-        response.end(publicAsset2.html && isDocumentNavigationRequest(request) ? injectPageConnectionToken(publicAsset2.body.toString("utf8"), websocketHub.createConnectionToken()) : publicAsset2.body);
+        response.end(htmlAsset ? renderPageHtml(publicAsset2.body, response, publicAsset2.html && isDocumentNavigationRequest(request) ? websocketHub.createConnectionToken() : void 0) : publicAsset2.body);
         return;
       }
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -152889,7 +152974,7 @@ function capsuleReloadSurface(database, config = {}) {
   return surface;
 }
 function createDevInspectionToken() {
-  return randomBytes10(32).toString("hex");
+  return randomBytes11(32).toString("hex");
 }
 function requireDevInspectionToken(request, response, expectedToken) {
   if (devInspectionTokenMatches(request.headers[DEV_INSPECTION_TOKEN_HEADER], expectedToken)) {
@@ -154373,8 +154458,8 @@ async function startContainerSession(options) {
     await mkdir11(path21.join(runtimeDir, "deploy-files"), { recursive: true, mode: 448 });
     await chmod5(path21.join(runtimeDir, "deploy-files"), 448);
   }
-  const deployReleaseRoot = path21.join(runtimeDir, "deploy-files", randomBytes10(16).toString("hex"));
-  const telemetryCaStagePath = telemetryCa ? path21.join(runtimeDir, "telemetry-ca", `${randomBytes10(16).toString("hex")}.pem`) : null;
+  const deployReleaseRoot = path21.join(runtimeDir, "deploy-files", randomBytes11(16).toString("hex"));
+  const telemetryCaStagePath = telemetryCa ? path21.join(runtimeDir, "telemetry-ca", `${randomBytes11(16).toString("hex")}.pem`) : null;
   const preservedRoot = path21.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
   const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0 || Boolean(telemetryCaStagePath || existingBinding?.telemetryCaStagePath));
@@ -154405,8 +154490,8 @@ async function startContainerSession(options) {
   }
   const additionalMounts = deployFileMounts(bundle.deployFiles, deployReleaseRoot, preservedRoot);
   const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
-  const containerTransactionToken = randomBytes10(16).toString("hex");
-  const runtimeProbeToken = randomBytes10(32).toString("hex");
+  const containerTransactionToken = randomBytes11(16).toString("hex");
+  const runtimeProbeToken = randomBytes11(32).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
     "--env",
@@ -154468,7 +154553,7 @@ async function startContainerSession(options) {
     SPORADES_BASE_IMAGE.image,
     ...sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]
   ];
-  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes10(4).toString("hex")}`;
+  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes11(4).toString("hex")}`;
   const oldName = String(existingContainer?.Name ?? existingBinding?.containerName ?? containerName).replace(/^\//, "");
   const oldWasRunning = Boolean(existingContainer?.State?.Running);
   let oldRenamed = false;
@@ -155858,7 +155943,7 @@ function uploadHostReleaseArchive(options) {
 }
 function createHostReleaseId(now2 = /* @__PURE__ */ new Date()) {
   const timestamp = now2.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  return `${timestamp}-${randomBytes10(4).toString("hex")}`;
+  return `${timestamp}-${randomBytes11(4).toString("hex")}`;
 }
 function normaliseHostLogEntries(data2) {
   if (!Array.isArray(data2?.entries)) {
@@ -157145,7 +157230,7 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
   throw commandError(message, hint);
 }
 async function replaceContainerBinding(bindingPath, binding) {
-  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes10(8).toString("hex")}.tmp`;
+  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes11(8).toString("hex")}.tmp`;
   try {
     await writeFile10(temporaryPath, `${JSON.stringify(binding, null, 2)}
 `, { flag: "wx" });
@@ -157169,7 +157254,7 @@ function verifyContainerReplacementOwnership(binding, consumer, expectedContaine
 async function acquireContainerLifecycleLock(projectDir) {
   const lockDir = path21.join(projectDir, ".sporades", ".container-lifecycle-lock");
   await mkdir11(path21.dirname(lockDir), { recursive: true });
-  const token = randomBytes10(16).toString("hex");
+  const token = randomBytes11(16).toString("hex");
   const ownerPath = path21.join(lockDir, "owner.json");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
