@@ -118,8 +118,9 @@ import type { WithImplicitCoercion } from "buffer";
 import type { BinaryLike, KeyObject } from "node:crypto";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 
+import { assertAllowedFileMimeType, normalizeFileMimeType } from "./file-policy.js";
 import { chainMaybePromise, thenIfPromise } from "./maybe-promise.js";
-import { applyFileAcl, bindPostgresAclDependencyLocking } from "./acl-runtime.js";
+import { allowFileUpload, applyFileAcl, bindPostgresAclDependencyLocking } from "./acl-runtime.js";
 import type { HelperError } from "./runtime-errors.js";
 import { enclosingPromiseCombinatorRoot, promiseCompositionRootCandidate, releasePromiseObserver, retainPromiseObserver } from "./promise-coordinator.js";
 
@@ -568,6 +569,7 @@ export function createFileStorageTables(sqlite: LooseRecord) {
       ),
     () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
     () => sqlite.exec(sql(filePathBackfillSql())),
+    () => sqlite.exec(sql("CREATE INDEX IF NOT EXISTS [sporades_files_created_live] ON [sporades_files] ([createdAt], [id]) WHERE [deletedAt] IS NULL AND [status] = 'uploaded'")),
     () => sqlite.exec(sql(activeFilePathDedupeSql())),
     () =>
       sqlite.exec(
@@ -678,6 +680,16 @@ async function createPendingFileUploadOperation(database: LooseRecord, auth: Loo
     };
   }
 
+  try { assertAllowedFileMimeType(database.fileAllowedMimeTypes, input.type); }
+  catch (error: any) { return { ok: false, error: { message: error.message, hint: error.hint, code: error.code } }; }
+  if (database.fileAcl?.resolve?.("upload") && !await allowFileUpload(database, auth, {
+    sizeBytes: size,
+    mimeType: normalizeFileMimeType(input.type),
+    name: normalizeFileName(input.name, typeof input.path === "string" ? input.path : null),
+  })) {
+    return { ok: false, error: { ...createStructuredFileError("File upload denied.", "The Capsule upload policy denied this file."), code: "FILE_UPLOAD_DENIED" } };
+  }
+
   return await withFileUploadPathLock("capsule", async () => {
     const now = new Date().toISOString();
     const replacing = message.replace === true;
@@ -730,7 +742,7 @@ async function createPendingFileUploadOperation(database: LooseRecord, auth: Loo
       const uploadId = nodeCryptoModule.randomUUID();
       const version = nodeCryptoModule.randomUUID();
       const name = normalizeFileName(input.name, target.path);
-      const type = String(input.type ?? "application/octet-stream");
+      const type = database.fileAllowedMimeTypes ? normalizeFileMimeType(input.type) : String(input.type ?? "application/octet-stream");
       await sqlite.deleteFileUploadsForPath(target.path);
       try {
         await sqlite.insertFileUpload({
@@ -807,6 +819,12 @@ async function completePendingFileUploadOperation(database: LooseRecord, uploadI
       total: upload.expectedSize,
     });
     const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
+    if (database.fileAcl?.resolve?.("upload") && bytes.length !== upload.expectedSize) {
+      throw Object.assign(new Error("File size differs from the admitted upload metadata."), {
+        code: "FILE_UPLOAD_SIZE_MISMATCH", hint: "Request a fresh upload URL with the actual file size.",
+      });
+    }
+    assertAllowedFileMimeType(database.fileAllowedMimeTypes, upload.type, bytes);
     const now = new Date().toISOString();
     const completion = await database.adapter.withTransaction(async (sqlite: LooseRecord) => {
       const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
@@ -850,6 +868,7 @@ async function completePendingFileUploadOperation(database: LooseRecord, uploadI
       : {
         message: error.message,
         hint: error.hint ?? "Request a fresh upload URL and retry.",
+        ...(error.code ? { code: error.code } : {}),
       };
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.failed",

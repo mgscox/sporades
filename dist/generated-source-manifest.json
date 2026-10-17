@@ -69,6 +69,7 @@
       "src/email-events-runtime.ts",
       "src/endpoint-file-response.ts",
       "src/file-ingress-runtime.ts",
+      "src/file-policy.ts",
       "src/file-storage-runtime.ts",
       "src/file-transaction.ts",
       "src/http-runtime.ts",
@@ -130,7 +131,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "4374b31d36cd48f23eb471e294a7656a76b8bd55cef34c55feb7abc60b078542"
+    "digest": "dd3f7594cb915396496654affb0540808334175f931d971104b36fe925a3218d"
   },
   "outputs": {
     "files": [
@@ -376,6 +377,10 @@
       "dist/file-ingress-runtime.d.ts.map",
       "dist/file-ingress-runtime.js",
       "dist/file-ingress-runtime.js.map",
+      "dist/file-policy.d.ts",
+      "dist/file-policy.d.ts.map",
+      "dist/file-policy.js",
+      "dist/file-policy.js.map",
       "dist/file-storage-runtime.d.ts",
       "dist/file-storage-runtime.d.ts.map",
       "dist/file-storage-runtime.js",
@@ -582,6 +587,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "f293f680533be59d2640f2fe5825200bb9e21db6d1ffde2123e4b6da77f93b3a"
+    "digest": "d8fb3d38bbadd5da8f9bb270b5c4039832821a5ad21a2bc2a28bdaac8da6624a"
   }
 }
