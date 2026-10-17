@@ -15,17 +15,31 @@ test('generated self-contained Bundle rate limits share trusted client identity 
   let child;
 
   try {
-    const serverSource = `import { capsule, endpoint } from 'sporades/server';
+    const serverSource = `import { capsule, endpoint, table, String as Text } from 'sporades/server';
 const inspect = ctx => ({ result: ctx.rateLimit('shared', { limit: 1, windowMs: 60000 }), address: ctx.request.clientAddress,
   authAddress: ctx.auth.clientAddress, tokenLeaked: Object.keys(ctx.request.headers).some(name => name.toLowerCase() === 'x-sporades-client-address-token') });
-export default capsule({ name: 'capsule-rate-limit-bundle', schema: {}, endpoints: {
+const resource = { resource: { table: 'anchors', id: 'anchor' }, operationId: 'stable' };
+export default capsule({ name: 'capsule-rate-limit-bundle', schema: { anchors: table({ value: Text() }) }, endpoints: {
   limited: endpoint({ method: 'GET', path: '/limited' }, ctx => ({ status: 200, body: inspect(ctx) })),
-  other: endpoint({ method: 'GET', path: '/other' }, ctx => ({ status: 200, body: inspect(ctx) }))
+  other: endpoint({ method: 'GET', path: '/other' }, ctx => ({ status: 200, body: inspect(ctx) })),
+  record: endpoint({ method: 'GET', path: '/resource-record' }, async ctx => ({ body: await ctx.resources.run({ ...resource, input: null }, async scope => {
+    const anchor = await scope.db.anchors.where('id', 'anchor').get();
+    const value = String(Number(anchor.value) + 1);
+    await scope.db.anchors.update('anchor', { value });
+    return { value };
+  }) })),
+  status: endpoint({ method: 'GET', path: '/resource-status' }, async ctx => ({ body: await ctx.resources.status(resource) }))
 } });`;
     const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(root, 'server/index.ts') });
     const source = await createServerBundleModuleSource({
       config: { name: 'capsule-rate-limit-bundle' }, serverEnv: {}, serverSource, serverModuleSource,
-      epilogue: `database.securitySession = process.env.FAKE_SECURITY_SESSION || 'hosted'; database.runtimeProbeToken = '${probe}';\nprocess.stdout.write(JSON.stringify({ listening: server.address().port }) + '\\n');`,
+      epilogue: `database.securitySession = process.env.FAKE_SECURITY_SESSION || 'hosted'; database.runtimeProbeToken = '${probe}';
+await database.adapter.prepare('INSERT OR IGNORE INTO anchors (id,createdAt,updatedAt,value) VALUES (?,?,?,?)').run('anchor', new Date().toISOString(), new Date().toISOString(), '0');
+if (database.securitySession === 'hosted') {
+await database.adapter.insertAuthUser({ id: 'receipt-actor', displayName: 'Actor', email: null, picture: null, isAuthenticated: 0, isGuest: 1, provider: 'anonymous', createdAt: new Date().toISOString() });
+await database.adapter.insertAuthSession({ token: 'receipt-session', userId: 'receipt-actor', provider: 'anonymous', createdAt: new Date().toISOString(), expiresAt: '2099-01-01T00:00:00.000Z' });
+}
+process.stdout.write(JSON.stringify({ listening: server.address().port }) + '\\n');`,
     });
     await writeFile(path.join(root, 'server.mjs'), source);
 
@@ -55,6 +69,15 @@ export default capsule({ name: 'capsule-rate-limit-bundle', schema: {}, endpoint
         };
 
         if (session === 'hosted') {
+          for (const address of ['192.0.2.1', '2001:db8::2']) {
+            const identity = { ...internalIdentity, 'x-sporades-client-address': address, 'x-sporades-session-token': 'receipt-session' };
+            const recorded = await call('/resource-record', identity);
+            assert.equal(recorded.status, 200);
+            assert.deepEqual(recorded.body, { value: '1' }, 'resource callback must run once across address changes');
+            const status = await call('/resource-status', identity);
+            assert.equal(status.status, 200);
+            assert.deepEqual(status.body, { state: 'committed', result: { value: '1' }, intentIds: [] });
+          }
           const first = await call('/limited', { ...internalIdentity, ...spoofedForwarding });
           assert.equal(first.status, 200);
           assert.equal(first.body.result.ok, true);

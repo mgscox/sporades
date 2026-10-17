@@ -107557,7 +107557,7 @@ function bindOuterResources(database, context2, hooks) {
     });
     return promise;
   };
-  const actorDigest = createHash10("sha256").update(resourceCanonicalJson({ auth: context2.auth, credential: context2.credential ?? null, privileged: false })).digest("hex");
+  const actorDigest = resourceActorDigest(context2, false);
   const guardCapability = (name2, value) => wrapCapability(value, (path22) => {
     if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
     if (!["where", "orderBy", "limit"].includes(path22.at(-1))) touched = true;
@@ -107785,14 +107785,17 @@ function wrapCapability(value, before, path22 = [], cache = /* @__PURE__ */ new 
   cache.set(value, proxy);
   return proxy;
 }
+function resourceActorDigest(context2, privileged) {
+  const { clientAddress: _requestAddress, ...auth } = context2.auth;
+  return createHash10("sha256").update(resourceCanonicalJson({ auth, credential: context2.credential ?? null, privileged })).digest("hex");
+}
 function bindJobResources(database, context2, claim, hooks) {
   let invocationActive = true;
   let used = false;
   let scopeRunning = false;
   let touched = false;
   const privileged = hooks.privileged === true;
-  const actorBinding = resourceCanonicalJson({ auth: context2.auth, credential: context2.credential ?? null, privileged });
-  const actorDigest = createHash10("sha256").update(actorBinding).digest("hex");
+  const actorDigest = resourceActorDigest(context2, privileged);
   for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context2[name2]) continue;
     context2[name2] = wrapCapability(context2[name2], (path22) => {

@@ -316,7 +316,7 @@ export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
  * anonymous rather than linked to email, Google, or another provider.
  */
 export type AuthContext = {
-  /** Trusted Hosted request address; absent outside a trusted request. Never forwarding-header input. */
+  /** Trusted Hosted request address; absent outside a trusted request. Never forwarding-header input. Excluded from durable resource receipt identity. */
   readonly clientAddress?: string;
   userId: string;
   /** Present only for non-human Service Users; absence preserves the legacy human/Anonymous shape. */

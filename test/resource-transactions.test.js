@@ -15,6 +15,7 @@ import { RESOURCE_ADAPTER_SUPPORT, resourceCanonicalJson, bindJobResources, bind
 import { POSTGRES_SKIP_REASON, postgresTestUrl, resetPostgresSchema } from './support/database-adapter-engines.js';
 import { createPostgresDatabaseAdapter } from '../dist/server-runtime-source.js';
 import { takeLiveQueryDirtyTables } from '../dist/live-query-invalidation.js';
+import { clientAddressBoundaryToken } from '../dist/client-address.js';
 
 const actor = { userId: 'actor', displayName: 'Actor', email: null, picture: null, isAuthenticated: false, isGuest: true, provider: 'anonymous' };
 const options = (input = { b: 2, a: 1 }) => ({ resource: { table: 'anchors', id: 'anchor' }, operationId: 'operation', input });
@@ -2804,6 +2805,123 @@ test('a Custom mutation joins its outer transaction for a first resource scope',
     assert.deepEqual(result, { ok: true, data: { committed: true }, error: null });
     assert.equal(f.database.adapter.prepare("SELECT count(*) n FROM writes WHERE value='mutation-committed'").get().n, 1);
     assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM sporades_resource_receipts').get().n, 1);
+  } finally { await f.close(); }
+});
+
+for (const kind of ['mutation', 'endpoint']) for (const legacy of [false, true]) {
+test(`${kind} resource replay and status preserve ${legacy ? 'legacy' : 'new'} receipts across request address changes`, async () => {
+  let callbacks = 0;
+  let allow = true;
+  const addresses = [];
+  const statusOptions = { resource: options().resource, operationId: 'operation' };
+  const record = ctx => {
+    addresses.push(ctx.auth.clientAddress);
+    if (kind === 'endpoint') assert.equal(ctx.request.clientAddress, ctx.auth.clientAddress);
+    return ctx.resources.run(options(), async scope => {
+      callbacks++;
+      await scope.db.writes.insert({ value: 'once' });
+      return { committed: true };
+    });
+  };
+  const inspect = ctx => ctx.resources.status(statusOptions);
+  const f = await fixture(() => null, {
+    schema: { anchors: table({ value: Text() }).acl({ read: () => allow, write: () => allow }), writes: table({ value: Text() }) },
+    mutations: { record: mutation(record), inspect: mutation(inspect) },
+    endpoints: { record: endpoint({ method: 'POST', path: '/record' }, record), inspect: endpoint({ method: 'POST', path: '/inspect' }, inspect) },
+  });
+  const token = 'resource-receipt-session';
+  const otherToken = 'other-resource-session';
+  for (const [user, sessionToken] of [[actor, token], [{ ...actor, userId: 'other' }, otherToken]]) {
+    await f.database.adapter.insertAuthUser({ id: user.userId, ...user, createdAt: f.clock.now().toISOString(), isAuthenticated: 0, isGuest: 1 });
+    await f.database.adapter.insertAuthSession({ token: sessionToken, userId: user.userId, provider: user.provider, createdAt: f.clock.now().toISOString(), expiresAt: '2099-01-01T00:00:00.000Z' });
+  }
+  f.database.securitySession = 'hosted';
+  f.database.runtimeProbeToken = 'a'.repeat(64);
+  const call = async (name, clientAddress, overrides = {}) => {
+    if (kind === 'mutation') {
+      const result = await runMutation(f.database, overrides.auth ?? actor, name, [], { clientAddress, ...overrides });
+      if (!result.ok) throw Object.assign(new Error(result.error.message), result.error);
+      return result.data;
+    }
+    return runEndpoint(f.database, f.database.endpoints.find(item => item.name === name), new URL(`http://capsule.test/${name}`), {
+      method: 'POST', headers: {
+        'x-sporades-session-token': overrides.auth ? otherToken : token,
+        ...(clientAddress ? { 'x-sporades-client-address': clientAddress, 'x-sporades-client-address-token': clientAddressBoundaryToken(f.database.runtimeProbeToken) } : {}),
+      }, async *[Symbol.asyncIterator]() {},
+    });
+  };
+  try {
+    if (legacy) {
+      assert.deepEqual(await call('inspect'), { state: 'absent' });
+      // Frozen pre-clientAddress receipt fixture: SHA-256 of canonical legacy
+      // {auth: actor, credential: {kind: 'session'}, privileged: false} and input.
+      await f.database.adapter.prepare('INSERT INTO sporades_resource_receipts VALUES (?,?,?,?,?,?,?,?)').run(
+        'anchors', 'anchor', 'operation', '43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777',
+        '51d5214da8193ba5c79a10e04b5adc61a5bdef1e95de69b326329851a623ce44', '{"committed":true}', '[]', f.clock.now().toISOString(),
+      );
+    }
+    for (const clientAddress of ['192.0.2.1', '2001:db8::2', undefined]) {
+      assert.deepEqual(await call('inspect', clientAddress), legacy || clientAddress !== '192.0.2.1' ? { state: 'committed', result: { committed: true }, intentIds: [] } : { state: 'absent' });
+      assert.deepEqual(await call('record', clientAddress), { committed: true });
+      assert.deepEqual(await call('inspect', clientAddress), { state: 'committed', result: { committed: true }, intentIds: [] });
+    }
+    assert.equal(callbacks, legacy ? 0 : 1);
+    assert.equal(f.database.adapter.prepare('SELECT count(*) n FROM writes').get().n, legacy ? 0 : 1);
+    assert.equal(f.database.adapter.prepare('SELECT actorDigest FROM sporades_resource_receipts').get().actorDigest, '51d5214da8193ba5c79a10e04b5adc61a5bdef1e95de69b326329851a623ce44');
+    assert.deepEqual(addresses, ['192.0.2.1', '2001:db8::2', undefined]);
+    for (const name of ['record', 'inspect']) {
+      await assert.rejects(call(name, '192.0.2.3', { auth: { ...actor, userId: 'other' } }), { code: 'RESOURCE_OPERATION_CONFLICT' });
+      if (kind === 'mutation') await assert.rejects(call(name, '192.0.2.3', { auth: { ...actor, displayName: 'Changed snapshot' } }), { code: 'RESOURCE_OPERATION_CONFLICT' });
+      allow = false;
+      await assert.rejects(call(name, '192.0.2.4'), { code: 'DENIED' });
+      allow = true;
+    }
+    assert.equal(callbacks, legacy ? 0 : 1);
+  } finally { await f.close(); }
+});
+}
+
+test('resource receipts retain access-key credential conflicts and current revocation checks', async () => {
+  let callbacks = 0;
+  const f = await fixture(() => null, {
+    accessKeys: { scopes: ['resources:write'] },
+    mutations: {
+      issue: mutation((ctx, name) => ctx.accessKeys.issue({ name, grants: ['resources:write'] })),
+      revoke: mutation((ctx, id) => ctx.accessKeys.revoke(id)),
+    },
+    endpoints: {
+      record: endpoint({ method: 'POST', path: '/record' }, requireAuth({ credentials: ['access-key'], scopes: ['resources:write'] }, ctx => ctx.resources.run(options(), () => { callbacks++; return true; }))),
+      inspect: endpoint({ method: 'POST', path: '/inspect' }, requireAuth({ credentials: ['access-key'], scopes: ['resources:write'] }, ctx => ctx.resources.status({ resource: options().resource, operationId: 'operation' }))),
+    },
+  });
+  const owner = { ...actor, isAuthenticated: true, isGuest: false, provider: 'email', email: 'owner@example.test' };
+  const sessionToken = 'resource-key-owner-session';
+  await f.database.adapter.insertAuthUser({ id: owner.userId, ...owner, createdAt: f.clock.now().toISOString(), isAuthenticated: 1, isGuest: 0 });
+  await f.database.adapter.insertAuthSession({ token: sessionToken, userId: owner.userId, provider: owner.provider, createdAt: f.clock.now().toISOString(), expiresAt: '2099-01-01T00:00:00.000Z' });
+  f.database.securitySession = 'hosted';
+  f.database.runtimeProbeToken = 'a'.repeat(64);
+  const call = (name, key, address) => runEndpoint(f.database, f.database.endpoints.find(item => item.name === name), new URL(`http://capsule.test/${name}`), {
+    method: 'POST', headers: {
+      authorization: `Bearer ${key.token}`,
+      'x-sporades-client-address': address,
+      'x-sporades-client-address-token': clientAddressBoundaryToken(f.database.runtimeProbeToken),
+    }, async *[Symbol.asyncIterator]() {},
+  });
+  try {
+    const keys = [];
+    for (const name of ['first', 'second']) {
+      const result = await runMutation(f.database, owner, 'issue', [name], { sessionToken });
+      assert.equal(result.ok, true, JSON.stringify(result.error));
+      keys.push(result.data);
+    }
+    assert.equal(await call('record', keys[0], '192.0.2.1'), true);
+    assert.equal(await call('record', keys[0], '192.0.2.2'), true);
+    assert.deepEqual(await call('inspect', keys[0], '192.0.2.2'), { state: 'committed', result: true, intentIds: [] });
+    for (const name of ['record', 'inspect']) await assert.rejects(call(name, keys[1], '192.0.2.2'), { code: 'RESOURCE_OPERATION_CONFLICT' });
+    const revoked = await runMutation(f.database, owner, 'revoke', [keys[0].accessKey.id], { sessionToken });
+    assert.equal(revoked.ok, true, JSON.stringify(revoked.error));
+    for (const name of ['record', 'inspect']) await assert.rejects(call(name, keys[0], '192.0.2.3'), { code: 'UNAUTHENTICATED' });
+    assert.equal(callbacks, 1);
   } finally { await f.close(); }
 });
 
