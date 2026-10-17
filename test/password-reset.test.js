@@ -19,7 +19,9 @@ import {
   sendEmailPasswordResetLink,
   verifyPasswordResetCode,
 } from "../dist/server-runtime-source.js";
-import { mutation, query } from "../dist/server.js";
+import { html, mutation, query } from "../dist/server.js";
+import { parseFragment } from "parse5";
+import { bundleServerCapsuleModule } from "../dist/bundle-pipeline.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 const emailAuthConfig = {
@@ -621,6 +623,66 @@ test("reset mail leaves the request path and is delivered by a durable Job", asy
   });
 });
 
+test("custom reset bodies deliver usable escaped links and expiry through the durable Job", async () => {
+  const sent = [];
+  await withMailDatabase(async (database, clock) => {
+    await registerEmailAccount(database, "custom@example.com", "original-password");
+    // Exercise ampersands and an apostrophe in a same-origin URL.
+    database.passwordResetConfig.path = "/it's/reset-password?next=a&label=b";
+    const session = await resolveAnonymousSession(database, null);
+    const source = await bundleServerCapsuleModule({
+      serverSource: 'import { escapeHtml, html } from "sporades/server"; export const escaped = escapeHtml("<&"); export const body = html`<pre>${"<unsafe>&"}</pre>`;',
+      serverSourcePath: path.resolve(".scratch/html-capsule.ts"),
+    });
+    const bundled = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+    assert.equal(bundled.escaped, "&lt;&amp;");
+    await database.mail.send({ to: "custom@example.com", subject: "Welcome", htmlBody: bundled.body });
+    assert.equal(sent[0].htmlBody, "<pre>&lt;unsafe&gt;&amp;</pre>");
+    await sendEmailPasswordResetLink(database, session, "custom@example.com", {
+      textBody: "Reset: {{link}}\nAgain: {{link}}\nExpires: {{expiresAt}}",
+      htmlBody: html`<a href='{{link}}'>Reset</a><time>{{expiresAt}}</time>`,
+    });
+    await drainJobQueue(clock);
+    assert.equal(sent.length, 2);
+    const message = sent[1];
+    const [first, second, expires] = message.textBody.split("\n");
+    const link = first.slice("Reset: ".length);
+    assert.equal(second, `Again: ${link}`);
+    assert.equal(expires, "Expires: 2031-05-01T11:00:00.001Z");
+    const nodes = parseFragment(message.htmlBody).childNodes;
+    assert.deepEqual(nodes[0].attrs, [{ name: "href", value: link }]);
+    assert.equal(nodes[1].childNodes[0].value, expires.slice("Expires: ".length));
+    assert.match(message.htmlBody, /&amp;/);
+    assert.match(message.htmlBody, /&#39;/);
+    const code = new URL(link).searchParams.get("code");
+    assert.equal((await confirmPasswordReset(database, session, code, "replacement-password")).ok, true);
+    assert.equal((await confirmPasswordReset(database, session, code, "replayed-password")).ok, false);
+    assert.equal(database.log.tail().some(event => event.event === "auth.password-reset.missing-link-placeholder"), false);
+  }, { async send(message) { sent.push(message); return { messageId: "<custom@example.com>", accepted: [], rejected: [] }; }, close() {} });
+});
+
+test("custom bodies without a link still send and warn without account or message data", async () => {
+  const sent = [];
+  await withMailDatabase(async (database, clock) => {
+    await registerEmailAccount(database, "warn@example.com", "original-password");
+    const session = await resolveAnonymousSession(database, null);
+    for (const email of ["warn@example.com", "unknown@example.com"]) {
+      await sendEmailPasswordResetLink(database, session, email, { textBody: "private copy", htmlBody: "<p>private copy</p>" });
+    }
+    await drainJobQueue(clock);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].textBody, "private copy");
+    assert.equal(sent[0].htmlBody, "<p>private copy</p>");
+    const warnings = database.log.tail().filter(event => event.event === "auth.password-reset.missing-link-placeholder");
+    assert.equal(warnings.length, 2, "known and unknown accounts emit the same warning");
+    for (const warning of warnings) {
+      assert.equal(warning.level, "warn");
+      assert.deepEqual(warning.data, { fields: ["textBody", "htmlBody"] });
+      assert.doesNotMatch(JSON.stringify(warning), /warn@example|unknown@example|private copy|code=/);
+    }
+  }, { async send(message) { sent.push(message); return { messageId: "<warn@example.com>", accepted: [], rejected: [] }; }, close() {} });
+});
+
 test("an SMTP delivery failure does not tell the caller whether the address is registered", async () => {
   await withMailDatabase(async (database) => {
     await registerEmailAccount(database, "registered@example.com", "original-password");
@@ -645,7 +707,9 @@ test("a password reset request Job retries SMTP delivery with one Reset code", a
     await registerEmailAccount(database, "retry-delivery@example.com", "original-password");
     const session = await resolveAnonymousSession(database, null);
 
-    await sendEmailPasswordResetLink(database, session, "retry-delivery@example.com");
+    await sendEmailPasswordResetLink(database, session, "retry-delivery@example.com", {
+      textBody: "{{link}} expires {{expiresAt}}", htmlBody: "<a href='{{link}}'>{{expiresAt}}</a>",
+    });
     await drainJobQueue(clock);
 
     let job = database.adapter.prepare(

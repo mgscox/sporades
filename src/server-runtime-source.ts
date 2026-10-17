@@ -1,6 +1,7 @@
 import { isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { CLIENT_ADDRESS_TOKEN_HEADER } from "./client-address.js";
+import { htmlString } from "./html.js";
 import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import type { RuntimeWebSocketOperation, RuntimeWebSocketTelemetry, WebSocketOperationOutcome } from "./runtime-telemetry.js";
@@ -6569,6 +6570,7 @@ export async function sendEmailPasswordResetLink(
   }
   recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
   const code = `${randomBytes(16).toString("base64url")}.${randomBytes(32).toString("base64url")}`;
+  const htmlBody = htmlString(options.htmlBody) ?? options.htmlBody;
   // Both paths stop after this one durable enqueue. The worker owns lookup, Reset-code creation,
   // and SMTP delivery, so no request-side database or Job sequence identifies a registered email.
   await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
@@ -6576,8 +6578,19 @@ export async function sendEmailPasswordResetLink(
     code,
     subject: typeof options.subject === "string" ? options.subject : "Reset your password",
     textBody: typeof options.textBody === "string" ? options.textBody : null,
-    htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : null,
+    htmlBody: typeof htmlBody === "string" ? htmlBody : null,
   }, `password-reset-request:${code.split(".")[0]}`, PASSWORD_RESET_REQUEST_RETRY);
+  const fields = ["textBody", "htmlBody"].filter(field => {
+    const value = field === "htmlBody" ? htmlBody : options.textBody;
+    return typeof value === "string" && !value.includes("{{link}}");
+  });
+  if (fields.length) {
+    // Warn on the request path for known and unknown addresses alike. No copy or account data.
+    try {
+      await database.log?.emit?.({ category: "platform", event: "auth.password-reset.missing-link-placeholder",
+        level: "warn", message: "Custom password-reset bodies should contain {{link}}.", data: { fields } });
+    } catch { /* A diagnostic failure must not undo an accepted request. */ }
+  }
   return { ok: true };
 }
 

@@ -48,6 +48,7 @@
 // `require`, and a deployed Capsule resolves Node's builtins exactly as the bundle's own top-level
 // imports do. That is the case ADR-0041 left untested, and the carrier's self-containment check was
 // narrowed to say so.
+import { htmlString } from "./html.js";
 function mailError(code, message, hint) {
     const error = new Error(message);
     error.code = code;
@@ -282,8 +283,9 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
     }
     if (input.textBody === undefined && input.htmlBody === undefined)
         invalid("Pass at least one of `textBody` or `htmlBody`.");
+    const htmlBody = htmlString(input.htmlBody) ?? input.htmlBody;
     for (const field of ["textBody", "htmlBody"]) {
-        const value = input[field];
+        const value = field === "htmlBody" ? htmlBody : input[field];
         if (value !== undefined && (typeof value !== "string" || value.length > 1024 * 1024 || /\0/.test(value))) {
             invalid(`Pass \`${field}\` as a string of at most 1 MiB without null characters.`);
         }
@@ -315,7 +317,7 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
         subject,
         ...(autoSubmitted !== undefined ? { autoSubmitted } : {}),
         ...(input.textBody !== undefined ? { textBody: input.textBody } : {}),
-        ...(input.htmlBody !== undefined ? { htmlBody: input.htmlBody } : {}),
+        ...(htmlBody !== undefined ? { htmlBody } : {}),
         ...(providerHeaders?.length ? { providerHeaders } : {}),
         ...(provider !== undefined ? { provider } : {}),
     };

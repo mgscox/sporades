@@ -489,6 +489,22 @@ test("docs publish the implemented User journey tracker contract", async () => {
   assert.match(serverTypes, /Journey tracker/i);
 });
 
+test("HTML mail helpers and reset placeholders are published together", async () => {
+  const guide = await readProjectFile("docs/guide/mail.md");
+  const declarations = await readProjectFile("src/types/server.d.ts");
+  const module = await readProjectFile("docs/api/modules/server.html");
+  for (const name of ["escapeHtml", "html"]) {
+    assert.match(guide, new RegExp(name));
+    assert.match(declarations, new RegExp(`export function ${name}\\(`));
+    assert.match(await readProjectFile(`docs/api/functions/server.${name}.html`), new RegExp(name));
+    assert(module.includes(`functions/server.${name}.html`));
+  }
+  for (const pattern of [/html\.raw/, /\{\{link\}\}/, /\{\{expiresAt\}\}/, /quoted attributes/, /warning/, /not a sanitizer/, /String\(fragment\)/]) {
+    assert.match(guide, pattern);
+  }
+  assert.match(guide, /::: v-pre[\s\S]*`\{\{link\}\}`[\s\S]*`\{\{expiresAt\}\}`/);
+});
+
 test("published docs and API describe production SMTP mail parity", async () => {
   const [prd, architecture, mailGuide, serverGuide, reference, declarations, apiMail, apiInput] = await Promise.all([
     readProjectFile("docs/PRD.md"),

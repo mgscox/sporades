@@ -1,5 +1,6 @@
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceNotificationIntentStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
+export { escapeHtml, html, type Html } from "./html.js";
 import type {
   AppContext as CanonicalAppContext,
   EndpointBodyBytes as CanonicalEndpointBodyBytes,
@@ -475,7 +476,8 @@ function field<Value = unknown>(kind: FieldKind): FieldBuilder<Value> {
 }
 
 export function serverRuntimeModuleSource() {
-  return `const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+  return `export { escapeHtml, html } from "sporades:html";
+const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
 function authRequirementsError(hint) {

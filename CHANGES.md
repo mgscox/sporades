@@ -7,7 +7,7 @@ Changes since v0.9.31.
 ### 🚀 Features
 
 - Add `ctx.app.publicOrigin`, canonical Hosted alias selection, and origin diagnostics (#231).
-
+- Export HTML-safe mail helpers and support password-reset body placeholders (#230).
 - Add pinned monitoring release acceptance verifier (#229) (872f33866).
 - Add admission lifecycle proof harness and human verification handoff (#221) (9e4608535).
 - Add resource and API-performance alerts (#222) (0dc656b53).

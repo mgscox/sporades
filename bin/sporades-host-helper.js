@@ -28539,6 +28539,40 @@ import { AsyncLocalStorage } from "node:async_hooks";
 var runtimeRequestScope = new AsyncLocalStorage();
 var runtimeJobScope = new AsyncLocalStorage();
 
+// src/html.ts
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[character]);
+}
+var fragmentKey = Symbol.for("sporades.html.fragment");
+function htmlString(value) {
+  if (value === null || typeof value !== "object") return void 0;
+  const descriptor = Object.getOwnPropertyDescriptor(value, fragmentKey);
+  return descriptor && "value" in descriptor && typeof descriptor.value === "string" ? descriptor.value : void 0;
+}
+function fragment(value) {
+  const result = Object.freeze(Object.defineProperty({ toString: () => value }, fragmentKey, { value }));
+  return result;
+}
+function interpolation(value) {
+  if (Array.isArray(value)) return value.map(interpolation).join("");
+  return htmlString(value) ?? escapeHtml(value);
+}
+function html(strings2, ...values) {
+  return fragment(strings2.reduce((result, part, index) => result + part + (index < values.length ? interpolation(values[index]) : ""), ""));
+}
+((html2) => {
+  function raw(trusted2) {
+    return fragment(String(trusted2));
+  }
+  html2.raw = raw;
+})(html || (html = {}));
+
 // src/resource-runtime.ts
 var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
   sqlite: "supported",

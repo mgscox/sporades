@@ -69,6 +69,14 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
 import * as publicServerApi from "sporades/server";
+const safeHtml: publicServerApi.Html = publicServerApi.html\`<p title="\${'"<&'}">\${[publicServerApi.html\`<b>nested</b>\`, null, undefined, publicServerApi.html.raw('<br>')]}</p>\`;
+const safeMail: publicServerApi.MailSendInput = { to: 'recipient@example.com', subject: 'Welcome', htmlBody: safeHtml };
+const resetCopy: publicServerApi.PasswordResetMailOptions = { textBody: 'Reset: {{link}} before {{expiresAt}}', htmlBody: safeHtml };
+const escapedText: string = publicServerApi.escapeHtml({ name: 'unknown' });
+const renderedHtml: string = globalThis.String(safeHtml);
+// @ts-expect-error arbitrary objects are not trusted fragments.
+const forgedHtml: publicServerApi.Html = { toString: () => '<b>unsafe</b>' };
+void safeMail; void resetCopy; void escapedText; void renderedHtml; void forgedHtml;
 const admissionConfig: publicServerApi.AdmissionPolicyConfig = { path: "config/admission.json" };
 declare const publicAppContext: publicServerApi.AppContext;
 const appPublicOrigin: string = publicAppContext.publicOrigin;
