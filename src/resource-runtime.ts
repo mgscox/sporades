@@ -212,7 +212,7 @@ export function bindOuterResources(database: RecordValue, context: RecordValue, 
     void promise.catch(() => {});
     return promise;
   };
-  const actorDigest = createHash("sha256").update(resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged: false })).digest("hex");
+  const actorDigest = resourceActorDigest(context, false);
   const guardCapability = (name: string, value: any) => wrapCapability(value, (path) => {
       if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
       if (!["where", "orderBy", "limit"].includes(path.at(-1)!)) touched = true;
@@ -444,14 +444,20 @@ function wrapCapability(value: any, before: (path: string[]) => void, path: stri
   return proxy;
 }
 
+function resourceActorDigest(context: RecordValue, privileged: boolean) {
+  // Request metadata is not durable actor identity. Preserve the original
+  // Auth/Credential envelope so receipts created before clientAddress replay.
+  const { clientAddress: _requestAddress, ...auth } = context.auth;
+  return createHash("sha256").update(resourceCanonicalJson({ auth, credential: context.credential ?? null, privileged })).digest("hex");
+}
+
 export function bindJobResources(database: RecordValue, context: RecordValue, claim: RecordValue, hooks: RecordValue) {
   let invocationActive = true;
   let used = false;
   let scopeRunning = false;
   let touched = false;
   const privileged = hooks.privileged === true;
-  const actorBinding = resourceCanonicalJson({ auth: context.auth, credential: context.credential ?? null, privileged });
-  const actorDigest = createHash("sha256").update(actorBinding).digest("hex");
+  const actorDigest = resourceActorDigest(context, privileged);
   for (const name of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context[name]) continue;
     context[name] = wrapCapability(context[name], (path) => {

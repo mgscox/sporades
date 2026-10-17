@@ -20,6 +20,49 @@ for trusted identity, opaque `429`/`Retry-After`, bounded eviction diagnostics,
 compatible reloads, canonicalization, hot generations and the
 measured no-policy latency budget. No declaration preserves existing routing.
 
+## Capsule rate limits
+
+Every Capsule handler context (`ctx` in queries, mutations, endpoints, and
+Jobs) exposes synchronous `ctx.rateLimit(key, { limit, windowMs })`. Calls with
+the same key and parameter tuple share a counter across those handler types in
+one runtime:
+
+```ts
+const admission = ctx.rateLimit("password-reset", {
+  limit: 5,
+  windowMs: 15 * 60_000,
+});
+if (!admission.ok) {
+  return {
+    status: 429,
+    body: { error: "RATE_LIMITED", retryAfterMs: admission.retryAfterMs },
+  };
+}
+```
+
+The result is `{ ok: boolean, retryAfterMs: number }`. Allowed calls return
+`retryAfterMs: 0`; denied calls return the ceiling of the remaining window in
+milliseconds. A fixed window begins at the first call for a bucket. Denied
+attempts count up to the limit and then saturate. Keys must be non-empty and
+at most 1024 UTF-8 bytes. `limit` and `windowMs` must be positive safe integers,
+`limit` must be below `Number.MAX_SAFE_INTEGER`, and `windowMs` cannot exceed
+24 hours.
+
+The in-memory table is shared by handler contexts in a runtime and holds at
+most 10,000 buckets with deterministic least-recently-used eviction. Its
+counters are separate from HTTP request admission and authentication's
+existing email and Session counters. Transaction rollback does not refund a
+rate-limit attempt. Restart resets the table; limits are per process and can
+allow bursts at window boundaries. High key churn can evict live buckets.
+
+Custom endpoint contexts may include readonly `ctx.request.clientAddress`.
+This address is present only when the request crossed the trusted Hosted Caddy
+boundary. Queries and mutations expose the same connection address as readonly
+`ctx.auth.clientAddress`. Both values are `undefined` in Dev and Container
+sessions. Public `X-Forwarded-For`, `X-Real-IP`, and `CF-Connecting-IP` headers
+do not establish trust; no additional trusted-proxy configuration is introduced.
+Jobs do not inherit an endpoint's request address.
+
 ## Building the Server Side
 
 ### Define Tables

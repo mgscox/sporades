@@ -1,6 +1,7 @@
 import { isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
-import { CLIENT_ADDRESS_TOKEN_HEADER } from "./client-address.js";
+import { createCapsuleRateLimiter, resolveRegistrationThrottle } from "./capsule-rate-limit.js";
+import { CLIENT_ADDRESS_TOKEN_HEADER, trustedClientAddress } from "./client-address.js";
 import { htmlString } from "./html.js";
 import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
 import { withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
@@ -577,6 +578,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         validateEndpointResponseDeclarations(capsuleDefinition);
     }
     validateLogConfig(config);
+    const registrationThrottle = resolveRegistrationThrottle(config.auth);
     const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
     const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
     if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -821,6 +823,9 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
         mail,
         authConfig: authStatus(config, serverEnv),
+        capsuleRateLimiter: createCapsuleRateLimiter(),
+        registrationRateLimiter: createCapsuleRateLimiter(),
+        registrationThrottle,
         reauthenticationPolicy: capsuleDefinition?.auth?.reauthentication?.purposes ?? null,
         authorizeReauthentication: typeof capsuleDefinition?.auth?.reauthentication?.authorize === "function" ? async function (transaction, auth, purpose) {
             const reauthDatabase = createTransactionDatabase(database, transaction);
@@ -2558,6 +2563,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
     // aliases or closures.
     const privilegedContext = {
         app: database.app,
+        rateLimit: database.capsuleRateLimiter.consume,
         env: context.env,
         payments: context.payments,
         log: context.log,
@@ -3543,7 +3549,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request, reque
     const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
     // Admission intentionally precedes multipart body consumption. Ordinary endpoint bodies retain
     // their historic bounded read path below.
-    let endpointRequest = endpointRequestHead(requestUrl, request, requestPath);
+    let endpointRequest = endpointRequestHead(database, requestUrl, request, requestPath);
     const requirements = readAuthRequirements(handler);
     const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
     if (requirements)
@@ -3938,6 +3944,7 @@ function bindOrdinaryJobResourceContext(database, context, claim, privileged = f
 }
 function createAtomicStripeConsequenceContext(database, parent) {
     const context = {
+        rateLimit: database.capsuleRateLimiter.consume,
         auth: parent.auth,
         app: database.app,
         env: database.serverEnv,
@@ -4050,11 +4057,11 @@ export async function runAtomicStripeConsequence(database, parentContext, event,
     throw new Error("Unreachable atomic Stripe consequence fence state.");
 }
 async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true, requestPath = requestUrl.pathname) {
-    const head = endpointRequestHead(requestUrl, request, requestPath);
+    const head = endpointRequestHead(database, requestUrl, request, requestPath);
     const payload = await readEndpointPayload(request, head.headers, database, parseJsonBody);
     return { ...head, ...payload };
 }
-function endpointRequestHead(requestUrl, request, requestPath = requestUrl.pathname) {
+function endpointRequestHead(database, requestUrl, request, requestPath = requestUrl.pathname) {
     const headers = Object.fromEntries(Object.entries(request.headers).filter(([name]) => name.toLowerCase() !== CLIENT_ADDRESS_TOKEN_HEADER).map(([name, value]) => [
         name.toLowerCase(),
         Array.isArray(value) ? value.join(", ") : value,
@@ -4063,12 +4070,13 @@ function endpointRequestHead(requestUrl, request, requestPath = requestUrl.pathn
     return {
         method: request.method,
         path: requestPath,
+        clientAddress: trustedClientAddress(database, request) ?? undefined,
         headers,
         query,
     };
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
-    const auth = protectContextIdentity(contextAuthIdentity(session.auth));
+    const auth = protectContextIdentity({ ...contextAuthIdentity(session.auth), ...(endpointRequest.clientAddress ? { clientAddress: endpointRequest.clientAddress } : {}) });
     const credential = options.ordinaryCredential === false
         ? null
         : protectContextIdentity(options.credential ?? { kind: "session" });
@@ -4076,6 +4084,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
         auth,
         ...(credential ? { credential } : {}),
         app: database.app,
+        rateLimit: database.capsuleRateLimiter.consume,
         env: database.serverEnv,
         payments: database.paymentsConfig,
         log: createEndpointLogger(database, {
@@ -4093,6 +4102,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
         request: {
             method: endpointRequest.method,
             path: endpointRequest.path,
+            clientAddress: endpointRequest.clientAddress,
             headers: endpointRequest.headers,
             query: endpointRequest.query,
             body: endpointRequest.body,
@@ -4162,7 +4172,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     return context;
 }
 function contextAuthIdentity(value) {
-    const { userKind, ...legacyIdentity } = value ?? {};
+    const { userKind, clientAddress: _requestAddress, ...legacyIdentity } = value ?? {};
     return userKind === "service" ? { ...legacyIdentity, userKind } : legacyIdentity;
 }
 function protectContextIdentity(value) {
@@ -5014,6 +5024,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 subscriptions: new Map(),
                 session: createPendingWebSocketSession(),
                 origin,
+                clientAddress: trustedClientAddress(database, request) ?? undefined,
                 connectedAt: now,
                 lastSeenAt: now,
                 journey: null,
@@ -5295,7 +5306,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             previousAuth.provider !== resolvedSession.auth.provider ||
             Boolean(previousAuth.isAuthenticated) !== Boolean(resolvedSession.auth.isAuthenticated)))
             retireJourney(client);
-        client.session = resolvedSession;
+        client.session = { ...resolvedSession, clientAddress: client.clientAddress };
         if (message.type === "auth.get") {
             await sendAuthResult(client, message.id ?? null);
             return;
@@ -6022,6 +6033,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 try {
                     const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
                         sessionToken: client.session.token,
+                        clientAddress: client.clientAddress,
                     });
                     sendJson(client, formatMutationResult(message, mutationName, result));
                     if (result.ok && mutationResultsWithWrites.has(result)) {
@@ -6120,6 +6132,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 const readTables = new Set();
                 const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
                     sessionToken: client.session.token,
+                    clientAddress: client.clientAddress,
                 }));
                 // A failed run may not have read what a successful one would, so it re-runs on every refresh.
                 if (subscription.generation === generation)
@@ -6482,7 +6495,7 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
     try {
         result = await (async () => {
             try {
-                context = createMutationContext(database, auth, { sessionToken: options.sessionToken });
+                context = createMutationContext(database, auth, { sessionToken: options.sessionToken, clientAddress: options.clientAddress });
                 if (queryHandler)
                     admitCredentialHandler(queryHandler, context, "query");
                 context = await applyContextMiddleware(database, context, "query");
@@ -6689,6 +6702,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
                 try {
                     context = createMutationContext(transactionDatabase, auth, {
                         sessionToken: options.sessionToken,
+                        clientAddress: options.clientAddress,
                         serviceUserMutationAuthority,
                         mutationInvocation,
                     });
@@ -6956,7 +6970,7 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource, event, contex
     }
 }
 function createMutationContext(database, auth, options = {}) {
-    auth = protectContextIdentity(contextAuthIdentity(auth));
+    auth = protectContextIdentity({ ...contextAuthIdentity(auth), ...(options.clientAddress ? { clientAddress: options.clientAddress } : {}) });
     const credential = options.ordinaryCredential === false
         ? null
         : protectContextIdentity(options.credential ?? { kind: "session" });
@@ -6966,6 +6980,7 @@ function createMutationContext(database, auth, options = {}) {
         app: database.app,
         env: database.serverEnv,
         payments: database.paymentsConfig,
+        rateLimit: database.capsuleRateLimiter.consume,
         log: createEndpointLogger(database, credential ? {
             attribution: {
                 actor: { userId: auth.userId },
