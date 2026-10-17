@@ -12,11 +12,11 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cli = path.join(repo, 'bin/sporades.js');
 const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(repo, '.sporades', 'test-public-assets-config') };
 const assets = [
-  ['binary.html', Buffer.from([0xff, 0xfe, 0x3c, 0x62, 0x3e]), 'text/html; charset=utf-8'],
   ['favicon.ico', Buffer.from([0, 0, 1, 0, 255, 128]), 'image/x-icon'],
   ['sitemap.xml', Buffer.from('<?xml version="1.0"?><urlset/>\n'), 'application/xml; charset=utf-8'],
   ['robots.txt', Buffer.from('User-agent: *\nSitemap: /sitemap.xml\n'), 'text/plain; charset=utf-8'],
   ['nested/stable-name.txt', Buffer.from('nested public bytes\n'), 'text/plain; charset=utf-8'],
+  ['binary.html', Buffer.from([0xff, 0xfe, 0x3c, 0x62, 0x3e]), 'text/html; charset=utf-8'],
 ];
 
 async function fixture(toolchain, fn) {
