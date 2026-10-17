@@ -80528,7 +80528,7 @@ function createBoundedFixedWindow(options = {}) {
       } catch {
       }
     }
-    return { count: bucket.count, remainingSeconds: Math.ceil((windowMs - (elapsed - bucket.startedAt)) / 1e3) };
+    return { count: bucket.count, remainingMs: Math.ceil(windowMs - (elapsed - bucket.startedAt)), remainingSeconds: Math.ceil((windowMs - (elapsed - bucket.startedAt)) / 1e3) };
   }
   return Object.freeze({
     retryAfter,
@@ -107595,7 +107595,7 @@ function bindOuterResources(database, context2, hooks) {
     });
     return promise;
   };
-  const actorDigest = createHash10("sha256").update(resourceCanonicalJson({ auth: context2.auth, credential: context2.credential ?? null, privileged: false })).digest("hex");
+  const actorDigest = resourceActorDigest(context2, false);
   const guardCapability = (name2, value) => wrapCapability(value, (path22) => {
     if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
     if (!["where", "orderBy", "limit"].includes(path22.at(-1))) touched = true;
@@ -107823,14 +107823,17 @@ function wrapCapability(value, before, path22 = [], cache = /* @__PURE__ */ new 
   cache.set(value, proxy);
   return proxy;
 }
+function resourceActorDigest(context2, privileged) {
+  const { clientAddress: _requestAddress, ...auth } = context2.auth;
+  return createHash10("sha256").update(resourceCanonicalJson({ auth, credential: context2.credential ?? null, privileged })).digest("hex");
+}
 function bindJobResources(database, context2, claim, hooks) {
   let invocationActive = true;
   let used = false;
   let scopeRunning = false;
   let touched = false;
   const privileged = hooks.privileged === true;
-  const actorBinding = resourceCanonicalJson({ auth: context2.auth, credential: context2.credential ?? null, privileged });
-  const actorDigest = createHash10("sha256").update(actorBinding).digest("hex");
+  const actorDigest = resourceActorDigest(context2, privileged);
   for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context2[name2]) continue;
     context2[name2] = wrapCapability(context2[name2], (path22) => {
@@ -127746,22 +127749,24 @@ async function setEmailPassword(database, _session, email, newPassword) {
   return { ok: true };
 }
 function createEmailSignInThrottleState(database, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
-  const existing = database[scope];
+  const owner = database.__rootDatabase ?? database;
+  const existing = owner[scope];
   if (existing instanceof Map) {
     return existing;
   }
   const next = /* @__PURE__ */ new Map();
-  database[scope] = next;
+  owner[scope] = next;
   return next;
 }
-function emailSignInThrottleKeys(email, session) {
-  return [`email\0${email}`, `caller\0${callerContextKey(session)}`];
+function emailSignInThrottleKeys(database, email, session) {
+  const address = database.securitySession === "hosted" ? canonicalClientAddress(session?.clientAddress ?? session?.auth?.clientAddress) : null;
+  return [`email\0${email}`, `caller\0${callerContextKey(session)}`, ...address ? [`caller\0address:${address}`] : []];
 }
 function currentEmailSignInThrottleState(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
   const attempts = createEmailSignInThrottleState(database, scope);
   const now2 = Date.now();
   pruneEmailSignInThrottleState(attempts, now2);
-  const keys = emailSignInThrottleKeys(email, session);
+  const keys = emailSignInThrottleKeys(database, email, session);
   const entries = keys.map((key) => {
     const current2 = attempts.get(key);
     return {
@@ -127790,7 +127795,8 @@ function recordFailedEmailSignInAttempt(database, email, session, scope = EMAIL_
 }
 function resetEmailSignInAttempts(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
   const attempts = createEmailSignInThrottleState(database, scope);
-  for (const key of emailSignInThrottleKeys(email, session)) {
+  for (const key of emailSignInThrottleKeys(database, email, session)) {
+    if (key.startsWith("caller\0address:")) continue;
     attempts.delete(key);
   }
 }
@@ -128106,6 +128112,15 @@ async function signUpWithEmail(database, session, provider, credentials, registr
   }
   if (!database.authConfig.providers.email.enabled) {
     return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (database.registrationThrottle) {
+    const { email, address } = database.registrationThrottle;
+    const normalizedEmail = String(credentials?.email ?? "").trim().toLowerCase();
+    const identity = nodeCryptoModule3.createHash("sha256").update(normalizedEmail).digest("hex");
+    const emailResult = database.registrationRateLimiter.consume(`email:${identity}`, email);
+    const clientAddress = database.securitySession === "hosted" ? canonicalClientAddress(session?.clientAddress ?? session?.auth?.clientAddress) : null;
+    const addressResult = clientAddress ? database.registrationRateLimiter.consume(`address:${clientAddress}`, address) : { ok: true, retryAfterMs: 0 };
+    if (!emailResult.ok || !addressResult.ok) return { ok: false, error: { code: "REGISTRATION_THROTTLED", message: "Registration is temporarily unavailable. Try again later.", retryAfterMs: Math.max(emailResult.retryAfterMs, addressResult.retryAfterMs) } };
   }
   const normalized = normalizeEmailCredentials(credentials);
   if (!normalized.ok) {
@@ -129018,6 +129033,39 @@ function restartPolicyStatus(mode, overrides2 = {}) {
     ...policy.verificationFallbackOnly ? { verificationFallbackOnly: true } : {},
     ...overrides2
   };
+}
+
+// src/capsule-rate-limit.ts
+function validRateLimitOptions(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value) && Number.isSafeInteger(value.limit) && value.limit > 0 && value.limit < Number.MAX_SAFE_INTEGER && Number.isSafeInteger(value.windowMs) && value.windowMs > 0 && value.windowMs <= 864e5;
+}
+function createCapsuleRateLimiter(options = {}) {
+  const windows = createBoundedFixedWindow({ ...options, idleMs: 864e5, expireWindows: true });
+  return Object.freeze({
+    consume(key, parameters) {
+      if (typeof key !== "string" || !key.length || Buffer.byteLength(key, "utf8") > 1024 || !validRateLimitOptions(parameters)) {
+        throw Object.assign(new Error("Invalid rate limit key or options."), { code: "INVALID_RATE_LIMIT" });
+      }
+      const bucket = windows.record(JSON.stringify([key, parameters.limit, parameters.windowMs]), parameters.windowMs, parameters.limit + 1);
+      const ok = bucket.count <= parameters.limit;
+      return Object.freeze({ ok, retryAfterMs: ok ? 0 : bucket.remainingMs });
+    },
+    stats: windows.stats
+  });
+}
+function resolveRegistrationThrottle(auth) {
+  const value = auth?.email?.registration?.throttle;
+  if (value === void 0 || value === false) return null;
+  const invalid4 = () => {
+    throw Object.assign(new Error("Invalid auth.email.registration.throttle configuration."), { code: "INVALID_AUTH_CONFIG" });
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["email", "address"].includes(key))) return invalid4();
+  const email = value.email === void 0 ? { limit: 5, windowMs: 9e5 } : value.email;
+  const address = value.address === void 0 ? { limit: 20, windowMs: 9e5 } : value.address;
+  for (const parameters of [email, address]) {
+    if (!validRateLimitOptions(parameters) || Object.keys(parameters).some((key) => !["limit", "windowMs"].includes(key))) return invalid4();
+  }
+  return Object.freeze({ email: Object.freeze({ ...email }), address: Object.freeze({ ...address }) });
 }
 
 // src/server-runtime-source.ts
@@ -135923,6 +135971,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
   validateLogConfig(config);
+  const registrationThrottle = resolveRegistrationThrottle(config.auth);
   const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
@@ -136164,6 +136213,9 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
     mail,
     authConfig: authStatus2(config, serverEnv),
+    capsuleRateLimiter: createCapsuleRateLimiter(),
+    registrationRateLimiter: createCapsuleRateLimiter(),
+    registrationThrottle,
     reauthenticationPolicy: capsuleDefinition?.auth?.reauthentication?.purposes ?? null,
     authorizeReauthentication: typeof capsuleDefinition?.auth?.reauthentication?.authorize === "function" ? async function(transaction, auth, purpose) {
       const reauthDatabase = createTransactionDatabase(database, transaction);
@@ -137642,6 +137694,7 @@ function createContextPrivilegedApi(database, contextGetter) {
 }
 function createPrivilegedHandlerContext(database, context2, signal) {
   const privilegedContext = {
+    rateLimit: database.capsuleRateLimiter.consume,
     env: context2.env,
     payments: context2.payments,
     log: context2.log,
@@ -138551,7 +138604,7 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
 async function runEndpoint(database, endpoint, requestUrl, request, requestPath = requestUrl.pathname) {
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
-  let endpointRequest = endpointRequestHead(requestUrl, request, requestPath);
+  let endpointRequest = endpointRequestHead(database, requestUrl, request, requestPath);
   const requirements = readAuthRequirements(handler);
   const hasAuthorization = requirements ? endpointHasAuthorization(request) : false;
   if (requirements) delete endpointRequest.headers.authorization;
@@ -138911,6 +138964,7 @@ function bindOrdinaryJobResourceContext(database, context2, claim, privileged = 
 }
 function createAtomicStripeConsequenceContext(database, parent) {
   const context2 = {
+    rateLimit: database.capsuleRateLimiter.consume,
     auth: parent.auth,
     env: database.serverEnv,
     signal: parent.signal,
@@ -139015,11 +139069,11 @@ async function runAtomicStripeConsequence(database, parentContext, event, subscr
   throw new Error("Unreachable atomic Stripe consequence fence state.");
 }
 async function readEndpointRequest(database, requestUrl, request, parseJsonBody = true, requestPath = requestUrl.pathname) {
-  const head = endpointRequestHead(requestUrl, request, requestPath);
+  const head = endpointRequestHead(database, requestUrl, request, requestPath);
   const payload = await readEndpointPayload(request, head.headers, database, parseJsonBody);
   return { ...head, ...payload };
 }
-function endpointRequestHead(requestUrl, request, requestPath = requestUrl.pathname) {
+function endpointRequestHead(database, requestUrl, request, requestPath = requestUrl.pathname) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).filter(([name2]) => name2.toLowerCase() !== CLIENT_ADDRESS_TOKEN_HEADER).map(([name2, value]) => [
       name2.toLowerCase(),
@@ -139030,16 +139084,18 @@ function endpointRequestHead(requestUrl, request, requestPath = requestUrl.pathn
   return {
     method: request.method,
     path: requestPath,
+    clientAddress: trustedClientAddress(database, request) ?? void 0,
     headers,
     query
   };
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
-  const auth = protectContextIdentity(contextAuthIdentity(session.auth));
+  const auth = protectContextIdentity({ ...contextAuthIdentity(session.auth), ...endpointRequest.clientAddress ? { clientAddress: endpointRequest.clientAddress } : {} });
   const credential = options.ordinaryCredential === false ? null : protectContextIdentity(options.credential ?? { kind: "session" });
   const context2 = {
     auth,
     ...credential ? { credential } : {},
+    rateLimit: database.capsuleRateLimiter.consume,
     env: database.serverEnv,
     payments: database.paymentsConfig,
     log: createEndpointLogger(database, {
@@ -139057,6 +139113,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     request: {
       method: endpointRequest.method,
       path: endpointRequest.path,
+      clientAddress: endpointRequest.clientAddress,
       headers: endpointRequest.headers,
       query: endpointRequest.query,
       body: endpointRequest.body,
@@ -139131,7 +139188,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
   return context2;
 }
 function contextAuthIdentity(value) {
-  const { userKind, ...legacyIdentity } = value ?? {};
+  const { userKind, clientAddress: _requestAddress, ...legacyIdentity } = value ?? {};
   return userKind === "service" ? { ...legacyIdentity, userKind } : legacyIdentity;
 }
 function protectContextIdentity(value) {
@@ -139960,6 +140017,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         subscriptions: /* @__PURE__ */ new Map(),
         session: createPendingWebSocketSession(),
         origin,
+        clientAddress: trustedClientAddress(database, request) ?? void 0,
         connectedAt: now2,
         lastSeenAt: now2,
         journey: null,
@@ -140219,7 +140277,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     const previousAuth = client.session.auth;
     const resolvedSession = await resolveAnonymousSession(database, messageSessionToken ?? null);
     if (previousAuth.userId && (previousAuth.userId !== resolvedSession.auth.userId || previousAuth.provider !== resolvedSession.auth.provider || Boolean(previousAuth.isAuthenticated) !== Boolean(resolvedSession.auth.isAuthenticated))) retireJourney(client);
-    client.session = resolvedSession;
+    client.session = { ...resolvedSession, clientAddress: client.clientAddress };
     if (message.type === "auth.get") {
       await sendAuthResult(client, message.id ?? null);
       return;
@@ -140883,7 +140941,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       return operation.run(async () => {
         try {
           const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
-            sessionToken: client.session.token
+            sessionToken: client.session.token,
+            clientAddress: client.clientAddress
           });
           sendJson(client, formatMutationResult(message, mutationName, result));
           if (result.ok && mutationResultsWithWrites.has(result)) {
@@ -140980,7 +141039,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         const database = getDatabase();
         const readTables = /* @__PURE__ */ new Set();
         const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
-          sessionToken: client.session.token
+          sessionToken: client.session.token,
+          clientAddress: client.clientAddress
         }));
         if (subscription.generation === generation2) subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
         const data2 = subscription.style === "direct" ? result.data ?? result.rows : { rows: result.data ?? result.rows };
@@ -141315,7 +141375,7 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
   try {
     result = await (async () => {
       try {
-        context2 = createMutationContext(database, auth, { sessionToken: options.sessionToken });
+        context2 = createMutationContext(database, auth, { sessionToken: options.sessionToken, clientAddress: options.clientAddress });
         if (queryHandler) admitCredentialHandler(queryHandler, context2, "query");
         context2 = await applyContextMiddleware(database, context2, "query");
       } catch (error) {
@@ -141503,6 +141563,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
         try {
           context2 = createMutationContext(transactionDatabase, auth, {
             sessionToken: options.sessionToken,
+            clientAddress: options.clientAddress,
             serviceUserMutationAuthority,
             mutationInvocation
           });
@@ -141755,13 +141816,14 @@ async function runMutationHookAndDrainPendingAclWrites(hookSource, event, contex
   }
 }
 function createMutationContext(database, auth, options = {}) {
-  auth = protectContextIdentity(contextAuthIdentity(auth));
+  auth = protectContextIdentity({ ...contextAuthIdentity(auth), ...options.clientAddress ? { clientAddress: options.clientAddress } : {} });
   const credential = options.ordinaryCredential === false ? null : protectContextIdentity(options.credential ?? { kind: "session" });
   const context2 = {
     auth,
     ...credential ? { credential } : {},
     env: database.serverEnv,
     payments: database.paymentsConfig,
+    rateLimit: database.capsuleRateLimiter.consume,
     log: createEndpointLogger(database, credential ? {
       attribution: {
         actor: { userId: auth.userId },
@@ -148016,6 +148078,7 @@ async function readProjectConfig(projectDir) {
   if (config.payments !== void 0) config.payments = validatePaymentsConfig(config.payments);
   if (config.mail !== void 0) config.mail = validateMailConfig(config.mail);
   validatePasswordResetConfig(config.auth);
+  resolveRegistrationThrottle(config.auth);
   validateTeamsConfig(config.teams);
   validateCapsuleServicesConfig(config.services);
   validateTelemetryProjectConfig(config.telemetry);

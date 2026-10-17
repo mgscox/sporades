@@ -9,6 +9,7 @@ export declare function createBoundedFixedWindow(options?: {
     retryAfter: (key: string, limit: number, windowMs: number) => number;
     record: (key: string, windowMs: number, ceiling?: number) => {
         count: number;
+        remainingMs: number;
         remainingSeconds: number;
     };
     delete: (key: string) => boolean;

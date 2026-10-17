@@ -330,6 +330,8 @@ export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
  * anonymous rather than linked to email, Google, or another provider.
  */
 export type AuthContext = {
+  /** Trusted Hosted request address; absent outside a trusted request. Never forwarding-header input. Excluded from durable resource receipt identity. */
+  readonly clientAddress?: string;
   userId: string;
   /** Present only for non-human Service Users; absence preserves the legacy human/Anonymous shape. */
   userKind?: "service";
@@ -938,6 +940,8 @@ export type CapsuleContext<
 > = {
   db: DatabaseFromSchema<Schema>;
   resources: ResourcesApi<Schema>;
+  /** Shared across handlers; 10,000 LRU buckets, process-local, reset on restart; independent of transactions. */
+  rateLimit(key: string, options: RateLimitOptions): RateLimitResult;
   auth: AuthContext;
   credential: Credential;
   env: Record<string, string>;
@@ -968,6 +972,12 @@ export type CapsuleContext<
   lifecycle: LifecycleContinuationApi;
 };
 
+/** Per-process fixed-window rate limit. Allowed calls return retryAfterMs: 0. */
+export type RateLimitOptions = Readonly<{ limit: number; windowMs: number }>;
+export type RateLimitResult = Readonly<{ ok: boolean; retryAfterMs: number }>;
+/** Optional sporades.json auth.email.registration.throttle configuration; omission/false disables it. */
+export type RegistrationThrottleConfig = false | { email?: RateLimitOptions; address?: RateLimitOptions };
+
 /** Immutable exact bytes from one bounded Custom endpoint request-body read. */
 export type EndpointBodyBytes = {
   readonly byteLength: number;
@@ -979,6 +989,8 @@ export type EndpointBodyBytes = {
 
 /** Request details available only inside Custom endpoint handlers. */
 export type EndpointRequest = {
+  /** Canonical address authenticated by the Hosted proxy, otherwise undefined. */
+  readonly clientAddress?: string;
   method: string;
   path: string;
   query: Record<string, string>;
@@ -1053,7 +1065,7 @@ export type StripeEventHandler<Schema extends SchemaDefinition = SchemaDefinitio
 /** Narrow transaction-owned context for one atomic Stripe consequence. */
 export type AtomicStripeConsequenceContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<
   PrivilegedContext<Schema>,
-  "auth" | "signal" | "db" | "env" | "log"
+  "auth" | "signal" | "db" | "env" | "log" | "rateLimit"
 > & {
   /** Jobs persist with the consequence and are dispatched only after commit. */
   jobs: Pick<JobApi, "enqueue">;

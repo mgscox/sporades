@@ -146,6 +146,63 @@ anonymous Session, callback URI, nonce, and expiry; it is consumed with the
 single-use OAuth state and is never added to redirects, provider traffic, or
 callback errors.
 
+### Throttle registration attempts
+
+Registration throttling is opt-in. Omit `auth.email.registration.throttle` or
+set it to `false` to leave it disabled. An object enables both normalized-email
+and trusted Hosted-address limits; each may be overridden independently:
+
+```json
+{
+  "auth": {
+    "email": {
+      "registration": {
+        "throttle": {
+          "email": { "limit": 5, "windowMs": 900000 },
+          "address": { "limit": 20, "windowMs": 900000 }
+        }
+      }
+    }
+  }
+}
+```
+
+When enabled, the defaults are five attempts per normalized email and twenty
+per trusted address in 15 minutes. Email keys are trimmed and lowercased.
+Every attempt counts, including invalid input and an address already in use.
+Address limits apply only to Hosted requests with a trusted client address;
+Dev and Container sessions use the email limit only. A throttled attempt
+returns this JSON shape with the remaining delay in milliseconds:
+
+```json
+{ "data": null, "error": { "code": "REGISTRATION_THROTTLED", "message": "Registration is temporarily unavailable. Try again later.", "retryAfterMs": 48231 } }
+```
+
+The runtime obtains the address from the trusted Hosted WebSocket connection. For a
+custom endpoint using the shared limiter, return the same retry field:
+
+```ts
+endpoint({ method: "POST", path: "/invite" }, (ctx) => {
+  const attempt = ctx.rateLimit("invite", { limit: 5, windowMs: 60_000 });
+  if (!attempt.ok) {
+    return {
+      status: 429,
+      body: { error: "RATE_LIMITED", retryAfterMs: attempt.retryAfterMs },
+    };
+  }
+  return { status: 200, body: { accepted: true } };
+});
+```
+
+Custom endpoint `ctx.rateLimit` buckets and these registration counters are
+separate.
+
+Hosted sign-in, password reset, and password change attempts also receive an
+additional per-trusted-address limit. Existing email and Session counters
+remain in place. Successful authentication does not refund address-wide failures.
+This address is supplied by the trusted Hosted boundary; the
+Capsule must not infer it from forwarded headers.
+
 ### Purpose-bound reauthentication
 
 Use Reauthentication Proofs when an already signed-in human must freshly
