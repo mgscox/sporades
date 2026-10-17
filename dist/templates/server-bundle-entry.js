@@ -1,3 +1,4 @@
+import { routeCollection } from "../observability-runtime.js";
 import { openAdmissionPolicy, resolveAdmissionPolicy } from "../admission-policy.js";
 import { preservedDeployFilePath } from "../deploy-files.js";
 // The generated Capsule server bundle: the boot program a deployed Capsule runs, written as
@@ -202,6 +203,8 @@ const server = createServer(async (request, response) => telemetry.run(request, 
         if (routeHttpAdmission(database, request, response)) {
             return;
         }
+        if (await routeCollection(database, request, response))
+            return;
         if (await routeSporadesAuth(database, request, response)) {
             return;
         }
@@ -321,7 +324,7 @@ async function routePublicAsset(request, response, publicRoot, hub) {
             : { "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache" }),
     });
     response.end(html && isDocumentNavigationRequest(request)
-        ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken())
+        ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken(), database)
         : body);
     return true;
 }

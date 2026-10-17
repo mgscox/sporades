@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { routeCollection } from "../observability-runtime.js";
 import { validateQueryCredential } from "./telemetry-diagnostics.js";
 import { openAdmissionPolicy, type AdmissionHealth, type AdmissionReloadEvent, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
 import { createAdmissionEvidence } from "../admission-evidence.js";
@@ -2606,7 +2607,8 @@ async function startDevSession(options: LooseRecord) {
       }
 
       if (
-        (await routeSporadesAuth(runtime.database, request, response))
+        (await routeCollection(runtime.database, request, response))
+        || (await routeSporadesAuth(runtime.database, request, response))
         || (await handleFileHttpRoute(runtime.database, request, response, websocketHub as any))
         || (await routeEndpoint(runtime.database, request, response))
       ) {
@@ -2620,7 +2622,7 @@ async function startDevSession(options: LooseRecord) {
           ...(publicAsset.html ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }),
         });
         response.end(publicAsset.html && isDocumentNavigationRequest(request)
-          ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken())
+          ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken(), runtime.database)
           : publicAsset.body);
         return;
       }

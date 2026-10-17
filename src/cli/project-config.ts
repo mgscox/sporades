@@ -1,3 +1,4 @@
+import { validateObservabilityConfig } from "../observability-runtime.js";
 import { resolveRegistrationThrottle } from "../capsule-rate-limit.js";
 import { resolveAdmissionPolicy } from "../admission-policy.js";
 import { createHash } from "node:crypto";
@@ -33,6 +34,8 @@ const DEFAULT_CSP_DIRECTIVES = {
 
 const SUPPORTED_PROJECT_KEYS = new Set([
   "admissionPolicy",
+  "analytics",
+  "observability",
   "auth",
   "baseImage",
   "capsule",
@@ -71,6 +74,7 @@ export async function readProjectConfig(projectDir: string) {
   }
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   validateLogConfig(config);
+  validateObservabilityConfig(config);
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);

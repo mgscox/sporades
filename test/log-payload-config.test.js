@@ -120,3 +120,16 @@ test("shipped CLI agrees with configuration loading at both sides of the floor",
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("unconfigured log metadata preserves prose punctuation and strips URL credentials", () => {
+  const data = {
+    note: "Investigate #234 collection", next: "Ready? Continue debugging.",
+    links: ["See https://example.test/inbox?request=link-secret#fragment-secret", "/inbox?token=relative-secret#fragment-secret", "(//example.test/inbox?cap=protocol-secret#fragment-secret).", "See ./inbox?cap=dot-secret#fragment-secret, then ../outbox#parent-secret!"],
+    url: 'See https://example.test/inbox?filter="query phrase"#fragment-secret then continue.',
+  };
+  const envelope = createLogEnvelope({ config: {}, data });
+  assert.equal(envelope.data.note, data.note);
+  assert.equal(envelope.data.next, data.next);
+  assert.equal(envelope.data.url, "See https://example.test/inbox then continue.");
+  assert.deepEqual(envelope.data.links, ["See https://example.test/inbox", "/inbox", "(//example.test/inbox).", "See ./inbox, then ../outbox!"]);
+});

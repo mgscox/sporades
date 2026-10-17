@@ -536,8 +536,8 @@ function serializeCspDirectives(directives: Record<string, unknown>) {
     .join("; ");
 }
 
-export function injectPageConnectionToken(html: string, token: string) {
-  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
+export function injectPageConnectionToken(html: string, token: string, database?: LooseRecord) {
+  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? '<script src="/__sporades/observe.js"></script>' : ""}`;
   if (/<head(\s[^>]*)?>/i.test(html)) {
     return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
   }

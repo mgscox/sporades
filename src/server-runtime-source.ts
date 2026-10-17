@@ -1,3 +1,5 @@
+import { createRuntimeObservability } from "./observability-runtime.js";
+import { redactDiagnosticText } from "./runtime-log-policy.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { createCapsuleRateLimiter, resolveRegistrationThrottle } from "./capsule-rate-limit.js";
 import { CLIENT_ADDRESS_TOKEN_HEADER, trustedClientAddress } from "./client-address.js";
@@ -708,6 +710,7 @@ export async function openDevDatabase(
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
   validateLogConfig(config);
+  const observability = createRuntimeObservability({ ...config, release: process.env.SPORADES_RELEASE_ID ?? config.release }, serverEnv);
   const registrationThrottle = resolveRegistrationThrottle(config.auth);
   const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
@@ -902,6 +905,7 @@ export async function openDevDatabase(
     __handlerContextMappingCount: 0,
     rowCache,
     serverEnv,
+    observability,
     paymentsConfig,
     createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
     stripeApiBaseUrl: options?.stripeApiBaseUrl,
@@ -1076,6 +1080,7 @@ export async function openDevDatabase(
         const failures: Array<{ index: number; error: unknown }> = [];
         const pending: Promise<void>[] = [];
         const resources = [
+          () => database.observability.close(),
           () => shutdownClamavRuntime(database),
           () => {
             if (mailStartError !== undefined) throw mailStartError;
@@ -2742,7 +2747,7 @@ function redactLogData(value: unknown, serverEnv: any): any {
     return null;
   }
   if (typeof value === "string") {
-    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : value;
+    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : redactDiagnosticText(value, serverEnv);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return value;
@@ -3912,6 +3917,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
+    database.observability?.capture(error, "endpoint");
     if (outerCommitted) throw error;
     if ((endpointRequest as LooseRecord).multipart) {
       try { await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } }); } catch {}
@@ -6727,6 +6733,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
     if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
     context = await applyContextMiddleware(database, context, "query");
   } catch (error: any) {
+    database.observability?.capture(error, "query");
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -6780,6 +6787,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   return { rows, error: null };
   })();
   } catch (error) {
+    database.observability?.capture(error, "query");
     primaryError = error;
     throw error;
   } finally {
@@ -6823,6 +6831,7 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
     assertJsonCompatible(data);
     return { data, error: null as any };
   } catch (error: any) {
+    database.observability?.capture(error, "query");
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -7011,6 +7020,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
   } catch (error: any) {
+    database.observability?.capture(error, "mutation");
     if (outerCommitted) return createHookErrorResult(error);
     dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
@@ -7878,6 +7888,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
             error = atomicStripeAbortError();
           }
         }
+        if (handlerStarted) database.observability?.capture(error, "job");
         const handlerFailure = safeJobFailure(error);
         const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
         const failedAt = database.clock.now().toISOString();

@@ -85,6 +85,7 @@
       "src/mail-runtime.ts",
       "src/maybe-promise.ts",
       "src/notification-intent-runtime.ts",
+      "src/observability-runtime.ts",
       "src/package-root.ts",
       "src/project-public.ts",
       "src/promise-coordinator.ts",
@@ -117,6 +118,7 @@
       "src/teams-runtime.ts",
       "src/telemetry-propagation-policy.ts",
       "src/templates/client-runtime-template.ts",
+      "src/templates/observability-loader.ts",
       "src/templates/scaffold-template.ts",
       "src/templates/server-bundle-entry.ts",
       "src/templates/server-bundle-inputs.d.ts",
@@ -124,6 +126,7 @@
       "src/types/admission-policy.d.ts",
       "src/types/client.d.ts",
       "src/types/monitoring.d.ts",
+      "src/types/observability.d.ts",
       "src/types/server.d.ts",
       "src/types/stripe.d.ts",
       "src/types/team-billing-import.d.ts",
@@ -132,7 +135,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "9d7cf24380aff46c7ba6b0f8a604a01985ed1412c0f883eef65c219801e91e92"
+    "digest": "7f087d2a1f7664d35f5cbdeafb535128669324f0ebb4c40125d083278968528d"
   },
   "outputs": {
     "files": [
@@ -442,6 +445,10 @@
       "dist/notification-intent-runtime.d.ts.map",
       "dist/notification-intent-runtime.js",
       "dist/notification-intent-runtime.js.map",
+      "dist/observability-runtime.d.ts",
+      "dist/observability-runtime.d.ts.map",
+      "dist/observability-runtime.js",
+      "dist/observability-runtime.js.map",
       "dist/package-root.d.ts",
       "dist/package-root.d.ts.map",
       "dist/package-root.js",
@@ -574,6 +581,10 @@
       "dist/templates/client-runtime-template.d.ts.map",
       "dist/templates/client-runtime-template.js",
       "dist/templates/client-runtime-template.js.map",
+      "dist/templates/observability-loader.d.ts",
+      "dist/templates/observability-loader.d.ts.map",
+      "dist/templates/observability-loader.js",
+      "dist/templates/observability-loader.js.map",
       "dist/templates/scaffold-template.d.ts",
       "dist/templates/scaffold-template.d.ts.map",
       "dist/templates/scaffold-template.js",
@@ -592,6 +603,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "a2a5ae1056cf40756574d2682086ecf4412be3061e53eca66faf51c8b728971e"
+    "digest": "64399b04b525eeabac975b8f060df32f91b417f05d315f2c3e251794984eae37"
   }
 }
