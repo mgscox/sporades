@@ -1042,7 +1042,12 @@ checks, not full format validation, executable-content filtering, or malware
 scanning. Continue to use multipart content inspection where that is required.
 Existing Files remain readable and are not reclassified by enabling the policy.
 
-SDK negotiation/PUT failures use the existing error envelope with a `code`:
+SDK negotiation/PUT failures use the existing error envelope with a `code`.
+`files.upload()` rejects with an Error carrying the same `code` and `hint`;
+the original envelope is retained at `error.error` for compatibility. Import
+`FileUploadErrorCode` and `FileUploadError` from `sporades/client` when handling
+these policy failures:
+
 
 | Code | Meaning |
 | --- | --- |

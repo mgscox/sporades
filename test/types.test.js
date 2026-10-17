@@ -118,6 +118,13 @@ import { importLegacyTeamBillingEvidence, type LegacyTeamBillingEvidence, type T
 import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
 
 import { auth as emittedAuth } from "${repoRoot}/dist/client.js";
+import { type FileUploadError, type FileUploadErrorCode } from "sporades/client";
+import { type FileUploadErrorCode as EmittedFileUploadErrorCode } from "${repoRoot}/dist/client.js";
+const uploadErrorCode: FileUploadErrorCode = "FILE_MIME_TYPE_MISMATCH";
+const emittedUploadErrorCode: EmittedFileUploadErrorCode = uploadErrorCode;
+const uploadPolicyError = (error: FileUploadError): FileUploadErrorCode => error.code;
+// @ts-expect-error Only the declared upload policy rejection codes belong to this type.
+const invalidUploadPolicyError: FileUploadErrorCode = "ANY_ERROR";
 import { prerender, type PrerenderBoundary } from "sporades/client";
 import { prerender as emittedPrerender } from "${repoRoot}/dist/client.js";
 const boundaries: readonly PrerenderBoundary[] = prerender.discover();
