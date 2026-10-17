@@ -66,6 +66,11 @@ test('Sentry envelopes contain redacted errors, stack frames and Capsule/release
 });
 
 const credentialDiagnostics = [
+  ['JSON token array', JSON.stringify({ token: ['first-array-marker', 'second-array-marker'] }), /first-array-marker|second-array-marker/],
+  ['JSON Set-Cookie array', JSON.stringify({ 'set-cookie': ['a=first-cookie-marker; Path=/', 'b=second-cookie-marker; HttpOnly'] }), /first-cookie-marker|second-cookie-marker/],
+  ['nested credential object', JSON.stringify({ token: { first: ['first-object-marker', { value: 'second-object-marker' }], last: 'third-object-marker' }, status: 'continue' }), /first-object-marker|second-object-marker|third-object-marker/],
+  ['escaped structured credential', JSON.stringify({ token: ['first-escaped-marker\\"],}', 'second-escaped-marker'] }), /first-escaped-marker|second-escaped-marker/],
+  ['unterminated credential array', '{"token":["first-truncated-marker",\n"second-truncated-marker"', /first-truncated-marker|second-truncated-marker/],
   ['JSON token', '{"token":"json-credential-marker","access_token":"json-access-marker"}', /json-credential-marker|json-access-marker/],
   ['nested JSON token', 'Failure: {"details":{"token":"nested-credential-marker"}}', /nested-credential-marker/],
   ['single quoted password', "password='first-single-marker second-single-marker'", /first-single-marker|second-single-marker/],
@@ -98,9 +103,41 @@ test('diagnostic credentials are redacted at the receiver for server and browser
       for (const event of received.slice(before)) {
         assert.match(event.exception.values[0].value, /REDACTED/);
         assert.doesNotMatch(JSON.stringify(event), leaked);
+        if (name === 'nested credential object') assert.match(event.exception.values[0].value, /"status":"continue"/);
       }
     });
   }
+});
+
+const privateDiagnosticUrls = ['//example.test/inbox', './client.js', '../client.js', '/client.js'];
+const privateUrl = base => `${base}?cap=qa-query-marker#qa-fragment-marker`;
+const urlMessage = base => `Ready? Investigate #234 (${privateUrl(base)}). Continue.`;
+const safeUrlMessage = base => `Ready? Investigate #234 (${base}). Continue.`;
+
+test('relative diagnostic URLs lose private suffixes in receiver messages and stack filenames', async t => {
+  const received = [];
+  const receiver = await listen(t, async (request, response) => {
+    let body = ''; for await (const part of request) body += part;
+    received.push(JSON.parse(body.trim().split('\n')[2])); response.end();
+  });
+  const observability = createRuntimeObservability({ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1' });
+  t.after(() => observability.close());
+  const origin = await listen(t, (request, response) => routeCollection({ observability }, request, response));
+  for (const base of privateDiagnosticUrls) await t.test(base, async () => {
+    const before = received.length;
+    const message = urlMessage(base);
+    const stack = `Error: ${message}\n    at execute (${privateUrl(base)}:12:8)`;
+    observability.capture({ message, stack }, 'mutation');
+    await observability.flush();
+    assert.equal((await fetch(origin + '/__sporades/collect', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'error', message, stack }) })).status, 204);
+    await observability.flush();
+    assert.equal(received.length, before + 2);
+    for (const event of received.slice(before)) {
+      assert.doesNotMatch(JSON.stringify(event), /qa-query-marker|qa-fragment-marker/);
+      assert.equal(event.exception.values[0].value, safeUrlMessage(base));
+      assert.deepEqual(event.exception.values[0].stacktrace.frames, [{ filename: base, function: 'execute', lineno: 12, colno: 8 }]);
+    }
+  });
 });
 
 test('runtime captures query, mutation, endpoint and Job failures without changing rollback or retries', async t => {
@@ -249,6 +286,12 @@ test('generated Capsule serves the loader under self CSP and collects client err
     window.dispatchEvent(new window.ErrorEvent('error', { error: new Error(message) }));
     await Promise.all(sends);
   }
+  for (const base of privateDiagnosticUrls) {
+    const error = new Error(urlMessage(base));
+    error.stack = `Error: ${error.message}\n    at execute (${privateUrl(base)}:12:8)`;
+    window.dispatchEvent(new window.ErrorEvent('error', { error }));
+    await Promise.all(sends);
+  }
   window.dispatchEvent(new window.ErrorEvent('error', { error: new Error('browser failure?request=token-error#fragment') }));
   const rejection = new window.Event('unhandledrejection');
   Object.defineProperty(rejection, 'reason', { value: new Error('unhandled server-only-secret') });
@@ -257,9 +300,18 @@ test('generated Capsule serves the loader under self CSP and collects client err
   window.location.hash = '#second-route?request=route-token';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await Promise.all(sends);
-  for (let i = 0; i < 100 && received.length < 5; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope').length, 3 + credentialDiagnostics.length);
+  const expectedErrors = 3 + credentialDiagnostics.length + privateDiagnosticUrls.length;
+  for (let i = 0; i < 100 && received.length < expectedErrors + 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope').length, expectedErrors);
   for (const [, , leaked] of credentialDiagnostics) assert.doesNotMatch(received.map(event => event.body).join('\n'), leaked);
+  const urlEvents = received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope')
+    .map(event => JSON.parse(event.body.trim().split('\n')[2])).filter(event => event.exception.values[0].value.startsWith('Ready?'));
+  assert.equal(urlEvents.length, privateDiagnosticUrls.length);
+  for (const [index, event] of urlEvents.entries()) {
+    assert.equal(event.exception.values[0].value, safeUrlMessage(privateDiagnosticUrls[index]));
+    assert.deepEqual(event.exception.values[0].stacktrace.frames, [{ filename: privateDiagnosticUrls[index], function: 'execute', lineno: 12, colno: 8 }]);
+  }
+  assert.doesNotMatch(received.map(event => event.body).join('\n'), /qa-query-marker|qa-fragment-marker/);
   assert.equal(received.filter(event => event.headers['content-type'] === 'application/json').length, 2);
   assert.doesNotMatch(received.map(event => event.body).join('\n'), /server-only-secret|client-secret|client-fragment|token-error|token-transport|route-token|second-route/);
 });

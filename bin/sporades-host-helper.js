@@ -28514,6 +28514,24 @@ function validatePublicTreeFileSet(files) {
 function isSensitiveLogKey(key) {
   return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
 }
+function structuredCredentialEnd(text2, start) {
+  const closers = [];
+  let quote = "";
+  for (let index = start; index < text2.length; index++) {
+    const char = text2[index];
+    if (quote) {
+      if (char === "\\") index++;
+      else if (char === quote) quote = "";
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === "[") closers.push("]");
+    else if (char === "{") closers.push("}");
+    else if (char === "]" || char === "}") {
+      if (closers.pop() !== char) return text2.length;
+      if (!closers.length) return index + 1;
+    }
+  }
+  return text2.length;
+}
 function redactDiagnosticText(value, serverEnv = {}) {
   let safe = value;
   for (const secret of Object.values(serverEnv)) {
@@ -28527,10 +28545,13 @@ function redactDiagnosticText(value, serverEnv = {}) {
     const start = match.index + match[0].length;
     const value2 = safe.slice(start).match(/^(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|(?=\r?$))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|(?=\r?$))|[^\s,;]+)/m);
     redacted += safe.slice(cursor, match.index) + "[REDACTED]";
-    cursor = start + (value2?.[0].length ?? 0);
+    cursor = safe[start] === "[" || safe[start] === "{" ? structuredCredentialEnd(safe, start) : start + (value2?.[0].length ?? 0);
   }
   safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
-  return safe.replace(/((?:https?:\/\/|file:\/\/\/|(?:^|[\s("'])\/(?!\/))[^\s?#<>"']*)[?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*/gi, "$1").replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+  return safe.replace(
+    /((?:https?:\/\/|file:\/\/\/|(?:^|[\s("'])(?:\/{1,2}|\.\.?\/))[^\s?#<>"']*)([?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*)/gi,
+    (_match, path12, suffix) => path12 + (suffix.slice(1).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}]+$/)?.[0] ?? "")
+  ).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
 }
 
 // src/runtime-request-context.ts

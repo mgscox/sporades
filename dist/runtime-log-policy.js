@@ -47,6 +47,34 @@ export function isSensitiveLogKey(key) {
     return (/(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) ||
         /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key)));
 }
+// Structured credentials are one private value, including nested containers and
+// quoted delimiters. A malformed or truncated container conceals the remainder.
+function structuredCredentialEnd(text, start) {
+    const closers = [];
+    let quote = "";
+    for (let index = start; index < text.length; index++) {
+        const char = text[index];
+        if (quote) {
+            if (char === "\\")
+                index++;
+            else if (char === quote)
+                quote = "";
+        }
+        else if (char === '"' || char === "'")
+            quote = char;
+        else if (char === "[")
+            closers.push("]");
+        else if (char === "{")
+            closers.push("}");
+        else if (char === "]" || char === "}") {
+            if (closers.pop() !== char)
+                return text.length;
+            if (!closers.length)
+                return index + 1;
+        }
+    }
+    return text.length;
+}
 /** Shared diagnostic text policy. Stack frames are admitted separately by error collection. */
 export function redactDiagnosticText(value, serverEnv = {}) {
     let safe = value;
@@ -68,12 +96,14 @@ export function redactDiagnosticText(value, serverEnv = {}) {
         // Admit escaped quotes and spaces, and conceal an unterminated value to the line end.
         const value = safe.slice(start).match(/^(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|(?=\r?$))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|(?=\r?$))|[^\s,;]+)/m);
         redacted += safe.slice(cursor, match.index) + "[REDACTED]";
-        cursor = start + (value?.[0].length ?? 0);
+        cursor = safe[start] === "[" || safe[start] === "{"
+            ? structuredCredentialEnd(safe, start)
+            : start + (value?.[0].length ?? 0);
     }
     safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
     // Only URL suffixes are private. A question or issue number in ordinary prose is data.
     // Quoted query values travel with the URL, so their contents cannot survive stripping.
-    return safe.replace(/((?:https?:\/\/|file:\/\/\/|(?:^|[\s("'])\/(?!\/))[^\s?#<>"']*)[?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*/gi, "$1")
+    return safe.replace(/((?:https?:\/\/|file:\/\/\/|(?:^|[\s("'])(?:\/{1,2}|\.\.?\/))[^\s?#<>"']*)([?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*)/gi, (_match, path, suffix) => path + (suffix.slice(1).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}]+$/)?.[0] ?? ""))
         .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
 }
 //# sourceMappingURL=runtime-log-policy.js.map

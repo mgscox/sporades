@@ -90,8 +90,12 @@ Do not put capabilities in URL path segments or ordinary diagnostic prose.
 Messages and frames reuse the log diagnostic redaction policy for Server env
 values and recognizable credentials, including quoted JSON fields, quoted
 passwords with spaces, Basic/Bearer credentials and complete Cookie headers.
-URL queries/fragments are stripped while ordinary prose such as `Investigate
-#234 collection` and `Ready? Continue debugging.` is preserved.
+Sensitive arrays and objects are concealed as a whole, including every token
+and Set-Cookie entry; malformed containers conceal the remaining text.
+URL queries/fragments are stripped from absolute, protocol-relative (`//host/path`),
+root-relative (`/path`) and explicit relative (`./path`, `../path`) URLs, including
+stack filenames. Surrounding punctuation and ordinary prose such as `Investigate
+#234 collection` and `Ready? Continue debugging.` are preserved.
 There are no custom analytics properties,
 page titles, request bodies, cookies or authorization headers in provider events.
 

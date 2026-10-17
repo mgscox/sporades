@@ -1,4 +1,8 @@
-/** Opt-in project configuration for Sentry-envelope compatible error collection. */
+/**
+ * Opt-in Sentry-envelope error collection. Diagnostics conceal complete sensitive
+ * values (including arrays/objects) and URL queries/fragments, including relative
+ * URLs in messages and stack filenames.
+ */
 export type ObservabilityConfig = {
   errors?: {
     protocol: "sentry";
