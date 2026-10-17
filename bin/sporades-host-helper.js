@@ -46589,10 +46589,10 @@ async function setCapsuleCanonicalDomain(request2) {
     const record = await verifyRegisteredCapsule(request2, "lifecycle");
     const aliases = validateAliasDomains(record.aliasDomains);
     if (canonicalDomain && !aliases.includes(canonicalDomain)) throw helperError("Canonical domain is not a registered alias.", "Select one of this Capsule's registered alias domains.");
-    const next = { ...record, canonicalDomain, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    restart = record.canonicalRestartPending === true || record.status === "running" && (record.canonicalDomain ?? null) !== canonicalDomain;
+    const next = { ...record, canonicalDomain, ...restart ? { canonicalRestartPending: true } : {}, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
     publicOrigin = hostedPublicOrigin(next);
-    if ((record.canonicalDomain ?? null) === canonicalDomain) return;
-    restart = record.status === "running";
+    if ((record.canonicalDomain ?? null) === canonicalDomain && !restart) return;
     const registryPath2 = normaliseRegistration(request2, record).registryRecord;
     await writeRegistryRecordAtomic(registryPath2, next);
   });
@@ -46600,7 +46600,7 @@ async function setCapsuleCanonicalDomain(request2) {
   writeEnvelope({
     ok: !restart || Boolean(restarted),
     data: { publicOrigin, canonicalDomain, restarted: Boolean(restarted) },
-    error: restart && !restarted ? { message: "Canonical domain saved; Capsule restart failed.", hint: "Inspect Capsule logs and run host start after repair. The saved origin will be used." } : null
+    error: restart && !restarted ? { message: "Canonical domain saved; Capsule restart failed.", hint: "Inspect Capsule logs, then retry this canonical command or run host start after repair. The saved origin will be used." } : null
   });
 }
 async function registerCapsule(request2) {
@@ -51009,6 +51009,7 @@ function reloadCaddy(lifecycle) {
 async function updateRegistryStatus(request2, status) {
   await mutateRegistryRecord(request2, (record) => {
     record.status = status;
+    if (status === "stopped" || status === "unregistered") delete record.canonicalRestartPending;
     record.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
     return record;
   });
@@ -51081,6 +51082,7 @@ async function recordReleaseStarted(request2, releaseId) {
     const now = (/* @__PURE__ */ new Date()).toISOString();
     record.currentRelease = { ...record.currentRelease ?? {}, id: releaseId };
     record.status = "running";
+    delete record.canonicalRestartPending;
     record.updatedAt = now;
     record.releases = upsertReleaseEntry(record, releaseId, (entry) => ({
       ...entry,

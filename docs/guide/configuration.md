@@ -19,9 +19,12 @@ selection export nothing. A local Container session can use `sporades deploy
 --telemetry <name>` and disable export with `sporades deploy --no-telemetry`.
 
 Server handlers can read `ctx.app.publicOrigin` to build links that point back
-to the Capsule. Dev uses its actual local URL and configured port. A Container
+to the Capsule. Dev uses its bound local URL, including during init hooks and
+startup Jobs when `--port 0` selects a dynamic port. A Container
 uses `deploy.publicOrigin` when set, then `SPORADES_PUBLIC_ORIGIN`, then its
-configured local port. Hosted uses the selected canonical alias over HTTPS, or
+effective local port (`deploy --port` overrides `deploy.port`). Container launch
+and doctor retain the origin selected at deployment until redeploy. Hosted uses
+the selected canonical alias over HTTPS, or
 the Host subdomain over HTTPS when no alias is selected. Explicit
 `deploy.publicOrigin` values must be HTTP(S) origins with no credentials, path,
 query, or fragment; loopback HTTP is intended for local use. In deployed mode,

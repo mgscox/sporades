@@ -8,7 +8,7 @@ import { validateAliasDomains, validateCanonicalDomain } from "./host-domain-ali
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync, statSync, watch } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type RequestListener } from "node:http";
 import { appendFile, chmod, cp, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -2446,6 +2446,20 @@ async function startDevSession(options: LooseRecord) {
     data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
   });
   let telemetry!: ReturnType<typeof createHttpRequestTelemetry>;
+  // Bind before runtime initialization: init hooks and startup Jobs need the
+  // actual origin even when the operator asks the OS to choose a port.
+  const starting: RequestListener = (_request, response) => {
+    response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Dev session is starting.");
+  };
+  const server = createServer(starting);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+  });
+  const address = server.address();
+  const actualPort = typeof address === "object" && address ? address.port : port;
+  const url = `http://localhost:${actualPort}`;
   try {
     runtime = await createDevRuntime({
       projectDir: options.projectDir,
@@ -2454,22 +2468,28 @@ async function startDevSession(options: LooseRecord) {
       serverEnv: bundle.serverRuntime.env,
       serviceEnv: capsuleServiceEnv,
       capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-      config: { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: `http://localhost:${port}` },
+      config: { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: url },
       runtimeProbeToken: inspectionToken,
       onJobQueueReady(queueDatabase: any) {
         telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
         telemetry.bindJobQueue(queueDatabase);
       },
     });
-  } catch (error) { await telemetry?.shutdown(); throw error; }
-  await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
-  runtime.database.log.emit({
-    category: "platform",
-    event: "dev.session.started",
-    level: "info",
-    message: "Dev session started",
-    data: { diagnostics: runtime.database.runtimeDiagnostics },
-  });
+    await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
+    runtime.database.log.emit({
+      category: "platform",
+      event: "dev.session.started",
+      level: "info",
+      message: "Dev session started",
+      data: { diagnostics: runtime.database.runtimeDiagnostics },
+    });
+  } catch (error) {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await runtime?.shutdown();
+    await telemetry?.shutdown();
+    throw error;
+  }
   const devRefresh = createDevRefreshController();
   const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport, {
     // Resolve the current adapter at dispatch/accept time. Operations and close
@@ -2480,7 +2500,8 @@ async function startDevSession(options: LooseRecord) {
     },
   });
 
-  const server = createServer(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
+  server.removeListener("request", starting);
+  server.on("request", async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
     try {
       if (prepareHttpSecurity(runtime.database, request, response, () => routeHttpAdmission(runtime.database, request, response))) {
         return;
@@ -2666,17 +2687,6 @@ async function startDevSession(options: LooseRecord) {
     socket.destroy();
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => resolve());
-  });
-
-  const address = server.address();
-  const actualPort = typeof address === "object" && address ? address.port : port;
-  const url = `http://localhost:${actualPort}`;
-  runtime.database.publicOrigin = url;
-  runtime.database.passwordResetConfig.origin = url;
-  runtime.database.teamJoinLinkConfig.origin = url;
   let actionBundleCreated = false;
   let watchers: ReturnType<typeof watchDevInputs> = [];
   let onUnhandledRejection: ((reason: any) => void) | null = null;
@@ -4818,6 +4828,7 @@ function dockerMountField(value: string) {
 async function startContainerSession(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4000;
+  const publicOrigin = resolvePublicOrigin({ ...config, deploy: { ...config.deploy, port }, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN });
   const runtimeDir = path.join(options.projectDir, ".sporades");
   const containerName = `sporades-${config.name ?? path.basename(options.projectDir)}`;
   const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
@@ -4995,9 +5006,9 @@ async function startContainerSession(options: LooseRecord) {
       "--env",
       "SPORADES_SECURITY_SESSION=container",
       "--env",
-      `SPORADES_PUBLIC_ORIGIN=${resolvePublicOrigin({ ...config, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN })}`,
+      `SPORADES_PUBLIC_ORIGIN=${publicOrigin}`,
       "--env",
-      `SPORADES_CONTAINER_PUBLIC_ORIGIN=${resolvePublicOrigin({ ...config, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN })}`,
+      `SPORADES_CONTAINER_PUBLIC_ORIGIN=${publicOrigin}`,
       "--env",
       `SPORADES_ADMISSION_POLICY_PATH=${bundle.deployFiles.find(file => file.update === "admission")?.path ?? ""}`,
       "--env",
@@ -5077,7 +5088,7 @@ async function startContainerSession(options: LooseRecord) {
       containerId,
       containerName,
       containerTransactionToken,
-      publicOrigin: resolvePublicOrigin({ ...config, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN }),
+      publicOrigin,
       telemetryDescriptorVersion: 1,
       ...(telemetryProfile !== undefined ? { telemetryProfile } : {}),
       ...(telemetryCaStagePath ? { telemetryCaStagePath } : {}),

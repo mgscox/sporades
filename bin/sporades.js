@@ -152155,6 +152155,21 @@ async function startDevSession(options) {
     data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null
   });
   let telemetry;
+  const starting = (_request, response) => {
+    response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Dev session is starting.");
+  };
+  const server = createServer2(starting);
+  await new Promise((resolve2, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve2();
+    });
+  });
+  const address = server.address();
+  const actualPort = typeof address === "object" && address ? address.port : port;
+  const url = `http://localhost:${actualPort}`;
   try {
     runtime = await createDevRuntime({
       projectDir: options.projectDir,
@@ -152163,25 +152178,28 @@ async function startDevSession(options) {
       serverEnv: bundle.serverRuntime.env,
       serviceEnv: capsuleServiceEnv,
       capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-      config: { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: `http://localhost:${port}` },
+      config: { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: url },
       runtimeProbeToken: inspectionToken,
       onJobQueueReady(queueDatabase) {
         telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
         telemetry.bindJobQueue(queueDatabase);
       }
     });
+    await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
+    runtime.database.log.emit({
+      category: "platform",
+      event: "dev.session.started",
+      level: "info",
+      message: "Dev session started",
+      data: { diagnostics: runtime.database.runtimeDiagnostics }
+    });
   } catch (error) {
+    server.closeAllConnections();
+    await new Promise((resolve2) => server.close(() => resolve2()));
+    await runtime?.shutdown();
     await telemetry?.shutdown();
     throw error;
   }
-  await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
-  runtime.database.log.emit({
-    category: "platform",
-    event: "dev.session.started",
-    level: "info",
-    message: "Dev session started",
-    data: { diagnostics: runtime.database.runtimeDiagnostics }
-  });
   const devRefresh = createDevRefreshController();
   const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport, {
     // Resolve the current adapter at dispatch/accept time. Operations and close
@@ -152191,7 +152209,8 @@ async function startDevSession(options) {
       connectionOpened: () => telemetry.websocket.connectionOpened()
     }
   });
-  const server = createServer2(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
+  server.removeListener("request", starting);
+  server.on("request", async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
     try {
       if (prepareHttpSecurity(runtime.database, request, response, () => routeHttpAdmission(runtime.database, request, response))) {
         return;
@@ -152356,16 +152375,6 @@ async function startDevSession(options) {
   server.on("connect", (_request, socket) => {
     socket.destroy();
   });
-  await new Promise((resolve2, reject) => {
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => resolve2());
-  });
-  const address = server.address();
-  const actualPort = typeof address === "object" && address ? address.port : port;
-  const url = `http://localhost:${actualPort}`;
-  runtime.database.publicOrigin = url;
-  runtime.database.passwordResetConfig.origin = url;
-  runtime.database.teamJoinLinkConfig.origin = url;
   let actionBundleCreated = false;
   let watchers = [];
   let onUnhandledRejection = null;
@@ -154376,6 +154385,7 @@ function dockerMountField(value) {
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4e3;
+  const publicOrigin = resolvePublicOrigin({ ...config, deploy: { ...config.deploy, port }, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN });
   const runtimeDir = path21.join(options.projectDir, ".sporades");
   const containerName = `sporades-${config.name ?? path21.basename(options.projectDir)}`;
   const bindingPath = path21.join(options.projectDir, CONTAINER_BINDING_FILE);
@@ -154550,9 +154560,9 @@ async function startContainerSession(options) {
     "--env",
     "SPORADES_SECURITY_SESSION=container",
     "--env",
-    `SPORADES_PUBLIC_ORIGIN=${resolvePublicOrigin({ ...config, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN })}`,
+    `SPORADES_PUBLIC_ORIGIN=${publicOrigin}`,
     "--env",
-    `SPORADES_CONTAINER_PUBLIC_ORIGIN=${resolvePublicOrigin({ ...config, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN })}`,
+    `SPORADES_CONTAINER_PUBLIC_ORIGIN=${publicOrigin}`,
     "--env",
     `SPORADES_ADMISSION_POLICY_PATH=${bundle.deployFiles.find((file) => file.update === "admission")?.path ?? ""}`,
     "--env",
@@ -154627,7 +154637,7 @@ async function startContainerSession(options) {
       containerId,
       containerName,
       containerTransactionToken,
-      publicOrigin: resolvePublicOrigin({ ...config, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN }),
+      publicOrigin,
       telemetryDescriptorVersion: 1,
       ...telemetryProfile !== void 0 ? { telemetryProfile } : {},
       ...telemetryCaStagePath ? { telemetryCaStagePath } : {},

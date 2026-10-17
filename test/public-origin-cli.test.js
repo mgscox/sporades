@@ -39,7 +39,7 @@ process.stdout.write(JSON.stringify({ok:true,data:r.action==='capsule.register'?
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-test('Dev uses the selected local port through a runtime rebuild and doctor', { timeout: 90000 }, async () => {
+test('Dev resolves --port 0 before init hooks and preserves the origin through rebuild and doctor', { timeout: 90000 }, async () => {
   const root = await mkdtemp(path.resolve('.scratch/origin-dev-'));
   const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, 'config'), SPORADES_PUBLIC_ORIGIN: 'https://ignored.example' };
   let child;
@@ -53,9 +53,9 @@ test('Dev uses the selected local port through a runtime rebuild and doctor', { 
     await writeFile(configPath, JSON.stringify(config));
     await writeFile(path.join(project, 'client/index.tsx'), 'document.body.dataset.ready="true";');
     const serverFile = path.join(project, 'server/index.ts');
-    await writeFile(serverFile, `import {capsule,endpoint} from 'sporades/server';export default capsule({name:'origin-dev',endpoints:{origin:endpoint({method:'GET',path:'/origin'},ctx=>({status:200,body:{origin:ctx.app.publicOrigin}}))}});`);
+    await writeFile(serverFile, `import {capsule,endpoint} from 'sporades/server';let initOrigin;export default capsule({name:'origin-dev',hooks:{init(ctx){initOrigin=ctx.app.publicOrigin;}},endpoints:{origin:endpoint({method:'GET',path:'/origin'},ctx=>({status:200,body:{origin:ctx.app.publicOrigin,initOrigin}}))}});`);
     let output = '', errors = '';
-    child = spawn(process.execPath, [cli, 'dev', '--json'], { cwd: project, env });
+    child = spawn(process.execPath, [cli, 'dev', '--port', '0', '--json'], { cwd: project, env });
     child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { errors += chunk; });
     const until = async predicate => {
       const deadline = Date.now() + 30000;
@@ -63,13 +63,16 @@ test('Dev uses the selected local port through a runtime rebuild and doctor', { 
       assert(predicate(), output + errors);
     };
     await until(() => output.includes('"event":"started"'));
-    assert.deepEqual(await (await fetch('http://127.0.0.1:5688/origin')).json(), { origin: 'http://localhost:5688' });
+    const started = output.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(line => line?.data?.event === 'started');
+    const origin = started.data.url;
+    assert.notEqual(new URL(origin).port, '0');
+    assert.deepEqual(await (await fetch(`${origin}/origin`)).json(), { origin, initOrigin: origin });
     output = '';
     await writeFile(serverFile, (await readFile(serverFile, 'utf8')) + '\n// rebuild origin\n');
     await until(() => output.includes('"event":"rebuild"') && output.includes('"status":"success"'));
-    assert.deepEqual(await (await fetch('http://127.0.0.1:5688/origin')).json(), { origin: 'http://localhost:5688' });
+    assert.deepEqual(await (await fetch(`${origin}/origin`)).json(), { origin, initOrigin: origin });
     const doctor = JSON.parse((await run(process.execPath, [cli, 'doctor', '--session', 'dev', '--json'], { cwd: project, env })).stdout);
-    assert.equal(doctor.data.checks.find(c => c.id === 'doctor.public-origin').details.publicOrigin, 'http://localhost:5688');
+    assert.equal(doctor.data.checks.find(c => c.id === 'doctor.public-origin').details.publicOrigin, origin);
   } finally {
     if (child) {
       child.kill('SIGTERM'); await Promise.race([once(child, 'exit'), pause(3000)]);

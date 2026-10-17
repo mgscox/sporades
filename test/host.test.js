@@ -8563,7 +8563,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       assert.deepEqual(await authenticatedWithRequiredInspection.json(), {
         ok: false,
         data: {
-          runtime: { ready: false, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
+          runtime: { ready: false, publicOrigin: "http://localhost:4000", fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
           checks: {
             sqlite: { ok: true },
             fileStorage: { ok: true },
@@ -8585,7 +8585,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       assert.deepEqual(body, {
         ok: true,
         data: {
-          runtime: { ready: true, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
+          runtime: { ready: true, publicOrigin: "http://localhost:4000", fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
           checks: {
             sqlite: { ok: true },
             fileStorage: { ok: true },
@@ -8594,7 +8594,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
         },
         error: null,
       });
-      assert.deepEqual(Object.keys(body.data.runtime).sort(), ["fileMaxSizeBytes", "httpMaxBodyBytes", "ready"]);
+      assert.deepEqual(Object.keys(body.data.runtime).sort(), ["fileMaxSizeBytes", "httpMaxBodyBytes", "publicOrigin", "ready"]);
       const raw = JSON.stringify(body);
       assert.equal(raw.includes(dir), false);
       assert.equal(raw.includes("a".repeat(64)), false);
@@ -16113,5 +16113,74 @@ test('canonical domain updates recreate a running Capsule with canonical links a
     const after = JSON.parse(await readFile(fixture.registryRecordPath, 'utf8'));
     assert.equal(after.currentRelease.id, record.currentRelease.id);
     assert.equal(after.hostedUrl, record.hostedUrl);
+  });
+});
+
+test('canonical changes recover after registry publication interrupts recreation', async () => {
+  await withTempDir(async dir => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir);
+    await mkdir(path.join(fixture.remoteRoot, 'caddy/hosts/capsules.example.dev'), { recursive: true });
+    await writeFile(path.join(fixture.remoteRoot, 'caddy/Caddyfile'), 'import ./hosts/*.caddy\n');
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, 'utf8'));
+    record.aliasDomains = ['canonical.example'];
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const docker = await installFakeDocker(dir);
+    const target = { action: 'capsule.canonical.set', host: { alias: 'personal', domain: fixture.domain, scheme: 'https', remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+    // Interrupt at the real publication boundary, after releasing the registry lock
+    // but before any lifecycle/Docker work. The Host route OS lock dies with us.
+    const hook = path.join(dir, 'interrupt-canonical.mjs');
+    await writeFile(docker.logPath, '');
+    await writeFile(hook, `import fs from 'node:fs/promises'; import {syncBuiltinESMExports} from 'node:module';
+const rm = fs.rm; fs.rm = async (target, ...args) => {
+  const result = await rm(target, ...args);
+  if (String(target).endsWith('/registry/.lock')) process.exit(17);
+  return result;
+}; syncBuiltinESMExports();`);
+    for (const domain of ['canonical.example', null]) {
+      const request = { ...target, canonical: { domain } };
+      const callsBefore = (await docker.calls()).length;
+      const interrupted = await runHostHelper(request, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${hook}` } });
+      assert.equal(interrupted.code, 17, interrupted.stdout + interrupted.stderr);
+      assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, 'utf8')).canonicalDomain, domain);
+      assert.equal((await docker.calls()).length, callsBefore);
+      const retried = JSON.parse((await runHostHelper(request, { cwd: dir, env: docker.env })).stdout);
+      assert.equal(retried.ok, true, JSON.stringify(retried));
+      assert.equal(retried.data.restarted, true, 'same-value retry must apply the saved origin');
+      const run = (await docker.calls()).filter(call => call.args[0] === 'run').at(-1);
+      assert(run.args.includes(`SPORADES_PUBLIC_ORIGIN=${domain ? 'https://' + domain : record.hostedUrl}`));
+    }
+  });
+});
+
+test('canonical restart failures remain retryable until started or explicitly stopped', async t => {
+  for (const stop of [false, true]) await t.test(stop ? 'explicit stop cancels pending recreation' : 'same-value retry repairs failed restart', async () => {
+    await withTempDir(async dir => {
+      const fixture = await writeHostedCapsuleRollbackFixture(dir);
+      await mkdir(path.join(fixture.remoteRoot, 'caddy/hosts/capsules.example.dev'), { recursive: true });
+      await writeFile(path.join(fixture.remoteRoot, 'caddy/Caddyfile'), 'import ./hosts/*.caddy\n');
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, 'utf8'));
+      record.aliasDomains = ['canonical.example'];
+      await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUN_STATUSES: '1,0' } });
+      const target = { host: { alias: 'personal', domain: fixture.domain, scheme: 'https', remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+      const invoke = async request => JSON.parse((await runHostHelper({ ...target, ...request }, { cwd: dir, env: docker.env })).stdout);
+      const request = { action: 'capsule.canonical.set', canonical: { domain: 'canonical.example' } };
+      const failed = await invoke(request);
+      assert.equal(failed.ok, false, JSON.stringify(failed));
+      assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, 'utf8')).canonicalDomain, 'canonical.example');
+      if (stop) assert.equal((await invoke({ action: 'capsule.stop' })).ok, true);
+      const callsBefore = (await docker.calls()).length;
+      const retried = await invoke(request);
+      assert.equal(retried.ok, true, JSON.stringify(retried));
+      assert.equal(retried.data.restarted, !stop);
+      if (stop) assert.equal((await docker.calls()).length, callsBefore, 'stopped Capsules stay stopped');
+      else {
+        const run = (await docker.calls()).filter(call => call.args[0] === 'run').at(-1);
+        assert(run.args.includes('SPORADES_PUBLIC_ORIGIN=https://canonical.example'));
+      }
+      const settledCalls = (await docker.calls()).length;
+      assert.equal((await invoke(request)).data.restarted, false, 'settled retries do not recreate');
+      assert.equal((await docker.calls()).length, settledCalls);
+    });
   });
 });

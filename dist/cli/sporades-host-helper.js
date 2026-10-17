@@ -1130,19 +1130,20 @@ async function setCapsuleCanonicalDomain(request) {
         const aliases = validateAliasDomains(record.aliasDomains);
         if (canonicalDomain && !aliases.includes(canonicalDomain))
             throw helperError("Canonical domain is not a registered alias.", "Select one of this Capsule's registered alias domains.");
-        const next = { ...record, canonicalDomain, updatedAt: new Date().toISOString() };
+        restart = record.canonicalRestartPending === true || (record.status === "running" && (record.canonicalDomain ?? null) !== canonicalDomain);
+        const next = { ...record, canonicalDomain, ...(restart ? { canonicalRestartPending: true } : {}), updatedAt: new Date().toISOString() };
         publicOrigin = hostedPublicOrigin(next);
-        if ((record.canonicalDomain ?? null) === canonicalDomain)
+        if ((record.canonicalDomain ?? null) === canonicalDomain && !restart)
             return;
-        restart = record.status === "running";
         const registryPath = normaliseRegistration(request, record).registryRecord;
         await writeRegistryRecordAtomic(registryPath, next);
     });
     // The outer Host route lock spans registry publication and recreation. A failed
-    // restart retains the desired origin and the existing lifecycle's unavailable route.
+    // restart retains the desired origin and pending marker, so an identical retry
+    // repairs interruptions or failed starts. A successful lifecycle start clears it.
     const restarted = restart ? await restartCapsule(request, { write: false, trustedRegistryLifecycle: true }) : null;
     writeEnvelope({ ok: !restart || Boolean(restarted), data: { publicOrigin, canonicalDomain, restarted: Boolean(restarted) },
-        error: restart && !restarted ? { message: "Canonical domain saved; Capsule restart failed.", hint: "Inspect Capsule logs and run host start after repair. The saved origin will be used." } : null });
+        error: restart && !restarted ? { message: "Canonical domain saved; Capsule restart failed.", hint: "Inspect Capsule logs, then retry this canonical command or run host start after repair. The saved origin will be used." } : null });
 }
 async function registerCapsule(request) {
     validateRegisterRequest(request);
@@ -5473,6 +5474,8 @@ function reloadCaddy(lifecycle) {
 async function updateRegistryStatus(request, status) {
     await mutateRegistryRecord(request, (record) => {
         record.status = status;
+        if (status === "stopped" || status === "unregistered")
+            delete record.canonicalRestartPending;
         record.updatedAt = new Date().toISOString();
         return record;
     });
@@ -5554,6 +5557,7 @@ async function recordReleaseStarted(request, releaseId) {
         const now = new Date().toISOString();
         record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
         record.status = "running";
+        delete record.canonicalRestartPending;
         record.updatedAt = now;
         record.releases = upsertReleaseEntry(record, releaseId, (entry) => ({
             ...entry,

@@ -50,6 +50,11 @@ the Capsule, and requests are not redirected. These commands change routing
 metadata only: they do not provision DNS or alter `hostedUrl` or the Capsule's
 identity.
 
+If a canonical change is interrupted or its restart fails, retry the same
+command after repair to apply the saved origin. A successful `host start` also
+applies it. An explicit `host stop` cancels the pending restart, so later
+canonical commands keep that Capsule stopped.
+
 Aliases are selected at registration (up to 20, lowercase ASCII/punycode DNS
 names). To change an existing Capsule's aliases, unregister it, then register
 it with the complete replacement list and start it again. This causes downtime
