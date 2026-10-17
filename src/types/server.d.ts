@@ -8,6 +8,20 @@ export type JsonObject = { [key: string]: JsonValue };
 
 export type MaybePromise<Value> = Value | Promise<Value>;
 
+declare const htmlBrand: unique symbol;
+/** Immutable escaped HTML fragment. Mail accepts it directly; String(fragment) renders it elsewhere. */
+export type Html = Readonly<{ [htmlBrand]: true; toString(): string }>;
+
+/** Escapes &, <, >, double and single quotes for HTML text and quoted attributes. Nullish values become empty strings. */
+export function escapeHtml(value: unknown): string;
+
+/** Escapes interpolations, joins arrays without separators, and preserves nested Html fragments. Use only in text or quoted attributes. */
+export function html(strings: TemplateStringsArray, ...values: unknown[]): Html;
+export namespace html {
+  /** Explicit escaping opt-out for trusted Capsule HTML. Never pass user input. */
+  function raw(trusted: string): Html;
+}
+
 /**
  * Builder returned by a Sporades field helper such as `String()` or `Boolean()`.
  *
@@ -477,7 +491,7 @@ export type MailSendInput = {
   replyTo?: MailAddress;
   subject: string;
   textBody?: string;
-  htmlBody?: string;
+  htmlBody?: string | Html;
   /** Emits one standard Auto-Submitted header; omitted messages emit none. */
   autoSubmitted?: "no" | "auto-generated" | "auto-replied";
   provider?: JsonObject;
@@ -722,11 +736,13 @@ export type PrivilegedTeamBillingApi = {
   listQuarantines(options?: { limit?: number }): Promise<{ quarantines: readonly PrivilegedTeamBillingQuarantine[] }>;
 };
 
-/** Copy overrides for the built-in password reset message. */
+/** Copy overrides for the built-in password reset message. Each custom body should contain {{link}}. */
 export type PasswordResetMailOptions = {
   subject?: string;
+  /** Replaces {{link}} and {{expiresAt}} with the Reset URL and ISO expiry. Missing {{link}} logs a warning. */
   textBody?: string;
-  htmlBody?: string;
+  /** Same placeholders, HTML-escaped for text or quoted attributes. Missing {{link}} logs a warning. */
+  htmlBody?: string | Html;
 };
 
 /** A Reset code rendered as a link to the Capsule's own reset page. */

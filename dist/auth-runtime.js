@@ -66,6 +66,7 @@ import { canonicalClientAddress } from "./client-address.js";
 // with `randomUUID`, recorded in ADR-0041, and the guard in
 // `test/server-bundle-free-bindings.test.js` refuses it by name.
 import { traceRuntimeOperation } from "./runtime-request-context.js";
+import { escapeHtml } from "./html.js";
 import { commandError } from "./runtime-errors.js";
 // Batch 5. The one name this domain needs from the user-preferences module, and the reason that
 // module was made its own batch and run early: `migrateAnonymousPreferences` is what kept the seven
@@ -1884,11 +1885,15 @@ export async function prepareEmailPasswordResetDelivery(database, payload, attem
     if (!issued)
         return null;
     const body = passwordResetMailBody(issued.link);
+    const customBody = (template, html) => template.replace(/\{\{(link|expiresAt)\}\}/g, (_match, key) => {
+        const value = key === "link" ? issued.link : issued.expiresAt;
+        return html ? escapeHtml(value) : value;
+    });
     return {
         to: credential.email,
         subject: typeof payload?.subject === "string" ? payload.subject : "Reset your password",
-        textBody: typeof payload?.textBody === "string" ? payload.textBody : body.textBody,
-        htmlBody: typeof payload?.htmlBody === "string" ? payload.htmlBody : body.htmlBody,
+        textBody: typeof payload?.textBody === "string" ? customBody(payload.textBody, false) : body.textBody,
+        htmlBody: typeof payload?.htmlBody === "string" ? customBody(payload.htmlBody, true) : body.htmlBody,
     };
 }
 export async function createEmailPasswordResetLink(database, _session, email) {
@@ -2055,12 +2060,9 @@ export function passwordResetMailBody(link) {
             `Open this link to choose a new password:\n${link}\n\n` +
             "If you did not request this, you can ignore this message and your password will stay the same.\n",
         htmlBody: "<p>We received a request to reset your password.</p>" +
-            `<p><a href="${escapeHtmlAttribute(link)}">Choose a new password</a></p>` +
+            `<p><a href="${escapeHtml(link)}">Choose a new password</a></p>` +
             "<p>If you did not request this, you can ignore this message and your password will stay the same.</p>",
     };
-}
-function escapeHtmlAttribute(value) {
-    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 export function mailNotConfiguredError() {
     return {

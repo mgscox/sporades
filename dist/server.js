@@ -1,3 +1,4 @@
+export { escapeHtml, html } from "./html.js";
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 export function requireUserAuth(context, options = {}) {
     const linked = normalizeRequireUserAuthOptions(options).linked;
@@ -175,7 +176,8 @@ function field(kind) {
     };
 }
 export function serverRuntimeModuleSource() {
-    return `const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+    return `export { escapeHtml, html } from "sporades:html";
+const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
 function authRequirementsError(hint) {

@@ -49,6 +49,8 @@
 // imports do. That is the case ADR-0041 left untested, and the carrier's self-containment check was
 // narrowed to say so.
 
+import { htmlString } from "./html.js";
+
 type LooseRecord = Record<string, any>;
 type RuntimeEnv = Record<string, string | undefined>;
 
@@ -288,8 +290,9 @@ function normalizeMailMessage(input: any, defaultFrom: any, vendor = "generic") 
     invalid("Pass a non-empty subject that normalizes to at most 998 characters without prohibited control characters.");
   }
   if (input.textBody === undefined && input.htmlBody === undefined) invalid("Pass at least one of `textBody` or `htmlBody`.");
+  const htmlBody = htmlString(input.htmlBody) ?? input.htmlBody;
   for (const field of ["textBody", "htmlBody"]) {
-    const value = input[field];
+    const value = field === "htmlBody" ? htmlBody : input[field];
     if (value !== undefined && (typeof value !== "string" || value.length > 1024 * 1024 || /\0/.test(value))) {
       invalid(`Pass \`${field}\` as a string of at most 1 MiB without null characters.`);
     }
@@ -318,7 +321,7 @@ function normalizeMailMessage(input: any, defaultFrom: any, vendor = "generic") 
     subject,
     ...(autoSubmitted !== undefined ? { autoSubmitted } : {}),
     ...(input.textBody !== undefined ? { textBody: input.textBody } : {}),
-    ...(input.htmlBody !== undefined ? { htmlBody: input.htmlBody } : {}),
+    ...(htmlBody !== undefined ? { htmlBody } : {}),
     ...(providerHeaders?.length ? { providerHeaders } : {}),
     ...(provider !== undefined ? { provider } : {}),
   };
