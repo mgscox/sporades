@@ -2702,6 +2702,60 @@ test("generated Hosted, Dev and Container Bundles require Host identity for addr
   }
 });
 
+test("a generated Bundle exposes ACL presets and denies client access to Privileged-only tables", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-private-tables-"));
+  let booted;
+  let socket;
+  try {
+    const serverSource = `import { acl, capsule, mutation, query, String, table } from "sporades/server";
+      export default capsule({ name: "private-tables", schema: {
+        secrets: table({ value: String() }).acl(acl.privilegedOnly()),
+        internal: table({ value: String() }).acl(acl.denyAll()),
+        open: table({ value: String() }),
+      },
+      hooks: { init: ctx => ctx.privileged.run({ operation: "private.seed", targetResourceKind: "capsule-db" }, async p => {
+        await p.db.secrets.insert({ value: "bundle-secret" });
+        await p.db.internal.insert({ value: "bundle-internal" });
+      }) },
+      queries: { secrets: query(ctx => ctx.db.secrets.all()), internal: query(ctx => ctx.db.internal.all()) },
+      mutations: {
+        secrets: mutation(ctx => ctx.db.secrets.insert({ value: "forbidden" })),
+        internal: mutation(ctx => ctx.db.internal.insert({ value: "forbidden" })),
+        open: mutation(ctx => ctx.db.open.insert({ value: "compatible" })),
+        inspect: mutation(ctx => ctx.privileged.run({ operation: "private.inspect", targetResourceKind: "capsule-db" }, async p => ({
+          secrets: (await p.db.secrets.all()).map(row => row.value),
+          internal: (await p.db.internal.all()).map(row => row.value),
+        }))),
+      } });`;
+    const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), "server", "index.ts") });
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource, serverModuleSource });
+    await writePublicTree(root, "<!doctype html><html><body></body></html>");
+    booted = await bootBundle({ source, dir: root });
+    socket = await openBundleSocket(booted.baseUrl);
+    for (const name of ["secrets", "internal"]) {
+      socket.send({ id: `read-${name}`, type: "query.subscribe", query: name });
+      const read = await socket.waitFor(message => message.id === `read-${name}`);
+      assert.equal(read.error, null);
+      assert.deepEqual(read.data, []);
+      socket.send({ id: `write-${name}`, type: "mutation.run", mutation: name, args: [] });
+      const denied = await socket.waitFor(message => message.id === `write-${name}`);
+      assert.deepEqual(denied.error, { code: "DENIED", message: "Denied.", hint: "The current user is not allowed to perform this operation." });
+    }
+    socket.send({ id: "inspect", type: "mutation.run", mutation: "inspect", args: [] });
+    const inspected = await socket.waitFor(message => message.id === "inspect");
+    assert.equal(inspected.error, null);
+    assert.deepEqual(inspected.data, { secrets: ["bundle-secret"], internal: ["bundle-internal"] });
+    socket.send({ id: "open", type: "mutation.run", mutation: "open", args: [] });
+    const compatible = await socket.waitFor(message => message.id === "open");
+    assert.equal(compatible.error, null);
+    assert.equal(compatible.data.value, "compatible");
+  } finally {
+    socket?.close();
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a generated Bundle enforces upload ACL and MIME policy and lists Files only through Privileged code", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-file-policy-"));
   let booted;

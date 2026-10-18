@@ -787,7 +787,10 @@ test("ACL user guide documents policy behavior and storage helper boundaries", a
   assert.match(guide, /never select a current Team, bootstrap a Team, enumerate memberships, or\s+expose `ctx\.teams`/);
   assert.match(guide, /inactive or undeclared assignments fail closed/);
   assert.match(guide, /Team admins do not receive application-role authority unless the ACL checks\s+`isAdmin` explicitly/);
-  assert.match(guide, /`sporades doctor` may later warn about missing ACLs or\s+open-to-the-world data/);
+  assert.match(guide, /`sporades doctor` names tables with missing ACL rules/);
+  assert.match(guide, /every table with no declared rules \(including `\.acl\(\{\}\)`\) as allow-all/);
+  assert.match(guide, /`\.acl\(acl\.privilegedOnly\(\)\)`; `acl\.denyAll\(\)` is an alias/);
+  assert.match(guide, /without executing policy functions/);
 });
 
 test("write ACL fallback, operation-specific override, missing ACL, and async rules apply to writes", async () => {
