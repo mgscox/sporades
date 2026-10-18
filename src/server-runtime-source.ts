@@ -1361,7 +1361,10 @@ export async function openDevDatabase(
   await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
   await sqlite.ensureLogStorage();
   if (missingEnvEvent) {
-    try { await sqlite.insertLogIndexEvent(missingEnvEvent); } catch { /* JSONL remains authoritative. */ }
+    try {
+      await sqlite.insertLogIndexEvent(missingEnvEvent);
+      await sqlite.pruneLogIndex(logIndexLimit(config));
+    } catch { /* JSONL remains authoritative. */ }
   }
   options?.onJobQueueReady?.(database);
   if (!options?.runtimeActionOnly) {

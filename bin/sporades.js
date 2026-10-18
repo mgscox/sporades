@@ -136700,6 +136700,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   if (missingEnvEvent) {
     try {
       await sqlite.insertLogIndexEvent(missingEnvEvent);
+      await sqlite.pruneLogIndex(logIndexLimit(config));
     } catch {
     }
   }

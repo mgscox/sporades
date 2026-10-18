@@ -1314,6 +1314,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     if (missingEnvEvent) {
         try {
             await sqlite.insertLogIndexEvent(missingEnvEvent);
+            await sqlite.pruneLogIndex(logIndexLimit(config));
         }
         catch { /* JSONL remains authoritative. */ }
     }

@@ -185,3 +185,16 @@ test('failClosed boot with a relative database filename writes diagnostics besid
   await assert.rejects(readFile(path.join(dir, 'denied.db')), { code: 'ENOENT' });
   assert.match(await readFile(path.join(dir, 'logs/events.jsonl'), 'utf8'), /Missing required Server env keys: KEY/);
 }));
+
+test('missing-env boot diagnostics preserve the configured Log index bound across restarts', async () => temporary(async dir => {
+  const { openDevDatabase, shutdownAndCloseDatabase } = await import('../dist/server-runtime-source.js');
+  const config = { name: 'bounded-boot', env: { required: ['KEY'] }, logs: { indexLimit: 1 } };
+  for (let boot = 0; boot < 3; boot++) {
+    const db = await openDevDatabase(path.join(dir, 'data.db'), '', {}, config);
+    try {
+      const events = await db.log.recent(10);
+      assert.equal(events.length, 1);
+      assert.equal(events[0].event, 'env.required.missing');
+    } finally { await shutdownAndCloseDatabase(db); }
+  }
+}));
