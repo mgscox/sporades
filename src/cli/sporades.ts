@@ -6180,6 +6180,7 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
     cwd: options.projectDir,
     encoding: "utf8",
     ...(String(options.action).startsWith("access-keys.") ? { maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER } : {}),
+    ...(String(options.action).includes(".backup.") ? { maxBuffer: 16 * 1024 * 1024 } : {}),
     input: `${JSON.stringify(request)}\n`,
   });
 

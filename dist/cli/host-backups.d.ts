@@ -40,7 +40,16 @@ export declare function pruneHostBackups(policy: HostBackupPolicy, host: HostHel
 }>;
 export declare function createHostBackup(policy: HostBackupPolicy, target: BackupTarget, afterCapture?: () => Promise<void>): Promise<{
     id: any;
-    manifest: HostBackupManifest;
+    manifest: {
+        fileCount: number;
+        directoryCount: number;
+        version: 1;
+        domain: string;
+        subname: string;
+        releaseId: string;
+        createdAt: string;
+        schemaHash: string;
+    };
 }>;
 export declare function publishHostBackupMetric(host: HostHelperHost, subname: string, removed?: boolean): Promise<void>;
 export declare function recoverHostBackupRestore(data: string): Promise<void>;
@@ -49,7 +58,16 @@ export declare function restoreHostBackup(policy: HostBackupPolicy, target: Back
     id: string;
     sourceSubname: string;
     subname: string;
-    manifest: HostBackupManifest;
+    manifest: {
+        fileCount: number;
+        directoryCount: number;
+        version: 1;
+        domain: string;
+        subname: string;
+        releaseId: string;
+        createdAt: string;
+        schemaHash: string;
+    };
     restartRequired: boolean;
 }>;
 export declare function hostBackupStatus(host: HostHelperHost, subname: string): Promise<{

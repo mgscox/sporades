@@ -91,7 +91,9 @@ resume journal; retrying create resumes only that exact container before retryin
 If Docker cannot resume it, inspect Docker and run `host start` explicitly. Normal
 start/stop clears obsolete backup resume evidence. A successful backup has a full
 64-character restic snapshot ID; list returns IDs and times scoped to the source
-Capsule. Prune keeps the latest `retention` snapshots for that Capsule and reclaims
+Capsule. Create and restore return a compact manifest summary with file/directory
+counts; the encrypted snapshot retains the complete checksum inventory. Prune
+keeps the latest `retention` snapshots for that Capsule and reclaims
 unreferenced repository bytes. Restic owns repository concurrency locking.
 
 The systemd timer runs each registered Capsule with a deployed release in

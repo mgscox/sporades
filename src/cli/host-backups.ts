@@ -18,6 +18,10 @@ export type HostBackupPolicy = {
 type Snapshot = { id: string; time: string; tags: string[] };
 export type HostBackupManifest = { version: 1; domain: string; subname: string; releaseId: string; createdAt: string; schemaHash: string; checksums: Record<string, string>; directories: string[] };
 export type BackupTarget = { host: HostHelperHost; subname: string; releaseId: string; data: string };
+function manifestSummary(manifest: HostBackupManifest) {
+  const { checksums, directories, ...identity } = manifest;
+  return { ...identity, fileCount: Object.keys(checksums).length, directoryCount: directories.length };
+}
 
 function fail(message: string): never {
   throw helperError(message, "Inspect protected Host backup configuration and restic repository access; no credentials are included in diagnostics.");
@@ -166,7 +170,7 @@ export async function createHostBackup(policy: HostBackupPolicy, target: BackupT
     const summary = output.trim().split("\n").map(line => JSON.parse(line)).find(v => v.message_type === "summary");
     if (!/^[a-f0-9]{64}$/.test(summary?.snapshot_id)) fail("Backup did not produce a complete snapshot.");
     await atomicBackupJson(path.join(hostBackupDirectory(target.host), `${target.subname}.json`), { id: summary.snapshot_id, createdAt: manifest.createdAt, repository: repositoryIdentity(policy) });
-    return { id: summary.snapshot_id, manifest };
+    return { id: summary.snapshot_id, manifest: manifestSummary(manifest) };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 export async function publishHostBackupMetric(host: HostHelperHost, subname: string, removed = false) {
@@ -261,7 +265,7 @@ export async function restoreHostBackup(policy: HostBackupPolicy, target: Backup
       await rename(staged, target.data);
       await atomicBackupJson(journal, { version: 1, phase: "committed" });
     } finally { await recoverHostBackupRestore(target.data); }
-    return { restored: true, id, sourceSubname, subname: target.subname, manifest, restartRequired: true };
+    return { restored: true, id, sourceSubname, subname: target.subname, manifest: manifestSummary(manifest), restartRequired: true };
   } finally { await rm(restored, { recursive: true, force: true }); await rm(staged, { recursive: true, force: true }); }
 }
 export async function hostBackupStatus(host: HostHelperHost, subname: string) {

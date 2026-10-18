@@ -4,6 +4,10 @@ import { createReadStream } from "node:fs";
 import { chown, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { helperError } from "./cli-support.js";
+function manifestSummary(manifest) {
+    const { checksums, directories, ...identity } = manifest;
+    return { ...identity, fileCount: Object.keys(checksums).length, directoryCount: directories.length };
+}
 function fail(message) {
     throw helperError(message, "Inspect protected Host backup configuration and restic repository access; no credentials are included in diagnostics.");
 }
@@ -202,7 +206,7 @@ export async function createHostBackup(policy, target, afterCapture) {
         if (!/^[a-f0-9]{64}$/.test(summary?.snapshot_id))
             fail("Backup did not produce a complete snapshot.");
         await atomicBackupJson(path.join(hostBackupDirectory(target.host), `${target.subname}.json`), { id: summary.snapshot_id, createdAt: manifest.createdAt, repository: repositoryIdentity(policy) });
-        return { id: summary.snapshot_id, manifest };
+        return { id: summary.snapshot_id, manifest: manifestSummary(manifest) };
     }
     finally {
         await rm(directory, { recursive: true, force: true });
@@ -334,7 +338,7 @@ export async function restoreHostBackup(policy, target, sourceSubname, id) {
         finally {
             await recoverHostBackupRestore(target.data);
         }
-        return { restored: true, id, sourceSubname, subname: target.subname, manifest, restartRequired: true };
+        return { restored: true, id, sourceSubname, subname: target.subname, manifest: manifestSummary(manifest), restartRequired: true };
     }
     finally {
         await rm(restored, { recursive: true, force: true });

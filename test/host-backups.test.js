@@ -96,6 +96,8 @@ test('encrypted restic round trip, Capsule isolation, retention and corruption r
   const first = await createHostBackup(p, source, async () => { captured = true; });
   assert.equal(captured, true);
   assert.equal(first.manifest.releaseId, source.releaseId);
+  assert.equal(first.manifest.fileCount, 2);
+  assert.equal(first.manifest.checksums, undefined);
   assert.match(first.manifest.schemaHash, /^[a-f0-9]{64}$/);
   assert.equal((await hostBackupStatus(h, 'source')).stale, false);
   assert.equal((await hostBackupStatus(h, 'staging')).stale, true);
