@@ -7,6 +7,7 @@ Changes since v0.9.31.
 ### 🚀 Features
 
 - Add opt-in CSP nonces, Hosted-only HSTS, explicit CSP report URIs and doctor migration guidance (#235).
+- Add shared Capsule rate limits and trusted-address authentication throttles (#232).
 - Export HTML-safe mail helpers and support password-reset body placeholders (#230).
 - Add pinned monitoring release acceptance verifier (#229) (872f33866).
 - Add admission lifecycle proof harness and human verification handoff (#221) (9e4608535).

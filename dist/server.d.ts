@@ -1,3 +1,4 @@
+export type { RateLimitOptions, RateLimitResult, RegistrationThrottleConfig } from "../src/types/server.js";
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { SecurityConfig, ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 export { escapeHtml, html, type Html } from "./html.js";
@@ -245,6 +246,8 @@ export type CapsuleTableDefinition<Fields extends UnknownRecord> = Omit<TableDef
     unique(...fields: [keyof Fields & string, ...(keyof Fields & string)[]]): CapsuleTableDefinition<Fields>;
 };
 export type AuthContext = {
+    /** Canonical client address authenticated by the Hosted proxy; absent outside trusted requests. */
+    readonly clientAddress?: string;
     userId: string;
     /** Present only for non-human Service Users; absence preserves the legacy human/Anonymous shape. */
     userKind?: "service";

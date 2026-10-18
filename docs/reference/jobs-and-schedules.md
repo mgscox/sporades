@@ -520,7 +520,11 @@ Application writes, child Jobs and the operation receipt commit together.
 key `(resourceTable, resourceId, operationId)` within the database. It stores
 SHA-256 input and actor-binding digests, canonical result JSON, intent-ID JSON,
 and `committedAt`. The actor digest binds the complete captured
-Auth/Credential snapshot and Privileged mode. Receipts are also the v1 replay
+Auth/Credential snapshot and Privileged mode, excluding request-only
+`auth.clientAddress` metadata. Address changes do not alter receipt identity;
+receipts created before trusted client addresses remain compatible. Replay and
+status still require current authorization, and changed actors or credentials
+still conflict. Receipts are also the v1 replay
 tombstones and are retained indefinitely; SQLite needs no separate lock row or
 durable resource lease. The `sporades_resource_` and `sporades_notification_`
 table namespaces are reserved.
