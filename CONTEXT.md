@@ -522,6 +522,10 @@ _Avoid_: Privileged server role, bypassACL API, pending-member role
 The optional Capsule `teams.admitJoin` callback that decides whether one already validated, email-matched Join link may create a membership. Sporades invokes it under the Team lifecycle lock with the joining user as subject, the exact accepted-member count, and a Team-Join-purpose trusted read capability. Its decision, Join-link consumption, and membership insertion commit or roll back atomically; it grants no provisional membership or broader authority.
 _Avoid_: subscription hook, pending member, billing ACL exception
 
+**Destructive Team policy**:
+The opt-in `teams.authorizeDestructive` Capsule policy. Direct SDK and server Team demotion, removal, leave and deletion consult it after current authorization and final-admin checks under the exact Team lifecycle lock, in the operation transaction. A five-second, expiring read-only Capsule database view can inspect cross-owner responsibility without disclosing it to the caller. Only explicit valid allow commits; refusal poisons the enclosing transaction and stays opaque. All protected responsibility writers take server-only `ctx.teams.lockLifecycle` before app reads/writes, including explicit accepted transfers and atomic Stripe consequences. It retains the lock through outer settlement without granting userless code administrative authority. Provider work runs after commit.
+_Avoid_: mutation hook, billing-holder transfer API, provider callback transaction
+
 **Privileged server role**:
 A server-only authority for trusted system-owned execution that intentionally runs without a Sporades user identity, such as scheduled Jobs or platform-owned maintenance. It is separate from Capsule roles, app admin users, browser credentials, users, team members, sessions, and accounts.
 Its `privilegedCtx.files.delete(fileReference)` operation can delete any exact live Capsule File without current-user ownership or `files.acl.delete` authorization and is therefore distinct from user-scoped `ctx.files.delete(fileReference)`; it remains callback-bound and covered by the Privileged audit lifecycle.

@@ -70,7 +70,7 @@ import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
-const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
+const trustedReadPurposes = new Set(["teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -604,6 +604,9 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     if (capsuleDefinition?.teams?.admitJoin !== undefined && typeof capsuleDefinition.teams.admitJoin !== "function") {
         throw commandError("Invalid Capsule Team admission policy.", "Declare teams.admitJoin as a server function.", "INVALID_TEAM_JOIN_ADMISSION");
     }
+    if (capsuleDefinition?.teams?.authorizeDestructive !== undefined && typeof capsuleDefinition.teams.authorizeDestructive !== "function") {
+        throw commandError("Invalid Capsule Team policy.", "Declare teams.authorizeDestructive as a server function.", "INVALID_TEAM_DESTRUCTIVE_POLICY");
+    }
     const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
     const teamBillingDefinition = capsuleDefinition?.teamBilling === undefined
         ? null
@@ -919,6 +922,48 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 }
                 finally {
                     await drainPendingLogWrites(admissionDatabase);
+                }
+            }
+            : undefined,
+        runTeamDestructivePolicy: typeof capsuleDefinition?.teams?.authorizeDestructive === "function"
+            ? async function (transactionAdapter, auth, input, signal) {
+                const root = this.__rootDatabase ?? this;
+                const transaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
+                const controller = new AbortController();
+                const abort = () => controller.abort();
+                if (signal?.aborted)
+                    abort();
+                else
+                    signal?.addEventListener("abort", abort, { once: true });
+                const deadline = performance.now() + 5_000;
+                const timer = root.clock.setTimer(abort, 5_000);
+                let removeAbort = () => { };
+                try {
+                    return await withTrustedRead(root, {
+                        transaction, purpose: "teams.destructive-policy", subject: input, signal: controller.signal,
+                        failOnReadError: true,
+                    }, async (db, assertActive) => {
+                        const evaluation = Promise.resolve().then(() => capsuleDefinition.teams.authorizeDestructive(Object.freeze({
+                            app: root.app, auth: Object.freeze({ ...auth }), db, signal: controller.signal,
+                        }), input));
+                        const aborted = new Promise((_, reject) => {
+                            const fail = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));
+                            removeAbort = () => controller.signal.removeEventListener("abort", fail);
+                            controller.signal.addEventListener("abort", fail, { once: true });
+                            if (controller.signal.aborted)
+                                fail();
+                        });
+                        const decision = await Promise.race([evaluation, aborted]);
+                        if (performance.now() >= deadline)
+                            controller.abort();
+                        assertActive();
+                        return decision;
+                    });
+                }
+                finally {
+                    removeAbort();
+                    root.clock.clearTimer(timer);
+                    signal?.removeEventListener("abort", abort);
                 }
             }
             : undefined,
@@ -3694,6 +3739,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request, reque
                             ordinaryCredential: !runtimeOwnedProviderCallback,
                             credential: accessKeyAdmission?.credential,
                             accessKeyGrants: accessKeyAdmission?.grants,
+                            signal: request.signal ?? request.__sporadesEndpointSignal,
                         });
                         revokeOuterResources = bindOuterResources(transactionDatabase, context, {
                             startedAt: outerStartedAt,
@@ -3842,6 +3888,7 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
         adapter,
         sqlite: adapter,
         __transactionActive: true,
+        __isTeamPolicyTransactionActive: () => isActiveTransactionScopedAdapter(transactionAdapter),
         [trustedReadTransactionAdapter]: transactionAdapter,
         __rootDatabase: database.__rootDatabase ?? database,
         [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
@@ -3989,6 +4036,7 @@ function createAtomicStripeConsequenceContext(database, parent) {
     const privilegedTeams = createPrivilegedTeamsApi(database, () => holder.current);
     context.teams = Object.freeze({
         countMembers: privilegedTeams.countMembers.bind(privilegedTeams),
+        lockLifecycle: privilegedTeams.lockLifecycle.bind(privilegedTeams),
     });
     return context;
 }
@@ -4108,6 +4156,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
         auth,
         ...(credential ? { credential } : {}),
         app: database.app,
+        signal: options.signal,
         rateLimit: database.capsuleRateLimiter.consume,
         env: database.serverEnv,
         payments: database.paymentsConfig,
@@ -4513,6 +4562,32 @@ function trustedReadResult(value, assertActive) {
         return result;
     });
 }
+// Mark failed reads even when a policy catches the storage exception itself.
+function trackTrustedPolicyReads(value, fail, pending) {
+    return new Proxy(value, {
+        get(target, key) {
+            const member = target[key];
+            if (typeof member === "function")
+                return (...args) => {
+                    try {
+                        const result = member.apply(target, args);
+                        if (isPromiseLike(result)) {
+                            const tracked = Promise.resolve(result).catch(error => { fail(); throw error; });
+                            pending.add(tracked);
+                            void tracked.then(() => pending.delete(tracked), () => pending.delete(tracked));
+                            return tracked;
+                        }
+                        return result && typeof result === "object" ? trackTrustedPolicyReads(result, fail, pending) : result;
+                    }
+                    catch (error) {
+                        fail();
+                        throw error;
+                    }
+                };
+            return member && typeof member === "object" ? trackTrustedPolicyReads(member, fail, pending) : member;
+        },
+    });
+}
 export async function withTrustedRead(database, options, callback) {
     if (!isActiveTransactionScopedAdapter(options?.transaction, database?.adapter)) {
         throw commandError("Trusted app-database reads require an active transaction.", "Start the trusted policy from the runtime-owned transition transaction.", "TRUSTED_READ_TRANSACTION_REQUIRED");
@@ -4526,10 +4601,13 @@ export async function withTrustedRead(database, options, callback) {
         throw abortError();
     const transactionDatabase = createTransactionDatabase(database, options.transaction);
     let active = true;
+    let readFailed = false;
     const assertActive = () => {
         if (!active) {
             throw commandError("Trusted app-database read access is no longer active.", "Start a new runtime-owned trusted policy callback before reading app data.", "TRUSTED_READ_ACCESS_INACTIVE");
         }
+        if (readFailed)
+            throw commandError("Trusted app-database read failed.", "The runtime-owned trusted policy could not be evaluated.", "TRUSTED_READ_FAILED");
         if (signal?.aborted)
             throw abortError();
     };
@@ -4540,10 +4618,14 @@ export async function withTrustedRead(database, options, callback) {
     };
     grantPrivilegedDbAccess(context);
     const holder = createContextHolder(context);
-    const db = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
+    const pendingReads = new Set();
+    const rawDb = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
+    const db = options.failOnReadError ? trackTrustedPolicyReads(rawDb, () => { readFailed = true; }, pendingReads) : rawDb;
     try {
         try {
             const result = await callback(db, assertActive);
+            if (pendingReads.size > 0)
+                readFailed = true;
             assertActive();
             return result;
         }
@@ -5038,10 +5120,13 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 "",
                 "",
             ].join("\r\n"));
+            const teamOperationController = new AbortController();
+            socket.once("close", () => teamOperationController.abort());
             const origin = resolveOAuthRequestOrigin(policy, request);
             const now = new Date().toISOString();
             const client = {
                 id: `client-${(nextClientId++).toString(36)}`,
+                teamOperationSignal: teamOperationController.signal,
                 socket,
                 buffer: Buffer.alloc(0),
                 messageQueue: Promise.resolve(),
@@ -5918,15 +6003,17 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         }
         if (message.type === "teams.promote" || message.type === "teams.demote" || message.type === "teams.removeMember" || message.type === "teams.leave" || message.type === "teams.delete") {
             try {
+                const teamContext = { credential: { kind: "session" }, signal: client.teamOperationSignal };
+                bindAccessKeyOwnerSession(teamContext, client.session.token);
                 const data = message.type === "teams.promote"
                     ? await promoteTeamMember(database, client.session.auth, message.teamId, message.userId)
                     : message.type === "teams.demote"
-                        ? await demoteTeamMember(database, client.session.auth, message.teamId, message.userId)
+                        ? await demoteTeamMember(database, client.session.auth, message.teamId, message.userId, teamContext)
                         : message.type === "teams.removeMember"
-                            ? await removeTeamMember(database, client.session.auth, message.teamId, message.userId)
+                            ? await removeTeamMember(database, client.session.auth, message.teamId, message.userId, teamContext)
                             : message.type === "teams.leave"
-                                ? await leaveCurrentUserTeam(database, client.session.auth, message.teamId)
-                                : await deleteCurrentUserTeam(database, client.session.auth, message.teamId);
+                                ? await leaveCurrentUserTeam(database, client.session.auth, message.teamId, teamContext)
+                                : await deleteCurrentUserTeam(database, client.session.auth, message.teamId, teamContext);
                 sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
             }
             catch (error) {
@@ -6058,6 +6145,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                     const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
                         sessionToken: client.session.token,
                         clientAddress: client.clientAddress,
+                        signal: client.teamOperationSignal,
                     });
                     sendJson(client, formatMutationResult(message, mutationName, result));
                     if (result.ok && mutationResultsWithWrites.has(result)) {
@@ -6733,6 +6821,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
                     context = createMutationContext(transactionDatabase, auth, {
                         sessionToken: options.sessionToken,
                         clientAddress: options.clientAddress,
+                        signal: options.signal,
                         serviceUserMutationAuthority,
                         mutationInvocation,
                     });
@@ -7008,6 +7097,7 @@ function createMutationContext(database, auth, options = {}) {
         auth,
         ...(credential ? { credential } : {}),
         app: database.app,
+        signal: options.signal,
         env: database.serverEnv,
         payments: database.paymentsConfig,
         rateLimit: database.capsuleRateLimiter.consume,

@@ -9,7 +9,7 @@ import { createServerBundleModuleSource } from '../dist/templates/server-bundle-
 import { probeAppBinding, expectedAppBinding } from './support/app-binding-probe.js';
 
 const run = promisify(execFile);
-test('generated Bundles preserve readonly app bindings in registration and table ACL callbacks', { timeout: 60000 }, async t => {
+test('generated Bundles preserve readonly app bindings in registration, table ACL and destructive Team callbacks', { timeout: 60000 }, async t => {
   await mkdir('.scratch', { recursive: true });
   const root = await mkdtemp(path.resolve('.scratch/origin-callback-bundle-'));
   const serverSource = `import { capsule, query, table, String as Text } from 'sporades/server';
@@ -21,6 +21,7 @@ export default capsule({name:'origin-callback-bundle',
     admit(ctx){observations.admit=probeAppBinding(ctx);return {allow:true};},
     async finalize(ctx){observations.finalize=probeAppBinding(ctx);await ctx.db.proofs.insert({origin:ctx.app.publicOrigin});}
   }},
+  teams:{authorizeDestructive(ctx){observations.destructive=probeAppBinding(ctx);return {allow:true};}},
   queries:{proofs:query(async ctx=>({origins:(await ctx.db.proofs.all()).map(row=>row.origin),observations}))}
 });`;
   try {
@@ -30,6 +31,9 @@ export default capsule({name:'origin-callback-bundle',
       epilogue: `import {resolveAnonymousSession as probeGuest,signUpWithEmail as probeSignup,runQuery as probeQuery} from '../server-runtime-source.js';
 const owner=await probeSignup(database,await probeGuest(database,null),'email',{email:'bundle@example.com',password:'password-123'});
 if(!owner.ok) throw new Error(JSON.stringify(owner.error));
+const {listCurrentUserTeams,deleteCurrentUserTeam}=await import('../teams-runtime.js');
+const team=(await listCurrentUserTeams(database,owner.auth)).teams[0];
+await deleteCurrentUserTeam(database,owner.auth,team.id);
 const result=await probeQuery(database,owner.auth,'proofs');
 if(result.error) throw new Error(JSON.stringify(result.error));
 process.stdout.write(JSON.stringify({callbackProbe:result.data})+'\\n');
@@ -47,7 +51,7 @@ process.exit(0);`,
       const { stdout } = await run(process.execPath, ['server.mjs'], { cwd: dir, env, timeout: 20000 });
       const result = stdout.split('\n').map(line => { try { return JSON.parse(line).callbackProbe; } catch { return null; } }).find(Boolean);
       assert.deepEqual(result, { origins: [origin], observations: {
-        admit: expectedAppBinding(origin), finalize: expectedAppBinding(origin), acl: expectedAppBinding(origin),
+        admit: expectedAppBinding(origin), finalize: expectedAppBinding(origin), acl: expectedAppBinding(origin), destructive: expectedAppBinding(origin),
       } });
     });
   } finally { await rm(root, { recursive: true, force: true }); }

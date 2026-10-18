@@ -7,7 +7,7 @@ import { requireAuth } from "./auth-runtime.js";
 import { chainMaybePromise } from "./maybe-promise.js";
 import { commandError } from "./runtime-errors.js";
 import { normalizeOrigin } from "./http-runtime.js";
-import { accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
+import { readCurrentUserSessionToken, accessKeyCredentialLogAttribution } from "./access-keys-runtime.js";
 
 type LooseRecord = Record<string, any>;
 type TeamJoinLinkInspection = {
@@ -108,6 +108,9 @@ export function createTeamTables(adapter: LooseRecord) {
 
 export function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseRecord, contextGetter?: () => LooseRecord) {
   return {
+    async lockLifecycle(teamId: unknown, memberUserId?: unknown) {
+      return lockPolicyLifecycle(database, auth, teamId, memberUserId, contextGetter?.());
+    },
     async list() {
       requireAuth({ auth }, { linked: true });
       return listCurrentUserTeams(database, auth);
@@ -184,6 +187,12 @@ export function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseReco
  */
 export function createPrivilegedTeamsApi(database: LooseRecord, contextGetter: () => LooseRecord) {
   return Object.freeze({
+    async lockLifecycle(teamId: unknown, memberUserId?: unknown) {
+      const context = contextGetter();
+      assertActivePrivilegedTeamAccess(contextGetter);
+      return lockPolicyLifecycle(database, null, teamId, memberUserId, context,
+        () => assertActivePrivilegedTeamAccess(contextGetter));
+    },
     async countMembers(teamId: any) {
       return runPrivilegedTeamInspection(contextGetter, (assertActive) => countPrivilegedTeamMembers(database, teamId, assertActive));
     },
@@ -685,6 +694,86 @@ async function countTeamAdmins(tx: LooseRecord, teamId: string) {
   return Number(row?.count ?? 0);
 }
 
+function teamPolicyDenied() {
+  return commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED");
+}
+
+function beforeTeamCommit(tx: LooseRecord, check: () => any) {
+  if (!Object.prototype.hasOwnProperty.call(tx, transactionBeforeCommitChecks)) {
+    Object.defineProperty(tx, transactionBeforeCommitChecks, { value: [] });
+  }
+  (tx as any)[transactionBeforeCommitChecks].push(async () => {
+    try { await check(); } catch { throw teamPolicyDenied(); }
+  });
+}
+
+async function assertCurrentPolicyActor(database: LooseRecord, tx: LooseRecord, auth: LooseRecord, context?: LooseRecord) {
+  requireAuth({ auth }, { linked: true });
+  const token = context && readCurrentUserSessionToken(context);
+  const now = (database.clock?.now?.() ?? new Date()).toISOString();
+  // Every public Session path supplies the runtime's private token binding.
+  // Trusted internal calls without a context still re-read the persisted User.
+  if (context && (context.credential?.kind !== "session" || !token)) throw teamPolicyDenied();
+  const authLock = tx.engine === "postgres" ? " FOR UPDATE" : "";
+  const user = token
+    ? await tx.prepare(tx.dialect.sql("SELECT [u].[id] FROM [sporades_auth_users] [u] JOIN [sporades_auth_sessions] [s] ON [s].[userId] = [u].[id] WHERE [u].[id] = ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND [s].[token] = ? AND [s].[expiresAt] > ?" + authLock)).get(auth.userId, token, now)
+    : await tx.prepare(tx.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [id] = ? AND [isAuthenticated] = 1 AND [isGuest] = 0" + authLock)).get(auth.userId);
+  if (!user || context?.signal?.aborted) throw teamPolicyDenied();
+}
+
+async function enforceDestructivePolicy(database: LooseRecord, tx: LooseRecord, auth: LooseRecord, operation: string, teamId: string, userId: string, role: string, context?: LooseRecord) {
+  if (typeof database.runTeamDestructivePolicy !== "function") return;
+  let allowed = false;
+  // Poison the enclosing transaction on failure even if Capsule code catches it.
+  beforeTeamCommit(tx, async () => {
+    if (!allowed) throw teamPolicyDenied();
+    await assertCurrentPolicyActor(database, tx, auth, context);
+  });
+  try {
+    await assertCurrentPolicyActor(database, tx, auth, context);
+    const decision = await database.runTeamDestructivePolicy(tx, auth, Object.freeze({
+      teamId, actorUserId: auth.userId, operation,
+      member: Object.freeze({ userId, role }),
+      scope: operation === "delete" ? "team" : "member",
+    }), context?.signal);
+    const descriptor = decision && typeof decision === "object" && !Array.isArray(decision)
+      ? Object.getOwnPropertyDescriptor(decision, "allow") : null;
+    if (!descriptor || !("value" in descriptor) || descriptor.value !== true || Reflect.ownKeys(decision).some(key => key !== "allow")) throw teamPolicyDenied();
+    await assertCurrentPolicyActor(database, tx, auth, context);
+    allowed = true;
+  } catch { throw teamPolicyDenied(); }
+}
+
+/** Retain the exact Team lock until the caller's existing transaction settles. */
+async function lockPolicyLifecycle(database: LooseRecord, auth: LooseRecord | null, teamId: unknown, memberUserId: unknown, context?: LooseRecord, assertActive?: () => void) {
+  const tx = (database as any)[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter;
+  if (!database.__transactionActive || database.__isTeamPolicyTransactionActive?.() !== true) throw teamPolicyDenied();
+  let admitted = false;
+  beforeTeamCommit(tx, async () => {
+    if (!admitted || context?.signal?.aborted) throw teamPolicyDenied();
+    if (auth) await assertCurrentPolicyActor(database, tx, auth, context);
+  });
+  try {
+    if (context?.signal?.aborted || typeof teamId !== "string"
+      || (memberUserId !== undefined && !isOpaqueTeamId(memberUserId))) throw teamPolicyDenied();
+    await lockTeamLifecycle(tx, teamId, teamPolicyDenied);
+    assertActive?.();
+    if (auth) {
+      await assertCurrentPolicyActor(database, tx, auth, context);
+      if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamPolicyDenied();
+    }
+    const row = memberUserId === undefined ? null : await tx.prepare(tx.dialect.sql(
+      "SELECT [userId], [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
+    )).get(teamId, memberUserId);
+    if (context?.signal?.aborted) throw teamPolicyDenied();
+    assertActive?.();
+    // Admission must finish inside the Privileged callback. Once admitted,
+    // retain the lock through outer commit even after that callback settles.
+    admitted = true;
+    return Object.freeze({ teamId, member: row ? Object.freeze({ userId: String(row.userId), role: row.role }) : null });
+  } catch { throw teamPolicyDenied(); }
+}
+
 export async function lockTeamLifecycle(tx: LooseRecord, teamId: string, missingTeamError: () => Error = teamDenied) {
   // A no-op row update is a portable per-Team write lock: under Postgres the
   // next lifecycle transaction waits and then observes the prior commit;
@@ -928,6 +1017,7 @@ async function changeTeamMemberRole(database: LooseRecord, auth: LooseRecord, te
         const admins = await countTeamAdmins(tx, teamId);
         if (admins < 2) throw teamDenied();
       }
+      if (role === "member") await enforceDestructivePolicy(database, tx, auth, "demote", teamId, userId, target.role, eventContext);
       await tx.prepare(sql("UPDATE [sporades_team_memberships] SET [role] = ? WHERE [teamId] = ? AND [userId] = ?")).run(role, teamId, userId);
     });
   } catch (error: any) {
@@ -949,6 +1039,7 @@ export async function removeTeamMember(database: LooseRecord, auth: LooseRecord,
       const target = await tx.prepare(sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
       if (!target) throw teamDenied();
       if (target.role === "admin" && await countTeamAdmins(tx, teamId) < 2) throw teamDenied();
+      await enforceDestructivePolicy(database, tx, auth, "removeMember", teamId, userId, target.role, eventContext);
       await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
       const removed = await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, userId);
       if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
@@ -974,6 +1065,7 @@ export async function leaveCurrentUserTeam(database: LooseRecord, auth: LooseRec
       // An admin must explicitly hand over/demote first. This is deliberately
       // stricter than merely checking whether another admin exists.
       if (!membership || membership.role === "admin") throw teamDenied();
+      await enforceDestructivePolicy(database, tx, auth, "leave", teamId, auth.userId, membership.role, eventContext);
       await tx.prepare(sql("DELETE FROM [sporades_team_membership_application_roles] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
       const removed = await tx.prepare(sql("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).run(teamId, auth.userId);
       if (Number(removed?.changes ?? 0) !== 1) throw teamDenied();
@@ -998,6 +1090,7 @@ export async function deleteCurrentUserTeam(database: LooseRecord, auth: LooseRe
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamDenied();
       const members = await tx.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId);
       if (Number(members?.count ?? 0) !== 1) throw teamDenied();
+      await enforceDestructivePolicy(database, tx, auth, "delete", teamId, auth.userId, "admin", eventContext);
       const links = await tx.prepare(sql("SELECT [id] FROM [sporades_team_join_links] WHERE [teamId] = ?")).all(teamId);
       for (const link of links) {
         await tx.prepare(sql("DELETE FROM [sporades_team_join_link_redemptions] WHERE [joinLinkId] = ?")).run(link.id);

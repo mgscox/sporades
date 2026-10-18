@@ -261,6 +261,22 @@ typedUsers.insertOrIgnore({ email: "person@example.test" }, "createdAt");
 // @ts-expect-error Managed update timestamps are not insert conflict fields.
 typedUsers.insertOrIgnore({ email: "person@example.test" }, "updatedAt");
 
+async function lifecycleContract(ctx: publicServerApi.CapsuleContext) {
+  const snapshot = await ctx.teams.lockLifecycle("team-id", "recipient-id");
+  snapshot.member?.role satisfies "admin" | "member" | undefined;
+  // @ts-expect-error snapshots cannot be edited into authority.
+  snapshot.teamId = "other-team";
+  // @ts-expect-error browsers cannot lock server transactions.
+  teams.lockLifecycle("team-id");
+}
+const atomicLifecycle = stripeEvent({ consequence: "atomic" }, async (ctx) => {
+  const snapshot = await ctx.teams.lockLifecycle("team-id", "recipient-id");
+  snapshot.member?.role satisfies "admin" | "member" | undefined;
+  // @ts-expect-error atomic consequences do not gain membership mutation authority.
+  ctx.teams.demote("team-id", "recipient-id");
+});
+void lifecycleContract; void atomicLifecycle;
+
 const legacyStripeSubscription = stripeEvent(async (ctx, event) => {
   ctx.log.info("legacy Stripe event", event.providerEventId);
   await ctx.db.todos.all();
@@ -278,6 +294,24 @@ const app = capsule({
   accessKeys: { scopes: ["todos:read", "todos:write"] },
   teams: {
     appRoles: ["author", "reviewer"],
+    authorizeDestructive: async (ctx, input) => {
+      const origin: string = ctx.app.publicOrigin;
+      // @ts-expect-error runtime-owned app identity is readonly
+      ctx.app = { publicOrigin: origin };
+      input.operation satisfies "demote" | "removeMember" | "leave" | "delete";
+      input.scope satisfies "team" | "member";
+      input.member.role satisfies "admin" | "member";
+      const signal: AbortSignal = ctx.signal;
+      const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
+      // @ts-expect-error the destructive policy is read-only.
+      ctx.db.todos.insert({ title: "forbidden", ownerId: input.actorUserId });
+      // @ts-expect-error no nested Privileged authority.
+      ctx.privileged.run({}, () => true);
+      // @ts-expect-error the runtime input is immutable.
+      input.member.userId = "another-user";
+      void signal;
+      return { allow: rows.length === 1 };
+    },
     admitJoin: async (ctx, input) => {
       const publicOrigin: string = ctx.app.publicOrigin;
       // @ts-expect-error Admission app identity is readonly.
