@@ -1458,6 +1458,19 @@ contact, unless `--allow-missing-env` is explicit. Boot emits one names-only err
 preserves existing doctor/push behavior for the 0.9.x patch contract. See
 [required Server env](reference/projects-and-configuration.md#required-server-env).
 
+### Atomic Capsule-owned Team responsibility
+
+Opt-in `teams.authorizeDestructive` protects demote, removeMember, leave and Team
+deletion through one transaction-owned policy for direct SDK and server calls.
+It requires explicit valid allow after current Session/membership/admin checks
+and the exact Team lifecycle lock. Expiring read-only cross-owner Capsule reads
+keep provider evidence private; failures poison app/runtime rollback and remain
+opaque. Server-only `teams.lockLifecycle` lets explicit accepted transfers and
+local billing-state changes share that lock in their existing write transaction,
+including atomic Stripe consequences, without provider calls or wider userless
+administration. Omission preserves 0.9.x behavior without a storage migration.
+See [the Teams contract](reference/teams.md#atomic-destructive-policy).
+
 ## Non-Goals
 
 - Being an interpreted IR sandbox.

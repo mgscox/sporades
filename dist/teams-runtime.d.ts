@@ -23,6 +23,13 @@ export declare const TEAM_APPLICATION_ROLE_MAX = 32;
 export declare const TEAM_APPLICATION_ROLE_PATCH_MAX = 16;
 export declare function createTeamTables(adapter: LooseRecord): any;
 export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: LooseRecord, contextGetter?: () => LooseRecord): {
+    lockLifecycle(teamId: unknown, memberUserId?: unknown): Promise<Readonly<{
+        teamId: string;
+        member: Readonly<{
+            userId: string;
+            role: any;
+        }> | null;
+    }>>;
     list(): Promise<{
         teams: any[];
     }>;
@@ -77,6 +84,13 @@ export declare function createCurrentUserTeamsApi(database: LooseRecord, auth: L
  * methods mix inspections with user-scoped and mutating operations.
  */
 export declare function createPrivilegedTeamsApi(database: LooseRecord, contextGetter: () => LooseRecord): Readonly<{
+    lockLifecycle(teamId: unknown, memberUserId?: unknown): Promise<Readonly<{
+        teamId: string;
+        member: Readonly<{
+            userId: string;
+            role: any;
+        }> | null;
+    }>>;
     countMembers(teamId: any): Promise<any>;
     listMembers(teamId: any, options?: LooseRecord): Promise<any>;
     listJoinLinks(teamId: any): Promise<any>;

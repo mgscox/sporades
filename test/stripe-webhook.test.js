@@ -977,7 +977,7 @@ test("durable cancellation wins a final-attempt atomic fence deferral race", asy
   }, { clock });
 });
 
-test("an atomic Stripe consequence can count one exact Team without gaining broader Team authority", async () => {
+test("an atomic Stripe consequence can count and lock one exact Team without gaining mutation authority", async () => {
   const teamId = "123e4567-e89b-42d3-a456-426614174001";
   let shouldFail = true;
   const leakedTeams = [];
@@ -985,7 +985,10 @@ test("an atomic Stripe consequence can count one exact Team without gaining broa
   const capsule = {
     schema: { stripeTeamCounts: table({ providerEventId: Text(), totalCount: Text() }) },
     stripeEvents: declareStripeEvent({ consequence: "atomic" }, async (ctx, event) => {
-      assert.deepEqual(Object.keys(ctx.teams), ["countMembers"]);
+      assert.deepEqual(Object.keys(ctx.teams), ["countMembers", "lockLifecycle"]);
+      assert.equal(typeof ctx.teams.demote, "undefined");
+      assert.equal(typeof ctx.teams.delete, "undefined");
+      assert.deepEqual(await ctx.teams.lockLifecycle(teamId), { teamId, member: null });
       assert.equal(typeof ctx.teams.list, "undefined");
       assert.equal(typeof ctx.teams.listMembers, "undefined");
       assert.equal(typeof ctx.teams.create, "undefined");
@@ -1013,6 +1016,7 @@ test("an atomic Stripe consequence can count one exact Team without gaining broa
     assert.equal((await inspectRuntimeJobs(database.adapter)).find((jobState) => jobState.id === jobId)?.status, "delayed");
     assert.deepEqual((await runQuery(database, anonymousAuth, "teamCounts")).data, []);
     await assert.rejects(() => leakedTeams[0].countMembers(teamId), (error) => error.code === "PRIVILEGED_TEAM_ACCESS_INACTIVE");
+    await assert.rejects(() => leakedTeams[0].lockLifecycle(teamId), (error) => error.code === "PRIVILEGED_TEAM_ACCESS_INACTIVE");
     await assert.rejects(() => leakedCountMembers[0](teamId), (error) => error.code === "PRIVILEGED_TEAM_ACCESS_INACTIVE");
 
     shouldFail = false;
