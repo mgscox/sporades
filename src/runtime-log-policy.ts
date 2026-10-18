@@ -114,7 +114,7 @@ function stripDiagnosticUrlSuffixes(text: string) {
       // repeated apostrophes. Punctuation and spaces cannot hide that suffix.
       const closesOuter = !!delimiter && delimiter === outerQuote
         && (delimiter !== "'" || (/^[),.;:!?\]}\x60]*(?:\s|$)/.test(text.slice(end + 1))
-          && !/[&#=]/.test(diagnosticUrlContinuation(text, end + 1, outerQuote))));
+          && !/[&#=']|%(?:26|23|3[fd])/i.test(diagnosticUrlContinuation(text, end + 1, outerQuote))));
       if (quote) {
         // A same-quote apostrophe at the structural wrapper boundary also
         // bounds an ambiguous value opener after a query separator.
@@ -123,8 +123,8 @@ function stripDiagnosticUrlSuffixes(text: string) {
         // quote. A later matching quote before another separator makes an
         // earlier apostrophe ambiguous, even when it itself precedes & or #.
         if (delimiter === quote
-          && (delimiter !== "'" || (/^[ \t]*(?:[&#=]|["']|$)/.test(text.slice(end + 1))
-            && !/'[ \t]*[&#=]/.test(diagnosticUrlContinuation(text, end + 1, outerQuote))))) quote = "";
+          && (delimiter !== "'" || (/^[ \t]*(?:[&#=]|%(?:26|23|3[fd])|["']|$)/i.test(text.slice(end + 1))
+            && !/'[ \t]*(?:[&#=]|%(?:26|23|3[fd]))/i.test(diagnosticUrlContinuation(text, end + 1, outerQuote))))) quote = "";
         else if (char === "\\") { end += 2; continue; }
       } else if (delimiter) {
         // Classify a value opening before considering the surrounding string's

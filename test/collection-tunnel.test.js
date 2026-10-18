@@ -277,6 +277,20 @@ for (const base of apostropheDiagnosticUrls) repeatedApostropheDiagnostics.push(
   stack: `Error: diagnostic URL\n    at execute ('${base}?filter=O', Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker:12:8)`,
   frames: [{ filename: "'" + base, function: 'execute', lineno: 12, colno: 8 }],
 });
+for (const [name, before, after, value, tail] of [
+  ['encoded continuation after repeated apostrophes', "'", "'", "O', Reilly's", '%26cap%3Dqa-apostrophe-query-marker%23qa-apostrophe-fragment-marker'],
+  ['encoded continuation after a bare quoted value', 'url=', '', "'O'&Reilly's phrase'", '%26cap%3Dqa-apostrophe-query-marker%23qa-apostrophe-fragment-marker'],
+  ['repeated apostrophes without another separator', "'", "'", "O', Reilly's qa-apostrophe-query-marker qa-apostrophe-fragment-marker", ''],
+]) {
+  const urls = apostropheDiagnosticUrls.map(base => `${before}${base}?filter=${value}${tail}${after}`);
+  const clean = apostropheDiagnosticUrls.map(base => before + base + after);
+  repeatedApostropheDiagnostics.push({ name,
+    message: `Ready? Investigate #234 ${urls.join(' ')} Continue.`,
+    safe: `Ready? Investigate #234 ${clean.join(' ')} Continue.`,
+    stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
+    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+  });
+}
 {
   const urls = apostropheDiagnosticUrls.map(base => JSON.stringify({ url: `${base}?filter=O', 'Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker`, status: 'ready' }));
   const clean = apostropheDiagnosticUrls.map(base => JSON.stringify({ url: base, status: 'ready' }));

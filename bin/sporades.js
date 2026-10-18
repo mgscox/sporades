@@ -80505,10 +80505,10 @@ function stripDiagnosticUrlSuffixes(text3) {
     while (end < text3.length && !/[\r\n]/.test(text3[end])) {
       const char = text3[end];
       const delimiter = char === "\\" && /["']/.test(text3[end + 1] ?? "") ? text3.slice(end, end + 2) : /["']/.test(char) ? char : "";
-      const closesOuter = !!delimiter && delimiter === outerQuote && (delimiter !== "'" || /^[),.;:!?\]}\x60]*(?:\s|$)/.test(text3.slice(end + 1)) && !/[&#=]/.test(diagnosticUrlContinuation(text3, end + 1, outerQuote)));
+      const closesOuter = !!delimiter && delimiter === outerQuote && (delimiter !== "'" || /^[),.;:!?\]}\x60]*(?:\s|$)/.test(text3.slice(end + 1)) && !/[&#=']|%(?:26|23|3[fd])/i.test(diagnosticUrlContinuation(text3, end + 1, outerQuote)));
       if (quote) {
         if (quote === "'" && outerQuote === "'" && closesOuter) break;
-        if (delimiter === quote && (delimiter !== "'" || /^[ \t]*(?:[&#=]|["']|$)/.test(text3.slice(end + 1)) && !/'[ \t]*[&#=]/.test(diagnosticUrlContinuation(text3, end + 1, outerQuote)))) quote = "";
+        if (delimiter === quote && (delimiter !== "'" || /^[ \t]*(?:[&#=]|%(?:26|23|3[fd])|["']|$)/i.test(text3.slice(end + 1)) && !/'[ \t]*(?:[&#=]|%(?:26|23|3[fd]))/i.test(diagnosticUrlContinuation(text3, end + 1, outerQuote)))) quote = "";
         else if (char === "\\") {
           end += 2;
           continue;
