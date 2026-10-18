@@ -1,4 +1,5 @@
 import { validateObservabilityConfig } from "../observability-runtime.js";
+import { normalizePublicOrigin } from "../public-origin.js";
 import { validateServerEnvConfig } from "../server-env-requirements.js";
 import { resolveFileAllowedMimeTypes } from "../file-policy.js";
 import { resolveRegistrationThrottle } from "../capsule-rate-limit.js";
@@ -67,6 +68,7 @@ export async function readProjectConfig(projectDir) {
         throw commandError("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
     }
     resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
+    validatePublicOriginConfig(config);
     validateLogConfig(config);
     validateObservabilityConfig(config);
     if (config.env !== undefined)
@@ -189,10 +191,16 @@ export async function readOptionalProjectSecurity(projectDir, session) {
         throw error;
     }
 }
+export function validatePublicOriginConfig(config) {
+    if (config.deploy?.publicOrigin !== undefined && !normalizePublicOrigin(config.deploy.publicOrigin)) {
+        throw Object.assign(commandError("Invalid deploy.publicOrigin.", "Set an HTTP(S) origin without credentials, path, query or fragment."), { code: "INVALID_PUBLIC_ORIGIN" });
+    }
+}
 export function validateProjectConfigShape(config) {
     if (!config || typeof config !== "object" || Array.isArray(config)) {
         throw commandError("Invalid project configuration: sporades.json", "Set sporades.json to a JSON object.");
     }
+    validatePublicOriginConfig(config);
     const unsupportedKeys = Object.keys(config).filter((key) => !SUPPORTED_PROJECT_KEYS.has(key)).sort();
     if (unsupportedKeys.length > 0) {
         throw commandError("Unsupported project configuration keys.", "Remove unsupported top-level keys from sporades.json or move Capsule-specific values into Server env or app code.", { unsupportedKeys });

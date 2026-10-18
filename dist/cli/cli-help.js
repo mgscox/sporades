@@ -218,6 +218,8 @@ Profile commands:
 Capsule commands:
   bind <subname>      Bind this project to a Hosted Capsule
   register <subname>  Register a Hosted Capsule
+  canonical set <subname> <alias>|clear <subname>
+                      Select the public origin; restart a running Capsule
   push                Push and install a Hosted Capsule release
   start <subname>     Start a Hosted Capsule
   stop <subname>      Stop a Hosted Capsule
@@ -250,6 +252,8 @@ Options:
                       Ephemeral operator user:password for check or migrate
   --server <target>   SSH target for host add
   --domain <domain>   Hosted domain for host add
+  --canonical-domain <hostname>
+                      Public HTTPS link origin for register
   --alias-domain <hostname>
                       Custom HTTPS domain for register (repeatable)
   --remote-root <path>

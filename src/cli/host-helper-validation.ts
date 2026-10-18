@@ -1,6 +1,6 @@
 import { resolveDeployFiles } from "../deploy-files.js";
 import path from "node:path";
-import { validateAliasDomains } from "./host-domain-aliases.js";
+import { validateAliasDomains, validateCanonicalDomain } from "./host-domain-aliases.js";
 
 import { validatePublicTreeFileSet } from "../public-tree-contract.js";
 import { helperError } from "./cli-support.js";
@@ -223,6 +223,7 @@ export function validateRegisterRequest(request: HostHelperRequest) {
   }
   const registration = request.registration ?? {};
   validateAliasDomains(registration.aliasDomains);
+  validateCanonicalDomain(registration.canonicalDomain);
   const mismatchedIdentity =
     (registration.subname && registration.subname !== request.capsule.subname) ||
     (registration.domain && registration.domain !== request.host.domain) ||

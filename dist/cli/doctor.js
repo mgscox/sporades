@@ -1,3 +1,4 @@
+import { resolvePublicOrigin, normalizePublicOrigin, isLocalPublicOrigin } from "../public-origin.js";
 import { missingServerEnvKeys } from "../server-env-requirements.js";
 import { readProjectServerEnv } from "./server-env-check.js";
 import { spawn, spawnSync } from "node:child_process";
@@ -35,6 +36,8 @@ export async function runDoctorChecks(options) {
     if (project.config.env !== undefined)
         checks.push(await serverEnvCheck(project.config, options.projectDir));
     checks.push(await securityPolicyCheck(project.config, options));
+    if (options.session !== "hosted")
+        checks.push(await localPublicOriginCheck(project.config, options));
     const publicDevCheck = await publicDevPostureCheck(options);
     if (publicDevCheck) {
         checks.push(publicDevCheck);
@@ -66,6 +69,23 @@ export async function runDoctorChecks(options) {
         }
     }
     return checks;
+}
+function publicOriginCheck(origin, session, source) {
+    const warn = source !== "configuration" && ["container", "hosted"].includes(session) && isLocalPublicOrigin(origin);
+    return { id: "doctor.public-origin", title: "Capsule public origin", scope: doctorScope(session),
+        status: warn ? "warn" : "pass", severity: warn ? "warning" : "info",
+        message: `Public origin: ${origin}`,
+        ...(warn ? { hint: "Configure a non-local public origin before sending application links." } : {}),
+        details: { publicOrigin: origin, source } };
+}
+async function localPublicOriginCheck(config, options) {
+    const session = options.session ?? "dev";
+    const file = session === "container" ? "binding.json" : "dev-session.json";
+    const state = await readOptionalJsonFile(path.join(options.projectDir, ".sporades", file));
+    const recorded = session === "container" ? normalizePublicOrigin(state?.publicOrigin)
+        : typeof state?.port === "number" ? `http://localhost:${state.port}` : null;
+    return publicOriginCheck(recorded ?? resolvePublicOrigin({ ...config, __sporadesSession: session,
+        __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN }), session, recorded ? "session" : "configuration");
 }
 async function serverEnvCheck(config, projectDir) {
     const base = { id: "doctor.server-env", title: "Required Server env", scope: "project" };
@@ -393,6 +413,12 @@ async function hostedCapsuleDoctorChecks(options) {
     if (!capsule) {
         return checks;
     }
+    const origin = normalizePublicOrigin(runtimeHealth.data?.runtime?.publicOrigin) ?? normalizePublicOrigin(capsule.publicOrigin);
+    if (origin)
+        checks.push(publicOriginCheck(origin, "hosted", runtimeHealth.data?.runtime?.publicOrigin ? "runtime" : "registry"));
+    else
+        checks.push({ id: "doctor.public-origin", title: "Capsule public origin", scope: "hosted", status: "skip", severity: "info",
+            message: "The Host helper did not report a public origin.", hint: "Upgrade the Host helper and Capsule Bundle to report the effective origin." });
     checks.push(hostedReleaseCheck(capsule, commands));
     checks.push(hostedRuntimeHealthCheck(runtimeHealth, commands));
     if (Object.hasOwn(runtimeHealth.data?.runtime ?? {}, "admissionPolicy") || Object.hasOwn(capsuleStats.data ?? {}, "admissionPolicy")) {

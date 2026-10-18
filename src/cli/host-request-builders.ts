@@ -193,11 +193,12 @@ export function createHostBootstrapRequest(profile: LooseRecord) {
   };
 }
 
-export function createHostRegistrationRequest(alias: string, profile: LooseRecord, subname: string, aliasDomains: string[] = []) {
+export function createHostRegistrationRequest(alias: string, profile: LooseRecord, subname: string, aliasDomains: string[] = [], canonicalDomain: string | null = null) {
   const bootstrap = createHostBootstrapRequest(profile);
   const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
   const capsuleLog = posixJoin(capsuleDirectory, "logs", "http.log");
   return {
+    ...(canonicalDomain ? { canonicalDomain } : {}),
     ...(aliasDomains.length ? { aliasDomains } : {}),
     subname,
     domain: profile.domain,

@@ -63,7 +63,9 @@ Exact-Team admins use `updateApplicationRoles(teamId, userId, { add, remove })` 
 ## Atomic destructive policy
 
 Capsules with app-owned responsibility (for example a compatibility billing holder)
-can opt into `teams.authorizeDestructive`. This applies identically to direct
+can opt into `teams.authorizeDestructive`. Its frozen context includes the
+runtime-owned `ctx.app.publicOrigin`, with the same immutable identity as other
+server contexts. This applies identically to direct
 client SDK calls and server `ctx.teams.demote`, `removeMember`, `leave`, and
 `delete`. `admitJoin`, mutation hooks, and `teamBilling.authorize` do not replace it.
 
@@ -93,7 +95,8 @@ is the exact affected current membership. `scope: "team"` on deletion means
 users and rows naming former members. Deletion still requires the actor to be
 the sole remaining admin member. Other operations have `scope: "member"`.
 
-The policy context has only frozen `auth`, read-only `db`, and `signal`. Its
+The policy context has only immutable `app` metadata, frozen `auth`, read-only
+`db`, and `signal`. Its
 transaction-bound Capsule reads bypass ordinary row ACLs so it can check
 cross-owner responsibility. They confer no runtime-table, write, provider,
 logging, environment, or nested Privileged authority. The caller receives only

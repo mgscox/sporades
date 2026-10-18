@@ -91,6 +91,10 @@ const renderedHtml: string = globalThis.String(safeHtml);
 const forgedHtml: publicServerApi.Html = { toString: () => '<b>unsafe</b>' };
 void safeMail; void resetCopy; void escapedText; void renderedHtml; void forgedHtml;
 const admissionConfig: publicServerApi.AdmissionPolicyConfig = { path: "config/admission.json" };
+declare const publicAppContext: publicServerApi.AppContext;
+const appPublicOrigin: string = publicAppContext.publicOrigin;
+// @ts-expect-error AppContext public origin cannot be reassigned.
+publicAppContext.publicOrigin = "https://changed.example.test";
 const admissionPolicy: publicServerApi.AdmissionPolicy = { version: 1, rules: [{ id: "blocked-path", enabled: true, conditions: [{ kind: "pathname", exact: "/blocked" }, { kind: "method", value: "GET" }], action: { kind: "deny" } }] };
 const quotaPolicy: publicServerApi.AdmissionAction = { kind: "rate-limit", limit: 5, windowMs: 60000 };
 // @ts-expect-error future schema versions are not the v1 policy contract.
@@ -100,11 +104,17 @@ const bypassAdmission: publicServerApi.AdmissionAction = { kind: "allow" };
 void admissionConfig; void admissionPolicy; void quotaPolicy; void futureAdmission; void bypassAdmission;
 
 async function resourceContract(ctx: publicServerApi.CapsuleContext) {
+  const publicOrigin: string = ctx.app.publicOrigin;
+  // @ts-expect-error AppContext and its public origin are immutable.
+  ctx.app.publicOrigin = "https://changed.example.test";
   const support: publicServerApi.ResourceAdapterSupport = { sqlite: "supported", postgres: "supported", libsql: "unsupported" };
   // @ts-expect-error libSQL resource scopes are explicitly unsupported in v1.
   const inventedLibsqlSupport: publicServerApi.ResourceAdapterSupport = { sqlite: "supported", postgres: "supported", libsql: "supported" };
   void support; void inventedLibsqlSupport;
   const answer = await ctx.resources.run({ resource: { table: "anchors", id: "existing" }, operationId: "stable", input: null }, async scope => {
+    const resourceOrigin: string = scope.app.publicOrigin;
+    // @ts-expect-error Resource scopes expose the same immutable AppContext.
+    scope.app.publicOrigin = "https://changed.example.test";
     await scope.jobs.enqueue("child", null);
     const staged = await scope.notifications.accept({ id: "notice", to: ["recipient@example.com"], subject: "Notice", text: "Body" });
     const stagedState: "staged" = staged.state;
@@ -280,10 +290,19 @@ void legacyStripeSubscription;
 
 const app = capsule({
   name: "typed island",
+  auth: { reauthentication: { purposes: { sensitive: { maxAgeSeconds: 60 } }, authorize: (ctx) => {
+    const publicOrigin: string = ctx.app.publicOrigin;
+    // @ts-expect-error Admission app identity is readonly.
+    ctx.app.publicOrigin = "https://changed.example.test";
+    return Promise.resolve(publicOrigin.startsWith("http"));
+  } } },
   accessKeys: { scopes: ["todos:read", "todos:write"] },
   teams: {
     appRoles: ["author", "reviewer"],
     authorizeDestructive: async (ctx, input) => {
+      const origin: string = ctx.app.publicOrigin;
+      // @ts-expect-error runtime-owned app identity is readonly
+      ctx.app = { publicOrigin: origin };
       input.operation satisfies "demote" | "removeMember" | "leave" | "delete";
       input.scope satisfies "team" | "member";
       input.member.role satisfies "admin" | "member";
@@ -299,6 +318,9 @@ const app = capsule({
       return { allow: rows.length === 1 };
     },
     admitJoin: async (ctx, input) => {
+      const publicOrigin: string = ctx.app.publicOrigin;
+      // @ts-expect-error Admission app identity is readonly.
+      ctx.app.publicOrigin = "https://changed.example.test";
       const rowsPromise: Promise<unknown[]> = ctx.db.todos.where("ownerId", input.teamId).all();
       const rowPromise: Promise<unknown> = ctx.db.todos.where("ownerId", input.teamId).get();
       const rows = await rowsPromise;
@@ -331,6 +353,9 @@ const app = capsule({
     },
     portal: { returnPath: "/settings/billing", continuationTtlSeconds: 600 },
     authorize: async (ctx, input) => {
+      const publicOrigin: string = ctx.app.publicOrigin;
+      // @ts-expect-error Team Billing app identity is readonly.
+      ctx.app.publicOrigin = "https://changed.example.test";
       const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
       input.teamRole satisfies "admin" | "member";
       input.operation satisfies "read" | "checkout" | "portal" | "plan-transition" | "erasure";
@@ -494,6 +519,7 @@ const app = capsule({
   ],
   queries: {
     sessionGuarded: query(requireAuth({ credentials: ["session"], scopes: ["todos:read"] }, (ctx) => {
+      const publicOrigin: string = ctx.app.publicOrigin;
       ctx.credential.kind satisfies "session";
       // @ts-expect-error Session provenance has no Access-key attribution ID.
       ctx.credential.id;
@@ -510,6 +536,8 @@ const app = capsule({
       return ctx.auth.userId;
     })),
     todos: query(async (ctx) => {
+      // @ts-expect-error Handler app identity is readonly.
+      ctx.app.publicOrigin = "https://changed.example.test";
       await ctx.mail.send({ to: "recipient@example.com", subject: "Query", textBody: "Query" });
       return ctx.db.todos
         .where("ownerId", ctx.auth.userId)

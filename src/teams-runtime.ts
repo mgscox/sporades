@@ -1,3 +1,4 @@
+import { resolvePublicOrigin } from "./public-origin.js";
 // Runtime-owned Teams foundation. Team state deliberately lives beside auth
 // storage, never in a Capsule schema or the normal ctx.db API.
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -209,11 +210,9 @@ export function createPrivilegedTeamsApi(database: LooseRecord, contextGetter: (
 
 export function resolveTeamJoinLinkConfig(config: LooseRecord) {
   const join = config?.teams?.join ?? {};
-  const port = typeof config?.dev?.port === "number"
-    ? config.dev.port : typeof config?.deploy?.port === "number" ? config.deploy.port : 4000;
   return {
     path: normalizeTeamJoinPath(join.path) ?? "/join",
-    origin: normalizeOrigin(config?.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
+    origin: resolvePublicOrigin(config),
   };
 }
 

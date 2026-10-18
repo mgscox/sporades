@@ -64,3 +64,17 @@ export async function assertHostnamesAvailable(remoteRoot: string, hostnames: st
     }
   }
 }
+
+export function validateCanonicalDomain(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  validateAliasDomains([value]);
+  return value as string;
+}
+
+export function hostedPublicOrigin(record: any): string {
+  const domain = validateCanonicalDomain(record.canonicalDomain);
+  if (domain && !validateAliasDomains(record.aliasDomains).includes(domain)) {
+    throw helperError("Canonical domain is not a registered alias.", "Select one of this Capsule's registered alias domains.");
+  }
+  return domain ? `https://${domain}` : record.hostedUrl;
+}

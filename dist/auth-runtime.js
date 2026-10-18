@@ -1,3 +1,4 @@
+import { resolvePublicOrigin } from "./public-origin.js";
 import { canonicalClientAddress } from "./client-address.js";
 // The Capsule runtime's auth domain: sessions, the four OAuth providers and their identity-token
 // verification, password reset, the email sign-in throttles, and the credential hashing that
@@ -3338,15 +3339,12 @@ async function unsealOAuthRegistration(database, row, transactionAdapter = datab
 // Capsule mail a victim a genuine reset link pointing at the attacker's server.
 export function resolvePasswordResetConfig(config) {
     const passwordReset = config.auth?.email?.passwordReset ?? {};
-    const port = typeof config.dev?.port === "number"
-        ? config.dev.port
-        : typeof config.deploy?.port === "number" ? config.deploy.port : 4000;
     const ttlMs = typeof passwordReset.ttlMs === "number" && Number.isFinite(passwordReset.ttlMs)
         ? Math.min(Math.max(passwordReset.ttlMs, PASSWORD_RESET_MIN_TTL_MS), PASSWORD_RESET_MAX_TTL_MS)
         : PASSWORD_RESET_DEFAULT_TTL_MS;
     return {
         path: normalizePasswordResetPath(passwordReset.path) ?? PASSWORD_RESET_DEFAULT_PATH,
-        origin: normalizeOrigin(config.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
+        origin: resolvePublicOrigin(config),
         ttlMs,
     };
 }

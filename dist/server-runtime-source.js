@@ -1,5 +1,6 @@
 import { createRuntimeObservability } from "./observability-runtime.js";
 import { redactDiagnosticText } from "./runtime-log-policy.js";
+import { bindAppContext, isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
 import { dirname as pathDirname } from "node:path";
 import { missingServerEnvKeys, missingServerEnvError, validateServerEnvConfig } from "./server-env-requirements.js";
 import { validatePaymentsConfig } from "./stripe-payment-config.js";
@@ -749,6 +750,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         schedules,
         accessKeyScopes: capsuleDefinition?.accessKeys?.scopes ?? [],
         securitySession: config.__sporadesSession ?? "container",
+        publicOrigin: resolvePublicOrigin(config),
         clock,
         capsuleIdentity: String(config.name ?? "capsule"),
         capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
@@ -857,7 +859,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             grantPrivilegedDbAccess(reauthContext);
             const holder = createContextHolder(reauthContext);
             try {
-                return (await capsuleDefinition.auth.reauthentication.authorize({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, purpose)) === true;
+                return (await capsuleDefinition.auth.reauthentication.authorize(bindAppContext({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, database.app), purpose)) === true;
             }
             finally {
                 active = false;
@@ -883,7 +885,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 try {
                     let decision = null;
                     try {
-                        decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+                        decision = await capsuleDefinition.auth.registration.admit(bindAppContext({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission }, rootDatabase.app));
                     }
                     finally {
                         active = false;
@@ -895,7 +897,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                     grantPrivilegedDbAccess(finalizeContext);
                     const finalizeHolder = createContextHolder(finalizeContext);
                     try {
-                        await capsuleDefinition.auth.registration.finalize({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state });
+                        await capsuleDefinition.auth.registration.finalize(bindAppContext({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, rootDatabase.app), { ...evidence, state: decision.state });
                     }
                     finally {
                         revokePrivilegedDbAccess(finalizeContext);
@@ -946,7 +948,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                         failOnReadError: true,
                     }, async (db, assertActive) => {
                         const evaluation = Promise.resolve().then(() => capsuleDefinition.teams.authorizeDestructive(Object.freeze({
-                            auth: Object.freeze({ ...auth }), db, signal: controller.signal,
+                            app: root.app, auth: Object.freeze({ ...auth }), db, signal: controller.signal,
                         }), input));
                         const aborted = new Promise((_, reject) => {
                             const fail = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));
@@ -1329,6 +1331,11 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         serverEnv,
         dataDir: path.dirname(databasePath),
     });
+    database.app = Object.freeze({ get publicOrigin() { return database.publicOrigin; } });
+    if (["hosted", "container"].includes(config.__sporadesSession) && isLocalPublicOrigin(database.publicOrigin) && !options?.runtimeActionOnly) {
+        database.log.emit({ category: "platform", event: "app.publicOrigin.unresolved", level: "error",
+            message: "No non-local public origin resolved. Configure deploy.publicOrigin or SPORADES_PUBLIC_ORIGIN for Container sessions, or the Hosted canonical domain.", data: null });
+    }
     mailLogSink = database.log;
     database.audit = createPrivilegedAuditEmitter(database.log);
     await sqlite.ensureSystemTable();
@@ -2629,6 +2636,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
     // let middleware smuggle lifecycle APIs across this userless boundary under
     // aliases or closures.
     const privilegedContext = {
+        app: database.app,
         rateLimit: database.capsuleRateLimiter.consume,
         env: context.env,
         payments: context.payments,
@@ -3502,6 +3510,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
         signal,
     }, (db) => definition.admit(Object.freeze({
         db,
+        app: database.app,
         env: database.serverEnv,
         signal,
         request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
@@ -3557,6 +3566,7 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
                 auth: Object.freeze({ ...admission.auth }),
                 credential: Object.freeze({ ...(admission.credential ?? { kind: "session" }) }),
                 db,
+                app: database.app,
                 env: database.serverEnv,
                 signal: controller.signal,
                 request: requestHead,
@@ -4013,6 +4023,7 @@ function createAtomicStripeConsequenceContext(database, parent) {
     const context = {
         rateLimit: database.capsuleRateLimiter.consume,
         auth: parent.auth,
+        app: database.app,
         env: database.serverEnv,
         signal: parent.signal,
         log: createEndpointLogger(database),
@@ -4150,6 +4161,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     const context = {
         auth,
         ...(credential ? { credential } : {}),
+        app: database.app,
         signal: options.signal,
         rateLimit: database.capsuleRateLimiter.consume,
         env: database.serverEnv,
@@ -4255,6 +4267,8 @@ function protectContextIdentity(value) {
     });
 }
 function createContextHolder(context) {
+    if (context.app)
+        bindAppContext(context, context.app);
     context.resources = unsupportedResources;
     const holder = { current: context };
     Object.defineProperty(context, "__sporadesContextHolder", {
@@ -4417,6 +4431,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
         ...baseContext,
         kind,
     };
+    bindAppContext(context, database.app);
     bindPendingAclWrites(context, baseContext);
     bindCurrentUserFileDeleteState(context, baseContext);
     bindMutationSecretState(context, baseContext);
@@ -4434,10 +4449,11 @@ async function applyContextMiddleware(database, baseContext, kind) {
         const previousContext = context;
         const result = await runContextMiddleware(middlewareSource, context);
         const middlewareContext = result ?? context;
-        if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
-            throw commandError("Invalid Capsule context middleware result.", "Context middleware must preserve the runtime-owned Auth and Credential values.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+        if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential || (middlewareContext.app !== undefined && middlewareContext.app !== database.app)) {
+            throw commandError("Invalid Capsule context middleware result.", "Context middleware must preserve the runtime-owned Auth, Credential and app values.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
         }
         context = { ...middlewareContext, auth: canonicalAuth };
+        bindAppContext(context, database.app);
         if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
             context.credential = canonicalCredential;
         }
@@ -7090,6 +7106,7 @@ function createMutationContext(database, auth, options = {}) {
     const context = {
         auth,
         ...(credential ? { credential } : {}),
+        app: database.app,
         signal: options.signal,
         env: database.serverEnv,
         payments: database.paymentsConfig,
@@ -7308,10 +7325,10 @@ function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, asser
             },
         }),
     };
-    return context;
+    return bindAppContext(context, database.app);
 }
 function createTeamBillingAuthorityContext(database, auth, trustedDb, teamId, assertActive) {
-    return {
+    return bindAppContext({
         auth: Object.freeze({ ...auth }),
         env: database.serverEnv,
         log: createEndpointLogger(database),
@@ -7326,7 +7343,7 @@ function createTeamBillingAuthorityContext(database, auth, trustedDb, teamId, as
                 return Object.freeze({ totalCount });
             },
         }),
-    };
+    }, database.app);
 }
 function deferOrScheduleJobDispatch(database, queueDatabase, context = undefined) {
     const currentContext = context ?? handlerContextByDatabase.get(database)?.();

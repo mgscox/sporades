@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { routeCollection } from "../observability-runtime.js";
+import { resolvePublicOrigin } from "../public-origin.js";
 import { missingServerEnvKeys, missingServerEnvError } from "../server-env-requirements.js";
 import { validateQueryCredential } from "./telemetry-diagnostics.js";
 import { openAdmissionPolicy, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
 import { createAdmissionEvidence } from "../admission-evidence.js";
 import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, removeDeployFileSnapshot } from "../deploy-files.js";
-import { validateAliasDomains } from "./host-domain-aliases.js";
+import { validateAliasDomains, validateCanonicalDomain } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync, statSync, watch } from "node:fs";
@@ -1117,6 +1118,7 @@ function parseHostArgs(args) {
     let server = null;
     let domain = null;
     const aliasDomains = [];
+    let canonicalDomain = null;
     let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
     let tlsMode = DEFAULT_HOST_TLS_MODE;
     let subname = null;
@@ -1151,6 +1153,11 @@ function parseHostArgs(args) {
                 break;
             case "--server":
                 server = readFlagValue(rest, ++index, "--server");
+                break;
+            case "--canonical-domain":
+                if (subcommand !== "register")
+                    throw commandError("--canonical-domain is only supported by host register.", "Use host canonical set to change an existing registration.");
+                canonicalDomain = validateCanonicalDomain(readFlagValue(rest, ++index, "--canonical-domain"));
                 break;
             case "--alias-domain":
                 if (subcommand !== "register")
@@ -1295,6 +1302,16 @@ function parseHostArgs(args) {
             validateCapsuleSubname(positionalSubname);
             return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
         }
+        case "canonical": {
+            const [operation, name, domain, ...extra] = positional;
+            if (!["set", "clear"].includes(operation) || !name || extra.length || (operation === "set" ? !domain : domain !== undefined)) {
+                throw commandError("Invalid canonical domain command.", "Use host canonical set <subname> <alias> or host canonical clear <subname>.");
+            }
+            validateCapsuleSubname(name);
+            if (hostAlias)
+                validateHostAlias(hostAlias);
+            return { subcommand, subname: name, canonicalDomain: operation === "set" ? validateCanonicalDomain(domain) : null, hostAlias, json, projectDir: process.cwd() };
+        }
         case "register": {
             const [positionalSubname, ...extra] = positional;
             if (!positionalSubname) {
@@ -1307,8 +1324,10 @@ function parseHostArgs(args) {
                 validateHostAlias(hostAlias);
             }
             validateCapsuleSubname(positionalSubname);
+            if (canonicalDomain && !aliasDomains.includes(canonicalDomain))
+                aliasDomains.push(canonicalDomain);
             validateAliasDomains(aliasDomains);
-            return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, json, projectDir: process.cwd() };
+            return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, canonicalDomain, json, projectDir: process.cwd() };
         }
         case "rotate-key": {
             const [positionalSubname, ...extra] = positional;
@@ -2200,6 +2219,20 @@ async function startDevSession(options) {
         data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
     });
     let telemetry;
+    // Bind before runtime initialization: init hooks and startup Jobs need the
+    // actual origin even when the operator asks the OS to choose a port.
+    const starting = (_request, response) => {
+        response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
+        response.end("Dev session is starting.");
+    };
+    const server = createServer(starting);
+    await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(port, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+    });
+    const address = server.address();
+    const actualPort = typeof address === "object" && address ? address.port : port;
+    const url = `http://localhost:${actualPort}`;
     try {
         runtime = await createDevRuntime({
             projectDir: options.projectDir,
@@ -2208,26 +2241,29 @@ async function startDevSession(options) {
             serverEnv: bundle.serverRuntime.env,
             serviceEnv: capsuleServiceEnv,
             capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-            config: withRuntimeSecuritySession(config, session),
+            config: { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: url },
             runtimeProbeToken: inspectionToken,
             onJobQueueReady(queueDatabase) {
                 telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
                 telemetry.bindJobQueue(queueDatabase);
             },
         });
+        await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
+        runtime.database.log.emit({
+            category: "platform",
+            event: "dev.session.started",
+            level: "info",
+            message: "Dev session started",
+            data: { diagnostics: runtime.database.runtimeDiagnostics },
+        });
     }
     catch (error) {
+        server.closeAllConnections();
+        await new Promise(resolve => server.close(() => resolve()));
+        await runtime?.shutdown();
         await telemetry?.shutdown();
         throw error;
     }
-    await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
-    runtime.database.log.emit({
-        category: "platform",
-        event: "dev.session.started",
-        level: "info",
-        message: "Dev session started",
-        data: { diagnostics: runtime.database.runtimeDiagnostics },
-    });
     const devRefresh = createDevRefreshController();
     const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport, {
         // Resolve the current adapter at dispatch/accept time. Operations and close
@@ -2237,7 +2273,8 @@ async function startDevSession(options) {
             connectionOpened: () => telemetry.websocket.connectionOpened(),
         },
     });
-    const server = createServer(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
+    server.removeListener("request", starting);
+    server.on("request", async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
         try {
             if (prepareHttpSecurity(runtime.database, request, response, () => routeHttpAdmission(runtime.database, request, response))) {
                 return;
@@ -2410,13 +2447,6 @@ async function startDevSession(options) {
     server.on("connect", (_request, socket) => {
         socket.destroy();
     });
-    await new Promise((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(port, "127.0.0.1", () => resolve());
-    });
-    const address = server.address();
-    const actualPort = typeof address === "object" && address ? address.port : port;
-    const url = `http://localhost:${actualPort}`;
     let actionBundleCreated = false;
     let watchers = [];
     let onUnhandledRejection = null;
@@ -2489,7 +2519,7 @@ async function startDevSession(options) {
             }
             await new Promise((resolve) => setTimeout(resolve, restartPolicy.backoffMs * attempt));
             try {
-                await runtime.restart(bundle.serverRuntime.source, bundle.serverRuntime.env, runtimeServiceEnv, bundle.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(config, session), telemetry);
+                await runtime.restart(bundle.serverRuntime.source, bundle.serverRuntime.env, runtimeServiceEnv, bundle.serverRuntime.capsuleModuleSource, { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: url }, telemetry);
                 websocketHub.disconnectAll();
                 runtime.database.log.emit({
                     category: "platform",
@@ -2578,7 +2608,7 @@ async function startDevSession(options) {
                 if (affectsServerRuntime) {
                     const telemetryChanged = JSON.stringify(nextTelemetryConfig) !== JSON.stringify(telemetryConfig);
                     const nextTelemetry = telemetryChanged ? createHttpRequestTelemetry(nextTelemetryConfig, emitTelemetryDiagnostic) : null;
-                    await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session), nextTelemetry ?? telemetry).catch(async (error) => {
+                    await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, { ...withRuntimeSecuritySession(nextConfig, session), __sporadesDevOrigin: url }, nextTelemetry ?? telemetry).catch(async (error) => {
                         telemetry.bindJobQueue(runtime.database);
                         await nextTelemetry?.shutdown();
                         throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
@@ -3851,6 +3881,19 @@ async function manageHost(options) {
             }
             return;
         }
+        case "canonical": {
+            const config = await readHostConfig();
+            const resolved = resolveHostProfile(config, options.hostAlias);
+            const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile,
+                action: "capsule.canonical.set", subname: options.subname, canonical: { domain: options.canonicalDomain }, projectDir: options.projectDir });
+            if (options.json)
+                writeResult(result, !result.ok);
+            else if (!result.ok)
+                throw commandError(result.error.message, result.error.hint);
+            else
+                process.stdout.write(`Public origin: ${result.data.publicOrigin}\n`);
+            return;
+        }
         case "register": {
             await readProjectConfig(options.projectDir);
             const config = await readHostConfig();
@@ -3861,7 +3904,7 @@ async function manageHost(options) {
                 profile: resolved.profile,
                 action: "capsule.register",
                 subname: options.subname,
-                registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname, options.aliasDomains),
+                registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname, options.aliasDomains, options.canonicalDomain),
                 projectDir: options.projectDir,
             });
             if (!result.ok) {
@@ -3870,6 +3913,10 @@ async function manageHost(options) {
                     return;
                 }
                 throw commandError(result.error.message, result.error.hint);
+            }
+            if (options.canonicalDomain && (result.data?.capsule?.canonicalDomain !== options.canonicalDomain
+                || result.data?.capsule?.publicOrigin !== `https://${options.canonicalDomain}`)) {
+                throw commandError("Host helper did not confirm the canonical domain.", "Upgrade the Host helper and inspect the registration; no local binding was written.");
             }
             const confirmedAliases = result.data?.capsule?.aliasDomains;
             if (options.aliasDomains.length && (!Array.isArray(confirmedAliases)
@@ -4449,6 +4496,7 @@ function dockerMountField(value) {
 async function startContainerSession(options) {
     const config = await readProjectConfig(options.projectDir);
     const port = options.port ?? config.deploy?.port ?? 4000;
+    const publicOrigin = resolvePublicOrigin({ ...config, deploy: { ...config.deploy, port }, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN });
     const runtimeDir = path.join(options.projectDir, ".sporades");
     const containerName = `sporades-${config.name ?? path.basename(options.projectDir)}`;
     const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
@@ -4615,6 +4663,10 @@ async function startContainerSession(options) {
         "--env",
         "SPORADES_SECURITY_SESSION=container",
         "--env",
+        `SPORADES_PUBLIC_ORIGIN=${publicOrigin}`,
+        "--env",
+        `SPORADES_CONTAINER_PUBLIC_ORIGIN=${publicOrigin}`,
+        "--env",
         `SPORADES_ADMISSION_POLICY_PATH=${bundle.deployFiles.find(file => file.update === "admission")?.path ?? ""}`,
         "--env",
         `SPORADES_CONTAINER_TELEMETRY_CONFIG=${JSON.stringify(telemetryConfig)}`,
@@ -4678,6 +4730,7 @@ async function startContainerSession(options) {
             containerId,
             containerName,
             containerTransactionToken,
+            publicOrigin,
             telemetryDescriptorVersion: 1,
             ...(telemetryProfile !== undefined ? { telemetryProfile } : {}),
             ...(telemetryCaStagePath ? { telemetryCaStagePath } : {}),
@@ -5659,6 +5712,8 @@ function invokeRemoteHostHelper(options) {
     };
     if (options.admission)
         request.admission = options.admission;
+    if (options.canonical)
+        request.canonical = options.canonical;
     if (options.bootstrap) {
         request.bootstrap = options.bootstrap;
     }

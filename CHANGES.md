@@ -7,6 +7,7 @@ Changes since v0.9.31.
 ### 🚀 Features
 
 - Add opt-in Sentry-envelope errors and Umami/Plausible pageviews through a redacted same-origin collection tunnel (#234).
+- Add `ctx.app.publicOrigin`, canonical Hosted alias selection, and origin diagnostics (#231).
 - Add opt-in `acl.privilegedOnly()` / `acl.denyAll()` table policies and name allow-all tables in doctor warnings (#239).
 
 - Add opt-in required Server env checks for doctor, Host push, and runtime boot (#236).

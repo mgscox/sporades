@@ -598,6 +598,30 @@ A typical `sporades.json` looks like this:
 
 Ports follow this cascade: CLI flag, then `sporades.json`, then default.
 
+### Public origin
+
+Server handler and policy contexts expose the immutable `ctx.app.publicOrigin` as
+the trusted base URL for links, callbacks, and other Capsule-owned URLs. It is
+independent of request Host headers and does not change Capsule identity or
+`hostedUrl`.
+
+The `ctx.app` binding itself is non-writable and non-configurable, including in
+table/File ACL, registration, reauthentication and Team policy callbacks.
+
+Dev resolves it to the local HTTP URL using the actual configured CLI port.
+Container resolves `deploy.publicOrigin`, then the `SPORADES_PUBLIC_ORIGIN`
+environment override, then its local HTTP URL using `deploy.port`. Hosted uses
+the Capsule's selected canonical HTTPS alias, or its Host subdomain over HTTPS
+when no alias is selected. The Host subdomain remains routed when an alias is
+canonical, and no redirect is added.
+
+An explicit `deploy.publicOrigin` must be an HTTP(S) origin with no credentials,
+path, query, or fragment. Invalid explicit values fail configuration validation.
+Container deploy snapshots the resolved origin in its launch environment;
+redeploy to apply a configuration change. If a deployed runtime cannot
+observe a valid effective origin, startup logs an error and continues so older
+Capsules keep running; `sporades doctor` reports the effective origin when it
+can observe one.
 ### Required Server env
 
 Opt into required Server env checks by adding `env` to `sporades.json`:
