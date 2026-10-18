@@ -67,7 +67,8 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition, type ServerEnvConfig } from "sporades/server";
+const serverEnvConfig: ServerEnvConfig = { required: ["INTAKE_URL"], failClosed: true };
 import * as publicServerApi from "sporades/server";
 const errorCollection: publicServerApi.ObservabilityConfig = { errors: { protocol: "sentry", dsnEnv: "ERROR_DSN", client: true, sampleRate: 0.25 } };
 const pageviews: publicServerApi.AnalyticsConfig = { provider: "umami", endpointEnv: "ANALYTICS_ENDPOINT", websiteIdEnv: "WEBSITE_ID", redactQuery: true };

@@ -202,6 +202,8 @@ const MIGRATED_RUNTIME_MODULES = [
   // emitted list in this same batch.
   { file: "mail-runtime.js", atLeast: 20, sentinel: "encodeMimeHeaderValue" },
   { file: "mail-config.js", atLeast: 0, sentinel: "validateMailConfig" },
+  // Shared CLI/runtime env admission travels with every deployed Capsule.
+  { file: "server-env-requirements.js", atLeast: 3, sentinel: "validateServerEnvConfig" },
   // Provider callbacks travel as their own cohesive runtime modules. The config
   // module is also consumed by the CLI; the runtime module owns verification,
   // normalization and dispatch. Private sentinels keep both visible here.
@@ -1349,6 +1351,7 @@ const RUN_LEXER_CENSUS = {
   createRuntimeObservability: "not a SQL lexer: removes UUID hyphens for Sentry event IDs",
   redactDiagnosticText: "not a SQL lexer: strips capability URL suffixes and recognizable credentials from diagnostic text",
   structuredCredentialEnd: "not a SQL lexer: balances nested diagnostic credential values and escaped JSON-style strings for whole-value redaction",
+  missingServerEnvError: "not a lexer: recovery hints name CLI flags with double hyphens",
   resolveDeployFiles: "not a lexer: rejects deployment path segments starting with a hyphen",
   skipSqlQuotedOrCommented: "the one tokenizer every read-only inspection consumer asks a dialect of",
   // On the inspection path — every Postgres inspection query passes through it twice — and left

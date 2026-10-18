@@ -1,4 +1,5 @@
 import { validateObservabilityConfig } from "../observability-runtime.js";
+import { validateServerEnvConfig } from "../server-env-requirements.js";
 import { resolveFileAllowedMimeTypes } from "../file-policy.js";
 import { resolveRegistrationThrottle } from "../capsule-rate-limit.js";
 import { resolveAdmissionPolicy } from "../admission-policy.js";
@@ -43,6 +44,7 @@ const SUPPORTED_PROJECT_KEYS = new Set([
   "client",
   "deploy",
   "dev",
+  "env",
   "files",
   "id",
   "logging",
@@ -76,6 +78,7 @@ export async function readProjectConfig(projectDir: string) {
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   validateLogConfig(config);
   validateObservabilityConfig(config);
+  if (config.env !== undefined) config.env = validateServerEnvConfig(config.env);
   resolveFileAllowedMimeTypes(config.files);
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);

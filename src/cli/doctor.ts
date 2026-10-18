@@ -1,3 +1,5 @@
+import { missingServerEnvKeys } from "../server-env-requirements.js";
+import { readProjectServerEnv } from "./server-env-check.js";
 import { spawn, spawnSync } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { connect } from "node:net";
@@ -46,6 +48,8 @@ export async function runDoctorChecks(options: LooseRecord) {
     return checks;
   }
 
+  if (project.config.env !== undefined) checks.push(await serverEnvCheck(project.config, options.projectDir));
+
   checks.push(await securityPolicyCheck(project.config, options));
   const publicDevCheck = await publicDevPostureCheck(options);
   if (publicDevCheck) {
@@ -76,6 +80,22 @@ export async function runDoctorChecks(options: LooseRecord) {
   }
 
   return checks;
+}
+
+async function serverEnvCheck(config: LooseRecord, projectDir: string) {
+  const base = { id: "doctor.server-env", title: "Required Server env", scope: "project" };
+  try {
+    const missingKeys = missingServerEnvKeys(config, await readProjectServerEnv(projectDir));
+    return {
+      ...base, status: missingKeys.length ? "fail" : "pass", severity: missingKeys.length ? "error" : "info",
+      message: missingKeys.length ? `Missing required Server env keys: ${missingKeys.join(", ")}` : "Required Server env keys are present.",
+      details: { missingKeys },
+      ...(missingKeys.length ? { hint: "Set the named keys with `sporades env set <name> --stdin`, then rerun `sporades doctor`." } : {}),
+    };
+  } catch {
+    return { ...base, status: "fail", severity: "error", message: "Server env could not be checked.",
+      hint: "Restore readable Server env and the matching local sealed private key, then rerun `sporades doctor`." };
+  }
 }
 
 async function projectConfigCheck(projectDir: string) {

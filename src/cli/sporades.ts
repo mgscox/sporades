@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { routeCollection } from "../observability-runtime.js";
+import { missingServerEnvKeys, missingServerEnvError } from "../server-env-requirements.js";
 import { validateQueryCredential } from "./telemetry-diagnostics.js";
 import { openAdmissionPolicy, type AdmissionHealth, type AdmissionReloadEvent, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
 import { createAdmissionEvidence } from "../admission-evidence.js";
@@ -1278,6 +1279,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   let restart = false;
   let verify = false;
   let fallbackToPreviousRelease = false;
+  let allowMissingEnv = false;
   let branch = "main";
   let file = DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW;
   let dryRun = false;
@@ -1344,6 +1346,10 @@ function parseHostArgs(args: string[]): LooseRecord {
       case "--verify":
         verify = true;
         restart = true;
+        break;
+
+      case "--allow-missing-env":
+        allowMissingEnv = true;
         break;
 
       case "--fallback-to-previous-release":
@@ -1643,7 +1649,7 @@ function parseHostArgs(args: string[]): LooseRecord {
           "Use `sporades host push --verify --fallback-to-previous-release`.",
         );
       }
-      return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, json, projectDir: process.cwd() };
+      return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, allowMissingEnv, json, projectDir: process.cwd() };
 
     case "github": {
       const [area, action, ...extra] = positional;
@@ -4191,6 +4197,8 @@ async function manageHost(options: LooseRecord) {
       const preserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
       const sshAccess = await resolveHostedCapsuleSshAccessForAudit(projectConfig, options.projectDir);
       const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
+        projectConfig,
+        allowMissingEnv: options.allowMissingEnv,
         projectDir: options.projectDir,
         alias: target.alias,
         profile: target.profile,
@@ -6132,9 +6140,15 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
 }
 
 async function prepareHostPushSealedServerEnv(options: LooseRecord) {
+  const checkRequired = (values: Record<string, string>) => {
+    if (options.projectConfig.env === undefined || options.allowMissingEnv) return;
+    const missing = missingServerEnvKeys(options.projectConfig, values);
+    if (missing.length) throw missingServerEnvError(missing);
+  };
   const paths = sealedServerEnvPaths(options.projectDir);
   const envelope = await readSealedServerEnv(paths);
   if (!envelope) {
+    checkRequired({});
     const legacyEnvFile = await readServerEnvFile(path.join(options.projectDir, ".env.sporades.server"));
     const legacyValues = legacyEnvFile.exists ? parseServerEnv(legacyEnvFile) : {};
     if (Object.keys(legacyValues).length > 0) {
@@ -6171,6 +6185,7 @@ async function prepareHostPushSealedServerEnv(options: LooseRecord) {
     });
   }
 
+  checkRequired(values);
   const hostKey = await readHostedCapsuleSealedEnvPublicKey(options.alias, options.profile, options.subname, options.projectDir);
   const hostEnvelope = sealServerEnv(values, hostKey.publicKey, {
     source: "host-push-auto-reencrypt",
