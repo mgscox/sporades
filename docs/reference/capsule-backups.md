@@ -77,7 +77,11 @@ sporades host backup prune --host production --subname tickets --json
 ```
 
 Create holds the Capsule lifecycle lock, checks Docker ownership labels and the
-exact container ID, and gracefully stops a running container. With the writer
+exact container/release ID, and gracefully stops a running container. A running
+or interrupted runtime must match the current release; otherwise create fails
+before stopping or resuming it. Restart that Capsule deliberately on the intended
+release first. This prevents a scheduled backup from activating a release that
+was pushed without restart. With the writer
 stopped it uses SQLite `VACUUM INTO`, copies uploaded files, checks SQLite
 integrity, and builds a versioned manifest containing the source domain/subname,
 release ID, creation time, schema hash (SHA-256 of ordered SQLite schema

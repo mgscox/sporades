@@ -209,7 +209,7 @@ test('shipped CLI and helper quiesce exact containers, restore staging, and repo
   await writeFile(path.join(config, 'hosts.json'), JSON.stringify({ currentHostAlias: h.alias, profiles: { [h.alias]: { ...h, server: 'fake-only' } } }));
   await writeFile(state, JSON.stringify({ source: true, staging: false }));
   await writeFile(path.join(bin, 'ssh'), `#!${process.execPath}\nconst {spawnSync}=require('node:child_process');const {readFileSync}=require('node:fs'); const r=spawnSync(process.execPath,[${JSON.stringify(path.join(root, 'bin', 'sporades-host-helper.js'))}],{input:readFileSync(0),env:process.env,encoding:'utf8'});process.stdout.write(r.stdout);process.stderr.write(r.stderr);process.exit(r.status??1);\n`, { mode: 0o755 });
-  await writeFile(path.join(bin, 'docker'), `#!${process.execPath}\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(args)+'\\n'); const state=JSON.parse(fs.readFileSync(${JSON.stringify(state)},'utf8'));const sourceId='a'.repeat(64), stagingId='b'.repeat(64);const subname=args.at(-1)===sourceId||args.at(-1).endsWith('-source')?'source':'staging';if(args[0]==='inspect')console.log(JSON.stringify({Id:subname==='source'?sourceId:stagingId,State:{Running:state[subname],Restarting:false},Config:{Labels:{'com.sporades.managed':'true','com.sporades.hosted-domain':${JSON.stringify(h.domain)},'com.sporades.capsule-subname':subname}}}));else if(args[0]==='stop'||args[0]==='start'){state[subname]=args[0]==='start';fs.writeFileSync(${JSON.stringify(state)},JSON.stringify(state));}\n`, { mode: 0o755 });
+  await writeFile(path.join(bin, 'docker'), `#!${process.execPath}\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(args)+'\\n'); const state=JSON.parse(fs.readFileSync(${JSON.stringify(state)},'utf8'));const sourceId='a'.repeat(64), stagingId='b'.repeat(64);const subname=args.at(-1)===sourceId||args.at(-1).endsWith('-source')?'source':'staging';if(args[0]==='inspect')console.log(JSON.stringify({Id:subname==='source'?sourceId:stagingId,State:{Running:state[subname],Restarting:false},Config:{Labels:{'com.sporades.managed':'true','com.sporades.hosted-domain':${JSON.stringify(h.domain)},'com.sporades.capsule-subname':subname,'com.sporades.release-id':process.env.FAKE_BACKUP_RELEASE_ID||'release-one'}}}));else if(args[0]==='stop'||args[0]==='start'){state[subname]=args[0]==='start';fs.writeFileSync(${JSON.stringify(state)},JSON.stringify(state));}\n`, { mode: 0o755 });
   await writeFile(p.passwordFile, 'private-test-key', { mode: 0o600 }); restic(p, ['init']);
   const policyFile = path.join(dir, 'policy.json'); await writeFile(policyFile, JSON.stringify(p));
   const env = { ...process.env, PATH: bin + path.delimiter + process.env.PATH, SPORADES_CONFIG_DIR: config, SPORADES_TEST_FLOCK_PATH: path.join(root, 'test', 'support', 'exec-flock.py') };
@@ -225,6 +225,13 @@ test('shipped CLI and helper quiesce exact containers, restore staging, and repo
   const operations = (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(operations.some(a => a[0] === 'stop' && a.at(-1) === 'a'.repeat(64)));
   assert.ok(operations.some(a => a[0] === 'start' && a.at(-1) === 'a'.repeat(64)));
+  env.FAKE_BACKUP_RELEASE_ID = 'pending-old-release';
+  const releaseMismatch = cli(['create', '--subname', 'source'], false);
+  assert.match(releaseMismatch.error.message, /different release/);
+  delete env.FAKE_BACKUP_RELEASE_ID;
+  assert.equal(JSON.parse(await readFile(state, 'utf8')).source, true);
+  const afterMismatch = (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(afterMismatch.filter(a => a[0] === 'stop').length, operations.filter(a => a[0] === 'stop').length);
   assert.equal(cli(['list', '--subname', 'source']).data.snapshots[0].id, created.id);
   cli(['restore', '--subname', 'source', '--id', created.id, '--confirm', 'source'], false);
   cli(['restore', '--subname', 'source', '--to-subname', 'staging', '--id', created.id, '--confirm', 'staging']);

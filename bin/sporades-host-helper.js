@@ -48420,6 +48420,9 @@ async function manageCapsuleBackup(request2) {
         if (e.code === "ENOENT") return null;
         throw e;
       });
+      if ((container?.State.Running || container?.State.Restarting || pending) && container?.Config?.Labels?.["com.sporades.release-id"] !== record.currentRelease.id) {
+        throw helperError("Backup cannot resume a runtime from a different release.", "Restart the Capsule on the intended current release before backing up; a backup must not activate a pending release.");
+      }
       if (pending) {
         await trustedBackupPath(resumeJournal, true);
         if (pending.id !== container?.Id) throw helperError("Interrupted backup container changed.", "Inspect the Capsule, remove its protected resume journal after recovery, then retry.");

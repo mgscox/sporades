@@ -2590,6 +2590,10 @@ async function manageCapsuleBackup(request) {
             // Resume only the exact container we stopped if an earlier backup was interrupted.
             const pending = await readFile(resumeJournal, "utf8").then(JSON.parse, e => { if (e.code === "ENOENT")
                 return null; throw e; });
+            if ((container?.State.Running || container?.State.Restarting || pending)
+                && container?.Config?.Labels?.["com.sporades.release-id"] !== record.currentRelease.id) {
+                throw helperError("Backup cannot resume a runtime from a different release.", "Restart the Capsule on the intended current release before backing up; a backup must not activate a pending release.");
+            }
             if (pending) {
                 await trustedBackupPath(resumeJournal, true);
                 if (pending.id !== container?.Id)
