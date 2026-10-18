@@ -886,7 +886,7 @@ test("real HTTP multipart replay exposes safe limits and preserves the corrected
     }
     const health = await fetch(`${origin}/__sporades/health/runtime`, { headers: { "x-sporades-host-probe": database.runtimeProbeToken } });
     assert.equal(health.status, 200);
-    assert.deepEqual((await health.json()).data.runtime, { ready: true, fileMaxSizeBytes: 10 * 1024 * 1024, httpMaxBodyBytes: 1024 * 1024 });
+    assert.deepEqual((await health.json()).data.runtime, { ready: true, publicOrigin: "http://localhost:4000", fileMaxSizeBytes: 10 * 1024 * 1024, httpMaxBodyBytes: 1024 * 1024 });
 
     const payload = Buffer.alloc(92_000, "private-field-content ");
     const send = (filename) => fetch(`${origin}/upload`, {

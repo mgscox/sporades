@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { openDevDatabase, createWebSocketHub } from "../dist/server-runtime-source.js";
 import { String, table, mutation, query } from "../dist/server.js";
+import { probeAppBinding, expectedAppBinding } from "./support/app-binding-probe.js";
 
 async function fixture(run, policy, options = {}) {
   const dir = await mkdtemp(path.join(process.cwd(), ".team-policy-"));
@@ -102,6 +103,25 @@ async function seed(owner, teamId, holder, state) {
   const result = await owner.send({ type: "mutation.run", name: "seed", args: [teamId, holder.userId, state] });
   assert.equal(result.error, null, JSON.stringify(result));
 }
+
+test("destructive Team policy retains immutable app identity through SDK and mutation paths", async () => {
+  const observations = [];
+  await fixture(async ({ client, database }) => {
+    const owner = await client("origin-owner");
+    for (const via of ["sdk", "app"]) {
+      const teamId = await team(owner);
+      const response = await owner.send(via === "sdk"
+        ? { type: "teams.delete", teamId }
+        : { type: "mutation.run", name: "destroy", args: ["delete", teamId] });
+      assert.equal(response.error, null, JSON.stringify(response));
+    }
+    assert.deepEqual(observations, [expectedAppBinding(database.app.publicOrigin), expectedAppBinding(database.app.publicOrigin)]);
+  }, ctx => {
+    observations.push(probeAppBinding(ctx));
+    assert.ok(ctx.signal instanceof AbortSignal);
+    return { allow: true };
+  });
+});
 
 test("Capsule responsibility policy refuses destructive SDK and ctx.teams operations", async () => {
   await fixture(async ({ client }) => {
@@ -217,7 +237,7 @@ test("inactive responsibility permits all paths and policies receive immutable e
       }
     }
   }, async (ctx, input) => {
-    assert.deepEqual(Object.keys(ctx).sort(), ["auth", "db", "signal"]);
+    assert.deepEqual(Object.keys(ctx).sort(), ["app", "auth", "db", "signal"]);
     assert.equal(ctx.db.responsibility.update, undefined);
     assert.equal(ctx.db.sporades_teams, undefined);
     assert.equal(Object.isFrozen(ctx.auth), true);

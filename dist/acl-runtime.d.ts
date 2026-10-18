@@ -138,10 +138,13 @@ export declare function createTableAclContext(context: any, database: any): {
             hasAnyRole(teamId: any, roles: any): any;
         }>;
     }>;
+} & {
+    readonly app: any;
 };
 export declare function bindPendingAclWrites(context: any, sourceContext?: any): any;
 export declare function trackPendingAclWrite(context: any, pending: any): any;
 export declare function createFileAclContext(auth: LooseRecord, database: LooseRecord, credential?: LooseRecord): Readonly<{
+    app: any;
     auth: Readonly<{
         [x: string]: any;
     }>;

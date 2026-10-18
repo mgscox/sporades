@@ -18,6 +18,23 @@ Add an explicit `telemetry.profile` binding in `sporades.json` or pass
 selection export nothing. A local Container session can use `sporades deploy
 --telemetry <name>` and disable export with `sporades deploy --no-telemetry`.
 
+Server handlers can read `ctx.app.publicOrigin` to build links that point back
+to the Capsule. Both the `ctx.app` binding and its metadata are readonly:
+handlers and policy callbacks cannot replace, delete or redefine them, including
+after context middleware returns a copy. This also applies to table and File ACL,
+registration, reauthentication, Team join and Team billing policy contexts.
+Dev uses its bound local URL, including during init hooks and
+startup Jobs when `--port 0` selects a dynamic port. A Container
+uses `deploy.publicOrigin` when set, then `SPORADES_PUBLIC_ORIGIN`, then its
+effective local port (`deploy --port` overrides `deploy.port`). Container launch
+and doctor retain the origin selected at deployment until redeploy. Hosted uses
+the selected canonical alias over HTTPS, or
+the Host subdomain over HTTPS when no alias is selected. Explicit
+`deploy.publicOrigin` values must be HTTP(S) origins with no credentials, path,
+query, or fragment; loopback HTTP is intended for local use. In deployed mode,
+a missing or invalid effective origin is reported at startup without stopping
+existing applications.
+
 ## Database backend
 
 See [database configuration and local services](../reference/projects-and-configuration.md#configuration)

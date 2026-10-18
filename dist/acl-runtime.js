@@ -1,3 +1,4 @@
+import { bindAppContext } from "./public-origin.js";
 // The ACL and privileged-audit domain: table ACL policy as ADR-0022 defines it, the privileged
 // server role's `ctx.privileged` surface as ADR-0027 separates it from Capsule roles, and the audit
 // event every privileged run emits.
@@ -531,11 +532,11 @@ export function createTableAclContext(context, database) {
     // ACL evaluation is deliberately read-only. Current-user Teams can lazily
     // bootstrap durable state, so policy callbacks receive only constrained
     // membership decisions rather than the normal Team management API.
-    return {
+    return bindAppContext({
         auth: context?.auth,
         credential: context?.credential,
         acl: createAclHelpers(database, context),
-    };
+    }, database.app);
 }
 const pendingAclWritesByContext = new WeakMap();
 export function bindPendingAclWrites(context, sourceContext) {
@@ -568,6 +569,7 @@ export function createFileAclContext(auth, database, credential = { kind: "sessi
         credential: Object.freeze({ ...credential }),
     };
     return Object.freeze({
+        app: database.app,
         auth: context.auth,
         credential: context.credential,
         acl: createAclHelpers(database, context),

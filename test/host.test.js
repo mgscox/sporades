@@ -3821,6 +3821,8 @@ test("sporades host helper registers Hosted Capsules with registry state and una
     assert.equal(output.data.registered, true);
     assert.equal(output.data.authoritative, true);
     assert.deepEqual(output.data.capsule, {
+      canonicalDomain: null,
+      publicOrigin: "https://team-notes.capsules.example.dev",
       aliasDomains: [],
       aliasUrls: [],
       subname: "team-notes",
@@ -8605,7 +8607,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       assert.deepEqual(await authenticatedWithRequiredInspection.json(), {
         ok: false,
         data: {
-          runtime: { ready: false, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
+          runtime: { ready: false, publicOrigin: "http://localhost:4000", fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
           checks: {
             sqlite: { ok: true },
             fileStorage: { ok: true },
@@ -8627,7 +8629,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
       assert.deepEqual(body, {
         ok: true,
         data: {
-          runtime: { ready: true, fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
+          runtime: { ready: true, publicOrigin: "http://localhost:4000", fileMaxSizeBytes: 7_654_321, httpMaxBodyBytes: 1_234_567 },
           checks: {
             sqlite: { ok: true },
             fileStorage: { ok: true },
@@ -8636,7 +8638,7 @@ test("Sporades runtime health rejects unauthenticated probes and returns safe re
         },
         error: null,
       });
-      assert.deepEqual(Object.keys(body.data.runtime).sort(), ["fileMaxSizeBytes", "httpMaxBodyBytes", "ready"]);
+      assert.deepEqual(Object.keys(body.data.runtime).sort(), ["fileMaxSizeBytes", "httpMaxBodyBytes", "publicOrigin", "ready"]);
       const raw = JSON.stringify(body);
       assert.equal(raw.includes(dir), false);
       assert.equal(raw.includes("a".repeat(64)), false);
@@ -9367,6 +9369,8 @@ test("sporades host helper lists registry records enriched with Docker container
             subname: "archive",
             domain: "capsules.example.dev",
             hostedUrl: "https://archive.capsules.example.dev",
+            publicOrigin: "https://archive.capsules.example.dev",
+            canonicalDomain: null,
             registry: {
               remoteCapsuleId: "capsules.example.dev/archive",
               createdAt: "2026-01-04T00:00:00.000Z",
@@ -9397,6 +9401,8 @@ test("sporades host helper lists registry records enriched with Docker container
             subname: "drafts",
             domain: "capsules.example.dev",
             hostedUrl: "https://drafts.capsules.example.dev",
+            publicOrigin: "https://drafts.capsules.example.dev",
+            canonicalDomain: null,
             registry: {
               remoteCapsuleId: "capsules.example.dev/drafts",
               createdAt: "2026-01-01T00:00:00.000Z",
@@ -9429,6 +9435,8 @@ test("sporades host helper lists registry records enriched with Docker container
             subname: "notes",
             domain: "capsules.example.dev",
             hostedUrl: "https://notes.capsules.example.dev",
+            publicOrigin: "https://notes.capsules.example.dev",
+            canonicalDomain: null,
             registry: {
               remoteCapsuleId: "capsules.example.dev/notes",
               createdAt: "2026-01-02T00:00:00.000Z",
@@ -16090,5 +16098,133 @@ test('real Caddy rewrites Hosted identity and gates simulated Cloudflare traffic
         }
       }
     } finally { runtime.closeAllConnections(); await new Promise(resolve=>runtime.close(resolve)); }
+  });
+});
+
+test('canonical public origin is registered as a routed alias and changes without unregistering', async () => {
+  await withTempDir(async dir => {
+    const remoteRoot = path.join(dir, 'remote-root');
+    const caddy = await installFakeCaddy(dir);
+    await mkdir(path.join(remoteRoot, 'caddy', 'hosts'), { recursive: true });
+    await writeFile(path.join(remoteRoot, 'caddy', 'Caddyfile'), 'import ./sporades-hosted-domains.caddy\n');
+    await writeFile(path.join(remoteRoot, 'caddy', 'hosts', 'capsules.example.dev.caddy'), 'import ./capsules.example.dev/*.caddy\n');
+    const target = { host: { alias: 'personal', domain: 'capsules.example.dev', scheme: 'https', remoteRoot }, capsule: { subname: 'team-notes' } };
+    const registered = await runHostHelper({ ...target, action: 'capsule.register', registration: { aliasDomains: ['other.example'], canonicalDomain: 'canonical.example' } }, { cwd: dir, env: caddy.env });
+    assert.equal(JSON.parse(registered.stdout).ok, true, registered.stdout);
+    assert.equal(JSON.parse(registered.stdout).data.capsule.publicOrigin, 'https://canonical.example');
+    const recordPath = path.join(remoteRoot, 'hosts/capsules.example.dev/registry/capsules/team-notes.json');
+    const first = JSON.parse(await readFile(recordPath, 'utf8'));
+    assert.equal(first.canonicalDomain, 'canonical.example');
+    assert.deepEqual(first.aliasDomains, ['other.example', 'canonical.example']);
+    assert.match(await readFile(path.join(remoteRoot, 'caddy/hosts/capsules.example.dev/team-notes.caddy'), 'utf8'), /canonical\.example/);
+    const change = async canonicalDomain => JSON.parse((await runHostHelper({ ...target, action: 'capsule.canonical.set', canonical: { domain: canonicalDomain } }, { cwd: dir, env: caddy.env })).stdout);
+    const rejected = await change('unregistered.example');
+    assert.equal(rejected.ok, false);
+    assert.equal(JSON.parse(await readFile(recordPath, 'utf8')).canonicalDomain, 'canonical.example');
+    const changed = await change('other.example');
+    assert.equal(changed.ok, true, JSON.stringify(changed));
+    assert.equal(changed.data.publicOrigin, 'https://other.example');
+    assert.equal(changed.data.restarted, false, 'registration stays stopped');
+    const cleared = await change(null);
+    assert.equal(cleared.ok, true, JSON.stringify(cleared));
+    assert.equal(cleared.data.publicOrigin, 'https://team-notes.capsules.example.dev');
+    const final = JSON.parse(await readFile(recordPath, 'utf8'));
+    assert.equal(final.createdAt, first.createdAt);
+    assert.equal(final.hostedUrl, first.hostedUrl);
+    assert.deepEqual(final.aliasDomains, first.aliasDomains);
+  });
+});
+
+test('canonical domain updates recreate a running Capsule with canonical links and both browser origins', async () => {
+  await withTempDir(async dir => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir);
+    await mkdir(path.join(fixture.remoteRoot, 'caddy/hosts/capsules.example.dev'), { recursive: true });
+    await writeFile(path.join(fixture.remoteRoot, 'caddy/Caddyfile'), 'import ./hosts/*.caddy\n');
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, 'utf8'));
+    record.aliasDomains = ['canonical.example'];
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const docker = await installFakeDocker(dir);
+    const target = { host: { alias: 'personal', domain: fixture.domain, scheme: 'https', remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+    const result = JSON.parse((await runHostHelper({ ...target, action: 'capsule.canonical.set', canonical: { domain: 'canonical.example' } }, { cwd: dir, env: docker.env })).stdout);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.data.restarted, true);
+    const run = (await docker.calls()).find(call => call.args[0] === 'run');
+    assert(run, 'running Capsules are recreated');
+    assert(run.args.includes('SPORADES_PUBLIC_ORIGIN=https://canonical.example'));
+    const aliases = JSON.parse(run.args.find(arg => arg.startsWith('SPORADES_PUBLIC_ALIASES=')).slice('SPORADES_PUBLIC_ALIASES='.length));
+    assert(aliases.includes('https://team-notes.capsules.example.dev'));
+    assert(aliases.includes('https://canonical.example'));
+    const after = JSON.parse(await readFile(fixture.registryRecordPath, 'utf8'));
+    assert.equal(after.currentRelease.id, record.currentRelease.id);
+    assert.equal(after.hostedUrl, record.hostedUrl);
+  });
+});
+
+test('canonical changes recover after registry publication interrupts recreation', async () => {
+  await withTempDir(async dir => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir);
+    await mkdir(path.join(fixture.remoteRoot, 'caddy/hosts/capsules.example.dev'), { recursive: true });
+    await writeFile(path.join(fixture.remoteRoot, 'caddy/Caddyfile'), 'import ./hosts/*.caddy\n');
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, 'utf8'));
+    record.aliasDomains = ['canonical.example'];
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const docker = await installFakeDocker(dir);
+    const target = { action: 'capsule.canonical.set', host: { alias: 'personal', domain: fixture.domain, scheme: 'https', remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+    // Interrupt at the real publication boundary, after releasing the registry lock
+    // but before any lifecycle/Docker work. The Host route OS lock dies with us.
+    const hook = path.join(dir, 'interrupt-canonical.mjs');
+    await writeFile(docker.logPath, '');
+    await writeFile(hook, `import fs from 'node:fs/promises'; import {syncBuiltinESMExports} from 'node:module';
+const rm = fs.rm; fs.rm = async (target, ...args) => {
+  const result = await rm(target, ...args);
+  if (String(target).endsWith('/registry/.lock')) process.exit(17);
+  return result;
+}; syncBuiltinESMExports();`);
+    for (const domain of ['canonical.example', null]) {
+      const request = { ...target, canonical: { domain } };
+      const callsBefore = (await docker.calls()).length;
+      const interrupted = await runHostHelper(request, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${hook}` } });
+      assert.equal(interrupted.code, 17, interrupted.stdout + interrupted.stderr);
+      assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, 'utf8')).canonicalDomain, domain);
+      assert.equal((await docker.calls()).length, callsBefore);
+      const retried = JSON.parse((await runHostHelper(request, { cwd: dir, env: docker.env })).stdout);
+      assert.equal(retried.ok, true, JSON.stringify(retried));
+      assert.equal(retried.data.restarted, true, 'same-value retry must apply the saved origin');
+      const run = (await docker.calls()).filter(call => call.args[0] === 'run').at(-1);
+      assert(run.args.includes(`SPORADES_PUBLIC_ORIGIN=${domain ? 'https://' + domain : record.hostedUrl}`));
+    }
+  });
+});
+
+test('canonical restart failures remain retryable until started or explicitly stopped', async t => {
+  for (const stop of [false, true]) await t.test(stop ? 'explicit stop cancels pending recreation' : 'same-value retry repairs failed restart', async () => {
+    await withTempDir(async dir => {
+      const fixture = await writeHostedCapsuleRollbackFixture(dir);
+      await mkdir(path.join(fixture.remoteRoot, 'caddy/hosts/capsules.example.dev'), { recursive: true });
+      await writeFile(path.join(fixture.remoteRoot, 'caddy/Caddyfile'), 'import ./hosts/*.caddy\n');
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, 'utf8'));
+      record.aliasDomains = ['canonical.example'];
+      await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUN_STATUSES: '1,0' } });
+      const target = { host: { alias: 'personal', domain: fixture.domain, scheme: 'https', remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } };
+      const invoke = async request => JSON.parse((await runHostHelper({ ...target, ...request }, { cwd: dir, env: docker.env })).stdout);
+      const request = { action: 'capsule.canonical.set', canonical: { domain: 'canonical.example' } };
+      const failed = await invoke(request);
+      assert.equal(failed.ok, false, JSON.stringify(failed));
+      assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, 'utf8')).canonicalDomain, 'canonical.example');
+      if (stop) assert.equal((await invoke({ action: 'capsule.stop' })).ok, true);
+      const callsBefore = (await docker.calls()).length;
+      const retried = await invoke(request);
+      assert.equal(retried.ok, true, JSON.stringify(retried));
+      assert.equal(retried.data.restarted, !stop);
+      if (stop) assert.equal((await docker.calls()).length, callsBefore, 'stopped Capsules stay stopped');
+      else {
+        const run = (await docker.calls()).filter(call => call.args[0] === 'run').at(-1);
+        assert(run.args.includes('SPORADES_PUBLIC_ORIGIN=https://canonical.example'));
+      }
+      const settledCalls = (await docker.calls()).length;
+      assert.equal((await invoke(request)).data.restarted, false, 'settled retries do not recreate');
+      assert.equal((await docker.calls()).length, settledCalls);
+    });
   });
 });

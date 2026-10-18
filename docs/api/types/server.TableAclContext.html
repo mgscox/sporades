@@ -18,9 +18,9 @@ Capsule context middleware are intentionally not forwarded into ACL rules;
 pass stable policy inputs through row data and use <code>ctx.acl</code> for runtime
 decisions.</p>
 </div></section>
-<div class="tsd-signature"><span class="tsd-signature-keyword">type</span> <span class="tsd-kind-type-alias">TableAclContext</span> <span class="tsd-signature-symbol">=</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-property" href="#acl">acl</a><span class="tsd-signature-symbol">:</span> <a href="server.AclHelpers.html" class="tsd-signature-type tsd-kind-type-alias">AclHelpers</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#auth">auth</a><span class="tsd-signature-symbol">:</span> <a href="server.AuthContext.html" class="tsd-signature-type tsd-kind-type-alias">AuthContext</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#credential">credential</a><span class="tsd-signature-symbol">:</span> <a href="server.CredentialProvenance.html" class="tsd-signature-type tsd-kind-type-alias">CredentialProvenance</a><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
+<div class="tsd-signature"><span class="tsd-signature-keyword">type</span> <span class="tsd-kind-type-alias">TableAclContext</span> <span class="tsd-signature-symbol">=</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-property" href="#acl">acl</a><span class="tsd-signature-symbol">:</span> <a href="server.AclHelpers.html" class="tsd-signature-type tsd-kind-type-alias">AclHelpers</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#app">app</a><span class="tsd-signature-symbol">:</span> <a href="server.AppContext.html" class="tsd-signature-type tsd-kind-type-alias">AppContext</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#auth">auth</a><span class="tsd-signature-symbol">:</span> <a href="server.AuthContext.html" class="tsd-signature-type tsd-kind-type-alias">AuthContext</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#credential">credential</a><span class="tsd-signature-symbol">:</span> <a href="server.CredentialProvenance.html" class="tsd-signature-type tsd-kind-type-alias">CredentialProvenance</a><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L138">server.d.ts:138</a></li></ul></aside>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L141">server.d.ts:141</a></li></ul></aside>
 <section class="tsd-panel-group tsd-index-group">
 <section class="tsd-panel tsd-index-panel">
 <details class="tsd-index-content tsd-accordion" open><summary class="tsd-accordion-summary tsd-index-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
@@ -29,6 +29,7 @@ decisions.</p>
 <section class="tsd-index-section">
 <h3 class="tsd-index-heading tsd-anchor-link" id="properties">Properties<a href="#properties" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-index-list"><a href="#acl" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>acl</span></a>
+<a href="#app" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>app</span></a>
 <a href="#auth" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>auth</span></a>
 <a href="#credential" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>credential</span></a>
 </div></section></div></details></section></section>
@@ -39,17 +40,22 @@ decisions.</p>
 <h3 class="tsd-anchor-link" id="acl"><span>acl</span><a href="#acl" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">acl</span><span class="tsd-signature-symbol">:</span> <a href="server.AclHelpers.html" class="tsd-signature-type tsd-kind-type-alias">AclHelpers</a></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L141">server.d.ts:141</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L145">server.d.ts:145</a></li></ul></aside></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="app"><code class="tsd-tag">Readonly</code><span>app</span><a href="#app" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-signature"><span class="tsd-kind-property">app</span><span class="tsd-signature-symbol">:</span> <a href="server.AppContext.html" class="tsd-signature-type tsd-kind-type-alias">AppContext</a></div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L142">server.d.ts:142</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="auth"><span>auth</span><a href="#auth" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">auth</span><span class="tsd-signature-symbol">:</span> <a href="server.AuthContext.html" class="tsd-signature-type tsd-kind-type-alias">AuthContext</a></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L139">server.d.ts:139</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L143">server.d.ts:143</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="credential"><span>credential</span><a href="#credential" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">credential</span><span class="tsd-signature-symbol">:</span> <a href="server.CredentialProvenance.html" class="tsd-signature-type tsd-kind-type-alias">CredentialProvenance</a></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L140">server.d.ts:140</a></li></ul></aside></section></section></details></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L144">server.d.ts:144</a></li></ul></aside></section></section></details></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">
@@ -66,7 +72,7 @@ decisions.</p>
 <h3>On This Page</h3></summary>
 <div class="tsd-accordion-details">
 <details open class="tsd-accordion tsd-page-navigation-section"><summary class="tsd-accordion-summary" data-key="section-Properties"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>Properties</summary>
-<div><a href="#acl"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>acl</span></a><a href="#auth"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>auth</span></a><a href="#credential"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>credential</span></a></div></details></div></details></div>
+<div><a href="#acl"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>acl</span></a><a href="#app"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>app</span></a><a href="#auth"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>auth</span></a><a href="#credential"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Property"><use href="../assets/icons.svg#icon-1024"></use></svg><span>credential</span></a></div></details></div></details></div>
 <div class="site-menu">
 <nav class="tsd-navigation"><a href="../index.html">Sporades SDK API</a>
 <ul class="tsd-small-nested-navigation" id="tsd-nav-container">
