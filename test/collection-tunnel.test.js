@@ -248,6 +248,46 @@ const escapedQueryDiagnostics = apostropheDiagnosticUrls.map(base => {
   };
 });
 
+const repeatedApostropheDiagnostics = [
+  ["comma then word apostrophe", "'", "'", "O', Reilly's"],
+  ["comma then opening apostrophe", "'", "'", "O', 'Reilly"],
+  ["comma then opening and word apostrophes", "'", "'", "O', 'Reilly's"],
+  ["semicolon then opening apostrophe", "'", "'", "O'; 'Reilly's"],
+  ["bracket then opening apostrophe", "'", "'", "O') 'Reilly's"],
+  ["tabs then opening apostrophe", "'", "'", "O', \t'Reilly's"],
+  ["double quoted continuation", "'", "'", 'O\', "Reilly\'s"'],
+  ["bare value and ampersand", 'url=', '', "'O'&Reilly's phrase'"],
+  ["bare value and fragment", 'url=', '', "'O'#Reilly's phrase'"],
+  ["bare value and equals", 'url=', '', "'O'=Reilly's phrase'"],
+  ["bare value and another opener", 'url=', '', "'O'& cap = 'Reilly's phrase'"],
+].map(([name, before, after, value]) => {
+  const urls = apostropheDiagnosticUrls.map(base => `${before}${base}?filter=${value}&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker${after}`);
+  const clean = apostropheDiagnosticUrls.map(base => before + base + after);
+  return { name,
+    message: `Ready? Investigate #234 ${urls.join(' ')} Continue.`,
+    safe: `Ready? Investigate #234 ${clean.join(' ')} Continue.`,
+    stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
+    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+  };
+});
+for (const base of apostropheDiagnosticUrls) repeatedApostropheDiagnostics.push({
+  name: `unterminated repeated apostrophes: ${base}`,
+  message: `Before '${base}?filter=O', Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker\nNext public #234 line.`,
+  safe: `Before '${base}\nNext public #234 line.`,
+  stack: `Error: diagnostic URL\n    at execute ('${base}?filter=O', Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker:12:8)`,
+  frames: [{ filename: "'" + base, function: 'execute', lineno: 12, colno: 8 }],
+});
+{
+  const urls = apostropheDiagnosticUrls.map(base => JSON.stringify({ url: `${base}?filter=O', 'Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker`, status: 'ready' }));
+  const clean = apostropheDiagnosticUrls.map(base => JSON.stringify({ url: base, status: 'ready' }));
+  repeatedApostropheDiagnostics.push({ name: 'repeated apostrophes preserve surrounding JSON fields',
+    message: `Ready? Investigate #234 ${urls.join(' ')} Continue.`,
+    safe: `Ready? Investigate #234 ${clean.join(' ')} Continue.`,
+    stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
+    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+  });
+}
+
 // Each row exercises all five URL forms in messages and stack filenames. The
 // non-credential cap key makes URL stripping, rather than key redaction, decisive.
 const structuralQueryDiagnostics = [
@@ -296,6 +336,7 @@ for (const [name, before, after, suffix] of [
 for (const [name, probes] of [
   ['apostrophes', [...apostropheDiagnostics, ...escapedQueryDiagnostics]],
   ...punctuatedApostropheGroups,
+  ['repeated apostrophes', repeatedApostropheDiagnostics],
   ['structural URL suffixes', structuralQueryDiagnostics],
 ]) test(`${name} stay private at server and tunnel receivers`, async t => {
   const received = [];
@@ -530,6 +571,7 @@ test('generated loader redacts diagnostic URL delimiters across all relative for
 for (const [name, probes] of [
   ['apostrophes', [...apostropheDiagnostics, ...escapedQueryDiagnostics]],
   ...punctuatedApostropheGroups,
+  ['repeated apostrophes', repeatedApostropheDiagnostics],
   ['structural URL suffixes', structuralQueryDiagnostics],
 ]) test(`generated loader conceals ${name} in messages and stack filenames`, async t => {
   const { Window } = await import('happy-dom');

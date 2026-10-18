@@ -75,6 +75,25 @@ function structuredCredentialEnd(text, start) {
     }
     return text.length;
 }
+// Apostrophes inside diagnostic text are not reliable boundaries. Look through
+// all of them until the line ends or a separately quoted/assigned URL begins.
+// A known surrounding double-quoted string also bounds this look-ahead; its
+// escaped quotes remain data. This preserves adjacent URL fields and JSON prose.
+function diagnosticUrlContinuation(text, start, outerQuote) {
+    const boundary = text.slice(start).search(/[\r\n]|[ \t](?:[\w.-]+[=:]["']?|["'])(?:https?:\/\/|file:\/\/\/|\/{1,2}|\.\.?\/)/i);
+    let end = boundary < 0 ? text.length : start + boundary;
+    if (outerQuote === '"') {
+        for (let index = start; index < end; index++) {
+            if (text[index] === "\\")
+                index++;
+            else if (text[index] === '"') {
+                end = index;
+                break;
+            }
+        }
+    }
+    return text.slice(start, end);
+}
 // Once a private suffix starts, scan to the URL boundary with explicit quote
 // state. Whitespace and punctuation inside a quoted value are private data, not
 // prose boundaries. Escaped JSON quotes are delimiters distinct from outer quotes.
@@ -93,11 +112,11 @@ function stripDiagnosticUrlSuffixes(text) {
             const delimiter = char === "\\" && /["']/.test(text[end + 1] ?? "")
                 ? text.slice(end, end + 2) : /["']/.test(char) ? char : "";
             // An apostrophe closes a wrapper only at a prose boundary, never before
-            // URI data such as -Reilly or a query/fragment continuation before the
-            // next quote or line end. Punctuation and spaces cannot hide that suffix.
+            // URI data such as -Reilly or a query/fragment continuation, even across
+            // repeated apostrophes. Punctuation and spaces cannot hide that suffix.
             const closesOuter = !!delimiter && delimiter === outerQuote
                 && (delimiter !== "'" || (/^[),.;:!?\]}\x60]*(?:\s|$)/.test(text.slice(end + 1))
-                    && !/^[^'\r\n]*[&#=]/.test(text.slice(end + 1))));
+                    && !/[&#=]/.test(diagnosticUrlContinuation(text, end + 1, outerQuote))));
             if (quote) {
                 // A same-quote apostrophe at the structural wrapper boundary also
                 // bounds an ambiguous value opener after a query separator.
@@ -108,7 +127,7 @@ function stripDiagnosticUrlSuffixes(text) {
                 // earlier apostrophe ambiguous, even when it itself precedes & or #.
                 if (delimiter === quote
                     && (delimiter !== "'" || (/^[ \t]*(?:[&#=]|["']|$)/.test(text.slice(end + 1))
-                        && !/^[^'\r\n]*'[ \t]*[&#=]/.test(text.slice(end + 1)))))
+                        && !/'[ \t]*[&#=]/.test(diagnosticUrlContinuation(text, end + 1, outerQuote)))))
                     quote = "";
                 else if (char === "\\") {
                     end += 2;

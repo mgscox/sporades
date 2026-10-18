@@ -100,6 +100,11 @@ Embedded apostrophes such as `?filter=O'Reilly&cap=...` or `?filter=O'-Reilly&ca
 cannot end stripping or expose later query values or fragments. Apostrophes beside
 URI punctuation or query separators remain private; ambiguous quotation conceals
 the remainder until a structural boundary or line end. Quoted query values may include
+repeated apostrophes such as `?filter=O', Reilly's&cap=...` or another opening
+apostrophe after punctuation. These quotes cannot hide a later query/fragment
+continuation from redaction. Separately quoted/assigned URL fields, surrounding
+JSON fields and following public lines retain their structural boundaries.
+Quoted query values may also include
 leading/trailing spaces or tabs, including JSON-escaped quotation such as
 `?filter=\" O'Reilly phrase \"&cap=...`. The runtime scans quoted values and escapes
 through the URL boundary, then removes everything from the first `?` or `#`

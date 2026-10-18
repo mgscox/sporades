@@ -80479,6 +80479,20 @@ function structuredCredentialEnd(text3, start) {
   }
   return text3.length;
 }
+function diagnosticUrlContinuation(text3, start, outerQuote) {
+  const boundary = text3.slice(start).search(/[\r\n]|[ \t](?:[\w.-]+[=:]["']?|["'])(?:https?:\/\/|file:\/\/\/|\/{1,2}|\.\.?\/)/i);
+  let end = boundary < 0 ? text3.length : start + boundary;
+  if (outerQuote === '"') {
+    for (let index = start; index < end; index++) {
+      if (text3[index] === "\\") index++;
+      else if (text3[index] === '"') {
+        end = index;
+        break;
+      }
+    }
+  }
+  return text3.slice(start, end);
+}
 function stripDiagnosticUrlSuffixes(text3) {
   let redacted = "", cursor = 0;
   for (const match of text3.matchAll(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"]*?)([?#]|%3f|%23)/giu)) {
@@ -80491,10 +80505,10 @@ function stripDiagnosticUrlSuffixes(text3) {
     while (end < text3.length && !/[\r\n]/.test(text3[end])) {
       const char = text3[end];
       const delimiter = char === "\\" && /["']/.test(text3[end + 1] ?? "") ? text3.slice(end, end + 2) : /["']/.test(char) ? char : "";
-      const closesOuter = !!delimiter && delimiter === outerQuote && (delimiter !== "'" || /^[),.;:!?\]}\x60]*(?:\s|$)/.test(text3.slice(end + 1)) && !/^[^'\r\n]*[&#=]/.test(text3.slice(end + 1)));
+      const closesOuter = !!delimiter && delimiter === outerQuote && (delimiter !== "'" || /^[),.;:!?\]}\x60]*(?:\s|$)/.test(text3.slice(end + 1)) && !/[&#=]/.test(diagnosticUrlContinuation(text3, end + 1, outerQuote)));
       if (quote) {
         if (quote === "'" && outerQuote === "'" && closesOuter) break;
-        if (delimiter === quote && (delimiter !== "'" || /^[ \t]*(?:[&#=]|["']|$)/.test(text3.slice(end + 1)) && !/^[^'\r\n]*'[ \t]*[&#=]/.test(text3.slice(end + 1)))) quote = "";
+        if (delimiter === quote && (delimiter !== "'" || /^[ \t]*(?:[&#=]|["']|$)/.test(text3.slice(end + 1)) && !/'[ \t]*[&#=]/.test(diagnosticUrlContinuation(text3, end + 1, outerQuote)))) quote = "";
         else if (char === "\\") {
           end += 2;
           continue;
