@@ -515,3 +515,40 @@ for (const operation of ["leave", "delete"]) {
     } });
   });
 }
+
+test("libSQL responsibility storage failure stays opaque and denies even when caught by the policy", async () => {
+  const { withFakeLibsqlService } = await import("./support/libsql-http-service.js");
+  const { runQuery } = await import("../dist/server-runtime-source.js");
+  const dir = await mkdtemp(path.join(process.cwd(), ".team-policy-read-failure-"));
+  let unavailable = false;
+  try {
+    await withFakeLibsqlService(path.join(dir, "data.db"), {
+      beforeStatement(sql) {
+        if (unavailable && /^\s*SELECT\b/i.test(sql) && /\bresponsibility\b/.test(sql)) throw new Error("PRIVATE_STORAGE_FAILURE sub_SYNTHETIC_PRIVATE");
+      },
+    }, async ({ url }) => {
+      const serverEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+      await fixture(async ({ client, database }) => {
+        for (const operation of ["demote", "removeMember", "leave", "delete"]) {
+          const { owner, holder, actor, teamId } = await scenario(client, operation, operation);
+          await seed(owner, teamId, holder);
+          const before = await runQuery(database, holder.auth, "responsibilities", []);
+          for (const via of ["sdk", "app"]) {
+            unavailable = true;
+            const response = await actor.send(via === "sdk" ? { type: `teams.${operation}`, teamId, userId: holder.userId }
+              : { type: "mutation.run", name: "destroy", args: [operation, teamId, holder.userId] });
+            unavailable = false;
+            assert.equal(response.error?.code, "TEAM_POLICY_DENIED");
+            assert.doesNotMatch(JSON.stringify(response), /PRIVATE_STORAGE_FAILURE|sub_SYNTHETIC_PRIVATE/);
+            assert.deepEqual(await runQuery(database, holder.auth, "responsibilities", []), before);
+            assert.equal((await owner.send({ type: "teams.listMembers", teamId })).data.totalCount, operation === "delete" ? 1 : 2);
+          }
+        }
+        assert.doesNotMatch(JSON.stringify(await database.log.tail(1000)), /PRIVATE_STORAGE_FAILURE|sub_SYNTHETIC_PRIVATE/);
+      }, async (ctx, input) => {
+        try { await ctx.db.responsibility.where("teamId", input.teamId).all(); } catch {}
+        return { allow: true };
+      }, { serverEnv, config: { services: { database: { kind: "database", engine: "libsql" } } } });
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
