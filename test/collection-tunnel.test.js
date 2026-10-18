@@ -177,6 +177,51 @@ test('relative diagnostic URL delimiters preserve prose and conceal suffixes at 
   }
 });
 
+const apostropheDiagnosticUrls = ['https://example.test/inbox', ...privateDiagnosticUrls];
+const apostropheDiagnostics = [
+  ['bare assignment', 'url=', '', "O'Reilly"],
+  ['single quoted', "'", "'", "O'Reilly"],
+  ['double quoted', '"', '"', "O'Reilly"],
+  ['bracketed', '[', ']', "O'Reilly's"],
+  ['single quoted query value', 'url=', '', "'O'Reilly phrase'"],
+  ['double quoted query value', 'url=', '', '"O\'Reilly phrase"'],
+  ['quoted punctuation', "'", "',", "O'Reilly"],
+  ['JSON field', '{"url":"', '","status":"ready"}', "O'Reilly"],
+].map(([name, before, after, value]) => {
+  const urls = apostropheDiagnosticUrls.map(base => before + base + `?filter=${value}&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker` + after);
+  const clean = apostropheDiagnosticUrls.map(base => before + base + after);
+  return { name,
+    message: `Ready? Investigate #234 ${urls.join(' ')} Continue.`,
+    safe: `Ready? Investigate #234 ${clean.join(' ')} Continue.`,
+    stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
+    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+  };
+});
+
+test('apostrophes cannot expose URL suffixes at server and tunnel receivers', async t => {
+  const received = [];
+  const receiver = await listen(t, async (request, response) => {
+    let body = ''; for await (const part of request) body += part;
+    received.push(JSON.parse(body.trim().split('\n')[2])); response.end();
+  });
+  const observability = createRuntimeObservability({ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1' });
+  t.after(() => observability.close());
+  const origin = await listen(t, (request, response) => routeCollection({ observability }, request, response));
+  for (const probe of apostropheDiagnostics) await t.test(probe.name, async () => {
+    const start = received.length;
+    observability.capture(Object.assign(new Error(probe.message), { stack: probe.stack }), 'mutation');
+    await observability.flush();
+    assert.equal((await fetch(origin + '/__sporades/collect', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'error', message: probe.message, stack: probe.stack }) })).status, 204);
+    await observability.flush();
+    assert.equal(received.length, start + 2);
+    for (const event of received.slice(start)) {
+      assert.doesNotMatch(JSON.stringify(event), /qa-apostrophe-query-marker|qa-apostrophe-fragment-marker|Reilly/);
+      assert.equal(event.exception.values[0].value, probe.safe);
+      assert.deepEqual(event.exception.values[0].stacktrace.frames, probe.frames);
+    }
+  });
+});
+
 test('runtime captures query, mutation, endpoint and Job failures without changing rollback or retries', async t => {
   const { mkdtemp, rm } = await import('node:fs/promises');
   const path = await import('node:path');
@@ -380,6 +425,28 @@ test('generated loader redacts diagnostic URL delimiters across all relative for
     assert.doesNotMatch(JSON.stringify(event), /qa-query-marker|qa-fragment-marker/);
     assert.equal(event.exception.values[0].value, `Ready? Investigate #234 ${delimitedUrls(before, after, false).join(' ')} Continue.`);
     assert.deepEqual(event.exception.values[0].stacktrace.frames, delimitedUrls(before, after, false).reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })));
+  });
+});
+
+test('generated loader conceals apostrophes inside URL queries and stack filenames', async t => {
+  const { Window } = await import('happy-dom');
+  const { origin, received, script } = await generatedCollectionFixture(t);
+  const window = new Window({ url: origin });
+  t.after(() => window.happyDOM.abort());
+  const sends = [];
+  window.fetch = (url, options) => { const promise = fetch(new URL(url, origin), { ...options, headers: { ...options.headers, origin } }); sends.push(promise); return promise; };
+  window.eval(script);
+  for (const [index, probe] of apostropheDiagnostics.entries()) await t.test(probe.name, async () => {
+    const error = Object.assign(new Error(probe.message), { stack: probe.stack });
+    window.dispatchEvent(new window.ErrorEvent('error', { error }));
+    await Promise.all(sends);
+    for (let i = 0; i < 100 && received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope').length < index + 1; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    const errors = received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope');
+    assert.equal(errors.length, index + 1);
+    const event = JSON.parse(errors.at(-1).body.trim().split('\n')[2]);
+    assert.doesNotMatch(JSON.stringify(event), /qa-apostrophe-query-marker|qa-apostrophe-fragment-marker|Reilly/);
+    assert.equal(event.exception.values[0].value, probe.safe);
+    assert.deepEqual(event.exception.values[0].stacktrace.frames, probe.frames);
   });
 });
 

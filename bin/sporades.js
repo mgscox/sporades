@@ -80479,6 +80479,35 @@ function structuredCredentialEnd(text3, start) {
   }
   return text3.length;
 }
+function stripDiagnosticUrlSuffixes(text3) {
+  let redacted = "", cursor = 0;
+  for (const match of text3.matchAll(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"]*)[?#]/giu)) {
+    if (match.index < cursor) continue;
+    const start = match.index + match[0].length - 1;
+    const wrapper = /^["']/.test(match[1]) ? match[1][0] : text3[match.index - 1];
+    let end = start + 1;
+    while (end < text3.length && !/[\s<>]/.test(text3[end])) {
+      const char = text3[end];
+      if (char === '"' || char === "'") {
+        if (/^[),.;:!?\]}]*(?:\s|$)/.test(text3.slice(end + 1)) || char === wrapper && /^,\s*"[^"\r\n]+"\s*:/.test(text3.slice(end + 1))) break;
+        if (/[=?#]/.test(text3[end - 1])) {
+          let close = end + 1;
+          for (; close < text3.length && !/[\r\n]/.test(text3[close]); close++) {
+            if (text3[close] === "\\") close++;
+            else if (text3[close] === char && !/^[\p{L}\p{M}\p{N}]/u.test(text3.slice(close + 1))) break;
+          }
+          end = Math.min(close + (text3[close] === char ? 1 : 0), text3.length);
+          continue;
+        }
+      }
+      end++;
+    }
+    const punctuation2 = text3.slice(start + 1, end).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? "";
+    redacted += text3.slice(cursor, match.index) + match[1] + punctuation2;
+    cursor = end;
+  }
+  return redacted + text3.slice(cursor);
+}
 function redactDiagnosticText(value, serverEnv = {}) {
   let safe = value;
   for (const secret of Object.values(serverEnv)) {
@@ -80495,10 +80524,7 @@ function redactDiagnosticText(value, serverEnv = {}) {
     cursor = safe[start] === "[" || safe[start] === "{" ? structuredCredentialEnd(safe, start) : start + (value2?.[0].length ?? 0);
   }
   safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
-  return safe.replace(
-    /((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"']*)([?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*)/giu,
-    (_match, path23, suffix) => path23 + (suffix.slice(1).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? "")
-  ).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+  return stripDiagnosticUrlSuffixes(safe).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
 }
 
 // src/client-address.ts

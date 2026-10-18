@@ -75,6 +75,45 @@ function structuredCredentialEnd(text, start) {
     }
     return text.length;
 }
+// Quotes inside a URL are data unless they close surrounding prose. A quoted
+// query value may contain spaces and embedded apostrophes; consume it as a unit.
+function stripDiagnosticUrlSuffixes(text) {
+    let redacted = "", cursor = 0;
+    for (const match of text.matchAll(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"]*)[?#]/giu)) {
+        if (match.index < cursor)
+            continue;
+        const start = match.index + match[0].length - 1;
+        const wrapper = /^["']/.test(match[1]) ? match[1][0] : text[match.index - 1];
+        let end = start + 1;
+        while (end < text.length && !/[\s<>]/.test(text[end])) {
+            const char = text[end];
+            if (char === '"' || char === "'") {
+                // A word apostrophe (O'Reilly) or another URL character cannot close
+                // prose quotation. Also preserve a closing JSON URL string and its fields.
+                if (/^[),.;:!?\]}]*(?:\s|$)/.test(text.slice(end + 1))
+                    || (char === wrapper && /^,\s*"[^"\r\n]+"\s*:/.test(text.slice(end + 1))))
+                    break;
+                if (/[=?#]/.test(text[end - 1])) {
+                    let close = end + 1;
+                    for (; close < text.length && !/[\r\n]/.test(text[close]); close++) {
+                        if (text[close] === "\\")
+                            close++;
+                        else if (text[close] === char && !/^[\p{L}\p{M}\p{N}]/u.test(text.slice(close + 1)))
+                            break;
+                    }
+                    // Unterminated quoted query values conceal the remainder of the line.
+                    end = Math.min(close + (text[close] === char ? 1 : 0), text.length);
+                    continue;
+                }
+            }
+            end++;
+        }
+        const punctuation = text.slice(start + 1, end).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? "";
+        redacted += text.slice(cursor, match.index) + match[1] + punctuation;
+        cursor = end;
+    }
+    return redacted + text.slice(cursor);
+}
 /** Shared diagnostic text policy. Stack frames are admitted separately by error collection. */
 export function redactDiagnosticText(value, serverEnv = {}) {
     let safe = value;
@@ -101,10 +140,8 @@ export function redactDiagnosticText(value, serverEnv = {}) {
             : start + (value?.[0].length ?? 0);
     }
     safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
-    // Only URL suffixes are private. A question or issue number in ordinary prose is data.
-    // Relative URLs can follow punctuation or key/value delimiters; letters, numbers and combining marks stay within words.
-    // Quoted query values travel with the URL, so their contents cannot survive stripping.
-    return safe.replace(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"']*)([?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*)/giu, (_match, path, suffix) => path + (suffix.slice(1).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? ""))
+    // Ordinary questions and issue numbers remain prose; only URL suffixes are private.
+    return stripDiagnosticUrlSuffixes(safe)
         .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
 }
 //# sourceMappingURL=runtime-log-policy.js.map

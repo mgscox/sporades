@@ -96,7 +96,10 @@ URL queries/fragments are stripped from absolute, protocol-relative (`//host/pat
 root-relative (`/path`) and explicit relative (`./path`, `../path`) URLs, including
 stack filenames. Relative URLs are recognized after punctuation and key/value
 delimiters, including `url=/path`, `[//host/path]`, and `<./path>`.
-Surrounding punctuation and ordinary prose such as `Investigate
+Embedded apostrophes such as `?filter=O'Reilly&cap=...` cannot end stripping
+or expose later query values or fragments. Quoted query values may include
+spaces; an unterminated quoted value conceals the remaining line.
+Genuine surrounding quotation, punctuation and ordinary prose such as `Investigate
 #234 collection` and `Ready? Continue debugging.` are preserved.
 There are no custom analytics properties,
 page titles, request bodies, cookies or authorization headers in provider events.

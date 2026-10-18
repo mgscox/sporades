@@ -1351,6 +1351,7 @@ const RUN_LEXER_CENSUS = {
   createRuntimeObservability: "not a SQL lexer: removes UUID hyphens for Sentry event IDs",
   redactDiagnosticText: "not a SQL lexer: strips capability URL suffixes and recognizable credentials from diagnostic text",
   structuredCredentialEnd: "not a SQL lexer: balances nested diagnostic credential values and escaped JSON-style strings for whole-value redaction",
+  stripDiagnosticUrlSuffixes: "not a SQL lexer: distinguishes URL query quotation from prose while concealing complete private suffixes",
   missingServerEnvError: "not a lexer: recovery hints name CLI flags with double hyphens",
   resolveDeployFiles: "not a lexer: rejects deployment path segments starting with a hyphen",
   skipSqlQuotedOrCommented: "the one tokenizer every read-only inspection consumer asks a dialect of",

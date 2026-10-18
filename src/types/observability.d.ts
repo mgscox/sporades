@@ -2,6 +2,7 @@
  * Opt-in Sentry-envelope error collection. Diagnostics conceal complete sensitive
  * values (including arrays/objects) and URL queries/fragments, including relative
  * URLs in messages and stack filenames after punctuation or key/value delimiters.
+ * Embedded apostrophes remain private; surrounding quotation is preserved.
  */
 export type ObservabilityConfig = {
   errors?: {

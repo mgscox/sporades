@@ -133,3 +133,12 @@ test("unconfigured log metadata preserves prose punctuation and strips URL crede
   assert.equal(envelope.data.url, "See https://example.test/inbox then continue.");
   assert.deepEqual(envelope.data.links, ["See https://example.test/inbox", "/inbox", "(//example.test/inbox).", "See ./inbox, then ../outbox!"]);
 });
+
+test("log metadata conceals unterminated URL query quotes and preserves apostrophes in paths", () => {
+  const envelope = createLogEnvelope({ config: {}, data: {
+    truncated: "See /inbox?filter='O'Reilly phrase&cap=qa-cap-marker#qa-fragment-marker Continued\nNext public line.",
+    author: "/authors/O'Reilly?cap=qa-path-marker#qa-path-fragment",
+  } });
+  assert.equal(envelope.data.truncated, "See /inbox\nNext public line.");
+  assert.equal(envelope.data.author, "/authors/O'Reilly");
+});
