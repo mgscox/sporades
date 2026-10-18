@@ -28543,13 +28543,14 @@ function stripDiagnosticUrlSuffixes(text2) {
       const char = text2[end];
       if (char === '"' || char === "'") {
         if (/^[),.;:!?\]}]*(?:\s|$)/.test(text2.slice(end + 1)) || char === wrapper && /^,\s*"[^"\r\n]+"\s*:/.test(text2.slice(end + 1))) break;
-        if (/[=?#]/.test(text2[end - 1])) {
+        const quote = text2[end - 1] === "\\" ? "\\" + char : char;
+        if (/[=?#]/.test(text2[end - quote.length])) {
           let close = end + 1;
           for (; close < text2.length && !/[\r\n]/.test(text2[close]); close++) {
+            if (text2.startsWith(quote, close) && !/^[\p{L}\p{M}\p{N}]/u.test(text2.slice(close + quote.length))) break;
             if (text2[close] === "\\") close++;
-            else if (text2[close] === char && !/^[\p{L}\p{M}\p{N}]/u.test(text2.slice(close + 1))) break;
           }
-          end = Math.min(close + (text2[close] === char ? 1 : 0), text2.length);
+          end = Math.min(close + (text2.startsWith(quote, close) ? quote.length : 0), text2.length);
           continue;
         }
       }

@@ -198,6 +198,19 @@ const apostropheDiagnostics = [
   };
 });
 
+const escapedQueryDiagnostics = apostropheDiagnosticUrls.map(base => {
+  const url = base + '?filter="O\'Reilly phrase"&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker';
+  const diagnostic = JSON.stringify({ url, status: 'ready' });
+  const clean = JSON.stringify({ url: base, status: 'ready' });
+  return {
+    name: `JSON-escaped query quotation: ${base}`,
+    message: `Ready? Investigate #234 ${diagnostic} Continue.`,
+    safe: `Ready? Investigate #234 ${clean} Continue.`,
+    stack: `Error: diagnostic URL\n    at execute (${diagnostic}:12:8)`,
+    frames: [{ filename: clean, function: 'execute', lineno: 12, colno: 8 }],
+  };
+});
+
 test('apostrophes cannot expose URL suffixes at server and tunnel receivers', async t => {
   const received = [];
   const receiver = await listen(t, async (request, response) => {
@@ -207,7 +220,7 @@ test('apostrophes cannot expose URL suffixes at server and tunnel receivers', as
   const observability = createRuntimeObservability({ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1' });
   t.after(() => observability.close());
   const origin = await listen(t, (request, response) => routeCollection({ observability }, request, response));
-  for (const probe of apostropheDiagnostics) await t.test(probe.name, async () => {
+  for (const probe of [...apostropheDiagnostics, ...escapedQueryDiagnostics]) await t.test(probe.name, async () => {
     const start = received.length;
     observability.capture(Object.assign(new Error(probe.message), { stack: probe.stack }), 'mutation');
     await observability.flush();
@@ -436,7 +449,7 @@ test('generated loader conceals apostrophes inside URL queries and stack filenam
   const sends = [];
   window.fetch = (url, options) => { const promise = fetch(new URL(url, origin), { ...options, headers: { ...options.headers, origin } }); sends.push(promise); return promise; };
   window.eval(script);
-  for (const [index, probe] of apostropheDiagnostics.entries()) await t.test(probe.name, async () => {
+  for (const [index, probe] of [...apostropheDiagnostics, ...escapedQueryDiagnostics].entries()) await t.test(probe.name, async () => {
     const error = Object.assign(new Error(probe.message), { stack: probe.stack });
     window.dispatchEvent(new window.ErrorEvent('error', { error }));
     await Promise.all(sends);

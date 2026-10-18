@@ -93,14 +93,17 @@ function stripDiagnosticUrlSuffixes(text: string) {
         // prose quotation. Also preserve a closing JSON URL string and its fields.
         if (/^[),.;:!?\]}]*(?:\s|$)/.test(text.slice(end + 1))
           || (char === wrapper && /^,\s*"[^"\r\n]+"\s*:/.test(text.slice(end + 1)))) break;
-        if (/[=?#]/.test(text[end - 1])) {
+        // JSON diagnostics represent a query quote as \". Match that whole
+        // delimiter so its spaces stay private and the outer JSON quote survives.
+        const quote = text[end - 1] === "\\" ? "\\" + char : char;
+        if (/[=?#]/.test(text[end - quote.length])) {
           let close = end + 1;
           for (; close < text.length && !/[\r\n]/.test(text[close]); close++) {
+            if (text.startsWith(quote, close) && !/^[\p{L}\p{M}\p{N}]/u.test(text.slice(close + quote.length))) break;
             if (text[close] === "\\") close++;
-            else if (text[close] === char && !/^[\p{L}\p{M}\p{N}]/u.test(text.slice(close + 1))) break;
           }
           // Unterminated quoted query values conceal the remainder of the line.
-          end = Math.min(close + (text[close] === char ? 1 : 0), text.length);
+          end = Math.min(close + (text.startsWith(quote, close) ? quote.length : 0), text.length);
           continue;
         }
       }

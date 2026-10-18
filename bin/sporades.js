@@ -80490,13 +80490,14 @@ function stripDiagnosticUrlSuffixes(text3) {
       const char = text3[end];
       if (char === '"' || char === "'") {
         if (/^[),.;:!?\]}]*(?:\s|$)/.test(text3.slice(end + 1)) || char === wrapper && /^,\s*"[^"\r\n]+"\s*:/.test(text3.slice(end + 1))) break;
-        if (/[=?#]/.test(text3[end - 1])) {
+        const quote = text3[end - 1] === "\\" ? "\\" + char : char;
+        if (/[=?#]/.test(text3[end - quote.length])) {
           let close = end + 1;
           for (; close < text3.length && !/[\r\n]/.test(text3[close]); close++) {
+            if (text3.startsWith(quote, close) && !/^[\p{L}\p{M}\p{N}]/u.test(text3.slice(close + quote.length))) break;
             if (text3[close] === "\\") close++;
-            else if (text3[close] === char && !/^[\p{L}\p{M}\p{N}]/u.test(text3.slice(close + 1))) break;
           }
-          end = Math.min(close + (text3[close] === char ? 1 : 0), text3.length);
+          end = Math.min(close + (text3.startsWith(quote, close) ? quote.length : 0), text3.length);
           continue;
         }
       }
