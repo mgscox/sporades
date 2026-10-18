@@ -411,6 +411,13 @@ export function schedule<const Definition extends ScheduleDefinition>(definition
   return { kind: "schedule", ...definition };
 }
 
+/** Table ACL presets. Privileged access still requires an explicit server-owned context. */
+export const acl = Object.freeze({ privilegedOnly: privilegedOnlyTableAcl, denyAll: privilegedOnlyTableAcl });
+
+function privilegedOnlyTableAcl() {
+  return Object.freeze({ read: () => false, write: () => false });
+}
+
 export function table<const Fields extends UnknownRecord>(fields: Fields): CapsuleTableDefinition<Fields> {
   return tableDefinition(fields);
 }
@@ -686,6 +693,9 @@ export function job(handler) {
 export function schedule(definition) {
   return { kind: "schedule", ...definition };
 }
+
+${privilegedOnlyTableAcl.toString()}
+export const acl = Object.freeze({ privilegedOnly: privilegedOnlyTableAcl, denyAll: privilegedOnlyTableAcl });
 
 export function table(fields) {
   return tableDefinition(fields);

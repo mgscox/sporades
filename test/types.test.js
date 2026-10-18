@@ -70,6 +70,13 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition, type ServerEnvConfig } from "sporades/server";
 const serverEnvConfig: ServerEnvConfig = { required: ["INTAKE_URL"], failClosed: true };
 import * as publicServerApi from "sporades/server";
+const privateSchema = {
+  secrets: table({ value: String() }).acl(publicServerApi.acl.privilegedOnly()),
+  internal: table({ value: String() }).acl(publicServerApi.acl.denyAll()).unique("value"),
+};
+capsule({ name: "private-data", schema: privateSchema, queries: {
+  secrets: query((ctx) => ctx.db.secrets.all()),
+} });
 const safeHtml: publicServerApi.Html = publicServerApi.html\`<p title="\${'"<&'}">\${[publicServerApi.html\`<b>nested</b>\`, null, undefined, publicServerApi.html.raw('<br>')]}</p>\`;
 const safeMail: publicServerApi.MailSendInput = { to: 'recipient@example.com', subject: 'Welcome', htmlBody: safeHtml };
 const resetCopy: publicServerApi.PasswordResetMailOptions = { textBody: 'Reset: {{link}} before {{expiresAt}}', htmlBody: safeHtml };

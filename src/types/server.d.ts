@@ -230,6 +230,17 @@ export type TableAclRules<Row extends Record<string, unknown> = Record<string, u
 >;
 
 /**
+ * Opt-in table ACL presets. Both names return immutable read/write deny rules.
+ * Ordinary reads are filtered and writes are denied; explicit server-owned
+ * Privileged contexts retain their existing audited, callback-bound access.
+ */
+export const acl: Readonly<{
+  privilegedOnly(): Readonly<{ read: () => boolean; write: () => boolean }>;
+  /** Alias of privilegedOnly(). */
+  denyAll(): Readonly<{ read: () => boolean; write: () => boolean }>;
+}>;
+
+/**
  * A Capsule table definition.
  *
  * Table definitions are declared in `capsule({ schema })`; Sporades adds

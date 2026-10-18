@@ -100441,6 +100441,10 @@ function isPlainObject(value) {
 
 // src/server.ts
 var atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
+var acl = Object.freeze({ privilegedOnly: privilegedOnlyTableAcl, denyAll: privilegedOnlyTableAcl });
+function privilegedOnlyTableAcl() {
+  return Object.freeze({ read: () => false, write: () => false });
+}
 function serverRuntimeModuleSource() {
   return `export { escapeHtml, html } from "sporades:html";
 const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
@@ -100651,6 +100655,9 @@ export function job(handler) {
 export function schedule(definition) {
   return { kind: "schedule", ...definition };
 }
+
+${privilegedOnlyTableAcl.toString()}
+export const acl = Object.freeze({ privilegedOnly: privilegedOnlyTableAcl, denyAll: privilegedOnlyTableAcl });
 
 export function table(fields) {
   return tableDefinition(fields);
@@ -148986,6 +148993,7 @@ async function loadBundledCapsuleDefinition(serverModuleSource) {
 }
 function capsuleAclDeclarationCheck(definition, normalizedSchema) {
   const schema = definition?.schema ?? {};
+  const allowAllTables = Object.entries(schema).filter(([, table]) => isAppTableDeclaration(table) && (table.aclRules === void 0 || Object.keys(table.aclRules ?? {}).length === 0)).map(([name2]) => name2);
   const tables = Object.entries(schema).filter(([, table]) => isAppTableDeclaration(table)).map(([name2, table]) => tableAclPosture(name2, table)).filter((table) => table.missing.length > 0);
   if (tables.length === 0) {
     return {
@@ -149007,11 +149015,12 @@ function capsuleAclDeclarationCheck(definition, normalizedSchema) {
     scope: "project",
     status: "warn",
     severity: "warning",
-    message: "Some Capsule app tables are missing ACL declarations; missing ACLs are allow-by-default and not deny-by-default today.",
-    hint: "Add .acl({ read, write }) to app table declarations that should restrict reads or writes. Doctor only inspects declarations and does not evaluate ACL policy outcomes against live user data.",
+    message: `Capsule app tables with missing ACL rules: ${tables.map((table) => `${table.name} (${table.missing.join(", ")})`).join("; ")}. ` + (allowAllTables.length ? `Allow-all tables: ${allowAllTables.join(", ")}. ` : "") + "Missing ACLs are allow-by-default and not deny-by-default today.",
+    hint: "Add .acl({ read, write }) to restrict user access, or import acl from sporades/server and use .acl(acl.privilegedOnly()) (alias: acl.denyAll()) for server-owned tables accessed through ctx.privileged.run. Doctor only inspects declarations and does not evaluate ACL policy outcomes against live user data.",
     details: {
       inspectedResource: "app-tables",
-      tables
+      tables,
+      allowAllTables
     }
   };
 }
