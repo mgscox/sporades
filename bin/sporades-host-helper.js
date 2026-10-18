@@ -48394,13 +48394,13 @@ async function manageCapsuleBackup(request2) {
   const source = request2.backup?.sourceSubname ?? request2.capsule.subname;
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(source)) throw helperError("Invalid backup source subname.", "Use a DNS-safe Capsule subname.");
   if (request2.action !== "capsule.backup.restore" && source !== request2.capsule.subname) throw helperError("Backup source does not match Capsule.", "Use the same --subname for this operation.");
-  const record = await verifyRegisteredCapsule(request2, "lifecycle");
   const policy = await readHostBackupPolicy(request2.host);
   if (!policy) throw helperError("Host backups are not configured.", "Run host backup configure --file <policy.json> first.");
   let data2;
   if (request2.action === "capsule.backup.list") data2 = { snapshots: await listHostBackups(policy, request2.host, source) };
   else if (request2.action === "capsule.backup.prune") data2 = await pruneHostBackups(policy, request2.host, source);
   else {
+    const record = await verifyRegisteredCapsule(request2, "lifecycle");
     const paths2 = canonicalReleasePaths(request2);
     if (!record.currentRelease?.id) throw helperError("Backup requires a deployed release.", "Push the intended release to this Capsule first.");
     const config = JSON.parse(await readFile9(path12.join(paths2.releases, record.currentRelease.id, "sporades.json"), "utf8"));

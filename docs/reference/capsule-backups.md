@@ -94,7 +94,8 @@ start/stop clears obsolete backup resume evidence. A successful backup has a ful
 Capsule. Create and restore return a compact manifest summary with file/directory
 counts; the encrypted snapshot retains the complete checksum inventory. Prune
 keeps the latest `retention` snapshots for that Capsule and reclaims
-unreferenced repository bytes. Restic owns repository concurrency locking.
+unreferenced repository bytes. Listing and pruning retained backups also work
+after the source Capsule has been deleted. Restic owns repository concurrency locking.
 
 The systemd timer runs each registered Capsule with a deployed release in
 sequence. Each successful create is followed by retention pruning; a failed

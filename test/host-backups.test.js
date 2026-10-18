@@ -249,4 +249,8 @@ test('shipped CLI and helper quiesce exact containers, restore staging, and repo
   assert.equal(cli(['list', '--subname', 'source']).data.snapshots.length, beforeFailure);
   assert.equal(JSON.parse(await readFile(state, 'utf8')).source, true);
   assert.equal(cli(['status']).data.capsules.find(c => c.subname === 'staging').stale, false);
+  await rm(path.join(registry, 'source.json'));
+  assert.equal(cli(['list', '--subname', 'source']).data.snapshots.length, beforeFailure);
+  cli(['prune', '--subname', 'source']);
+  assert.equal(cli(['list', '--subname', 'source']).data.snapshots.length, 1);
 }));

@@ -2558,7 +2558,6 @@ async function manageCapsuleBackup(request) {
         throw helperError("Invalid backup source subname.", "Use a DNS-safe Capsule subname.");
     if (request.action !== "capsule.backup.restore" && source !== request.capsule.subname)
         throw helperError("Backup source does not match Capsule.", "Use the same --subname for this operation.");
-    const record = await verifyRegisteredCapsule(request, "lifecycle");
     const policy = await readHostBackupPolicy(request.host);
     if (!policy)
         throw helperError("Host backups are not configured.", "Run host backup configure --file <policy.json> first.");
@@ -2568,6 +2567,7 @@ async function manageCapsuleBackup(request) {
     else if (request.action === "capsule.backup.prune")
         data = await pruneHostBackups(policy, request.host, source);
     else {
+        const record = await verifyRegisteredCapsule(request, "lifecycle");
         const paths = canonicalReleasePaths(request);
         if (!record.currentRelease?.id)
             throw helperError("Backup requires a deployed release.", "Push the intended release to this Capsule first.");
