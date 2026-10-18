@@ -813,6 +813,16 @@ export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseR
         row.createdAt,
       );
     },
+    selectLiveFilesPage(createdBefore: string | null, after: { createdAt: string; id: string } | null) {
+      let query = "SELECT * FROM [sporades_files] WHERE [deletedAt] IS NULL AND [status] = ?";
+      const parameters: string[] = ["uploaded"];
+      if (createdBefore !== null) { query += " AND [createdAt] < ?"; parameters.push(createdBefore); }
+      if (after) {
+        query += " AND ([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))";
+        parameters.push(after.createdAt, after.createdAt, after.id);
+      }
+      return this.prepare(sql(query + " ORDER BY [createdAt] ASC, [id] ASC LIMIT 101")).all(...parameters);
+    },
     selectFileById(fileId: any) {
       return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
     },

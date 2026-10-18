@@ -33914,26 +33914,26 @@ function getFilenameFromContentDispositionHeader(contentDisposition) {
     return value;
   }
   function rfc2231getparam(contentDispositionStr) {
-    const matches = [];
+    const matches2 = [];
     let match;
     const iter = toParamRegExp("filename\\*((?!0\\d)\\d+)(\\*?)", "ig");
     while ((match = iter.exec(contentDispositionStr)) !== null) {
       let [, n, quot, part] = match;
       n = parseInt(n, 10);
-      if (n in matches) {
+      if (n in matches2) {
         if (n === 0) {
           break;
         }
         continue;
       }
-      matches[n] = [quot, part];
+      matches2[n] = [quot, part];
     }
     const parts = [];
-    for (let n = 0; n < matches.length; ++n) {
-      if (!(n in matches)) {
+    for (let n = 0; n < matches2.length; ++n) {
+      if (!(n in matches2)) {
         break;
       }
-      let [quot, part] = matches[n];
+      let [quot, part] = matches2[n];
       part = rfc2616unquote(part);
       if (quot) {
         part = unescape(part);
@@ -33974,7 +33974,7 @@ function getFilenameFromContentDispositionHeader(contentDisposition) {
     if (!value.startsWith("=?") || /[\x00-\x19\x80-\xff]/.test(value)) {
       return value;
     }
-    return value.replaceAll(/=\?([\w-]*)\?([QB])\?((?:[^?]|\?(?!=))*)\?=/gi, function(matches, charset, encoding, text3) {
+    return value.replaceAll(/=\?([\w-]*)\?([QB])\?((?:[^?]|\?(?!=))*)\?=/gi, function(matches2, charset, encoding, text3) {
       if (encoding === "q" || encoding === "Q") {
         text3 = text3.replaceAll("_", " ");
         text3 = text3.replaceAll(/=([0-9a-f]{2})/gi, function(match, hex) {
@@ -39662,25 +39662,25 @@ var init_pdf = __esm({
           return null;
         }
         this.#regex ||= new RegExp("^D:(\\d{4})(\\d{2})?(\\d{2})?(\\d{2})?(\\d{2})?(\\d{2})?([Z|+\\-])?(\\d{2})?'?(\\d{2})?'?");
-        const matches = this.#regex.exec(input);
-        if (!matches) {
+        const matches2 = this.#regex.exec(input);
+        if (!matches2) {
           return null;
         }
-        const year = parseInt(matches[1], 10);
-        let month = parseInt(matches[2], 10);
+        const year = parseInt(matches2[1], 10);
+        let month = parseInt(matches2[2], 10);
         month = month >= 1 && month <= 12 ? month - 1 : 0;
-        let day = parseInt(matches[3], 10);
+        let day = parseInt(matches2[3], 10);
         day = day >= 1 && day <= 31 ? day : 1;
-        let hour = parseInt(matches[4], 10);
+        let hour = parseInt(matches2[4], 10);
         hour = hour >= 0 && hour <= 23 ? hour : 0;
-        let minute = parseInt(matches[5], 10);
+        let minute = parseInt(matches2[5], 10);
         minute = minute >= 0 && minute <= 59 ? minute : 0;
-        let second = parseInt(matches[6], 10);
+        let second = parseInt(matches2[6], 10);
         second = second >= 0 && second <= 59 ? second : 0;
-        const universalTimeRelation = matches[7] || "Z";
-        let offsetHour = parseInt(matches[8], 10);
+        const universalTimeRelation = matches2[7] || "Z";
+        let offsetHour = parseInt(matches2[8], 10);
         offsetHour = offsetHour >= 0 && offsetHour <= 23 ? offsetHour : 0;
-        let offsetMinute = parseInt(matches[9], 10) || 0;
+        let offsetMinute = parseInt(matches2[9], 10) || 0;
         offsetMinute = offsetMinute >= 0 && offsetMinute <= 59 ? offsetMinute : 0;
         if (universalTimeRelation === "-") {
           hour += offsetHour;
@@ -81121,35 +81121,35 @@ function matchHttpAdmissionRule(generation2, input) {
   }
   for (const rule of generation2.policy.rules) {
     if (!rule.enabled) continue;
-    let matches = true;
+    let matches2 = true;
     let indeterminate = false;
     for (const item of rule.conditions) {
       switch (item.kind) {
         case "method":
-          if (method !== item.value) matches = false;
+          if (method !== item.value) matches2 = false;
           break;
         case "pathname":
-          if (!("exact" in item ? pathname === item.exact : pathnameMatches(pathname, item.prefix))) matches = false;
+          if (!("exact" in item ? pathname === item.exact : pathnameMatches(pathname, item.prefix))) matches2 = false;
           break;
         case "header": {
           const values = headers.get(item.name);
-          if (!values) matches = false;
+          if (!values) matches2 = false;
           else if (item.value !== void 0) {
             if (values.length !== 1) indeterminate = true;
-            else if (values[0] !== item.value) matches = false;
+            else if (values[0] !== item.value) matches2 = false;
           }
           break;
         }
         case "query-key":
-          if (!queryKeys.has(item.name)) matches = false;
+          if (!queryKeys.has(item.name)) matches2 = false;
           break;
         case "address":
           if (!input.trustedAddress) indeterminate = true;
-          else if (!clientAddressMatches(input.trustedAddress, item.value)) matches = false;
+          else if (!clientAddressMatches(input.trustedAddress, item.value)) matches2 = false;
           break;
       }
     }
-    if (!matches) continue;
+    if (!matches2) continue;
     if (indeterminate) throw new Error("Indeterminate admission condition.");
     return rule;
   }
@@ -83009,6 +83009,7 @@ function createConnection() {
 
 function structuredError(error) {
   const next = new Error(error?.message ?? "Sporades file operation failed.");
+  if (typeof error?.code === "string") next.code = error.code;
   next.hint = error?.hint ?? "Retry the operation.";
   next.error = error;
   return next;
@@ -98380,8 +98381,8 @@ async function recordRendererPackageTargets(specifier, directory, onDependency, 
       for (const [key, target] of Object.entries(mappings)) {
         const star = key.indexOf("*");
         const suffix = star < 0 ? "" : key.slice(star + 1);
-        const matches = star < 0 ? key === alias : alias.startsWith(key.slice(0, star)) && alias.endsWith(suffix) && alias.length >= key.length - 1;
-        if (!matches) continue;
+        const matches2 = star < 0 ? key === alias : alias.startsWith(key.slice(0, star)) && alias.endsWith(suffix) && alias.length >= key.length - 1;
+        if (!matches2) continue;
         const match = star < 0 ? "" : alias.slice(star, suffix ? -suffix.length : void 0);
         const visitTarget = (value) => {
           if (Array.isArray(value)) {
@@ -101157,8 +101158,8 @@ async function verifyConsumerExpectation(recordPath, consumer, expected) {
       return void 0;
     }
   })();
-  const matches = expected === null ? current2 === null : validConsumerRecord(current2, consumer) && current2.token === expected.token && current2.identity === expected.identity;
-  if (!matches) {
+  const matches2 = expected === null ? current2 === null : validConsumerRecord(current2, consumer) && current2.token === expected.token && current2.identity === expected.identity;
+  if (!matches2) {
     throw publicTreeError("Public tree consumer ownership changed.", "Preserve the successor consumer and retry from its owning Container lifecycle.");
   }
 }
@@ -103726,6 +103727,68 @@ function isPlainObject2(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
+// src/file-policy.ts
+function resolveFileAllowedMimeTypes(files) {
+  const types2 = files?.allowedMimeTypes;
+  if (types2 === void 0) return null;
+  if (!Array.isArray(types2) || types2.some((type) => typeof type !== "string" || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type))) {
+    throw Object.assign(new Error("Invalid File MIME allowlist."), {
+      code: "INVALID_FILE_CONFIG",
+      hint: "Set files.allowedMimeTypes to an array of lowercase exact MIME types; [] denies all uploads."
+    });
+  }
+  return new Set(types2);
+}
+function normalizeFileMimeType(type) {
+  return String(type ?? "application/octet-stream").split(";", 1)[0].trim().toLowerCase();
+}
+var signatures = [
+  ["image/png", [137, 80, 78, 71, 13, 10, 26, 10], 0],
+  ["image/jpeg", [255, 216, 255], 0],
+  ["image/gif", [71, 73, 70, 56, 55, 97], 0],
+  ["image/gif", [71, 73, 70, 56, 57, 97], 0],
+  ["image/bmp", [66, 77], 0],
+  ["application/pdf", [37, 80, 68, 70, 45], 0],
+  ["application/gzip", [31, 139], 0],
+  ["application/zip", [80, 75, 3, 4], 0],
+  ["application/zip", [80, 75, 5, 6], 0],
+  ["application/zip", [80, 75, 7, 8], 0]
+];
+var signedTypes = /* @__PURE__ */ new Set([...signatures.map(([type]) => type), "image/webp", "image/avif"]);
+function matches(bytes, signature, offset2 = 0) {
+  return bytes.length >= offset2 + signature.length && signature.every((byte, index) => bytes[offset2 + index] === byte);
+}
+function detectedMimeType(bytes) {
+  for (const [type, signature, offset2] of signatures) if (matches(bytes, signature, offset2)) return type;
+  if (matches(bytes, [82, 73, 70, 70]) && matches(bytes, [87, 69, 66, 80], 8)) return "image/webp";
+  if (matches(bytes, [102, 116, 121, 112], 4) && (matches(bytes, [97, 118, 105, 102], 8) || matches(bytes, [97, 118, 105, 115], 8))) return "image/avif";
+  return null;
+}
+function assertAllowedFileMimeType(allowed, rawType, bytes) {
+  if (!allowed) return;
+  const type = normalizeFileMimeType(rawType);
+  if (!allowed.has(type)) throw Object.assign(new Error("File MIME type is not allowed."), {
+    code: "FILE_MIME_TYPE_NOT_ALLOWED",
+    hint: "Choose a type permitted by files.allowedMimeTypes."
+  });
+  if (!bytes) return;
+  const detected = detectedMimeType(bytes);
+  let valid = !signedTypes.has(type) || detected === type;
+  if (type === "text/plain") {
+    valid = detected === null;
+    try {
+      const text3 = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      valid = valid && !/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text3);
+    } catch {
+      valid = false;
+    }
+  }
+  if (!valid) throw Object.assign(new Error("File bytes do not match the declared MIME type."), {
+    code: "FILE_MIME_TYPE_MISMATCH",
+    hint: "Supply bytes matching the declared MIME type."
+  });
+}
+
 // src/team-billing-runtime.ts
 import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
 
@@ -104563,12 +104626,12 @@ function normalizeSubscription(definition, object2, operation, mode, eventType, 
   const priceId = item.price?.id;
   const productId = typeof item.price?.product === "string" ? item.price.product : item.price?.product?.id;
   if (item.object !== "subscription_item" || item.subscription !== object2.id || item.price?.recurring?.usage_type !== "licensed" || !ITEM_ID.test(String(item.id ?? "")) || !PRICE_ID.test(String(priceId ?? "")) || !PRODUCT_ID.test(String(productId ?? "")) || !Number.isSafeInteger(item.quantity) || item.quantity < 1) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
-  const matches = Object.entries(definition.catalogue).filter(([, product2]) => {
+  const matches2 = Object.entries(definition.catalogue).filter(([, product2]) => {
     const binding = product2.stripe?.[mode];
     return binding?.priceId === priceId && (!binding.productId || binding.productId === productId);
   });
-  if (matches.length !== 1) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
-  const [productKey, product] = matches[0];
+  if (matches2.length !== 1) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
+  const [productKey, product] = matches2[0];
   if (operation && (operation.productKey !== productKey || Number(operation.quantity) !== item.quantity)) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
   if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
   if (product.quantity.kind === "team-members" && item.quantity < (product.quantity.minimum ?? 1)) {
@@ -108456,6 +108519,38 @@ function createPrivilegedScheduleApi(database, contextGetter) {
 }
 function createPrivilegedFileApi(database, contextGetter) {
   return Object.freeze({
+    async list(options = {}) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) return active;
+      let cutoff = null;
+      let after = null;
+      try {
+        if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["createdBefore", "cursor"].includes(key))) throw new Error();
+        if (options.createdBefore !== void 0) {
+          if (!(typeof options.createdBefore === "string" || options.createdBefore instanceof Date)) throw new Error();
+          cutoff = new Date(options.createdBefore).toISOString();
+        }
+        if (options.cursor !== void 0 && options.cursor !== null) {
+          if (typeof options.cursor !== "string" || options.cursor.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(options.cursor)) throw new Error();
+          const decoded = JSON.parse(Buffer.from(options.cursor, "base64url").toString("utf8"));
+          if (decoded.v !== 1 || typeof decoded.id !== "string" || decoded.id.length === 0 || decoded.id.length > 200 || typeof decoded.createdAt !== "string" || new Date(decoded.createdAt).toISOString() !== decoded.createdAt || decoded.cutoff !== null && (typeof decoded.cutoff !== "string" || new Date(decoded.cutoff).toISOString() !== decoded.cutoff)) throw new Error();
+          if (options.createdBefore !== void 0 && cutoff !== decoded.cutoff) throw new Error();
+          cutoff = decoded.cutoff;
+          after = { createdAt: decoded.createdAt, id: decoded.id };
+        }
+      } catch {
+        return { ok: false, error: { message: "Invalid File listing options.", hint: "Use a valid createdBefore date and the cursor from the previous page with the same cutoff.", code: "INVALID_FILE_LIST_OPTIONS" } };
+      }
+      const rows = await database.adapter.selectLiveFilesPage(cutoff, after);
+      const stillActive = activePrivilegedFileAccess(contextGetter);
+      if (!stillActive.ok) return stillActive;
+      const page = rows.slice(0, 100);
+      const last = page.at(-1);
+      return { ok: true, data: {
+        files: page.map((row) => ({ ...fileMetadataFromRow(row), ownerId: row.ownerId, createdAt: row.createdAt, updatedAt: row.updatedAt })),
+        cursor: rows.length > 100 ? Buffer.from(JSON.stringify({ v: 1, createdAt: last.createdAt, id: last.id, cutoff })).toString("base64url") : null
+      }, error: null };
+    },
     async url(fileReference) {
       const active = activePrivilegedFileAccess(contextGetter);
       if (!active.ok) {
@@ -108529,7 +108624,7 @@ function createPrivilegedFileApi(database, contextGetter) {
       }
       throw commandError2(
         "Unsupported privileged file operation.",
-        "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
+        "Use one of the approved privileged file operations: list, url, createPublicUrl, or delete.",
         "UNSUPPORTED_PRIVILEGED_FILE_OPERATION"
       );
     }
@@ -108654,7 +108749,7 @@ function normalizeTableAcl(tableName, aclRules) {
   return normalized;
 }
 function normalizeFileAcl(aclRules) {
-  const supportedOperations = /* @__PURE__ */ new Set(["read", "publicUrl", "delete"]);
+  const supportedOperations = /* @__PURE__ */ new Set(["read", "publicUrl", "delete", "upload"]);
   if (aclRules === void 0) {
     return {
       resolve() {
@@ -108665,7 +108760,7 @@ function normalizeFileAcl(aclRules) {
   if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
     throw commandError2(
       "Invalid Capsule File ACL.",
-      "Declare files as { acl: { read?, publicUrl?, delete? } }.",
+      "Declare files as { acl: { read?, publicUrl?, delete?, upload? } }.",
       "INVALID_FILE_ACL"
     );
   }
@@ -108674,7 +108769,7 @@ function normalizeFileAcl(aclRules) {
     if (!supportedOperations.has(operation)) {
       throw commandError2(
         `Unsupported Capsule File ACL operation: ${operation}.`,
-        "Supported File ACL operations are read, publicUrl, and delete.",
+        "Supported File ACL operations are read, publicUrl, delete, and upload.",
         "INVALID_FILE_ACL"
       );
     }
@@ -108734,6 +108829,20 @@ function createFileAclContext(auth, database, credential = { kind: "session" }) 
     credential: context2.credential,
     acl: createAclHelpers(database, context2)
   });
+}
+async function allowFileUpload(database, auth, meta2) {
+  const rule = database.fileAcl?.resolve?.("upload");
+  if (!rule) return true;
+  const context2 = createFileAclContext(auth, database);
+  try {
+    const result = invokeAclRule(context2, () => rule(context2, Object.freeze(meta2)));
+    const allowed = isPromiseLike(result) ? await result : result;
+    return allowed === true && !aclRuleTouchedAsyncHelperRead(context2, !isPromiseLike(result));
+  } catch {
+    return false;
+  } finally {
+    await settleAclHelperReads(context2);
+  }
 }
 function applyFileAcl(database, operation, row, auth, credential = { kind: "session" }) {
   const rule = database.fileAcl?.resolve?.(operation);
@@ -109647,6 +109756,7 @@ function createFileStorageTables(sqlite) {
     ),
     () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
     () => sqlite.exec(sql2(filePathBackfillSql())),
+    () => sqlite.exec(sql2("CREATE INDEX IF NOT EXISTS [sporades_files_created_live] ON [sporades_files] ([createdAt], [id]) WHERE [deletedAt] IS NULL AND [status] = 'uploaded'")),
     () => sqlite.exec(sql2(activeFilePathDedupeSql())),
     () => sqlite.exec(
       sql2("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])")
@@ -109727,6 +109837,11 @@ async function createPendingFileUploadOperation(database, auth, message) {
       )
     };
   }
+  try {
+    assertAllowedFileMimeType(database.fileAllowedMimeTypes, input.type);
+  } catch (error) {
+    return { ok: false, error: { message: error.message, hint: error.hint, code: error.code } };
+  }
   return await withFileUploadPathLock("capsule", async () => {
     const now2 = (/* @__PURE__ */ new Date()).toISOString();
     const replacing = message.replace === true;
@@ -109742,11 +109857,30 @@ async function createPendingFileUploadOperation(database, auth, message) {
         error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
       };
     }
+    let normalizedPath;
+    try {
+      const effectivePath = input.path ?? existingByReference?.path;
+      normalizedPath = effectivePath == null ? null : normalizeAbsoluteFilePath(effectivePath);
+    } catch (error) {
+      return {
+        ok: false,
+        error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
+      };
+    }
+    const name2 = normalizeFileName(input.name, normalizedPath);
+    const targetPath = normalizedPath ?? `/default/${name2}`;
+    if (database.fileAcl?.resolve?.("upload") && !await allowFileUpload(database, auth, {
+      sizeBytes: size,
+      mimeType: normalizeFileMimeType(input.type),
+      name: name2
+    })) {
+      return { ok: false, error: { ...createStructuredFileError("File upload denied.", "The Capsule upload policy denied this file."), code: "FILE_UPLOAD_DENIED" } };
+    }
     return await database.adapter.withTransaction(async (sqlite) => {
       const transactionDatabase = { ...database, sqlite, adapter: sqlite };
       let target;
       try {
-        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path } : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now2);
+        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: targetPath } : await resolveFileWriteTarget(transactionDatabase, auth.userId, targetPath, now2);
       } catch (error) {
         return {
           ok: false,
@@ -109771,8 +109905,7 @@ async function createPendingFileUploadOperation(database, auth, message) {
       const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule2.randomUUID();
       const uploadId = nodeCryptoModule2.randomUUID();
       const version3 = nodeCryptoModule2.randomUUID();
-      const name2 = normalizeFileName(input.name, target.path);
-      const type = String(input.type ?? "application/octet-stream");
+      const type = database.fileAllowedMimeTypes ? normalizeFileMimeType(input.type) : String(input.type ?? "application/octet-stream");
       await sqlite.deleteFileUploadsForPath(target.path);
       try {
         await sqlite.insertFileUpload({
@@ -109845,6 +109978,13 @@ async function completePendingFileUploadOperation(database, uploadId, request, w
       total: upload.expectedSize
     });
     const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
+    if (database.fileAcl?.resolve?.("upload") && bytes.length !== upload.expectedSize) {
+      throw Object.assign(new Error("File size differs from the admitted upload metadata."), {
+        code: "FILE_UPLOAD_SIZE_MISMATCH",
+        hint: "Request a fresh upload URL with the actual file size."
+      });
+    }
+    assertAllowedFileMimeType(database.fileAllowedMimeTypes, upload.type, bytes);
     const now2 = (/* @__PURE__ */ new Date()).toISOString();
     const completion = await database.adapter.withTransaction(async (sqlite) => {
       const completed = await sqlite.completeFileUpload(upload, bytes.length, now2);
@@ -109882,7 +110022,8 @@ async function completePendingFileUploadOperation(database, uploadId, request, w
   } catch (error) {
     const structuredError = isUniqueConstraintError(error) ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.") : {
       message: error.message,
-      hint: error.hint ?? "Request a fresh upload URL and retry."
+      hint: error.hint ?? "Request a fresh upload URL and retry.",
+      ...error.code ? { code: error.code } : {}
     };
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.failed",
@@ -110620,9 +110761,7 @@ async function withFileUploadPathLock(path22, fn2) {
     }
   }
 }
-async function resolveFileWriteTarget(database, ownerId, input, now2) {
-  const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path22 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+async function resolveFileWriteTarget(database, ownerId, path22, now2) {
   const firstSegment = path22.split("/").filter(Boolean)[0] ?? "default";
   const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
   const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now2);
@@ -121304,7 +121443,7 @@ function locatePdfIndirectInteger(bytes, reference, limit, deadlineExpired) {
   const objectNumber = String(reference.objectNumber);
   const generation2 = String(reference.generation);
   let found = null;
-  const matches = (at2, text3) => at2 + text3.length <= limit && bytes.subarray(at2, at2 + text3.length).toString("ascii") === text3;
+  const matches2 = (at2, text3) => at2 + text3.length <= limit && bytes.subarray(at2, at2 + text3.length).toString("ascii") === text3;
   const skipWhitespace = (at2) => {
     let steps = 0;
     while (at2 < limit && pdfWhitespace(bytes[at2])) {
@@ -121315,17 +121454,17 @@ function locatePdfIndirectInteger(bytes, reference, limit, deadlineExpired) {
   };
   for (let cursor = 0; cursor < limit; cursor += 1) {
     if ((cursor & 255) === 0 && deadlineExpired?.("object")) return null;
-    if (cursor > 0 && !pdfWhitespace(bytes[cursor - 1]) || !matches(cursor, objectNumber)) continue;
+    if (cursor > 0 && !pdfWhitespace(bytes[cursor - 1]) || !matches2(cursor, objectNumber)) continue;
     let at2 = cursor + objectNumber.length;
     if (at2 >= limit || !pdfWhitespace(bytes[at2])) continue;
     at2 = skipWhitespace(at2);
     if (at2 < 0) return null;
-    if (!matches(at2, generation2)) continue;
+    if (!matches2(at2, generation2)) continue;
     at2 += generation2.length;
     if (at2 >= limit || !pdfWhitespace(bytes[at2])) continue;
     at2 = skipWhitespace(at2);
     if (at2 < 0) return null;
-    if (!matches(at2, "obj")) continue;
+    if (!matches2(at2, "obj")) continue;
     at2 += 3;
     if (at2 >= limit || !pdfWhitespace(bytes[at2])) continue;
     at2 = skipWhitespace(at2);
@@ -121336,7 +121475,7 @@ function locatePdfIndirectInteger(bytes, reference, limit, deadlineExpired) {
     const value = Number(bytes.subarray(valueStart, at2).toString("ascii"));
     at2 = skipWhitespace(at2);
     if (at2 < 0) return null;
-    if (!matches(at2, "endobj") || at2 + 6 < limit && !pdfDelimiter(bytes[at2 + 6])) continue;
+    if (!matches2(at2, "endobj") || at2 + 6 < limit && !pdfDelimiter(bytes[at2 + 6])) continue;
     if (!Number.isSafeInteger(value) || value > 24e6 || found) return null;
     found = { offset: cursor, value };
   }
@@ -122456,8 +122595,8 @@ function boundedBraceExpansion(pattern) {
     let expanded = false;
     const next = [];
     for (const candidate of patterns) {
-      const matches = [...candidate.matchAll(/\{([^{}]*)\}/g)];
-      const match = matches.find((entry) => braceBodyIsExpandable(entry[1]));
+      const matches2 = [...candidate.matchAll(/\{([^{}]*)\}/g)];
+      const match = matches2.find((entry) => braceBodyIsExpandable(entry[1]));
       const alternatives = !match ? void 0 : match[1].includes(",") ? match[1].split(",") : braceSequenceAlternatives(match[1]);
       if (!match || alternatives === void 0) {
         next.push(candidate);
@@ -123477,6 +123616,7 @@ async function stageMultipartIngressOperation(database, endpoint, request, endpo
       const stablePartKey = partKey ?? crypto2.createHash("sha256").update(`${fieldName}:${files.length}`).digest("hex");
       const actorId = String(actor.userId ?? "");
       const authority = admittedAuthority ?? { kind: "actor", actorId, ownerId: actorId };
+      assertAllowedFileMimeType(database.fileAllowedMimeTypes, type, body);
       const authorityId = authority.kind === "capsule-principal" ? `capsule:${authority.namespace}:${authority.keyDigest}` : `actor:${authority.actorId}`;
       const key = keyFor(endpoint, requestKey, stablePartKey, authorityId);
       const digest2 = crypto2.createHash("sha256").update(body).digest("hex");
@@ -127616,8 +127756,8 @@ async function readPasswordResetCode(database, code) {
   const row = await database.adapter.findPasswordResetCode(parts[0]);
   const expected = Buffer.from(row?.verifierHash ?? hashPasswordResetVerifier("\0absent"), "base64url");
   const actual = Buffer.from(hashPasswordResetVerifier(parts[1]), "base64url");
-  const matches = actual.length === expected.length && nodeCryptoModule3.timingSafeEqual(actual, expected);
-  if (!row || !matches) {
+  const matches2 = actual.length === expected.length && nodeCryptoModule3.timingSafeEqual(actual, expected);
+  if (!row || !matches2) {
     return null;
   }
   return database.clock.now().getTime() >= Date.parse(row.expiresAt) ? null : row;
@@ -133215,6 +133355,19 @@ function createSharedDatabaseAdapterMethods(dialect) {
         row.createdAt
       );
     },
+    selectLiveFilesPage(createdBefore, after) {
+      let query = "SELECT * FROM [sporades_files] WHERE [deletedAt] IS NULL AND [status] = ?";
+      const parameters = ["uploaded"];
+      if (createdBefore !== null) {
+        query += " AND [createdAt] < ?";
+        parameters.push(createdBefore);
+      }
+      if (after) {
+        query += " AND ([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))";
+        parameters.push(after.createdAt, after.createdAt, after.id);
+      }
+      return this.prepare(sql2(query + " ORDER BY [createdAt] ASC, [id] ASC LIMIT 101")).all(...parameters);
+    },
     selectFileById(fileId) {
       return this.prepare(sql2("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
     },
@@ -135973,6 +136126,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   validateLogConfig(config);
   const registrationThrottle = resolveRegistrationThrottle(config.auth);
   const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
+  const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError2("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
@@ -135983,7 +136137,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
   const teamBillingDefinition = capsuleDefinition?.teamBilling === void 0 ? null : normalizeTeamBillingDefinition(capsuleDefinition.teamBilling);
   if (capsuleDefinition?.files !== void 0 && (!capsuleDefinition.files || typeof capsuleDefinition.files !== "object" || Array.isArray(capsuleDefinition.files))) {
-    throw commandError2("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete? } }.", "INVALID_FILE_ACL");
+    throw commandError2("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete?, upload? } }.", "INVALID_FILE_ACL");
   }
   const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
   const path22 = await import("node:path");
@@ -136313,6 +136467,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes,
+    fileAllowedMimeTypes,
     httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
       database.__scheduleStopped = true;
@@ -147868,10 +148023,10 @@ async function validateComponents(dir, packageRoot) {
     if (typeof environment !== "object" || Array.isArray(environment) || Object.entries(environment).some(([key, value]) => name2 !== "jaeger" || key !== "TRACE_RETENTION" || typeof value !== "string" || value.length > 256 || value.includes("\0"))) fail2();
   }
   const mount = async (service, target, optional = false) => {
-    const matches = config.services[service].volumes?.filter((v2) => v2.target === target);
-    if (optional && !matches?.length) return [];
-    if (matches?.length !== 1 || matches[0].type !== "bind" || matches[0].read_only !== true) fail2();
-    const source = matches[0].source;
+    const matches2 = config.services[service].volumes?.filter((v2) => v2.target === target);
+    if (optional && !matches2?.length) return [];
+    if (matches2?.length !== 1 || matches2[0].type !== "bind" || matches2[0].read_only !== true) fail2();
+    const source = matches2[0].source;
     if (typeof source !== "string" || source.includes(",") || source !== path18.resolve(source) || !source.startsWith(dir + path18.sep)) fail2();
     const relative = path18.relative(dir, source);
     if (relative.split(path18.sep).some((p2) => !p2 || p2 === "." || p2 === "..")) fail2();
@@ -148072,6 +148227,7 @@ async function readProjectConfig(projectDir) {
   }
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   validateLogConfig(config);
+  resolveFileAllowedMimeTypes(config.files);
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
@@ -153032,7 +153188,7 @@ function watchDevInputs(projectDir, onChange, clientDependencies = () => [], ini
         if (!observedSignatures.has(watchedPath.path)) observedSignatures.set(watchedPath.path, signature);
       }
       const currentPaths = new Set(afterPaths.map((entry) => entry.path));
-      for (const signatures of [handledSignatures, observedSignatures]) for (const file of signatures.keys()) if (!currentPaths.has(file)) signatures.delete(file);
+      for (const signatures2 of [handledSignatures, observedSignatures]) for (const file of signatures2.keys()) if (!currentPaths.has(file)) signatures2.delete(file);
       lastHandledSignature = afterPaths.flatMap((entry) => handledSignatures.get(entry.path).split("\n")).sort().join("\n");
     } finally {
       rebuildInFlight = false;
