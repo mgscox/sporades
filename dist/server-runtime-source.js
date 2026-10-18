@@ -4352,7 +4352,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
         ...baseContext,
         kind,
     };
-    Object.defineProperty(context, "app", { value: database.app, enumerable: true });
+    Object.defineProperty(context, "app", { value: database.app, enumerable: true, writable: false, configurable: false });
     bindPendingAclWrites(context, baseContext);
     bindCurrentUserFileDeleteState(context, baseContext);
     bindMutationSecretState(context, baseContext);
@@ -4374,7 +4374,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
             throw commandError("Invalid Capsule context middleware result.", "Context middleware must preserve the runtime-owned Auth, Credential and app values.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
         }
         context = { ...middlewareContext, auth: canonicalAuth };
-        Object.defineProperty(context, "app", { value: database.app, enumerable: true });
+        Object.defineProperty(context, "app", { value: database.app, enumerable: true, writable: false, configurable: false });
         if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
             context.credential = canonicalCredential;
         }

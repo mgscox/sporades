@@ -42,6 +42,49 @@ import { capsule, query, mutation } from '../dist/server.js';
 import { openDevDatabase, resolveAnonymousSession, signUpWithEmail, runQuery, runMutation, createEmailPasswordResetLink } from '../dist/server-runtime-source.js';
 import { createTeamJoinLink, listCurrentUserTeams } from '../dist/teams-runtime.js';
 
+test('ordinary handlers cannot replace, delete or redefine the canonical app binding after context copies', async t => {
+  await mkdir('.scratch', { recursive: true });
+  for (const [name, middleware] of [
+    ['without middleware', []],
+    ['with spreading middleware', [ctx => ({ ...ctx })]],
+    ['with multiple middleware copies', [ctx => ({ ...ctx }), ctx => ({ ...ctx })]],
+    ['with middleware omitting app', [({ app, ...ctx }) => ctx]],
+  ]) await t.test(name, async () => {
+    const dir = await mkdtemp(path.resolve('.scratch/origin-readonly-'));
+    let database;
+    try {
+      function inspectApp(ctx) {
+        const app = ctx.app;
+        const { writable, configurable } = Object.getOwnPropertyDescriptor(ctx, 'app');
+        const forged = { publicOrigin: 'https://forged.example' };
+        const attempts = [];
+        for (const operation of [
+          () => Reflect.set(ctx, 'app', forged),
+          () => Reflect.deleteProperty(ctx, 'app'),
+          () => Reflect.defineProperty(ctx, 'app', { value: forged }),
+        ]) {
+          const accepted = operation();
+          attempts.push({ accepted, unchanged: ctx.app === app, origin: ctx.app?.publicOrigin });
+        }
+        return { attempts, writable, configurable };
+      }
+      const definition = capsule({ name: 'origin-readonly', middleware,
+        queries: { origin: query(inspectApp) }, mutations: { origin: mutation(inspectApp) } });
+      database = await openDevDatabase(path.join(dir, 'data.db'), '', {}, {
+        name: definition.name, __sporadesSession: 'hosted', __sporadesPublicOrigin: 'https://canonical.example',
+        auth: { providers: { anonymous: true } },
+      }, definition);
+      const guest = await resolveAnonymousSession(database, null);
+      const expected = { attempts: Array.from({ length: 3 }, () => ({ accepted: false, unchanged: true, origin: 'https://canonical.example' })),
+        writable: false, configurable: false };
+      for (const result of [await runQuery(database, guest.auth, 'origin'), await runMutation(database, guest.auth, 'origin', [])]) {
+        assert.equal(result.error, null);
+        assert.deepEqual(result.data, expected);
+      }
+    } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+});
+
 test('server contexts and built-in reset/join links share the canonical origin', async () => {
   const dir = await mkdtemp(path.resolve('.scratch/origin-runtime-'));
   let database;

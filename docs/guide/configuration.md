@@ -19,7 +19,9 @@ selection export nothing. A local Container session can use `sporades deploy
 --telemetry <name>` and disable export with `sporades deploy --no-telemetry`.
 
 Server handlers can read `ctx.app.publicOrigin` to build links that point back
-to the Capsule. Dev uses its bound local URL, including during init hooks and
+to the Capsule. Both the `ctx.app` binding and its metadata are readonly:
+handlers cannot replace, delete or redefine them, including after context
+middleware returns a copy. Dev uses its bound local URL, including during init hooks and
 startup Jobs when `--port 0` selects a dynamic port. A Container
 uses `deploy.publicOrigin` when set, then `SPORADES_PUBLIC_ORIGIN`, then its
 effective local port (`deploy --port` overrides `deploy.port`). Container launch

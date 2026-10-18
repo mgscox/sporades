@@ -4543,7 +4543,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     ...baseContext,
     kind,
   };
-  Object.defineProperty(context, "app", { value: database.app, enumerable: true });
+  Object.defineProperty(context, "app", { value: database.app, enumerable: true, writable: false, configurable: false });
   bindPendingAclWrites(context, baseContext);
   bindCurrentUserFileDeleteState(context, baseContext);
   bindMutationSecretState(context, baseContext);
@@ -4569,7 +4569,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
       );
     }
     context = { ...middlewareContext, auth: canonicalAuth };
-    Object.defineProperty(context, "app", { value: database.app, enumerable: true });
+    Object.defineProperty(context, "app", { value: database.app, enumerable: true, writable: false, configurable: false });
     if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
       context.credential = canonicalCredential;
     } else {

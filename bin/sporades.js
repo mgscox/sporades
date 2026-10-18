@@ -139404,7 +139404,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
     ...baseContext,
     kind
   };
-  Object.defineProperty(context2, "app", { value: database.app, enumerable: true });
+  Object.defineProperty(context2, "app", { value: database.app, enumerable: true, writable: false, configurable: false });
   bindPendingAclWrites(context2, baseContext);
   bindCurrentUserFileDeleteState(context2, baseContext);
   bindMutationSecretState(context2, baseContext);
@@ -139430,7 +139430,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
       );
     }
     context2 = { ...middlewareContext, auth: canonicalAuth };
-    Object.defineProperty(context2, "app", { value: database.app, enumerable: true });
+    Object.defineProperty(context2, "app", { value: database.app, enumerable: true, writable: false, configurable: false });
     if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
       context2.credential = canonicalCredential;
     } else {
