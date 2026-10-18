@@ -8,6 +8,7 @@ Changes since v0.9.31.
 
 - Add opt-in required Server env checks for doctor, Host push, and runtime boot (#236).
 
+- Add opt-in upload ACL and global MIME policy, plus privileged File listing for orphan cleanup (#233).
 - Add shared Capsule rate limits and trusted-address authentication throttles (#232).
 - Export HTML-safe mail helpers and support password-reset body placeholders (#230).
 - Add pinned monitoring release acceptance verifier (#229) (872f33866).

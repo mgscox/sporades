@@ -66,6 +66,31 @@ export declare function createPrivilegedScheduleApi(database: LooseRecord, conte
     }[]>;
 };
 export declare function createPrivilegedFileApi(database: LooseRecord, contextGetter: () => LooseRecord): Readonly<{
+    list(options?: LooseRecord): Promise<{
+        ok: boolean;
+        error?: undefined;
+    } | {
+        ok: boolean;
+        error: {
+            message: string;
+            hint: string;
+        };
+    } | {
+        ok: boolean;
+        error: {
+            message: string;
+            hint: string;
+            code: string;
+        };
+        data?: undefined;
+    } | {
+        ok: boolean;
+        data: {
+            files: any;
+            cursor: string | null;
+        };
+        error: null;
+    }>;
     url(fileReference: any): Promise<any>;
     createPublicUrl(fileReference: any, options?: LooseRecord): Promise<any>;
     delete(fileReference: any): Promise<any>;
@@ -140,6 +165,8 @@ export declare function createFileAclContext(auth: LooseRecord, database: LooseR
         }>;
     }>;
 }>;
+/** Upload policy is opt-in and gets no mutable runtime capabilities. */
+export declare function allowFileUpload(database: LooseRecord, auth: LooseRecord, meta: LooseRecord): Promise<boolean>;
 export declare function applyFileAcl(database: LooseRecord, operation: string, row: LooseRecord, auth: LooseRecord, credential?: LooseRecord): boolean | Promise<boolean>;
 export declare function grantPrivilegedDbAccess(context: any): any;
 export declare function revokePrivilegedDbAccess(context: any): any;

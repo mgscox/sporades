@@ -1,3 +1,4 @@
+export type { FileUploadError, FileUploadErrorCode } from "../src/types/client.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 
 const runtime = await import(`data:text/javascript,${encodeURIComponent(createClientRuntimeSource())}`);

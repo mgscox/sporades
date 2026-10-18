@@ -1,4 +1,5 @@
 import { validateServerEnvConfig } from "../server-env-requirements.js";
+import { resolveFileAllowedMimeTypes } from "../file-policy.js";
 import { resolveRegistrationThrottle } from "../capsule-rate-limit.js";
 import { resolveAdmissionPolicy } from "../admission-policy.js";
 import { createHash } from "node:crypto";
@@ -66,6 +67,7 @@ export async function readProjectConfig(projectDir) {
     validateLogConfig(config);
     if (config.env !== undefined)
         config.env = validateServerEnvConfig(config.env);
+    resolveFileAllowedMimeTypes(config.files);
     validateSecurityConfig(config.security);
     validateClientConfig(config.client);
     validateSchedulingConfig(config.scheduling);
