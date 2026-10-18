@@ -80481,29 +80481,36 @@ function structuredCredentialEnd(text3, start) {
 }
 function stripDiagnosticUrlSuffixes(text3) {
   let redacted = "", cursor = 0;
-  for (const match of text3.matchAll(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"]*)[?#]/giu)) {
+  for (const match of text3.matchAll(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"]*?)([?#]|%3f|%23)/giu)) {
     if (match.index < cursor) continue;
-    const start = match.index + match[0].length - 1;
+    const start = match.index + match[1].length;
     const wrapper = /^["']/.test(match[1]) ? match[1][0] : text3[match.index - 1];
-    let end = start + 1;
-    while (end < text3.length && !/[\s<>]/.test(text3[end])) {
+    const outerQuote = wrapper === '"' || wrapper === "'" ? wrapper : "";
+    let end = start + match[2].length;
+    let quote = "", valueStart = true;
+    while (end < text3.length && !/[\r\n]/.test(text3[end])) {
       const char = text3[end];
-      if (char === '"' || char === "'") {
-        if (/^[),.;:!?\]}]*(?:\s|$)/.test(text3.slice(end + 1)) || char === wrapper && /^,\s*"[^"\r\n]+"\s*:/.test(text3.slice(end + 1))) break;
-        const quote = text3[end - 1] === "\\" ? "\\" + char : char;
-        if (/[=?#]/.test(text3[end - quote.length])) {
-          let close = end + 1;
-          for (; close < text3.length && !/[\r\n]/.test(text3[close]); close++) {
-            if (text3.startsWith(quote, close) && !/^[\p{L}\p{M}\p{N}]/u.test(text3.slice(close + quote.length))) break;
-            if (text3[close] === "\\") close++;
-          }
-          end = Math.min(close + (text3.startsWith(quote, close) ? quote.length : 0), text3.length);
+      const delimiter = char === "\\" && /["']/.test(text3[end + 1] ?? "") ? text3.slice(end, end + 2) : /["']/.test(char) ? char : "";
+      const wordApostrophe = char === "'" && /[\p{L}\p{M}\p{N}]/u.test(text3[end - 1] ?? "") && /[\p{L}\p{M}\p{N}]/u.test(text3[end + 1] ?? "");
+      if (quote) {
+        if (delimiter === quote && !wordApostrophe) quote = "";
+        else if (char === "\\") {
+          end += 2;
           continue;
         }
-      }
-      end++;
+      } else if (delimiter) {
+        if (valueStart) {
+          quote = delimiter;
+          valueStart = false;
+        } else if (delimiter === outerQuote && !wordApostrophe) break;
+      } else if (/\s/.test(char)) {
+        const continuation = valueStart || /^[ \t]*[&#=]/.test(text3.slice(end));
+        if (!outerQuote && !continuation) break;
+      } else if (!outerQuote && /[<>]/.test(char)) break;
+      else valueStart = /[=?#&]/.test(char);
+      end += delimiter.length || 1;
     }
-    const punctuation2 = text3.slice(start + 1, end).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? "";
+    const punctuation2 = quote ? "" : text3.slice(start + match[2].length, end).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? "";
     redacted += text3.slice(cursor, match.index) + match[1] + punctuation2;
     cursor = end;
   }

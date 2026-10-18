@@ -77,39 +77,44 @@ function structuredCredentialEnd(text: string, start: number) {
   return text.length;
 }
 
-// Quotes inside a URL are data unless they close surrounding prose. A quoted
-// query value may contain spaces and embedded apostrophes; consume it as a unit.
+// Once a private suffix starts, scan to the URL boundary with explicit quote
+// state. Whitespace and punctuation inside a quoted value are private data, not
+// prose boundaries. Escaped JSON quotes are delimiters distinct from outer quotes.
 function stripDiagnosticUrlSuffixes(text: string) {
   let redacted = "", cursor = 0;
-  for (const match of text.matchAll(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"]*)[?#]/giu)) {
+  for (const match of text.matchAll(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"]*?)([?#]|%3f|%23)/giu)) {
     if (match.index < cursor) continue;
-    const start = match.index + match[0].length - 1;
+    const start = match.index + match[1].length;
     const wrapper = /^["']/.test(match[1]) ? match[1][0] : text[match.index - 1];
-    let end = start + 1;
-    while (end < text.length && !/[\s<>]/.test(text[end])) {
+    const outerQuote = wrapper === '"' || wrapper === "'" ? wrapper : "";
+    let end = start + match[2].length;
+    let quote = "", valueStart = true;
+    while (end < text.length && !/[\r\n]/.test(text[end])) {
       const char = text[end];
-      if (char === '"' || char === "'") {
-        // A word apostrophe (O'Reilly) or another URL character cannot close
-        // prose quotation. Also preserve a closing JSON URL string and its fields.
-        if (/^[),.;:!?\]}]*(?:\s|$)/.test(text.slice(end + 1))
-          || (char === wrapper && /^,\s*"[^"\r\n]+"\s*:/.test(text.slice(end + 1)))) break;
-        // JSON diagnostics represent a query quote as \". Match that whole
-        // delimiter so its spaces stay private and the outer JSON quote survives.
-        const quote = text[end - 1] === "\\" ? "\\" + char : char;
-        if (/[=?#]/.test(text[end - quote.length])) {
-          let close = end + 1;
-          for (; close < text.length && !/[\r\n]/.test(text[close]); close++) {
-            if (text.startsWith(quote, close) && !/^[\p{L}\p{M}\p{N}]/u.test(text.slice(close + quote.length))) break;
-            if (text[close] === "\\") close++;
-          }
-          // Unterminated quoted query values conceal the remainder of the line.
-          end = Math.min(close + (text.startsWith(quote, close) ? quote.length : 0), text.length);
-          continue;
-        }
-      }
-      end++;
+      const delimiter = char === "\\" && /["']/.test(text[end + 1] ?? "")
+        ? text.slice(end, end + 2) : /["']/.test(char) ? char : "";
+      const wordApostrophe = char === "'" && /[\p{L}\p{M}\p{N}]/u.test(text[end - 1] ?? "")
+        && /[\p{L}\p{M}\p{N}]/u.test(text[end + 1] ?? "");
+      if (quote) {
+        if (delimiter === quote && !wordApostrophe) quote = "";
+        else if (char === "\\") { end += 2; continue; }
+      } else if (delimiter) {
+        // Classify a value opening before considering the surrounding string's
+        // closing quote. Its first byte may be any whitespace or punctuation.
+        if (valueStart) { quote = delimiter; valueStart = false; }
+        else if (delimiter === outerQuote && !wordApostrophe) break;
+      } else if (/\s/.test(char)) {
+        // A surrounding quoted URL owns its spaces. Bare query syntax may
+        // have spaces around separators or before a quoted value / next key.
+        const continuation = valueStart || /^[ \t]*[&#=]/.test(text.slice(end));
+        if (!outerQuote && !continuation) break;
+      } else if (!outerQuote && /[<>]/.test(char)) break;
+      else valueStart = /[=?#&]/.test(char);
+      end += delimiter.length || 1;
     }
-    const punctuation = text.slice(start + 1, end).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? "";
+    // Only unquoted trailing prose punctuation survives; it cannot expose any
+    // part of the private suffix. Unterminated values conceal to the line end.
+    const punctuation = quote ? "" : text.slice(start + match[2].length, end).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? "";
     redacted += text.slice(cursor, match.index) + match[1] + punctuation;
     cursor = end;
   }

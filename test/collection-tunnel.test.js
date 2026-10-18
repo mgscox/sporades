@@ -211,7 +211,55 @@ const escapedQueryDiagnostics = apostropheDiagnosticUrls.map(base => {
   };
 });
 
-test('apostrophes cannot expose URL suffixes at server and tunnel receivers', async t => {
+// Each row exercises all five URL forms in messages and stack filenames. The
+// non-credential cap key makes URL stripping, rather than key redaction, decisive.
+const structuralQueryDiagnostics = [
+  ['double quote, leading space', '?filter=" O\'Reilly phrase"'],
+  ['double quote, trailing space', '?filter="O\'Reilly phrase "'],
+  ['double quote, leading and trailing tabs', '?filter=" \tO\'Reilly phrase\t "'],
+  ['single quote, leading space', "?filter=' O'Reilly phrase'"],
+  ['single quote, trailing space', "?filter='O'Reilly phrase '"],
+  ['single quote, leading and trailing tabs', "?filter=' \tO'Reilly phrase\t '"],
+  ['whitespace before quoted value', '?filter= \t" O\'Reilly phrase "'],
+  ['quoted punctuation and brackets', '?filter=" )],;<> O\'Reilly phrase "'],
+  ['apostrophes without query quotation', "?filter=O'Reilly's"],
+  ['encoded query value', '?filter=' + encodeURIComponent(' "O\'Reilly phrase" ')],
+  ['encoded query and fragment separators', '%3ffilter=%22%20O%27Reilly%20phrase%20%22', '%26cap=qa-apostrophe-query-marker%23qa-apostrophe-fragment-marker'],
+  ['unquoted JSON query with spaces and brackets', '?filter= O\'Reilly <phrase> '],
+  ['fragment starts with a quoted value', '#" O\'Reilly phrase "'],
+].map(([name, suffix, tail = '&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker']) => {
+  const diagnostics = apostropheDiagnosticUrls.map(base => JSON.stringify({ url: base + suffix + tail, status: 'ready' }));
+  const clean = apostropheDiagnosticUrls.map(base => JSON.stringify({ url: base, status: 'ready' }));
+  return { name: `structural JSON: ${name}`,
+    message: `Ready? Investigate #234 ${diagnostics.join(' ')} Continue.`,
+    safe: `Ready? Investigate #234 ${clean.join(' ')} Continue.`,
+    stack: 'Error: diagnostic URL\n' + diagnostics.map(url => `    at execute (${url}:12:8)`).join('\n'),
+    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+  };
+});
+for (const [name, before, after, suffix] of [
+  ['bare double quote', 'url=', '', '?filter=" \tO\'Reilly phrase \t"&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker'],
+  ['bare whitespace around query separators', 'url=', '', '?filter= \t" O\'Reilly phrase " \t& cap = qa-apostrophe-query-marker#qa-apostrophe-fragment-marker'],
+  ['bare single quote', 'url=', '', "?filter=' \tO'Reilly phrase \t'&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker"],
+  ['double wrapper and single value', '"', '"', "?filter=' O'Reilly phrase '&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker"],
+  ['single wrapper and double value', "'", "'", '?filter=" O\'Reilly phrase "&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker'],
+  ['quoted suffix without following parameter', '"', '"', '?filter=" qa-apostrophe-query-marker O\'Reilly phrase "'],
+  ['JSON escaped data inside quoted value', '', '', '?filter=" \\"O\'Reilly\\" phrase "&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker'],
+]) {
+  const diagnostics = apostropheDiagnosticUrls.map(base => before + base + suffix + after);
+  const clean = apostropheDiagnosticUrls.map(base => before + base + after);
+  structuralQueryDiagnostics.push({ name,
+    message: `Ready? Investigate #234 ${diagnostics.join(' ')} Continue.`,
+    safe: `Ready? Investigate #234 ${clean.join(' ')} Continue.`,
+    stack: 'Error: diagnostic URL\n' + diagnostics.map(url => `    at execute (${url}:12:8)`).join('\n'),
+    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+  });
+}
+
+for (const [name, probes] of [
+  ['apostrophes', [...apostropheDiagnostics, ...escapedQueryDiagnostics]],
+  ['structural URL suffixes', structuralQueryDiagnostics],
+]) test(`${name} stay private at server and tunnel receivers`, async t => {
   const received = [];
   const receiver = await listen(t, async (request, response) => {
     let body = ''; for await (const part of request) body += part;
@@ -220,7 +268,7 @@ test('apostrophes cannot expose URL suffixes at server and tunnel receivers', as
   const observability = createRuntimeObservability({ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1' });
   t.after(() => observability.close());
   const origin = await listen(t, (request, response) => routeCollection({ observability }, request, response));
-  for (const probe of [...apostropheDiagnostics, ...escapedQueryDiagnostics]) await t.test(probe.name, async () => {
+  for (const probe of probes) await t.test(probe.name, async () => {
     const start = received.length;
     observability.capture(Object.assign(new Error(probe.message), { stack: probe.stack }), 'mutation');
     await observability.flush();
@@ -441,7 +489,10 @@ test('generated loader redacts diagnostic URL delimiters across all relative for
   });
 });
 
-test('generated loader conceals apostrophes inside URL queries and stack filenames', async t => {
+for (const [name, probes] of [
+  ['apostrophes', [...apostropheDiagnostics, ...escapedQueryDiagnostics]],
+  ['structural URL suffixes', structuralQueryDiagnostics],
+]) test(`generated loader conceals ${name} in messages and stack filenames`, async t => {
   const { Window } = await import('happy-dom');
   const { origin, received, script } = await generatedCollectionFixture(t);
   const window = new Window({ url: origin });
@@ -449,7 +500,7 @@ test('generated loader conceals apostrophes inside URL queries and stack filenam
   const sends = [];
   window.fetch = (url, options) => { const promise = fetch(new URL(url, origin), { ...options, headers: { ...options.headers, origin } }); sends.push(promise); return promise; };
   window.eval(script);
-  for (const [index, probe] of [...apostropheDiagnostics, ...escapedQueryDiagnostics].entries()) await t.test(probe.name, async () => {
+  for (const [index, probe] of probes.entries()) await t.test(probe.name, async () => {
     const error = Object.assign(new Error(probe.message), { stack: probe.stack });
     window.dispatchEvent(new window.ErrorEvent('error', { error }));
     await Promise.all(sends);

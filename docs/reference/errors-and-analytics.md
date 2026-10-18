@@ -98,8 +98,11 @@ stack filenames. Relative URLs are recognized after punctuation and key/value
 delimiters, including `url=/path`, `[//host/path]`, and `<./path>`.
 Embedded apostrophes such as `?filter=O'Reilly&cap=...` cannot end stripping
 or expose later query values or fragments. Quoted query values may include
-spaces, including JSON-escaped quotation such as `?filter=\"O'Reilly phrase\"&cap=...`.
-The complete private suffix is removed while surrounding JSON fields are preserved;
+leading/trailing spaces or tabs, including JSON-escaped quotation such as
+`?filter=\" O'Reilly phrase \"&cap=...`. The runtime scans quoted values and escapes
+through the URL boundary, then removes everything from the first `?` or `#`
+(including percent-encoded `%3F` / `%23`) to that boundary. Encoded query values
+remain private. Surrounding JSON fields are preserved;
 an unterminated quoted value conceals the remaining line.
 Genuine surrounding quotation, punctuation and ordinary prose such as `Investigate
 #234 collection` and `Ready? Continue debugging.` are preserved.
