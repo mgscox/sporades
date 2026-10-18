@@ -70,6 +70,7 @@ export async function atomicBackupJson(file, value) {
 export async function readHostBackupPolicy(host) {
     const file = path.join(hostBackupDirectory(host), "policy.json");
     try {
+        await lstat(file);
         await trustedBackupPath(file, true);
     }
     catch (e) {

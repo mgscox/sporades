@@ -69,7 +69,7 @@ export async function atomicBackupJson(file: string, value: unknown) {
 }
 export async function readHostBackupPolicy(host: HostHelperHost): Promise<HostBackupPolicy | null> {
   const file = path.join(hostBackupDirectory(host), "policy.json");
-  try { await trustedBackupPath(file, true); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; throw e; }
+  try { await lstat(file); await trustedBackupPath(file, true); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; throw e; }
   return validateHostBackupPolicy(JSON.parse(await readFile(file, "utf8")));
 }
 

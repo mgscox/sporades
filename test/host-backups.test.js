@@ -55,6 +55,12 @@ test('backup keys reject readable permissions and symlinks', () => fixture(async
   await assert.rejects(trustedBackupPath(path.join(dir, 'link')), /Unsafe/);
 }));
 
+test('unconfigured backup inspection preserves existing Hosts without imposing backup path policy', () => fixture(async dir => {
+  const shared = path.join(dir, 'shared');
+  await mkdir(shared); await chmod(shared, 0o777);
+  assert.deepEqual(await hostBackupStatus(host(shared), 'source'), { configured: false });
+}));
+
 test('restore journal rolls back either interrupted rename and is idempotent', () => fixture(async dir => {
   const data = path.join(dir, 'data');
   const journal = path.join(dir, '.backup-restore.json');

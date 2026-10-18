@@ -2752,7 +2752,8 @@ async function manageCapsuleBackup(request: HostHelperRequest) {
 
 async function healthCapsule(request: HostHelperRequest) {
   const result = await evaluateCapsuleHealth(request);
-  Object.assign(result.data, { backups: await hostBackupStatus(request.host, request.capsule.subname) });
+  const backups = await hostBackupStatus(request.host, request.capsule.subname);
+  if (backups.configured) Object.assign(result.data, { backups });
   writeEnvelope(result);
 }
 

@@ -2639,7 +2639,9 @@ async function manageCapsuleBackup(request) {
 }
 async function healthCapsule(request) {
     const result = await evaluateCapsuleHealth(request);
-    Object.assign(result.data, { backups: await hostBackupStatus(request.host, request.capsule.subname) });
+    const backups = await hostBackupStatus(request.host, request.capsule.subname);
+    if (backups.configured)
+        Object.assign(result.data, { backups });
     writeEnvelope(result);
 }
 async function evaluateCapsuleHealth(request, options = {}) {

@@ -45344,6 +45344,7 @@ async function atomicBackupJson(file, value) {
 async function readHostBackupPolicy(host) {
   const file = path10.join(hostBackupDirectory(host), "policy.json");
   try {
+    await lstat8(file);
     await trustedBackupPath(file, true);
   } catch (e) {
     if (e.code === "ENOENT") return null;
@@ -48458,7 +48459,8 @@ async function manageCapsuleBackup(request2) {
 }
 async function healthCapsule(request2) {
   const result = await evaluateCapsuleHealth(request2);
-  Object.assign(result.data, { backups: await hostBackupStatus(request2.host, request2.capsule.subname) });
+  const backups = await hostBackupStatus(request2.host, request2.capsule.subname);
+  if (backups.configured) Object.assign(result.data, { backups });
   writeEnvelope(result);
 }
 async function evaluateCapsuleHealth(request2, options = {}) {
