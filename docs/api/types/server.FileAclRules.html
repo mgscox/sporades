@@ -11,10 +11,8 @@
 <li><a href="../modules/server.html">server</a></li>
 <li><a href="" aria-current="page">FileAclRules</a></li></ul>
 <h1>Type Alias FileAclRules</h1></div>
-<div class="tsd-signature"><span class="tsd-kind-type-alias">FileAclRules</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Partial</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-type">Record</span><span class="tsd-signature-symbol">&lt;</span><a href="server.FileAclOperation.html" class="tsd-signature-type tsd-kind-type-alias">FileAclOperation</a><span class="tsd-signature-symbol">,</span> <a href="server.FileAclRule.html" class="tsd-signature-type tsd-kind-type-alias">FileAclRule</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">&gt;</span></div>
-<div class="tsd-comment tsd-typography"><p>Optional rules that extend normal File ownership with explicit Capsule ACL.
-Owner access and public-URL revocation remain with the File owner; absent
-rules never widen File access.</p>
+<div class="tsd-signature"><span class="tsd-kind-type-alias">FileAclRules</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Partial</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-type">Record</span><span class="tsd-signature-symbol">&lt;</span><a href="server.FileAclOperation.html" class="tsd-signature-type tsd-kind-type-alias">FileAclOperation</a><span class="tsd-signature-symbol">,</span> <a href="server.FileAclRule.html" class="tsd-signature-type tsd-kind-type-alias">FileAclRule</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">&gt;</span> <span class="tsd-signature-symbol">&amp;</span> <span class="tsd-signature-symbol">{</span><br/>    <span class="tsd-kind-property">upload</span><span class="tsd-signature-symbol">?:</span> <a href="server.FileUploadAclRule.html" class="tsd-signature-type tsd-kind-type-alias">FileUploadAclRule</a><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div>
+<div class="tsd-comment tsd-typography"><p>Optional sharing rules plus an upload admission policy. Owner and public-URL revocation authority stay unchanged.</p>
 </div><aside class="tsd-sources">
 <ul>
 <li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L199">server.d.ts:199</a></li></ul></aside></div>

@@ -309,6 +309,38 @@ export function createPrivilegedScheduleApi(database: LooseRecord, contextGetter
 
 export function createPrivilegedFileApi(database: LooseRecord, contextGetter: () => LooseRecord) {
   return Object.freeze({
+    async list(options: LooseRecord = {}) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) return active;
+      let cutoff: string | null = null;
+      let after: { createdAt: string; id: string } | null = null;
+      try {
+        if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some(key => !["createdBefore", "cursor"].includes(key))) throw new Error();
+        if (options.createdBefore !== undefined) {
+          if (!(typeof options.createdBefore === "string" || options.createdBefore instanceof Date)) throw new Error();
+          cutoff = new Date(options.createdBefore).toISOString();
+        }
+        if (options.cursor !== undefined && options.cursor !== null) {
+          if (typeof options.cursor !== "string" || options.cursor.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(options.cursor)) throw new Error();
+          const decoded = JSON.parse(Buffer.from(options.cursor, "base64url").toString("utf8"));
+          if (decoded.v !== 1 || typeof decoded.id !== "string" || decoded.id.length === 0 || decoded.id.length > 200 || typeof decoded.createdAt !== "string" || new Date(decoded.createdAt).toISOString() !== decoded.createdAt || (decoded.cutoff !== null && (typeof decoded.cutoff !== "string" || new Date(decoded.cutoff).toISOString() !== decoded.cutoff))) throw new Error();
+          if (options.createdBefore !== undefined && cutoff !== decoded.cutoff) throw new Error();
+          cutoff = decoded.cutoff;
+          after = { createdAt: decoded.createdAt, id: decoded.id };
+        }
+      } catch {
+        return { ok: false, error: { message: "Invalid File listing options.", hint: "Use a valid createdBefore date and the cursor from the previous page with the same cutoff.", code: "INVALID_FILE_LIST_OPTIONS" } };
+      }
+      const rows = await database.adapter.selectLiveFilesPage(cutoff, after);
+      const stillActive = activePrivilegedFileAccess(contextGetter);
+      if (!stillActive.ok) return stillActive;
+      const page = rows.slice(0, 100);
+      const last = page.at(-1);
+      return { ok: true, data: {
+        files: page.map((row: LooseRecord) => ({ ...fileMetadataFromRow(row), ownerId: row.ownerId, createdAt: row.createdAt, updatedAt: row.updatedAt })),
+        cursor: rows.length > 100 ? Buffer.from(JSON.stringify({ v: 1, createdAt: last.createdAt, id: last.id, cutoff })).toString("base64url") : null,
+      }, error: null };
+    },
     async url(fileReference: any) {
       const active = activePrivilegedFileAccess(contextGetter);
       if (!active.ok) {
@@ -382,7 +414,7 @@ export function createPrivilegedFileApi(database: LooseRecord, contextGetter: ()
       }
       throw commandError(
         "Unsupported privileged file operation.",
-        "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
+        "Use one of the approved privileged file operations: list, url, createPublicUrl, or delete.",
         "UNSUPPORTED_PRIVILEGED_FILE_OPERATION",
       );
     },
@@ -525,7 +557,7 @@ export function normalizeTableAcl(tableName: any, aclRules: LooseRecord | undefi
 }
 
 export function normalizeFileAcl(aclRules: LooseRecord | undefined) {
-  const supportedOperations = new Set(["read", "publicUrl", "delete"]);
+  const supportedOperations = new Set(["read", "publicUrl", "delete", "upload"]);
   if (aclRules === undefined) {
     return {
       resolve() {
@@ -536,7 +568,7 @@ export function normalizeFileAcl(aclRules: LooseRecord | undefined) {
   if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
     throw commandError(
       "Invalid Capsule File ACL.",
-      "Declare files as { acl: { read?, publicUrl?, delete? } }.",
+      "Declare files as { acl: { read?, publicUrl?, delete?, upload? } }.",
       "INVALID_FILE_ACL",
     );
   }
@@ -545,7 +577,7 @@ export function normalizeFileAcl(aclRules: LooseRecord | undefined) {
     if (!supportedOperations.has(operation)) {
       throw commandError(
         `Unsupported Capsule File ACL operation: ${operation}.`,
-        "Supported File ACL operations are read, publicUrl, and delete.",
+        "Supported File ACL operations are read, publicUrl, delete, and upload.",
         "INVALID_FILE_ACL",
       );
     }
@@ -623,6 +655,22 @@ export function createFileAclContext(auth: LooseRecord, database: LooseRecord, c
     credential: context.credential,
     acl: createAclHelpers(database, context),
   });
+}
+
+/** Upload policy is opt-in and gets no mutable runtime capabilities. */
+export async function allowFileUpload(database: LooseRecord, auth: LooseRecord, meta: LooseRecord) {
+  const rule = database.fileAcl?.resolve?.("upload");
+  if (!rule) return true;
+  const context = createFileAclContext(auth, database);
+  try {
+    const result = invokeAclRule(context, () => rule(context, Object.freeze(meta)));
+    const allowed = isPromiseLike(result) ? await result : result;
+    return allowed === true && !aclRuleTouchedAsyncHelperRead(context, !isPromiseLike(result));
+  } catch {
+    return false;
+  } finally {
+    await settleAclHelperReads(context);
+  }
 }
 
 export function applyFileAcl(database: LooseRecord, operation: string, row: LooseRecord, auth: LooseRecord, credential: LooseRecord = { kind: "session" }) {

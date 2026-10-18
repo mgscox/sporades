@@ -326,6 +326,7 @@ const MIGRATED_RUNTIME_MODULES = [
   // defined in terms of it, so no honest edit removes it.
   { file: "maybe-promise.js", atLeast: 2, sentinel: "isPromiseLike" },
   { file: "file-storage-runtime.js", atLeast: 40, sentinel: "resolveLiveFileReference" },
+  { file: "file-policy.js", atLeast: 4, sentinel: "detectedMimeType" },
   // Trusted multipart ingress ships as a complete runtime module. Its private
   // descriptor comparator is the idempotency boundary used to distinguish a
   // replay from a conflicting claim, so it must remain visible to the deployed
