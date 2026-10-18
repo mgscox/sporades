@@ -15,6 +15,111 @@ async function importClientRuntime(options = {}) {
   return import(`data:text/javascript;base64,${encoded}#${Date.now()}-${Math.random()}`);
 }
 
+test("usePayments starts dormant and subscribes without an application query", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    const states = [];
+    let cleanup;
+    const hooks = runtime.createHooks({
+      useState(initial) { return [initial, state => states.push(state)]; },
+      useEffect(effect) { cleanup = effect(); },
+    });
+    assert.deepEqual(hooks.usePayments(), { stripe: { enabled: false, livemode: null } });
+    await settleMicrotasks();
+    assert.deepEqual(states.at(-1), { stripe: { enabled: false, livemode: null } });
+    assert.equal(browser.sent.some(message => message.type === "query.subscribe"), false);
+    cleanup();
+  } finally { browser.cleanup(); }
+});
+
+test("usePayments and the framework-neutral observer expose test/live state, reset on close, and clean up", async () => {
+  const timers = createDeterministicTimers();
+  const browser = installBrowserFakes(anonymousAuth, {
+    setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout, random: () => 0.5,
+  });
+  try {
+    const runtime = await importClientRuntime();
+    const states = [];
+    let cleanup;
+    runtime.createHooks({
+      useState(initial) { return [initial, state => states.push(state)]; },
+      useEffect(effect) { cleanup = effect(); },
+    }).usePayments();
+    const observed = [];
+    const subscription = runtime.payments.subscribe(state => observed.push(state));
+    await settleMicrotasks();
+    const emit = (socket, payments, type = "auth.result") => socket.emit("message", { data: JSON.stringify({
+      type, data: { auth: anonymousAuth, payments }, error: null,
+    }) });
+    const oldSocket = browser.sockets[0];
+    for (const livemode of [false, true]) {
+      emit(oldSocket, { stripe: { enabled: true, livemode, secretKey: "sk_private", customerId: "cus_private" }, secret: "private" });
+      assert.deepEqual(states.at(-1), { stripe: { enabled: true, livemode } });
+      assert.deepEqual(observed.at(-1), states.at(-1));
+      assert.equal(Object.isFrozen(states.at(-1).stripe), true);
+    }
+    // Auth replacement changes identity, not Capsule-wide payment configuration.
+    oldSocket.emit("message", { data: JSON.stringify({ type: "auth.session.replace", data: { auth: anonymousAuth } }) });
+    assert.equal(states.at(-1).stripe.livemode, true);
+    oldSocket.readyState = 3;
+    oldSocket.emit("close", {});
+    assert.deepEqual(states.at(-1), { stripe: { enabled: false, livemode: null } });
+    await settleMicrotasks();
+    timers.runNext();
+    await settleMicrotasks();
+    const newSocket = browser.sockets.at(-1);
+    assert.notEqual(newSocket, oldSocket);
+    emit(oldSocket, { stripe: { enabled: true, livemode: true } });
+    assert.equal(states.at(-1).stripe.enabled, false, "retired socket cannot enable billing");
+    emit(newSocket, { stripe: { enabled: true, livemode: false } });
+    assert.deepEqual(states.at(-1), { stripe: { enabled: true, livemode: false } });
+    cleanup(); subscription.unsubscribe(); subscription.unsubscribe();
+    const count = states.length;
+    const observedCount = observed.length;
+    emit(newSocket, { stripe: { enabled: true, livemode: true } });
+    assert.equal(states.length, count);
+    assert.equal(observed.length, observedCount);
+    assert.doesNotMatch(JSON.stringify(states), /sk_private|cus_private|secret/);
+    assert.equal(browser.sent.some(message => message.type === "query.subscribe"), false);
+  } finally { browser.cleanup(); }
+});
+
+test("payments.get and subscriptions fail closed for missing, malformed, or rejected activation metadata", async () => {
+  let metadata;
+  let error = null;
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "auth.get": () => ({ type: error ? "error" : "auth.result", data: error ? null : { auth: anonymousAuth, payments: metadata }, error }),
+  } });
+  try {
+    const runtime = await importClientRuntime();
+    for (metadata of [undefined, null, {}, { stripe: { enabled: true } }, { stripe: { enabled: "true", livemode: true } }, { stripe: { enabled: false, livemode: true } }]) {
+      assert.deepEqual(await runtime.payments.get(), { data: { stripe: { enabled: false, livemode: null } }, error: null });
+    }
+    metadata = { stripe: { enabled: true, livemode: false } };
+    assert.deepEqual((await runtime.payments.get()).data, metadata);
+    const states = [];
+    const subscription = runtime.payments.subscribe(state => states.push(state));
+    assert.deepEqual(states.at(-1), metadata, "late subscribers receive the confirmed snapshot");
+    error = { code: "UNAUTHENTICATED", message: "Session rejected" };
+    assert.deepEqual(await runtime.payments.get(), { data: null, error });
+    assert.deepEqual(states.at(-1), { stripe: { enabled: false, livemode: null } });
+    subscription.unsubscribe();
+    assert.throws(() => runtime.payments.subscribe(null), /listener/);
+  } finally { browser.cleanup(); }
+});
+
+test("the shipped client and generated browser runtime both expose payments and usePayments", async () => {
+  const shipped = await import("sporades/client");
+  const generated = await importClientRuntime();
+  for (const runtime of [shipped, generated]) {
+    assert.equal(typeof runtime.payments.get, "function");
+    assert.equal(typeof runtime.payments.subscribe, "function");
+    const hooks = runtime.createHooks({ useState: state => [state, () => {}], useEffect() {} });
+    assert.deepEqual(hooks.usePayments(), { stripe: { enabled: false, livemode: null } });
+  }
+});
+
 test("browser client runtime exposes no Privileged server role authority", async () => {
   const runtime = await importClientRuntime();
 
