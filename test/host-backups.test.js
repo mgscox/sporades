@@ -101,6 +101,7 @@ test('encrypted restic round trip, Capsule isolation, retention and corruption r
   // VACUUM INTO must include committed WAL data while the connection remains open.
   await writeFile(path.join(source.data, 'files', 'upload.bin'), Buffer.from([0, 255, 42, 7]));
   await writeFile(path.join(destination.data, 'target-key'), 'target-owned-secret', { mode: 0o600 });
+  await writeFile(path.join(destination.data, 'data.db-journal'), 'old SQLite rollback journal');
   let captured = false;
   const first = await createHostBackup(p, source, async () => { captured = true; });
   assert.equal(captured, true);
@@ -121,6 +122,7 @@ test('encrypted restic round trip, Capsule isolation, retention and corruption r
   assert.deepEqual(await readFile(path.join(destination.data, 'files', 'upload.bin')), Buffer.from([0, 255, 42, 7]));
   assert.equal((await lstat(path.join(destination.data, 'files', 'empty'))).isDirectory(), true);
   assert.equal(await readFile(path.join(destination.data, 'target-key'), 'utf8'), 'target-owned-secret');
+  await assert.rejects(readFile(path.join(destination.data, 'data.db-journal')), { code: 'ENOENT' });
   await assert.rejects(restoreHostBackup(p, destination, 'other', first.id), /does not belong/);
   // A valid encrypted snapshot carrying an altered file must still fail its manifest checks.
   const tampered = path.join(dir, 'tampered');

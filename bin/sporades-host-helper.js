@@ -45563,7 +45563,7 @@ async function restoreHostBackup(policy, target, sourceSubname, id2) {
     await inventoryFiles(target.data);
     await rm7(staged, { recursive: true, force: true });
     await cp(target.data, staged, { recursive: true, preserveTimestamps: true });
-    for (const name2 of ["data.db", "data.db-wal", "data.db-shm", "files"]) await rm7(path10.join(staged, name2), { recursive: true, force: true });
+    for (const name2 of ["data.db", "data.db-wal", "data.db-shm", "data.db-journal", "files"]) await rm7(path10.join(staged, name2), { recursive: true, force: true });
     await cp(path10.join(restored, "data.db"), path10.join(staged, "data.db"));
     await cp(path10.join(restored, "files"), path10.join(staged, "files"), { recursive: true });
     const owner = await lstat8(target.data);

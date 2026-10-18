@@ -151,7 +151,8 @@ must already be registered with an intended deployed release; releases are not
 selected or migrated by the backup command. The manifest schema hash describes
 the restored database; the operator must choose compatible release code.
 
-Only `data.db` and `files/` are replaced. Target-owned Sealed Server env keys and
+Only `data.db` and `files/` are replaced; old SQLite WAL, SHM and rollback journals
+are discarded. Target-owned Sealed Server env keys and
 other runtime state are retained; source Host credentials and release files are
 not imported. A protected journal and same-filesystem directory renames make
 interruption recovery idempotent: an uncommitted swap rolls back, a committed

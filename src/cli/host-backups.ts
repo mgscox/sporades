@@ -247,7 +247,7 @@ export async function restoreHostBackup(policy: HostBackupPolicy, target: Backup
     await inventoryFiles(target.data);
     await rm(staged, { recursive: true, force: true });
     await cp(target.data, staged, { recursive: true, preserveTimestamps: true });
-    for (const name of ["data.db", "data.db-wal", "data.db-shm", "files"]) await rm(path.join(staged, name), { recursive: true, force: true });
+    for (const name of ["data.db", "data.db-wal", "data.db-shm", "data.db-journal", "files"]) await rm(path.join(staged, name), { recursive: true, force: true });
     await cp(path.join(restored, "data.db"), path.join(staged, "data.db"));
     await cp(path.join(restored, "files"), path.join(staged, "files"), { recursive: true });
     // Restored Capsule files must remain writable by the non-root runtime user.
