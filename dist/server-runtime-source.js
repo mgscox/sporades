@@ -4646,6 +4646,28 @@ export async function withTrustedRead(database, options, callback) {
         revokePrivilegedDbAccess(context);
     }
 }
+function runTableRead(contextGetter, read) {
+    const activeContext = () => {
+        const context = contextGetter?.();
+        if (contextGetter && !context) {
+            throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+        }
+        return context;
+    };
+    activeContext();
+    const result = thenIfPromise(read(activeContext), (value) => {
+        // An async ACL can settle after its handler too. Never return rows under
+        // expired authority, including tables with no explicit read ACL.
+        activeContext();
+        return value;
+    });
+    // SQLite reads can become asynchronous behind another transaction. Observe
+    // rejection immediately even if Capsule code discards the result; callers
+    // that await it still receive the original rejection.
+    if (isPromiseLike(result))
+        void result.then(undefined, () => undefined);
+    return result;
+}
 function createEndpointTableApi(database, table, query = {}, contextGetter = null) {
     return {
         insert(values) {
@@ -4779,41 +4801,47 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             return createEndpointTableApi(database, table, { ...query, limit: count }, contextGetter);
         },
         get() {
-            const selected = database.adapter.selectAppRows(table, {
-                where: query.where
-                    ? {
-                        fieldName: query.where.fieldName,
-                        value: serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value),
+            return runTableRead(contextGetter, (activeContext) => {
+                const selected = database.adapter.selectAppRows(table, {
+                    where: query.where
+                        ? {
+                            fieldName: query.where.fieldName,
+                            value: serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value),
+                        }
+                        : null,
+                    orderBy: query.orderBy,
+                    limit: 1,
+                });
+                return thenIfPromise(selected, (rows) => {
+                    const context = activeContext();
+                    const row = rows[0] ?? null;
+                    if (!row) {
+                        return null;
                     }
-                    : null,
-                orderBy: query.orderBy,
-                limit: 1,
-            });
-            return thenIfPromise(selected, (rows) => {
-                const row = rows[0] ?? null;
-                if (!row) {
-                    return null;
-                }
-                const deserialized = deserializeRow(table, row);
-                const allowed = applyReadAcl(database, table, deserialized, contextGetter?.());
-                return thenIfPromise(allowed, (result) => (result ? deserialized : null));
+                    const deserialized = deserializeRow(table, row);
+                    const allowed = applyReadAcl(database, table, deserialized, context);
+                    return thenIfPromise(allowed, (result) => (result ? deserialized : null));
+                });
             });
         },
         all() {
-            const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-            const selected = database.adapter.selectAppRows(table, {
-                where: query.where
-                    ? {
-                        fieldName: query.where.fieldName,
-                        value: serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value),
-                    }
-                    : null,
-                orderBy: query.orderBy,
-                limit,
-            });
-            return thenIfPromise(selected, (selectedRows) => {
-                const rows = selectedRows.map((row) => deserializeRow(table, row));
-                return filterRowsByReadAcl(database, table, rows, contextGetter?.());
+            return runTableRead(contextGetter, (activeContext) => {
+                const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
+                const selected = database.adapter.selectAppRows(table, {
+                    where: query.where
+                        ? {
+                            fieldName: query.where.fieldName,
+                            value: serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value),
+                        }
+                        : null,
+                    orderBy: query.orderBy,
+                    limit,
+                });
+                return thenIfPromise(selected, (selectedRows) => {
+                    const context = activeContext();
+                    const rows = selectedRows.map((row) => deserializeRow(table, row));
+                    return filterRowsByReadAcl(database, table, rows, context);
+                });
             });
         },
     };

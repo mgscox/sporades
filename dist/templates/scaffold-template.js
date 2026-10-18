@@ -1689,22 +1689,22 @@ export default capsule({
   },
 
   queries: {
-    publicPhotos: query((ctx) =>
-      ctx.db.photos
+    publicPhotos: query(async (ctx) =>
+      (await ctx.db.photos
         .where("isPublic", true)
         .orderBy("createdAt", "desc")
-        .all()
+        .all())
         .filter((photo) => photo.imageUrl),
     ),
-    personalPhotos: query((ctx) => {
+    personalPhotos: query(async (ctx) => {
       if (ctx.auth.isGuest) {
         return [];
       }
 
-      return ctx.db.photos
+      return (await ctx.db.photos
         .where("ownerId", ctx.auth.userId)
         .orderBy("createdAt", "desc")
-        .all()
+        .all())
         .map((photo) => ({
           ...photo,
           status: photo.isPublic ? "public" : "private",
@@ -1713,13 +1713,13 @@ export default capsule({
   },
 
   jobs: {
-    timestampPhotoNames: job((ctx) => {
+    timestampPhotoNames: job(async (ctx) => {
       const time = new globalThis.Date().toISOString().slice(11, 16);
       let updated = 0;
-      for (const photo of ctx.db.photos.all()) {
+      for (const photo of await ctx.db.photos.all()) {
         const title = globalThis.String(photo.title).replace(/^\\d{2}:\\d{2}\\s+/, "");
         const fileName = globalThis.String(photo.fileName).replace(/^\\d{2}:\\d{2}\\s+/, "");
-        ctx.db.photos.update(photo.id, {
+        await ctx.db.photos.update(photo.id, {
           title: \`\${time} \${title}\`,
           fileName: \`\${time} \${fileName}\`,
         });

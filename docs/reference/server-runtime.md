@@ -270,6 +270,23 @@ ctx.db.projects.get()
 ctx.db.projects.all()
 ```
 
+Await terminal table operations (`get`, `all`, `insert`, `insertOrIgnore`,
+`update`, and `delete`) before using their results. They can return a Promise
+on any adapter, including SQLite while another transaction owns the connection.
+Returning an operation directly from a handler also lets the runtime await it.
+The shipped `TableApi` types describe these results as `MaybePromise<T>`.
+
+```ts
+const projects = await ctx.db.projects.all();
+return projects.map(project => project.name);
+```
+
+Keep reads inside their handler's lifetime. A read whose context expires while
+waiting for storage or an asynchronous ACL rejects with opaque `DENIED` instead
+of exposing rows. The runtime observes discarded read rejections so they cannot
+trigger a fatal restart; discarding a Promise still cannot produce a usable
+synchronous result. Awaiting a live read preserves its ACL result or rejection.
+
 Prefer filtering by `ctx.auth.userId` for per-user data. That keeps privacy in
 the server code where it belongs.
 
@@ -279,11 +296,11 @@ Custom query when a client-selected filter belongs in server code:
 
 ```ts
 queries: {
-  projectsForTeam: query((ctx, teamId: string, options: { archived: boolean }) =>
-    ctx.db.projects
+  projectsForTeam: query(async (ctx, teamId: string, options: { archived: boolean }) =>
+    (await ctx.db.projects
       .where("teamId", teamId)
       .where("ownerId", ctx.auth.userId)
-      .all()
+      .all())
       .filter((project) => options.archived || !project.archived),
   ),
 }
@@ -394,12 +411,12 @@ export default capsule({
       linked: true,
       credentials: ["session"],
       scopes: ["projects:delete"],
-    }, (ctx) => {
+    }, async (ctx) => {
       // Reject guest sessions too: require a linked (non-guest) user.
       const auth = requireUserAuth(ctx, { linked: true });
-      ctx.db.projects.where("ownerId", auth.userId).all().forEach((project) => {
-        ctx.db.projects.delete(project.id);
-      });
+      for (const project of await ctx.db.projects.where("ownerId", auth.userId).all()) {
+        await ctx.db.projects.delete(project.id);
+      }
     })),
   },
   endpoints: {

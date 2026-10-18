@@ -305,21 +305,21 @@ export type OrderDirection = "asc" | "desc" | "ASC" | "DESC";
 /**
  * Runtime table API exposed as `ctx.db.<tableName>` inside server handlers.
  *
- * Query builders are immutable from an app-author point of view: chain
- * `where`, `orderBy`, and `limit`, then finish with `get()` or `all()`.
- * Inserts and updates return rows including Sporades-managed auto fields.
+ * Chain immutable `where`, `orderBy`, and `limit` builders, then `get` or `all`.
+ * Await terminal operations: even SQLite can defer work behind a transaction.
+ * Inserts/updates include auto fields; reads that outlive their handler fail closed.
  */
 export type TableApi<Row extends Record<string, unknown> = Record<string, unknown>> = {
-  insert(values: InsertValues<Row>): Row;
+  insert(values: InsertValues<Row>): MaybePromise<Row>;
   /** Atomically insert, returning null only for the exactly named declared unique constraint. */
   insertOrIgnore(values: InsertValues<Row>, ...conflictFields: [keyof InsertValues<Row> & string, ...(keyof InsertValues<Row> & string)[]]): MaybePromise<Row | null>;
-  update(id: string, values: UpdateValues<Row>): Row | null;
-  delete(id: string): boolean;
+  update(id: string, values: UpdateValues<Row>): MaybePromise<Row | null>;
+  delete(id: string): MaybePromise<boolean>;
   where<FieldName extends keyof Row & string>(fieldName: FieldName, value: Row[FieldName]): TableApi<Row>;
   orderBy(fieldName: keyof Row & string, direction?: OrderDirection): TableApi<Row>;
   limit(count: number): TableApi<Row>;
-  get(): Row | null;
-  all(): Row[];
+  get(): MaybePromise<Row | null>;
+  all(): MaybePromise<Row[]>;
 };
 /** With operator telemetry enabled, internal statement/transaction spans explain HTTP request database time. No SQL, parameters or rows are exported; authoring and transaction semantics are unchanged. */
 export type DatabaseFromSchema<Schema extends SchemaDefinition> = {
