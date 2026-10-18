@@ -590,6 +590,13 @@ _Avoid_: security middleware, helmet config
 A legacy/import-friendly `.env.sporades.server` file at the project root containing server-only environment variables. Sporades still reads it when no Sealed Server env exists and `sporades env import` can migrate it into encrypted Runtime state. Max 64 keys, 64KB total. No `SPORADES_` prefix (reserved).
 _Avoid_: environment file, dot-env (implementation detail)
 
+**Required Server env**:
+The optional `env` declaration in `sporades.json` opts doctor and Host push into
+presence checks for declared keys plus configured SMTP auth, mail webhook and
+enabled Stripe env references. Missing/blank values produce one names-only boot
+error; `env.failClosed: true` refuses startup. Omitting `env` preserves existing
+doctor/push behavior in 0.9.x. Shell env never satisfies Capsule requirements.
+
 **Sealed Server env**:
 Encrypted server-only configuration values managed by Sporades, decryptable by configured local or Host keys, delivered to Dev sessions, Container sessions, and Hosted Capsules at runtime, and exposed to Capsule code through `ctx.env`. It is the hardened successor to plaintext Server env files.
 _Avoid_: secrets API, vault, encrypted dot-env

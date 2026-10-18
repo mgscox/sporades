@@ -266,6 +266,7 @@ Options:
   --tls <mode>        TLS mode: automatic or cloudflare-origin
   --subname <name>    Hosted Capsule subname
   --lines <n>, -n <n> Log line count
+  --allow-missing-env  Push despite missing required Server env keys
   --restart           Restart after host push
   --verify            Verify release health after host push
   --fallback-to-previous-release

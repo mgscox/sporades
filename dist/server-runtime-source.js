@@ -1,3 +1,6 @@
+import { dirname as pathDirname } from "node:path";
+import { missingServerEnvKeys, missingServerEnvError, validateServerEnvConfig } from "./server-env-requirements.js";
+import { validatePaymentsConfig } from "./stripe-payment-config.js";
 import { resolveFileAllowedMimeTypes } from "./file-policy.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { createCapsuleRateLimiter, resolveRegistrationThrottle } from "./capsule-rate-limit.js";
@@ -578,6 +581,18 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         validateEndpointResponseDeclarations(capsuleDefinition);
     }
     validateLogConfig(config);
+    validateServerEnvConfig(config.env);
+    const mailConfig = validateMailConfig(config.mail);
+    const declaredPayments = validatePaymentsConfig(config.payments);
+    const missingEnv = options?.runtimeActionOnly ? [] : missingServerEnvKeys({ ...config, mail: mailConfig, payments: declaredPayments }, serverEnv);
+    const missingEnvEvent = missingEnv.length ? createRuntimeLogSink({
+        database: null, config, serverEnv, dataDir: pathDirname(databasePath),
+    }).emit({
+        category: "platform", event: "env.required.missing", level: "error",
+        message: `Missing required Server env keys: ${missingEnv.join(", ")}`, data: null,
+    }) : null;
+    if (missingEnv.length && config.env?.failClosed === true)
+        throw missingServerEnvError(missingEnv);
     const registrationThrottle = resolveRegistrationThrottle(config.auth);
     const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
     const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
@@ -597,7 +612,6 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     }
     const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
     const path = await import("node:path");
-    const mailConfig = validateMailConfig(config.mail);
     let mailLogSink;
     const mail = createMailRuntime(mailConfig, serverEnv, {
         ...options,
@@ -1300,6 +1314,13 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     // own deadline so a delivered row can sleep until its 24-hour expiry.
     await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
     await sqlite.ensureLogStorage();
+    if (missingEnvEvent) {
+        try {
+            await sqlite.insertLogIndexEvent(missingEnvEvent);
+            await sqlite.pruneLogIndex(logIndexLimit(config));
+        }
+        catch { /* JSONL remains authoritative. */ }
+    }
     options?.onJobQueueReady?.(database);
     if (!options?.runtimeActionOnly) {
         await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));

@@ -54,6 +54,7 @@
       "src/cli/monitoring-stack.ts",
       "src/cli/project-config.ts",
       "src/cli/schedule-inspection-envelope.ts",
+      "src/cli/server-env-check.ts",
       "src/cli/sporades-host-helper.ts",
       "src/cli/sporades.ts",
       "src/cli/telemetry-diagnostics.ts",
@@ -100,6 +101,7 @@
       "src/runtime-restart-policy.ts",
       "src/runtime-telemetry.ts",
       "src/sealed-server-env.ts",
+      "src/server-env-requirements.ts",
       "src/server-runtime-source.ts",
       "src/server.ts",
       "src/service-users-runtime.ts",
@@ -135,7 +137,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "828212da052e509649dc863ee9eedfddc27dfefb392015fab7d9cfca608e703e"
+    "digest": "c5ae64fc5eb292cf8dc5991517ca99158dc3fd0a24b25c6feaa7a73d34c1ec86"
   },
   "outputs": {
     "files": [
@@ -321,6 +323,10 @@
       "dist/cli/schedule-inspection-envelope.d.ts.map",
       "dist/cli/schedule-inspection-envelope.js",
       "dist/cli/schedule-inspection-envelope.js.map",
+      "dist/cli/server-env-check.d.ts",
+      "dist/cli/server-env-check.d.ts.map",
+      "dist/cli/server-env-check.js",
+      "dist/cli/server-env-check.js.map",
       "dist/cli/sporades-host-helper.d.ts",
       "dist/cli/sporades-host-helper.d.ts.map",
       "dist/cli/sporades-host-helper.js",
@@ -505,6 +511,10 @@
       "dist/sealed-server-env.d.ts.map",
       "dist/sealed-server-env.js",
       "dist/sealed-server-env.js.map",
+      "dist/server-env-requirements.d.ts",
+      "dist/server-env-requirements.d.ts.map",
+      "dist/server-env-requirements.js",
+      "dist/server-env-requirements.js.map",
       "dist/server-runtime-source.d.ts",
       "dist/server-runtime-source.d.ts.map",
       "dist/server-runtime-source.js",
@@ -603,6 +613,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "59b5d780c6c1e6692a4b19c27f6adff87e025c8e844351a9da450ddf02f18238"
+    "digest": "5b6145f0979135aa2cf3bf88ce716c6b433cc1dbad8827b97faf854f32484aeb"
   }
 }

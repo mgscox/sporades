@@ -630,6 +630,10 @@ variables, reducing exposure risk when copying data to and from a Host server.
 It does not require any local keychain or secure storage, and is almost
 transparent to development operations once enabled.
 
+Declare required key names with [`env.required` in sporades.json](./projects-and-configuration.md#required-server-env).
+This opts doctor and Host push into presence checks. Boot logs one names-only
+error for missing keys; `env.failClosed: true` refuses startup.
+
 #### Create and Import Values
 
 Use Sealed Server env for server-only values:
