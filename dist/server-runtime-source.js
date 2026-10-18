@@ -6253,6 +6253,12 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 sessionToken: client.session.token,
                 auth: client.session.auth,
                 providers: authProvidersForClient(database.authConfig, client.origin),
+                payments: {
+                    stripe: {
+                        enabled: database.paymentsConfig?.stripe.enabled === true,
+                        livemode: database.paymentsConfig?.stripe.enabled === true ? database.paymentsConfig.stripe.livemode : null,
+                    },
+                },
             },
             error: null,
         });
