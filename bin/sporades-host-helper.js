@@ -46770,7 +46770,10 @@ async function main(request2) {
     }
     if (["capsule.register", "capsule.unregister", "capsule.delete"].includes(request2.action)) {
       try {
-        if (await readHostBackupPolicy(request2.host)) await publishHostBackupMetric(request2.host, request2.capsule.subname, request2.action !== "capsule.register");
+        if (await readHostBackupPolicy(request2.host)) {
+          const record = await readOptionalRegistryRecordForCapsule(request2);
+          await publishHostBackupMetric(request2.host, request2.capsule.subname, !record || record.status === "unregistered");
+        }
       } catch {
         process.stderr.write("Backup freshness metrics need reconciliation; reapply the backup policy.\n");
       }
