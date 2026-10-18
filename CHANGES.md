@@ -24,6 +24,8 @@ Changes since v0.9.31.
 
 ### 🐛 Bug Fixes
 
+- Prevent authenticated reloads from triggering fatal restarts through discarded, delayed table reads. Preserve Session-resolution scheduling across tracing, deny expired read authority, and describe deferred table results in the SDK types (#255).
+
 - Add opt-in atomic `teams.authorizeDestructive` for direct SDK and server demote, removeMember, leave and Team deletion. Transaction-bound cross-owner responsibility reads fail closed; `ctx.teams.lockLifecycle` shares exact-Team serialization with accepted transfers and atomic billing consequences. Omission preserves 0.9.x behavior; no storage migration. Requires publication of a new 0.9.x package before downstream adoption (#249).
 
 - Bump for vulns (f68221783).

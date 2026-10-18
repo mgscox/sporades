@@ -2596,7 +2596,10 @@ export async function refreshSessionOnAdapter(sqlite: LooseRecord, token: any) {
   return expiresAt;
 }
 
-export async function resolveAnonymousSession(database: LooseRecord, sessionToken: string | null) {
+export function resolveAnonymousSession(database: LooseRecord, sessionToken: string | null) {
+  // The tracing boundary already returns the operation's Promise. An async
+  // forwarding wrapper adds settlement turns even when tracing is disabled,
+  // changing how Session resolution interleaves with connection transactions.
   return traceRuntimeOperation("sporades.auth.session.resolve", () => resolveAnonymousSessionOperation(database, sessionToken));
 }
 
