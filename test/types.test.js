@@ -75,6 +75,13 @@ const pageviews: publicServerApi.AnalyticsConfig = { provider: "umami", endpoint
 // @ts-expect-error capability URL redaction cannot be disabled.
 const unsafePageviews: publicServerApi.AnalyticsConfig = { provider: "plausible", endpointEnv: "URL", websiteIdEnv: "ID", redactQuery: false };
 void errorCollection; void pageviews; void unsafePageviews;
+const privateSchema = {
+  secrets: table({ value: String() }).acl(publicServerApi.acl.privilegedOnly()),
+  internal: table({ value: String() }).acl(publicServerApi.acl.denyAll()).unique("value"),
+};
+capsule({ name: "private-data", schema: privateSchema, queries: {
+  secrets: query((ctx) => ctx.db.secrets.all()),
+} });
 const safeHtml: publicServerApi.Html = publicServerApi.html\`<p title="\${'"<&'}">\${[publicServerApi.html\`<b>nested</b>\`, null, undefined, publicServerApi.html.raw('<br>')]}</p>\`;
 const safeMail: publicServerApi.MailSendInput = { to: 'recipient@example.com', subject: 'Welcome', htmlBody: safeHtml };
 const resetCopy: publicServerApi.PasswordResetMailOptions = { textBody: 'Reset: {{link}} before {{expiresAt}}', htmlBody: safeHtml };
