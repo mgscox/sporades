@@ -659,6 +659,13 @@ same immutable public tree; there is no request-time renderer. See the
 
 ## Data and Migrations
 
+Server-owned app tables may opt into `.acl(acl.privilegedOnly())`, with
+`acl.denyAll()` as an alias, imported from `sporades/server`. Ordinary reads
+are filtered and writes denied; explicit audited Privileged server execution
+retains access. Existing tables remain allow-by-default in 0.9.x. Doctor names
+tables with missing rules and every table with no rules, suggesting the helper
+without evaluating policy functions.
+
 Sporades uses SQLite through Node `>=22.13 <23` or `>=24` built-in `node:sqlite`. Dev sessions store the
 database at `.sporades/data.db`. Local Container sessions and Hosted Capsules
 mount persistent data at `/app/data`, where the runtime stores SQLite data and

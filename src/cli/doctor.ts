@@ -317,6 +317,10 @@ async function loadBundledCapsuleDefinition(serverModuleSource: string) {
 
 function capsuleAclDeclarationCheck(definition: LooseRecord, normalizedSchema: LooseRecord) {
   const schema = definition?.schema ?? {};
+  const allowAllTables = Object.entries(schema)
+    .filter(([, table]) => isAppTableDeclaration(table) &&
+      (table.aclRules === undefined || Object.keys(table.aclRules ?? {}).length === 0))
+    .map(([name]) => name);
   const tables = Object.entries(schema)
     .filter(([, table]) => isAppTableDeclaration(table))
     .map(([name, table]) => tableAclPosture(name, table as LooseRecord))
@@ -344,12 +348,15 @@ function capsuleAclDeclarationCheck(definition: LooseRecord, normalizedSchema: L
     status: "warn",
     severity: "warning",
     message:
-      "Some Capsule app tables are missing ACL declarations; missing ACLs are allow-by-default and not deny-by-default today.",
+      `Capsule app tables with missing ACL rules: ${tables.map(table => `${table.name} (${table.missing.join(", ")})`).join("; ")}. ` +
+      (allowAllTables.length ? `Allow-all tables: ${allowAllTables.join(", ")}. ` : "") +
+      "Missing ACLs are allow-by-default and not deny-by-default today.",
     hint:
-      "Add .acl({ read, write }) to app table declarations that should restrict reads or writes. Doctor only inspects declarations and does not evaluate ACL policy outcomes against live user data.",
+      "Add .acl({ read, write }) to restrict user access, or import acl from sporades/server and use .acl(acl.privilegedOnly()) (alias: acl.denyAll()) for server-owned tables accessed through ctx.privileged.run. Doctor only inspects declarations and does not evaluate ACL policy outcomes against live user data.",
     details: {
       inspectedResource: "app-tables",
       tables,
+      allowAllTables,
     },
   };
 }

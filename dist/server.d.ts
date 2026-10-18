@@ -329,6 +329,15 @@ export declare function job<const HandlerType extends Handler>(handler: HandlerT
 export declare function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & {
     kind: "schedule";
 };
+/** Table ACL presets. Privileged access still requires an explicit server-owned context. */
+export declare const acl: Readonly<{
+    privilegedOnly: typeof privilegedOnlyTableAcl;
+    denyAll: typeof privilegedOnlyTableAcl;
+}>;
+declare function privilegedOnlyTableAcl(): Readonly<{
+    read: () => false;
+    write: () => false;
+}>;
 export declare function table<const Fields extends UnknownRecord>(fields: Fields): CapsuleTableDefinition<Fields>;
 export declare function String(): FieldBuilder<string>;
 export declare function Boolean(): FieldBuilder<boolean>;
