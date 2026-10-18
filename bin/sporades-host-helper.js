@@ -45610,7 +45610,7 @@ function repositoryIdentity(policy) {
 }
 function backupTimerUnits(host, policy) {
   const name2 = `sporades-backups-${createHash8("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}`;
-  const helper = JSON.stringify(path10.join(host.remoteRoot, "bin", "sporades-host-helper")).replace(/%/g, "%%").replace(/\$/g, "$$");
+  const helper = JSON.stringify(path10.join(host.remoteRoot, "bin", "sporades-host-helper")).replace(/%/g, "%%").replace(/\$/g, () => "$$");
   const encoded = Buffer.from(JSON.stringify({ alias: host.alias, domain: host.domain, scheme: host.scheme, remoteRoot: host.remoteRoot })).toString("base64url");
   return { name: name2, service: `# Sporades Capsule backups
 [Unit]

@@ -42,6 +42,7 @@ test('backup policy is opt-in, bounded and only permits explicit local or HTTPS 
   assert.match(timer.service, /UMask=0077/);
   assert.match(timer.service, /--backup-host/);
   assert.doesNotMatch(timer.service, /secret|password/);
+  assert.match(backupTimerUnits({ ...host('/test'), remoteRoot: '/srv/host$unit%' }, p).service, /host\$\$unit%%/);
 });
 
 test('backup keys reject readable permissions and symlinks', () => fixture(async dir => {

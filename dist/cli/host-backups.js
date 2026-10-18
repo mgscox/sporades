@@ -366,7 +366,7 @@ export async function hostBackupStatus(host, subname) {
 function repositoryIdentity(policy) { return createHash("sha256").update(policy.repository).digest("hex"); }
 export function backupTimerUnits(host, policy) {
     const name = `sporades-backups-${createHash("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}`;
-    const helper = JSON.stringify(path.join(host.remoteRoot, "bin", "sporades-host-helper")).replace(/%/g, "%%").replace(/\$/g, "$$");
+    const helper = JSON.stringify(path.join(host.remoteRoot, "bin", "sporades-host-helper")).replace(/%/g, "%%").replace(/\$/g, () => "$$");
     const encoded = Buffer.from(JSON.stringify({ alias: host.alias, domain: host.domain, scheme: host.scheme, remoteRoot: host.remoteRoot })).toString("base64url");
     return { name, service: `# Sporades Capsule backups\n[Unit]\nDescription=Sporades Capsule backups\nAfter=docker.service\nRequires=docker.service\n[Service]\nType=oneshot\nUMask=0077\nExecStart=${helper} --backup-host ${encoded}\nTimeoutStartSec=infinity\n`, timer: `# Sporades Capsule backups\n[Unit]\nDescription=Sporades Capsule backup schedule\n[Timer]\nOnCalendar=${policy.schedule ?? "daily"}\nPersistent=true\nRandomizedDelaySec=60\n[Install]\nWantedBy=timers.target\n` };
 }
