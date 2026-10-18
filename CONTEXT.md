@@ -171,6 +171,10 @@ _Avoid_: payment template, Stripe demo, billing feature
 The Capsule-owned server declaration that maps stable application Price names to an explicit one-time or subscription mode, a provider Price identity, and a maximum quantity after deliberate activation. The generated catalogue is empty, contains no live identities, and never belongs in browser code.
 _Avoid_: product list, Stripe Prices API, client price map
 
+**Payment activation snapshot**:
+The immutable Capsule-wide browser view of whether Stripe is active and whether it uses live mode. `createHooks().usePayments()` and framework-neutral `payments.get()` / `payments.subscribe()` expose only `{ stripe: { enabled, livemode } }` from the runtime handshake, defaulting to disabled with null mode before confirmation or while disconnected. It contains no provider IDs or credentials and grants no billing authority; Capsules use it to hide dormant Checkout and Customer Portal actions.
+_Avoid_: billing entitlement, browser Stripe configuration
+
 **capsule()**:
 The initialisation function. Called with the app definition. Registers the schema with SQLite, applies supported schema migrations, configures runtime-owned auth, wires the table API, and registers custom endpoints and message handlers. This is where app bootstrap happens - not an identity function.
 _Avoid_: app definition (that's the argument, not the function), config function

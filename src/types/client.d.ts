@@ -149,6 +149,21 @@ export type Subscription = {
   unsubscribe(): void;
 };
 
+/** Public payment activation only. Dormant, unknown, or disconnected state is disabled with a null mode. */
+export type PaymentsState = Readonly<{
+  stripe: Readonly<{ enabled: boolean; livemode: boolean | null }>;
+}>;
+
+/** Runtime-owned activation metadata; never grants billing authority or exposes provider credentials or IDs. */
+export type PaymentsApi = {
+  get(): Promise<SporadesResult<PaymentsState>>;
+  /** Emits immediately, refreshes on reconnect, and becomes dormant when disconnected. */
+  subscribe(listener: (state: PaymentsState) => void): Subscription;
+};
+
+/** Framework-neutral payment activation reader and observer. */
+export const payments: PaymentsApi;
+
 /**
  * App-defined message delivered through the Sporades client transport.
  *
@@ -449,6 +464,8 @@ export type SporadesHooks = {
   useQuery<Data = unknown>(name: string, ...args: JsonValue[]): QueryState<Data>;
   useMutation<Result = unknown>(name: string): MutationState<Result>;
   useAuth(): UseAuthState;
+  /** Safe to render before the runtime responds: checkout remains disabled. */
+  usePayments(): PaymentsState;
 };
 
 /** Vue lifecycle/reactivity primitives consumed by `createVueComposables()`. */
@@ -676,14 +693,14 @@ export function onMessage<Data = unknown>(): AppMessageStream<Data>;
 /** Subscribe directly to all App messages and receive an unsubscribe handle. */
 export function onMessage<Data = unknown>(listener: (message: AppMessage<Data>) => void): Subscription;
 /**
- * Bind Sporades query, mutation, and auth hooks to a client framework.
+ * Bind Sporades query, mutation, auth, and payment activation hooks to a client framework.
  *
  * @example
  * ```tsx
  * import { useEffect, useState } from "react";
  * import { createHooks } from "sporades/client";
  *
- * const { useAuth, useMutation, useQuery } = createHooks({ useState, useEffect });
+ * const { useAuth, useMutation, usePayments, useQuery } = createHooks({ useState, useEffect });
  * ```
  */
 export function createHooks(primitives: HookPrimitives): SporadesHooks;

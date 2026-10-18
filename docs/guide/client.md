@@ -15,6 +15,11 @@ not change the server contract. See
 [Choose a client framework](./projects.md#choose-a-client-framework) for all
 eight supported choices and their scaffolded reactivity model.
 
+Use [`usePayments()`](../reference/client-auth-and-preferences.md#hide-checkout-while-billing-is-dormant)
+from `createHooks` to hide Checkout and Customer Portal actions until Stripe is
+enabled. Other clients can subscribe through `payments.subscribe`; the runtime
+provides the activation state without an application query.
+
 ## Project public files
 
 New scaffolds declare an empty data-URL favicon (`<link rel="icon" href="data:," />`)

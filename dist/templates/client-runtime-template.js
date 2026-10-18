@@ -211,6 +211,20 @@ export const teamBilling = {
   },
 };
 
+const dormantPayments = Object.freeze({ stripe: Object.freeze({ enabled: false, livemode: null }) });
+const testPayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: false }) });
+const livePayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: true }) });
+
+function paymentState(value) {
+  if (value?.stripe?.enabled !== true || typeof value.stripe.livemode !== "boolean") return dormantPayments;
+  return value.stripe.livemode ? livePayments : testPayments;
+}
+
+export const payments = {
+  get() { return connect().payments(); },
+  subscribe(listener) { return connect().subscribePayments(listener); },
+};
+
 export const journey = {
   enable(options = {}) { return connect().journeyEnable(options); },
   set(state) { return connect().journeySet(state); },
@@ -351,7 +365,16 @@ export function createHooks(primitives) {
     };
   }
 
-  return { useQuery, useMutation, useAuth };
+  function usePayments() {
+    const [state, setState] = useState(dormantPayments);
+    useEffect(() => {
+      const subscription = payments.subscribe(setState);
+      return () => subscription.unsubscribe();
+    }, []);
+    return state;
+  }
+
+  return { useQuery, useMutation, useAuth, usePayments };
 }
 
 export function createVueComposables(primitives) {
@@ -770,6 +793,8 @@ function createConnection() {
   const queryChannels = new Map();
   const appMessageListeners = new Set();
   const authStateListeners = new Set();
+  const paymentsStateListeners = new Set();
+  let latestPaymentsState = dormantPayments;
   let latestAuthMessage = null;
   let latestAuthSocket = null;
   let journeyConsentOptions = null;
@@ -799,6 +824,7 @@ function createConnection() {
     if (pageCached) stopJourneyCapture();
     else journeyRetireOwner?.();
     pageRetired = true;
+    publishPayments(dormantPayments);
     connectionEpoch += 1;
     retryInFlight = false;
     if (retryTimer !== null) clearTimeout(retryTimer);
@@ -953,6 +979,7 @@ function createConnection() {
         pending.delete(id);
       }
       if (socket !== openedSocket || pageRetired) return;
+      publishPayments(dormantPayments);
       // A cached return may have waited for this socket to finish closing.
       if (cachedConnectionPending) { open(); return; }
       stopJourneyCapture();
@@ -1035,6 +1062,7 @@ function createConnection() {
       pending.delete(id);
     }
     latestAuthMessage = { id: null, type: "auth.result", data: null, error };
+    publishPayments(dormantPayments);
     notifyAuthStateListeners(latestAuthMessage);
     for (const subscription of subscriptions.values()) {
       subscription.latest = { data: null, error, loading: false };
@@ -1221,6 +1249,9 @@ function createConnection() {
   }
 
   function storeAuthSession(message, confirmedSocket = socket) {
+    if (confirmedSocket === socket && !pageRetired && (message.type === "auth.result" || Object.hasOwn(message.data ?? {}, "payments"))) {
+      publishPayments(message.error ? dormantPayments : paymentState(message.data?.payments));
+    }
     const token = message.data?.sessionToken;
     const nextAuthUserId = message.data?.auth?.userId ?? null;
     if ((latestAuthUserId && nextAuthUserId && latestAuthUserId !== nextAuthUserId) || (journeyEnabledUserId && nextAuthUserId && journeyEnabledUserId !== nextAuthUserId)) {
@@ -1249,6 +1280,12 @@ function createConnection() {
       } : null,
       error: message.error ?? null,
     };
+  }
+
+  function publishPayments(state) {
+    if (state === latestPaymentsState) return;
+    latestPaymentsState = state;
+    for (const listener of paymentsStateListeners) listener(state);
   }
 
   function publicResult(message) {
@@ -1412,6 +1449,19 @@ function createConnection() {
     },
     auth() {
       return request("auth.get").then(publicAuthResult);
+    },
+    payments() {
+      return request("auth.get").then(message => {
+        if (message.error) publishPayments(dormantPayments);
+        return { data: message.error ? null : latestPaymentsState, error: message.error ?? null };
+      });
+    },
+    subscribePayments(listener) {
+      if (typeof listener !== "function") throw new TypeError("payments.subscribe requires a listener function.");
+      const wrapped = state => listener(state);
+      paymentsStateListeners.add(wrapped);
+      listener(latestPaymentsState);
+      return { unsubscribe() { paymentsStateListeners.delete(wrapped); } };
     },
     isAuthenticated() {
       return request("auth.get")
