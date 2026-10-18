@@ -66,9 +66,15 @@ const sporadesCapsuleModule = sporadesAction ? null : await import(sporadesCapsu
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
 const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
+const launchSession = process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession;
+const containerPublicOrigin = launchSession === "container" ? process.env.SPORADES_CONTAINER_PUBLIC_ORIGIN : undefined;
+const launchPublicOrigin = launchSession === "hosted" ? process.env.SPORADES_PUBLIC_ORIGIN
+    : containerPublicOrigin ?? sporadesConfig.deploy?.publicOrigin ?? process.env.SPORADES_PUBLIC_ORIGIN ?? sporadesConfig.__sporadesPublicOrigin;
 const runtimeConfig = {
     ...sporadesConfig,
-    __sporadesSession: process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession,
+    __sporadesSession: launchSession,
+    // Keep a deployed Container's origin stable when Dev rebuilds the shared Bundle.
+    ...(containerPublicOrigin !== undefined ? { deploy: { ...sporadesConfig.deploy, publicOrigin: containerPublicOrigin } } : {}),
     // Local Containers keep their selection in Docker's immutable launch environment. Dev may
     // rebuild the shared server.mjs while a stopped Container is waiting to restart.
     __sporadesTelemetry: process.env.SPORADES_SECURITY_SESSION === "hosted"
@@ -78,7 +84,7 @@ const runtimeConfig = {
             && process.env.SPORADES_CONTAINER_TELEMETRY_CONFIG !== undefined
             ? JSON.parse(process.env.SPORADES_CONTAINER_TELEMETRY_CONFIG)
             : sporadesConfig.__sporadesTelemetry,
-    __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN ?? sporadesConfig.__sporadesPublicOrigin,
+    __sporadesPublicOrigin: launchPublicOrigin,
     __sporadesPublicAliases: JSON.parse(process.env.SPORADES_PUBLIC_ALIASES ?? "[]"),
 };
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);

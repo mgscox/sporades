@@ -59,6 +59,8 @@ export type HostedCapsuleRegistryRecord = JsonObject & {
   domain: string;
   hostedUrl: string;
   remoteCapsuleId: string;
+  canonicalDomain?: string | null;
+  publicOrigin?: string;
   aliasDomains?: string[];
   status?: HostedCapsuleStatus | string;
   currentRelease?: { id: string } | null;
@@ -106,6 +108,7 @@ export type HostedCapsuleMount = JsonObject & {
 };
 
 export type HostedCapsuleLifecycle = JsonObject & {
+  publicOrigin?: string;
   capsule?: HostHelperCapsuleTarget;
   host?: HostHelperHost;
   subname?: string;

@@ -696,7 +696,7 @@ test("Schedule payload factories receive immutable occurrence input and resolve 
         job: "record",
         payloadVersion: "generated-for-v1",
         payload: async (occurrence, ctx) => {
-          factoryCalls.push({ occurrence, keys: Object.keys(ctx).sort(), aborted: ctx.signal.aborted });
+          factoryCalls.push({ occurrence, keys: Object.keys(ctx).sort(), aborted: ctx.signal.aborted, origin: ctx.app.publicOrigin });
           return { generatedFor: occurrence.scheduledFor };
         },
       }),
@@ -709,10 +709,11 @@ test("Schedule payload factories receive immutable occurrence input and resolve 
     assert.deepEqual(seen, [{ generatedFor: "2030-01-01T00:01:00.000Z" }]);
     assert.deepEqual(factoryCalls.map(({ occurrence, keys, aborted }) => ({ occurrence, keys, aborted })), [{
       occurrence: { scheduleName: "dynamic", scheduledFor: "2030-01-01T00:01:00.000Z" },
-      keys: ["privileged", "signal"],
+      keys: ["app", "privileged", "signal"],
       aborted: false,
     }]);
     assert.equal(Object.isFrozen(factoryCalls[0].occurrence), true);
+    assert.equal(factoryCalls[0].origin, "http://localhost:4000");
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
