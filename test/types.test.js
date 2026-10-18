@@ -131,6 +131,13 @@ import { importLegacyTeamBillingEvidence, type LegacyTeamBillingEvidence, type T
 import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
 
 import { auth as emittedAuth } from "${repoRoot}/dist/client.js";
+import { type FileUploadError, type FileUploadErrorCode } from "sporades/client";
+import { type FileUploadErrorCode as EmittedFileUploadErrorCode } from "${repoRoot}/dist/client.js";
+const uploadErrorCode: FileUploadErrorCode = "FILE_MIME_TYPE_MISMATCH";
+const emittedUploadErrorCode: EmittedFileUploadErrorCode = uploadErrorCode;
+const uploadPolicyError = (error: FileUploadError): FileUploadErrorCode => error.code;
+// @ts-expect-error Only the declared upload policy rejection codes belong to this type.
+const invalidUploadPolicyError: FileUploadErrorCode = "ANY_ERROR";
 import { prerender, type PrerenderBoundary } from "sporades/client";
 import { prerender as emittedPrerender } from "${repoRoot}/dist/client.js";
 const boundaries: readonly PrerenderBoundary[] = prerender.discover();
@@ -299,6 +306,15 @@ const app = capsule({
   files: {
     accessKeys: { read: { scopes: ["todos:read"] } },
     acl: {
+      upload: async (ctx, meta) => {
+        meta.name.toUpperCase();
+        meta.mimeType.toUpperCase();
+        // @ts-expect-error Upload ACL has no mutable database or privileged capabilities.
+        ctx.db.todos.all();
+        // @ts-expect-error Upload metadata cannot be mutated by policy code.
+        meta.sizeBytes = 1;
+        return ctx.auth.isAuthenticated && meta.sizeBytes < 1024;
+      },
       read: async ({ file, ctx }) => {
         file.path.toUpperCase();
         const permitted = await ctx.acl.teams.isMember("00000000-0000-4000-8000-000000000000");
@@ -349,6 +365,11 @@ const app = capsule({
   }),
   jobs: {
     summarise: job(async (ctx, payload) => {
+      const fileApi = ctx.files;
+      if ("list" in fileApi) {
+        const page = await fileApi.list({ createdBefore: new globalThis.Date() });
+        if (page.ok) page.data.files[0]?.createdAt.toUpperCase();
+      }
       // @ts-expect-error A Job may run as the Privileged server role, which has no ordinary Credential provenance.
       ctx.credential.kind;
       if ("credential" in ctx) ctx.credential.kind satisfies "session" | "access-key";
@@ -555,6 +576,12 @@ const app = capsule({
         schedules[0]?.name.toUpperCase();
         const oneSchedule = await privilegedCtx.schedules.get("dynamicSummary");
         oneSchedule?.latestOccurrence?.scheduledFor.toUpperCase();
+        const page = await privilegedCtx.files.list({ createdBefore: new globalThis.Date(), cursor: null });
+        if (page.ok) {
+          page.data.cursor?.toUpperCase();
+          page.data.files[0]?.createdAt.toUpperCase();
+          page.data.files[0]?.ownerId.toUpperCase();
+        }
         const fileUrl = await privilegedCtx.files.url("/reports/private.txt");
         if (fileUrl.ok) {
           fileUrl.data.url.toUpperCase();
@@ -615,6 +642,8 @@ const app = capsule({
         textBody: text,
         provider: { trace: "types" },
       });
+      // @ts-expect-error Listing is available only within an active Privileged callback.
+      ctx.files.list();
       const deletedFile = await ctx.files.delete("/reports/obsolete.txt");
       deletedFile.id.toUpperCase();
       deletedFile.bucket.toUpperCase();

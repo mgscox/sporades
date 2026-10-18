@@ -1691,6 +1691,7 @@ function createConnection() {
 
 function structuredError(error) {
   const next = new Error(error?.message ?? "Sporades file operation failed.");
+  if (typeof error?.code === "string") next.code = error.code;
   next.hint = error?.hint ?? "Retry the operation.";
   next.error = error;
   return next;

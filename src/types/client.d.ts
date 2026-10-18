@@ -213,6 +213,10 @@ export type UploadCompleteEvent = {
   file: FileMetadata;
 };
 
+export type FileUploadErrorCode = "FILE_UPLOAD_DENIED" | "FILE_UPLOAD_SIZE_MISMATCH" | "FILE_MIME_TYPE_NOT_ALLOWED" | "FILE_MIME_TYPE_MISMATCH";
+/** Policy rejection thrown by files.upload; the original structured payload remains at error. */
+export type FileUploadError = Error & { code: FileUploadErrorCode; hint?: string; error: SporadesError };
+
 /**
  * Options for `files.upload()`.
  *

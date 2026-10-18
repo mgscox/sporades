@@ -3439,3 +3439,25 @@ test("generated client preserves the browser error budget after real ACL denials
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("client File upload policy failures retain their typed code at negotiation and PUT", async () => {
+  for (const [stage, code] of [["negotiation", "FILE_UPLOAD_DENIED"], ["negotiation", "FILE_MIME_TYPE_NOT_ALLOWED"], ["put", "FILE_MIME_TYPE_MISMATCH"], ["put", "FILE_UPLOAD_SIZE_MISMATCH"]]) {
+    const error = { code, message: "File rejected.", hint: "Check the File policy." };
+    const browser = installBrowserFakes(anonymousAuth, { handlers: {
+      "file.uploadUrl": () => stage === "negotiation"
+        ? { type: "error", data: null, error }
+        : { type: "file.uploadUrl.result", data: { uploadUrl: "/__sporades/uploads/policy", file: { id: "policy-file" } }, error: null },
+    } });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: false, status: 400, json: async () => ({ ok: false, error }) });
+    try {
+      const runtime = await importClientRuntime();
+      await assert.rejects(runtime.files.upload(new Blob(["hello"], { type: "text/plain" })), failure => {
+        assert.equal(failure.code, code);
+        assert.equal(failure.error.code, code);
+        assert.equal(failure.hint, error.hint);
+        return true;
+      });
+    } finally { globalThis.fetch = previousFetch; browser.cleanup(); }
+  }
+});

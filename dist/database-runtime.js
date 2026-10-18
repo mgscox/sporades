@@ -693,6 +693,19 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 "([id], [fileId], [ownerId], [bucketId], [bucketName], [path], [name], [type], [version], [expectedSize], [createdAt]) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(row.id, row.fileId, row.ownerId, row.bucketId, row.bucketName, row.path, row.name, row.type, row.version, row.expectedSize, row.createdAt);
         },
+        selectLiveFilesPage(createdBefore, after) {
+            let query = "SELECT * FROM [sporades_files] WHERE [deletedAt] IS NULL AND [status] = ?";
+            const parameters = ["uploaded"];
+            if (createdBefore !== null) {
+                query += " AND [createdAt] < ?";
+                parameters.push(createdBefore);
+            }
+            if (after) {
+                query += " AND ([createdAt] > ? OR ([createdAt] = ? AND [id] > ?))";
+                parameters.push(after.createdAt, after.createdAt, after.id);
+            }
+            return this.prepare(sql(query + " ORDER BY [createdAt] ASC, [id] ASC LIMIT 101")).all(...parameters);
+        },
         selectFileById(fileId) {
             return this.prepare(sql("SELECT * FROM [sporades_files] WHERE [id] = ?")).get(fileId) ?? null;
         },

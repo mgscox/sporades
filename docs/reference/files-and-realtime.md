@@ -1016,3 +1016,112 @@ is retried on a later startup; completed receipts remain replayable. There is no
 public manual ingress-sweeper API. Monitor the stable platform cleanup warning,
 but do not log authorization headers, principal keys, idempotency keys that
 contain secrets, or storage connection details.
+
+## Upload policy and MIME validation
+
+`capsule({ files: { acl: { upload: (ctx, meta) => boolean } } })` adds an opt-in
+policy for SDK upload negotiation, including replacement. `ctx` is the constrained
+`FileAclContext`, with frozen Auth/Credential snapshots and read-only ACL helpers;
+it has no database, request, mutable Teams, or Privileged capability. `meta` is a
+frozen `{ sizeBytes, mimeType, name }` object. MIME is normalized to lowercase
+without parameters; name is the normalized display filename that will be stored.
+When the name is omitted, it is derived from the validated, normalized File path,
+including an inherited replacement path. Denial creates no bucket or pending
+upload and leaves an existing File unchanged. The default is
+allow. With a hook, only `true` admits the upload, and the received byte count
+must match the declared `sizeBytes`. Synchronous errors and rejected Promises
+deny opaquely. The hook does not replace multipart endpoint admission.
+
+`files.allowedMimeTypes` in `sporades.json` applies to SDK upload/replacement and
+multipart file ingress. It is an array of exact lowercase MIME types, without
+wildcards or parameters. Omission keeps the existing unrestricted MIME behavior;
+`[]` denies every upload. Invalid configuration fails with `INVALID_FILE_CONFIG`.
+Declared types are checked before SDK upload URL creation. Actual bytes are
+checked before publication: PNG, JPEG, GIF, BMP, WebP, AVIF (primary AVIF brand),
+PDF, ZIP and gzip must match their signatures; `text/plain` must be UTF-8 without
+binary control characters or a recognized binary signature. Other MIME types
+are checked against the allowlist by declaration only. These are signature
+checks, not full format validation, executable-content filtering, or malware
+scanning. Continue to use multipart content inspection where that is required.
+Existing Files remain readable and are not reclassified by enabling the policy.
+
+SDK negotiation/PUT failures use the existing error envelope with a `code`.
+`files.upload()` rejects with an Error carrying the same `code` and `hint`;
+the original envelope is retained at `error.error` for compatibility. Import
+`FileUploadErrorCode` and `FileUploadError` from `sporades/client` when handling
+these policy failures:
+
+
+| Code | Meaning |
+| --- | --- |
+| `FILE_UPLOAD_DENIED` | The upload hook denied or threw. |
+| `FILE_UPLOAD_SIZE_MISMATCH` | PUT size differs from metadata admitted by the hook. |
+| `FILE_MIME_TYPE_NOT_ALLOWED` | The declared MIME type is outside the configured list. |
+| `FILE_MIME_TYPE_MISMATCH` | A supported byte check failed. |
+
+## Orphaned-file sweep
+
+Only an active Privileged server callback, including a schedule-owned Job, has
+`files.list({ createdBefore?, cursor? })`.
+It returns `PrivilegedResult<{ files, cursor }>`: at most 100 live, uploaded,
+non-deleted Files ordered by `createdAt` ascending, then ID ascending. Each entry
+contains ordinary File metadata plus `ownerId`, `createdAt`, and `updatedAt`.
+Pending uploads and unclaimed ingress leases are excluded. `createdBefore`
+accepts a Date or date string and is exclusive. Use ISO UTC strings for durable
+Job payloads. An opaque cursor retains the cutoff; pass it unchanged to advance,
+even after deleting a page's candidates. `cursor: null` ends iteration. Invalid
+options or a changed cutoff return `INVALID_FILE_LIST_OPTIONS`. A retained API
+reference loses authority when the privileged callback ends.
+
+This pattern supplies an app-owned `isReferenced(fileId)` predicate. Integrate
+it with the Capsule's actual schema and every place a File may be referenced:
+
+```ts
+import { capsule, job, schedule } from "sporades/server";
+
+export default capsule({
+  name: "documents",
+  jobs: {
+    sweepFiles: job(async (ctx) => {
+      // Keep a grace period for uploads that have not yet been attached.
+      const createdBefore = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      // Schedules enqueue with Privileged server role. Reject user-owned runs.
+      const files = ctx.files;
+      if (!("list" in files)) throw new Error("This Job requires Privileged server role.");
+      // Example schema: documents.fileId stores a File ID.
+      const isReferenced = async (fileId: string) =>
+        (await ctx.db.documents.where("fileId", fileId).get()) !== null;
+      let cursor: string | null = null;
+      let deleted = 0;
+      do {
+        const page = await files.list({ createdBefore, cursor });
+        if (!page.ok) throw new Error(page.error.message);
+        for (const file of page.data.files) {
+          if (await isReferenced(file.id)) continue;
+          const result = await files.delete(file.id);
+          if (!result.ok) throw new Error(result.error.message);
+          deleted++;
+        }
+        cursor = page.data.cursor;
+      } while (cursor);
+      return { deleted };
+    }),
+  },
+  schedules: {
+    nightlyFileSweep: schedule({
+      expression: "0 3 * * *", timezone: "UTC", job: "sweepFiles",
+      payload: {}, missedRun: "latest",
+    }),
+  },
+});
+```
+
+Declare the referenced `documents` table in the real Capsule. The application
+must coordinate File attachment/replacement and sweeping so a new reference
+cannot appear between the predicate and deletion; a grace period alone does
+not provide that guarantee. Listing is not a snapshot, deletion does not check
+app references, and retries may observe files another run already removed.
+Choose a bounded batch/time budget for large stores and persist the cutoff and
+cursor between Jobs if needed. File deletion revokes public URLs and removes
+stored bytes through the existing runtime path; byte removal remains best effort.
+Start with a dry run and audit candidate counts before enabling deletion.

@@ -146,6 +146,10 @@ export declare function completePendingFileUpload(database: LooseRecord, uploadI
     ok: boolean;
     data: null;
     error: {
+        message: string;
+        hint: string;
+    } | {
+        code?: any;
         message: any;
         hint: any;
     };

@@ -186,12 +186,12 @@ export type FileAclRuleInput = {
 
 export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
 
-/**
- * Optional rules that extend normal File ownership with explicit Capsule ACL.
- * Owner access and public-URL revocation remain with the File owner; absent
- * rules never widen File access.
- */
-export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
+/** Metadata supplied before an SDK upload URL is issued; name is the stored display filename, falling back to the normalized File path. */
+export type FileUploadMetadata = Readonly<{ sizeBytes: number; mimeType: string; name: string }>;
+/** Opt-in policy for SDK uploads and replacements; absence allows existing behavior. */
+export type FileUploadAclRule = (ctx: FileAclContext, meta: FileUploadMetadata) => MaybePromise<boolean>;
+/** Optional sharing rules plus an upload admission policy. Owner and public-URL revocation authority stay unchanged. */
+export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>> & { upload?: FileUploadAclRule };
 
 export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
 /** Runtime-owned inspector names; Capsule code cannot supply verdicts. */
@@ -840,7 +840,12 @@ export type CurrentUserFilesApi = {
   delete(fileReference: string): Promise<ServerFileMetadata>;
 };
 
+export type PrivilegedListedFileMetadata = PrivilegedOwnedFileMetadata & { createdAt: string; updatedAt: string };
+export type PrivilegedFileListOptions = { createdBefore?: string | Date; cursor?: string | null };
+export type PrivilegedFileListPage = { files: PrivilegedListedFileMetadata[]; cursor: string | null };
 export type PrivilegedFileApi = {
+  /** Up to 100 live uploaded Files, oldest first with ID tie-breaker. Cutoff is exclusive; cursor retains it. Only inside an active Privileged callback. */
+  list(options?: PrivilegedFileListOptions): Promise<PrivilegedResult<PrivilegedFileListPage>>;
   /** Return a private runtime URL for one live Capsule File by id or absolute File path. */
   url(fileReference: string): Promise<PrivilegedResult<{ url: string; file: PrivilegedOwnedFileMetadata }>>;
   /** Create a public URL for one live Capsule File while preserving File runtime boundaries. */

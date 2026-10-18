@@ -28554,6 +28554,21 @@ function redactDiagnosticText(value, serverEnv = {}) {
   ).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
 }
 
+// src/file-policy.ts
+var signatures = [
+  ["image/png", [137, 80, 78, 71, 13, 10, 26, 10], 0],
+  ["image/jpeg", [255, 216, 255], 0],
+  ["image/gif", [71, 73, 70, 56, 55, 97], 0],
+  ["image/gif", [71, 73, 70, 56, 57, 97], 0],
+  ["image/bmp", [66, 77], 0],
+  ["application/pdf", [37, 80, 68, 70, 45], 0],
+  ["application/gzip", [31, 139], 0],
+  ["application/zip", [80, 75, 3, 4], 0],
+  ["application/zip", [80, 75, 5, 6], 0],
+  ["application/zip", [80, 75, 7, 8], 0]
+];
+var signedTypes = /* @__PURE__ */ new Set([...signatures.map(([type]) => type), "image/webp", "image/avif"]);
+
 // src/runtime-request-context.ts
 import { AsyncLocalStorage } from "node:async_hooks";
 var runtimeRequestScope = new AsyncLocalStorage();
