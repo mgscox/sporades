@@ -188,7 +188,9 @@ exports `sporades_backup_last_success_seconds` and
 `sporades_backup_max_age_seconds` with Capsule identity labels. The helper
 explicitly sets that directory to `0755` and completed metric files to `0644`
 before atomic publication so the unprivileged exporter can read scheduled
-updates. The backup service retains `UMask=0077`; backup policy, credentials and
+updates. Exporter setup and reconciliation also enforce `0755`, even under
+`UMask=0077` on Hosts without configured backups. The backup service retains
+`UMask=0077`; backup policy, credentials and
 staging data stay private. The monitoring
 stack's `SporadesCapsuleBackupStale` alert fires when the threshold is exceeded
 for five minutes. Upgrade the monitoring stack's rule assets too. Existing Host

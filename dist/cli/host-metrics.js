@@ -231,6 +231,8 @@ export async function configureHostMetrics(root, host, operation = "reconcile") 
     await trusted(root);
     await mkdir(backupMetrics, { recursive: true, mode: 0o755 });
     await trusted(backupMetrics);
+    // mkdir's mode is filtered by umask, including on Hosts without backups.
+    await chmod(backupMetrics, 0o755);
     const args = ["--mount", `type=bind,source=${backupMetrics},target=/backup-metrics,readonly`, "--network", "host", "--pid", "host", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65534:65534", "--memory", "128m", "--cpus", "0.25", "--pids-limit", "64", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--mount", "type=bind,source=/,target=/host,readonly,bind-propagation=rslave", IMAGE, "--path.rootfs=/host", "--path.procfs=/host/proc", "--path.sysfs=/host/sys", `--web.listen-address=${address}:9100`, "--collector.disable-defaults", "--collector.textfile", "--collector.textfile.directory=/backup-metrics", ...["cpu", "loadavg", "meminfo", "vmstat", "diskstats", "filesystem", "netdev", "netstat", "pressure", "uname", "time", "stat"].map(c => `--collector.${c}`), "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|pstore|rpc_pipefs|securityfs|squashfs|sysfs|tracefs)$", "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/docker/netns)($|/)", "--collector.netdev.device-exclude=^(veth.*|br-.*|docker.*|lo)$"];
     const hash = createHash("sha256").update(JSON.stringify(args)).digest("hex");
     const current = ownedContainer();

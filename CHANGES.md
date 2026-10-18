@@ -25,6 +25,7 @@ Changes since v0.9.31.
 
 ### 🐛 Bug Fixes
 
+- Keep the Host exporter textfile directory readable under restrictive umasks during setup and reconciliation, including Hosts without backups (#238).
 - Preserve unconfigured Hosted Capsule start/restart beneath root-owned sticky ancestors when no backup restore journal exists (#238).
 - Add opt-in atomic `teams.authorizeDestructive` for direct SDK and server demote, removeMember, leave and Team deletion. Transaction-bound cross-owner responsibility reads fail closed; `ctx.teams.lockLifecycle` shares exact-Team serialization with accepted transfers and atomic billing consequences. Omission preserves 0.9.x behavior; no storage migration. Requires publication of a new 0.9.x package before downstream adoption (#249).
 
