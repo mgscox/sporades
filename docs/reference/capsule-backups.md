@@ -182,7 +182,11 @@ With Host resource telemetry enabled, run `host telemetry reconcile` after
 upgrading the helper to activate the node_exporter textfile collector. It reads
 only numeric backup freshness samples from `<remote-root>/backup-metrics` and
 exports `sporades_backup_last_success_seconds` and
-`sporades_backup_max_age_seconds` with Capsule identity labels. The monitoring
+`sporades_backup_max_age_seconds` with Capsule identity labels. The helper
+explicitly sets that directory to `0755` and completed metric files to `0644`
+before atomic publication so the unprivileged exporter can read scheduled
+updates. The backup service retains `UMask=0077`; backup policy, credentials and
+staging data stay private. The monitoring
 stack's `SporadesCapsuleBackupStale` alert fires when the threshold is exceeded
 for five minutes. Upgrade the monitoring stack's rule assets too. Existing Host
 telemetry absence alerts cover lost transport. Unconfigured Hosts emit no backup

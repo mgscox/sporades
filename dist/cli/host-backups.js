@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chown, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, chown, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { helperError } from "./cli-support.js";
 function manifestSummary(manifest) {
@@ -218,6 +218,9 @@ export async function publishHostBackupMetric(host, subname, removed = false) {
     await trustedBackupPath(host.remoteRoot, true);
     await mkdir(directory, { mode: 0o755, recursive: true });
     await trustedBackupPath(directory);
+    // Only numeric metrics are shared with the unprivileged exporter. The timer's
+    // private umask still applies to backup policy, credentials and staging data.
+    await chmod(directory, 0o755);
     const file = path.join(directory, createHash("sha256").update(`${host.domain}/${subname}`).digest("hex") + ".prom");
     const status = await hostBackupStatus(host, subname);
     if (removed || !status.configured) {
@@ -227,8 +230,9 @@ export async function publishHostBackupMetric(host, subname, removed = false) {
     const labels = `capsule_domain=${JSON.stringify(host.domain)},capsule_subname=${JSON.stringify(subname)}`;
     const text = `sporades_backup_last_success_seconds{${labels}} ${status.lastBackupAt ? Date.parse(status.lastBackupAt) / 1000 : 0}\nsporades_backup_max_age_seconds{${labels}} ${status.maxAgeSeconds}\n`;
     const temp = `${file}.${randomBytes(8).toString("hex")}.tmp`;
-    await writeFile(temp, text, { mode: 0o644, flag: "wx" });
     try {
+        await writeFile(temp, text, { mode: 0o600, flag: "wx" });
+        await chmod(temp, 0o644); // Establish readability before atomic publication, independent of umask.
         await rename(temp, file);
     }
     finally {

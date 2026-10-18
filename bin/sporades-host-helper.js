@@ -28404,7 +28404,7 @@ async function assertHostnamesAvailable(remoteRoot, hostnames, owner) {
 init_base_image();
 import { spawnSync as spawnSync7 } from "node:child_process";
 import { constants as fsConstants, createReadStream as createReadStream2, statSync } from "node:fs";
-import { access as access2, chmod as chmod2, lstat as lstat9, mkdir as mkdir5, open as open6, opendir, readdir as readdir5, readFile as readFile9, readlink, rename as rename8, rm as rm8, stat, statfs, symlink, writeFile as writeFile4 } from "node:fs/promises";
+import { access as access2, chmod as chmod3, lstat as lstat9, mkdir as mkdir5, open as open6, opendir, readdir as readdir5, readFile as readFile9, readlink, rename as rename8, rm as rm8, stat, statfs, symlink, writeFile as writeFile4 } from "node:fs/promises";
 import { createHash as createHash9, generateKeyPairSync, randomBytes as randomBytes7 } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path12 from "node:path";
@@ -45288,7 +45288,7 @@ init_cli_support();
 import { spawnSync as spawnSync6 } from "node:child_process";
 import { createHash as createHash8, randomBytes as randomBytes6 } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chown, cp, lstat as lstat8, mkdir as mkdir4, readFile as readFile8, readdir as readdir4, rename as rename7, rm as rm7, writeFile as writeFile3 } from "node:fs/promises";
+import { chmod as chmod2, chown, cp, lstat as lstat8, mkdir as mkdir4, readFile as readFile8, readdir as readdir4, rename as rename7, rm as rm7, writeFile as writeFile3 } from "node:fs/promises";
 import path10 from "node:path";
 function manifestSummary(manifest) {
   const { checksums, directories, ...identity } = manifest;
@@ -45478,6 +45478,7 @@ async function publishHostBackupMetric(host, subname, removed = false) {
   await trustedBackupPath(host.remoteRoot, true);
   await mkdir4(directory2, { mode: 493, recursive: true });
   await trustedBackupPath(directory2);
+  await chmod2(directory2, 493);
   const file = path10.join(directory2, createHash8("sha256").update(`${host.domain}/${subname}`).digest("hex") + ".prom");
   const status = await hostBackupStatus(host, subname);
   if (removed || !status.configured) {
@@ -45489,8 +45490,9 @@ async function publishHostBackupMetric(host, subname, removed = false) {
 sporades_backup_max_age_seconds{${labels}} ${status.maxAgeSeconds}
 `;
   const temp = `${file}.${randomBytes6(8).toString("hex")}.tmp`;
-  await writeFile3(temp, text2, { mode: 420, flag: "wx" });
   try {
+    await writeFile3(temp, text2, { mode: 384, flag: "wx" });
+    await chmod2(temp, 420);
     await rename7(temp, file);
   } finally {
     await rm7(temp, { force: true });
@@ -46235,7 +46237,7 @@ async function publishHostHelperBytes(contents, target, mode) {
   const temporary = `${target}.tmp-${process.pid}-${randomBytes7(8).toString("hex")}`;
   try {
     await writeFile4(temporary, contents, { flag: "wx", mode });
-    await chmod2(temporary, mode);
+    await chmod3(temporary, mode);
     await rename8(temporary, target);
   } finally {
     await rm8(temporary, { force: true });
@@ -47575,7 +47577,7 @@ async function claimReleaseArchive(request2) {
   if (!claimsStats.isDirectory() || claimsStats.isSymbolicLink() || typeof process.getuid === "function" && claimsStats.uid !== process.getuid()) {
     throw helperError("Hosted Capsule release claim directory is unsafe.", "Repair Host helper ownership of the release claim directory and retry.");
   }
-  await chmod2(claimsDirectory, 448);
+  await chmod3(claimsDirectory, 448);
   const claimedPath = path12.join(claimsDirectory, `${request2.release.id}-${process.pid}-${randomBytes7(16).toString("hex")}.tar.gz`);
   await rename8(request2.release.remoteArchive, claimedPath);
   try {
@@ -47583,7 +47585,7 @@ async function claimReleaseArchive(request2) {
     if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || stats.size > HOST_RELEASE_ARCHIVE_LIMITS.compressedBytes) {
       throw helperError("Hosted Capsule release archive is unsafe.", "Upload one bounded regular archive file and retry `sporades host push`.");
     }
-    await chmod2(claimedPath, 384);
+    await chmod3(claimedPath, 384);
     return { path: claimedPath, sha256: await releaseArchiveSha256(claimedPath) };
   } catch (error) {
     await rm8(claimedPath, { force: true });
@@ -50628,7 +50630,7 @@ async function atomicPublishBootstrapFile(target, contents, boundary) {
   await writeFile4(temporary, contents, { flag: "wx", mode: 420 });
   try {
     await assertBootstrapMutationBoundary(`${boundary}-publish`, [target, temporary]);
-    await chmod2(temporary, 420);
+    await chmod3(temporary, 420);
     await rename8(temporary, target);
     await refreshTrustedBootstrapFinalFileIdentity(target);
   } catch (error) {

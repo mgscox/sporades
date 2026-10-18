@@ -63,6 +63,36 @@ test('unconfigured backup inspection preserves existing Hosts without imposing b
   assert.deepEqual(await hostBackupStatus(host(shared), 'source'), { configured: false });
 }));
 
+test('backup metrics stay exporter-readable on creation and replacement under umask 0077', () => fixture(async dir => {
+  const previousUmask = process.umask(0o077);
+  try {
+    const h = host(dir), p = policy(dir), backups = hostBackupDirectory(h);
+    await mkdir(backups, { recursive: true, mode: 0o700 });
+    await atomicBackupJson(path.join(backups, 'policy.json'), p);
+    await writeFile(p.passwordFile, 'private-backup-password', { mode: 0o600 });
+    const metrics = path.join(h.remoteRoot, 'backup-metrics');
+    for (const maxAgeHours of [26, 48]) {
+      await atomicBackupJson(path.join(backups, 'policy.json'), { ...p, maxAgeHours });
+      await publishHostBackupMetric(h, 'source');
+      // The exporter runs as UID 65534: other-user read/traverse bits are required
+      // on its bind-mounted directory and read bits on every published file.
+      assert.equal((await lstat(metrics)).mode & 0o777, 0o755);
+      const files = await readdir(metrics);
+      assert.equal(files.length, 1, 'atomic publication leaves no temporary file');
+      const file = path.join(metrics, files[0]);
+      assert.equal((await lstat(file)).mode & 0o777, 0o644);
+      assert.match(await readFile(file, 'utf8'), new RegExp(`sporades_backup_max_age_seconds\\{[^\\n]+\\} ${maxAgeHours * 3600}\\n`));
+      assert.equal(process.umask(), 0o077);
+      assert.equal((await lstat(backups)).mode & 0o777, 0o700);
+      for (const secret of [p.passwordFile, path.join(backups, 'policy.json')]) {
+        assert.equal((await lstat(secret)).mode & 0o777, 0o600);
+      }
+      // Also repair a directory created by an earlier scheduled run with this umask.
+      await chmod(metrics, 0o700);
+    }
+  } finally { process.umask(previousUmask); }
+}));
+
 test('restore journal rolls back either interrupted rename and is idempotent', () => fixture(async dir => {
   const data = path.join(dir, 'data');
   const journal = path.join(dir, '.backup-restore.json');
