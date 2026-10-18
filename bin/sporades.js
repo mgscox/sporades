@@ -125085,7 +125085,14 @@ function createPrivilegedTeamsApi(database, contextGetter) {
     async lockLifecycle(teamId, memberUserId) {
       const context2 = contextGetter();
       assertActivePrivilegedTeamAccess(contextGetter);
-      return lockPolicyLifecycle(database, null, teamId, memberUserId, context2);
+      return lockPolicyLifecycle(
+        database,
+        null,
+        teamId,
+        memberUserId,
+        context2,
+        () => assertActivePrivilegedTeamAccess(contextGetter)
+      );
     },
     async countMembers(teamId) {
       return runPrivilegedTeamInspection(contextGetter, (assertActive) => countPrivilegedTeamMembers(database, teamId, assertActive));
@@ -125561,7 +125568,7 @@ async function enforceDestructivePolicy(database, tx, auth, operation, teamId, u
     throw teamPolicyDenied();
   }
 }
-async function lockPolicyLifecycle(database, auth, teamId, memberUserId, context2) {
+async function lockPolicyLifecycle(database, auth, teamId, memberUserId, context2, assertActive) {
   const tx = database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter;
   if (!database.__transactionActive || database.__isTeamPolicyTransactionActive?.() !== true) throw teamPolicyDenied();
   let admitted = false;
@@ -125572,6 +125579,7 @@ async function lockPolicyLifecycle(database, auth, teamId, memberUserId, context
   try {
     if (context2?.signal?.aborted || typeof teamId !== "string" || memberUserId !== void 0 && !isOpaqueTeamId(memberUserId)) throw teamPolicyDenied();
     await lockTeamLifecycle(tx, teamId, teamPolicyDenied);
+    assertActive?.();
     if (auth) {
       await assertCurrentPolicyActor(database, tx, auth, context2);
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamPolicyDenied();
@@ -125580,6 +125588,7 @@ async function lockPolicyLifecycle(database, auth, teamId, memberUserId, context
       "SELECT [userId], [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
     )).get(teamId, memberUserId);
     if (context2?.signal?.aborted) throw teamPolicyDenied();
+    assertActive?.();
     admitted = true;
     return Object.freeze({ teamId, member: row ? Object.freeze({ userId: String(row.userId), role: row.role }) : null });
   } catch {

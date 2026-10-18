@@ -749,7 +749,7 @@ export type CurrentUserTeamsApi = {
  * before the runtime can return a result.
  */
 export type PrivilegedTeamsApi = {
-  /** Retain an exact Team lifecycle lock in an already-active write transaction (including atomic Stripe consequences). This is inspection/serialization only: no user, membership mutation or admin authority. Nontransactional Jobs/Privileged callbacks and expired contexts fail closed. Call before responsibility reads/writes, without provider network calls. */
+  /** Retain an exact Team lifecycle lock in an already-active write transaction (including atomic Stripe consequences). This is inspection/serialization only: no user, membership mutation or admin authority. Nontransactional Jobs/Privileged callbacks and expired contexts fail closed. Pending acquisition/member reads that outlive the callback reject and roll back even when caught; successfully admitted locks remain held through outer commit. Call before responsibility reads/writes, without provider network calls. */
   lockLifecycle(teamId: string, memberUserId?: string): Promise<TeamLifecycleSnapshot>;
   /** Returns the exact accepted-membership total for an existing Team. */
   countMembers(teamId: string): Promise<TeamMemberCountResult>;

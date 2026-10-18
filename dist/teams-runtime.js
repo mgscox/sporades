@@ -153,7 +153,7 @@ export function createPrivilegedTeamsApi(database, contextGetter) {
         async lockLifecycle(teamId, memberUserId) {
             const context = contextGetter();
             assertActivePrivilegedTeamAccess(contextGetter);
-            return lockPolicyLifecycle(database, null, teamId, memberUserId, context);
+            return lockPolicyLifecycle(database, null, teamId, memberUserId, context, () => assertActivePrivilegedTeamAccess(contextGetter));
         },
         async countMembers(teamId) {
             return runPrivilegedTeamInspection(contextGetter, (assertActive) => countPrivilegedTeamMembers(database, teamId, assertActive));
@@ -671,7 +671,7 @@ async function enforceDestructivePolicy(database, tx, auth, operation, teamId, u
     }
 }
 /** Retain the exact Team lock until the caller's existing transaction settles. */
-async function lockPolicyLifecycle(database, auth, teamId, memberUserId, context) {
+async function lockPolicyLifecycle(database, auth, teamId, memberUserId, context, assertActive) {
     const tx = database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter;
     if (!database.__transactionActive || database.__isTeamPolicyTransactionActive?.() !== true)
         throw teamPolicyDenied();
@@ -687,6 +687,7 @@ async function lockPolicyLifecycle(database, auth, teamId, memberUserId, context
             || (memberUserId !== undefined && !isOpaqueTeamId(memberUserId)))
             throw teamPolicyDenied();
         await lockTeamLifecycle(tx, teamId, teamPolicyDenied);
+        assertActive?.();
         if (auth) {
             await assertCurrentPolicyActor(database, tx, auth, context);
             if (!await currentTeamAdmin(tx, teamId, auth.userId))
@@ -695,6 +696,9 @@ async function lockPolicyLifecycle(database, auth, teamId, memberUserId, context
         const row = memberUserId === undefined ? null : await tx.prepare(tx.dialect.sql("SELECT [userId], [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, memberUserId);
         if (context?.signal?.aborted)
             throw teamPolicyDenied();
+        assertActive?.();
+        // Admission must finish inside the Privileged callback. Once admitted,
+        // retain the lock through outer commit even after that callback settles.
         admitted = true;
         return Object.freeze({ teamId, member: row ? Object.freeze({ userId: String(row.userId), role: row.role }) : null });
     }

@@ -145,7 +145,11 @@ write transaction, including `stripeEvent({ consequence: "atomic" }, handler)`.
 It grants that userless context only exact member inspection and serialization,
 never membership mutation/admin authority. Nontransactional Jobs, read-only
 queries, and expired contexts refuse the lock. Use atomic Stripe consequences
-for provider observations; acquire this lock before reading/updating the
+for provider observations. Pending lock acquisition and member reads must finish
+while the Privileged callback is active; otherwise they reject without returning
+a snapshot and roll back the outer transaction even if caught. A successfully
+admitted lock remains held through outer commit after its callback ends. Acquire
+this lock before reading/updating the
 Capsule's responsibility, billing state, or accepted-transfer records. Use one
 Team per transaction (or a consistent Team-ID order when several are necessary).
 A separately committed transfer, a wrapper-only check, or a writer omitting

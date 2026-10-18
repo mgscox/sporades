@@ -189,7 +189,8 @@ export function createPrivilegedTeamsApi(database: LooseRecord, contextGetter: (
     async lockLifecycle(teamId: unknown, memberUserId?: unknown) {
       const context = contextGetter();
       assertActivePrivilegedTeamAccess(contextGetter);
-      return lockPolicyLifecycle(database, null, teamId, memberUserId, context);
+      return lockPolicyLifecycle(database, null, teamId, memberUserId, context,
+        () => assertActivePrivilegedTeamAccess(contextGetter));
     },
     async countMembers(teamId: any) {
       return runPrivilegedTeamInspection(contextGetter, (assertActive) => countPrivilegedTeamMembers(database, teamId, assertActive));
@@ -745,7 +746,7 @@ async function enforceDestructivePolicy(database: LooseRecord, tx: LooseRecord, 
 }
 
 /** Retain the exact Team lock until the caller's existing transaction settles. */
-async function lockPolicyLifecycle(database: LooseRecord, auth: LooseRecord | null, teamId: unknown, memberUserId: unknown, context?: LooseRecord) {
+async function lockPolicyLifecycle(database: LooseRecord, auth: LooseRecord | null, teamId: unknown, memberUserId: unknown, context?: LooseRecord, assertActive?: () => void) {
   const tx = (database as any)[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter;
   if (!database.__transactionActive || database.__isTeamPolicyTransactionActive?.() !== true) throw teamPolicyDenied();
   let admitted = false;
@@ -757,6 +758,7 @@ async function lockPolicyLifecycle(database: LooseRecord, auth: LooseRecord | nu
     if (context?.signal?.aborted || typeof teamId !== "string"
       || (memberUserId !== undefined && !isOpaqueTeamId(memberUserId))) throw teamPolicyDenied();
     await lockTeamLifecycle(tx, teamId, teamPolicyDenied);
+    assertActive?.();
     if (auth) {
       await assertCurrentPolicyActor(database, tx, auth, context);
       if (!await currentTeamAdmin(tx, teamId, auth.userId)) throw teamPolicyDenied();
@@ -765,6 +767,9 @@ async function lockPolicyLifecycle(database: LooseRecord, auth: LooseRecord | nu
       "SELECT [userId], [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
     )).get(teamId, memberUserId);
     if (context?.signal?.aborted) throw teamPolicyDenied();
+    assertActive?.();
+    // Admission must finish inside the Privileged callback. Once admitted,
+    // retain the lock through outer commit even after that callback settles.
     admitted = true;
     return Object.freeze({ teamId, member: row ? Object.freeze({ userId: String(row.userId), role: row.role }) : null });
   } catch { throw teamPolicyDenied(); }

@@ -305,18 +305,22 @@ for (const operation of ["demote", "removeMember", "leave", "delete"]) {
       assert.equal((await destruction).error?.code, "TEAM_POLICY_DENIED");
       assert.equal((await owner.send({ type: "teams.listMembers", teamId })).data.totalCount, operation === "delete" ? 1 : 2);
     }, undefined, { configure(capsule) {
-      capsule.mutations.holdState = mutation((ctx, teamId) => ctx.privileged.run(
-        { operation: "responsibility.update", targetResourceKind: "capsule-db" },
-        async privileged => {
-          await privileged.teams.lockLifecycle(teamId);
-          assert.equal(privileged.teams.demote, undefined);
-          const row = await privileged.db.responsibility.where("teamId", teamId).get();
-          await privileged.db.responsibility.update(row.id, { state: "active" });
-          entered.resolve();
-          await release.promise;
-          return { updated: true };
-        },
-      ));
+      capsule.mutations.holdState = mutation(async (ctx, teamId) => {
+        await ctx.privileged.run(
+          { operation: "responsibility.update", targetResourceKind: "capsule-db" },
+          async privileged => {
+            await privileged.teams.lockLifecycle(teamId);
+            assert.equal(privileged.teams.demote, undefined);
+            const row = await privileged.db.responsibility.where("teamId", teamId).get();
+            await privileged.db.responsibility.update(row.id, { state: "active" });
+          },
+        );
+        // Successfully acquired locks survive callback expiry until outer commit.
+        entered.resolve();
+        await release.promise;
+        await ctx.db.acceptances.insert({ teamId, userId: ctx.auth.userId });
+        return { updated: true };
+      });
     } });
   });
 }
@@ -431,6 +435,64 @@ test("atomic provider consequences share the Team lock and do not acquire member
     await assert.rejects(() => captured.lockLifecycle(teamId), error => error.code === "PRIVILEGED_TEAM_ACCESS_INACTIVE");
   });
 });
+
+for (const phase of ["lock", "member read"]) {
+  test(`Privileged lifecycle ${phase} completing after its callback rejects and poisons caught transactions`, async () => {
+    const { withFakeLibsqlService } = await import("./support/libsql-http-service.js");
+    const dir = await mkdtemp(path.join(process.cwd(), ".team-policy-detached-"));
+    const entered = deferred(); const release = deferred();
+    let delay = false;
+    let outcome;
+    let memberReads = 0;
+    try {
+      await withFakeLibsqlService(path.join(dir, "data.db"), {
+        async beforeStatement(sql) {
+          const memberRead = /^SELECT "userId", "role" FROM "sporades_team_memberships"/.test(sql);
+          if (delay && memberRead) memberReads++;
+          if (delay && (phase === "lock"
+            ? /^UPDATE "sporades_teams" SET "name" = "name"/.test(sql) : memberRead)) {
+            entered.resolve();
+            await release.promise;
+          }
+        },
+      }, async ({ url }) => {
+        const serverEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url };
+        await fixture(async ({ client, database }) => {
+          const owner = await client("owner");
+          const teamId = await team(owner);
+          delay = true;
+          const response = await owner.send({ type: "mutation.run", name: "detachedLock", args: [teamId, owner.userId] });
+          delay = false;
+          assert.equal(outcome.error?.code, "TEAM_POLICY_DENIED", "no late member snapshot escapes the callback");
+          assert.equal(outcome.snapshot, undefined);
+          assert.equal(response.error?.code, "TEAM_POLICY_DENIED", "caught rejection still aborts the outer mutation");
+          assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [acceptances]").get()).count, 0);
+          assert.equal(memberReads, phase === "lock" ? 0 : 1, "expiry after lock acquisition prevents a member read");
+        }, undefined, {
+          serverEnv, config: { services: { database: { kind: "database", engine: "libsql" } } },
+          configure(capsule) {
+            capsule.mutations.detachedLock = mutation(async (ctx, teamId, userId) => {
+              await ctx.db.acceptances.insert({ teamId, userId });
+              let pending;
+              await ctx.privileged.run({ operation: "responsibility.detached", targetResourceKind: "capsule-db" }, async privileged => {
+                // Attach a rejection handler immediately, but deliberately let the
+                // callback end while the adapter still owns the pending request.
+                pending = privileged.teams.lockLifecycle(teamId, userId).then(
+                  snapshot => ({ snapshot }), error => ({ error }),
+                );
+                await entered.promise;
+              });
+              release.resolve();
+              outcome = await pending;
+              await ctx.db.acceptances.insert({ teamId, userId });
+              return { caught: true };
+            });
+          },
+        });
+      });
+    } finally { release.resolve(); await rm(dir, { recursive: true, force: true }); }
+  });
+}
 
 for (const engine of ["libsql", "postgres"]) {
   test(`${engine}: public policy denial and accepted transfer use the same adapter transaction`, { skip: engine === "postgres" && !process.env.SPORADES_POSTGRES_TEST_URL ? "Set SPORADES_POSTGRES_TEST_URL for real PostgreSQL conformance" : false }, async () => {
