@@ -1023,6 +1023,14 @@ client entry), and then switch to `enforce`:
 
 For Vite, keep the client source entry such as `/client/index.tsx` in your HTML;
 Vite still owns the emitted script URL. The nonce placeholder survives the build.
+Only scripts explicitly marked with `nonce="%SPORADES_NONCE%"` may contribute
+code to a nonced Vite entry. Unmarked scripts keep their original markup and
+receive no nonce, including inline modules, external scripts and prerendered
+scripts. Unmarked modules are excluded from the trusted client Bundle; their
+original source URLs may therefore be absent from the emitted public tree.
+Mark every module intended to run before enabling nonce mode, even while testing
+in report-only mode. Sporades disables Vite's blanket `html.cspNonce` behavior
+in nonce mode and authorizes generated entry scripts through their output graph.
 The runtime replaces `%SPORADES_NONCE%` throughout served HTML, including
 `index.html`, prerender fragments and public HTML pages, with one fresh
 cryptographically random 256-bit nonce per response. Its connection-token script
@@ -1064,6 +1072,16 @@ reports merely because this option is set. Automatic forwarding through
 `observability.errors` and its same-origin collection tunnel belongs to the
 related [observability integration (#234)](https://github.com/mgscox/sporades/issues/234);
 until that integration ships, configure a working report URI explicitly.
+
+The Chromium regression checks cover Dev sessions and generated esbuild/Vite
+Bundles, including blocked unmarked classic/module scripts and inline handlers:
+
+```sh
+# Install Playwright and Chromium in your test environment first.
+SPORADES_REAL_CSP_BROWSER=1 node --test --test-name-pattern='Chromium blocks' test/public-assets.test.js
+```
+
+Set `SPORADES_CSP_BROWSER_EXECUTABLE` to use an existing Chromium executable.
 
 ### Inspect security policy
 

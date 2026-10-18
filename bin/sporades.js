@@ -81301,7 +81301,7 @@ function validateAliasDomains(value) {
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
-import { createHash as createHash18, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes11, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
+import { createHash as createHash19, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes11, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync as readFileSync4, statSync as statSync2, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod5, cp as cp2, lstat as lstat13, mkdir as mkdir11, open as open5, readdir as readdir6, readFile as readFile14, rename as rename9, rm as rm10, writeFile as writeFile10 } from "node:fs/promises";
@@ -99297,6 +99297,84 @@ function prerenderError(message, hint, diagnostics) {
   return error;
 }
 
+// src/client-csp.ts
+import { createHash as createHash4 } from "node:crypto";
+var NONCE_PLACEHOLDER = "%SPORADES_NONCE%";
+function scripts(html2) {
+  const found = [];
+  const visit = (node) => {
+    if ("tagName" in node && node.tagName === "script") found.push(node);
+    if ("childNodes" in node) node.childNodes.forEach(visit);
+    if ("tagName" in node && node.tagName === "template") visit(node.content);
+  };
+  visit(parse4(html2, { sourceCodeLocationInfo: true, scriptingEnabled: true }));
+  return found;
+}
+function viteCspPlugins() {
+  const preserved = /* @__PURE__ */ new Map();
+  return [{
+    name: "sporades-csp-preserve-scripts",
+    enforce: "post",
+    configResolved(config) {
+      if (config.html) config.html.cspNonce = void 0;
+    },
+    transformIndexHtml: {
+      order: "pre",
+      handler(html2, context2) {
+        let prefix = `sporades-csp-${createHash4("sha256").update(html2).digest("hex")}-`;
+        while (html2.includes(prefix)) prefix += "_";
+        const originals = /* @__PURE__ */ new Map();
+        const edits = scripts(html2).flatMap((script) => {
+          if (script.attrs.some((attr) => attr.name === "nonce" && attr.value === NONCE_PLACEHOLDER)) return [];
+          const location = script.sourceCodeLocation;
+          if (!location) throw new Error("Cannot preserve CSP script authorization.");
+          const marker = `<!--${prefix}${originals.size}-->`;
+          originals.set(marker, html2.slice(location.startOffset, location.endOffset));
+          return [{ start: location.startOffset, end: location.endOffset, value: marker }];
+        });
+        preserved.set(context2.filename, originals);
+        for (const edit of edits.sort((left, right) => right.start - left.start)) {
+          html2 = html2.slice(0, edit.start) + edit.value + html2.slice(edit.end);
+        }
+        return html2;
+      }
+    }
+  }, {
+    name: "sporades-csp-generated-entries",
+    enforce: "post",
+    transformIndexHtml: {
+      order: "post",
+      handler(html2, context2) {
+        const entryFiles = /* @__PURE__ */ new Set();
+        const visit = (file) => {
+          if (entryFiles.has(file)) return;
+          const chunk = context2.bundle?.[file];
+          if (chunk?.type !== "chunk") return;
+          entryFiles.add(file);
+          chunk.imports.forEach(visit);
+        };
+        if (context2.chunk) visit(context2.chunk.fileName);
+        const insertions = scripts(html2).flatMap((script) => {
+          const src = script.attrs.find((attr) => attr.name === "src")?.value;
+          if (!src || !entryFiles.has(src.replace(/^\//, "")) || script.attrs.some((attr) => attr.name === "nonce")) return [];
+          const end = script.sourceCodeLocation?.startTag?.endOffset;
+          if (!end) throw new Error("Cannot authorize generated CSP entry.");
+          return [end - 1];
+        });
+        for (const offset2 of insertions.sort((left, right) => right - left)) {
+          html2 = html2.slice(0, offset2) + ` nonce="${NONCE_PLACEHOLDER}"` + html2.slice(offset2);
+        }
+        for (const [marker, original] of preserved.get(context2.filename) ?? []) {
+          if (html2.split(marker).length !== 2) throw new Error("CSP script preservation marker changed during build.");
+          html2 = html2.replace(marker, () => original);
+        }
+        preserved.delete(context2.filename);
+        return html2;
+      }
+    }
+  }];
+}
+
 // src/client-toolchain.ts
 async function buildClientToolchain(options) {
   validateClientToolchainInput(options);
@@ -99426,7 +99504,6 @@ async function buildVite(options) {
       base: "/",
       publicDir: false,
       configFile: projectConfigFile,
-      ...options.cspNonce ? { html: { cspNonce: "%SPORADES_NONCE%" } } : {},
       envFile: false,
       envPrefix: "\0",
       mode: "production",
@@ -99440,6 +99517,7 @@ async function buildVite(options) {
       css: { postcss: { plugins: [] } },
       plugins: [
         ...frameworkPlugins,
+        ...options.cspNonce ? viteCspPlugins() : [],
         sporadesViteClientPlugin(options.devRefresh === true),
         sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, prerenderState, options.prerender !== void 0, options.onDependency),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig)
@@ -99842,7 +99920,7 @@ function hasHint(error) {
 }
 
 // src/sealed-server-env.ts
-import { createCipheriv, createDecipheriv, createHash as createHash4, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash as createHash5, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
 import { lstat as lstat5, mkdir as mkdir2, readFile as readFile4, rename as rename3, rm as rm3, writeFile } from "node:fs/promises";
 import path6 from "node:path";
 var ENVELOPE_VERSION = 1;
@@ -100041,7 +100119,7 @@ function exportedEnvelope(envelope) {
 }
 function fingerprintPublicKey(publicKey) {
   const fingerprintSource = isBinaryLike(publicKey) ? publicKey : createPublicKey(publicKey).export({ type: "spki", format: "pem" });
-  return createHash4("sha256").update(fingerprintSource).digest("hex").slice(0, 16);
+  return createHash5("sha256").update(fingerprintSource).digest("hex").slice(0, 16);
 }
 function validateEnvelope(envelope) {
   if (!isRecord(envelope)) {
@@ -102968,7 +103046,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash11, createHmac as createHmac2, randomBytes as randomBytes6, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { createHash as createHash12, createHmac as createHmac2, randomBytes as randomBytes6, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -103772,7 +103850,7 @@ function isPlainObject2(value) {
 }
 
 // src/team-billing-runtime.ts
-import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash8, randomUUID as randomUUID5 } from "node:crypto";
 
 // src/team-billing-subscription-semantics.ts
 function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
@@ -103799,10 +103877,10 @@ function teamBillingQuantityPolicyFingerprint(policy) {
 }
 
 // src/team-billing-convergence.ts
-import { createHash as createHash6, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash7, randomUUID as randomUUID4 } from "node:crypto";
 
 // src/team-billing-management.ts
-import { createHash as createHash5, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID3 } from "node:crypto";
 var TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 var TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 var CLAIM_TTL_MS = 5 * 60 * 1e3;
@@ -104335,10 +104413,10 @@ function sameQuantityPolicy(left, right) {
   return left?.kind === right?.kind && teamBillingQuantityPolicyFingerprint(left) === teamBillingQuantityPolicyFingerprint(right);
 }
 function intentIdempotency(database, teamId, intentId) {
-  return `sporades-team-billing-${createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
+  return `sporades-team-billing-${createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
 }
 function operationIdempotency(database, operationId) {
-  return `sporades-team-billing-operation-${createHash5("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
+  return `sporades-team-billing-operation-${createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
 }
 async function inTransaction(database, callback) {
   if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
@@ -104757,7 +104835,7 @@ function boundedObjectId(value) {
 }
 function safeDigest(raw) {
   try {
-    return createHash6("sha256").update(JSON.stringify(raw)).digest("hex");
+    return createHash7("sha256").update(JSON.stringify(raw)).digest("hex");
   } catch {
     return null;
   }
@@ -105313,10 +105391,10 @@ async function admitTeamBillingActor(database, transaction, auth, input) {
   return Object.freeze({ admitted: true });
 }
 function teamBillingErasureKey(database, teamId) {
-  return createHash7("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
+  return createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
 }
 function teamBillingErasureObjectKey(database, providerObjectId) {
-  return createHash7("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
+  return createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
 }
 async function assertTeamBillingErasureInactive(database, transaction, teamId) {
   const active = await transaction.prepare(transaction.dialect.sql(
@@ -105579,7 +105657,7 @@ function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
   return teamBillingOperationIdempotencyKey(capsuleIdentity, "checkout", teamId, requestId);
 }
 function teamBillingOperationIdempotencyKey(capsuleIdentity, kind, teamId, requestId) {
-  const digest2 = createHash7("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
+  const digest2 = createHash8("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
   return `sporades:team-${kind}:${digest2}`;
 }
 function exactOperationId(payload) {
@@ -105675,7 +105753,7 @@ function teamBillingDenied() {
 }
 
 // src/team-billing-erasure.ts
-import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash9, randomUUID as randomUUID6 } from "node:crypto";
 var TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
 var TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var CHECKOUT_ID2 = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
@@ -105803,7 +105881,7 @@ async function performTeamBillingErasure(database, context2, payload) {
         )).run(now(database), snapshot.teamId, claimToken);
         return false;
       }
-      const digest2 = createHash8("sha256").update(JSON.stringify(canonical)).digest("hex");
+      const digest2 = createHash9("sha256").update(JSON.stringify(canonical)).digest("hex");
       await transaction.prepare(transaction.dialect.sql(
         "INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)"
       )).run(current2.erasureKey, digest2, canonical.providerObservedAt, now(database));
@@ -105964,7 +106042,7 @@ function validateEvidence(value, expected) {
   return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions };
 }
 function providerIdempotency(database, key) {
-  return `sporades-team-billing-erasure-${createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
+  return `sporades-team-billing-erasure-${createHash9("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
 }
 function exactPayload(value) {
   return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "generationId\0operationId" && TEAM_ID.test(value.operationId) && TEAM_ID.test(value.generationId);
@@ -107127,10 +107205,10 @@ function safeJobFailure(error) {
 }
 
 // src/resource-runtime.ts
-import { createHash as createHash10 } from "node:crypto";
+import { createHash as createHash11 } from "node:crypto";
 
 // src/notification-intent-runtime.ts
-import { createHash as createHash9, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID7, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash10, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID7, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 var NOTIFICATION_RESERVATION_MS = 3e4;
 var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
 var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
@@ -107226,7 +107304,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
   };
   const payloadJson = canonicalJson(payload);
   if (Buffer.byteLength(payloadJson, "utf8") > 65536) invalid4();
-  const payloadDigest = createHash9("sha256").update(payloadJson).digest("hex");
+  const payloadDigest = createHash10("sha256").update(payloadJson).digest("hex");
   const key = [identity.table, identity.id, identity.operationId, input.id];
   const existing = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
   if (existing) {
@@ -107528,7 +107606,7 @@ function optionsSnapshot(options, status) {
   const table = boundedIdentity(options.resource.table);
   const id2 = boundedIdentity(options.resource.id);
   const operationId = boundedIdentity(options.operationId);
-  return { table, id: id2, operationId, digest: status ? null : createHash10("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
+  return { table, id: id2, operationId, digest: status ? null : createHash11("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
 }
 function resourceReceiptRow(adapter, row) {
   if (!row || adapter.engine !== "postgres") return row;
@@ -107640,7 +107718,7 @@ function bindOuterResources(database, context2, hooks) {
     });
     return promise;
   };
-  const actorDigest = createHash10("sha256").update(resourceCanonicalJson({ auth: context2.auth, credential: context2.credential ?? null, privileged: false })).digest("hex");
+  const actorDigest = createHash11("sha256").update(resourceCanonicalJson({ auth: context2.auth, credential: context2.credential ?? null, privileged: false })).digest("hex");
   const guardCapability = (name2, value) => wrapCapability(value, (path22) => {
     if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
     if (!["where", "orderBy", "limit"].includes(path22.at(-1))) touched = true;
@@ -107875,7 +107953,7 @@ function bindJobResources(database, context2, claim, hooks) {
   let touched = false;
   const privileged = hooks.privileged === true;
   const actorBinding = resourceCanonicalJson({ auth: context2.auth, credential: context2.credential ?? null, privileged });
-  const actorDigest = createHash10("sha256").update(actorBinding).digest("hex");
+  const actorDigest = createHash11("sha256").update(actorBinding).digest("hex");
   for (const name2 of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
     if (!context2[name2]) continue;
     context2[name2] = wrapCapability(context2[name2], (path22) => {
@@ -125282,7 +125360,7 @@ function parseTeamJoinCode(code) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash11("sha256").update(verifier).digest("base64url");
+  return createHash12("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
   return createHmac2("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
@@ -129092,7 +129170,7 @@ function restartPolicyStatus(mode, overrides2 = {}) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash13, randomBytes as randomBytes7, randomUUID as randomUUID12 } from "node:crypto";
+import { createHash as createHash14, randomBytes as randomBytes7, randomUUID as randomUUID12 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync as readFileSync3 } from "node:fs";
 
 // src/log-envelope.ts
@@ -131292,7 +131370,7 @@ function encodeMimeBase64(value) {
 }
 
 // src/email-events-runtime.ts
-import { createHash as createHash12, createHmac as createHmac3, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash13, createHmac as createHmac3, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 var MAILJET_EVENT_KINDS = {
   sent: "delivered",
   open: "opened",
@@ -131511,7 +131589,7 @@ function normalizePostmarkEvent(raw) {
   const metadata2 = data2.Metadata && typeof data2.Metadata === "object" && !Array.isArray(data2.Metadata) ? data2.Metadata : {};
   const correlationKey = Object.keys(metadata2).find((key) => key.toLowerCase() === "correlationid");
   const correlationId = correlationKey ? text2(metadata2[correlationKey]).trim() : "";
-  const identity = createHash12("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
+  const identity = createHash13("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
   return {
     provider: "postmark",
     kind: descriptor.kind,
@@ -131545,7 +131623,7 @@ function normalizeMailgunWebhook(raw) {
   const accountId = text2(account.id).trim();
   const domainName = text2(domain.name).trim().toLowerCase();
   if (!accountId || !domainName) return false;
-  const providerScope = createHash12("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
+  const providerScope = createHash13("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
   return {
     provider: "mailgun",
     kind,
@@ -138549,7 +138627,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
   if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
     throw commandError2("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
-  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash13("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
+  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash14("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
 }
 var endpointMultipartAdmissionTimeoutMs = 5e3;
 function multipartAdmissionDenied() {
@@ -140400,8 +140478,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       const emailProviderEnabled = database.authConfig.providers.email?.enabled === true;
       if (authorized && message.provider === "email" && emailProviderEnabled && normalized.ok && typeof normalized.password === "string") {
         const reauthenticationThrottleKeys = [
-          `email:${createHash13("sha256").update(normalized.email).digest("base64url")}`,
-          `session:${createHash13("sha256").update(client.session.token).digest("base64url")}`
+          `email:${createHash14("sha256").update(normalized.email).digest("base64url")}`,
+          `session:${createHash14("sha256").update(client.session.token).digest("base64url")}`
         ];
         const throttleNow = database.clock.now();
         let reserved = false;
@@ -141269,7 +141347,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash13("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash14("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -145924,7 +146002,7 @@ function escapeHtml2(value) {
 
 // src/dev-clamav-sidecar.ts
 import { spawn } from "node:child_process";
-import { createHash as createHash14, randomBytes as randomBytes8 } from "node:crypto";
+import { createHash as createHash15, randomBytes as randomBytes8 } from "node:crypto";
 import { mkdir as mkdir6, mkdtemp, rm as rm7 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -146116,7 +146194,7 @@ async function startDevClamavSidecar(options) {
   const dataRoot = path15.join(options.projectDir, ".sporades", "clamav");
   await mkdir6(path15.join(dataRoot, "clamav"), { recursive: true });
   const socketDir = await createDevClamavSocketDirectory();
-  const identity = createHash14("sha256").update(`${path15.resolve(options.projectDir)}\0${process.pid}\0${randomBytes8(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const identity = createHash15("sha256").update(`${path15.resolve(options.projectDir)}\0${process.pid}\0${randomBytes8(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
   const socketPath = path15.join(socketDir, "clamd.sock");
   let child;
@@ -147217,14 +147295,14 @@ function renderCliHelp(command) {
 // src/cli/monitoring-maintenance.ts
 import { spawn as spawn2, spawnSync as spawnSync2 } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { createHash as createHash16, randomBytes as randomBytes10 } from "node:crypto";
+import { createHash as createHash17, randomBytes as randomBytes10 } from "node:crypto";
 import { chown, chmod as chmod3, lstat as lstat11, mkdir as mkdir9, open as open4, readFile as readFile11, readdir as readdir5, rename as rename8, rm as rm9, writeFile as writeFile8 } from "node:fs/promises";
 import path18 from "node:path";
 import { pathToFileURL as pathToFileURL5 } from "node:url";
 
 // src/cli/monitoring-stack.ts
 import { spawnSync } from "node:child_process";
-import { createHash as createHash15 } from "node:crypto";
+import { createHash as createHash16 } from "node:crypto";
 import { chmod as chmod2, cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
 import path17 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
@@ -147295,11 +147373,11 @@ async function runMonitoringStack(action, directory, packageRoot) {
     else {
       if (!current2.isFile()) throw commandError(`Monitoring stack asset is not a regular file: ${name2}`, "Inspect the stack directory and remove unsafe links before continuing.");
       const destinationBytes = await readFile10(destination);
-      if (createHash15("sha256").update(sourceBytes).digest("hex") !== createHash15("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
+      if (createHash16("sha256").update(sourceBytes).digest("hex") !== createHash16("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
     }
   }
   if (action === "init" && !manifestStat && !preexistingContent) {
-    await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash15("sha256").update(await readFile10(path17.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
+    await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash16("sha256").update(await readFile10(path17.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
 `, { flag: "wx", mode: 420 });
     await chmod2(manifestPath, 420);
     created.push("stack-manifest.json");
@@ -147330,7 +147408,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
 }
 
 // src/cli/monitoring-maintenance.ts
-var digest = (bytes) => createHash16("sha256").update(bytes).digest("hex");
+var digest = (bytes) => createHash17("sha256").update(bytes).digest("hex");
 function fail2() {
   throw commandError("Monitoring maintenance could not complete.", "Keep services stopped. Check protected paths, stack provenance, configuration and the maintenance guide; retry with the same inputs. No backend history or Capsule data is deleted.");
 }
@@ -147596,7 +147674,7 @@ async function hashes(dir, prefix = "", exclude = /* @__PURE__ */ new Set()) {
     else if (e.isFile()) {
       const st = await lstat11(file);
       if (!st.isFile() || st.isSymbolicLink() || st.mode & 18) fail2();
-      const hash2 = createHash16("sha256");
+      const hash2 = createHash17("sha256");
       for await (const chunk of createReadStream(file)) hash2.update(chunk);
       result[name2] = hash2.digest("hex");
     } else fail2();
@@ -148027,7 +148105,7 @@ async function readAdmissionInspection(response) {
 }
 
 // src/cli/project-config.ts
-import { createHash as createHash17 } from "node:crypto";
+import { createHash as createHash18 } from "node:crypto";
 import { chmod as chmod4, mkdir as mkdir10, readFile as readFile12, writeFile as writeFile9 } from "node:fs/promises";
 import path19 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -148327,7 +148405,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest2 = createHash17("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest2 = createHash18("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest2}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -153605,7 +153683,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash18("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash19("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -156154,7 +156232,7 @@ function upgradeHostHelper(options) {
     if (!statSync2(localHelper).isFile()) {
       throw new Error("not a file");
     }
-    helperChecksum = createHash18("sha256").update(readFileSync4(localHelper)).digest("hex");
+    helperChecksum = createHash19("sha256").update(readFileSync4(localHelper)).digest("hex");
   } catch {
     throw commandError(
       "Local Host helper file was not found.",

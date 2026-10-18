@@ -58,6 +58,7 @@
       "src/cli/telemetry-profile.ts",
       "src/client-address.ts",
       "src/client-capabilities.ts",
+      "src/client-csp.ts",
       "src/client-prerender.ts",
       "src/client-toolchain.ts",
       "src/client.ts",
@@ -132,7 +133,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "ffea4a1eb9a112bd53d96f2c6bb3f05a3353bc99fe23a27fcc2403b3906da8b8"
+    "digest": "01ee6dd91c5a6a74e0959e77eaa322d9510e9089d61854abb34698b37782cf5a"
   },
   "outputs": {
     "files": [
@@ -334,6 +335,10 @@
       "dist/client-capabilities.d.ts.map",
       "dist/client-capabilities.js",
       "dist/client-capabilities.js.map",
+      "dist/client-csp.d.ts",
+      "dist/client-csp.d.ts.map",
+      "dist/client-csp.js",
+      "dist/client-csp.js.map",
       "dist/client-prerender.d.ts",
       "dist/client-prerender.d.ts.map",
       "dist/client-prerender.js",
@@ -592,6 +597,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "f938a7dcfec7ead4a890fcf773daf26eb4be2b746c5e5d8332f9619ec11c76e9"
+    "digest": "921f48ede7e190536333688fd89f39c8015454baa6c98667d8facf7ad755de09"
   }
 }

@@ -9,6 +9,7 @@ import { createClientRuntimeSource } from "./templates/client-runtime-template.j
 import { clientCapabilityError, clientFrameworkCapability, supportsClientCapability } from "./client-capabilities.js";
 import { placeClientPrerenderFragments, renderClientPrerenderFragment, validateClientPrerenderSourceHtml, validateClientPrerenderOutputHtml, type ClientPrerenderFragment, type ClientPrerenderWarning } from "./client-prerender.js";
 import { canonicalBuildDiagnosticRoots, redactBuildProjectRoots } from "./build-diagnostics.js";
+import { viteCspPlugins } from "./client-csp.js";
 
 export type ClientToolchainName = "esbuild" | "vite";
 export type ClientToolchainDiagnostics = {
@@ -189,7 +190,6 @@ async function buildVite(options: {
       base: "/",
       publicDir: false,
       configFile: projectConfigFile,
-      ...(options.cspNonce ? { html: { cspNonce: "%SPORADES_NONCE%" } } : {}),
       envFile: false,
       envPrefix: "\0",
       mode: "production",
@@ -205,6 +205,7 @@ async function buildVite(options: {
       css: { postcss: { plugins: [] } },
       plugins: [
         ...frameworkPlugins,
+        ...(options.cspNonce ? viteCspPlugins() : []),
         sporadesViteClientPlugin(options.devRefresh === true),
         sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, prerenderState, options.prerender !== undefined, options.onDependency),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
