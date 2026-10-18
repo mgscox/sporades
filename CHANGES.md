@@ -24,6 +24,8 @@ Changes since v0.9.31.
 
 ### 🐛 Bug Fixes
 
+- Preserve unconfigured Hosted Capsule start/restart beneath root-owned sticky ancestors when no backup restore journal exists (#238).
+
 - Bump for vulns (f68221783).
 - Prevent favicon 404s in new scaffolds (#219) (d44aa0970).
 - Offer only supported OAuth sign-in actions (#215) (1977b8e49).

@@ -262,16 +262,17 @@ async function inventoryFiles(directory) {
 export async function recoverHostBackupRestore(data) {
     const capsule = path.dirname(data);
     const journal = path.join(capsule, ".backup-restore.json");
-    let value;
+    // Ordinary lifecycle operations do not opt into backup path policy without a journal.
     try {
-        await trustedBackupPath(journal, true);
-        value = JSON.parse(await readFile(journal, "utf8"));
+        await lstat(journal);
     }
     catch (e) {
         if (e.code === "ENOENT")
             return;
         throw e;
     }
+    await trustedBackupPath(journal, true);
+    const value = JSON.parse(await readFile(journal, "utf8"));
     if (value.version !== 1 || !["prepared", "committed"].includes(value.phase))
         fail("Invalid backup restore recovery journal.");
     const previous = path.join(capsule, ".backup-previous");

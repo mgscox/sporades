@@ -113,6 +113,27 @@ test('restore journal rolls back either interrupted rename and is idempotent', (
   }
 }));
 
+test('existing restore journals retain strict path and permission validation', () => fixture(async dir => {
+  const capsule = path.join(dir, 'capsule');
+  const data = path.join(capsule, 'data');
+  const journal = path.join(capsule, '.backup-restore.json');
+  await mkdir(data, { recursive: true });
+  await writeFile(path.join(data, 'value'), 'unchanged');
+  for (const attack of ['readable-journal', 'writable-ancestor', 'dangling-symlink']) {
+    if (attack === 'dangling-symlink') await symlink(path.join(dir, 'absent'), journal);
+    else {
+      await atomicBackupJson(journal, { version: 1, phase: 'committed' });
+      if (attack === 'readable-journal') await chmod(journal, 0o644);
+      else await chmod(capsule, 0o777);
+    }
+    await assert.rejects(recoverHostBackupRestore(data), /private|Unsafe/, attack);
+    assert.equal(await readFile(path.join(data, 'value'), 'utf8'), 'unchanged');
+    assert.equal((await lstat(journal)).isSymbolicLink(), attack === 'dangling-symlink');
+    await rm(journal);
+    await chmod(capsule, 0o700);
+  }
+}));
+
 test('backup CLI refuses restore without exact destination confirmation before SSH', () => fixture(async dir => {
   const result = spawnSync(process.execPath, ['bin/sporades.js', 'host', 'backup', 'restore', '--subname', 'source', '--to-subname', 'staging', '--id', 'a'.repeat(64), '--confirm', 'source', '--json'], { cwd: root, env: { ...process.env, SPORADES_CONFIG_DIR: path.join(dir, 'config') }, encoding: 'utf8' });
   assert.notEqual(result.status, 0);

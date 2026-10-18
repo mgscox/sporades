@@ -160,6 +160,9 @@ swap finishes cleanup. Retrying restore, creating the next backup or starting th
 Capsule settles its journal while the runtime is stopped. Temporary plaintext
 snapshots are private Host-owned directories removed after settlement; an
 interrupted create is cleaned up by its next attempt.
+When no restore journal exists, start and restart retain the ordinary Host path
+policy, including root-owned sticky ancestors such as `/tmp`. An existing
+journal still requires the strict backup ownership, permissions and no-symlink checks.
 
 This is Capsule data recovery, not full Host disaster recovery. Preserve release
 bundles, registry state, Host profiles, sealed environment key material, backup

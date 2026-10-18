@@ -45518,14 +45518,14 @@ async function inventoryFiles(directory2) {
 async function recoverHostBackupRestore(data2) {
   const capsule = path10.dirname(data2);
   const journal = path10.join(capsule, ".backup-restore.json");
-  let value;
   try {
-    await trustedBackupPath(journal, true);
-    value = JSON.parse(await readFile8(journal, "utf8"));
+    await lstat8(journal);
   } catch (e) {
     if (e.code === "ENOENT") return;
     throw e;
   }
+  await trustedBackupPath(journal, true);
+  const value = JSON.parse(await readFile8(journal, "utf8"));
   if (value.version !== 1 || !["prepared", "committed"].includes(value.phase)) fail2("Invalid backup restore recovery journal.");
   const previous = path10.join(capsule, ".backup-previous");
   const staged = path10.join(capsule, ".backup-next");
