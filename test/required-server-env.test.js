@@ -171,3 +171,17 @@ test('generated Bundle continues by default and starts failClosed after required
     assert.equal((result.stdout + result.stderr + JSON.stringify(events)).includes('private-restored-probe'), false);
   }
 }));
+
+test('failClosed boot with a relative database filename writes diagnostics beside it without claiming its path', async () => temporary(async dir => {
+  const runtime = new URL('../dist/server-runtime-source.js', import.meta.url).href;
+  const program = `import { openDevDatabase } from ${JSON.stringify(runtime)};
+    try { await openDevDatabase('denied.db', '', {}, { env: { required: ['KEY'], failClosed: true } }); }
+    catch (error) { process.stdout.write(error.code); }`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', program], {
+    cwd: dir, encoding: 'utf8', timeout: 15000, env: { ...process.env, SPORADES_CONFIG_DIR: path.join(dir, 'cli-config') },
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.stdout, 'MISSING_REQUIRED_SERVER_ENV');
+  await assert.rejects(readFile(path.join(dir, 'denied.db')), { code: 'ENOENT' });
+  assert.match(await readFile(path.join(dir, 'logs/events.jsonl'), 'utf8'), /Missing required Server env keys: KEY/);
+}));

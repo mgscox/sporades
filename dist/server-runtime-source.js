@@ -1,3 +1,4 @@
+import { dirname as pathDirname } from "node:path";
 import { missingServerEnvKeys, missingServerEnvError, validateServerEnvConfig } from "./server-env-requirements.js";
 import { validatePaymentsConfig } from "./stripe-payment-config.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
@@ -584,7 +585,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     const declaredPayments = validatePaymentsConfig(config.payments);
     const missingEnv = options?.runtimeActionOnly ? [] : missingServerEnvKeys({ ...config, mail: mailConfig, payments: declaredPayments }, serverEnv);
     const missingEnvEvent = missingEnv.length ? createRuntimeLogSink({
-        database: null, config, serverEnv, dataDir: requirePathModule().dirname(databasePath),
+        database: null, config, serverEnv, dataDir: pathDirname(databasePath),
     }).emit({
         category: "platform", event: "env.required.missing", level: "error",
         message: `Missing required Server env keys: ${missingEnv.join(", ")}`, data: null,

@@ -129103,6 +129103,9 @@ function restartPolicyStatus(mode, overrides2 = {}) {
   };
 }
 
+// src/server-runtime-source.ts
+import { dirname as pathDirname } from "node:path";
+
 // src/capsule-rate-limit.ts
 function validRateLimitOptions(value) {
   return !!value && typeof value === "object" && !Array.isArray(value) && Number.isSafeInteger(value.limit) && value.limit > 0 && value.limit < Number.MAX_SAFE_INTEGER && Number.isSafeInteger(value.windowMs) && value.windowMs > 0 && value.windowMs <= 864e5;
@@ -136047,7 +136050,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     database: null,
     config,
     serverEnv,
-    dataDir: requirePathModule().dirname(databasePath)
+    dataDir: pathDirname(databasePath)
   }).emit({
     category: "platform",
     event: "env.required.missing",
