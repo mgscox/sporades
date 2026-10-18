@@ -2,7 +2,8 @@
  * Opt-in Sentry-envelope error collection. Diagnostics conceal complete sensitive
  * values (including arrays/objects) and URL queries/fragments, including relative
  * URLs in messages and stack filenames after punctuation or key/value delimiters.
- * Complete suffixes stay private across quoted whitespace, apostrophes and
+ * Complete suffixes stay private across quoted whitespace, apostrophes beside
+ * URI punctuation or query separators (ambiguous boundaries conceal the remainder), and
  * JSON escapes, including percent-encoded query/fragment delimiters. Surrounding
  * quotation and JSON fields are preserved; unterminated values conceal the line.
  */

@@ -92,10 +92,21 @@ function stripDiagnosticUrlSuffixes(text) {
             const char = text[end];
             const delimiter = char === "\\" && /["']/.test(text[end + 1] ?? "")
                 ? text.slice(end, end + 2) : /["']/.test(char) ? char : "";
-            const wordApostrophe = char === "'" && /[\p{L}\p{M}\p{N}]/u.test(text[end - 1] ?? "")
-                && /[\p{L}\p{M}\p{N}]/u.test(text[end + 1] ?? "");
+            // An apostrophe closes a wrapper only at a prose boundary, never before
+            // URI data such as -Reilly or a query/fragment continuation before the
+            // next quote or line end. Punctuation and spaces cannot hide that suffix.
+            const closesOuter = !!delimiter && delimiter === outerQuote
+                && (delimiter !== "'" || (/^[),.;:!?\]}\x60]*(?:\s|$)/.test(text.slice(end + 1))
+                    && !/^[^'\r\n]*[&#=]/.test(text.slice(end + 1))));
             if (quote) {
-                if (delimiter === quote && !wordApostrophe)
+                // A same-quote apostrophe at the structural wrapper boundary also
+                // bounds an ambiguous value opener after a query separator.
+                if (quote === "'" && outerQuote === "'" && closesOuter)
+                    break;
+                // A value quote may precede a separator or its surrounding string's
+                // quote. Other apostrophes are ambiguous data: keep concealing them.
+                if (delimiter === quote
+                    && (delimiter !== "'" || /^[ \t]*(?:[&#=]|["']|$)/.test(text.slice(end + 1))))
                     quote = "";
                 else if (char === "\\") {
                     end += 2;
@@ -109,7 +120,7 @@ function stripDiagnosticUrlSuffixes(text) {
                     quote = delimiter;
                     valueStart = false;
                 }
-                else if (delimiter === outerQuote && !wordApostrophe)
+                else if (closesOuter)
                     break;
             }
             else if (/\s/.test(char)) {

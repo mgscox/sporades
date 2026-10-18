@@ -181,9 +181,16 @@ const apostropheDiagnosticUrls = ['https://example.test/inbox', ...privateDiagno
 const apostropheDiagnostics = [
   ['bare assignment', 'url=', '', "O'Reilly"],
   ['single quoted', "'", "'", "O'Reilly"],
+  ['single quoted apostrophe before dash', "'", "'", "O'-Reilly"],
+  ['single quoted apostrophe before query separator', "'", "'", "O'"],
+  ['single quoted apostrophe before spaced query separator', "'", "'", "O' \t"],
+  ['single quoted apostrophe before comma and spaced separator', "'", "'", "O', \t"],
+  ['single quoted apostrophe before comma and spaced value', "'", "'", "O', Reilly"],
+  ['single quoted apostrophe before fragment with whitespace', "'", "'", "O'# Reilly"],
   ['double quoted', '"', '"', "O'Reilly"],
   ['bracketed', '[', ']', "O'Reilly's"],
   ['single quoted query value', 'url=', '', "'O'Reilly phrase'"],
+  ['single quoted query value with punctuation', 'url=', '', "'O'-Reilly phrase'"],
   ['double quoted query value', 'url=', '', '"O\'Reilly phrase"'],
   ['quoted punctuation', "'", "',", "O'Reilly"],
   ['JSON field', '{"url":"', '","status":"ready"}', "O'Reilly"],
@@ -197,6 +204,26 @@ const apostropheDiagnostics = [
     frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
   };
 });
+
+// URI punctuation on either side of an apostrophe is data, not proof that the
+// surrounding URL string ended. Keep all five forms and exact public prose.
+const punctuatedApostropheDiagnostics = [...'-._~:/?#[]@!$&()*+,;=%'].flatMap(punctuation => [
+  ["before", `O'${punctuation}Reilly`], ["after", `O${punctuation}'Reilly`],
+]).map(([position, value]) => {
+  const urls = apostropheDiagnosticUrls.map(base => `'${base}?filter=${value}&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker'`);
+  const clean = apostropheDiagnosticUrls.map(base => `'${base}'`);
+  return { name: `apostrophe ${position} URI punctuation: ${value}`,
+    message: `Ready? Investigate #234 ${urls.join(' ')} Continue.`,
+    safe: `Ready? Investigate #234 ${clean.join(' ')} Continue.`,
+    stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
+    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+  };
+});
+
+// Each fresh loader admits twenty errors per minute; stay below that real bound.
+const punctuatedApostropheGroups = Array.from({ length: Math.ceil(punctuatedApostropheDiagnostics.length / 16) }, (_, index) => [
+  `apostrophes beside URI punctuation ${index + 1}`, punctuatedApostropheDiagnostics.slice(index * 16, (index + 1) * 16),
+]);
 
 const escapedQueryDiagnostics = apostropheDiagnosticUrls.map(base => {
   const url = base + '?filter="O\'Reilly phrase"&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker';
@@ -258,6 +285,7 @@ for (const [name, before, after, suffix] of [
 
 for (const [name, probes] of [
   ['apostrophes', [...apostropheDiagnostics, ...escapedQueryDiagnostics]],
+  ...punctuatedApostropheGroups,
   ['structural URL suffixes', structuralQueryDiagnostics],
 ]) test(`${name} stay private at server and tunnel receivers`, async t => {
   const received = [];
@@ -491,6 +519,7 @@ test('generated loader redacts diagnostic URL delimiters across all relative for
 
 for (const [name, probes] of [
   ['apostrophes', [...apostropheDiagnostics, ...escapedQueryDiagnostics]],
+  ...punctuatedApostropheGroups,
   ['structural URL suffixes', structuralQueryDiagnostics],
 ]) test(`generated loader conceals ${name} in messages and stack filenames`, async t => {
   const { Window } = await import('happy-dom');

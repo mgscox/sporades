@@ -28568,9 +28568,10 @@ function stripDiagnosticUrlSuffixes(text2) {
     while (end < text2.length && !/[\r\n]/.test(text2[end])) {
       const char = text2[end];
       const delimiter = char === "\\" && /["']/.test(text2[end + 1] ?? "") ? text2.slice(end, end + 2) : /["']/.test(char) ? char : "";
-      const wordApostrophe = char === "'" && /[\p{L}\p{M}\p{N}]/u.test(text2[end - 1] ?? "") && /[\p{L}\p{M}\p{N}]/u.test(text2[end + 1] ?? "");
+      const closesOuter = !!delimiter && delimiter === outerQuote && (delimiter !== "'" || /^[),.;:!?\]}\x60]*(?:\s|$)/.test(text2.slice(end + 1)) && !/^[^'\r\n]*[&#=]/.test(text2.slice(end + 1)));
       if (quote) {
-        if (delimiter === quote && !wordApostrophe) quote = "";
+        if (quote === "'" && outerQuote === "'" && closesOuter) break;
+        if (delimiter === quote && (delimiter !== "'" || /^[ \t]*(?:[&#=]|["']|$)/.test(text2.slice(end + 1)))) quote = "";
         else if (char === "\\") {
           end += 2;
           continue;
@@ -28579,7 +28580,7 @@ function stripDiagnosticUrlSuffixes(text2) {
         if (valueStart) {
           quote = delimiter;
           valueStart = false;
-        } else if (delimiter === outerQuote && !wordApostrophe) break;
+        } else if (closesOuter) break;
       } else if (/\s/.test(char)) {
         const continuation = valueStart || /^[ \t]*[&#=]/.test(text2.slice(end));
         if (!outerQuote && !continuation) break;

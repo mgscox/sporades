@@ -96,8 +96,10 @@ URL queries/fragments are stripped from absolute, protocol-relative (`//host/pat
 root-relative (`/path`) and explicit relative (`./path`, `../path`) URLs, including
 stack filenames. Relative URLs are recognized after punctuation and key/value
 delimiters, including `url=/path`, `[//host/path]`, and `<./path>`.
-Embedded apostrophes such as `?filter=O'Reilly&cap=...` cannot end stripping
-or expose later query values or fragments. Quoted query values may include
+Embedded apostrophes such as `?filter=O'Reilly&cap=...` or `?filter=O'-Reilly&cap=...`
+cannot end stripping or expose later query values or fragments. Apostrophes beside
+URI punctuation or query separators remain private; ambiguous quotation conceals
+the remainder until a structural boundary or line end. Quoted query values may include
 leading/trailing spaces or tabs, including JSON-escaped quotation such as
 `?filter=\" O'Reilly phrase \"&cap=...`. The runtime scans quoted values and escapes
 through the URL boundary, then removes everything from the first `?` or `#`
