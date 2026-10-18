@@ -707,7 +707,10 @@ configuration:
 
 `payments` remains optional so existing Capsules and non-blank demonstration
 templates retain their current behavior. The dormant shape is exact and grants
-no provider authority. Activation is all-or-nothing:
+no provider authority. Use the runtime-provided
+[`usePayments()` or `payments.subscribe()`](./client-auth-and-preferences.md#hide-checkout-while-billing-is-dormant)
+to hide Checkout and Customer Portal actions while billing is dormant, without
+writing an application query. Activation is all-or-nothing:
 
 ```json
 {
