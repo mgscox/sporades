@@ -501,6 +501,7 @@ test("sporades doctor warns when Capsule app tables have no ACL declarations", a
           schema: {
             notes: table({ title: String() }),
             users: table({ name: String() }),
+            emptyRules: table({ value: String() }).acl({}),
           },
         });
       `,
@@ -515,9 +516,13 @@ test("sporades doctor warns when Capsule app tables have no ACL declarations", a
     assert.equal(check.severity, "warning");
     assert.match(check.message, /not deny-by-default today/);
     assert.match(check.hint, /Add \.acl\(\{ read, write \}\)/);
+    assert.match(check.hint, /\.acl\(acl\.privilegedOnly\(\)\)/);
+    assert.match(check.message, /Allow-all tables: notes, users, emptyRules/);
+    assert.deepEqual(check.details.allowAllTables, ["notes", "users", "emptyRules"]);
     assert.deepEqual(check.details.tables, [
       { name: "notes", missing: ["declaration", "read", "write"] },
       { name: "users", missing: ["declaration", "read", "write"] },
+      { name: "emptyRules", missing: ["read", "write"] },
     ]);
   });
 });
@@ -544,11 +549,30 @@ test("sporades doctor distinguishes partial table ACL declarations", async () =>
     const check = findCheck(JSON.parse(result.stdout), "doctor.capsule-authoring.acl-posture");
 
     assert.equal(check.status, "warn");
+    assert.deepEqual(check.details.allowAllTables, []);
+    for (const name of ["readOnlyNotes", "writeOnlyNotes", "insertOnlyNotes"]) assert.ok(check.message.includes(name));
     assert.deepEqual(check.details.tables, [
       { name: "readOnlyNotes", missing: ["write"] },
       { name: "writeOnlyNotes", missing: ["read"] },
       { name: "insertOnlyNotes", missing: ["read", "write"] },
     ]);
+  });
+});
+
+test("sporades doctor accepts privileged-only table ACL helpers in bundled metadata", async () => {
+  await withTempDir(async (dir) => {
+    await writeCapsuleProject(dir, `
+      import { acl, String, capsule, table } from "sporades/server";
+      export default capsule({ schema: {
+        secrets: table({ value: String() }).acl(acl.privilegedOnly()),
+        internal: table({ value: String() }).acl(acl.denyAll()),
+      } });
+    `);
+    const result = await runCli(["doctor", "--strict", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const check = findCheck(JSON.parse(result.stdout), "doctor.capsule-authoring.acl-posture");
+    assert.equal(check.status, "pass");
+    assert.deepEqual(check.details, { tableCount: 2, inspectedResource: "app-tables" });
   });
 });
 
