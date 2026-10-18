@@ -82879,9 +82879,10 @@ function createConnection() {
     },
     subscribePayments(listener) {
       if (typeof listener !== "function") throw new TypeError("payments.subscribe requires a listener function.");
-      paymentsStateListeners.add(listener);
+      const wrapped = state => listener(state);
+      paymentsStateListeners.add(wrapped);
       listener(latestPaymentsState);
-      return { unsubscribe() { paymentsStateListeners.delete(listener); } };
+      return { unsubscribe() { paymentsStateListeners.delete(wrapped); } };
     },
     isAuthenticated() {
       return request("auth.get")

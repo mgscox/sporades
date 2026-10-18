@@ -120,6 +120,25 @@ test("the shipped client and generated browser runtime both expose payments and 
   }
 });
 
+test("payment observers have independent, idempotent subscription lifetimes", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    const states = [];
+    const listener = state => states.push(state);
+    const first = runtime.payments.subscribe(listener);
+    first.unsubscribe();
+    const second = runtime.payments.subscribe(listener);
+    first.unsubscribe();
+    await settleMicrotasks();
+    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "auth.result", data: {
+      auth: anonymousAuth, payments: { stripe: { enabled: true, livemode: false } },
+    }, error: null }) });
+    assert.equal(states.at(-1).stripe.enabled, true, "retired cleanup cannot remove a later observer");
+    second.unsubscribe();
+  } finally { browser.cleanup(); }
+});
+
 test("browser client runtime exposes no Privileged server role authority", async () => {
   const runtime = await importClientRuntime();
 
