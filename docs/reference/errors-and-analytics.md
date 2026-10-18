@@ -94,7 +94,9 @@ Sensitive arrays and objects are concealed as a whole, including every token
 and Set-Cookie entry; malformed containers conceal the remaining text.
 URL queries/fragments are stripped from absolute, protocol-relative (`//host/path`),
 root-relative (`/path`) and explicit relative (`./path`, `../path`) URLs, including
-stack filenames. Surrounding punctuation and ordinary prose such as `Investigate
+stack filenames. Relative URLs are recognized after punctuation and key/value
+delimiters, including `url=/path`, `[//host/path]`, and `<./path>`.
+Surrounding punctuation and ordinary prose such as `Investigate
 #234 collection` and `Ready? Continue debugging.` are preserved.
 There are no custom analytics properties,
 page titles, request bodies, cookies or authorization headers in provider events.

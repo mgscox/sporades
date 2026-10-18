@@ -140,6 +140,43 @@ test('relative diagnostic URLs lose private suffixes in receiver messages and st
   });
 });
 
+const diagnosticUrlDelimiters = [
+  ['assignment', 'url=', ''], ['square brackets', '[', ']'], ['angle brackets', '<', '>'],
+  ['colon', 'url:', ''], ['braces', '{', '}'], ['comma', ',', ''],
+  ['semicolon', ';', ''], ['pipe', '|', ''], ['backticks', '`', '`'],
+  ['period', 'url.', ''], ['dash', 'url-', ''], ['underscore', 'url_', ''],
+];
+const delimitedUrls = (before, after, privateValues = true) => privateDiagnosticUrls
+  .map(base => before + (privateValues ? privateUrl(base) : base) + after);
+
+test('relative diagnostic URL delimiters preserve prose and conceal suffixes at both receivers', async t => {
+  const received = [];
+  const receiver = await listen(t, async (request, response) => {
+    let body = ''; for await (const part of request) body += part;
+    received.push(JSON.parse(body.trim().split('\n')[2])); response.end();
+  });
+  for (const [name, before, after] of diagnosticUrlDelimiters) {
+    const observability = createRuntimeObservability({ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1' });
+    t.after(() => observability.close());
+    const origin = await listen(t, (request, response) => routeCollection({ observability }, request, response));
+    for (const base of privateDiagnosticUrls) await t.test(`${name}: ${base}`, async () => {
+      const start = received.length;
+      const message = `Ready? Investigate #234 ${before}${privateUrl(base)}${after} Continue.`;
+      const stack = `Error: ${message}\n    at execute (${before}${privateUrl(base)}${after}:12:8)`;
+      observability.capture({ message, stack }, 'mutation');
+      await observability.flush();
+      assert.equal((await fetch(origin + '/__sporades/collect', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'error', message, stack }) })).status, 204);
+      await observability.flush();
+      assert.equal(received.length, start + 2);
+      for (const event of received.slice(start)) {
+        assert.doesNotMatch(JSON.stringify(event), /qa-query-marker|qa-fragment-marker/);
+        assert.equal(event.exception.values[0].value, `Ready? Investigate #234 ${before}${base}${after} Continue.`);
+        assert.deepEqual(event.exception.values[0].stacktrace.frames, [{ filename: before + base + after, function: 'execute', lineno: 12, colno: 8 }]);
+      }
+    });
+  }
+});
+
 test('runtime captures query, mutation, endpoint and Job failures without changing rollback or retries', async t => {
   const { mkdtemp, rm } = await import('node:fs/promises');
   const path = await import('node:path');
@@ -241,11 +278,10 @@ test('tunnel rejects cross-origin, malformed and unsupported events; spoofed for
   assert.equal(received[0].headers['x-forwarded-for'], undefined);
 });
 
-test('generated Capsule serves the loader under self CSP and collects client errors with server-side redaction', async t => {
+async function generatedCollectionFixture(t) {
   const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
   const path = await import('node:path');
   const { spawn } = await import('node:child_process');
-  const { Window } = await import('happy-dom');
   const { createServerBundleModuleSource } = await import('../dist/templates/server-bundle-module-graph.js');
   const { bundleServerCapsuleModule } = await import('../dist/bundle-pipeline.js');
   const root = await mkdtemp(path.join(process.cwd(), '.scratch', 'collect-bundle-'));
@@ -272,6 +308,12 @@ test('generated Capsule serves the loader under self CSP and collects client err
   assert.match(document.headers.get('content-security-policy'), /script-src 'self'(?:;|$)/);
   const script = await (await fetch(origin + '/__sporades/observe.js')).text();
   assert.doesNotMatch(script, /server-only-secret|website-234|DSN|127\.0\.0\.1/);
+  return { origin, received, script };
+}
+
+test('generated Capsule serves the loader under self CSP and collects client errors with server-side redaction', async t => {
+  const { Window } = await import('happy-dom');
+  const { origin, received, script } = await generatedCollectionFixture(t);
   const window = new Window({ url: origin + '/?request=client-secret#client-fragment' });
   t.after(() => window.happyDOM.abort());
   const sends = [];
@@ -314,6 +356,31 @@ test('generated Capsule serves the loader under self CSP and collects client err
   assert.doesNotMatch(received.map(event => event.body).join('\n'), /qa-query-marker|qa-fragment-marker/);
   assert.equal(received.filter(event => event.headers['content-type'] === 'application/json').length, 2);
   assert.doesNotMatch(received.map(event => event.body).join('\n'), /server-only-secret|client-secret|client-fragment|token-error|token-transport|route-token|second-route/);
+});
+
+test('generated loader redacts diagnostic URL delimiters across all relative forms', async t => {
+  const { Window } = await import('happy-dom');
+  const { origin, received, script } = await generatedCollectionFixture(t);
+  const window = new Window({ url: origin });
+  t.after(() => window.happyDOM.abort());
+  const sends = [];
+  window.fetch = (url, options) => { const promise = fetch(new URL(url, origin), { ...options, headers: { ...options.headers, origin } }); sends.push(promise); return promise; };
+  window.eval(script);
+  for (const [name, before, after] of diagnosticUrlDelimiters) await t.test(name, async () => {
+    const message = `Ready? Investigate #234 ${delimitedUrls(before, after).join(' ')} Continue.`;
+    const error = new Error(message);
+    error.stack = `Error: ${message}\n` + delimitedUrls(before, after).map(url => `    at execute (${url}:12:8)`).join('\n');
+    window.dispatchEvent(new window.ErrorEvent('error', { error }));
+    await Promise.all(sends);
+    const count = diagnosticUrlDelimiters.findIndex(entry => entry[0] === name) + 1;
+    for (let i = 0; i < 100 && received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope').length < count; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    const errors = received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope');
+    assert.equal(errors.length, count);
+    const event = JSON.parse(errors.at(-1).body.trim().split('\n')[2]);
+    assert.doesNotMatch(JSON.stringify(event), /qa-query-marker|qa-fragment-marker/);
+    assert.equal(event.exception.values[0].value, `Ready? Investigate #234 ${delimitedUrls(before, after, false).join(' ')} Continue.`);
+    assert.deepEqual(event.exception.values[0].stacktrace.frames, delimitedUrls(before, after, false).reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })));
+  });
 });
 
 test('project validation accepts only opt-in protocol contracts and rejects unsafe provider configuration', async () => {

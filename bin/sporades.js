@@ -80496,8 +80496,8 @@ function redactDiagnosticText(value, serverEnv = {}) {
   }
   safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
   return safe.replace(
-    /((?:https?:\/\/|file:\/\/\/|(?:^|[\s("'])(?:\/{1,2}|\.\.?\/))[^\s?#<>"']*)([?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*)/gi,
-    (_match, path22, suffix) => path22 + (suffix.slice(1).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}]+$/)?.[0] ?? "")
+    /((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"']*)([?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*)/giu,
+    (_match, path22, suffix) => path22 + (suffix.slice(1).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? "")
   ).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
 }
 

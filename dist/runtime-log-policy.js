@@ -102,8 +102,9 @@ export function redactDiagnosticText(value, serverEnv = {}) {
     }
     safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
     // Only URL suffixes are private. A question or issue number in ordinary prose is data.
+    // Relative URLs can follow punctuation or key/value delimiters; letters, numbers and combining marks stay within words.
     // Quoted query values travel with the URL, so their contents cannot survive stripping.
-    return safe.replace(/((?:https?:\/\/|file:\/\/\/|(?:^|[\s("'])(?:\/{1,2}|\.\.?\/))[^\s?#<>"']*)([?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*)/gi, (_match, path, suffix) => path + (suffix.slice(1).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}]+$/)?.[0] ?? ""))
+    return safe.replace(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"']*)([?#](?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s<>"'])*)/giu, (_match, path, suffix) => path + (suffix.slice(1).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? ""))
         .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
 }
 //# sourceMappingURL=runtime-log-policy.js.map
