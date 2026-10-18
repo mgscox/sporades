@@ -10,6 +10,8 @@ import type {
 } from "./hosted-capsule-contract.js";
 
 export type HostHelperAction =
+  | "capsule.backup.create" | "capsule.backup.list" | "capsule.backup.restore" | "capsule.backup.prune"
+  | "host.backup.configure" | "host.backup.status"
   | "capsule.register"
   | "capsule.sealed-env.rotate-key"
   | "capsule.unregister"
@@ -99,6 +101,7 @@ export type HostHelperRequestBase = JsonObject & {
   verification?: HostHelperVerification;
   accessKeys?: JsonObject;
   diagnostics?: { queryCredential: string };
+  backup?: { policy?: import("./host-backups.js").HostBackupPolicy; sourceSubname?: string; id?: string; confirm?: string };
   telemetry?: { tracePropagationOrigins?: string[]; endpoint: string; credential: string; inventoryCredential?: string; inventoryHost?: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
 };
 
@@ -211,6 +214,7 @@ export type HostAdmissionPublishRequest = HostHelperRequestBase & {
   admission: { contents: string | null };
 };
 export type HostHelperRequest =
+  | (HostHelperRequestBase & { action: "capsule.backup.create" | "capsule.backup.list" | "capsule.backup.restore" | "capsule.backup.prune" | "host.backup.configure" | "host.backup.status" })
   | HostAdmissionPublishRequest
   | HostBootstrapRequest
   | HostRegistrationRequest

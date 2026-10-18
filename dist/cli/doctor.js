@@ -361,6 +361,17 @@ async function hostedCapsuleDoctorChecks(options) {
         runHostJsonCommand(["host", "ssh", target.subname, "--host", target.alias, "--json"], options.projectDir),
     ]);
     checks.push(hostHealthCheck(hostHealth, commands));
+    const backup = runtimeHealth.data?.backups;
+    if (backup?.configured) {
+        const age = backup.ageSeconds === null ? "missing" : `${Math.floor(backup.ageSeconds)} seconds old`;
+        checks.push({
+            id: "doctor.hosted.backups", title: "Capsule data backups", scope: "hosted",
+            severity: backup.stale ? "warning" : "info", status: backup.stale ? "warn" : "pass",
+            message: `Last Capsule backup: ${age}${backup.stale ? " (stale)" : ""}.`,
+            details: { lastBackupAt: backup.lastBackupAt, ageSeconds: backup.ageSeconds, maxAgeSeconds: backup.maxAgeSeconds },
+            commands: [`sporades host backup create --host ${target.alias} --subname ${target.subname} --json`],
+        });
+    }
     const capsule = hostedCapsuleFromList(list, target.subname);
     checks.push(hostedRegistryCheck(list, capsule, commands));
     if (!capsule) {

@@ -461,7 +461,7 @@ if (request.action === "capsule.list") {
 }
 if (request.action === "capsule.health") {
   if (${JSON.stringify(healthOk)}) {
-    write({ ok: true, data: { capsule: { subname: request.capsule.subname, domain: request.host.domain, registered: true }, release: ${JSON.stringify(currentRelease)}, container: { name: request.health.container.name, running: true }, route: { url: request.health.runtimeHealthUrl, responding: true }, runtime: { ready: true, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } } }, error: null });
+    write({ ok: true, data: { capsule: { subname: request.capsule.subname, domain: request.host.domain, registered: true }, release: ${JSON.stringify(currentRelease)}, container: { name: request.health.container.name, running: true }, route: { url: request.health.runtimeHealthUrl, responding: true }, runtime: { ready: true, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, backups: ${JSON.stringify(overrides.backups)} }, error: null });
   } else {
     write({ ok: false, data: { failure: ${JSON.stringify(healthFailure)}, capsule: { subname: request.capsule.subname }, route: { url: request.health.runtimeHealthUrl, responding: false }, container: { name: request.health.container.name, running: false } }, error: { message: "Hosted Capsule health failed.", hint: "Check Hosted Capsule logs, then retry health." } });
   }
@@ -1284,7 +1284,7 @@ test("sporades doctor diagnoses a healthy Hosted Capsule through Host inspection
   await withTempDir(async (dir) => {
     const projectDir = await createProject(dir, "team-notes");
     const configDir = path.join(dir, "machine-config");
-    const fakeSsh = await installDoctorFakeSsh(dir, hostedDoctorFixtureScript());
+    const fakeSsh = await installDoctorFakeSsh(dir, hostedDoctorFixtureScript({ backups: { configured: true, lastBackupAt: "2026-10-18T00:00:00.000Z", ageSeconds: 123, maxAgeSeconds: 93600, stale: false } }));
 
     await withHttpServer((request, response) => {
       response.writeHead(200, { "content-type": "application/json" });
@@ -1325,6 +1325,9 @@ test("sporades doctor diagnoses a healthy Hosted Capsule through Host inspection
       assert.equal(findCheck(envelope, "doctor.hosted.registry").status, "pass");
       assert.equal(findCheck(envelope, "doctor.hosted.release").status, "pass");
       assert.equal(findCheck(envelope, "doctor.hosted.runtime-health").status, "pass");
+      assert.equal(findCheck(envelope, "doctor.hosted.backups").status, "pass");
+      assert.equal(findCheck(envelope, "doctor.hosted.backups").details.ageSeconds, 123);
+      assert.match(findCheck(envelope, "doctor.hosted.backups").message, /123 seconds old/);
       assert.equal(findCheck(envelope, "doctor.hosted.stats").status, "pass");
       assert.equal(findCheck(envelope, "doctor.hosted.sealed-server-env").status, "pass");
       assert.equal(findCheck(envelope, "doctor.hosted.ssh").status, "pass");

@@ -218,6 +218,13 @@ Profile commands:
                       Change a Hosted Capsule's Telemetry opt-out
 
 Capsule commands:
+  backup configure --file <policy.json>
+                      Configure encrypted backups and an optional Host timer
+  backup create|list|prune --subname <name>
+                      Manage encrypted SQLite and files snapshots
+  backup restore --subname <source> --id <full-id> --confirm <destination>
+                      Restore a stopped Capsule; optionally --to-subname <destination>
+  backup status       Report last successful backup age for each Capsule
   bind <subname>      Bind this project to a Hosted Capsule
   register <subname>  Register a Hosted Capsule
   push                Push and install a Hosted Capsule release

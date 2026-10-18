@@ -150,6 +150,10 @@ The repository currently includes:
   registration, release push, start, stop, restart, unregister, storage delete,
   list, stats, logs, SSH inspection, bootstrap, and low-level helper
   invocation.
+- Opt-in encrypted Hosted Capsule SQLite/files backups through local or HTTPS S3
+  restic repositories, explicit stopped-target restore, retention, Host timers,
+  backup-age diagnostics and stale-backup alerts. See the [restore-rehearsal
+  runbook](./reference/capsule-backups.md). Full Host disaster recovery remains separate.
 - Hosted Capsules routed through Caddy with domain-scoped registry, storage,
   route files, deterministic Docker containers, loopback-only published ports,
   Docker ownership labels, and a Host-server-owned unavailable response for
@@ -1438,7 +1442,7 @@ and exposes value-safe presence checks through `sporades env has <name>`.
 - Providing file-based routing.
 - Supporting external databases as the primary app store.
 - Making endpoints the main data API.
-- Adding multi-node orchestration, managed backups, DNS automation, or a public
+- Adding multi-node orchestration, full Host disaster recovery, DNS automation, or a public
   hosted management API in the current scope.
 
 ## Log payload cap validation

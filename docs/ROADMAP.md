@@ -22,7 +22,8 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
-| Automated backups | candidate | Back up SQLite data and uploaded file bytes for deployed Container sessions and Hosted Capsules. Needs restore semantics, retention, encryption, and CLI inspection. Backup/restore is for transient data to support redeployment or restore after deletion; i.e. the mapped Docker paths. Can be just `tar` or similar. |
+| Capsule data backups | implemented | Opt-in Hosted SQLite/files backups with encrypted local or HTTPS S3 restic repositories, retention, a systemd schedule, freshness diagnostics and stale-backup alerts. See [Capsule backups and restore rehearsals](./reference/capsule-backups.md). Local Container session backups remain future work. |
+| Local Container backups | candidate | Back up SQLite data and uploaded file bytes for deployed Container sessions and Hosted Capsules. Needs restore semantics, retention, encryption, and CLI inspection. Backup/restore is for transient data to support redeployment or restore after deletion; i.e. the mapped Docker paths. Can be just `tar` or similar. |
 | Host backup and restore | candidate | Back up and restore Host-server-owned state, including Hosted Capsule registry data, persistent Capsule data, uploaded file bytes, Host-generated sealed env keys, release metadata, and route/proxy state. Needs retention, encryption, restore authorization, and disaster-recovery semantics. |
 
 ## Recently Implemented

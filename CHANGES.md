@@ -6,6 +6,8 @@ Changes since v0.9.31.
 
 ### 🚀 Features
 
+- Add opt-in encrypted Capsule data backups, local/S3 targets, schedules, restore rehearsals and freshness alerts (#238).
+
 - Add opt-in upload ACL and global MIME policy, plus privileged File listing for orphan cleanup (#233).
 - Add shared Capsule rate limits and trusted-address authentication throttles (#232).
 - Export HTML-safe mail helpers and support password-reset body placeholders (#230).

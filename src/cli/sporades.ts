@@ -86,6 +86,7 @@ import {
 } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
+import { validateHostBackupPolicy } from "./host-backups.js";
 import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
@@ -1264,6 +1265,27 @@ function validateServerEnvKeyName(name: string) {
 }
 
 function parseHostArgs(args: string[]): LooseRecord {
+  if (args[0] === "backup") {
+    const operation = args[1];
+    if (!["configure", "create", "list", "restore", "prune", "status"].includes(operation)) throw commandError("Unknown backup operation.", "Use host backup configure|create|list|restore|prune|status.");
+    const options: LooseRecord = { subcommand: "backup", operation, projectDir: process.cwd(), json: false };
+    const names: Record<string, string> = { "--host": "hostAlias", "--subname": "subname", "--to-subname": "toSubname", "--id": "id", "--confirm": "confirm", "--file": "file" };
+    for (let i = 2; i < args.length; i++) {
+      if (args[i] === "--json") { options.json = true; continue; }
+      const name = names[args[i]];
+      if (!name || options[name] !== undefined) throw commandError("Invalid backup option.", "Use --host, --subname, --to-subname, --id, --confirm, --file and --json.");
+      options[name] = readFlagValue(args, ++i, args[i - 1]);
+    }
+    if (options.hostAlias) validateHostAlias(options.hostAlias);
+    for (const name of ["subname", "toSubname", "confirm"]) if (options[name]) validateCapsuleSubname(options[name]);
+    if (!["configure", "status"].includes(operation) && !options.subname) throw commandError("Missing backup Capsule subname.", "Pass --subname <name>.");
+    if (operation === "configure" && (!options.file || options.subname)) throw commandError("Missing backup policy file or unexpected subname.", "Use host backup configure --file <policy.json>.");
+    if (operation !== "configure" && options.file) throw commandError("Unexpected backup policy file.", "Use --file with configure.");
+    if (operation === "restore") {
+      if (!/^[a-f0-9]{64}$/.test(options.id ?? "") || options.confirm !== (options.toSubname ?? options.subname)) throw commandError("Restore requires a snapshot ID and confirmation of the destination.", "Pass --id <full-id> --confirm <destination-subname> and stop the destination Capsule first.");
+    } else if (options.id || options.confirm || options.toSubname) throw commandError("Unexpected restore option.", "Use --id, --confirm and --to-subname only with restore.");
+    return options;
+  }
   const [subcommand, ...rest] = args;
   let json = false;
   let hostAlias = null;
@@ -3957,6 +3979,25 @@ async function ensureHostProfileEnvKey(config: LooseRecord, alias: string | numb
 
 async function manageHost(options: LooseRecord) {
   switch (options.subcommand) {
+    case "backup": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const policy = options.operation === "configure" ? validateHostBackupPolicy(JSON.parse(await readFile(path.resolve(options.file), "utf8"))) : undefined;
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile,
+        action: ["configure", "status"].includes(options.operation) ? `host.backup.${options.operation}` : `capsule.backup.${options.operation}`,
+        subname: options.toSubname ?? options.subname, projectDir: options.projectDir,
+        backup: { ...(policy ? { policy } : {}), ...(options.subname ? { sourceSubname: options.subname } : {}), ...(options.id ? { id: options.id, confirm: options.confirm } : {}) } });
+      if (result.ok && policy) {
+        (config.profiles[resolved.alias] as LooseRecord).backups = policy;
+        await writeHostConfig(config);
+      }
+      if (options.json) writeResult(result, !result.ok);
+      else {
+        if (!result.ok) throw commandError(result.error.message, result.error.hint);
+        process.stdout.write(`${JSON.stringify(result.data, null, 2)}\n`);
+      }
+      return;
+    }
     case "telemetry": {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
@@ -4095,10 +4136,15 @@ async function manageHost(options: LooseRecord) {
           throw commandError(result.error.message, result.error.hint);
         }
         process.stdout.write(`Hosted Capsule runtime healthy: ${health.runtimeHealthUrl}\n`);
+        if (result.data.backups?.configured) process.stdout.write(`Last backup: ${result.data.backups.ageSeconds === null ? "missing" : `${Math.floor(result.data.backups.ageSeconds)} seconds ago`}${result.data.backups.stale ? " (stale)" : ""}\n`);
         return;
       }
 
       const result = await checkHostServerHealth(resolved.alias, resolved.profile);
+      if (resolved.profile.backups) {
+        const backups = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: "host.backup.status", projectDir: options.projectDir });
+        Object.assign(result.data, { backups: backups.ok ? backups.data : { configured: true, unavailable: true } });
+      }
 
       if (options.json) {
         writeResult(result, !result.ok);
@@ -4109,6 +4155,8 @@ async function manageHost(options: LooseRecord) {
         throw commandError(result.error.message, result.error.hint);
       }
       process.stdout.write(`Host server healthy: ${result.data.healthUrl}\n`);
+      const backups = (result.data as LooseRecord).backups;
+      for (const capsule of backups?.capsules ?? []) if (capsule.configured) process.stdout.write(`Backup ${capsule.subname}: ${capsule.ageSeconds === null ? "missing" : `${Math.floor(capsule.ageSeconds)} seconds ago`}${capsule.stale ? " (stale)" : ""}\n`);
       return;
     }
 
@@ -6079,6 +6127,7 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
     capsule: options.subname ? { subname: options.subname } : null,
   };
   if (options.admission) request.admission = options.admission;
+  if (options.backup) request.backup = options.backup;
   if (options.bootstrap) {
     request.bootstrap = options.bootstrap;
   }
