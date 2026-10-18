@@ -448,6 +448,14 @@ included in HTTP errors, CLI output, or client transport results.
 preferences and file APIs, app-message helpers, a `createHooks` factory,
 Vue-native composables, Svelte stores, SolidJS signals, Lit reactive
 controllers, and Inferno lifecycle adapters over the same connection.
+`createHooks` also provides `usePayments()`, returning only
+`{ stripe: { enabled: boolean, livemode: boolean | null } }` from the runtime
+handshake. The framework-neutral `payments.get()` and `payments.subscribe()`
+expose the same immutable activation state without an app query. Missing,
+dormant, unknown, and disconnected state defaults to disabled with null mode.
+Clients hide Checkout and Customer Portal actions while disabled; server billing
+authorization remains required. No credentials, Server env names, or provider
+IDs are exposed. The API is additive within 0.9.x.
 The framework-neutral `prerender` API additionally exposes `discover()` for a
 readonly snapshot of opaque, named static-fragment boundary handles and
 `dismiss(name?)` for explicit all-fragment or name-filtered cleanup. Each handle
