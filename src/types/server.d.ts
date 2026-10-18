@@ -622,6 +622,30 @@ export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDef
   /** Provider-free verified billing state for the exact Team whose Join is being admitted. */
   teamBilling: Pick<CurrentUserTeamBillingApi, "get">;
 };
+/** A destructive transition is proposed only after current Session, Team and final-admin checks under its lifecycle lock. */
+export type TeamDestructivePolicyInput = Readonly<{
+  teamId: string;
+  actorUserId: string;
+  operation: "demote" | "removeMember" | "leave" | "delete";
+  /** Exact affected current membership; deletion currently requires the actor to be the sole member. */
+  member: Readonly<{ userId: string; role: "admin" | "member" }>;
+  /** Deletion affects every responsibility associated with teamId, regardless of its owner or holder. */
+  scope: "member" | "team";
+}>;
+/** Only an own data property `allow: true`, with no additional properties, permits the write. */
+export type TeamDestructivePolicyDecision = { allow: boolean };
+export type TeamDestructivePolicyContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+  auth: Readonly<AuthContext>;
+  /** Transaction-bound cross-owner Capsule reads bypass row ACLs. No writes, runtime tables, provider operations or nested Privileged capability. Revoked on settle/abort/5-second budget expiry; unreadable or unfinished reads deny even if caught. */
+  db: ReadOnlyDatabaseFromSchema<Schema>;
+  signal: AbortSignal;
+}>;
+/** Snapshot of one optional exact member, read after acquiring the lifecycle lock. No profiles or credentials. */
+export type TeamLifecycleSnapshot = Readonly<{
+  teamId: string;
+  member: Readonly<{ userId: string; role: "admin" | "member" }> | null;
+}>;
+
 export type TeamBillingQuantityPolicy =
   | { kind: "fixed"; value: number }
   | { kind: "team-members"; minimum?: number };
@@ -681,6 +705,8 @@ export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefini
   };
 };
 export type CurrentUserTeamsApi = {
+  /** Server-only: lock an administered Team through the existing mutation/endpoint transaction's commit or rollback. Call before any responsibility read/write; validate explicit recipient acceptance and the optional member's current admin role. Normal ctx.db ACLs remain in force. No network calls while locked. Refusal poisons the enclosing transaction. */
+  lockLifecycle(teamId: string, memberUserId?: string): Promise<TeamLifecycleSnapshot>;
   list(): Promise<{ teams: TeamSummary[] }>;
   /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
   create(name: string): Promise<{ team: TeamSummary }>;
@@ -723,6 +749,8 @@ export type CurrentUserTeamsApi = {
  * before the runtime can return a result.
  */
 export type PrivilegedTeamsApi = {
+  /** Retain an exact Team lifecycle lock in an already-active write transaction (including atomic Stripe consequences). This is inspection/serialization only: no user, membership mutation or admin authority. Nontransactional Jobs/Privileged callbacks and expired contexts fail closed. Pending acquisition/member reads that outlive the callback reject and roll back even when caught; successfully admitted locks remain held through outer commit. Call before responsibility reads/writes, without provider network calls. */
+  lockLifecycle(teamId: string, memberUserId?: string): Promise<TeamLifecycleSnapshot>;
   /** Returns the exact accepted-membership total for an existing Team. */
   countMembers(teamId: string): Promise<TeamMemberCountResult>;
   /** Lists the existing safe member projection for an existing Team. */
@@ -1085,8 +1113,8 @@ export type AtomicStripeConsequenceContext<Schema extends SchemaDefinition = Sch
 > & {
   /** Jobs persist with the consequence and are dispatched only after commit. */
   jobs: Pick<JobApi, "enqueue">;
-  /** Exact read-only Team membership count inside the consequence transaction. */
-  teams: Pick<PrivilegedTeamsApi, "countMembers">;
+  /** Exact membership count and lifecycle serialization inside the consequence transaction. */
+  teams: Pick<PrivilegedTeamsApi, "countMembers" | "lockLifecycle">;
 };
 
 /** Handler for one runtime-serialized, transaction-owned Stripe consequence. */
@@ -1331,6 +1359,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
     appRoles?: readonly string[];
     /** Trusted admission policy invoked after Join-link validation and before a new membership is inserted in the same transaction. */
     admitJoin?(ctx: TeamJoinAdmissionContext<Schema>, input: TeamJoinAdmissionInput): MaybePromise<TeamJoinAdmissionDecision>;
+    /** Opt-in atomic policy for every SDK and ctx.teams destructive path. Omission preserves 0.9.x behavior; invalid declaration rejects startup. Explicit valid allow required; failures are opaque TEAM_POLICY_DENIED and roll back app/runtime writes even when caught. All Capsule responsibility writers must take teams.lockLifecycle in the same transaction before reads/writes. */
+    authorizeDestructive?(ctx: TeamDestructivePolicyContext<Schema>, input: TeamDestructivePolicyInput): MaybePromise<TeamDestructivePolicyDecision>;
   };
   /** Optional headless Team Billing control plane. Omission leaves billing dormant and creates no billing storage. */
   teamBilling?: TeamBillingDefinition<Schema>;

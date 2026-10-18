@@ -740,6 +740,10 @@ export function transferAccessKeyRuntimeState(previousContext, nextContext) {
         accessKeyOwnerSessionTokens.set(nextContext, sessionToken);
     }
 }
+/** Runtime-private Session binding shared by current-user capability checks. */
+export function readCurrentUserSessionToken(context) {
+    return accessKeyOwnerSessionTokens.get(context);
+}
 export function bindAccessKeyOwnerSession(context, sessionToken) {
     if (context && typeof context === "object" && typeof sessionToken === "string") {
         accessKeyOwnerSessionTokens.set(context, sessionToken);
