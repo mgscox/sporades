@@ -81,7 +81,8 @@ exact container/release ID, and gracefully stops a running container. A running
 or interrupted runtime must match the current release; otherwise create fails
 before stopping or resuming it. Restart that Capsule deliberately on the intended
 release first. This prevents a scheduled backup from activating a release that
-was pushed without restart. With the writer
+was pushed without restart. Release pointers must agree with registry state;
+reconcile any interrupted deployment before backing up. With the writer
 stopped it uses SQLite `VACUUM INTO`, copies uploaded files, checks SQLite
 integrity, and builds a versioned manifest containing the source domain/subname,
 release ID, creation time, schema hash (SHA-256 of ordered SQLite schema
@@ -106,6 +107,8 @@ sequence. Each successful create is followed by retention pruning; a failed
 create never triggers pruning for that Capsule. Other Capsules still run.
 Inspect `journalctl -u sporades-backups-<identity>.service`; configure reports the
 exact timer name. `Persistent=true` catches a missed invocation after downtime.
+Backup execution orders after Capsule boot recovery so a catch-up snapshot cannot
+hold a lifecycle lock ahead of autostart.
 The timer calls the installed helper, so helper upgrades automatically carry the
 backup implementation forward. Bootstrap does not enable backups by default.
 

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { attemptJournalPath } from '../dist/deploy-files.js';
 import { atomicBackupJson, backupTimerUnits, configureHostBackups, createHostBackup, hostBackupDirectory, hostBackupStatus, listHostBackups, pruneHostBackups, publishHostBackupMetric, recoverHostBackupRestore, restoreHostBackup, trustedBackupPath, validateHostBackupPolicy } from '../dist/cli/host-backups.js';
 
 const root = process.cwd();
@@ -40,6 +41,7 @@ test('backup policy is opt-in, bounded and only permits explicit local or HTTPS 
   const timer = backupTimerUnits(host('/test'), { ...p, schedule: 'daily' });
   assert.match(timer.timer, /OnCalendar=daily\nPersistent=true/);
   assert.match(timer.service, /UMask=0077/);
+  assert.ok(timer.service.includes(`After=docker.service ${timer.name.replace('sporades-backups-', 'sporades-capsules-')}.service`));
   assert.match(timer.service, /--backup-host/);
   assert.doesNotMatch(timer.service, /secret|password/);
   assert.match(backupTimerUnits({ ...host('/test'), remoteRoot: '/srv/host$unit%' }, p).service, /host\$\$unit%%/);
@@ -206,6 +208,7 @@ test('shipped CLI and helper quiesce exact containers, restore staging, and repo
   for (const subname of ['source', 'staging']) {
     const capsule = path.join(h.remoteRoot, 'hosts', h.domain, 'capsules', subname);
     await mkdir(path.join(capsule, 'releases', 'release-one'), { recursive: true });
+    await symlink('releases/release-one', path.join(capsule, 'current'));
     await writeFile(path.join(capsule, 'releases', 'release-one', 'sporades.json'), '{}');
     await writeFile(path.join(registry, `${subname}.json`), JSON.stringify({ subname, domain: h.domain, remoteCapsuleId: `${h.domain}/${subname}`, status: subname === 'source' ? 'running' : 'stopped', currentRelease: { id: 'release-one' } }));
   }
@@ -238,6 +241,18 @@ test('shipped CLI and helper quiesce exact containers, restore staging, and repo
   assert.equal(JSON.parse(await readFile(state, 'utf8')).source, true);
   const afterMismatch = (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(afterMismatch.filter(a => a[0] === 'stop').length, operations.filter(a => a[0] === 'stop').length);
+  const sourceCapsule = path.dirname(source.data);
+  await rm(path.join(sourceCapsule, 'current'));
+  await symlink('releases/pending-release', path.join(sourceCapsule, 'current'));
+  assert.match(cli(['create', '--subname', 'source'], false).error.message, /pointer requires recovery/);
+  await rm(path.join(sourceCapsule, 'current'));
+  await symlink('releases/release-one', path.join(sourceCapsule, 'current'));
+  const preserved = path.join(sourceCapsule, 'preserved-files');
+  await mkdir(preserved);
+  await atomicBackupJson(attemptJournalPath(preserved), { interrupted: true });
+  assert.match(cli(['create', '--subname', 'source'], false).error.message, /Interrupted deployment/);
+  await rm(attemptJournalPath(preserved));
+  assert.equal(JSON.parse(await readFile(state, 'utf8')).source, true);
   assert.equal(cli(['list', '--subname', 'source']).data.snapshots[0].id, created.id);
   cli(['restore', '--subname', 'source', '--id', created.id, '--confirm', 'source'], false);
   cli(['restore', '--subname', 'source', '--to-subname', 'staging', '--id', created.id, '--confirm', 'staging']);

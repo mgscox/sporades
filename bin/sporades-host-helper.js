@@ -45610,13 +45610,14 @@ function repositoryIdentity(policy) {
   return createHash8("sha256").update(policy.repository).digest("hex");
 }
 function backupTimerUnits(host, policy) {
-  const name2 = `sporades-backups-${createHash8("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}`;
+  const identity = createHash8("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16);
+  const name2 = `sporades-backups-${identity}`;
   const helper = JSON.stringify(path10.join(host.remoteRoot, "bin", "sporades-host-helper")).replace(/%/g, "%%").replace(/\$/g, () => "$$");
   const encoded = Buffer.from(JSON.stringify({ alias: host.alias, domain: host.domain, scheme: host.scheme, remoteRoot: host.remoteRoot })).toString("base64url");
   return { name: name2, service: `# Sporades Capsule backups
 [Unit]
 Description=Sporades Capsule backups
-After=docker.service
+After=docker.service sporades-capsules-${identity}.service
 Requires=docker.service
 [Service]
 Type=oneshot
@@ -48407,6 +48408,9 @@ async function manageCapsuleBackup(request2) {
     const record = await verifyRegisteredCapsule(request2, "lifecycle");
     const paths2 = canonicalReleasePaths(request2);
     if (!record.currentRelease?.id) throw helperError("Backup requires a deployed release.", "Push the intended release to this Capsule first.");
+    if (await pathExists(attemptJournalPath(hostedPreservedFilesRoot(paths2)))) throw helperError("Interrupted deployment requires recovery before backup.", "Run host reconcile for this Capsule first.");
+    const currentTarget = await readlink(paths2.currentLink);
+    if (path12.resolve(paths2.capsule, currentTarget) !== path12.join(paths2.releases, record.currentRelease.id)) throw helperError("Backup current release pointer requires recovery.", "Run host reconcile and select the intended release before retrying backup.");
     const config = JSON.parse(await readFile9(path12.join(paths2.releases, record.currentRelease.id, "sporades.json"), "utf8"));
     if (config.services?.database || config.services?.storage || config.files?.storagePath) throw helperError("Backup supports standard local SQLite and files storage only.", "Use provider-native backup for external services or custom storage paths.");
     const target = { host: request2.host, subname: request2.capsule.subname, releaseId: record.currentRelease.id, data: paths2.data };

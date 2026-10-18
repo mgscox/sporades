@@ -2700,6 +2700,9 @@ async function manageCapsuleBackup(request: HostHelperRequest) {
     const record = await verifyRegisteredCapsule(request, "lifecycle");
     const paths = canonicalReleasePaths(request);
     if (!record.currentRelease?.id) throw helperError("Backup requires a deployed release.", "Push the intended release to this Capsule first.");
+    if (await pathExists(attemptJournalPath(hostedPreservedFilesRoot(paths)))) throw helperError("Interrupted deployment requires recovery before backup.", "Run host reconcile for this Capsule first.");
+    const currentTarget = await readlink(paths.currentLink);
+    if (path.resolve(paths.capsule, currentTarget) !== path.join(paths.releases, record.currentRelease.id)) throw helperError("Backup current release pointer requires recovery.", "Run host reconcile and select the intended release before retrying backup.");
     const config = JSON.parse(await readFile(path.join(paths.releases, record.currentRelease.id, "sporades.json"), "utf8"));
     if (config.services?.database || config.services?.storage || config.files?.storagePath) throw helperError("Backup supports standard local SQLite and files storage only.", "Use provider-native backup for external services or custom storage paths.");
     const target = { host: request.host, subname: request.capsule.subname, releaseId: record.currentRelease.id, data: paths.data };
