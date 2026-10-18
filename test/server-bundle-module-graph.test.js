@@ -240,12 +240,14 @@ import { capsule, mutation, query } from "sporades/server";
 export default capsule({
   name: "bundle-teams",
   schema: {},
-  teams: { appRoles: ["author", "reviewer"] },
+  teams: { appRoles: ["author", "reviewer"], authorizeDestructive: () => ({ allow: false }) },
   queries: {
     ownTeams: query((ctx) => ctx.teams.list()),
   },
   mutations: {
     updateMemberRoles: mutation((ctx, teamId, userId, changes) => ctx.teams.updateApplicationRoles(teamId, userId, changes)),
+    deleteTeam: mutation((ctx, teamId) => ctx.teams.delete(teamId)),
+    lockTeam: mutation((ctx, teamId) => ctx.teams.lockLifecycle(teamId, ctx.auth.userId)),
   },
 });
 `;
@@ -1381,6 +1383,14 @@ test("a generated server bundle lazily lists the current linked user's singleton
       const created = await socket.waitFor((message) => message.id === "teams-create");
       assert.equal(created.type, "teams.create.result");
       assert.equal(created.data.team.role, "admin");
+      socket.send({ id: "policy-sdk-delete", type: "teams.delete", teamId: created.data.team.id });
+      assert.equal((await socket.waitFor(message => message.id === "policy-sdk-delete")).error.code, "TEAM_POLICY_DENIED");
+      socket.send({ id: "policy-app-delete", type: "mutation.run", name: "deleteTeam", args: [created.data.team.id] });
+      assert.equal((await socket.waitFor(message => message.id === "policy-app-delete")).error.code, "TEAM_POLICY_DENIED");
+      socket.send({ id: "policy-lock", type: "mutation.run", name: "lockTeam", args: [created.data.team.id] });
+      const locked = await socket.waitFor(message => message.id === "policy-lock");
+      assert.equal(locked.error, null, JSON.stringify(locked));
+      assert.equal(locked.data.member.role, "admin");
       socket.send({ id: "teams-rename", type: "teams.rename", teamId: created.data.team.id, name: "Generated Renamed Team" });
       const renamed = await socket.waitFor((message) => message.id === "teams-rename");
       assert.equal(renamed.type, "teams.rename.result");

@@ -1016,7 +1016,7 @@ test("Privileged callbacks expose only safe Team inspections during their active
       assert.deepEqual(result.data.inspection.team, { id: team.id, name: "My Team" });
       assert.equal(result.data.inspection.usable, true);
       assert.deepEqual(result.data.invalidInspection, { team: null, expiresAt: null, usable: false });
-      assert.deepEqual(result.data.unavailable, ["countMembers", "inspectJoinLink", "listJoinLinks", "listMembers"]);
+      assert.deepEqual(result.data.unavailable, ["countMembers", "inspectJoinLink", "listJoinLinks", "listMembers", "lockLifecycle"]);
       assert.doesNotMatch(JSON.stringify(result.data), /v1\.|privileged-owner@example\.com|invitee@example\.com|password-123/i);
     } finally {
       database.adapter = baseAdapter;

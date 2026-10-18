@@ -44,6 +44,13 @@ test("the published Teams contract defines the public boundaries and is reachabl
     /Concurrent joins for a final seat[\s\S]*serialize/i,
   ]) assert.match(teams, statement);
   assert.match(readme, /teams\.admitJoin[\s\S]*joining user's ordinary row ACLs/);
+  assert.match(teams, /## Atomic destructive policy/);
+  assert.match(teams, /lockLifecycle/);
+  assert.match(teams, /before[\s\S]*reading responsibility/);
+  assert.match(teams, /Omitting `authorizeDestructive` preserves/);
+  assert.match(serverTypes, /authorizeDestructive\?\(ctx: TeamDestructivePolicyContext<Schema>, input: TeamDestructivePolicyInput\)/);
+  assert.match(serverTypes, /lockLifecycle\(teamId: string, memberUserId\?: string\)/);
+  assert.match(clientTypes, /atomic teams\.authorizeDestructive policy/);
   assert.match(clientTypes, /export type TeamsApi/);
   assert.match(clientTypes, /export const teams: TeamsApi/);
   assert.match(clientTypes, /TeamMembersListResult = \{ members: TeamMemberSummary\[\]; nextCursor\?: string; totalCount: number \}/);
@@ -60,6 +67,8 @@ test("the published Teams contract defines the public boundaries and is reachabl
   assert.match(aclTeamHelpersApi, /Read-only Team decisions available while evaluating table and File ACL rules\./);
   for (const runtime of [sourceRuntime, generatedRuntime, generatedBin]) {
     assert.match(runtime, /runTeamJoinAdmission/);
+    assert.match(runtime, /runTeamDestructivePolicy/);
+    assert.match(runtime, /teams\.destructive-policy/);
     assert.match(runtime, /teams\.join-admission/);
     assert.match(runtime, /withTrustedRead/);
   }

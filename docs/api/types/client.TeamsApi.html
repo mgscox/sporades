@@ -98,7 +98,7 @@
 <li class="">
 <div class="tsd-signature tsd-anchor-link" id="delete-1"><span class="tsd-kind-call-signature">delete</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">teamId</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="client.SporadesResult.html" class="tsd-signature-type tsd-kind-type-alias">SporadesResult</a><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">deleted</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">true</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">&gt;</span><a href="#delete-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
 <div class="tsd-description">
-<div class="tsd-comment tsd-typography"><p>Deletes a Team only when the caller is its sole remaining admin member.</p>
+<div class="tsd-comment tsd-typography"><p>Subject to the Capsule's atomic teams.authorizeDestructive policy when declared.</p>
 </div>
 <div class="tsd-parameters">
 <h4 class="tsd-parameters-title">Parameters</h4>
@@ -106,14 +106,14 @@
 <li><span><span class="tsd-kind-parameter">teamId</span>: <span class="tsd-signature-type">string</span></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="client.SporadesResult.html" class="tsd-signature-type tsd-kind-type-alias">SporadesResult</a><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">deleted</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">true</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/client.d.ts#L361">client.d.ts:361</a></li></ul></aside></div></li></ul></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/client.d.ts#L365">client.d.ts:365</a></li></ul></aside></div></li></ul></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="demote"><span>demote</span><a href="#demote" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <ul class="tsd-signatures">
 <li class="">
 <div class="tsd-signature tsd-anchor-link" id="demote-1"><span class="tsd-kind-call-signature">demote</span><span class="tsd-signature-symbol">(</span><br/>    <span class="tsd-kind-parameter">teamId</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">,</span><br/>    <span class="tsd-kind-parameter">userId</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">,</span><br/><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="client.SporadesResult.html" class="tsd-signature-type tsd-kind-type-alias">SporadesResult</a><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">updated</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">true</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">&gt;</span><a href="#demote-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
 <div class="tsd-description">
-<div class="tsd-comment tsd-typography"><p>Demotes an admin only when another committed Team admin remains.</p>
+<div class="tsd-comment tsd-typography"><p>Subject to the Capsule's atomic teams.authorizeDestructive policy when declared.</p>
 </div>
 <div class="tsd-parameters">
 <h4 class="tsd-parameters-title">Parameters</h4>
@@ -122,7 +122,7 @@
 <li><span><span class="tsd-kind-parameter">userId</span>: <span class="tsd-signature-type">string</span></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="client.SporadesResult.html" class="tsd-signature-type tsd-kind-type-alias">SporadesResult</a><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">updated</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">true</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/client.d.ts#L355">client.d.ts:355</a></li></ul></aside></div></li></ul></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/client.d.ts#L356">client.d.ts:356</a></li></ul></aside></div></li></ul></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="inspectjoinlink"><span>inspect<wbr/>Join<wbr/>Link</span><a href="#inspectjoinlink" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <ul class="tsd-signatures">
@@ -159,7 +159,7 @@
 <li class="">
 <div class="tsd-signature tsd-anchor-link" id="leave-1"><span class="tsd-kind-call-signature">leave</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">teamId</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="client.SporadesResult.html" class="tsd-signature-type tsd-kind-type-alias">SporadesResult</a><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">left</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">true</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">&gt;</span><a href="#leave-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
 <div class="tsd-description">
-<div class="tsd-comment tsd-typography"><p>Leaves an explicitly identified Team only while the caller is an ordinary member.</p>
+<div class="tsd-comment tsd-typography"><p>Subject to the Capsule's atomic teams.authorizeDestructive policy when declared.</p>
 </div>
 <div class="tsd-parameters">
 <h4 class="tsd-parameters-title">Parameters</h4>
@@ -167,7 +167,7 @@
 <li><span><span class="tsd-kind-parameter">teamId</span>: <span class="tsd-signature-type">string</span></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="client.SporadesResult.html" class="tsd-signature-type tsd-kind-type-alias">SporadesResult</a><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">left</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">true</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/client.d.ts#L359">client.d.ts:359</a></li></ul></aside></div></li></ul></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/client.d.ts#L362">client.d.ts:362</a></li></ul></aside></div></li></ul></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="list"><span>list</span><a href="#list" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <ul class="tsd-signatures">
@@ -230,7 +230,7 @@
 <li class="">
 <div class="tsd-signature tsd-anchor-link" id="removemember-1"><span class="tsd-kind-call-signature">removeMember</span><span class="tsd-signature-symbol">(</span><br/>    <span class="tsd-kind-parameter">teamId</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">,</span><br/>    <span class="tsd-kind-parameter">userId</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">,</span><br/><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="client.SporadesResult.html" class="tsd-signature-type tsd-kind-type-alias">SporadesResult</a><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">removed</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">true</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">&gt;</span><a href="#removemember-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
 <div class="tsd-description">
-<div class="tsd-comment tsd-typography"><p>Removes another Team member and their runtime-owned membership authority. Self-removal uses leave().</p>
+<div class="tsd-comment tsd-typography"><p>Subject to the Capsule's atomic teams.authorizeDestructive policy when declared.</p>
 </div>
 <div class="tsd-parameters">
 <h4 class="tsd-parameters-title">Parameters</h4>
@@ -239,7 +239,7 @@
 <li><span><span class="tsd-kind-parameter">userId</span>: <span class="tsd-signature-type">string</span></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="client.SporadesResult.html" class="tsd-signature-type tsd-kind-type-alias">SporadesResult</a><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">removed</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">true</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/client.d.ts#L357">client.d.ts:357</a></li></ul></aside></div></li></ul></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/client.d.ts#L359">client.d.ts:359</a></li></ul></aside></div></li></ul></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="rename"><span>rename</span><a href="#rename" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <ul class="tsd-signatures">
