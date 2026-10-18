@@ -417,6 +417,13 @@ sporades host push --host personal --subname team-notes --restart --json
 sporades host push --host personal --subname team-notes --verify --fallback-to-previous-release --json
 ```
 
+Capsules declaring `env` in `sporades.json` must supply all explicit and
+configuration-implied required Server env keys before push. The check runs
+locally before Host contact or upload. `--allow-missing-env` bypasses only this
+presence check; runtime `env.failClosed` and existing Stripe credential checks
+still apply. See [required Server env](./projects-and-configuration.md#required-server-env).
+
+
 Useful Hosted Capsule operations:
 
 ```sh
@@ -597,6 +604,16 @@ Normal mode exits non-zero for failed checks. `--strict` also exits non-zero for
 warnings, which makes it useful before handoff, release, or automated repair
 loops. JSON output includes the check `id`, `scope`, `status`, `severity`,
 message, optional hint, follow-up commands, and non-secret details.
+
+`doctor.capsule-authoring.acl-posture` names each table with missing read/write
+rules in its warning message. Tables without any ACL rules, including
+`.acl({})`, are listed as allow-all in the message and JSON
+`details.allowAllTables`; `details.tables` retains each table's missing rules.
+For server-owned data, import `acl` from `sporades/server` and use
+`.acl(acl.privilegedOnly())` (alias `acl.denyAll()`), with explicit audited
+`ctx.privileged.run` access in trusted server code. The check does not execute
+policy functions or prove that a declared rule restricts access. See
+[table ACL behavior](server-runtime.md#define-tables).
 
 Check statuses mean:
 

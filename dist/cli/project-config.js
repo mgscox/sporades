@@ -1,4 +1,5 @@
 import { normalizePublicOrigin } from "../public-origin.js";
+import { validateServerEnvConfig } from "../server-env-requirements.js";
 import { resolveFileAllowedMimeTypes } from "../file-policy.js";
 import { resolveRegistrationThrottle } from "../capsule-rate-limit.js";
 import { resolveAdmissionPolicy } from "../admission-policy.js";
@@ -36,6 +37,7 @@ const SUPPORTED_PROJECT_KEYS = new Set([
     "client",
     "deploy",
     "dev",
+    "env",
     "files",
     "id",
     "logging",
@@ -65,6 +67,8 @@ export async function readProjectConfig(projectDir) {
     resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
     validatePublicOriginConfig(config);
     validateLogConfig(config);
+    if (config.env !== undefined)
+        config.env = validateServerEnvConfig(config.env);
     resolveFileAllowedMimeTypes(config.files);
     validateSecurityConfig(config.security);
     validateClientConfig(config.client);

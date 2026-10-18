@@ -5393,6 +5393,50 @@ test("sporades host push reports a structured recovery hint when local sealed so
   });
 });
 
+test("required Server env blocks Host push before SSH/upload and allows an explicit bypass", async () => {
+  await withTempDir(async (dir) => {
+    const fakeSsh = await installContractFakeSsh(path.join(dir, "fake-ssh"), `
+const request = JSON.parse(stdin);
+process.stdout.write(JSON.stringify({ ok: true, data: { installed: true, release: { id: request.release.id } }, error: null }) + "\\n");
+`);
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const env = { ...hostEnv(path.join(dir, "config")), ...fakeSsh.env, ...fakeScp.env,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}` };
+    const created = await runCli(["create", "env-island", "--template", "blank", "--framework", "vanilla", "--no-install", "--no-git", "--json"], { cwd: dir, env });
+    assert.equal(created.code, 0, created.stdout);
+    const projectDir = path.join(dir, "env-island");
+    await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.env = { required: ["TICKETS_INTAKE_URL"] };
+    await writeFile(configPath, JSON.stringify(config));
+    assert.equal((await runCli(["host", "add", "work", "--server", "deploy@example.test", "--domain", "apps.work.test", "--json"], { cwd: projectDir, env })).code, 0);
+    const args = ["host", "push", "--host", "work", "--subname", "env-island", "--json"];
+    const denied = await runCli(args, { cwd: projectDir, env });
+    assert.equal(denied.code, 1);
+    assert.match(JSON.parse(denied.stdout).error.message, /Missing required Server env keys: TICKETS_INTAKE_URL/);
+    assert.match(JSON.parse(denied.stdout).error.hint, /--allow-missing-env/);
+    await assert.rejects(readFile(fakeSsh.logPath), { code: "ENOENT" });
+    await assert.rejects(readFile(fakeScp.logPath), { code: "ENOENT" });
+    const bypassed = await runCli([...args, "--allow-missing-env"], { cwd: projectDir, env });
+    assert.equal(bypassed.code, 0, bypassed.stdout + bypassed.stderr);
+    assert.equal((await readJsonl(fakeScp.logPath)).length, 1);
+    // Existing Capsules keep push behavior until they opt in with an env stanza.
+    delete config.env;
+    await writeFile(configPath, JSON.stringify(config));
+    const legacy = await runCli(args, { cwd: projectDir, env });
+    assert.equal(legacy.code, 0, legacy.stdout + legacy.stderr);
+    assert.equal((await runCli(["env", "init", "--json"], { cwd: projectDir, env })).code, 0);
+    config.env = { required: ["TICKETS_INTAKE_URL"] };
+    config.mail = { webhooks: { mailjet: { path: "/mail-events", secretEnv: "MAIL_WEBHOOK_SECRET" } } };
+    await writeFile(configPath, JSON.stringify(config));
+    const sealedDenied = await runCli(args, { cwd: projectDir, env });
+    assert.equal(sealedDenied.code, 1);
+    assert.match(JSON.parse(sealedDenied.stdout).error.message, /MAIL_WEBHOOK_SECRET, TICKETS_INTAKE_URL/);
+    assert.equal((await readJsonl(fakeScp.logPath)).length, 2);
+  });
+});
+
 test("sporades host push can publish a Vanilla TypeScript Capsule and request restart", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");

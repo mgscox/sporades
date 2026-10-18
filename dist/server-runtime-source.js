@@ -1,4 +1,7 @@
-import { isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
+import { bindAppContext, isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
+import { dirname as pathDirname } from "node:path";
+import { missingServerEnvKeys, missingServerEnvError, validateServerEnvConfig } from "./server-env-requirements.js";
+import { validatePaymentsConfig } from "./stripe-payment-config.js";
 import { resolveFileAllowedMimeTypes } from "./file-policy.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { createCapsuleRateLimiter, resolveRegistrationThrottle } from "./capsule-rate-limit.js";
@@ -579,6 +582,18 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         validateEndpointResponseDeclarations(capsuleDefinition);
     }
     validateLogConfig(config);
+    validateServerEnvConfig(config.env);
+    const mailConfig = validateMailConfig(config.mail);
+    const declaredPayments = validatePaymentsConfig(config.payments);
+    const missingEnv = options?.runtimeActionOnly ? [] : missingServerEnvKeys({ ...config, mail: mailConfig, payments: declaredPayments }, serverEnv);
+    const missingEnvEvent = missingEnv.length ? createRuntimeLogSink({
+        database: null, config, serverEnv, dataDir: pathDirname(databasePath),
+    }).emit({
+        category: "platform", event: "env.required.missing", level: "error",
+        message: `Missing required Server env keys: ${missingEnv.join(", ")}`, data: null,
+    }) : null;
+    if (missingEnv.length && config.env?.failClosed === true)
+        throw missingServerEnvError(missingEnv);
     const registrationThrottle = resolveRegistrationThrottle(config.auth);
     const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
     const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
@@ -598,7 +613,6 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     }
     const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
     const path = await import("node:path");
-    const mailConfig = validateMailConfig(config.mail);
     let mailLogSink;
     const mail = createMailRuntime(mailConfig, serverEnv, {
         ...options,
@@ -838,7 +852,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             grantPrivilegedDbAccess(reauthContext);
             const holder = createContextHolder(reauthContext);
             try {
-                return (await capsuleDefinition.auth.reauthentication.authorize({ app: database.app, db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, purpose)) === true;
+                return (await capsuleDefinition.auth.reauthentication.authorize(bindAppContext({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, database.app), purpose)) === true;
             }
             finally {
                 active = false;
@@ -864,7 +878,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 try {
                     let decision = null;
                     try {
-                        decision = await capsuleDefinition.auth.registration.admit({ app: rootDatabase.app, db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission });
+                        decision = await capsuleDefinition.auth.registration.admit(bindAppContext({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission }, rootDatabase.app));
                     }
                     finally {
                         active = false;
@@ -876,7 +890,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                     grantPrivilegedDbAccess(finalizeContext);
                     const finalizeHolder = createContextHolder(finalizeContext);
                     try {
-                        await capsuleDefinition.auth.registration.finalize({ app: rootDatabase.app, db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state });
+                        await capsuleDefinition.auth.registration.finalize(bindAppContext({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, rootDatabase.app), { ...evidence, state: decision.state });
                     }
                     finally {
                         revokePrivilegedDbAccess(finalizeContext);
@@ -1307,6 +1321,13 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     // own deadline so a delivered row can sleep until its 24-hour expiry.
     await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
     await sqlite.ensureLogStorage();
+    if (missingEnvEvent) {
+        try {
+            await sqlite.insertLogIndexEvent(missingEnvEvent);
+            await sqlite.pruneLogIndex(logIndexLimit(config));
+        }
+        catch { /* JSONL remains authoritative. */ }
+    }
     options?.onJobQueueReady?.(database);
     if (!options?.runtimeActionOnly) {
         await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
@@ -4192,7 +4213,7 @@ function protectContextIdentity(value) {
 }
 function createContextHolder(context) {
     if (context.app)
-        Object.defineProperty(context, "app", { value: context.app, enumerable: true, writable: false, configurable: false });
+        bindAppContext(context, context.app);
     context.resources = unsupportedResources;
     const holder = { current: context };
     Object.defineProperty(context, "__sporadesContextHolder", {
@@ -4355,7 +4376,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
         ...baseContext,
         kind,
     };
-    Object.defineProperty(context, "app", { value: database.app, enumerable: true, writable: false, configurable: false });
+    bindAppContext(context, database.app);
     bindPendingAclWrites(context, baseContext);
     bindCurrentUserFileDeleteState(context, baseContext);
     bindMutationSecretState(context, baseContext);
@@ -4377,7 +4398,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
             throw commandError("Invalid Capsule context middleware result.", "Context middleware must preserve the runtime-owned Auth, Credential and app values.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
         }
         context = { ...middlewareContext, auth: canonicalAuth };
-        Object.defineProperty(context, "app", { value: database.app, enumerable: true, writable: false, configurable: false });
+        bindAppContext(context, database.app);
         if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
             context.credential = canonicalCredential;
         }
@@ -7182,7 +7203,6 @@ function invokeWithLifecycleInitiation(operation) {
 function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, assertActive) {
     const context = {
         auth: Object.freeze({ ...auth }),
-        app: database.app,
         env: database.serverEnv,
         log: createEndpointLogger(database),
         db: trustedDb,
@@ -7199,12 +7219,11 @@ function createTeamJoinAdmissionContext(database, auth, trustedDb, teamId, asser
             },
         }),
     };
-    return context;
+    return bindAppContext(context, database.app);
 }
 function createTeamBillingAuthorityContext(database, auth, trustedDb, teamId, assertActive) {
-    return {
+    return bindAppContext({
         auth: Object.freeze({ ...auth }),
-        app: database.app,
         env: database.serverEnv,
         log: createEndpointLogger(database),
         db: trustedDb,
@@ -7218,7 +7237,7 @@ function createTeamBillingAuthorityContext(database, auth, trustedDb, teamId, as
                 return Object.freeze({ totalCount });
             },
         }),
-    };
+    }, database.app);
 }
 function deferOrScheduleJobDispatch(database, queueDatabase, context = undefined) {
     const currentContext = context ?? handlerContextByDatabase.get(database)?.();

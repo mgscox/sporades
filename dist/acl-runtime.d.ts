@@ -120,7 +120,6 @@ export declare function safePrivilegedAuditErrorCode(value: any, outcome?: strin
 export declare function normalizeTableAcl(tableName: any, aclRules: LooseRecord | undefined): LooseRecord;
 export declare function normalizeFileAcl(aclRules: LooseRecord | undefined): LooseRecord;
 export declare function createTableAclContext(context: any, database: any): {
-    app: any;
     auth: any;
     credential: any;
     acl: Readonly<{
@@ -139,6 +138,8 @@ export declare function createTableAclContext(context: any, database: any): {
             hasAnyRole(teamId: any, roles: any): any;
         }>;
     }>;
+} & {
+    readonly app: any;
 };
 export declare function bindPendingAclWrites(context: any, sourceContext?: any): any;
 export declare function trackPendingAclWrite(context: any, pending: any): any;

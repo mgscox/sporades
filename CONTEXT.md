@@ -499,6 +499,13 @@ _Avoid_: nested app transaction, hook transaction, partial mutation commit
 An authorization policy declared in Capsule definition code and applied invisibly around the Sporades DB API to accept or reject app-table and file-storage operations. Capsule code continues to use normal `ctx.db` and file APIs rather than calling permission checks directly. ACLs answer whether the current actor may see or change a row or file metadata record; file-specific validation and client-facing upload choices are not ACL concerns. ACLs are allow-by-default when no matching rule is specified; a `write` ACL rule may apply to insert, update, and delete operations unless an operation-specific rule overrides it. Write ACL rules evaluate against previous and next row state where relevant.
 _Avoid_: permission helper, manual auth check, database filter
 
+Server-owned app tables may opt into `.acl(acl.privilegedOnly())` (alias
+`acl.denyAll()`) from `sporades/server`: ordinary reads are filtered and writes
+denied, while explicit audited Privileged execution retains access. Missing
+rules keep their existing allow-by-default behavior. Doctor names tables with
+missing rules and lists tables without any ACL rules as allow-all without
+executing policy functions.
+
 **ACL context**:
 A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It provides scoped helpers such as `ctx.acl.db.get()`, `ctx.acl.db.exists()`, `ctx.acl.storage.get()`, `ctx.acl.storage.exists()`, and explicit-Team `ctx.acl.teams` membership, admin, and declared application-role decisions so database and storage ACL rules can check stable resources without exposing normal runtime APIs or allowing writes. Team helpers never choose a current Team, enumerate memberships, or manage membership state.
 _Avoid_: ctx.db in ACL, admin client, bypass API
@@ -583,6 +590,13 @@ _Avoid_: security middleware, helmet config
 **Server env**:
 A legacy/import-friendly `.env.sporades.server` file at the project root containing server-only environment variables. Sporades still reads it when no Sealed Server env exists and `sporades env import` can migrate it into encrypted Runtime state. Max 64 keys, 64KB total. No `SPORADES_` prefix (reserved).
 _Avoid_: environment file, dot-env (implementation detail)
+
+**Required Server env**:
+The optional `env` declaration in `sporades.json` opts doctor and Host push into
+presence checks for declared keys plus configured SMTP auth, mail webhook and
+enabled Stripe env references. Missing/blank values produce one names-only boot
+error; `env.failClosed: true` refuses startup. Omitting `env` preserves existing
+doctor/push behavior in 0.9.x. Shell env never satisfies Capsule requirements.
 
 **Sealed Server env**:
 Encrypted server-only configuration values managed by Sporades, decryptable by configured local or Host keys, delivered to Dev sessions, Container sessions, and Hosted Capsules at runtime, and exposed to Capsule code through `ctx.env`. It is the hardened successor to plaintext Server env files.

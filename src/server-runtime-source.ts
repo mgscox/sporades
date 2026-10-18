@@ -1,4 +1,7 @@
-import { isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
+import { bindAppContext, isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
+import { dirname as pathDirname } from "node:path";
+import { missingServerEnvKeys, missingServerEnvError, validateServerEnvConfig } from "./server-env-requirements.js";
+import { validatePaymentsConfig } from "./stripe-payment-config.js";
 import { resolveFileAllowedMimeTypes } from "./file-policy.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { createCapsuleRateLimiter, resolveRegistrationThrottle } from "./capsule-rate-limit.js";
@@ -710,6 +713,17 @@ export async function openDevDatabase(
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
   validateLogConfig(config);
+  validateServerEnvConfig(config.env);
+  const mailConfig = validateMailConfig(config.mail);
+  const declaredPayments = validatePaymentsConfig(config.payments);
+  const missingEnv = options?.runtimeActionOnly ? [] : missingServerEnvKeys({ ...config, mail: mailConfig, payments: declaredPayments }, serverEnv);
+  const missingEnvEvent = missingEnv.length ? createRuntimeLogSink({
+    database: null, config, serverEnv, dataDir: pathDirname(databasePath),
+  }).emit({
+    category: "platform", event: "env.required.missing", level: "error",
+    message: `Missing required Server env keys: ${missingEnv.join(", ")}`, data: null,
+  }) : null;
+  if (missingEnv.length && config.env?.failClosed === true) throw missingServerEnvError(missingEnv);
   const registrationThrottle = resolveRegistrationThrottle(config.auth);
   const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
   const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
@@ -729,7 +743,6 @@ export async function openDevDatabase(
   }
   const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
   const path = await import("node:path");
-  const mailConfig = validateMailConfig(config.mail);
   let mailLogSink: LooseRecord | undefined;
   const mail = createMailRuntime(mailConfig, serverEnv, {
     ...options,
@@ -982,7 +995,7 @@ export async function openDevDatabase(
     authorizeReauthentication: typeof capsuleDefinition?.auth?.reauthentication?.authorize === "function" ? async function (transaction: LooseRecord, auth: LooseRecord, purpose: string) {
       const reauthDatabase = createTransactionDatabase(database, transaction); let active = true; const assertActive = () => { if (!active) throw commandError("Reauthentication access is no longer active.", "Start a new reauthentication attempt.", "REAUTHENTICATION_ACCESS_INACTIVE"); };
       const reauthContext: LooseRecord = { purpose: "auth.reauthentication", auth }; grantPrivilegedDbAccess(reauthContext); const holder = createContextHolder(reauthContext);
-      try { return (await capsuleDefinition.auth.reauthentication.authorize({ app: database.app, db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, purpose)) === true; }
+      try { return (await capsuleDefinition.auth.reauthentication.authorize(bindAppContext({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, database.app), purpose)) === true; }
       finally { active = false; revokePrivilegedDbAccess(reauthContext); }
     } : async () => true,
     passwordResetConfig: resolvePasswordResetConfig(config),
@@ -1001,12 +1014,12 @@ export async function openDevDatabase(
         grantPrivilegedDbAccess(readContext); const readHolder = createContextHolder(readContext);
         try {
           let decision: LooseRecord | null = null;
-          try { decision = await capsuleDefinition.auth.registration.admit({ app: rootDatabase.app, db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission }); }
+          try { decision = await capsuleDefinition.auth.registration.admit(bindAppContext({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission }, rootDatabase.app)); }
           finally { active = false; revokePrivilegedDbAccess(readContext); }
           if (!decision || decision.allow !== true) return false;
           const finalizeContext: LooseRecord = { purpose: "auth.registration-finalize", evidence };
           grantPrivilegedDbAccess(finalizeContext); const finalizeHolder = createContextHolder(finalizeContext);
-          try { await capsuleDefinition.auth.registration.finalize({ app: rootDatabase.app, db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state }); }
+          try { await capsuleDefinition.auth.registration.finalize(bindAppContext({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, rootDatabase.app), { ...evidence, state: decision.state }); }
           finally { revokePrivilegedDbAccess(finalizeContext); }
           return true;
         } finally { active = false; revokePrivilegedDbAccess(readContext); await drainPendingLogWrites(registrationDatabase); }
@@ -1357,6 +1370,12 @@ export async function openDevDatabase(
   // own deadline so a delivered row can sleep until its 24-hour expiry.
   await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
   await sqlite.ensureLogStorage();
+  if (missingEnvEvent) {
+    try {
+      await sqlite.insertLogIndexEvent(missingEnvEvent);
+      await sqlite.pruneLogIndex(logIndexLimit(config));
+    } catch { /* JSONL remains authoritative. */ }
+  }
   options?.onJobQueueReady?.(database);
   if (!options?.runtimeActionOnly) {
     await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
@@ -4382,7 +4401,7 @@ function protectContextIdentity(value: LooseRecord) {
 }
 
 function createContextHolder(context: LooseRecord) {
-  if (context.app) Object.defineProperty(context, "app", { value: context.app, enumerable: true, writable: false, configurable: false });
+  if (context.app) bindAppContext(context, context.app);
   context.resources = unsupportedResources;
   const holder = { current: context };
   Object.defineProperty(context, "__sporadesContextHolder", {
@@ -4546,7 +4565,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     ...baseContext,
     kind,
   };
-  Object.defineProperty(context, "app", { value: database.app, enumerable: true, writable: false, configurable: false });
+  bindAppContext(context, database.app);
   bindPendingAclWrites(context, baseContext);
   bindCurrentUserFileDeleteState(context, baseContext);
   bindMutationSecretState(context, baseContext);
@@ -4572,7 +4591,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
       );
     }
     context = { ...middlewareContext, auth: canonicalAuth };
-    Object.defineProperty(context, "app", { value: database.app, enumerable: true, writable: false, configurable: false });
+    bindAppContext(context, database.app);
     if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
       context.credential = canonicalCredential;
     } else {
@@ -7434,7 +7453,6 @@ function invokeWithLifecycleInitiation(operation: () => any) {
 function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord, teamId: string, assertActive: () => void) {
   const context: LooseRecord = {
     auth: Object.freeze({ ...auth }),
-    app: database.app,
     env: database.serverEnv,
     log: createEndpointLogger(database),
     db: trustedDb,
@@ -7454,13 +7472,12 @@ function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord
       },
     }),
   };
-  return context;
+  return bindAppContext(context, database.app);
 }
 
 function createTeamBillingAuthorityContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord, teamId: string, assertActive: () => void) {
-  return {
+  return bindAppContext({
     auth: Object.freeze({ ...auth }),
-    app: database.app,
     env: database.serverEnv,
     log: createEndpointLogger(database),
     db: trustedDb,
@@ -7481,7 +7498,7 @@ function createTeamBillingAuthorityContext(database: LooseRecord, auth: LooseRec
         return Object.freeze({ totalCount });
       },
     }),
-  };
+  }, database.app);
 }
 
 function deferOrScheduleJobDispatch(database: LooseRecord, queueDatabase: LooseRecord, context: LooseRecord | undefined = undefined) {

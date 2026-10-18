@@ -1,3 +1,8 @@
+/** Preserve runtime-owned app identity even when a callback context stays mutable. */
+export function bindAppContext(context, app) {
+    Object.defineProperty(context, "app", { value: app, enumerable: true, writable: false, configurable: false });
+    return context;
+}
 /** Public link authority comes only from launch/project configuration, never HTTP headers. */
 export function normalizePublicOrigin(value) {
     if (typeof value !== "string" || value.length > 2048 || !/^https?:\/\//i.test(value) || /[\\\s]/.test(value))

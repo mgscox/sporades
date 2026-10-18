@@ -655,6 +655,13 @@ same immutable public tree; there is no request-time renderer. See the
 
 ## Data and Migrations
 
+Server-owned app tables may opt into `.acl(acl.privilegedOnly())`, with
+`acl.denyAll()` as an alias, imported from `sporades/server`. Ordinary reads
+are filtered and writes denied; explicit audited Privileged server execution
+retains access. Existing tables remain allow-by-default in 0.9.x. Doctor names
+tables with missing rules and every table with no rules, suggesting the helper
+without evaluating policy functions.
+
 Sporades uses SQLite through Node `>=22.13 <23` or `>=24` built-in `node:sqlite`. Dev sessions store the
 database at `.sporades/data.db`. Local Container sessions and Hosted Capsules
 mount persistent data at `/app/data`, where the runtime stores SQLite data and
@@ -1429,6 +1436,15 @@ code as `ctx.env`, and is never bundled into `client.js`. Legacy
 sealed envelope exists. The CLI accepts a single value over stdin with
 `sporades env set <name> --stdin`, preserving and re-sealing sibling values,
 and exposes value-safe presence checks through `sporades env has <name>`.
+
+Optional `env.required` and `env.failClosed` declarations add required Server env
+presence checks. An `env` stanza opts doctor and Host push into checking explicit
+keys plus configured SMTP auth, mail webhook, and enabled Stripe env references.
+Missing or whitespace-only values fail doctor and refuse push before Host
+contact, unless `--allow-missing-env` is explicit. Boot emits one names-only error;
+`failClosed: true` refuses startup before database initialization. Omission
+preserves existing doctor/push behavior for the 0.9.x patch contract. See
+[required Server env](reference/projects-and-configuration.md#required-server-env).
 
 ## Non-Goals
 

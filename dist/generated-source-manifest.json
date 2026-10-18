@@ -53,6 +53,7 @@
       "src/cli/monitoring-stack.ts",
       "src/cli/project-config.ts",
       "src/cli/schedule-inspection-envelope.ts",
+      "src/cli/server-env-check.ts",
       "src/cli/sporades-host-helper.ts",
       "src/cli/sporades.ts",
       "src/cli/telemetry-diagnostics.ts",
@@ -100,6 +101,7 @@
       "src/runtime-restart-policy.ts",
       "src/runtime-telemetry.ts",
       "src/sealed-server-env.ts",
+      "src/server-env-requirements.ts",
       "src/server-runtime-source.ts",
       "src/server.ts",
       "src/service-users-runtime.ts",
@@ -134,7 +136,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "5009fcf98472e9e3109a5166a33443a8197392f70e64c654b3f6c97231d68b29"
+    "digest": "389d305e1d41be22aa7594d4bfd91a085b722a5e0133b8a4dc17aca1da9a81e8"
   },
   "outputs": {
     "files": [
@@ -316,6 +318,10 @@
       "dist/cli/schedule-inspection-envelope.d.ts.map",
       "dist/cli/schedule-inspection-envelope.js",
       "dist/cli/schedule-inspection-envelope.js.map",
+      "dist/cli/server-env-check.d.ts",
+      "dist/cli/server-env-check.d.ts.map",
+      "dist/cli/server-env-check.js",
+      "dist/cli/server-env-check.js.map",
       "dist/cli/sporades-host-helper.d.ts",
       "dist/cli/sporades-host-helper.d.ts.map",
       "dist/cli/sporades-host-helper.js",
@@ -504,6 +510,10 @@
       "dist/sealed-server-env.d.ts.map",
       "dist/sealed-server-env.js",
       "dist/sealed-server-env.js.map",
+      "dist/server-env-requirements.d.ts",
+      "dist/server-env-requirements.d.ts.map",
+      "dist/server-env-requirements.js",
+      "dist/server-env-requirements.js.map",
       "dist/server-runtime-source.d.ts",
       "dist/server-runtime-source.d.ts.map",
       "dist/server-runtime-source.js",
@@ -602,6 +612,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "5fdffc090b7ef9328f42fe0babe0f38b4f3b1460ca0f11714d596a49aa52cb53"
+    "digest": "f124cd55dc878fbece3d672442af659debbed0374723bec30b720c71f2ad028b"
   }
 }
