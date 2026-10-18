@@ -2385,7 +2385,9 @@ test("a packed credential-free blank Capsule installs, typechecks, builds, and b
       assert.match(serverBundle, /STRIPE_CHECKOUT_RESPONSE_INVALID/);
       assert.match(serverBundle, /STRIPE_PORTAL_RESPONSE_INVALID/);
       assert.match(serverBundle, /STRIPE_WEBHOOK_REJECTED/);
-      assert.doesNotMatch(clientBundle, /stripe/i);
+      // Public activation metadata names Stripe; provider mechanics and secret
+      // material still belong exclusively to the server bundle.
+      assert.doesNotMatch(clientBundle, /StripeResource|api\.stripe\.com|STRIPE_CHECKOUT_RESPONSE_INVALID|STRIPE_PORTAL_RESPONSE_INVALID|STRIPE_WEBHOOK_REJECTED|sk_(?:test|live)_|whsec_/);
       assert.doesNotMatch(`${packed.stdout}${packed.stderr}${candidateCli.installed.stdout}${candidateCli.installed.stderr}${createResult.stdout}${createResult.stderr}${installed.stdout}${installed.stderr}${typechecked.stdout}${typechecked.stderr}${dumpResult.stdout}${dumpResult.stderr}${jobsResult.stdout}${jobsResult.stderr}${serverBundle}${clientBundle}`, /sk_test_generated_fixture|whsec_generated_fixture|obj_future_1|pending_webhooks|cs_test_generated_|test_generated_portal|Bearer sk_test_/i);
     } finally {
       child.kill("SIGTERM");

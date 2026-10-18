@@ -141,7 +141,7 @@ const malformedAdmission: publicServerApi.EndpointMultipartAdmissionDecision = {
 const deniedAdmission: publicServerApi.EndpointMultipartAdmissionDecision = { allow: false, allowFiles: true };
 import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripeCustomerPortalSessionResult, type StripePaymentsDisabledResult, type VerifiedStripeEvent } from "sporades/server/stripe";
 import { importLegacyTeamBillingEvidence, type LegacyTeamBillingEvidence, type TeamBillingImportAdapter } from "sporades/server/team-billing-import";
-import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
+import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, payments, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord, type PaymentsState } from "sporades/client";
 
 import { auth as emittedAuth } from "${repoRoot}/dist/client.js";
 import { type FileUploadError, type FileUploadErrorCode } from "sporades/client";
@@ -778,6 +778,15 @@ const todos = hooks.useQuery<Array<{ id: string; text: string }>>("todos");
 todos.data?.map((todo) => todo.text.toUpperCase());
 hooks.useMutation("addTodo").run("Ship the types");
 hooks.useAuth().signIn("google");
+const paymentState: PaymentsState = hooks.usePayments();
+paymentState.stripe.enabled satisfies boolean;
+paymentState.stripe.livemode satisfies boolean | null;
+// @ts-expect-error Payment snapshots are read-only.
+paymentState.stripe.enabled = true;
+// @ts-expect-error Provider identities never belong to the browser activation contract.
+paymentState.stripe.customerId;
+payments.get().then(result => result.data?.stripe.livemode);
+payments.subscribe(state => state.stripe.enabled).unsubscribe();
 const vue = createVueComposables({
   reactive<State extends object>(state: State): State { return state; },
   onScopeDispose(cleanup) { void cleanup; },
