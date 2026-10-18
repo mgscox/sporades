@@ -233,6 +233,8 @@ export declare function withAccessKeyTransaction(database: LooseRecord, operatio
 export declare function flushAccessKeyLifecycleAuditEvents(database: LooseRecord, context: LooseRecord | undefined): Promise<void>;
 export declare function dropAccessKeyLifecycleAuditEvents(context: LooseRecord | undefined): void;
 export declare function transferAccessKeyRuntimeState(previousContext: LooseRecord, nextContext: LooseRecord): void;
+/** Runtime-private Session binding shared by current-user capability checks. */
+export declare function readCurrentUserSessionToken(context: LooseRecord): string | undefined;
 export declare function bindAccessKeyOwnerSession(context: LooseRecord, sessionToken: unknown): void;
 export declare function accessKeySecretWasDisclosed(context: LooseRecord | undefined): boolean;
 export declare function markAccessKeySecretDisclosed(context: LooseRecord): void;

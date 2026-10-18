@@ -767,6 +767,11 @@ export function transferAccessKeyRuntimeState(previousContext: LooseRecord, next
   }
 }
 
+/** Runtime-private Session binding shared by current-user capability checks. */
+export function readCurrentUserSessionToken(context: LooseRecord) {
+  return accessKeyOwnerSessionTokens.get(context);
+}
+
 export function bindAccessKeyOwnerSession(context: LooseRecord, sessionToken: unknown) {
   if (context && typeof context === "object" && typeof sessionToken === "string") {
     accessKeyOwnerSessionTokens.set(context, sessionToken);

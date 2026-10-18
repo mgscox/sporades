@@ -60,6 +60,114 @@ The safe directory result contains user ID, display name, optional picture, mana
 
 Exact-Team admins use `updateApplicationRoles(teamId, userId, { add, remove })` to atomically reconcile declared roles. Promotion and demotion preserve at least one committed admin. Members leave with `leave(teamId)`; an admin cannot leave while still an admin, and `removeMember` cannot remove its caller. A sole admin member may delete an otherwise empty Team with `delete(teamId)`.
 
+## Atomic destructive policy
+
+Capsules with app-owned responsibility (for example a compatibility billing holder)
+can opt into `teams.authorizeDestructive`. This applies identically to direct
+client SDK calls and server `ctx.teams.demote`, `removeMember`, `leave`, and
+`delete`. `admitJoin`, mutation hooks, and `teamBilling.authorize` do not replace it.
+
+```ts
+teams: {
+  async authorizeDestructive(ctx, input) {
+    const rows = await ctx.db.responsibilities.where("teamId", input.teamId).all();
+    // Missing or ambiguous responsibility is a refusal, never an inactive default.
+    if (rows.length !== 1) return { allow: false };
+    const responsibility = rows[0];
+    if (!["active", "inactive"].includes(responsibility.state) ||
+        !responsibility.holderUserId) return { allow: false };
+    return { allow: responsibility.state === "inactive" || (
+      input.scope === "member" && input.member.userId !== responsibility.holderUserId
+    ) };
+  },
+},
+```
+
+The runtime acquires the exact Team lifecycle lock, rechecks current membership,
+admin/final-admin predicates and the current Session, then invokes the policy
+before any membership, role, counter, Join-link cleanup, or deletion write.
+Input is an immutable `{ teamId, actorUserId, operation, member: { userId, role },
+scope }`. `operation` is `demote`, `removeMember`, `leave`, or `delete`; `member`
+is the exact affected current membership. `scope: "team"` on deletion means
+**all** responsibility associated with that Team, including rows owned by other
+users and rows naming former members. Deletion still requires the actor to be
+the sole remaining admin member. Other operations have `scope: "member"`.
+
+The policy context has only frozen `auth`, read-only `db`, and `signal`. Its
+transaction-bound Capsule reads bypass ordinary row ACLs so it can check
+cross-owner responsibility. They confer no runtime-table, write, provider,
+logging, environment, or nested Privileged authority. The caller receives only
+the ordinary operation result or opaque `TEAM_POLICY_DENIED`; responsibility
+rows, provider identifiers and callback errors are never returned or logged by
+this boundary. Keep the policy local and await every read. Captured read handles
+expire when the callback settles, aborts, or exceeds its five-second evaluation
+budget. A non-cooperative callback cannot retain transaction authority.
+
+Only an object with its own data property `allow: true` and no other properties
+permits the operation. Missing/malformed/accessor decisions, exceptions, failed
+or unfinished reads (even if caught), cancellation, unavailable storage, and
+Session revocation/expiry refuse the operation. Refusal poisons the enclosing
+transaction: catching it cannot commit earlier Capsule writes. The lock remains
+held through outer commit or rollback, with current Session validity checked
+again before commit. PostgreSQL also retains locks on that Session and User;
+SQLite/libSQL use their writer transaction exclusion.
+
+### Serialize responsibility changes
+
+Every Capsule writer of protected responsibility must use the same lock **before
+reading responsibility or making writes** in its existing write transaction:
+
+```ts
+transfer: mutation(async (ctx, teamId, recipientUserId) => {
+  const snapshot = await ctx.teams.lockLifecycle(teamId, recipientUserId);
+  const responsibility = await ctx.db.responsibilities.where("teamId", teamId).get();
+  const acceptance = await ctx.db.acceptances
+    .where("teamId", teamId).where("userId", recipientUserId).get();
+  if (!responsibility || responsibility.holderUserId !== ctx.auth.userId ||
+      snapshot.member?.role !== "admin" || !acceptance) throw new Error("Denied");
+  await ctx.db.responsibilities.update(responsibility.id, { holderUserId: recipientUserId });
+  await ctx.db.acceptances.delete(acceptance.id);
+  await ctx.teams.demote(teamId, ctx.auth.userId);
+}),
+```
+
+The Capsule must authenticate acceptance as an explicit action by the recipient
+and bind it to the exact Team/transfer; restrict its writes with ordinary ACLs.
+Promotion alone never transfers responsibility. `lockLifecycle(teamId,
+memberUserId?)` returns `{ teamId, member }`, where `member` is the optional
+requested current `{ userId, role }` or null. This is a snapshot under the retained
+lock, not a reusable authority token. Normal `ctx.db` ACLs remain in force;
+the lock grants no cross-owner write access or new Privileged authority.
+Current-user calls require an administered Team and a current linked Session.
+
+The same server-only seam is available to already-Privileged code in an existing
+write transaction, including `stripeEvent({ consequence: "atomic" }, handler)`.
+It grants that userless context only exact member inspection and serialization,
+never membership mutation/admin authority. Nontransactional Jobs, read-only
+queries, and expired contexts refuse the lock. Use atomic Stripe consequences
+for provider observations; acquire this lock before reading/updating the
+Capsule's responsibility, billing state, or accepted-transfer records. Use one
+Team per transaction (or a consistent Team-ID order when several are necessary).
+A separately committed transfer, a wrapper-only check, or a writer omitting
+this seam cannot provide the shared invariant.
+
+Never hold the membership transaction open for provider network calls. Persist
+local intent atomically, then let durable Jobs perform provider work after commit
+and converge observations through the atomic seam. Runtime membership counters,
+last-admin protection, admission/capacity rules, and Team Billing seat staging
+retain their existing behavior and rollback boundaries.
+
+### Compatibility and rollout
+
+This is an additive 0.9.x contract. Omitting `authorizeDestructive` preserves
+existing behavior and requires no storage migration. A present non-function
+rejects Capsule startup. Before opting in, migrate/repair responsibility and
+acceptance rows and route **every** protected writer through `lockLifecycle`;
+missing/ambiguous rows should deny until repaired. Removing the declaration
+removes this Capsule-owned guard, so treat that as a deliberate policy change.
+Downstream must consume a published 0.9.x package and update its registry lockfile;
+an unpublished checkout does not satisfy its release gate.
+
 ## Email-bound Join links
 
 A **Join link** is a short-lived, revocable, single-use capability bound to one normalized target email and one Team. An exact-Team admin creates it with `createJoinLink(teamId, email, { ttlSeconds })`. Target email is required; the default lifetime is one day and the accepted lifetime range is 300 to 604800 seconds.
