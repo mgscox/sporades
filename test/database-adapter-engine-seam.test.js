@@ -199,6 +199,8 @@ const MIGRATED_RUNTIME_MODULES = [
   // emitted list in this same batch.
   { file: "mail-runtime.js", atLeast: 20, sentinel: "encodeMimeHeaderValue" },
   { file: "mail-config.js", atLeast: 0, sentinel: "validateMailConfig" },
+  // Shared CLI/runtime env admission travels with every deployed Capsule.
+  { file: "server-env-requirements.js", atLeast: 3, sentinel: "validateServerEnvConfig" },
   // Provider callbacks travel as their own cohesive runtime modules. The config
   // module is also consumed by the CLI; the runtime module owns verification,
   // normalization and dispatch. Private sentinels keep both visible here.
@@ -1343,6 +1345,7 @@ const namesRunDelimiters = (source) => {
 // distinguish these languages, which share quote characters. Listing each non-SQL purpose keeps
 // the detector broad instead of hiding new walkers behind language-specific exclusions.
 const RUN_LEXER_CENSUS = {
+  missingServerEnvError: "not a lexer: recovery hints name CLI flags with double hyphens",
   resolveDeployFiles: "not a lexer: rejects deployment path segments starting with a hyphen",
   skipSqlQuotedOrCommented: "the one tokenizer every read-only inspection consumer asks a dialect of",
   // On the inspection path — every Postgres inspection query passes through it twice — and left

@@ -1,3 +1,4 @@
+import { type ServerEnvConfig } from "./server-env-requirements.js";
 import type { PathLike } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { type ClientPrerenderFragment } from "./client-prerender.js";
@@ -8,6 +9,7 @@ export type ServerEnvFile = {
     raw: string;
 };
 export type ProjectConfig = JsonRecord & {
+    env?: ServerEnvConfig;
     auth?: AuthConfig;
     client?: {
         framework?: unknown;

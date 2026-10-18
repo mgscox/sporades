@@ -410,6 +410,13 @@ sporades host push --host personal --subname team-notes --restart --json
 sporades host push --host personal --subname team-notes --verify --fallback-to-previous-release --json
 ```
 
+Capsules declaring `env` in `sporades.json` must supply all explicit and
+configuration-implied required Server env keys before push. The check runs
+locally before Host contact or upload. `--allow-missing-env` bypasses only this
+presence check; runtime `env.failClosed` and existing Stripe credential checks
+still apply. See [required Server env](./projects-and-configuration.md#required-server-env).
+
+
 Useful Hosted Capsule operations:
 
 ```sh
