@@ -128307,7 +128307,7 @@ async function refreshSessionOnAdapter(sqlite, token) {
   await sqlite.refreshAuthSession(token, expiresAt);
   return expiresAt;
 }
-async function resolveAnonymousSession(database, sessionToken) {
+function resolveAnonymousSession(database, sessionToken) {
   return traceRuntimeOperation("sporades.auth.session.resolve", () => resolveAnonymousSessionOperation(database, sessionToken));
 }
 async function resolveAnonymousSessionOperation(database, sessionToken) {
@@ -140099,6 +140099,22 @@ async function withTrustedRead(database, options, callback) {
     revokePrivilegedDbAccess(context2);
   }
 }
+function runTableRead(contextGetter, read) {
+  const activeContext = () => {
+    const context2 = contextGetter?.();
+    if (contextGetter && !context2) {
+      throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+    }
+    return context2;
+  };
+  activeContext();
+  const result = thenIfPromise(read(activeContext), (value) => {
+    activeContext();
+    return value;
+  });
+  if (isPromiseLike(result)) void result.then(void 0, () => void 0);
+  return result;
+}
 function createEndpointTableApi(database, table, query = {}, contextGetter = null) {
   return {
     insert(values) {
@@ -140249,43 +140265,49 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       return createEndpointTableApi(database, table, { ...query, limit: count }, contextGetter);
     },
     get() {
-      const selected = database.adapter.selectAppRows(table, {
-        where: query.where ? {
-          fieldName: query.where.fieldName,
-          value: serializeFieldValue(
-            table.fields.find((field) => field.name === query.where.fieldName),
-            query.where.value
-          )
-        } : null,
-        orderBy: query.orderBy,
-        limit: 1
-      });
-      return thenIfPromise(selected, (rows) => {
-        const row = rows[0] ?? null;
-        if (!row) {
-          return null;
-        }
-        const deserialized = deserializeRow(table, row);
-        const allowed = applyReadAcl(database, table, deserialized, contextGetter?.());
-        return thenIfPromise(allowed, (result) => result ? deserialized : null);
+      return runTableRead(contextGetter, (activeContext) => {
+        const selected = database.adapter.selectAppRows(table, {
+          where: query.where ? {
+            fieldName: query.where.fieldName,
+            value: serializeFieldValue(
+              table.fields.find((field) => field.name === query.where.fieldName),
+              query.where.value
+            )
+          } : null,
+          orderBy: query.orderBy,
+          limit: 1
+        });
+        return thenIfPromise(selected, (rows) => {
+          const context2 = activeContext();
+          const row = rows[0] ?? null;
+          if (!row) {
+            return null;
+          }
+          const deserialized = deserializeRow(table, row);
+          const allowed = applyReadAcl(database, table, deserialized, context2);
+          return thenIfPromise(allowed, (result) => result ? deserialized : null);
+        });
       });
     },
     all() {
-      const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-      const selected = database.adapter.selectAppRows(table, {
-        where: query.where ? {
-          fieldName: query.where.fieldName,
-          value: serializeFieldValue(
-            table.fields.find((field) => field.name === query.where.fieldName),
-            query.where.value
-          )
-        } : null,
-        orderBy: query.orderBy,
-        limit
-      });
-      return thenIfPromise(selected, (selectedRows) => {
-        const rows = selectedRows.map((row) => deserializeRow(table, row));
-        return filterRowsByReadAcl(database, table, rows, contextGetter?.());
+      return runTableRead(contextGetter, (activeContext) => {
+        const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
+        const selected = database.adapter.selectAppRows(table, {
+          where: query.where ? {
+            fieldName: query.where.fieldName,
+            value: serializeFieldValue(
+              table.fields.find((field) => field.name === query.where.fieldName),
+              query.where.value
+            )
+          } : null,
+          orderBy: query.orderBy,
+          limit
+        });
+        return thenIfPromise(selected, (selectedRows) => {
+          const context2 = activeContext();
+          const rows = selectedRows.map((row) => deserializeRow(table, row));
+          return filterRowsByReadAcl(database, table, rows, context2);
+        });
       });
     }
   };
@@ -145143,22 +145165,22 @@ export default capsule({
   },
 
   queries: {
-    publicPhotos: query((ctx) =>
-      ctx.db.photos
+    publicPhotos: query(async (ctx) =>
+      (await ctx.db.photos
         .where("isPublic", true)
         .orderBy("createdAt", "desc")
-        .all()
+        .all())
         .filter((photo) => photo.imageUrl),
     ),
-    personalPhotos: query((ctx) => {
+    personalPhotos: query(async (ctx) => {
       if (ctx.auth.isGuest) {
         return [];
       }
 
-      return ctx.db.photos
+      return (await ctx.db.photos
         .where("ownerId", ctx.auth.userId)
         .orderBy("createdAt", "desc")
-        .all()
+        .all())
         .map((photo) => ({
           ...photo,
           status: photo.isPublic ? "public" : "private",
@@ -145167,13 +145189,13 @@ export default capsule({
   },
 
   jobs: {
-    timestampPhotoNames: job((ctx) => {
+    timestampPhotoNames: job(async (ctx) => {
       const time = new globalThis.Date().toISOString().slice(11, 16);
       let updated = 0;
-      for (const photo of ctx.db.photos.all()) {
+      for (const photo of await ctx.db.photos.all()) {
         const title = globalThis.String(photo.title).replace(/^\\d{2}:\\d{2}\\s+/, "");
         const fileName = globalThis.String(photo.fileName).replace(/^\\d{2}:\\d{2}\\s+/, "");
-        ctx.db.photos.update(photo.id, {
+        await ctx.db.photos.update(photo.id, {
           title: \`\${time} \${title}\`,
           fileName: \`\${time} \${fileName}\`,
         });

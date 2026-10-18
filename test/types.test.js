@@ -232,6 +232,26 @@ annotatedUniqueUsers.unique();
 annotatedUniqueUsers.unique("missing");
 
 declare const typedUsers: TableApi<{ id: string; createdAt: string; updatedAt: string; email: string; teamId: string }>;
+// Even SQLite can queue terminal operations behind another transaction.
+// @ts-expect-error A possibly deferred collection must be awaited before mapping.
+typedUsers.all().map(user => user.email);
+// @ts-expect-error A possibly deferred row must be awaited before reading fields.
+typedUsers.get()?.email;
+// @ts-expect-error A possibly deferred insert must be awaited before reading fields.
+typedUsers.insert({ email: "person@example.test", teamId: "team-a" }).id;
+// @ts-expect-error A possibly deferred update must be awaited before reading fields.
+typedUsers.update("user-1", { email: "person@example.test" })?.email;
+// @ts-expect-error A possibly deferred delete is not a synchronous boolean.
+const deletedUser: boolean = typedUsers.delete("user-1");
+async function awaitTableOperations() {
+  const rows = await typedUsers.all();
+  const row = await typedUsers.get();
+  const inserted = await typedUsers.insert({ email: "person@example.test", teamId: "team-a" });
+  const updated = await typedUsers.update(inserted.id, { email: "new@example.test" });
+  const deleted: boolean = await typedUsers.delete(inserted.id);
+  return { emails: rows.map(user => user.email), email: row?.email, updated: updated?.email, deleted };
+}
+void awaitTableOperations;
 typedUsers.insertOrIgnore({ email: "person@example.test", teamId: "team-a" }, "email");
 const serviceInsertOrIgnoreResult: ReturnType<typeof typedUsers.insertOrIgnore> = Promise.resolve({
   id: "user-1",
@@ -737,7 +757,7 @@ const app = capsule({
       return {
         path: ctx.request.path,
         userId: requireAuth(ctx).userId,
-        count: ctx.db.todos.all().length,
+        count: (await ctx.db.todos.all()).length,
       };
     }),
     guarded: endpoint({ method: "GET", path: "/guarded" }, requireAuth({ credentials: ["session"] }, (ctx) => ({
@@ -759,7 +779,7 @@ const app = capsule({
       await ctx.privileged.run({
         operation: "messages.auditTyping",
         targetResourceKind: "capsule-db",
-      }, (privilegedCtx) => privilegedCtx.db.todos.all().length);
+      }, async (privilegedCtx) => (await privilegedCtx.db.todos.all()).length);
       const sentToClients: number = ctx.messages.send({ type: "typing", data, scope: "currentUser" });
       return { ok: true, sentToClients };
     }),
