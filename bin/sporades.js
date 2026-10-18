@@ -80423,7 +80423,7 @@ function requiredServerEnvKeys(config) {
     if (auth.passwordEnv) keys.add(auth.passwordEnv);
   }
   for (const webhook of Object.values(config.mail?.webhooks ?? {})) {
-    if (webhook?.secretEnv) keys.add(webhook.secretEnv);
+    if (webhook?.enabled && webhook.secretEnv) keys.add(webhook.secretEnv);
   }
   const stripe = config.payments?.stripe;
   if (stripe?.enabled === true) {

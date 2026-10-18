@@ -50,7 +50,7 @@ export function requiredServerEnvKeys(config: Config): string[] {
     if (auth.passwordEnv) keys.add(auth.passwordEnv);
   }
   for (const webhook of Object.values(config.mail?.webhooks ?? {}) as Config[]) {
-    if (webhook?.secretEnv) keys.add(webhook.secretEnv);
+    if (webhook?.enabled && webhook.secretEnv) keys.add(webhook.secretEnv);
   }
   const stripe = config.payments?.stripe;
   if (stripe?.enabled === true) {

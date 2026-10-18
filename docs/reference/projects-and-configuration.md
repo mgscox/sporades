@@ -619,7 +619,7 @@ malformed declarations fail configuration validation without echoing values.
 
 The required set automatically includes configured
 `mail.smtp.auth.usernameEnv` and `passwordEnv` (except `method: "none"`), every
-configured mail webhook's `secretEnv`, and `payments.stripe.secretKeyEnv` and
+enabled mail webhook's `secretEnv`, and `payments.stripe.secretKeyEnv` and
 `webhookSecretEnv` when Stripe is enabled. Disabled Stripe configuration adds
 no keys. OAuth keys are not inferred; declare them explicitly when needed.
 

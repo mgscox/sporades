@@ -98,6 +98,12 @@ test('configured SMTP, webhook and enabled payments keys are implied; dormant in
   assert.equal(runCli(dir, ['doctor']).output.data.checks.find(c => c.id === 'doctor.server-env').status, 'pass');
 }));
 
+test('default webhook secret references are implied while disabled webhooks add no requirements', async () => temporary(async dir => {
+  await writeFile(path.join(dir, 'sporades.json'), JSON.stringify({ name: 'webhooks', env: {}, mail: { webhooks: { mailjet: {}, postmark: { secretEnv: 'CUSTOM_WEBHOOK' }, mailgun: { enabled: false } } } }));
+  const result = runCli(dir, ['doctor']);
+  assert.deepEqual(result.output.data.checks.find(c => c.id === 'doctor.server-env').details.missingKeys, ['CUSTOM_WEBHOOK', 'MAILJET_WEBHOOK_SECRET']);
+}));
+
 test('invalid env requirements are opaque and rejected consistently by config, doctor and runtime', async () => temporary(async dir => {
   const { readProjectConfig } = await import('../dist/cli/project-config.js');
   const { openDevDatabase } = await import('../dist/server-runtime-source.js');
@@ -138,4 +144,30 @@ test('generated server Bundle logs missing keys and enforces failClosed with sea
   assert.equal(events[0].message, 'Missing required Server env keys: MISSING_KEY');
   assert.equal((result.stdout + result.stderr).includes('private-bundle-probe'), false);
   await assert.rejects(readFile(path.join(dir, 'never.db')), { code: 'ENOENT' });
+}));
+
+test('generated Bundle continues by default and starts failClosed after required env is restored', async () => temporary(async dir => {
+  const { createServerBundleModuleSource } = await import('../dist/templates/server-bundle-module-graph.js');
+  for (const restored of [false, true]) {
+    const log = path.join(dir, `generated-${restored}.jsonl`);
+    const source = await createServerBundleModuleSource({
+      config: { name: 'env-boot-parity', env: { required: ['APP_URL'], failClosed: restored }, mail: { webhooks: { postmark: {} } }, logs: { jsonlPath: log } },
+      serverEnv: restored ? { APP_URL: 'private-restored-probe', POSTMARK_WEBHOOK_SECRET: 'private-restored-probe' } : {},
+      serverSource: '', serverModuleSource: 'export default { schema: {} };',
+      epilogue: "await new Promise(resolve => server.close(resolve)); await shutdownAndCloseDatabase(database); process.stdout.write('started');",
+    });
+    const bundle = path.join(dir, 'server.mjs');
+    await writeFile(bundle, source);
+    const result = spawnSync(process.execPath, [bundle], {
+      cwd: dir, encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, PORT: '0', SPORADES_CONFIG_DIR: path.join(dir, 'cli-config'), SPORADES_LOG_STDOUT: '0' },
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(result.stdout, 'started');
+    const events = (await readFile(log, 'utf8')).trim().split('\n').map(JSON.parse).filter(e => e.event === 'env.required.missing');
+    assert.equal(events.length, restored ? 0 : 1);
+    if (!restored) assert.equal(events[0].message, 'Missing required Server env keys: APP_URL, POSTMARK_WEBHOOK_SECRET');
+    assert.equal((result.stdout + result.stderr + JSON.stringify(events)).includes('private-restored-probe'), false);
+  }
 }));
