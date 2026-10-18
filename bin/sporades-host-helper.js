@@ -28571,7 +28571,7 @@ function stripDiagnosticUrlSuffixes(text2) {
       const closesOuter = !!delimiter && delimiter === outerQuote && (delimiter !== "'" || /^[),.;:!?\]}\x60]*(?:\s|$)/.test(text2.slice(end + 1)) && !/^[^'\r\n]*[&#=]/.test(text2.slice(end + 1)));
       if (quote) {
         if (quote === "'" && outerQuote === "'" && closesOuter) break;
-        if (delimiter === quote && (delimiter !== "'" || /^[ \t]*(?:[&#=]|["']|$)/.test(text2.slice(end + 1)))) quote = "";
+        if (delimiter === quote && (delimiter !== "'" || /^[ \t]*(?:[&#=]|["']|$)/.test(text2.slice(end + 1)) && !/^[^'\r\n]*'[ \t]*[&#=]/.test(text2.slice(end + 1)))) quote = "";
         else if (char === "\\") {
           end += 2;
           continue;

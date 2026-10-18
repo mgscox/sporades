@@ -104,9 +104,11 @@ function stripDiagnosticUrlSuffixes(text) {
                 if (quote === "'" && outerQuote === "'" && closesOuter)
                     break;
                 // A value quote may precede a separator or its surrounding string's
-                // quote. Other apostrophes are ambiguous data: keep concealing them.
+                // quote. A later matching quote before another separator makes an
+                // earlier apostrophe ambiguous, even when it itself precedes & or #.
                 if (delimiter === quote
-                    && (delimiter !== "'" || /^[ \t]*(?:[&#=]|["']|$)/.test(text.slice(end + 1))))
+                    && (delimiter !== "'" || (/^[ \t]*(?:[&#=]|["']|$)/.test(text.slice(end + 1))
+                        && !/^[^'\r\n]*'[ \t]*[&#=]/.test(text.slice(end + 1)))))
                     quote = "";
                 else if (char === "\\") {
                     end += 2;

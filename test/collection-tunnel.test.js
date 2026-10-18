@@ -219,6 +219,16 @@ const punctuatedApostropheDiagnostics = [...'-._~:/?#[]@!$&()*+,;=%'].flatMap(pu
     frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
   };
 });
+for (const value of ["'O'&Reilly phrase'", "'O'#Reilly phrase'", "'O'=Reilly phrase'", "'O'& cap = Reilly phrase'"]) {
+  const urls = apostropheDiagnosticUrls.map(base => `url=${base}?filter=${value}&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker`);
+  const clean = apostropheDiagnosticUrls.map(base => `url=${base}`);
+  punctuatedApostropheDiagnostics.push({ name: `bare quoted value with ambiguous separator: ${value}`,
+    message: `Ready? Investigate #234 ${urls.join(' ')} Continue.`,
+    safe: `Ready? Investigate #234 ${clean.join(' ')} Continue.`,
+    stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
+    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+  });
+}
 
 // Each fresh loader admits twenty errors per minute; stay below that real bound.
 const punctuatedApostropheGroups = Array.from({ length: Math.ceil(punctuatedApostropheDiagnostics.length / 16) }, (_, index) => [
