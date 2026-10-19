@@ -385,7 +385,8 @@ test("managed subscription updates attest current state and send one stable atom
 
 test("managed subscription updates surface a bounded payment-action result without provider identifiers", async () => {
   for (const paymentState of [
-    { pendingUpdate: { expires_at: 2_000_086_523 } },
+    { priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14,
+      pendingUpdate: { expires_at: 2_000_086_523, subscription_items: [validManagedItem()] } },
     { status: "past_due" },
   ]) {
     await withProvider(async (request, response) => {
@@ -399,6 +400,39 @@ test("managed subscription updates surface a bounded payment-action result witho
       assert.deepEqual(result, { ok: true, outcome: "payment-action-required" });
       assert.equal(Object.isFrozen(result), true);
       assert.equal(JSON.stringify(result).includes("sub_managed_team"), false);
+    });
+  }
+});
+
+test("pending managed updates attest the exact requested item and preserve Subscription association checks", async () => {
+  const pending = { expires_at: 2_000_086_523, subscription_items: [validManagedItem()] };
+  const invalidPending = [
+    { expires_at: 2_000_086_523 },
+    { ...pending, expires_at: 0 },
+    { ...pending, expires_at: "2000086523" },
+    { ...pending, subscription_items: [] },
+    { ...pending, subscription_items: [validManagedItem(), validManagedItem()] },
+    ...[
+      { id: "si_another" }, { subscription: "sub_another_team" },
+      { priceId: managedSubscriptionInput.sourcePriceId }, { productId: "prod_unknown" },
+      { quantity: 16 }, { usageType: "metered" },
+    ].map((override) => ({ ...pending, subscription_items: [validManagedItem(override)] })),
+  ];
+  const current = validManagedSubscription({ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14 });
+  const responses = [
+    ...invalidPending.map((pendingUpdate) => ({ ...current, pending_update: pendingUpdate })),
+    { ...current, customer: "cus_another_team", pending_update: pending },
+    { ...current, livemode: true, pending_update: pending },
+    { ...current, items: { ...current.items, has_more: true }, pending_update: pending },
+    { ...validManagedSubscription({ priceId: "price_unknown" }), pending_update: pending },
+  ];
+  for (const updated of responses) {
+    await withProvider((request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(request.method === "GET" ? current : updated));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      await assert.rejects(provider.updateManagedSubscription(managedSubscriptionInput), rejectedProviderFailure);
     });
   }
 });
