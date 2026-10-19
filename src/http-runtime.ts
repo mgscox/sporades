@@ -105,7 +105,7 @@
 
 import { ServerResponse, type IncomingHttpHeaders, type IncomingMessage, type OutgoingHttpHeaders } from "node:http";
 import { randomBytes } from "node:crypto";
-import { hstsHeader, validateHttpHardening } from "./http-security-config.js";
+import { cspReportDirectives, hstsHeader, validateHttpHardening } from "./http-security-config.js";
 import type { Duplex } from "node:stream";
 import type { Socket } from "node:net";
 import { traceRuntimeOperation } from "./runtime-request-context.js";
@@ -161,6 +161,7 @@ export type RuntimeSecurityPolicy = {
     header: string;
     directives: Record<string, string[] | string>;
     nonce?: boolean;
+    reportTo?: "observability";
   };
 };
 export type RuntimeRequestLike = {
@@ -501,7 +502,7 @@ export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurity
 
 export function resolveRuntimeSecurityPolicy(config: RuntimeConfig = {}): RuntimeSecurityPolicy {
   const security = config.security ?? {};
-  validateHttpHardening(security);
+  validateHttpHardening(security, config.observability);
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
   const session = config.__sporadesSession ?? "container";
@@ -512,7 +513,7 @@ export function resolveRuntimeSecurityPolicy(config: RuntimeConfig = {}): Runtim
   const directives = {
     ...defaultRuntimeCspDirectives(),
     ...(csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}),
-    ...(csp.reportTo ? { "report-uri": [csp.reportTo] } : {}),
+    ...cspReportDirectives(csp),
   };
   const mode = csp.mode === "enforce" ? "enforce" : "report-only";
 
@@ -536,6 +537,7 @@ export function resolveRuntimeSecurityPolicy(config: RuntimeConfig = {}): Runtim
       header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
       directives,
       ...(csp.nonce === true ? { nonce: true } : {}),
+      ...(csp.reportTo === "observability" ? { reportTo: "observability" } : {}),
     },
   };
 }

@@ -78,7 +78,7 @@ export async function createBundle(
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
   } = {},
 ) {
-  validateHttpHardening(config.security);
+  validateHttpHardening(config.security, config.observability as Record<string, unknown> | undefined);
   validateServerEnvConfig(config.env);
   resolveAdmissionPolicy(config.admissionPolicy, (config.deploy as { files?: unknown } | undefined)?.files);
   const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, (config.deploy as { files?: unknown } | undefined)?.files);

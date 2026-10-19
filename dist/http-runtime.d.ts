@@ -18,6 +18,7 @@ export type RuntimeSecurityPolicy = {
         header: string;
         directives: Record<string, string[] | string>;
         nonce?: boolean;
+        reportTo?: "observability";
     };
 };
 export type RuntimeRequestLike = {

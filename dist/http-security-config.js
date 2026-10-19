@@ -1,6 +1,8 @@
 import { commandError } from "./runtime-errors.js";
+/** Runtime-owned report-uri used by `security.csp.reportTo: "observability"`. */
+export const CSP_REPORT_PATH = "/__sporades/csp-report";
 /** Shared startup/CLI validation for opt-in HTTP hardening. Never echo configured values. */
-export function validateHttpHardening(security = {}) {
+export function validateHttpHardening(security = {}, observability) {
     const fail = (hint) => {
         throw commandError("Invalid HTTP security configuration.", hint, "INVALID_SECURITY_CONFIG");
     };
@@ -16,7 +18,11 @@ export function validateHttpHardening(security = {}) {
             }
         }
     }
-    if (csp.reportTo !== undefined) {
+    if (csp.reportTo === "observability") {
+        if (!observability?.errors)
+            fail("Configure observability.errors before setting security.csp.reportTo to \"observability\".");
+    }
+    else if (csp.reportTo !== undefined) {
         const value = csp.reportTo;
         let valid = typeof value === "string" && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]|[;#\\]/.test(value);
         if (valid) {
@@ -30,7 +36,7 @@ export function validateHttpHardening(security = {}) {
             }
         }
         if (!valid)
-            fail("Set security.csp.reportTo to a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.");
+            fail("Set security.csp.reportTo to \"observability\", a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.");
     }
     const hsts = security.hsts;
     if (hsts !== undefined) {
@@ -44,5 +50,11 @@ export function validateHttpHardening(security = {}) {
 }
 export function hstsHeader(hsts) {
     return `max-age=${hsts.maxAgeSeconds}${hsts.includeSubDomains ? "; includeSubDomains" : ""}${hsts.preload ? "; preload" : ""}`;
+}
+/** Shared by runtime and CLI inspection so both describe the same report destination. */
+export function cspReportDirectives(csp) {
+    if (csp.reportTo === "observability")
+        return { "report-uri": [CSP_REPORT_PATH] };
+    return csp.reportTo ? { "report-uri": [csp.reportTo] } : {};
 }
 //# sourceMappingURL=http-security-config.js.map

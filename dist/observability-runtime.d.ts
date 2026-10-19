@@ -7,6 +7,8 @@ export declare function createRuntimeObservability(config?: RecordValue, env?: R
     clientErrors: boolean;
     analytics: boolean;
     capture(error: any, surface: string, address?: string | null): void;
+    /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
+    captureCspViolation(violation: CspViolation): void;
     close(): void;
     flush(): Promise<void>;
     collect(input: RecordValue, origin: string, request: IncomingMessage, database: RecordValue): Promise<void>;
@@ -14,5 +16,10 @@ export declare function createRuntimeObservability(config?: RecordValue, env?: R
     leave(): void;
 };
 export declare function routeCollection(database: RecordValue, request: IncomingMessage, response: ServerResponse): Promise<boolean>;
+type CspViolation = {
+    directive: string;
+    blocked: string;
+    disposition?: "enforce" | "report";
+};
 export {};
 //# sourceMappingURL=observability-runtime.d.ts.map

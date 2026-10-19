@@ -19,7 +19,7 @@ const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple
 const SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
 const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 export async function createBundle(projectDir, config, options = {}) {
-    validateHttpHardening(config.security);
+    validateHttpHardening(config.security, config.observability);
     validateServerEnvConfig(config.env);
     resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
     const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, config.deploy?.files);

@@ -1,7 +1,10 @@
 import { commandError } from "./runtime-errors.js";
 
+/** Runtime-owned report-uri used by `security.csp.reportTo: "observability"`. */
+export const CSP_REPORT_PATH = "/__sporades/csp-report";
+
 /** Shared startup/CLI validation for opt-in HTTP hardening. Never echo configured values. */
-export function validateHttpHardening(security: Record<string, any> = {}) {
+export function validateHttpHardening(security: Record<string, any> = {}, observability?: Record<string, any>) {
   const fail = (hint: string): never => {
     throw commandError("Invalid HTTP security configuration.", hint, "INVALID_SECURITY_CONFIG");
   };
@@ -17,7 +20,9 @@ export function validateHttpHardening(security: Record<string, any> = {}) {
       }
     }
   }
-  if (csp.reportTo !== undefined) {
+  if (csp.reportTo === "observability") {
+    if (!observability?.errors) fail("Configure observability.errors before setting security.csp.reportTo to \"observability\".");
+  } else if (csp.reportTo !== undefined) {
     const value = csp.reportTo;
     let valid = typeof value === "string" && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]|[;#\\]/.test(value);
     if (valid) {
@@ -27,7 +32,7 @@ export function validateHttpHardening(security: Record<string, any> = {}) {
           && url.protocol === "https:" && !url.username && !url.password;
       } catch { valid = false; }
     }
-    if (!valid) fail("Set security.csp.reportTo to a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.");
+    if (!valid) fail("Set security.csp.reportTo to \"observability\", a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.");
   }
   const hsts = security.hsts;
   if (hsts !== undefined) {
@@ -42,4 +47,10 @@ export function validateHttpHardening(security: Record<string, any> = {}) {
 
 export function hstsHeader(hsts: Record<string, any>) {
   return `max-age=${hsts.maxAgeSeconds}${hsts.includeSubDomains ? "; includeSubDomains" : ""}${hsts.preload ? "; preload" : ""}`;
+}
+
+/** Shared by runtime and CLI inspection so both describe the same report destination. */
+export function cspReportDirectives(csp: Record<string, any>) {
+  if (csp.reportTo === "observability") return { "report-uri": [CSP_REPORT_PATH] };
+  return csp.reportTo ? { "report-uri": [csp.reportTo] } : {};
 }

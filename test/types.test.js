@@ -75,7 +75,8 @@ const securityConfig: publicServerApi.SecurityConfig = { csp: { nonce: true, mod
 const invalidNonceConfig: publicServerApi.SecurityConfig = { csp: { nonce: 'true' } };
 // @ts-expect-error reportTo is a URI string, not a boolean.
 const invalidReportConfig: publicServerApi.SecurityConfig = { csp: { reportTo: true } };
-void securityConfig; void invalidNonceConfig; void invalidReportConfig;
+const forwardedReports: publicServerApi.SecurityConfig = { csp: { reportTo: 'observability' } };
+void securityConfig; void invalidNonceConfig; void invalidReportConfig; void forwardedReports;
 const errorCollection: publicServerApi.ObservabilityConfig = { errors: { protocol: "sentry", dsnEnv: "ERROR_DSN", client: true, sampleRate: 0.25 } };
 const pageviews: publicServerApi.AnalyticsConfig = { provider: "umami", endpointEnv: "ANALYTICS_ENDPOINT", websiteIdEnv: "WEBSITE_ID", redactQuery: true };
 // @ts-expect-error capability URL redaction cannot be disabled.

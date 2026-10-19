@@ -26,6 +26,7 @@ export declare function readOptionalProjectSecurity(projectDir: string, session:
     };
     csp: {
         directives: any;
+        reportTo?: string | undefined;
         nonce?: boolean | undefined;
         mode: any;
         header: string;
@@ -34,7 +35,7 @@ export declare function readOptionalProjectSecurity(projectDir: string, session:
 } | null>;
 export declare function validatePublicOriginConfig(config: any): void;
 export declare function validateProjectConfigShape(config: unknown): void;
-export declare function validateSecurityConfig(security: LooseRecord): void;
+export declare function validateSecurityConfig(security: LooseRecord, observability?: LooseRecord): void;
 export declare function resolveEffectiveSecurityPolicy(config: LooseRecord, session: string): {
     cors: {
         sameOrigin: boolean;
@@ -53,6 +54,7 @@ export declare function resolveEffectiveSecurityPolicy(config: LooseRecord, sess
     };
     csp: {
         directives: any;
+        reportTo?: string | undefined;
         nonce?: boolean | undefined;
         mode: any;
         header: string;

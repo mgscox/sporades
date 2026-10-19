@@ -1128,8 +1128,9 @@ in report-only mode. Sporades disables Vite's blanket `html.cspNonce` behavior
 in nonce mode and authorizes generated entry scripts through their output graph.
 The runtime replaces `%SPORADES_NONCE%` throughout served HTML, including
 `index.html`, prerender fragments and public HTML pages, with one fresh
-cryptographically random 256-bit nonce per response. Its connection-token script
-uses the same nonce. HTML is served with `Cache-Control: no-store`; nonces are
+cryptographically random 256-bit nonce per response. Every runtime-injected
+script, including the connection-token script and the `/__sporades/observe.js`
+collection loader, uses the same nonce. HTML is served with `Cache-Control: no-store`; nonces are
 never stored in the public tree or shared security policy. Dev, Container and
 Hosted use the same behavior. Nonce substitution applies to the runtime's public
 HTML path; Custom endpoint responses remain Capsule-owned.
@@ -1163,10 +1164,16 @@ raw `directives.report-uri` override. It is a URI, not a Reporting API group nam
 no `Reporting-Endpoints` header is implied. The destination must already accept
 browser CSP reports. Reports can contain document URLs and other sensitive
 browser context, so choose a trusted collector. Sporades does not receive or log
-reports merely because this option is set. Automatic forwarding through
-`observability.errors` and its same-origin collection tunnel belongs to the
-related [observability integration (#234)](https://github.com/mgscox/sporades/issues/234);
-until that integration ships, configure a working report URI explicitly.
+reports merely because a URI is set.
+
+Set `"reportTo": "observability"` to forward violations through the configured
+[`observability.errors`](./errors-and-analytics.md#csp-violation-reports)
+Sentry-envelope sink instead. The value is rejected unless
+`observability.errors` is configured. The CSP then names the runtime-owned
+`report-uri /__sporades/csp-report`, and the runtime reduces each report to its
+directive, blocked origin or keyword, and disposition before delivery. Forwarding
+stays opt-in because the default report-only CSP would otherwise turn existing
+traffic into error events.
 
 The Chromium regression checks cover Dev sessions and generated esbuild/Vite
 Bundles, including blocked unmarked classic/module scripts and inline handlers:

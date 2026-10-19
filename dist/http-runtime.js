@@ -104,7 +104,7 @@
 // Static builtin imports are supported by the module graph (ADR-0042's constraint has expired).
 import { ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
-import { hstsHeader, validateHttpHardening } from "./http-security-config.js";
+import { cspReportDirectives, hstsHeader, validateHttpHardening } from "./http-security-config.js";
 import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
@@ -464,7 +464,7 @@ export function prepareHttpSecurity(database, request, response, admitPreflight)
 }
 export function resolveRuntimeSecurityPolicy(config = {}) {
     const security = config.security ?? {};
-    validateHttpHardening(security);
+    validateHttpHardening(security, config.observability);
     const cors = security.cors ?? {};
     const csp = security.csp ?? {};
     const session = config.__sporadesSession ?? "container";
@@ -475,7 +475,7 @@ export function resolveRuntimeSecurityPolicy(config = {}) {
     const directives = {
         ...defaultRuntimeCspDirectives(),
         ...(csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}),
-        ...(csp.reportTo ? { "report-uri": [csp.reportTo] } : {}),
+        ...cspReportDirectives(csp),
     };
     const mode = csp.mode === "enforce" ? "enforce" : "report-only";
     return {
@@ -498,6 +498,7 @@ export function resolveRuntimeSecurityPolicy(config = {}) {
             header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
             directives,
             ...(csp.nonce === true ? { nonce: true } : {}),
+            ...(csp.reportTo === "observability" ? { reportTo: "observability" } : {}),
         },
     };
 }

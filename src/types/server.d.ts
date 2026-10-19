@@ -1543,8 +1543,9 @@ export type SecurityConfig = {
     directives?: Record<string, string | string[]>;
     /** Fresh per-response nonce. Put nonce="%SPORADES_NONCE%" on trusted authored scripts. Inline event handlers cannot use nonces. */
     nonce?: boolean;
-    /** Browser report-uri destination: same-origin absolute path or credential-free HTTPS URL. */
-    reportTo?: string;
+    /** Browser report-uri destination: same-origin absolute path or credential-free HTTPS URL, or `"observability"` to
+     * forward bounded, redacted violations through the configured `observability.errors` sink (required for that value). */
+    reportTo?: "observability" | (string & {});
   };
   /** Hosted Capsules only. maxAgeSeconds is a non-negative safe integer; zero clears HSTS. */
   hsts?: { maxAgeSeconds: number; includeSubDomains?: boolean; preload?: boolean };

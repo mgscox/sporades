@@ -80626,6 +80626,54 @@ function trustedClientAddress(database, request) {
   return canonicalClientAddress(singleHeader(request, ACCESS_KEY_CLIENT_ADDRESS_HEADER));
 }
 
+// src/http-security-config.ts
+var CSP_REPORT_PATH = "/__sporades/csp-report";
+function validateHttpHardening(security = {}, observability) {
+  const fail4 = (hint) => {
+    throw commandError("Invalid HTTP security configuration.", hint, "INVALID_SECURITY_CONFIG");
+  };
+  const csp = security.csp ?? {};
+  if (csp.nonce !== void 0 && typeof csp.nonce !== "boolean") {
+    fail4("Set security.csp.nonce to a boolean.");
+  }
+  if (csp.nonce === true) {
+    for (const name2 of ["script-src", "script-src-elem"]) {
+      const value = csp.directives?.[name2];
+      if (value !== void 0 && typeof value !== "string" && !(Array.isArray(value) && value.every((item) => typeof item === "string"))) {
+        fail4("Set CSP script directives to a string or an array of strings.");
+      }
+    }
+  }
+  if (csp.reportTo === "observability") {
+    if (!observability?.errors) fail4('Configure observability.errors before setting security.csp.reportTo to "observability".');
+  } else if (csp.reportTo !== void 0) {
+    const value = csp.reportTo;
+    let valid = typeof value === "string" && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]|[;#\\]/.test(value);
+    if (valid) {
+      try {
+        const url = new URL(value, "https://sporades.invalid");
+        valid = (value.startsWith("/") && !value.startsWith("//") || value.startsWith("https://")) && url.protocol === "https:" && !url.username && !url.password;
+      } catch {
+        valid = false;
+      }
+    }
+    if (!valid) fail4('Set security.csp.reportTo to "observability", a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.');
+  }
+  const hsts = security.hsts;
+  if (hsts !== void 0) {
+    if (!hsts || typeof hsts !== "object" || Array.isArray(hsts) || !Number.isSafeInteger(hsts.maxAgeSeconds) || hsts.maxAgeSeconds < 0 || hsts.includeSubDomains !== void 0 && typeof hsts.includeSubDomains !== "boolean" || hsts.preload !== void 0 && typeof hsts.preload !== "boolean") {
+      fail4("Set security.hsts to an object with a non-negative safe integer maxAgeSeconds and optional boolean includeSubDomains and preload.");
+    }
+  }
+}
+function hstsHeader(hsts) {
+  return `max-age=${hsts.maxAgeSeconds}${hsts.includeSubDomains ? "; includeSubDomains" : ""}${hsts.preload ? "; preload" : ""}`;
+}
+function cspReportDirectives(csp) {
+  if (csp.reportTo === "observability") return { "report-uri": [CSP_REPORT_PATH] };
+  return csp.reportTo ? { "report-uri": [csp.reportTo] } : {};
+}
+
 // src/observability-runtime.ts
 function validateObservabilityConfig(config) {
   const fail4 = () => {
@@ -80713,6 +80761,27 @@ function createRuntimeObservability(config = {}, env = {}) {
     const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped2.signal, AbortSignal.timeout(2e3)]) });
     await response.body?.cancel();
   };
+  const eventBase = (platform) => ({
+    event_id: randomUUID().replaceAll("-", ""),
+    timestamp: Date.now() / 1e3,
+    platform,
+    environment: errors.environment,
+    release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : void 0
+  });
+  const deliver = (event) => {
+    const payload = JSON.stringify(event);
+    const body = `${JSON.stringify({ event_id: event.event_id, dsn })}
+${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}
+${payload}
+`;
+    if (!sentryUrl || !enter()) return;
+    const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope" }).catch(() => {
+    }).finally(() => {
+      active--;
+      pending.delete(task);
+    });
+    pending.add(task);
+  };
   return {
     enabled: !!analyticsUrl || !!(sentryUrl && errors.client),
     clientErrors: !!(sentryUrl && errors.client),
@@ -80725,28 +80794,27 @@ function createRuntimeObservability(config = {}, env = {}) {
           return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
         }).reverse() : [];
         const event = {
-          event_id: randomUUID().replaceAll("-", ""),
-          timestamp: Date.now() / 1e3,
-          platform: surface === "client" ? "javascript" : "node",
+          ...eventBase(surface === "client" ? "javascript" : "node"),
           level: "error",
-          environment: errors.environment,
-          release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : void 0,
           tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
           exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
           ...address ? { user: { ip_address: address } } : {}
         };
-        const payload = JSON.stringify(event);
-        const body = `${JSON.stringify({ event_id: event.event_id, dsn })}
-${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}
-${payload}
-`;
-        if (!enter()) return;
-        const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope" }).catch(() => {
-        }).finally(() => {
-          active--;
-          pending.delete(task);
+        deliver(event);
+      } catch {
+      }
+    },
+    /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
+    captureCspViolation(violation) {
+      try {
+        if (!sentryUrl || Math.random() >= (errors.sampleRate ?? 1)) return;
+        deliver({
+          ...eventBase("javascript"),
+          level: "warning",
+          logger: "csp",
+          message: `CSP violation: ${violation.directive} blocked ${violation.blocked}`,
+          tags: { capsule: safeText(config.name ?? "capsule", 128), surface: "csp", csp_directive: violation.directive, csp_blocked: violation.blocked, ...violation.disposition ? { csp_disposition: violation.disposition } : {} }
         });
-        pending.add(task);
       } catch {
       }
     },
@@ -80779,8 +80847,12 @@ ${payload}
   };
 }
 async function routeCollection(database, request, response) {
-  if (!database.observability?.enabled) return false;
   const pathname = request.url?.split("?")[0];
+  if (pathname === CSP_REPORT_PATH && database.securityPolicy?.csp?.reportTo === "observability" && database.observability) {
+    await routeCspReport(database, request, response);
+    return true;
+  }
+  if (!database.observability?.enabled) return false;
   if (pathname === "/__sporades/observe.js" && request.method === "GET") {
     response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
     response.end(collectionLoaderSource(database.observability.clientErrors, database.observability.analytics));
@@ -80842,6 +80914,83 @@ async function routeCollection(database, request, response) {
     database.observability.leave();
   }
   return true;
+}
+var CSP_REPORT_TYPES = ["application/csp-report", "application/reports+json", "application/json"];
+var CSP_BLOCKED_KEYWORDS = ["inline", "eval", "wasm-eval", "self", "trusted-types-policy", "trusted-types-sink"];
+var CSP_REPORTS_PER_REQUEST = 5;
+function cspViolation(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const report = input;
+  const raw = report["effective-directive"] ?? report.effectiveDirective ?? report["violated-directive"];
+  const directive = typeof raw === "string" ? raw.trim().split(/\s+/)[0] : "";
+  if (!/^[a-z][a-z-]{0,63}$/.test(directive)) return null;
+  const value = report["blocked-uri"] ?? report.blockedURL;
+  let blocked = "unknown";
+  if (typeof value === "string" && CSP_BLOCKED_KEYWORDS.includes(value)) blocked = value;
+  else if (typeof value === "string" && value.length <= 8192) {
+    try {
+      const url = new URL(value);
+      blocked = /^(https?|wss?):$/.test(url.protocol) ? url.origin : /^[a-z][a-z0-9+.-]{0,31}:$/.test(url.protocol) ? url.protocol : "unknown";
+    } catch {
+    }
+  }
+  const disposition = report.disposition === "enforce" || report.disposition === "report" ? report.disposition : void 0;
+  return { directive, blocked, ...disposition ? { disposition } : {} };
+}
+function cspViolations(input) {
+  if (Array.isArray(input)) {
+    return input.slice(0, 100).filter((entry) => entry && typeof entry === "object" && entry.type === "csp-violation").slice(0, CSP_REPORTS_PER_REQUEST).map((entry) => cspViolation(entry.body)).filter((entry) => entry !== null);
+  }
+  const report = input && typeof input === "object" ? cspViolation(input["csp-report"]) : null;
+  return report ? [report] : [];
+}
+async function routeCspReport(database, request, response) {
+  const reply = (code) => {
+    if (!response.headersSent) {
+      response.writeHead(code, { "cache-control": "no-store" });
+      response.end();
+    }
+  };
+  if (request.method !== "POST") return reply(405);
+  const origin = request.headers.origin;
+  try {
+    if (request.headers["sec-fetch-site"] === "cross-site" || origin !== void 0 && (typeof origin !== "string" || new URL(origin).host !== request.headers.host)) return reply(403);
+  } catch {
+    return reply(403);
+  }
+  const type = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+  if (!CSP_REPORT_TYPES.includes(type)) return reply(415);
+  if (!database.observability.enter()) return reply(429);
+  let timer;
+  try {
+    const body = await Promise.race([
+      (async () => {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += Buffer.byteLength(chunk);
+          if (size > 16384) throw Object.assign(new Error(), { status: 413 });
+          chunks.push(Buffer.from(chunk));
+        }
+        return Buffer.concat(chunks).toString("utf8");
+      })(),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error());
+          request.destroy();
+        }, 2e3);
+      })
+    ]);
+    const violations = cspViolations(JSON.parse(body));
+    if (!violations.length) throw new Error();
+    for (const violation of violations) database.observability.captureCspViolation(violation);
+    reply(204);
+  } catch (error) {
+    if (!response.destroyed) reply(error?.status === 413 ? 413 : 400);
+  } finally {
+    clearTimeout(timer);
+    database.observability.leave();
+  }
 }
 
 // src/public-origin.ts
@@ -102522,53 +102671,12 @@ function fail(message, hint) {
   throw error;
 }
 
-// src/http-security-config.ts
-function validateHttpHardening(security = {}) {
-  const fail4 = (hint) => {
-    throw commandError("Invalid HTTP security configuration.", hint, "INVALID_SECURITY_CONFIG");
-  };
-  const csp = security.csp ?? {};
-  if (csp.nonce !== void 0 && typeof csp.nonce !== "boolean") {
-    fail4("Set security.csp.nonce to a boolean.");
-  }
-  if (csp.nonce === true) {
-    for (const name2 of ["script-src", "script-src-elem"]) {
-      const value = csp.directives?.[name2];
-      if (value !== void 0 && typeof value !== "string" && !(Array.isArray(value) && value.every((item) => typeof item === "string"))) {
-        fail4("Set CSP script directives to a string or an array of strings.");
-      }
-    }
-  }
-  if (csp.reportTo !== void 0) {
-    const value = csp.reportTo;
-    let valid = typeof value === "string" && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]|[;#\\]/.test(value);
-    if (valid) {
-      try {
-        const url = new URL(value, "https://sporades.invalid");
-        valid = (value.startsWith("/") && !value.startsWith("//") || value.startsWith("https://")) && url.protocol === "https:" && !url.username && !url.password;
-      } catch {
-        valid = false;
-      }
-    }
-    if (!valid) fail4("Set security.csp.reportTo to a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.");
-  }
-  const hsts = security.hsts;
-  if (hsts !== void 0) {
-    if (!hsts || typeof hsts !== "object" || Array.isArray(hsts) || !Number.isSafeInteger(hsts.maxAgeSeconds) || hsts.maxAgeSeconds < 0 || hsts.includeSubDomains !== void 0 && typeof hsts.includeSubDomains !== "boolean" || hsts.preload !== void 0 && typeof hsts.preload !== "boolean") {
-      fail4("Set security.hsts to an object with a non-negative safe integer maxAgeSeconds and optional boolean includeSubDomains and preload.");
-    }
-  }
-}
-function hstsHeader(hsts) {
-  return `max-age=${hsts.maxAgeSeconds}${hsts.includeSubDomains ? "; includeSubDomains" : ""}${hsts.preload ? "; preload" : ""}`;
-}
-
 // src/bundle-pipeline.ts
 var AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 var SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
 var RUNTIME_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 async function createBundle(projectDir, config, options = {}) {
-  validateHttpHardening(config.security);
+  validateHttpHardening(config.security, config.observability);
   validateServerEnvConfig(config.env);
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, config.deploy?.files);
@@ -126247,7 +126355,7 @@ function prepareHttpSecurity(database, request, response, admitPreflight) {
 }
 function resolveRuntimeSecurityPolicy(config = {}) {
   const security = config.security ?? {};
-  validateHttpHardening(security);
+  validateHttpHardening(security, config.observability);
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
   const session = config.__sporadesSession ?? "container";
@@ -126258,7 +126366,7 @@ function resolveRuntimeSecurityPolicy(config = {}) {
   const directives = {
     ...defaultRuntimeCspDirectives(),
     ...csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {},
-    ...csp.reportTo ? { "report-uri": [csp.reportTo] } : {}
+    ...cspReportDirectives(csp)
   };
   const mode = csp.mode === "enforce" ? "enforce" : "report-only";
   return {
@@ -126278,7 +126386,8 @@ function resolveRuntimeSecurityPolicy(config = {}) {
       mode,
       header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
       directives,
-      ...csp.nonce === true ? { nonce: true } : {}
+      ...csp.nonce === true ? { nonce: true } : {},
+      ...csp.reportTo === "observability" ? { reportTo: "observability" } : {}
     }
   };
 }
@@ -149233,7 +149342,7 @@ async function readProjectConfig(projectDir) {
   validateObservabilityConfig(config);
   if (config.env !== void 0) config.env = validateServerEnvConfig(config.env);
   resolveFileAllowedMimeTypes(config.files);
-  validateSecurityConfig(config.security);
+  validateSecurityConfig(config.security, config.observability);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
   if (config.payments !== void 0) config.payments = validatePaymentsConfig(config.payments);
@@ -149361,14 +149470,14 @@ function validateProjectConfigShape(config) {
     );
   }
 }
-function validateSecurityConfig(security) {
+function validateSecurityConfig(security, observability) {
   if (security === void 0) {
     return;
   }
   if (!security || typeof security !== "object" || Array.isArray(security)) {
     throw commandError2("Invalid security policy.", "Set `security` in sporades.json to an object.");
   }
-  validateHttpHardening(security);
+  validateHttpHardening(security, observability);
   const cors = security.cors;
   if (cors !== void 0) {
     if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
@@ -149390,7 +149499,7 @@ function validateSecurityConfig(security) {
 }
 function resolveEffectiveSecurityPolicy(config, session) {
   const security = config.security ?? {};
-  validateHttpHardening(security);
+  validateHttpHardening(security, config.observability);
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
   const publicDev = session === "public-dev";
@@ -149419,10 +149528,11 @@ function resolveEffectiveSecurityPolicy(config, session) {
       mode: csp.mode ?? "report-only",
       header: (csp.mode ?? "report-only") === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
       ...csp.nonce === true ? { nonce: true } : {},
+      ...csp.reportTo === "observability" ? { reportTo: "observability" } : {},
       directives: {
         ...DEFAULT_CSP_DIRECTIVES,
         ...csp.directives ?? {},
-        ...csp.reportTo ? { "report-uri": [csp.reportTo] } : {}
+        ...cspReportDirectives(csp)
       }
     }
   };
