@@ -1,73 +1,38 @@
 # Changes
 
-## Unreleased - 2026-10-13
+## Unreleased - 2026-10-19
 
-Changes since v0.9.31.
+Changes since v0.9.32.
 
 ### 🚀 Features
 
-- Add opt-in Host-managed GlitchTip/Umami with sealed per-Capsule wiring, recovery, database backups and health alerts (#240).
-- Add opt-in CSP nonces, Hosted-only HSTS, CSP report URIs or redacted forwarding through `observability.errors`, and doctor migration guidance (#235).
-- Add opt-in Sentry-envelope errors and Umami/Plausible pageviews through a redacted same-origin collection tunnel (#234).
-- Add opt-in encrypted Capsule data backups, local/S3 targets, schedules, restore rehearsals and freshness alerts (#238).
-- Add `ctx.app.publicOrigin`, canonical Hosted alias selection, and origin diagnostics (#231).
-- Add opt-in `acl.privilegedOnly()` / `acl.denyAll()` table policies and name allow-all tables in doctor warnings (#239).
-
-- Add opt-in required Server env checks for doctor, Host push, and runtime boot (#236).
-- Expose safe runtime payment activation through `createHooks().usePayments()` and the framework-neutral `payments` API (#237).
-- Add opt-in upload ACL and global MIME policy, plus privileged File listing for orphan cleanup (#233).
-- Add shared Capsule rate limits and trusted-address authentication throttles (#232).
-- Export HTML-safe mail helpers and support password-reset body placeholders (#230).
-- Add pinned monitoring release acceptance verifier (#229) (872f33866).
-- Add admission lifecycle proof harness and human verification handoff (#221) (9e4608535).
-- Add resource and API-performance alerts (#222) (0dc656b53).
-- Add inventory-driven availability alerts and recoveries (#204) (803ca6060).
-- Support validated Auto-Submitted on send (#220) (40d3317ec).
-- Add safe monitoring maintenance and fresh restore (#213) (6542368d1).
-- Add bounded telemetry outage recovery and pipeline visibility (#207) (fc04b41b3).
+- Add opt-in Host-managed GlitchTip and Umami (#258) (ae2a8038).
+- Add opt-in CSP nonces, Hosted HSTS, report URIs and observability forwarding (#248) (5f6931c5).
+- Add opt-in same-origin error and analytics collection (#246) (98dd12ee).
+- Add encrypted Capsule backups, restore and scheduling (#253) (6fb5bf57).
+- Add privileged-only table ACL helpers and doctor guidance (#252) (39c37618).
+- Add opt-in required Server env checks (#250) (93b94739).
+- Add File upload policy and privileged orphan-sweep listing (#245) (27a12114).
+- Add Capsule rate limits and trusted client addresses (#243) (82c67500).
+- Add HTML-safe mail helpers and reset-body placeholders (#242) (736a6a88).
+- Allow documentation PR builds to run concurrently (#247) (e359a6ed).
 
 ### 🐛 Bug Fixes
 
-- Keep the Host exporter textfile directory readable under restrictive umasks during setup and reconciliation, including Hosts without backups (#238).
-- Preserve unconfigured Hosted Capsule start/restart beneath root-owned sticky ancestors when no backup restore journal exists (#238).
-- Prevent authenticated reloads from triggering fatal restarts through discarded, delayed table reads. Preserve Session-resolution scheduling across tracing, deny expired read authority, and describe deferred table results in the SDK types (#255).
-
-- Add opt-in atomic `teams.authorizeDestructive` for direct SDK and server demote, removeMember, leave and Team deletion. Transaction-bound cross-owner responsibility reads fail closed; `ctx.teams.lockLifecycle` shares exact-Team serialization with accepted transfers and atomic billing consequences. Omission preserves 0.9.x behavior; no storage migration. Requires publication of a new 0.9.x package before downstream adoption (#249).
-
-- Bump for vulns (f68221783).
-- Prevent favicon 404s in new scaffolds (#219) (d44aa0970).
-- Offer only supported OAuth sign-in actions (#215) (1977b8e49).
-- Cache hashed public assets immutably (#186) (871540c2f).
+- Fix authenticated reload crashes from delayed table reads (#256) (db7ca81c).
 
 ### 📝 Documentation
 
-- Complete admission lifecycle evidence and restore Hosted stats (#227) (ffa5eb6d5).
-- Preserve Collector asset modes under systemd umask (#224) (c3a6e6e65).
-- Diagnose and migrate Host monitoring connections (#212) (e9c635e6f).
-- Expose bounded, redacted admission evidence (#218) (4ac66e837).
-- Stabilize public-tree staging and PDF deadline tests (#217) (7753267cd).
-- Apply admission before WebSocket upgrades (#214) (1897d6932).
-- Stabilize Dev ClamAV framed readiness on macOS (#216) (312e55e26).
-- Scope Postgres and libsql live query refreshes by table (#202) (e23007e82).
-- Complete canonical non-address HTTP admission matching (#210) (bdfe6d872).
-- Enforce bounded fixed-window quotas for trusted admission clients (#211) (b7bbd3f13).
-- Rotate and revoke per-sender telemetry credentials (#203) (789b4862a).
-- Establish trusted Hosted client-address admission (#209) (b274551d2).
-- Trace outbound fetch dependency time (#199) (d243884f2).
-- Enforce exact-path HTTP denial before Capsule routing (#193) (3e59f8862).
-- Trace individual WebSocket operations and connection activity (#198) (4473caeac).
-- Complete malformed request liveness coverage (#201) (2e8c02038).
-- Automatically synchronize Host lifecycle inventory (#195) (f7b35cbbc).
-- Trace durable Job attempts and queue pressure (#200) (b4042ce8d).
-- Trace authentication and File operations within HTTP requests (#197) (d37a224fd).
-- Trace database time within Capsule requests (#196) (9e92f0fa0).
-- Publish deployer-owned read-only admission policy generations (#189) (45066b7a2).
-- Support project public assets across Capsule sessions (#188) (de6806ed3).
-- Verify multipart limit diagnostics over real HTTP (#185) (1b8dfd77f).
+- Propose Capsule container services (ADR 0056) (#260) (d80e1b26).
+- Reconcile roadmap with v0.9.x delivered work (#257) (6e450668).
+- Expose canonical public origins for Capsule links (#241) (8ebd1147).
+- Protect destructive Team operations with atomic Capsule policy (#254) (d7edadd4).
+- Expose payment activation through usePayments (#251) (06d786a5).
+- Move workflow execution to Tower (e9d03972).
 
-### 🧪 Tests
+### 📦 Packaging
 
-- Make the connection-lost screen clear and actionable (#226) (6cf8993a9).
+- Follow the current Node LTS release (9a8ef846).
 
 ## v0.9.11 - 2026-09-02
 
@@ -156,6 +121,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
