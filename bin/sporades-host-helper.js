@@ -45676,7 +45676,7 @@ function absolute(value) {
 function validateHostBackupPolicy(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail2("Invalid Host backup policy.");
   const v = value;
-  if (Object.keys(v).some((k) => !["repository", "passwordFile", "credentialsFile", "schedule", "retention", "maxAgeHours"].includes(k))) fail2("Unknown Host backup policy field.");
+  if (Object.keys(v).some((k) => !["repository", "passwordFile", "credentialsFile", "schedule", "retention", "retentionDays", "maxAgeHours"].includes(k))) fail2("Unknown Host backup policy field.");
   let repository = absolute(v.repository);
   if (typeof v.repository === "string" && v.repository.startsWith("s3:https://")) {
     let url;
@@ -45687,8 +45687,8 @@ function validateHostBackupPolicy(value) {
     }
     repository = !!url.hostname && !url.username && !url.password && !url.search && !url.hash && /^\/[^/]+/.test(url.pathname);
   }
-  if (!repository || !absolute(v.passwordFile) || v.credentialsFile !== void 0 && !absolute(v.credentialsFile) || ![null, "hourly", "daily", "weekly"].includes(v.schedule) || !Number.isSafeInteger(v.retention) || v.retention < 1 || v.retention > 1e4 || !Number.isSafeInteger(v.maxAgeHours) || v.maxAgeHours < 1 || v.maxAgeHours > 87600) fail2("Invalid Host backup policy.");
-  return { repository: v.repository, passwordFile: v.passwordFile, ...v.credentialsFile ? { credentialsFile: v.credentialsFile } : {}, schedule: v.schedule, retention: v.retention, maxAgeHours: v.maxAgeHours };
+  if (!repository || !absolute(v.passwordFile) || v.credentialsFile !== void 0 && !absolute(v.credentialsFile) || ![null, "hourly", "daily", "weekly"].includes(v.schedule) || !Number.isSafeInteger(v.retention) || v.retention < 1 || v.retention > 1e4 || v.retentionDays !== void 0 && (!Number.isSafeInteger(v.retentionDays) || v.retentionDays < 1 || v.retentionDays > 3650) || !Number.isSafeInteger(v.maxAgeHours) || v.maxAgeHours < 1 || v.maxAgeHours > 87600) fail2("Invalid Host backup policy.");
+  return { repository: v.repository, passwordFile: v.passwordFile, ...v.credentialsFile ? { credentialsFile: v.credentialsFile } : {}, schedule: v.schedule, retention: v.retention, ...v.retentionDays !== void 0 ? { retentionDays: v.retentionDays } : {}, maxAgeHours: v.maxAgeHours };
 }
 async function trustedBackupPath(file, secret = false) {
   if (!absolute(file)) fail2("Invalid Host backup path.");
@@ -45762,8 +45762,9 @@ async function listHostBackups(policy, host, subname) {
   }).sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
 }
 async function pruneHostBackups(policy, host, subname) {
-  await restic(policy, ["forget", "--tag", tag(host, subname), "--group-by", "tags", "--keep-last", String(policy.retention), "--prune"]);
-  return { pruned: true, retention: policy.retention };
+  const within = policy.retentionDays === void 0 ? [] : ["--keep-within", `${policy.retentionDays}d`];
+  await restic(policy, ["forget", "--tag", tag(host, subname), "--group-by", "tags", "--keep-last", String(policy.retention), ...within, "--prune"]);
+  return { pruned: true, retention: policy.retention, ...policy.retentionDays === void 0 ? {} : { retentionDays: policy.retentionDays } };
 }
 async function digest2(file) {
   const hash2 = createHash8("sha256");
@@ -45980,6 +45981,10 @@ async function hostBackupStatus(host, subname) {
   const time = value?.repository === repositoryIdentity(policy) ? Date.parse(value?.createdAt) : NaN;
   const ageSeconds = Number.isFinite(time) ? Math.max(0, (Date.now() - time) / 1e3) : null;
   return { configured: true, lastBackupAt: Number.isFinite(time) ? value.createdAt : null, ageSeconds, maxAgeSeconds: policy.maxAgeHours * 3600, stale: ageSeconds === null || ageSeconds > policy.maxAgeHours * 3600 };
+}
+async function hostBackupRetention(host) {
+  const policy = await readHostBackupPolicy(host);
+  return policy ? { keepLast: policy.retention, keepWithinDays: policy.retentionDays ?? null } : null;
 }
 function repositoryIdentity(policy) {
   return createHash8("sha256").update(policy.repository).digest("hex");
@@ -47616,7 +47621,8 @@ async function dispatchMain(request2) {
     const records = await readCapsuleRegistryRecords(request2);
     const capsules = [];
     for (const record of records) if (record.status !== "unregistered") capsules.push({ subname: record.subname, ...await hostBackupStatus(request2.host, record.subname) });
-    writeEnvelope({ ok: true, data: { configured: !!await readHostBackupPolicy(request2.host), capsules }, error: null });
+    const retention = await hostBackupRetention(request2.host);
+    writeEnvelope({ ok: true, data: { configured: !!retention, ...retention ? { retention } : {}, capsules }, error: null });
     return;
   }
   if (request2.action.startsWith("capsule.backup.")) {

@@ -5,7 +5,7 @@ import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlin
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { attemptJournalPath } from '../dist/deploy-files.js';
-import { atomicBackupJson, backupTimerUnits, configureHostBackups, createHostBackup, hostBackupDirectory, hostBackupStatus, listHostBackups, pruneHostBackups, publishHostBackupMetric, recoverHostBackupRestore, restoreHostBackup, trustedBackupPath, validateHostBackupPolicy } from '../dist/cli/host-backups.js';
+import { atomicBackupJson, backupTimerUnits, configureHostBackups, createHostBackup, hostBackupDirectory, hostBackupRetention, hostBackupStatus, listHostBackups, pruneHostBackups, publishHostBackupMetric, recoverHostBackupRestore, restoreHostBackup, trustedBackupPath, validateHostBackupPolicy } from '../dist/cli/host-backups.js';
 
 const root = process.cwd();
 const hasRestic = spawnSync('restic', ['version']).status === 0;
@@ -46,6 +46,82 @@ test('backup policy is opt-in, bounded and only permits explicit local or HTTPS 
   assert.doesNotMatch(timer.service, /secret|password/);
   assert.match(backupTimerUnits({ ...host('/test'), remoteRoot: '/srv/host$unit%' }, p).service, /host\$\$unit%%/);
 });
+
+test('day-based retention is optional, bounded and leaves count-only policies unchanged', () => {
+  const p = policy('/test');
+  assert.equal('retentionDays' in validateHostBackupPolicy(p), false);
+  assert.deepEqual(validateHostBackupPolicy({ ...p, retentionDays: 30 }), { ...p, retentionDays: 30 });
+  assert.equal(validateHostBackupPolicy({ ...p, retentionDays: 3650 }).retentionDays, 3650);
+  for (const retentionDays of [0, -1, 1.5, 3651, '30', '30d', null, Number.NaN, Infinity, true, [30], { days: 30 }]) {
+    assert.throws(() => validateHostBackupPolicy({ ...p, retentionDays }), /Invalid Host backup policy/, String(retentionDays));
+  }
+});
+
+test('prune passes the exact restic retention rule and reports it', () => fixture(async dir => {
+  const h = host(dir), p = policy(dir), calls = path.join(dir, 'restic-calls');
+  await writeFile(p.passwordFile, 'private-key', { mode: 0o600 });
+  const bin = path.join(dir, 'bin');
+  await mkdir(bin);
+  await writeFile(path.join(bin, 'package.json'), JSON.stringify({ type: 'commonjs' }));
+  await writeFile(path.join(bin, 'restic'), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(2))+'\\n');console.log('[]');\n`, { mode: 0o755 });
+  const before = process.env.PATH;
+  try {
+    process.env.PATH = bin + path.delimiter + before;
+    const tagged = `sporades:${h.domain}:source`;
+    // Count-only policies keep the exact pre-existing invocation and result.
+    assert.deepEqual(await pruneHostBackups({ ...p, retention: 7 }, h, 'source'), { pruned: true, retention: 7 });
+    assert.deepEqual(await pruneHostBackups({ ...p, retention: 7, retentionDays: 30 }, h, 'source'), { pruned: true, retention: 7, retentionDays: 30 });
+    const commands = (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(commands, [
+      ['--no-cache', '--json', 'forget', '--tag', tagged, '--group-by', 'tags', '--keep-last', '7', '--prune'],
+      ['--no-cache', '--json', 'forget', '--tag', tagged, '--group-by', 'tags', '--keep-last', '7', '--keep-within', '30d', '--prune'],
+    ]);
+  } finally { process.env.PATH = before; }
+}));
+
+test('backup status reports the effective retention rule', () => fixture(async dir => {
+  const h = host(dir), p = policy(dir), backups = hostBackupDirectory(h);
+  await mkdir(backups, { recursive: true, mode: 0o700 });
+  await writeFile(p.passwordFile, 'private-key', { mode: 0o600 });
+  assert.deepEqual(await hostBackupRetention(h), null);
+  await atomicBackupJson(path.join(backups, 'policy.json'), { ...p, retention: 3 });
+  assert.deepEqual(await hostBackupRetention(h), { keepLast: 3, keepWithinDays: null });
+  await atomicBackupJson(path.join(backups, 'policy.json'), { ...p, retention: 3, retentionDays: 30 });
+  assert.deepEqual(await hostBackupRetention(h), { keepLast: 3, keepWithinDays: 30 });
+  // Per-Capsule freshness (health, doctor, metrics) keeps its existing shape.
+  assert.deepEqual(Object.keys(await hostBackupStatus(h, 'source')).sort(), ['ageSeconds', 'configured', 'lastBackupAt', 'maxAgeSeconds', 'stale']);
+}));
+
+test('keep-within retains every recent snapshot regardless of manual runs and prunes older ones', { skip: !hasRestic && 'Install restic to run encrypted local repository acceptance', timeout: 180000 }, () => fixture(async dir => {
+  const p = policy(dir), h = host(dir), tagged = `sporades:${h.domain}:source`;
+  await writeFile(p.passwordFile, 'high-entropy-test-backup-password\n', { mode: 0o600 });
+  restic(p, ['init']);
+  const content = path.join(dir, 'content');
+  await mkdir(content);
+  const now = Date.now(), day = 86400_000;
+  // Daily snapshots plus a burst of manual/rehearsal/catch-up snapshots inside the window.
+  const ages = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 1, 2, 5, 10, 20, 29, 31, 45, 90];
+  const ids = new Map();
+  for (const age of ages) {
+    await writeFile(path.join(content, 'value'), String(age));
+    const time = new Date(now - age * day).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    const output = restic(p, ['--json', 'backup', '--host', h.domain, '--tag', tagged, '--time', time, '--', 'value'], { cwd: content });
+    ids.set(age, output.trim().split('\n').map(JSON.parse).find(v => v.message_type === 'summary').snapshot_id);
+  }
+  const other = restic(p, ['--json', 'backup', '--host', h.domain, '--tag', `sporades:${h.domain}:other`, '--time', new Date(now - 90 * day).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ''), '--', 'value'], { cwd: content });
+  const otherId = other.trim().split('\n').map(JSON.parse).find(v => v.message_type === 'summary').snapshot_id;
+  // keep-last alone would retain only three snapshots, covering well under a day.
+  await pruneHostBackups({ ...p, retention: 3, retentionDays: 30 }, h, 'source');
+  const kept = new Set((await listHostBackups(p, h, 'source')).map(s => s.id));
+  for (const [age, id] of ids) assert.equal(kept.has(id), age < 30, `snapshot aged ${age} days`);
+  // The count rule still applies when it retains more than the day rule.
+  await pruneHostBackups({ ...p, retention: 12, retentionDays: 1 }, h, 'source');
+  assert.equal((await listHostBackups(p, h, 'source')).length, 12);
+  await pruneHostBackups({ ...p, retention: 2 }, h, 'source');
+  assert.deepEqual((await listHostBackups(p, h, 'source')).map(s => s.id), [ids.get(0), ids.get(0.1)]);
+  // Pruning is scoped to its Capsule tag.
+  assert.deepEqual((await listHostBackups(p, h, 'other')).map(s => s.id), [otherId]);
+}));
 
 test('backup keys reject readable permissions and symlinks', () => fixture(async dir => {
   const key = path.join(dir, 'key');
@@ -343,4 +419,14 @@ test('shipped CLI and helper quiesce exact containers, restore staging, and repo
   assert.equal(cli(['list', '--subname', 'source']).data.snapshots.length, beforeFailure);
   cli(['prune', '--subname', 'source']);
   assert.equal(cli(['list', '--subname', 'source']).data.snapshots.length, 1);
+  assert.deepEqual(cli(['status']).data.retention, { keepLast: 1, keepWithinDays: null });
+  await writeFile(policyFile, JSON.stringify({ ...p, retentionDays: 30 }));
+  cli(['configure', '--file', policyFile]);
+  assert.deepEqual(cli(['status']).data.retention, { keepLast: 1, keepWithinDays: 30 });
+  assert.equal(JSON.parse(await readFile(path.join(config, 'hosts.json'), 'utf8')).profiles[h.alias].backups.retentionDays, 30);
+  assert.deepEqual(cli(['prune', '--subname', 'source']).data, { pruned: true, retention: 1, retentionDays: 30 });
+  // Invalid values are refused locally before any Host contact.
+  await writeFile(policyFile, JSON.stringify({ ...p, retentionDays: 0 }));
+  assert.match(cli(['configure', '--file', policyFile], false).error.message, /Invalid Host backup policy/);
+  assert.deepEqual(cli(['status']).data.retention, { keepLast: 1, keepWithinDays: 30 });
 }));
