@@ -16,6 +16,7 @@ const assets = [
   ['sitemap.xml', Buffer.from('<?xml version="1.0"?><urlset/>\n'), 'application/xml; charset=utf-8'],
   ['robots.txt', Buffer.from('User-agent: *\nSitemap: /sitemap.xml\n'), 'text/plain; charset=utf-8'],
   ['nested/stable-name.txt', Buffer.from('nested public bytes\n'), 'text/plain; charset=utf-8'],
+  ['binary.html', Buffer.from([0xff, 0xfe, 0x3c, 0x62, 0x3e]), 'text/html; charset=utf-8'],
 ];
 
 async function fixture(toolchain, fn) {
@@ -71,7 +72,7 @@ async function assertAssets(url) {
       const response = await fetch(`${url}/${name}`, { method });
       assert.equal(response.status, 200, `${method} ${name}`);
       assert.equal(response.headers.get('content-type'), type, name);
-      assert.equal(response.headers.get('cache-control'), 'no-cache', name);
+      assert.equal(response.headers.get('cache-control'), name.endsWith('.html') ? 'no-store' : 'no-cache', name);
       assert.deepEqual(Buffer.from(await response.arrayBuffer()), method === 'HEAD' ? Buffer.alloc(0) : bytes, name);
     }
   }
@@ -108,6 +109,111 @@ for (const toolchain of ['esbuild', 'vite']) test(`scaffold favicon declaration 
     const bundle = await createBundle(project, config);
     await withGeneratedServer(project, bundle, assertIcon);
   });
+});
+
+for (const toolchain of ['esbuild', 'vite']) test(`nonce HTML and runtime injection agree in Dev and generated ${toolchain} releases`, async () => {
+  await fixture(toolchain, async (project, config) => {
+    config.security = { csp: { mode: 'enforce', nonce: true, directives: { 'script-src': ["'self'"] } } };
+    if (toolchain === 'vite') {
+      config.client.prerender = [{ name: 'nonce-fragment', module: 'render.mjs' }];
+      await writeFile(path.join(project, 'render.mjs'), `export default () => '<section data-prerender-nonce="%SPORADES_NONCE%">Prerendered</section>';`);
+    }
+    await writeFile(path.join(project, 'sporades.json'), JSON.stringify(config));
+    const unmarked = '<script id="unmarked">window.unmarkedSentinel=true;</script><script id="unmarked-module" type="module">window.unmarkedModuleSentinel=true;</script>';
+    const html = '<!doctype html><html><head><script nonce="%SPORADES_NONCE%">window.authored=true;</script>' + unmarked + '</head><body><script type="module" nonce="%SPORADES_NONCE%" src="' + (toolchain === 'vite' ? '/client/index.tsx' : '/client.js') + '"></script></body></html>';
+    await writeFile(path.join(project, 'index.html'), html);
+    await mkdir(path.join(project, 'public'), { recursive: true });
+    await writeFile(path.join(project, 'public', 'landing.html'), '<head><script nonce="%SPORADES_NONCE%">window.landing=true;</script></head>');
+    const assertNonce = async url => {
+      const nonces = [];
+      for (const pathname of ['/', '/index.html', '/landing.html']) {
+        for (const navigation of [true, false]) {
+          const response = await fetch(url + pathname, { headers: navigation ? { 'sec-fetch-dest': 'document' } : {} });
+          assert.equal(response.status, 200);
+          assert.equal(response.headers.get('cache-control'), 'no-store');
+          const policy = response.headers.get('content-security-policy');
+          const nonce = policy.match(/'nonce-([^']+)'/)[1];
+          const body = await response.text();
+          assert.ok(!body.includes('%SPORADES_NONCE%'), pathname);
+          assert.ok(body.includes(`nonce="${nonce}"`), pathname);
+          if (toolchain === 'vite' && pathname !== '/landing.html') assert.ok(body.includes(`data-prerender-nonce="${nonce}"`));
+          if (pathname !== '/landing.html') assert.ok(body.includes(unmarked), 'unmarked scripts retain their exact bytes and cannot enter the trusted module Bundle');
+          for (const script of body.matchAll(/<script\b[^>]*>/g)) {
+            if (script[0].includes('id="unmarked')) assert.ok(!script[0].includes('nonce='), script[0]);
+            else assert.ok(script[0].includes(`nonce="${nonce}"`), script[0]);
+          }
+          assert.equal(body.includes(`nonce="${nonce}">window.__SPORADES_CONNECTION_TOKEN=`), navigation && pathname !== '/landing.html');
+          nonces.push(nonce);
+        }
+      }
+      assert.equal(new Set(nonces).size, nonces.length);
+    };
+    const child = spawn(process.execPath, [cli, 'dev', '--json'], { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const next = events(child);
+    try {
+      const started = await next(event => event.data?.event === 'started');
+      await assertNonce(started.data.url);
+    } finally { child.kill('SIGTERM'); await once(child, 'exit'); }
+    const bundle = await createBundle(project, config);
+    await withGeneratedServer(project, bundle, assertNonce);
+  });
+});
+
+for (const toolchain of ['esbuild', 'vite']) test(`Chromium blocks unmarked scripts in Dev and generated ${toolchain} Bundles`, {
+  skip: process.env.SPORADES_REAL_CSP_BROWSER !== '1',
+}, async () => {
+  const { chromium } = await import('playwright').catch(() => {
+    throw new Error('Install Playwright and Chromium to run SPORADES_REAL_CSP_BROWSER=1 node --test test/public-assets.test.js.');
+  });
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.SPORADES_CSP_BROWSER_EXECUTABLE });
+  try {
+    await fixture(toolchain, async (project, config) => {
+      config.security = { csp: { mode: 'enforce', nonce: true, directives: { 'script-src': ["'self'"] } } };
+      if (toolchain === 'vite') {
+        // A project Vite setting must not restore blanket authorization.
+        await writeFile(path.join(project, 'vite.config.mjs'), 'export default { html: { cspNonce: "%SPORADES_NONCE%" } };');
+        config.client.prerender = [{ name: 'scripts', module: 'render.mjs' }];
+        await writeFile(path.join(project, 'render.mjs'), `export default () => '<script>window.unmarkedPrerender=true;</script><script nonce="%SPORADES_NONCE%">window.markedPrerender=true;</script>';`);
+      }
+      await writeFile(path.join(project, 'sporades.json'), JSON.stringify(config));
+      await mkdir(path.join(project, 'public'), { recursive: true });
+      await writeFile(path.join(project, 'public', 'unmarked.js'), 'window.unmarkedExternal=true;');
+      await writeFile(path.join(project, 'client', 'lazy.ts'), 'document.body.dataset.lazyReady="true";');
+      await writeFile(path.join(project, 'client/index.tsx'), `document.querySelector('button').addEventListener('click',()=>window.trustedListener=true); import('./lazy').then(()=>document.body.dataset.cspReady='true');`);
+      await writeFile(path.join(project, 'index.html'), `<!doctype html><html><head><link rel="icon" href="data:,">
+<script nonce="%SPORADES_NONCE%">window.markedClassic=true;</script>
+<script>window.unmarkedClassic=true;</script>
+<script type="module">window.unmarkedModule=true;</script>
+<script src="/unmarked.js"></script>
+<script type="module" src="/unmarked.js"></script>
+<script nonce="wrong">window.wrongNonce=true;</script>
+<script type="module" nonce="%SPORADES_NONCE%">window.markedModule=true;</script>
+</head><body><button onclick="window.inlineHandler=true">Trusted listener</button>
+<script type="module" nonce="%SPORADES_NONCE%" src="${toolchain === 'vite' ? '/client/index.tsx' : '/client.js'}"></script></body></html>`);
+      const page = await browser.newPage();
+      const assertBoundary = async url => {
+        await page.goto(url);
+        await page.waitForFunction(() => document.body.dataset.cspReady === 'true');
+        await page.getByRole('button', { name: 'Trusted listener' }).click();
+        assert.deepEqual(await page.evaluate(() => ({
+          token: typeof window.__SPORADES_CONNECTION_TOKEN === 'string',
+          classic: window.markedClassic === true, module: window.markedModule === true,
+          listener: window.trustedListener === true, lazy: document.body.dataset.lazyReady === 'true',
+          unmarked: [window.unmarkedClassic, window.unmarkedModule, window.unmarkedExternal, window.wrongNonce, window.inlineHandler, window.unmarkedPrerender].some(Boolean),
+          prerender: window.markedPrerender === true,
+        })), { token: true, classic: true, module: true, listener: true, lazy: true, unmarked: false, prerender: toolchain === 'vite' });
+      };
+      const child = spawn(process.execPath, [cli, 'dev', '--json'], { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const next = events(child);
+      try {
+        const started = await next(event => event.data?.event === 'started');
+        await assertBoundary(started.data.url);
+      } finally { child.kill('SIGTERM'); await once(child, 'exit'); }
+      const bundle = await createBundle(project, config);
+      await withGeneratedServer(project, bundle, assertBoundary);
+      await page.close();
+    });
+  } finally { await browser.close(); }
 });
 
 for (const toolchain of ['esbuild', 'vite']) test(`Unicode public collisions preserve on-disk and generated-server ${toolchain} release bytes`, async () => {

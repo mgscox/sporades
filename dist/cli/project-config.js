@@ -16,6 +16,7 @@ import { validatePaymentsConfig } from "../stripe-payment-config.js";
 import { validateTelemetryProjectConfig } from "./telemetry-profile.js";
 import { commandError, errorDetails } from "./cli-support.js";
 import { readClientPrerenderConfig } from "../client-prerender.js";
+import { cspReportDirectives, hstsHeader, validateHttpHardening } from "../http-security-config.js";
 export { validateMailConfig } from "../mail-config.js";
 export { validatePaymentsConfig } from "../stripe-payment-config.js";
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
@@ -74,7 +75,7 @@ export async function readProjectConfig(projectDir) {
     if (config.env !== undefined)
         config.env = validateServerEnvConfig(config.env);
     resolveFileAllowedMimeTypes(config.files);
-    validateSecurityConfig(config.security);
+    validateSecurityConfig(config.security, config.observability);
     validateClientConfig(config.client);
     validateSchedulingConfig(config.scheduling);
     if (config.payments !== undefined)
@@ -206,13 +207,14 @@ export function validateProjectConfigShape(config) {
         throw commandError("Unsupported project configuration keys.", "Remove unsupported top-level keys from sporades.json or move Capsule-specific values into Server env or app code.", { unsupportedKeys });
     }
 }
-export function validateSecurityConfig(security) {
+export function validateSecurityConfig(security, observability) {
     if (security === undefined) {
         return;
     }
     if (!security || typeof security !== "object" || Array.isArray(security)) {
         throw commandError("Invalid security policy.", "Set `security` in sporades.json to an object.");
     }
+    validateHttpHardening(security, observability);
     const cors = security.cors;
     if (cors !== undefined) {
         if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
@@ -235,6 +237,7 @@ export function validateSecurityConfig(security) {
 }
 export function resolveEffectiveSecurityPolicy(config, session) {
     const security = config.security ?? {};
+    validateHttpHardening(security, config.observability);
     const cors = security.cors ?? {};
     const csp = security.csp ?? {};
     const publicDev = session === "public-dev";
@@ -243,6 +246,7 @@ export function resolveEffectiveSecurityPolicy(config, session) {
     const devOrigins = dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [];
     const allowedOrigins = publicDev ? ["*"] : configuredOrigins;
     return {
+        ...(session === "hosted" && security.hsts ? { hsts: hstsHeader(security.hsts) } : {}),
         cors: {
             sameOrigin: !publicDev,
             publicDev,
@@ -261,9 +265,12 @@ export function resolveEffectiveSecurityPolicy(config, session) {
         csp: {
             mode: csp.mode ?? "report-only",
             header: (csp.mode ?? "report-only") === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
+            ...(csp.nonce === true ? { nonce: true } : {}),
+            ...(csp.reportTo === "observability" ? { reportTo: "observability" } : {}),
             directives: {
                 ...DEFAULT_CSP_DIRECTIVES,
                 ...(csp.directives ?? {}),
+                ...cspReportDirectives(csp),
             },
         },
     };

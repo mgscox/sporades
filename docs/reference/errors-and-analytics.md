@@ -58,6 +58,43 @@ The first-party loader captures `error`, `unhandledrejection`, and error results
 received by the Sporades client transport. This is basic collection: it does not
 upload source maps, capture console output, record sessions, or track users.
 
+## CSP violation reports
+
+Set `security.csp.reportTo` to `"observability"` to send browser Content
+Security Policy violations to the same `observability.errors` destination:
+
+```json
+{
+  "observability": { "errors": { "protocol": "sentry", "dsnEnv": "ERROR_DSN" } },
+  "security": { "csp": { "mode": "report-only", "nonce": true, "reportTo": "observability" } }
+}
+```
+
+Configuration fails with `INVALID_SECURITY_CONFIG` unless `observability.errors`
+is present. Browser `client` errors are not required. The response CSP gains
+`report-uri /__sporades/csp-report` in Dev, Container and Hosted sessions, and
+the runtime exposes that route only for this setting; other Capsules keep
+ordinary routing for the path. The route follows normal request admission.
+
+The route accepts `POST` bodies of up to 16 KiB as `application/csp-report`,
+`application/reports+json` or `application/json`. It rejects cross-site fetch
+metadata and mismatched `Origin` headers with 403, other methods with 405,
+other media types with 415, oversized bodies with 413 and malformed or
+non-CSP reports with 400, all with empty `no-store` responses. A Reporting API
+batch forwards at most five `csp-violation` entries. Each forwarded event is a
+`warning` envelope with the `csp` logger and the message
+`CSP violation: <directive> blocked <source>`, tagged with Capsule, `surface: csp`,
+directive, blocked source and disposition. The blocked source is reduced to an
+`http(s)`/`ws(s)` origin, a scheme such as `data:`, a CSP keyword such as `inline`
+or `unknown`. Document and referrer URLs, source files, line numbers, script samples,
+the original policy, nonces and client addresses are discarded.
+
+Reports share the collection budget (120 reservations per minute, eight
+active), apply `sampleRate`, and are best effort. A missing DSN leaves the route
+accepting and dropping reports with 204. Report endpoints are unauthenticated
+by design, so anyone can submit synthetic violations; treat these events as
+signals rather than evidence.
+
 ## Umami pageviews
 
 1. Add the Capsule's site in Umami and copy its website ID into the Server env
@@ -79,7 +116,8 @@ On document navigation, active browser integrations add the first-party
 `/__sporades/observe.js` loader before Capsule scripts. It sends JSON to
 `POST /__sporades/collect`. Both routes follow normal request admission.
 `script-src 'self'` and `connect-src 'self'` suffice for collection; no provider
-script, DSN, endpoint or website identifier reaches the page. Browser blocking
+script, DSN, endpoint or website identifier reaches the page. With
+`security.csp.nonce`, the loader carries the response nonce. Browser blocking
 rules can still block any URL, so delivery cannot be guaranteed.
 
 Pageviews cover initial load, `pushState`, `replaceState`, `popstate` and hash

@@ -22,7 +22,7 @@ import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublic
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, withSealedServerEnvMutationLock, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
-import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, injectPageConnectionToken, interpretHttpRequestTarget, isDocumentNavigationRequest, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeConnectionToken, routeEndpoint, routeHttpAdmission, routeWebSocketAdmission, routeRuntimeHealth, writeInvalidHttpRequestTarget, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
+import { createSqliteDatabaseAdapter, createLogEnvelope, createPrivilegedAuditLogInput, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, renderPageHtml, interpretHttpRequestTarget, isDocumentNavigationRequest, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeConnectionToken, routeEndpoint, routeHttpAdmission, routeWebSocketAdmission, routeRuntimeHealth, writeInvalidHttpRequestTarget, routeSporadesAuth, runReadOnlyQuery, shutdownHttpServerAndRuntime, simulateLocalIdentitySession, readJsonlLogEvents, replacePreparedRuntimeDatabase, shutdownAndCloseDatabase, validateReadOnlyInspectionSql, writeUnhandledHttpError, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
 import { validateHostBackupPolicy } from "./host-backups.js";
@@ -2485,12 +2485,13 @@ async function startDevSession(options) {
             }
             const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, requestPath);
             if (publicAsset) {
+                const htmlAsset = publicAsset.contentType === "text/html; charset=utf-8";
                 response.writeHead(200, {
                     "content-type": publicAsset.contentType,
-                    ...(publicAsset.html ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }),
+                    ...(htmlAsset ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }),
                 });
-                response.end(publicAsset.html && isDocumentNavigationRequest(request)
-                    ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken(), runtime.database)
+                response.end(htmlAsset
+                    ? renderPageHtml(publicAsset.body, response, publicAsset.html && isDocumentNavigationRequest(request) ? websocketHub.createConnectionToken() : undefined, runtime.database)
                     : publicAsset.body);
                 return;
             }

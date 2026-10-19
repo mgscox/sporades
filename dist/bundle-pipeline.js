@@ -14,10 +14,12 @@ import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, cl
 import { resolveSporadesPackageRoot } from "./package-root.js";
 import { validateStripePaymentsRuntimeConfig, validateStripePaymentsSealedServerEnv } from "./stripe-payment-config.js";
 import { readClientPrerenderConfig } from "./client-prerender.js";
+import { validateHttpHardening } from "./http-security-config.js";
 const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 const SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
 const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 export async function createBundle(projectDir, config, options = {}) {
+    validateHttpHardening(config.security, config.observability);
     validateServerEnvConfig(config.env);
     resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
     const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, config.deploy?.files);
@@ -80,6 +82,7 @@ export async function createBundle(projectDir, config, options = {}) {
         clientSourcePath: paths.clientEntry,
         frameworkConfig: frameworkBundleConfig,
         devRefresh: options.devClientRefresh === true,
+        cspNonce: config.security?.csp?.nonce === true,
     }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); });
     const clientBundle = clientOutput.legacyClientBundle;
     const serverBundleInputs = {

@@ -80626,6 +80626,54 @@ function trustedClientAddress(database, request) {
   return canonicalClientAddress(singleHeader(request, ACCESS_KEY_CLIENT_ADDRESS_HEADER));
 }
 
+// src/http-security-config.ts
+var CSP_REPORT_PATH = "/__sporades/csp-report";
+function validateHttpHardening(security = {}, observability) {
+  const fail4 = (hint) => {
+    throw commandError("Invalid HTTP security configuration.", hint, "INVALID_SECURITY_CONFIG");
+  };
+  const csp = security.csp ?? {};
+  if (csp.nonce !== void 0 && typeof csp.nonce !== "boolean") {
+    fail4("Set security.csp.nonce to a boolean.");
+  }
+  if (csp.nonce === true) {
+    for (const name2 of ["script-src", "script-src-elem"]) {
+      const value = csp.directives?.[name2];
+      if (value !== void 0 && typeof value !== "string" && !(Array.isArray(value) && value.every((item) => typeof item === "string"))) {
+        fail4("Set CSP script directives to a string or an array of strings.");
+      }
+    }
+  }
+  if (csp.reportTo === "observability") {
+    if (!observability?.errors) fail4('Configure observability.errors before setting security.csp.reportTo to "observability".');
+  } else if (csp.reportTo !== void 0) {
+    const value = csp.reportTo;
+    let valid = typeof value === "string" && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]|[;#\\]/.test(value);
+    if (valid) {
+      try {
+        const url = new URL(value, "https://sporades.invalid");
+        valid = (value.startsWith("/") && !value.startsWith("//") || value.startsWith("https://")) && url.protocol === "https:" && !url.username && !url.password;
+      } catch {
+        valid = false;
+      }
+    }
+    if (!valid) fail4('Set security.csp.reportTo to "observability", a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.');
+  }
+  const hsts = security.hsts;
+  if (hsts !== void 0) {
+    if (!hsts || typeof hsts !== "object" || Array.isArray(hsts) || !Number.isSafeInteger(hsts.maxAgeSeconds) || hsts.maxAgeSeconds < 0 || hsts.includeSubDomains !== void 0 && typeof hsts.includeSubDomains !== "boolean" || hsts.preload !== void 0 && typeof hsts.preload !== "boolean") {
+      fail4("Set security.hsts to an object with a non-negative safe integer maxAgeSeconds and optional boolean includeSubDomains and preload.");
+    }
+  }
+}
+function hstsHeader(hsts) {
+  return `max-age=${hsts.maxAgeSeconds}${hsts.includeSubDomains ? "; includeSubDomains" : ""}${hsts.preload ? "; preload" : ""}`;
+}
+function cspReportDirectives(csp) {
+  if (csp.reportTo === "observability") return { "report-uri": [CSP_REPORT_PATH] };
+  return csp.reportTo ? { "report-uri": [csp.reportTo] } : {};
+}
+
 // src/observability-runtime.ts
 function validateObservabilityConfig(config) {
   const fail4 = () => {
@@ -80715,6 +80763,27 @@ function createRuntimeObservability(config = {}, env = {}) {
     const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped2.signal, AbortSignal.timeout(2e3)]) });
     await response.body?.cancel();
   };
+  const eventBase = (platform) => ({
+    event_id: randomUUID().replaceAll("-", ""),
+    timestamp: Date.now() / 1e3,
+    platform,
+    environment: errors.environment,
+    release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : void 0
+  });
+  const deliver = (event) => {
+    const payload = JSON.stringify(event);
+    const body = `${JSON.stringify({ event_id: event.event_id, dsn })}
+${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}
+${payload}
+`;
+    if (!sentryUrl || !enter()) return;
+    const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {
+    }).finally(() => {
+      active--;
+      pending.delete(task);
+    });
+    pending.add(task);
+  };
   return {
     enabled: !!analyticsUrl || !!(sentryUrl && errors.client),
     clientErrors: !!(sentryUrl && errors.client),
@@ -80727,28 +80796,27 @@ function createRuntimeObservability(config = {}, env = {}) {
           return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
         }).reverse() : [];
         const event = {
-          event_id: randomUUID().replaceAll("-", ""),
-          timestamp: Date.now() / 1e3,
-          platform: surface === "client" ? "javascript" : "node",
+          ...eventBase(surface === "client" ? "javascript" : "node"),
           level: "error",
-          environment: errors.environment,
-          release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : void 0,
           tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
           exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
           ...address ? { user: { ip_address: address } } : {}
         };
-        const payload = JSON.stringify(event);
-        const body = `${JSON.stringify({ event_id: event.event_id, dsn })}
-${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}
-${payload}
-`;
-        if (!enter()) return;
-        const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {
-        }).finally(() => {
-          active--;
-          pending.delete(task);
+        deliver(event);
+      } catch {
+      }
+    },
+    /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
+    captureCspViolation(violation) {
+      try {
+        if (!sentryUrl || Math.random() >= (errors.sampleRate ?? 1)) return;
+        deliver({
+          ...eventBase("javascript"),
+          level: "warning",
+          logger: "csp",
+          message: `CSP violation: ${violation.directive} blocked ${violation.blocked}`,
+          tags: { capsule: safeText(config.name ?? "capsule", 128), surface: "csp", csp_directive: violation.directive, csp_blocked: violation.blocked, ...violation.disposition ? { csp_disposition: violation.disposition } : {} }
         });
-        pending.add(task);
       } catch {
       }
     },
@@ -80781,8 +80849,12 @@ ${payload}
   };
 }
 async function routeCollection(database, request, response) {
-  if (!database.observability?.enabled) return false;
   const pathname = request.url?.split("?")[0];
+  if (pathname === CSP_REPORT_PATH && database.securityPolicy?.csp?.reportTo === "observability" && database.observability) {
+    await routeCspReport(database, request, response);
+    return true;
+  }
+  if (!database.observability?.enabled) return false;
   if (pathname === "/__sporades/observe.js" && request.method === "GET") {
     response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
     response.end(collectionLoaderSource(database.observability.clientErrors, database.observability.analytics));
@@ -80844,6 +80916,83 @@ async function routeCollection(database, request, response) {
     database.observability.leave();
   }
   return true;
+}
+var CSP_REPORT_TYPES = ["application/csp-report", "application/reports+json", "application/json"];
+var CSP_BLOCKED_KEYWORDS = ["inline", "eval", "wasm-eval", "self", "trusted-types-policy", "trusted-types-sink"];
+var CSP_REPORTS_PER_REQUEST = 5;
+function cspViolation(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const report = input;
+  const raw = report["effective-directive"] ?? report.effectiveDirective ?? report["violated-directive"];
+  const directive = typeof raw === "string" ? raw.trim().split(/\s+/)[0] : "";
+  if (!/^[a-z][a-z-]{0,63}$/.test(directive)) return null;
+  const value = report["blocked-uri"] ?? report.blockedURL;
+  let blocked = "unknown";
+  if (typeof value === "string" && CSP_BLOCKED_KEYWORDS.includes(value)) blocked = value;
+  else if (typeof value === "string" && value.length <= 8192) {
+    try {
+      const url = new URL(value);
+      blocked = /^(https?|wss?):$/.test(url.protocol) ? url.origin : /^[a-z][a-z0-9+.-]{0,31}:$/.test(url.protocol) ? url.protocol : "unknown";
+    } catch {
+    }
+  }
+  const disposition = report.disposition === "enforce" || report.disposition === "report" ? report.disposition : void 0;
+  return { directive, blocked, ...disposition ? { disposition } : {} };
+}
+function cspViolations(input) {
+  if (Array.isArray(input)) {
+    return input.slice(0, 100).filter((entry) => entry && typeof entry === "object" && entry.type === "csp-violation").slice(0, CSP_REPORTS_PER_REQUEST).map((entry) => cspViolation(entry.body)).filter((entry) => entry !== null);
+  }
+  const report = input && typeof input === "object" ? cspViolation(input["csp-report"]) : null;
+  return report ? [report] : [];
+}
+async function routeCspReport(database, request, response) {
+  const reply = (code) => {
+    if (!response.headersSent) {
+      response.writeHead(code, { "cache-control": "no-store" });
+      response.end();
+    }
+  };
+  if (request.method !== "POST") return reply(405);
+  const origin = request.headers.origin;
+  try {
+    if (request.headers["sec-fetch-site"] === "cross-site" || origin !== void 0 && (typeof origin !== "string" || new URL(origin).host !== request.headers.host)) return reply(403);
+  } catch {
+    return reply(403);
+  }
+  const type = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+  if (!CSP_REPORT_TYPES.includes(type)) return reply(415);
+  if (!database.observability.enter()) return reply(429);
+  let timer;
+  try {
+    const body = await Promise.race([
+      (async () => {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += Buffer.byteLength(chunk);
+          if (size > 16384) throw Object.assign(new Error(), { status: 413 });
+          chunks.push(Buffer.from(chunk));
+        }
+        return Buffer.concat(chunks).toString("utf8");
+      })(),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error());
+          request.destroy();
+        }, 2e3);
+      })
+    ]);
+    const violations = cspViolations(JSON.parse(body));
+    if (!violations.length) throw new Error();
+    for (const violation of violations) database.observability.captureCspViolation(violation);
+    reply(204);
+  } catch (error) {
+    if (!response.destroyed) reply(error?.status === 413 ? 413 : 400);
+  } finally {
+    clearTimeout(timer);
+    database.observability.leave();
+  }
 }
 
 // src/public-origin.ts
@@ -81805,7 +81954,7 @@ function validateCanonicalDomain(value) {
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
-import { createHash as createHash18, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes10, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
+import { createHash as createHash19, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes11, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync as readFileSync4, statSync as statSync2, watch } from "node:fs";
 import { createServer as createServer2 } from "node:http";
 import { appendFile, chmod as chmod5, cp as cp2, lstat as lstat13, mkdir as mkdir11, open as open5, readdir as readdir6, readFile as readFile14, rename as rename9, rm as rm10, writeFile as writeFile10 } from "node:fs/promises";
@@ -99855,6 +100004,84 @@ function prerenderError(message, hint, diagnostics) {
   return error;
 }
 
+// src/client-csp.ts
+import { createHash as createHash4 } from "node:crypto";
+var NONCE_PLACEHOLDER = "%SPORADES_NONCE%";
+function scripts(html2) {
+  const found = [];
+  const visit = (node) => {
+    if ("tagName" in node && node.tagName === "script") found.push(node);
+    if ("childNodes" in node) node.childNodes.forEach(visit);
+    if ("tagName" in node && node.tagName === "template") visit(node.content);
+  };
+  visit(parse4(html2, { sourceCodeLocationInfo: true, scriptingEnabled: true }));
+  return found;
+}
+function viteCspPlugins() {
+  const preserved = /* @__PURE__ */ new Map();
+  return [{
+    name: "sporades-csp-preserve-scripts",
+    enforce: "post",
+    configResolved(config) {
+      if (config.html) config.html.cspNonce = void 0;
+    },
+    transformIndexHtml: {
+      order: "pre",
+      handler(html2, context2) {
+        let prefix = `sporades-csp-${createHash4("sha256").update(html2).digest("hex")}-`;
+        while (html2.includes(prefix)) prefix += "_";
+        const originals = /* @__PURE__ */ new Map();
+        const edits = scripts(html2).flatMap((script) => {
+          if (script.attrs.some((attr) => attr.name === "nonce" && attr.value === NONCE_PLACEHOLDER)) return [];
+          const location = script.sourceCodeLocation;
+          if (!location) throw new Error("Cannot preserve CSP script authorization.");
+          const marker = `<!--${prefix}${originals.size}-->`;
+          originals.set(marker, html2.slice(location.startOffset, location.endOffset));
+          return [{ start: location.startOffset, end: location.endOffset, value: marker }];
+        });
+        preserved.set(context2.filename, originals);
+        for (const edit of edits.sort((left, right) => right.start - left.start)) {
+          html2 = html2.slice(0, edit.start) + edit.value + html2.slice(edit.end);
+        }
+        return html2;
+      }
+    }
+  }, {
+    name: "sporades-csp-generated-entries",
+    enforce: "post",
+    transformIndexHtml: {
+      order: "post",
+      handler(html2, context2) {
+        const entryFiles = /* @__PURE__ */ new Set();
+        const visit = (file) => {
+          if (entryFiles.has(file)) return;
+          const chunk = context2.bundle?.[file];
+          if (chunk?.type !== "chunk") return;
+          entryFiles.add(file);
+          chunk.imports.forEach(visit);
+        };
+        if (context2.chunk) visit(context2.chunk.fileName);
+        const insertions = scripts(html2).flatMap((script) => {
+          const src = script.attrs.find((attr) => attr.name === "src")?.value;
+          if (!src || !entryFiles.has(src.replace(/^\//, "")) || script.attrs.some((attr) => attr.name === "nonce")) return [];
+          const end = script.sourceCodeLocation?.startTag?.endOffset;
+          if (!end) throw new Error("Cannot authorize generated CSP entry.");
+          return [end - 1];
+        });
+        for (const offset2 of insertions.sort((left, right) => right - left)) {
+          html2 = html2.slice(0, offset2) + ` nonce="${NONCE_PLACEHOLDER}"` + html2.slice(offset2);
+        }
+        for (const [marker, original] of preserved.get(context2.filename) ?? []) {
+          if (html2.split(marker).length !== 2) throw new Error("CSP script preservation marker changed during build.");
+          html2 = html2.replace(marker, () => original);
+        }
+        preserved.delete(context2.filename);
+        return html2;
+      }
+    }
+  }];
+}
+
 // src/client-toolchain.ts
 async function buildClientToolchain(options) {
   validateClientToolchainInput(options);
@@ -99997,6 +100224,7 @@ async function buildVite(options) {
       css: { postcss: { plugins: [] } },
       plugins: [
         ...frameworkPlugins,
+        ...options.cspNonce ? viteCspPlugins() : [],
         sporadesViteClientPlugin(options.devRefresh === true),
         sporadesVitePrerenderPlugin(projectRoot, [options.projectDir, projectRoot], options.prerender ?? [], prerenderWarnings, prerenderState, options.prerender !== void 0, options.onDependency),
         sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig)
@@ -100399,7 +100627,7 @@ function hasHint(error) {
 }
 
 // src/sealed-server-env.ts
-import { createCipheriv, createDecipheriv, createHash as createHash4, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash as createHash5, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
 import { lstat as lstat5, mkdir as mkdir2, readFile as readFile4, rename as rename3, rm as rm3, writeFile } from "node:fs/promises";
 import path6 from "node:path";
 var ENVELOPE_VERSION = 1;
@@ -100598,7 +100826,7 @@ function exportedEnvelope(envelope) {
 }
 function fingerprintPublicKey(publicKey) {
   const fingerprintSource = isBinaryLike(publicKey) ? publicKey : createPublicKey(publicKey).export({ type: "spki", format: "pem" });
-  return createHash4("sha256").update(fingerprintSource).digest("hex").slice(0, 16);
+  return createHash5("sha256").update(fingerprintSource).digest("hex").slice(0, 16);
 }
 function validateEnvelope(envelope) {
   if (!isRecord(envelope)) {
@@ -102450,6 +102678,7 @@ var AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple",
 var SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
 var RUNTIME_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 async function createBundle(projectDir, config, options = {}) {
+  validateHttpHardening(config.security, config.observability);
   validateServerEnvConfig(config.env);
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, config.deploy?.files);
@@ -102511,7 +102740,8 @@ async function createBundle(projectDir, config, options = {}) {
     clientSource,
     clientSourcePath: paths.clientEntry,
     frameworkConfig: frameworkBundleConfig,
-    devRefresh: options.devClientRefresh === true
+    devRefresh: options.devClientRefresh === true,
+    cspNonce: config.security?.csp?.nonce === true
   }).catch((error) => {
     throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
   });
@@ -103457,7 +103687,7 @@ function createPreferencesError(message, hint, code) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash5, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID4, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash6, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID4, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 
 // src/maybe-promise.ts
 function isPromiseLike(value) {
@@ -104801,7 +105031,7 @@ function parseTeamJoinCode(code) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash5("sha256").update(verifier).digest("base64url");
+  return createHash6("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
   return createHmac("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
@@ -105525,6 +105755,7 @@ function flushTeamSecurityEvents(database, context2, options = {}) {
 
 // src/http-runtime.ts
 import { ServerResponse } from "node:http";
+import { randomBytes as randomBytes6 } from "node:crypto";
 
 // src/file-policy.ts
 function resolveFileAllowedMimeTypes(files) {
@@ -105589,7 +105820,7 @@ function assertAllowedFileMimeType(allowed, rawType, bytes) {
 }
 
 // src/team-billing-runtime.ts
-import { createHash as createHash8, randomUUID as randomUUID7 } from "node:crypto";
+import { createHash as createHash9, randomUUID as randomUUID7 } from "node:crypto";
 
 // src/team-billing-subscription-semantics.ts
 function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
@@ -105616,10 +105847,10 @@ function teamBillingQuantityPolicyFingerprint(policy) {
 }
 
 // src/team-billing-convergence.ts
-import { createHash as createHash7, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
 
 // src/team-billing-management.ts
-import { createHash as createHash6, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
 var TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 var TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 var CLAIM_TTL_MS = 5 * 60 * 1e3;
@@ -106152,10 +106383,10 @@ function sameQuantityPolicy(left, right) {
   return left?.kind === right?.kind && teamBillingQuantityPolicyFingerprint(left) === teamBillingQuantityPolicyFingerprint(right);
 }
 function intentIdempotency(database, teamId, intentId) {
-  return `sporades-team-billing-${createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
+  return `sporades-team-billing-${createHash7("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
 }
 function operationIdempotency(database, operationId) {
-  return `sporades-team-billing-operation-${createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
+  return `sporades-team-billing-operation-${createHash7("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
 }
 async function inTransaction(database, callback) {
   if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
@@ -106574,7 +106805,7 @@ function boundedObjectId(value) {
 }
 function safeDigest(raw) {
   try {
-    return createHash7("sha256").update(JSON.stringify(raw)).digest("hex");
+    return createHash8("sha256").update(JSON.stringify(raw)).digest("hex");
   } catch {
     return null;
   }
@@ -107130,10 +107361,10 @@ async function admitTeamBillingActor(database, transaction, auth, input) {
   return Object.freeze({ admitted: true });
 }
 function teamBillingErasureKey(database, teamId) {
-  return createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
+  return createHash9("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
 }
 function teamBillingErasureObjectKey(database, providerObjectId) {
-  return createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
+  return createHash9("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
 }
 async function assertTeamBillingErasureInactive(database, transaction, teamId) {
   const active = await transaction.prepare(transaction.dialect.sql(
@@ -107396,7 +107627,7 @@ function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
   return teamBillingOperationIdempotencyKey(capsuleIdentity, "checkout", teamId, requestId);
 }
 function teamBillingOperationIdempotencyKey(capsuleIdentity, kind, teamId, requestId) {
-  const digest2 = createHash8("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
+  const digest2 = createHash9("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
   return `sporades:team-${kind}:${digest2}`;
 }
 function exactOperationId(payload) {
@@ -107492,7 +107723,7 @@ function teamBillingDenied() {
 }
 
 // src/team-billing-erasure.ts
-import { createHash as createHash9, randomUUID as randomUUID8 } from "node:crypto";
+import { createHash as createHash10, randomUUID as randomUUID8 } from "node:crypto";
 var TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
 var TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var CHECKOUT_ID2 = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
@@ -107620,7 +107851,7 @@ async function performTeamBillingErasure(database, context2, payload) {
         )).run(now(database), snapshot.teamId, claimToken);
         return false;
       }
-      const digest2 = createHash9("sha256").update(JSON.stringify(canonical)).digest("hex");
+      const digest2 = createHash10("sha256").update(JSON.stringify(canonical)).digest("hex");
       await transaction.prepare(transaction.dialect.sql(
         "INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)"
       )).run(current2.erasureKey, digest2, canonical.providerObservedAt, now(database));
@@ -107781,7 +108012,7 @@ function validateEvidence(value, expected) {
   return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions };
 }
 function providerIdempotency(database, key) {
-  return `sporades-team-billing-erasure-${createHash9("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
+  return `sporades-team-billing-erasure-${createHash10("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
 }
 function exactPayload(value) {
   return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "generationId\0operationId" && TEAM_ID.test(value.operationId) && TEAM_ID.test(value.generationId);
@@ -108948,10 +109179,10 @@ function safeJobFailure(error) {
 }
 
 // src/resource-runtime.ts
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash12 } from "node:crypto";
 
 // src/notification-intent-runtime.ts
-import { createHash as createHash10, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID9, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { createHash as createHash11, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID9, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 var NOTIFICATION_RESERVATION_MS = 3e4;
 var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
 var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
@@ -109047,7 +109278,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
   };
   const payloadJson = canonicalJson(payload);
   if (Buffer.byteLength(payloadJson, "utf8") > 65536) invalid4();
-  const payloadDigest = createHash10("sha256").update(payloadJson).digest("hex");
+  const payloadDigest = createHash11("sha256").update(payloadJson).digest("hex");
   const key = [identity.table, identity.id, identity.operationId, input.id];
   const existing = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
   if (existing) {
@@ -109349,7 +109580,7 @@ function optionsSnapshot(options, status) {
   const table = boundedIdentity(options.resource.table);
   const id2 = boundedIdentity(options.resource.id);
   const operationId = boundedIdentity(options.operationId);
-  return { table, id: id2, operationId, digest: status ? null : createHash11("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
+  return { table, id: id2, operationId, digest: status ? null : createHash12("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
 }
 function resourceReceiptRow(adapter, row) {
   if (!row || adapter.engine !== "postgres") return row;
@@ -109692,7 +109923,7 @@ function wrapCapability(value, before, path24 = [], cache = /* @__PURE__ */ new 
 }
 function resourceActorDigest(context2, privileged) {
   const { clientAddress: _requestAddress, ...auth } = context2.auth;
-  return createHash11("sha256").update(resourceCanonicalJson({ auth, credential: context2.credential ?? null, privileged })).digest("hex");
+  return createHash12("sha256").update(resourceCanonicalJson({ auth, credential: context2.credential ?? null, privileged })).digest("hex");
 }
 function bindJobResources(database, context2, claim, hooks) {
   let invocationActive = true;
@@ -126049,8 +126280,20 @@ function emitHttpFailureLog(database, request, error, context2 = {}) {
   } catch {
   }
 }
+var pageNonces = /* @__PURE__ */ new WeakMap();
 function prepareHttpSecurity(database, request, response, admitPreflight) {
   const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
+  const directives = { ...policy.csp.directives };
+  if (policy.csp.nonce) {
+    const nonce = randomBytes6(32).toString("base64");
+    pageNonces.set(response, nonce);
+    for (const name2 of ["script-src", "script-src-elem"]) {
+      if (name2 === "script-src-elem" && directives[name2] === void 0) continue;
+      const values = directives[name2] ?? [];
+      const sources = Array.isArray(values) ? values : values.split(/\s+/);
+      directives[name2] = [...sources.filter((value) => value !== "'none'"), `'nonce-${nonce}'`, "'strict-dynamic'"];
+    }
+  }
   const originalWriteHead = response.writeHead.bind(response);
   response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
     const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : void 0;
@@ -126062,7 +126305,8 @@ function prepareHttpSecurity(database, request, response, admitPreflight) {
       "x-frame-options": "DENY",
       "permissions-policy": "camera=(), microphone=(), geolocation=()",
       "cross-origin-opener-policy": "same-origin",
-      [policy.csp.header]: serializeCspDirectives(policy.csp.directives)
+      [policy.csp.header]: serializeCspDirectives(directives),
+      ...policy.hsts ? { "strict-transport-security": policy.hsts } : {}
     };
     if (isGuardedAttachmentHttpResponse(response)) {
       delete headers["content-security-policy-report-only"];
@@ -126113,6 +126357,7 @@ function prepareHttpSecurity(database, request, response, admitPreflight) {
 }
 function resolveRuntimeSecurityPolicy(config = {}) {
   const security = config.security ?? {};
+  validateHttpHardening(security, config.observability);
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
   const session = config.__sporadesSession ?? "container";
@@ -126122,10 +126367,14 @@ function resolveRuntimeSecurityPolicy(config = {}) {
   const publicOrigin = normalizeOrigin(config.__sporadesPublicOrigin);
   const directives = {
     ...defaultRuntimeCspDirectives(),
-    ...csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}
+    ...csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {},
+    ...cspReportDirectives(csp)
   };
   const mode = csp.mode === "enforce" ? "enforce" : "report-only";
   return {
+    ...session === "hosted" && security.hsts ? {
+      hsts: hstsHeader(security.hsts)
+    } : {},
     cors: {
       sameOrigin: !publicDev,
       publicDev,
@@ -126138,7 +126387,9 @@ function resolveRuntimeSecurityPolicy(config = {}) {
     csp: {
       mode,
       header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
-      directives
+      directives,
+      ...csp.nonce === true ? { nonce: true } : {},
+      ...csp.reportTo === "observability" ? { reportTo: "observability" } : {}
     }
   };
 }
@@ -126158,8 +126409,16 @@ function defaultRuntimeCspDirectives() {
 function serializeCspDirectives(directives) {
   return Object.entries(directives).map(([name2, values]) => `${name2} ${Array.isArray(values) ? values.join(" ") : String(values)}`).join("; ");
 }
-function injectPageConnectionToken(html2, token, database) {
-  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? '<script src="/__sporades/observe.js"></script>' : ""}`;
+function renderPageHtml(html2, response, token, database) {
+  const nonce = pageNonces.get(response);
+  if (!nonce && token === void 0) return html2;
+  const source = typeof html2 === "string" ? html2 : html2.toString("utf8");
+  const rendered = nonce ? source.replaceAll("%SPORADES_NONCE%", nonce) : source;
+  return token === void 0 ? rendered : injectPageConnectionToken(rendered, token, database, nonce);
+}
+function injectPageConnectionToken(html2, token, database, nonce) {
+  const attribute = nonce ? ` nonce="${nonce}"` : "";
+  const script = `<script${attribute}>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? `<script${attribute} src="/__sporades/observe.js"></script>` : ""}`;
   if (/<head(\s[^>]*)?>/i.test(html2)) {
     return html2.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
 ${script}`);
@@ -129838,7 +130097,7 @@ function resolveRegistrationThrottle(auth) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash13, randomBytes as randomBytes6, randomUUID as randomUUID13 } from "node:crypto";
+import { createHash as createHash14, randomBytes as randomBytes7, randomUUID as randomUUID13 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync as readFileSync3 } from "node:fs";
 
 // src/log-envelope.ts
@@ -132038,7 +132297,7 @@ function encodeMimeBase64(value) {
 }
 
 // src/email-events-runtime.ts
-import { createHash as createHash12, createHmac as createHmac3, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+import { createHash as createHash13, createHmac as createHmac3, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
 var MAILJET_EVENT_KINDS = {
   sent: "delivered",
   open: "opened",
@@ -132257,7 +132516,7 @@ function normalizePostmarkEvent(raw) {
   const metadata2 = data2.Metadata && typeof data2.Metadata === "object" && !Array.isArray(data2.Metadata) ? data2.Metadata : {};
   const correlationKey = Object.keys(metadata2).find((key) => key.toLowerCase() === "correlationid");
   const correlationId = correlationKey ? text2(metadata2[correlationKey]).trim() : "";
-  const identity = createHash12("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
+  const identity = createHash13("sha256").update(JSON.stringify([recordType, messageId || null, occurredAt, recipient, descriptor.identityDiscriminator])).digest("hex");
   return {
     provider: "postmark",
     kind: descriptor.kind,
@@ -132291,7 +132550,7 @@ function normalizeMailgunWebhook(raw) {
   const accountId = text2(account.id).trim();
   const domainName = text2(domain.name).trim().toLowerCase();
   if (!accountId || !domainName) return false;
-  const providerScope = createHash12("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
+  const providerScope = createHash13("sha256").update(JSON.stringify([accountId, domainName])).digest("hex").slice(0, 16);
   return {
     provider: "mailgun",
     kind,
@@ -139401,7 +139660,7 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
   if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
     throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
-  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash13("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
+  return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash14("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
 }
 var endpointMultipartAdmissionTimeoutMs = 5e3;
 function multipartAdmissionDenied() {
@@ -140904,7 +141163,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         if (typeof oldestToken !== "string") break;
         connectionTokens.delete(oldestToken);
       }
-      const token = randomBytes6(32).toString("base64url");
+      const token = randomBytes7(32).toString("base64url");
       connectionTokens.set(token, Date.now() + connectionTokenTtlMs);
       return token;
     },
@@ -141326,8 +141585,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       const emailProviderEnabled = database.authConfig.providers.email?.enabled === true;
       if (authorized && message.provider === "email" && emailProviderEnabled && normalized.ok && typeof normalized.password === "string") {
         const reauthenticationThrottleKeys = [
-          `email:${createHash13("sha256").update(normalized.email).digest("base64url")}`,
-          `session:${createHash13("sha256").update(client.session.token).digest("base64url")}`
+          `email:${createHash14("sha256").update(normalized.email).digest("base64url")}`,
+          `session:${createHash14("sha256").update(client.session.token).digest("base64url")}`
         ];
         const throttleNow = database.clock.now();
         let reserved = false;
@@ -141802,7 +142061,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         const nowDate = database.clock.now();
         const inactivityMs = database.journeySessionInactivityMinutes * 6e4;
         if (!client.journey.sessionId || client.journey.lastActivityAt !== null && nowDate.getTime() - client.journey.lastActivityAt >= inactivityMs) {
-          client.journey.sessionId = randomBytes6(24).toString("base64url");
+          client.journey.sessionId = randomBytes7(24).toString("base64url");
           client.journey.sessionIds.add(client.journey.sessionId);
         }
         const previous = journeys.get(client.journey.sessionId);
@@ -142178,7 +142437,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
     return { ok: true };
   }
   recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
-  const code = `${randomBytes6(16).toString("base64url")}.${randomBytes6(32).toString("base64url")}`;
+  const code = `${randomBytes7(16).toString("base64url")}.${randomBytes7(32).toString("base64url")}`;
   const htmlBody = htmlString(options.htmlBody) ?? options.htmlBody;
   await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
     email: cleanEmail,
@@ -142206,7 +142465,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   return { ok: true };
 }
 function createWebSocketAccept(key) {
-  return createHash13("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  return createHash14("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 }
 function drainWebSocketFrames(client, onMessage) {
   while (client.buffer.length >= 2) {
@@ -146897,7 +147156,7 @@ function validateHostBackupPolicy(value) {
 
 // src/dev-clamav-sidecar.ts
 import { spawn } from "node:child_process";
-import { createHash as createHash14, randomBytes as randomBytes7 } from "node:crypto";
+import { createHash as createHash15, randomBytes as randomBytes8 } from "node:crypto";
 import { mkdir as mkdir6, mkdtemp, rm as rm7 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -147089,7 +147348,7 @@ async function startDevClamavSidecar(options) {
   const dataRoot = path16.join(options.projectDir, ".sporades", "clamav");
   await mkdir6(path16.join(dataRoot, "clamav"), { recursive: true });
   const socketDir = await createDevClamavSocketDirectory();
-  const identity = createHash14("sha256").update(`${path16.resolve(options.projectDir)}\0${process.pid}\0${randomBytes7(8).toString("hex")}`).digest("hex").slice(0, 20);
+  const identity = createHash15("sha256").update(`${path16.resolve(options.projectDir)}\0${process.pid}\0${randomBytes8(8).toString("hex")}`).digest("hex").slice(0, 20);
   const containerName = `sporades-dev-clamav-${identity}`;
   const socketPath = path16.join(socketDir, "clamd.sock");
   let child;
@@ -147279,7 +147538,7 @@ ${removed.stderr}`)) failures.push(new Error("Dev File inspection container clea
 }
 
 // src/capsule-services.ts
-import { randomBytes as randomBytes8 } from "node:crypto";
+import { randomBytes as randomBytes9 } from "node:crypto";
 import { mkdir as mkdir7, readFile as readFile9, rm as rm8, writeFile as writeFile6 } from "node:fs/promises";
 import path17 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
@@ -147353,9 +147612,9 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   }
   const credentials = {
     databaseUser: typeof existing.databaseUser === "string" && existing.databaseUser ? existing.databaseUser : POSTGRES_USER,
-    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes8(24).toString("base64url"),
+    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes9(24).toString("base64url"),
     storageAccessKey: typeof existing.storageAccessKey === "string" && existing.storageAccessKey ? existing.storageAccessKey : MINIO_ROOT_USER,
-    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes8(24).toString("base64url")
+    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes9(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
     await mkdir7(path17.dirname(credentialsPath), { recursive: true });
@@ -148211,14 +148470,14 @@ function renderCliHelp(command) {
 // src/cli/monitoring-maintenance.ts
 import { spawn as spawn2, spawnSync as spawnSync2 } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { createHash as createHash16, randomBytes as randomBytes9 } from "node:crypto";
+import { createHash as createHash17, randomBytes as randomBytes10 } from "node:crypto";
 import { chown, chmod as chmod3, lstat as lstat11, mkdir as mkdir9, open as open4, readFile as readFile11, readdir as readdir5, rename as rename8, rm as rm9, writeFile as writeFile8 } from "node:fs/promises";
 import path19 from "node:path";
 import { pathToFileURL as pathToFileURL5 } from "node:url";
 
 // src/cli/monitoring-stack.ts
 import { spawnSync } from "node:child_process";
-import { createHash as createHash15 } from "node:crypto";
+import { createHash as createHash16 } from "node:crypto";
 import { chmod as chmod2, cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
 import path18 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
@@ -148289,11 +148548,11 @@ async function runMonitoringStack(action, directory, packageRoot) {
     else {
       if (!current2.isFile()) throw commandError2(`Monitoring stack asset is not a regular file: ${name2}`, "Inspect the stack directory and remove unsafe links before continuing.");
       const destinationBytes = await readFile10(destination);
-      if (createHash15("sha256").update(sourceBytes).digest("hex") !== createHash15("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
+      if (createHash16("sha256").update(sourceBytes).digest("hex") !== createHash16("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
     }
   }
   if (action === "init" && !manifestStat && !preexistingContent) {
-    await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash15("sha256").update(await readFile10(path18.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
+    await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash16("sha256").update(await readFile10(path18.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
 `, { flag: "wx", mode: 420 });
     await chmod2(manifestPath, 420);
     created.push("stack-manifest.json");
@@ -148324,7 +148583,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
 }
 
 // src/cli/monitoring-maintenance.ts
-var digest = (bytes) => createHash16("sha256").update(bytes).digest("hex");
+var digest = (bytes) => createHash17("sha256").update(bytes).digest("hex");
 function fail3() {
   throw commandError2("Monitoring maintenance could not complete.", "Keep services stopped. Check protected paths, stack provenance, configuration and the maintenance guide; retry with the same inputs. No backend history or Capsule data is deleted.");
 }
@@ -148346,7 +148605,7 @@ async function safeDirectory(dir, privateMode = false) {
   if (!st.isDirectory() || st.isSymbolicLink() || st.mode & (privateMode ? 63 : 18) || process.geteuid && st.uid !== process.geteuid()) fail3();
 }
 async function atomic(file, bytes, mode = 384, owner) {
-  const temp = `${file}.${randomBytes9(8).toString("hex")}.tmp`;
+  const temp = `${file}.${randomBytes10(8).toString("hex")}.tmp`;
   const handle = await open4(temp, "wx", mode);
   try {
     await handle.writeFile(bytes);
@@ -148590,7 +148849,7 @@ async function hashes(dir, prefix = "", exclude = /* @__PURE__ */ new Set()) {
     else if (e.isFile()) {
       const st = await lstat11(file);
       if (!st.isFile() || st.isSymbolicLink() || st.mode & 18) fail3();
-      const hash2 = createHash16("sha256");
+      const hash2 = createHash17("sha256");
       for await (const chunk of createReadStream(file)) hash2.update(chunk);
       result[name2] = hash2.digest("hex");
     } else fail3();
@@ -148631,7 +148890,7 @@ async function checkArchive(dir, backup, file) {
   if (run2("-tvf").split("\n").some((line) => !/^[-d]/.test(line))) fail3();
 }
 async function storageGuards(dir, names) {
-  const owner = randomBytes9(16).toString("hex");
+  const owner = randomBytes10(16).toString("hex");
   const guards = [];
   const release = async () => {
     for (const guard of guards.reverse()) {
@@ -148734,7 +148993,7 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
     const beforeFiles = await hashes(dir, "", excluded);
     const configMetadata = await metadata(dir, excluded);
     if (await exists(location)) fail3();
-    const stage = `${location}.partial-${randomBytes9(8).toString("hex")}`;
+    const stage = `${location}.partial-${randomBytes10(8).toString("hex")}`;
     await mkdir9(stage, { mode: 448 });
     try {
       await mkdir9(path19.join(stage, "config"), { mode: 448 });
@@ -149032,7 +149291,7 @@ async function readAdmissionInspection(response) {
 }
 
 // src/cli/project-config.ts
-import { createHash as createHash17 } from "node:crypto";
+import { createHash as createHash18 } from "node:crypto";
 import { chmod as chmod4, mkdir as mkdir10, readFile as readFile12, writeFile as writeFile9 } from "node:fs/promises";
 import path21 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -149093,7 +149352,7 @@ async function readProjectConfig(projectDir) {
   validateObservabilityConfig(config);
   if (config.env !== void 0) config.env = validateServerEnvConfig(config.env);
   resolveFileAllowedMimeTypes(config.files);
-  validateSecurityConfig(config.security);
+  validateSecurityConfig(config.security, config.observability);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
   if (config.payments !== void 0) config.payments = validatePaymentsConfig(config.payments);
@@ -149221,13 +149480,14 @@ function validateProjectConfigShape(config) {
     );
   }
 }
-function validateSecurityConfig(security) {
+function validateSecurityConfig(security, observability) {
   if (security === void 0) {
     return;
   }
   if (!security || typeof security !== "object" || Array.isArray(security)) {
     throw commandError2("Invalid security policy.", "Set `security` in sporades.json to an object.");
   }
+  validateHttpHardening(security, observability);
   const cors = security.cors;
   if (cors !== void 0) {
     if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
@@ -149249,6 +149509,7 @@ function validateSecurityConfig(security) {
 }
 function resolveEffectiveSecurityPolicy(config, session) {
   const security = config.security ?? {};
+  validateHttpHardening(security, config.observability);
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
   const publicDev = session === "public-dev";
@@ -149257,6 +149518,7 @@ function resolveEffectiveSecurityPolicy(config, session) {
   const devOrigins = dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [];
   const allowedOrigins = publicDev ? ["*"] : configuredOrigins;
   return {
+    ...session === "hosted" && security.hsts ? { hsts: hstsHeader(security.hsts) } : {},
     cors: {
       sameOrigin: !publicDev,
       publicDev,
@@ -149275,9 +149537,12 @@ function resolveEffectiveSecurityPolicy(config, session) {
     csp: {
       mode: csp.mode ?? "report-only",
       header: (csp.mode ?? "report-only") === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
+      ...csp.nonce === true ? { nonce: true } : {},
+      ...csp.reportTo === "observability" ? { reportTo: "observability" } : {},
       directives: {
         ...DEFAULT_CSP_DIRECTIVES,
-        ...csp.directives ?? {}
+        ...csp.directives ?? {},
+        ...cspReportDirectives(csp)
       }
     }
   };
@@ -149341,7 +149606,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest2 = createHash17("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest2 = createHash18("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest2}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -149649,6 +149914,11 @@ function securityPostureWarnings(security, session) {
   if (security.cors.allowedOrigins.includes("*")) {
     warnings.push("CORS allows every origin");
   }
+  const scriptSources = security.csp.directives["script-src"] ?? [];
+  const sources = Array.isArray(scriptSources) ? scriptSources : String(scriptSources).split(/\s+/);
+  if (sources.some((value) => value === "https:" || value === "'unsafe-inline'")) {
+    warnings.push("CSP script-src permits https: or 'unsafe-inline'; nonce mode is available");
+  }
   const permissiveDirectives = Object.entries(security.csp.directives).filter(([, values]) => Array.isArray(values) && values.some((value) => value === "*" || value === "'unsafe-eval'")).map(([name2]) => name2);
   if (permissiveDirectives.length > 0) {
     warnings.push(`CSP directives are broad (${permissiveDirectives.join(", ")})`);
@@ -149665,6 +149935,9 @@ function securityPolicyHint(warnings) {
   }
   if (warnings.some((warning) => warning.includes("CSP"))) {
     hints.push("Tighten security.csp.directives and use security.csp.mode `enforce` when the policy is ready.");
+  }
+  if (warnings.some((warning) => warning.includes("nonce mode"))) {
+    hints.push('Enable security.csp.nonce, add nonce="%SPORADES_NONCE%" to authored scripts, and remove https: and unsafe-inline from script-src. Replace inline event handlers with addEventListener.');
   }
   return hints.join(" ");
 }
@@ -153311,7 +153584,7 @@ async function startDevSession(options) {
   });
   let runtimeServiceEnv = capsuleServiceEnv;
   const inspectionToken = createDevInspectionToken();
-  const actionBundleId = randomBytes10(16).toString("hex");
+  const actionBundleId = randomBytes11(16).toString("hex");
   const actionBundlePath = path23.join(options.projectDir, ".sporades", "build", ".dev-actions", actionBundleId, "server.mjs");
   const sessionFilePath = path23.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path23.join(options.projectDir, ".sporades", "data.db");
@@ -153515,11 +153788,12 @@ async function startDevSession(options) {
       }
       const publicAsset2 = await readPublicAsset(bundle.staticFiles.publicTree, requestPath);
       if (publicAsset2) {
+        const htmlAsset = publicAsset2.contentType === "text/html; charset=utf-8";
         response.writeHead(200, {
           "content-type": publicAsset2.contentType,
-          ...publicAsset2.html ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }
+          ...htmlAsset ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }
         });
-        response.end(publicAsset2.html && isDocumentNavigationRequest(request) ? injectPageConnectionToken(publicAsset2.body.toString("utf8"), websocketHub.createConnectionToken(), runtime.database) : publicAsset2.body);
+        response.end(htmlAsset ? renderPageHtml(publicAsset2.body, response, publicAsset2.html && isDocumentNavigationRequest(request) ? websocketHub.createConnectionToken() : void 0, runtime.database) : publicAsset2.body);
         return;
       }
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -154135,7 +154409,7 @@ function capsuleReloadSurface(database, config = {}) {
   return surface;
 }
 function createDevInspectionToken() {
-  return randomBytes10(32).toString("hex");
+  return randomBytes11(32).toString("hex");
 }
 function requireDevInspectionToken(request, response, expectedToken) {
   if (devInspectionTokenMatches(request.headers[DEV_INSPECTION_TOKEN_HEADER], expectedToken)) {
@@ -154766,7 +155040,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash18("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash19("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -155744,8 +156018,8 @@ async function startContainerSession(options) {
     await mkdir11(path23.join(runtimeDir, "deploy-files"), { recursive: true, mode: 448 });
     await chmod5(path23.join(runtimeDir, "deploy-files"), 448);
   }
-  const deployReleaseRoot = path23.join(runtimeDir, "deploy-files", randomBytes10(16).toString("hex"));
-  const telemetryCaStagePath = telemetryCa ? path23.join(runtimeDir, "telemetry-ca", `${randomBytes10(16).toString("hex")}.pem`) : null;
+  const deployReleaseRoot = path23.join(runtimeDir, "deploy-files", randomBytes11(16).toString("hex"));
+  const telemetryCaStagePath = telemetryCa ? path23.join(runtimeDir, "telemetry-ca", `${randomBytes11(16).toString("hex")}.pem`) : null;
   const preservedRoot = path23.join(runtimeDir, "preserved-files");
   const createdSeeds = [];
   const seedJournal = await beginPreservedFileAttempt(preservedRoot, deployReleaseRoot, bundle.deployFiles.length > 0 || Boolean(telemetryCaStagePath || existingBinding?.telemetryCaStagePath));
@@ -155776,8 +156050,8 @@ async function startContainerSession(options) {
   }
   const additionalMounts = deployFileMounts(bundle.deployFiles, deployReleaseRoot, preservedRoot);
   const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
-  const containerTransactionToken = randomBytes10(16).toString("hex");
-  const runtimeProbeToken = randomBytes10(32).toString("hex");
+  const containerTransactionToken = randomBytes11(16).toString("hex");
+  const runtimeProbeToken = randomBytes11(32).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
     "--env",
@@ -155843,7 +156117,7 @@ async function startContainerSession(options) {
     SPORADES_BASE_IMAGE.image,
     ...sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]
   ];
-  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes10(4).toString("hex")}`;
+  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes11(4).toString("hex")}`;
   const oldName = String(existingContainer?.Name ?? existingBinding?.containerName ?? containerName).replace(/^\//, "");
   const oldWasRunning = Boolean(existingContainer?.State?.Running);
   let oldRenamed = false;
@@ -157245,7 +157519,7 @@ function uploadHostReleaseArchive(options) {
 }
 function createHostReleaseId(now2 = /* @__PURE__ */ new Date()) {
   const timestamp = now2.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  return `${timestamp}-${randomBytes10(4).toString("hex")}`;
+  return `${timestamp}-${randomBytes11(4).toString("hex")}`;
 }
 function normaliseHostLogEntries(data2) {
   if (!Array.isArray(data2?.entries)) {
@@ -157456,7 +157730,7 @@ function upgradeHostHelper(options) {
     if (!statSync2(localHelper).isFile()) {
       throw new Error("not a file");
     }
-    helperChecksum = createHash18("sha256").update(readFileSync4(localHelper)).digest("hex");
+    helperChecksum = createHash19("sha256").update(readFileSync4(localHelper)).digest("hex");
   } catch {
     throw commandError2(
       "Local Host helper file was not found.",
@@ -158532,7 +158806,7 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
   throw commandError2(message, hint);
 }
 async function replaceContainerBinding(bindingPath, binding) {
-  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes10(8).toString("hex")}.tmp`;
+  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes11(8).toString("hex")}.tmp`;
   try {
     await writeFile10(temporaryPath, `${JSON.stringify(binding, null, 2)}
 `, { flag: "wx" });
@@ -158556,7 +158830,7 @@ function verifyContainerReplacementOwnership(binding, consumer, expectedContaine
 async function acquireContainerLifecycleLock(projectDir) {
   const lockDir = path23.join(projectDir, ".sporades", ".container-lifecycle-lock");
   await mkdir11(path23.dirname(lockDir), { recursive: true });
-  const token = randomBytes10(16).toString("hex");
+  const token = randomBytes11(16).toString("hex");
   const ownerPath = path23.join(lockDir, "owner.json");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {

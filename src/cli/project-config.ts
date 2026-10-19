@@ -17,6 +17,7 @@ import { validatePaymentsConfig } from "../stripe-payment-config.js";
 import { validateTelemetryProjectConfig } from "./telemetry-profile.js";
 import { commandError, errorDetails, type LooseRecord } from "./cli-support.js";
 import { readClientPrerenderConfig } from "../client-prerender.js";
+import { cspReportDirectives, hstsHeader, validateHttpHardening } from "../http-security-config.js";
 
 export { validateMailConfig } from "../mail-config.js";
 export { validatePaymentsConfig } from "../stripe-payment-config.js";
@@ -82,7 +83,7 @@ export async function readProjectConfig(projectDir: string) {
   validateObservabilityConfig(config);
   if (config.env !== undefined) config.env = validateServerEnvConfig(config.env);
   resolveFileAllowedMimeTypes(config.files);
-  validateSecurityConfig(config.security);
+  validateSecurityConfig(config.security, config.observability);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
   if (config.payments !== undefined) config.payments = validatePaymentsConfig(config.payments);
@@ -229,13 +230,14 @@ export function validateProjectConfigShape(config: unknown) {
   }
 }
 
-export function validateSecurityConfig(security: LooseRecord) {
+export function validateSecurityConfig(security: LooseRecord, observability?: LooseRecord) {
   if (security === undefined) {
     return;
   }
   if (!security || typeof security !== "object" || Array.isArray(security)) {
     throw commandError("Invalid security policy.", "Set `security` in sporades.json to an object.");
   }
+  validateHttpHardening(security, observability);
   const cors = security.cors;
   if (cors !== undefined) {
     if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
@@ -261,6 +263,7 @@ export function validateSecurityConfig(security: LooseRecord) {
 
 export function resolveEffectiveSecurityPolicy(config: LooseRecord, session: string) {
   const security = config.security ?? {};
+  validateHttpHardening(security, config.observability);
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
   const publicDev = session === "public-dev";
@@ -270,6 +273,7 @@ export function resolveEffectiveSecurityPolicy(config: LooseRecord, session: str
   const allowedOrigins = publicDev ? ["*"] : configuredOrigins;
 
   return {
+    ...(session === "hosted" && security.hsts ? { hsts: hstsHeader(security.hsts) } : {}),
     cors: {
       sameOrigin: !publicDev,
       publicDev,
@@ -288,9 +292,12 @@ export function resolveEffectiveSecurityPolicy(config: LooseRecord, session: str
     csp: {
       mode: csp.mode ?? "report-only",
       header: (csp.mode ?? "report-only") === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
+      ...(csp.nonce === true ? { nonce: true } : {}),
+      ...(csp.reportTo === "observability" ? { reportTo: "observability" } : {}),
       directives: {
         ...DEFAULT_CSP_DIRECTIVES,
         ...(csp.directives ?? {}),
+        ...cspReportDirectives(csp),
       },
     },
   };

@@ -815,6 +815,9 @@ test("sporades doctor hosted human output includes exact follow-up commands", as
 test("sporades doctor skips unavailable local runtime checks without failing strict mode", async () => {
   await withTempDir(async (dir) => {
     const projectDir = await createProject(dir);
+    await updateSporadesConfig(projectDir, config => {
+      config.security.csp.directives = { "script-src": ["'self'"] };
+    });
     const normal = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir });
     assert.equal(normal.code, 0, normal.stderr);
     assert.equal(JSON.parse(normal.stdout).data.summary.skip, 2);
@@ -864,6 +867,7 @@ test("sporades doctor reports effective security policy for the requested sessio
     await updateSporadesConfig(projectDir, (config) => {
       config.security.cors.allowedOrigins = ["https://example.com"];
       config.security.csp.mode = "enforce";
+      config.security.csp.directives = { "script-src": ["'self'"] };
     });
 
     const result = await runCli(["doctor", "--session", "hosted", "--host", "personal", "--subname", "security-island", "--json"], {
@@ -878,6 +882,28 @@ test("sporades doctor reports effective security policy for the requested sessio
     assert.equal(policy.details.security.cors.publicDev, false);
     assert.deepEqual(policy.details.security.cors.allowedOrigins, ["https://example.com"]);
     assert.equal(policy.details.security.csp.header, "content-security-policy");
+  });
+});
+
+test("sporades doctor recommends nonce mode for broad script sources", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createProject(dir, "nonce-island");
+    for (const sources of [["'self'", "https:"], "'self' 'unsafe-inline'"]) {
+      await updateSporadesConfig(projectDir, config => {
+        config.security.csp.directives = { "script-src": sources };
+      });
+      const result = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir });
+      const policy = findCheck(JSON.parse(result.stdout), "doctor.security-policy");
+      assert.equal(policy.status, "warn");
+      assert.match(policy.hint, /security\.csp\.nonce/);
+      assert.match(policy.hint, /%SPORADES_NONCE%/);
+    }
+    await updateSporadesConfig(projectDir, config => {
+      config.security.csp.nonce = true;
+      config.security.csp.directives = { "script-src": ["'self'"] };
+    });
+    const result = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir });
+    assert.equal(findCheck(JSON.parse(result.stdout), "doctor.security-policy").status, "pass");
   });
 });
 
