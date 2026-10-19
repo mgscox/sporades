@@ -793,6 +793,12 @@ A committed termination:
   reset request accepted before a later re-registration of the same email is
   not delivered to the new account.
 
+Reset-code issuance shares the identity lock with termination and rechecks
+credential ownership before inserting or reusing a code. Pending mail Jobs with
+missing, malformed or same-millisecond identity-generation timestamps safely
+complete without delivery; request a fresh link. The public request response
+stays identical for registered and unregistered addresses.
+
 Existing WebSocket connections of the terminated human are moved to a fresh
 Anonymous session after commit, before the Mutation result is sent and before
 subscriptions refresh. Every affected subscription reruns under the replacement
@@ -814,6 +820,10 @@ Service-User callers, post-`await` initiation and retained aliases are refused.
 Unknown, malformed, guest, Service-User and Privileged/operator targets share
 the bounded `HUMAN_IDENTITY_TERMINATION_DENIED` error with every caller refusal.
 A tombstone replay still requires a current authorized human Session.
+Caller and target identities are locked in deterministic order, followed by a
+live check of the exact Session retained through commit. If two humans try to
+terminate each other concurrently, only one can succeed; the terminated
+caller's operation fails with `HUMAN_IDENTITY_TERMINATION_DENIED`.
 
 Termination refuses with `HUMAN_IDENTITY_TERMINATION_BLOCKED` while the human
 has any Team membership, including the automatically created personal Team.

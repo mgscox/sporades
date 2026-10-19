@@ -1839,6 +1839,20 @@ export function hashPasswordResetVerifier(verifier) {
 // cannot kill a link the user is about to click. The outstanding count is capped
 // instead. Returns null when the account is already at the cap.
 export async function issuePasswordResetCode(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
+    // Every issuer (worker, retry and custom-delivery link) shares termination's identity fence.
+    // The initial email lookup is only a hint: under the retained lock, re-read both the terminal
+    // marker and credential ownership before inspecting, reusing or inserting any Reset code.
+    return await withAuthTransaction(database, async (tx) => {
+        const owner = await tx.lockAuthUserFileAuthority(credential.userId);
+        if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active")
+            return null;
+        const current = await tx.findEmailCredentialWithUser(credential.email);
+        if (!current || current.userId !== credential.userId || current.createdAt !== credential.createdAt)
+            return null;
+        return await issuePasswordResetCodeOnAdapter({ ...database, adapter: tx }, current, requestedCode, allowRequestedCodeInsert);
+    });
+}
+async function issuePasswordResetCodeOnAdapter(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
     const { selector, code, verifierHash, now } = passwordResetCodeParts(database, requestedCode);
     if (requestedCode) {
         const existing = await database.adapter.findPasswordResetCode(selector);
@@ -1884,8 +1898,11 @@ export async function prepareEmailPasswordResetDelivery(database, payload, attem
         return null;
     // ADR-0057 generation fence: a request accepted before this credential existed belonged to an
     // earlier identity at the same address (or to none), so it must not reach the newer account.
-    const requestedAt = typeof payload?.requestedAt === "string" ? Date.parse(payload.requestedAt) : Number.NaN;
-    if (Number.isFinite(requestedAt) && Date.parse(credential.createdAt) > requestedAt)
+    const requestedAt = canonicalAuthInstant(payload?.requestedAt);
+    const createdAt = canonicalAuthInstant(credential.createdAt);
+    // Missing/invalid legacy evidence and equal-millisecond generations are ambiguous. Fail closed:
+    // a caller can request a fresh link, but an old Job must never select a replacement identity.
+    if (requestedAt === null || createdAt === null || createdAt >= requestedAt)
         return null;
     const issued = await issuePasswordResetCode(database, credential, payload?.code ?? null, attempt === 1);
     if (!issued)
@@ -3202,7 +3219,7 @@ const oauthRegistrationRetentionKey = (keyId) => `oauth-registration-key:retain:
 const oauthRegistrationKeyId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{22}$/.test(value);
 const oauthRegistrationMaterial = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 const OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1000;
-function oauthRegistrationInstant(value) {
+function canonicalAuthInstant(value) {
     if (typeof value !== "string")
         return null;
     const instant = Date.parse(value);
@@ -3218,7 +3235,7 @@ async function oauthRegistrationOutstandingExpiry(adapter, keyId, now) {
 function oauthRegistrationAlias(value, now) {
     try {
         const parsed = JSON.parse(String(value ?? ""));
-        const expiresAt = oauthRegistrationInstant(parsed?.expiresAt);
+        const expiresAt = canonicalAuthInstant(parsed?.expiresAt);
         return oauthRegistrationKeyId(parsed?.keyId) && expiresAt !== null && expiresAt > now
             ? { keyId: parsed.keyId, expiresAt }
             : null;
@@ -3321,7 +3338,7 @@ export async function retireOAuthRegistrationKeys(database, options = {}) {
                 continue;
             let retainUntil = null;
             try {
-                retainUntil = oauthRegistrationInstant(JSON.parse(String(row.value))?.expiresAt);
+                retainUntil = canonicalAuthInstant(JSON.parse(String(row.value))?.expiresAt);
             }
             catch {
                 retainUntil = null;

@@ -128554,6 +128554,15 @@ function hashPasswordResetVerifier(verifier) {
   return nodeCryptoModule3.createHash("sha256").update(verifier).digest("base64url");
 }
 async function issuePasswordResetCode(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
+  return await withAuthTransaction(database, async (tx) => {
+    const owner = await tx.lockAuthUserFileAuthority(credential.userId);
+    if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") return null;
+    const current2 = await tx.findEmailCredentialWithUser(credential.email);
+    if (!current2 || current2.userId !== credential.userId || current2.createdAt !== credential.createdAt) return null;
+    return await issuePasswordResetCodeOnAdapter({ ...database, adapter: tx }, current2, requestedCode, allowRequestedCodeInsert);
+  });
+}
+async function issuePasswordResetCodeOnAdapter(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
   const { selector, code, verifierHash, now: now2 } = passwordResetCodeParts(database, requestedCode);
   if (requestedCode) {
     const existing = await database.adapter.findPasswordResetCode(selector);
@@ -128589,8 +128598,9 @@ async function prepareEmailPasswordResetDelivery(database, payload, attempt = 1)
   const email = typeof payload?.email === "string" ? payload.email.trim().toLowerCase() : "";
   const credential = email ? await database.adapter.findEmailCredentialWithUser(email) : null;
   if (!credential) return null;
-  const requestedAt = typeof payload?.requestedAt === "string" ? Date.parse(payload.requestedAt) : Number.NaN;
-  if (Number.isFinite(requestedAt) && Date.parse(credential.createdAt) > requestedAt) return null;
+  const requestedAt = canonicalAuthInstant(payload?.requestedAt);
+  const createdAt = canonicalAuthInstant(credential.createdAt);
+  if (requestedAt === null || createdAt === null || createdAt >= requestedAt) return null;
   const issued = await issuePasswordResetCode(database, credential, payload?.code ?? null, attempt === 1);
   if (!issued) return null;
   const body = passwordResetMailBody(issued.link);
@@ -129718,7 +129728,7 @@ var oauthRegistrationRetentionKey = (keyId) => `oauth-registration-key:retain:${
 var oauthRegistrationKeyId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{22}$/.test(value);
 var oauthRegistrationMaterial = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 var OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1e3;
-function oauthRegistrationInstant(value) {
+function canonicalAuthInstant(value) {
   if (typeof value !== "string") return null;
   const instant = Date.parse(value);
   return Number.isFinite(instant) && new Date(instant).toISOString() === value ? instant : null;
@@ -129735,7 +129745,7 @@ async function oauthRegistrationOutstandingExpiry(adapter, keyId, now2) {
 function oauthRegistrationAlias(value, now2) {
   try {
     const parsed = JSON.parse(String(value ?? ""));
-    const expiresAt = oauthRegistrationInstant(parsed?.expiresAt);
+    const expiresAt = canonicalAuthInstant(parsed?.expiresAt);
     return oauthRegistrationKeyId(parsed?.keyId) && expiresAt !== null && expiresAt > now2 ? { keyId: parsed.keyId, expiresAt } : null;
   } catch {
     return null;
@@ -129805,7 +129815,7 @@ async function retireOAuthRegistrationKeys(database, options = {}) {
       if (!oauthRegistrationKeyId(keyId) || keyId === current2.keyId) continue;
       let retainUntil = null;
       try {
-        retainUntil = oauthRegistrationInstant(JSON.parse(String(row.value))?.expiresAt);
+        retainUntil = canonicalAuthInstant(JSON.parse(String(row.value))?.expiresAt);
       } catch {
         retainUntil = null;
       }
@@ -143374,8 +143384,11 @@ async function terminateHumanIdentityInMutation(database, auth, credential, opti
   if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || credential?.kind !== "session" || typeof options.sessionToken !== "string" || typeof userId !== "string" || userId.length === 0 || userId.length > 256) {
     throw humanIdentityTerminationDenied();
   }
+  for (const identityId of [.../* @__PURE__ */ new Set([auth.userId, userId])].sort()) {
+    await database.adapter.lockAuthUserFileAuthority(identityId);
+  }
   const actorSession = await database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND [u].[userKind] = 'human' AND [u].[lifecycleStatus] = 'active'"
+    "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND [u].[userKind] = 'human' AND [u].[lifecycleStatus] = 'active'" + (database.adapter.dialect.name === "postgres" ? " FOR UPDATE OF [s]" : "")
   )).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
   if (!actorSession) throw humanIdentityTerminationDenied();
   const outcome = await database.adapter.terminateHumanIdentity({

@@ -425,6 +425,24 @@ test("terminated humans cannot join Teams, and captured Job provenance does not 
   });
 });
 
+test("reset delivery refuses ambiguous identity-generation evidence after email reuse", async () => {
+  await withRuntime(async (database) => {
+    const admin = await register(database, "generation-admin@example.test");
+    const original = await register(database, "generation@example.test");
+    await clearTeams(database, original);
+    assert.equal((await call(database, admin, "terminate", [original.auth.userId])).error, null);
+    await register(database, "generation@example.test", "replacement-password");
+    const credential = await database.adapter.findEmailCredentialWithUser("generation@example.test");
+    for (const requestedAt of [undefined, null, "malformed", "2026-01-01", credential.createdAt]) {
+      const delivery = await prepareEmailPasswordResetDelivery(database, { email: credential.email, requestedAt });
+      assert.equal(delivery, null, `ambiguous requestedAt ${String(requestedAt)} must not target a replacement identity`);
+      assert.equal(await countRows(database, "sporades_auth_password_reset_codes", "email", credential.email), 0);
+    }
+    const requestedAt = new Date(Date.parse(credential.createdAt) + 1).toISOString();
+    assert.equal((await prepareEmailPasswordResetDelivery(database, { email: credential.email, requestedAt }))?.to, credential.email);
+  });
+});
+
 test("a delayed reset request accepted before re-registration cannot reach the replacement account", async () => {
   await withRuntime(async (database) => {
     const admin = await register(database, "delay-admin@example.test");
@@ -667,6 +685,109 @@ export default capsule({
     }
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+for (const mode of ["delivery", "retry", "link"]) {
+  test(`Postgres reset issuance rechecks identity after paused credential lookup (${mode})`, { skip: POSTGRES_SKIP_REASON, timeout: 15_000 }, async () => {
+    await withPostgresAdapter(async () => {
+      const serverEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+      const runtimeConfig = { ...config, services: { database: { engine: "postgres" } } };
+      const first = await openDevDatabase("", "", serverEnv, runtimeConfig, definition);
+      const second = await openDevDatabase("", "", serverEnv, runtimeConfig, definition);
+      const entered = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      let attempt;
+      try {
+        const admin = await register(first, "reset-race-admin@example.test");
+        const target = await register(first, "reset-race-target@example.test");
+        await clearTeams(first, target);
+        const credential = await second.adapter.findEmailCredentialWithUser("reset-race-target@example.test");
+        const code = "reset-race-selector-0001.reset-race-verifier-000000000000000001";
+        const payload = { email: credential.email, code, requestedAt: new Date(Date.parse(credential.createdAt) + 1).toISOString() };
+        if (mode === "retry") assert.ok(await prepareEmailPasswordResetDelivery(second, payload));
+        const lookup = second.adapter.findEmailCredentialWithUser.bind(second.adapter);
+        let paused = false;
+        second.adapter.findEmailCredentialWithUser = async (...args) => {
+          const result = await lookup(...args);
+          if (!paused) { paused = true; entered.resolve(); await release.promise; }
+          return result;
+        };
+        attempt = mode === "link"
+          ? createEmailPasswordResetLink(second, null, credential.email)
+          : prepareEmailPasswordResetDelivery(second, payload, mode === "retry" ? 2 : 1);
+        await entered.promise;
+        assert.equal((await call(first, admin, "terminate", [target.auth.userId])).data?.status, "terminated");
+        release.resolve();
+        const result = await attempt;
+        if (mode === "link") assert.equal(result.ok, false, "the custom delivery path cannot return a link");
+        else assert.equal(result, null, "the mail worker must not deliver a link");
+        assert.equal(await countRows(first, "sporades_auth_password_reset_codes", "userId", target.auth.userId), 0, "no recreated Reset row");
+        assert.equal((await verifyPasswordResetCode(first, null, code)).ok, false, "no verifiable code after termination");
+        await register(first, credential.email, "replacement-password");
+        assert.equal(await prepareEmailPasswordResetDelivery(second, payload), null, "replaying old work cannot reach a replacement identity");
+      } finally {
+        release.resolve();
+        await attempt?.catch(() => {});
+        await second.close();
+        await first.close();
+      }
+    });
+  });
+}
+
+test("Postgres mutual termination retains live caller authority until commit", { skip: POSTGRES_SKIP_REASON, timeout: 15_000 }, async () => {
+  await withPostgresAdapter(async () => {
+    const serverEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+    const runtimeConfig = { ...config, services: { database: { engine: "postgres" } } };
+    const first = await openDevDatabase("", "", serverEnv, runtimeConfig, definition);
+    const second = await openDevDatabase("", "", serverEnv, runtimeConfig, definition);
+    const checked = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let closing;
+    let opposing;
+    try {
+      const alice = await register(first, "mutual-alice@example.test");
+      const bob = await register(first, "mutual-bob@example.test");
+      await clearTeams(first, alice);
+      await clearTeams(first, bob);
+      const withTransaction = first.adapter.withTransaction.bind(first.adapter);
+      first.adapter.withTransaction = (fn, options) => withTransaction((tx) => fn(new Proxy(tx, {
+        get(adapter, key) {
+          const value = Reflect.get(adapter, key, adapter);
+          if (key === "prepare") return (sql) => {
+            const statement = value.call(adapter, sql);
+            if (!sql.includes('SELECT "s"."token"')) return statement;
+            return { ...statement, async get(...args) {
+              const session = await statement.get(...args);
+              checked.resolve();
+              await release.promise;
+              return session;
+            } };
+          };
+          return typeof value === "function" ? value.bind(adapter) : value;
+        },
+      })), options);
+      closing = call(first, alice, "terminate", [bob.auth.userId]);
+      await checked.promise;
+      opposing = call(second, bob, "terminate", [alice.auth.userId]);
+      // Without the caller fence Bob commits while Alice is paused after her Session check.
+      // With the fence Bob waits; releasing Alice allows exactly one termination to commit.
+      await Promise.race([opposing, new Promise((resolve) => setTimeout(resolve, 200))]);
+      release.resolve();
+      const results = await Promise.all([closing, opposing]);
+      assert.equal(results.filter((result) => result.data?.status === "terminated").length, 1, JSON.stringify(results));
+      assert.equal(results.filter((result) => result.error?.code === DENIED).length, 1, JSON.stringify(results));
+      const users = await Promise.all([userRow(first, alice.auth.userId), userRow(first, bob.auth.userId)]);
+      assert.equal(users.filter((user) => user.lifecycleStatus === "terminated").length, 1);
+      const survivor = users.find((user) => user.lifecycleStatus === "active");
+      assert.equal(await countRows(first, "sporades_auth_sessions", "userId", survivor.id), 1);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([closing, opposing]);
+      await second.close();
+      await first.close();
+    }
+  });
 });
 
 test("Postgres serializes sign-in and Team Join on another connection with an uncommitted termination", { skip: POSTGRES_SKIP_REASON }, async () => {

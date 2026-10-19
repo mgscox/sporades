@@ -574,13 +574,13 @@ export type ServerAuthApi = {
   revokeHumanSecurity(userId: string): Promise<{ userId: string; revokedSessionCount: number; revokedAccessKeyCount: number }>;
   reserveRevokeHumanSecurity(userId: string): ValidatedLifecycleOperation<{ userId: string; revokedSessionCount: number; revokedAccessKeyCount: number }>;
   /**
-   * Terminally close one exact linked human identity in the enclosing Mutation transaction
-   * (ADR-0057): the user becomes a non-authenticating tombstone, email credentials, Provider
-   * identities, Sessions, OAuth attempts, Reset codes and preferences are deleted, and current
-   * Access keys retire with cause `owner-deleted`. Requires a current authenticated human Session
-   * and initiation during the Mutation's initial dispatch; every other caller, surface and target
-   * kind fails with `HUMAN_IDENTITY_TERMINATION_DENIED`. A human with any Team membership fails with
-   * `HUMAN_IDENTITY_TERMINATION_BLOCKED`. The Capsule owns administrator policy and reauthentication.
+   * Terminally close one exact linked human in the Mutation transaction (ADR-0057), leaving a
+   * non-authenticating tombstone. Deletes email credentials, Provider identities, Sessions, OAuth
+   * attempts, Reset codes and preferences; retires current Access keys with cause `owner-deleted`.
+   * Requires initial Mutation dispatch and a current authenticated human Session; caller/target
+   * identity locks and the exact live Session fence remain held through commit. Other callers,
+   * surfaces and target kinds fail with `HUMAN_IDENTITY_TERMINATION_DENIED`; any Team membership
+   * fails with `HUMAN_IDENTITY_TERMINATION_BLOCKED`. The Capsule owns admin policy and reauthentication.
    */
   terminateHumanIdentity(userId: string): Promise<TerminateHumanIdentityResult>;
   /** Write-free, one-shot reservation of {@link terminateHumanIdentity} for `ctx.lifecycle.continue`. */
@@ -590,9 +590,9 @@ export type ServerAuthApi = {
   /**
    * Issue a Reset code and deliver it over the runtime SMTP transport.
    *
-   * Resolves identically whether or not the email is registered, so it cannot
-   * be used to enumerate accounts. Throws only when mail is not configured or
-   * email auth is disabled.
+   * Resolves identically for registered and unregistered emails. Ambiguous legacy or
+   * same-millisecond generation evidence skips delivery; request a fresh link. Issuance serializes
+   * with termination. Throws only if mail is unconfigured or email auth is disabled.
    */
   sendEmailPasswordResetLink(email: string, options?: PasswordResetMailOptions): Promise<void>;
   /**

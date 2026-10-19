@@ -7417,9 +7417,15 @@ async function terminateHumanIdentityInMutation(database, auth, credential, opti
         || typeof userId !== "string" || userId.length === 0 || userId.length > 256) {
         throw humanIdentityTerminationDenied();
     }
+    // Retain both identities through commit, in the same order for opposing callers. Checking the
+    // Session before these locks allows two humans to authorize each other's termination at once.
+    for (const identityId of [...new Set([auth.userId, userId])].sort()) {
+        await database.adapter.lockAuthUserFileAuthority(identityId);
+    }
     const actorSession = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] " +
         "WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 " +
-        "AND [u].[userKind] = 'human' AND [u].[lifecycleStatus] = 'active'")).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
+        "AND [u].[userKind] = 'human' AND [u].[lifecycleStatus] = 'active'" +
+        (database.adapter.dialect.name === "postgres" ? " FOR UPDATE OF [s]" : ""))).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
     if (!actorSession)
         throw humanIdentityTerminationDenied();
     const outcome = await database.adapter.terminateHumanIdentity({

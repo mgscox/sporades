@@ -2101,6 +2101,24 @@ export async function issuePasswordResetCode(
   credential: LooseRecord,
   requestedCode: string | null = null,
   allowRequestedCodeInsert = true,
+): Promise<{ code: string; selector: string; link: string; expiresAt: string } | null> {
+  // Every issuer (worker, retry and custom-delivery link) shares termination's identity fence.
+  // The initial email lookup is only a hint: under the retained lock, re-read both the terminal
+  // marker and credential ownership before inspecting, reusing or inserting any Reset code.
+  return await withAuthTransaction(database, async (tx: LooseRecord) => {
+    const owner = await tx.lockAuthUserFileAuthority(credential.userId);
+    if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") return null;
+    const current = await tx.findEmailCredentialWithUser(credential.email);
+    if (!current || current.userId !== credential.userId || current.createdAt !== credential.createdAt) return null;
+    return await issuePasswordResetCodeOnAdapter({ ...database, adapter: tx }, current, requestedCode, allowRequestedCodeInsert);
+  });
+}
+
+async function issuePasswordResetCodeOnAdapter(
+  database: LooseRecord,
+  credential: LooseRecord,
+  requestedCode: string | null = null,
+  allowRequestedCodeInsert = true,
 ) {
   const { selector, code, verifierHash, now } = passwordResetCodeParts(database, requestedCode);
   if (requestedCode) {
@@ -2146,8 +2164,11 @@ export async function prepareEmailPasswordResetDelivery(database: LooseRecord, p
   if (!credential) return null;
   // ADR-0057 generation fence: a request accepted before this credential existed belonged to an
   // earlier identity at the same address (or to none), so it must not reach the newer account.
-  const requestedAt = typeof payload?.requestedAt === "string" ? Date.parse(payload.requestedAt) : Number.NaN;
-  if (Number.isFinite(requestedAt) && Date.parse(credential.createdAt) > requestedAt) return null;
+  const requestedAt = canonicalAuthInstant(payload?.requestedAt);
+  const createdAt = canonicalAuthInstant(credential.createdAt);
+  // Missing/invalid legacy evidence and equal-millisecond generations are ambiguous. Fail closed:
+  // a caller can request a fresh link, but an old Job must never select a replacement identity.
+  if (requestedAt === null || createdAt === null || createdAt >= requestedAt) return null;
   const issued = await issuePasswordResetCode(database, credential, payload?.code ?? null, attempt === 1);
   if (!issued) return null;
   const body = passwordResetMailBody(issued.link);
@@ -3490,7 +3511,7 @@ const oauthRegistrationKeyId = (value: unknown): value is string => typeof value
 const oauthRegistrationMaterial = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 const OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1000;
 
-function oauthRegistrationInstant(value: unknown) {
+function canonicalAuthInstant(value: unknown) {
   if (typeof value !== "string") return null;
   const instant = Date.parse(value);
   return Number.isFinite(instant) && new Date(instant).toISOString() === value ? instant : null;
@@ -3509,7 +3530,7 @@ async function oauthRegistrationOutstandingExpiry(adapter: LooseRecord, keyId: s
 function oauthRegistrationAlias(value: unknown, now: number) {
   try {
     const parsed = JSON.parse(String(value ?? ""));
-    const expiresAt = oauthRegistrationInstant(parsed?.expiresAt);
+    const expiresAt = canonicalAuthInstant(parsed?.expiresAt);
     return oauthRegistrationKeyId(parsed?.keyId) && expiresAt !== null && expiresAt > now
       ? { keyId: parsed.keyId, expiresAt }
       : null;
@@ -3608,7 +3629,7 @@ export async function retireOAuthRegistrationKeys(database: LooseRecord, options
       const keyId = String(row.key).slice("oauth-registration-key:retain:".length);
       if (!oauthRegistrationKeyId(keyId) || keyId === current.keyId) continue;
       let retainUntil: number | null = null;
-      try { retainUntil = oauthRegistrationInstant(JSON.parse(String(row.value))?.expiresAt); } catch { retainUntil = null; }
+      try { retainUntil = canonicalAuthInstant(JSON.parse(String(row.value))?.expiresAt); } catch { retainUntil = null; }
       const outstanding = await oauthRegistrationOutstandingExpiry(adapter, keyId, now);
       if (retainUntil === null || retainUntil > now || outstanding > now) continue;
       await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationMaterialKey(keyId));

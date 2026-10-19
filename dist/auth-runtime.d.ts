@@ -124,7 +124,7 @@ export declare function issuePasswordResetCode(database: LooseRecord, credential
     code: string;
     selector: string;
     link: string;
-    expiresAt: any;
+    expiresAt: string;
 } | null>;
 export declare function prepareEmailPasswordResetDelivery(database: LooseRecord, payload: LooseRecord, attempt?: number): Promise<{
     to: any;
@@ -143,7 +143,7 @@ export declare function createEmailPasswordResetLink(database: LooseRecord, _ses
 } | {
     ok: boolean;
     link: string;
-    expiresAt: any;
+    expiresAt: string;
     error?: undefined;
 }>;
 export declare function serverAuthError(error: LooseRecord | undefined, fallback: string): Error & {

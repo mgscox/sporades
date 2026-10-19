@@ -831,8 +831,10 @@ test("registered and unregistered reset requests each enqueue one durable reques
 test("retrying a durable reset request reuses its one Reset code", async () => {
   await withMailDatabase(async (database) => {
     await registerEmailAccount(database, "retry@example.com", "original-password");
+    const credential = await database.adapter.findEmailCredentialWithUser("retry@example.com");
     const payload = {
       email: "retry@example.com",
+      requestedAt: new Date(Date.parse(credential.createdAt) + 1).toISOString(),
       code: `${"selector".padEnd(16, "x")}.${"verifier".padEnd(32, "x")}`,
       subject: "Reset your password",
       textBody: null,
