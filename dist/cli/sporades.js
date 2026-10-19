@@ -29,6 +29,7 @@ import { validateHostBackupPolicy } from "./host-backups.js";
 import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
+import { runStripeFake } from "./stripe-fake.js";
 import { renderCliHelp } from "./cli-help.js";
 import { runMonitoringMaintenance } from "./monitoring-maintenance.js";
 import { runMonitoringStack } from "./monitoring-stack.js";
@@ -97,6 +98,13 @@ async function main() {
             });
             return;
         }
+        case "stripe-fake":
+            if (isHelp) {
+                printHelp("stripe-fake");
+                return;
+            }
+            await runStripeFake(args);
+            return;
         case "dev":
             if (isHelp) {
                 printHelp('dev');

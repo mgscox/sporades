@@ -58,6 +58,7 @@ export default defineConfig({
           { text: "Prerender modules", link: "/reference/prerender-modules" },
           { text: "Server runtime", link: "/reference/server-runtime" },
           { text: "Built-in Teams", link: "/reference/teams" },
+          { text: "Team Billing tests", link: "/reference/team-billing-testing" },
           { text: "Jobs and schedules", link: "/reference/jobs-and-schedules" },
           { text: "Client, auth, and preferences", link: "/reference/client-auth-and-preferences" },
           { text: "Files and realtime", link: "/reference/files-and-realtime" },

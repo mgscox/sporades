@@ -135,6 +135,14 @@ The repository currently includes:
   tombstones prevent late events from recreating entitlement and retain no
   Team, User, email, holder, Plan, quantity, invoice, raw provider evidence, or
   recoverable provider identifier. Stripe Customer deletion is out of scope.
+- A stateful Team Billing Stripe protocol fake exported as
+  `sporades/testing/stripe` and available through `sporades stripe-fake`. It
+  models catalogue-bound Checkout, Portal, managed Subscription updates and
+  provider-safe erasure, with signed callbacks, idempotency, deterministic
+  controls and provider faults. Separate loopback API/control origins and
+  test-key-only authentication keep it local. Fake-provider acceptance remains
+  distinct from real Stripe acceptance; the Dev origin override is a separate
+  ADR 0058 implementation.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database
@@ -959,6 +967,7 @@ Errors use exit code `1` and include an actionable `hint`.
 
 Implemented command families:
 
+- `sporades stripe-fake --catalogue <file> --webhook-target <url> --webhook-secret-stdin`
 - `sporades create [name]`
 - `sporades dev`
 - `sporades deploy`
