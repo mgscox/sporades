@@ -99,13 +99,14 @@ Sporades cannot predict every Compose feature a service will need, so the
 `compose` object accepts any key of a Compose service definition, written in
 Compose's own snake_case form, and copies it into the generated service. Sporades
 only checks each key and the path it widens, and treats every key as one of
-three classes:
+four classes:
 
 | Class | Keys | Behaviour |
 | --- | --- | --- |
 | Ordinary | Every key Sporades classifies as non-widening in the pinned Compose specification, for example `restart`, `depends_on`, `mem_limit`, `cpus`, `deploy.resources.limits`, `ulimits`, `shm_size`, `stop_signal`, `stop_grace_period`, `init`, `entrypoint`, `working_dir`, `tmpfs`, `logging`, `platform`, `pull_policy`, `x-*` extensions | Copied verbatim. |
 | Sporades-owned | `image`, `command`, `environment`, `env_file`, `healthcheck`, `container_name`, `networks`, `ports`, `expose`, `secrets`, `configs`, `user`, `read_only`, `cap_drop`, `security_opt`, and `com.sporades.*` labels | Rejected with a hint naming the first-class field that controls it (`image`, `command`, `env`, `health`, `port`, `user`, `hardening`). This keeps env custody, readiness, addressing and hardening defaults under Sporades. Other labels merge. |
 | Elevated | `privileged`, `cap_add`, `devices`, `device_cgroup_rules`, `gpus`, `deploy.resources.reservations.devices`, `network_mode`, `pid`, `ipc`, `uts`, `userns_mode`, `cgroup`, `cgroup_parent`, `runtime`, `sysctls`, `group_add`, `extra_hosts` (it can reach the host through `host-gateway`), `volumes_from`, `oom_kill_disable`, host-path entries in `volumes` (elevation name `volumes.bind`), and a first-class `user` that resolves to root (elevation name `root`) | Allowed only when the key is also named in the service's `elevated` list, for example `"elevated": ["gpus"]`. |
+| Forbidden | `extends`, `include`, `build`, YAML merge keys (`<<`), anchors and aliases | Rejected even when listed in `elevated`. Each one imports configuration from outside the declared key: `extends` recursively merges another service, so extending a generated `database` service would inherit its credential `environment` and state volume without those paths being classified. Merge keys and aliases do the same within the file, and `build` runs a local build context instead of a pinned image. |
 
 Rules that apply to every class:
 
@@ -113,9 +114,17 @@ Rules that apply to every class:
   it classifies against. A key from a newer specification that Sporades has not
   classified is treated as elevated until it is, so a new Compose capability can
   never widen authority silently.
-- **Validation runs twice.** Sporades validates each key against the pinned
-  Compose schema, then runs `docker compose config --quiet` on the generated
-  file. Both failures report the offending `services.<name>.compose` path.
+- **Classification runs on the resolved model.** Sporades validates each
+  declared key against the pinned Compose schema, renders the file (as quoted
+  JSON-compatible YAML, so a declared key can never become a merge key or alias),
+  and then classifies the output of `docker compose config --format json`, not
+  only the declaration. The resolved service must match exactly:
+  - every Sporades-owned path equals the value Sporades rendered;
+  - every elevated path present is acknowledged; and
+  - no path exists that the declaration does not account for.
+
+  Any resolution-time merge or default that widens the service therefore fails
+  closed. Failures report the offending `services.<name>.compose` path.
 - **`depends_on` uses declared names.** It may name `database`, `storage` or
   other container services of the same Capsule. Sporades translates these to the
   generated container names and rejects unknown names and cycles. The Capsule
@@ -138,9 +147,24 @@ Elevation is acknowledged where the authority is granted:
   such a service emits a Privileged audit event that lists the elevated keys and
   no values.
 - **Hosted Capsules.** A repository change alone cannot escalate on a shared
-  Host. `host push` also requires a Host-owned allowance for that Capsule and key,
-  which the operator grants and revokes through `sporades host ...`. A release
-  whose elevated keys are not allowed is refused before it starts.
+  Host. `host push` also requires a Host-owned allowance, which the operator
+  grants and revokes through `sporades host ...`. An allowance is bound to the
+  exact authority it grants, not just to a key name. It records:
+  - the Capsule and service;
+  - the elevated key;
+  - a SHA-256 digest of that key's normalized resolved value (the canonical JSON
+    of the bind source and target, device paths, capability list and so on); and
+  - the service's image digest.
+
+  If any of these changes — for example a benign bind mount becomes `/`, a
+  different device is named, a stronger capability is added, or the image
+  behind a privileged service is swapped — the allowance no longer matches.
+  `host push` then refuses the release before it starts and reports the key and
+  its new normalized value, so the operator can review it and approve it again.
+  Elevated values are configuration literals, never secrets, so showing them is
+  safe. Revoking an allowance stops the affected running service and refuses
+  later starts, restarts, boot recovery and rollback to any release that needs
+  it. Allowance grants, denials and revocations emit Privileged audit events.
 
 The same passthrough is not extended to the built-in `database` and `storage`
 services in this decision.
@@ -303,8 +327,13 @@ Capsule without the service it depends on.
 - Users can adopt any Compose service feature without a Sporades release.
   Sporades's maintenance cost moves to keeping the key classification current
   as the Compose specification changes, which is a single, testable table.
-- Hosted elevation needs a new Host-owned allowance store and `sporades host`
-  commands, and its deny and revocation paths need tests.
+- Hosted elevation needs a new Host-owned allowance store, bound to normalized
+  values and image digests, and `sporades host` commands. Its deny, value-change
+  and revocation paths need tests.
+- Classifying the resolved Compose model, not just the declaration, makes the
+  passthrough safe against Compose features that merge or import
+  configuration. It also means Sporades depends on the JSON output of
+  `docker compose config` being stable within the pinned Compose version.
 - Docker Desktop on Apple Silicon exposes no Metal GPU to containers, so local
   `llama.cpp` runs on the CPU. Small embedding models are practical; large
   generative models are not a goal of the first slice.
