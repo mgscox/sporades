@@ -75,6 +75,9 @@ export async function createBundle(
     deployFiles?: boolean;
     telemetryProfile?: string | null;
     containerTelemetry?: boolean;
+    // CLI Dev admission runs before the ordinary mode/key validator. Never
+    // serialized into Bundle inputs or used by Container/Hosted consumers.
+    validateRuntimeEnv?: (env: ServerEnv) => void;
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
   } = {},
 ) {
@@ -118,6 +121,7 @@ export async function createBundle(
     ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey)
     : parseServerEnv(serverEnvFile);
   validateAuthConfig(config, serverEnv);
+  options.validateRuntimeEnv?.(serverEnv);
   validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
 
   const [serverSource, clientSource] = await Promise.all([
