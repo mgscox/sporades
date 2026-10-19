@@ -6481,6 +6481,7 @@ export function createWebSocketHub(
   }
 
   async function sendQueryResult(client: LooseRecord, subscription: LooseRecord, onError: (error: any) => void, operation = startOperation(client, "query", subscription.name)) {
+    if (client.replacingTerminatedSession) { operation.end("cancelled"); return; }
     queryOperations.get(subscription)?.end("cancelled");
     queryOperations.set(subscription, operation);
     return operation.run(async () => {
@@ -6524,7 +6525,7 @@ export function createWebSocketHub(
     const dirty = takeLiveQueryDirtyTables();
     const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
     for (const client of clients) {
-      if (client.closing || client.socket.destroyed) continue;
+      if (client.closing || client.socket.destroyed || client.replacingTerminatedSession) continue;
       for (const subscription of client.subscriptions.values()) {
         const running = queryRefreshes.get(subscription);
         if (running) {
@@ -6586,8 +6587,19 @@ export function createWebSocketHub(
   // A connection whose replacement cannot be resolved is closed rather than left on the old actor.
   async function retireTerminatedHumanClients(database: LooseRecord, userIds: string[]) {
     const terminated = new Set(userIds);
-    for (const client of [...clients]) {
-      if (!terminated.has(client.session?.auth?.userId)) continue;
+    const affected = [...clients].filter((client) => terminated.has(client.session?.auth?.userId));
+    // Fence every affected reader before the first asynchronous replacement:
+    // another client's old query can settle while Anonymous sessions are made.
+    for (const client of affected) {
+      client.replacingTerminatedSession = true;
+      for (const subscription of client.subscriptions.values()) {
+        subscription.generation = (subscription.generation ?? 0) + 1;
+        cancelQueryRefresh(subscription);
+        // Actor changes invalidate even auth-only queries and untouched tables.
+        subscription.readTables = null;
+      }
+    }
+    for (const client of affected) {
       retireJourney(client);
       try {
         const replacement = await resolveAnonymousSession(database, null);
@@ -6601,8 +6613,12 @@ export function createWebSocketHub(
       } catch {
         client.session = { token: null, auth: { userId: null, isAuthenticated: false, isGuest: true }, clientAddress: client.clientAddress };
         try { client.socket.destroy(); } catch { /* already closed */ }
+      } finally {
+        client.replacingTerminatedSession = false;
       }
     }
+    // Run after the Mutation response, independently of app-table dirtiness.
+    if (affected.length) setTimeout(refreshQueries, 0);
   }
 
   async function sendAuthResult(client: LooseRecord, id: any) {

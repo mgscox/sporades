@@ -3057,7 +3057,8 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
   return await withRegistrationTransaction(database, async (tx: LooseRecord) => {
     if (await sessionUserWasTerminated(tx, session.auth.userId)) return terminatedSessionUserError();
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
+    let recoveredLegacyIdentity = false;
+    let email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {
       const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
       if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
@@ -3081,6 +3082,21 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
         };
       }
       identity = legacyIdentities[0] ?? null;
+      recoveredLegacyIdentity = Boolean(identity);
+    }
+    if (identity) {
+      // A guest callback can resolve a different human from its Session's user.
+      // Fence that owner against termination before replaying any profile or
+      // Session writes, then re-read the provider evidence under the same lock.
+      const owner = await tx.lockAuthUserFileAuthority(identity.userId);
+      if (!owner || owner.lifecycleStatus === "terminated") return terminatedSessionUserError();
+      const current = recoveredLegacyIdentity
+        ? await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email)
+        : [await tx.findAuthIdentityByProviderSubject(provider, subject)];
+      if (current.length !== 1 || current[0]?.id !== identity.id || current[0]?.userId !== identity.userId
+        || current[0]?.subject !== identity.subject) return terminatedSessionUserError();
+      identity = current[0];
+      email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity.email ?? null;
     }
     // Decide only after legacy recovery. A pre-Teams Google account is already
     // linked even when its old identity must be recovered by verified email.

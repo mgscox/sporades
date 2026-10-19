@@ -795,7 +795,12 @@ A committed termination:
 
 Existing WebSocket connections of the terminated human are moved to a fresh
 Anonymous session after commit, before the Mutation result is sent and before
-subscriptions refresh. Durable user Jobs captured from the human fail with
+subscriptions refresh. Every affected subscription reruns under the replacement
+actor, including auth-only queries and queries whose tables did not change.
+In-flight results from the old actor cannot publish after replacement. OAuth
+callbacks lock the resolved identity's owner and recheck its provider mapping
+before writing profile or Session data, so a raced callback cannot restore a
+terminated identity. Durable user Jobs captured from the human fail with
 `JOB_ACTOR_UNAVAILABLE` instead of running under the old authority. The
 closing Mutation itself keeps its original actor until it settles, so its
 authorized app erasure can finish.

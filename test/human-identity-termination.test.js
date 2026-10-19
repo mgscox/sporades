@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -10,13 +12,15 @@ import { fileURLToPath } from "node:url";
 
 import { capsule, endpoint, job, message, mutation, query, requireAuth, String as Text, table } from "../dist/server.js";
 import {
-  confirmPasswordReset, createEmailPasswordResetLink, hashPasswordResetVerifier, linkProviderIdentity, openDevDatabase,
+  confirmPasswordReset, createEmailPasswordResetLink, createWebSocketHub, hashPasswordResetVerifier, linkProviderIdentity, openDevDatabase,
   prepareEmailPasswordResetDelivery, readCurrentUserPreferences, resolveAnonymousSession, routeEndpoint, runAppMessage,
   runCurrentUserJobWorker, runEndpoint, runMutation, runQuery, signInWithEmail, signUpWithEmail, updateCurrentUserPreferences,
   verifyPasswordResetCode,
 } from "../dist/server-runtime-source.js";
 import { createAdditionalTeam, createTeamJoinLink, deleteCurrentUserTeam, joinCurrentUserTeam, listCurrentUserTeams } from "../dist/teams-runtime.js";
 import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter } from "./support/database-adapter-engines.js";
+
+import { takeLiveQueryDirtyTables } from "../dist/live-query-invalidation.js";
 
 // ADR-0057 acceptance through the public runtime: real sign-up, sign-in, Reset codes, Access keys
 // and Mutations against disposable Capsule databases. No provider or mail transport is contacted.
@@ -573,8 +577,8 @@ async function openSocket(baseUrl) {
   return socket;
 }
 
-async function waitFor(socket, predicate) {
-  const deadline = Date.now() + WAIT_MS;
+async function waitFor(socket, predicate, timeoutMs = WAIT_MS) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const found = socket.received.find(predicate);
     if (found) return found;
@@ -702,3 +706,155 @@ test("Postgres serializes sign-in and Team Join on another connection with an un
     }
   });
 });
+
+// Hold the actual identity lookup on connection two, rather than racing timers.
+for (const mode of ["subject", "legacy", "unlinked"]) {
+  test(`Postgres OAuth callback rechecks the resolved owner and mapping after lookup (${mode})`, { skip: POSTGRES_SKIP_REASON, timeout: 15_000 }, async () => {
+    await withPostgresAdapter(async () => {
+      const serverEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+      const runtimeConfig = { ...config, name: `oauth-termination-${randomUUID()}`, services: { database: { engine: "postgres" } } };
+      const first = await openDevDatabase("", "", serverEnv, runtimeConfig, definition);
+      const second = await openDevDatabase("", "", serverEnv, runtimeConfig, definition);
+      const entered = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      let attempt;
+      try {
+        const admin = await register(first, "oauth-admin@example.test");
+        const target = await register(first, "oauth-target@example.test");
+        await clearTeams(first, target);
+        const subject = mode === "legacy" ? "legacy:old-google-account" : "stable-provider-subject";
+        const now = new Date().toISOString();
+        await first.adapter.insertAuthIdentity({ id: randomUUID(), userId: target.auth.userId, provider: "google", subject,
+          email: "oauth-target@example.test", displayName: "Original", picture: null, createdAt: now, updatedAt: now });
+        const anonymous = await resolveAnonymousSession(second, null);
+        const withTransaction = second.adapter.withTransaction.bind(second.adapter);
+        let paused = false;
+        second.adapter.withTransaction = (fn, options) => withTransaction((tx) => fn(new Proxy(tx, {
+          get(adapter, key) {
+            const value = Reflect.get(adapter, key, adapter);
+            if (key === (mode === "legacy" ? "findLegacyAuthIdentitiesByProviderEmail" : "findAuthIdentityByProviderSubject")) {
+              return async (...args) => {
+                const identity = await value.apply(adapter, args);
+                if (!paused) { paused = true; entered.resolve(); await release.promise; }
+                return identity;
+              };
+            }
+            return typeof value === "function" ? value.bind(adapter) : value;
+          },
+        })), options);
+        attempt = linkProviderIdentity(second, anonymous, "google", { subject: "stable-provider-subject", email: "oauth-target@example.test",
+          emailVerified: true, displayName: "Must not restore", picture: "https://example.test/restored.png" });
+        await entered.promise;
+        if (mode === "unlinked") {
+          await first.adapter.prepare(first.adapter.dialect.sql("DELETE FROM [sporades_auth_identities] WHERE [userId] = ?")).run(target.auth.userId);
+        } else {
+          assert.equal((await call(first, admin, "terminate", [target.auth.userId])).data.status, "terminated");
+        }
+        const before = await userRow(first, target.auth.userId);
+        const sessionsBefore = await countRows(first, "sporades_auth_sessions", "userId", target.auth.userId);
+        release.resolve();
+        const result = await attempt;
+        assert.equal(result.ok, false, "a callback with stale provider evidence cannot authenticate");
+        assert.equal(result.error?.code, "AUTH_SESSION_INVALID");
+        assert.deepEqual(await userRow(first, target.auth.userId), before, "no erased profile or authority is restored");
+        assert.equal(await countRows(first, "sporades_auth_sessions", "userId", target.auth.userId), sessionsBefore, "no new Session");
+        assert.equal(await countRows(first, "sporades_auth_identities", "userId", target.auth.userId), 0, "no identity reattachment");
+        assert.equal((await sessionUser(second, anonymous.token)).isAuthenticated, false);
+      } finally {
+        release.resolve();
+        await attempt?.catch(() => {});
+        await second.close();
+        await first.close();
+      }
+    });
+  });
+}
+
+for (const mode of ["settled", "initial", "refresh"]) {
+  const hold = mode !== "settled";
+  test(`termination refreshes untouched-table and auth-only subscriptions across two Sessions (${mode})`, { timeout: 15_000 }, async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "closure-subscriptions-"));
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const finished = Promise.withResolvers();
+    let holdQueries = mode === "initial";
+    let held = 0;
+    let completed = 0;
+    const snapshot = (ctx) => ({ userId: ctx.auth.userId, authenticated: ctx.auth.isAuthenticated });
+    const localDefinition = {
+      schema: { todos: table({ userId: Text(), value: Text() }).acl({ read: () => true, write: () => true }) },
+      queries: {
+        authOnly: query(snapshot),
+        privateRows: query(async (ctx) => ({ ...snapshot(ctx), rows: (await ctx.db.todos.all()).filter((row) => row.userId === ctx.auth.userId) })),
+        held: query(async (ctx) => {
+          const result = { ...snapshot(ctx), rows: (await ctx.db.todos.all()).filter((row) => row.userId === ctx.auth.userId) };
+          if (holdQueries && ctx.auth.isAuthenticated) {
+            if (++held === 2) entered.resolve();
+            await release.promise;
+            if (++completed === 2) finished.resolve();
+          }
+          return result;
+        }),
+      },
+      mutations: { close: mutation((ctx) => ctx.serverAuth.terminateHumanIdentity(ctx.auth.userId)) },
+    };
+    let database;
+    let hub;
+    const server = createServer();
+    const sockets = [];
+    try {
+      database = await openDevDatabase(path.join(dir, "data.db"), "", {}, config, localDefinition);
+      const human = await register(database, "subscription@example.test");
+      const second = await signIn(database, "subscription@example.test");
+      await clearTeams(database, human);
+      await database.adapter.prepare("INSERT INTO todos (id, userId, value, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)").run(randomUUID(), human.auth.userId, "private", new Date().toISOString(), new Date().toISOString());
+      hub = createWebSocketHub(() => database);
+      server.on("upgrade", (request, peer) => { void hub.accept(request, peer); });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      for (const token of [human.token, second.sessionToken]) {
+        const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/?connectionToken=${hub.createConnectionToken()}`);
+        socket.received = [];
+        socket.addEventListener("message", (event) => socket.received.push(JSON.parse(event.data)));
+        sockets.push(socket);
+        await once(socket, "open");
+        await send(socket, { id: "auth", type: "auth.get", sessionToken: token });
+        assert.equal((await send(socket, { id: "private", type: "query.subscribe", query: "privateRows" })).data.rows.length, 1);
+        assert.equal((await send(socket, { id: "actor", type: "query.subscribe", query: "authOnly" })).data.authenticated, true);
+        if (mode === "initial") socket.send(JSON.stringify({ id: "held", type: "query.subscribe", query: "held" }));
+        if (mode === "refresh") await send(socket, { id: "held", type: "query.subscribe", query: "held" });
+      }
+      if (mode === "refresh") {
+        takeLiveQueryDirtyTables();
+        holdQueries = true;
+        await database.adapter.prepare("UPDATE todos SET value = value").run();
+        database.__notifyJobStateQueries();
+      }
+      if (hold) await entered.promise;
+      takeLiveQueryDirtyTables();
+      const closed = await send(sockets[0], { id: "close", type: "mutation.run", mutation: "close", args: [] });
+      assert.equal(closed.data?.status, "terminated", JSON.stringify(closed));
+      for (const socket of sockets) await waitFor(socket, (message) => message.type === "auth.session.replace");
+      release.resolve();
+      if (hold) await finished.promise;
+      for (const socket of sockets) {
+        for (const id of hold ? ["private", "actor", "held"] : ["private", "actor"]) {
+          const refreshed = await waitFor(socket, (message) => message.id === id && message.data?.authenticated === false, 2000);
+          assert.notEqual(refreshed.data.userId, human.auth.userId);
+          if (id !== "actor") assert.deepEqual(refreshed.data.rows, []);
+        }
+        await send(socket, { id: "sentinel", type: "auth.get" });
+        const afterReplacement = socket.received.slice(socket.received.findIndex((message) => message.type === "auth.session.replace") + 1);
+        assert.equal(afterReplacement.some((message) => message.type === "query.result" && message.data?.authenticated === true), false, "an old-actor result never publishes after replacement");
+      }
+      assert.equal((await database.adapter.prepare("SELECT COUNT(*) AS count FROM todos").get()).count, 1, "closure did not dirty the watched table");
+    } finally {
+      release.resolve();
+      for (const socket of sockets) socket.close();
+      hub?.disconnectAll();
+      if (server.listening) await new Promise((resolve) => server.close(resolve));
+      await database?.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}

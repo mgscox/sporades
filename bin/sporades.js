@@ -129314,7 +129314,8 @@ async function linkProviderIdentity(database, session, provider, profile, sealed
   return await withRegistrationTransaction(database, async (tx) => {
     if (await sessionUserWasTerminated(tx, session.auth.userId)) return terminatedSessionUserError();
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
+    let recoveredLegacyIdentity = false;
+    let email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {
       const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
       if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
@@ -129338,6 +129339,15 @@ async function linkProviderIdentity(database, session, provider, profile, sealed
         };
       }
       identity = legacyIdentities[0] ?? null;
+      recoveredLegacyIdentity = Boolean(identity);
+    }
+    if (identity) {
+      const owner = await tx.lockAuthUserFileAuthority(identity.userId);
+      if (!owner || owner.lifecycleStatus === "terminated") return terminatedSessionUserError();
+      const current2 = recoveredLegacyIdentity ? await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email) : [await tx.findAuthIdentityByProviderSubject(provider, subject)];
+      if (current2.length !== 1 || current2[0]?.id !== identity.id || current2[0]?.userId !== identity.userId || current2[0]?.subject !== identity.subject) return terminatedSessionUserError();
+      identity = current2[0];
+      email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity.email ?? null;
     }
     const bootstrapInitialTeam = !identity && session.auth.isGuest;
     let registration = { ok: true };
@@ -142307,6 +142317,10 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     });
   }
   async function sendQueryResult(client, subscription, onError, operation = startOperation(client, "query", subscription.name)) {
+    if (client.replacingTerminatedSession) {
+      operation.end("cancelled");
+      return;
+    }
     queryOperations.get(subscription)?.end("cancelled");
     queryOperations.set(subscription, operation);
     return operation.run(async () => {
@@ -142351,7 +142365,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     const dirty = takeLiveQueryDirtyTables();
     const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
     for (const client of clients) {
-      if (client.closing || client.socket.destroyed) continue;
+      if (client.closing || client.socket.destroyed || client.replacingTerminatedSession) continue;
       for (const subscription of client.subscriptions.values()) {
         const running = queryRefreshes.get(subscription);
         if (running) {
@@ -142402,8 +142416,16 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
   }
   async function retireTerminatedHumanClients(database, userIds) {
     const terminated = new Set(userIds);
-    for (const client of [...clients]) {
-      if (!terminated.has(client.session?.auth?.userId)) continue;
+    const affected = [...clients].filter((client) => terminated.has(client.session?.auth?.userId));
+    for (const client of affected) {
+      client.replacingTerminatedSession = true;
+      for (const subscription of client.subscriptions.values()) {
+        subscription.generation = (subscription.generation ?? 0) + 1;
+        cancelQueryRefresh(subscription);
+        subscription.readTables = null;
+      }
+    }
+    for (const client of affected) {
       retireJourney(client);
       try {
         const replacement = await resolveAnonymousSession(database, null);
@@ -142420,8 +142442,11 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
           client.socket.destroy();
         } catch {
         }
+      } finally {
+        client.replacingTerminatedSession = false;
       }
     }
+    if (affected.length) setTimeout(refreshQueries, 0);
   }
   async function sendAuthResult(client, id2) {
     const database = getDatabase();
