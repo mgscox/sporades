@@ -274,6 +274,7 @@ test("real callback verification and atomic convergence accept the fake's events
   const callbackOrigin = await listen(callback);
   const fake = await createStripeTeamBillingFake({ catalogue, webhookSecret: secret, webhookTarget: `${callbackOrigin}/stripe/webhook`, delivery: "manual" });
   t.after(async () => { await fake.close(); await stop(callback); await database.close(); });
+  database.stripeApiBaseUrl = fake.origin;
   await database.init();
   const timestamp = new Date().toISOString();
   database.adapter.prepare("INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES ('fake-admin', ?, 'Admin', NULL, NULL, 1, 0, 'email')").run(timestamp);
