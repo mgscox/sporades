@@ -904,7 +904,7 @@ test("Capsule Team admission is transaction-bound and serializes concurrent join
       "only the admitted Join commits its transaction-scoped application log",
     );
     assert.ok(observedJoinAdmissions.every((entry) => entry.teamId === team.id && entry.userId === entry.actorUserId));
-    assert.ok(observedJoinAdmissions.every((entry) => JSON.stringify(entry.contextKeys) === JSON.stringify(["auth", "db", "env", "log", "teamBilling"])));
+    assert.ok(observedJoinAdmissions.every((entry) => JSON.stringify(entry.contextKeys) === JSON.stringify(["app", "auth", "db", "env", "log", "teamBilling"])));
     assert.ok(observedJoinAdmissions.every((entry) => entry.billingState === "inactive"));
     assert.ok(observedJoinAdmissions.every((entry) => JSON.stringify(entry.tableKeys) === JSON.stringify(["all", "get", "limit", "orderBy", "where"])));
     assert.throws(() => leakedAdmissionTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
@@ -1905,7 +1905,7 @@ test("headless Team Billing returns only policy-approved provider-free state and
     assert.equal(inactive.error, null, JSON.stringify(inactive.error));
     assert.deepEqual(inactive.data, { state: "inactive", teamId: team.id });
     assert.deepEqual(billingPolicyChecks.at(-1).input, { operation: "read", teamId: team.id, teamRole: "admin" });
-    assert.deepEqual(billingPolicyChecks.at(-1).contextKeys, ["auth", "db", "env", "log", "teams"]);
+    assert.deepEqual(billingPolicyChecks.at(-1).contextKeys, ["app", "auth", "db", "env", "log", "teams"]);
     assert.deepEqual(billingPolicyChecks.at(-1).tableKeys, ["all", "get", "limit", "orderBy", "where"]);
     assert.throws(() => capturedBillingPolicyTable.all(), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
     const reservedNamespace = await send(owner, {

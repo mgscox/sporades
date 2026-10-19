@@ -1,3 +1,4 @@
+import { validateServerEnvConfig, type ServerEnvConfig } from "./server-env-requirements.js";
 import { buildAdmissionPolicy, resolveAdmissionPolicy } from "./admission-policy.js";
 import { buildDeployFiles } from "./deploy-files.js";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -25,6 +26,7 @@ type HelperError = Error & { hint?: string; diagnostics?: unknown; phase?: strin
 export type ServerEnvFile = { exists: boolean; raw: string };
 export type ProjectConfig = JsonRecord & {
   security?: SecurityConfig;
+  env?: ServerEnvConfig;
   auth?: AuthConfig;
   client?: { framework?: unknown; toolchain?: unknown; prerender?: readonly ClientPrerenderFragment[] };
 };
@@ -77,6 +79,7 @@ export async function createBundle(
   } = {},
 ) {
   validateHttpHardening(config.security);
+  validateServerEnvConfig(config.env);
   resolveAdmissionPolicy(config.admissionPolicy, (config.deploy as { files?: unknown } | undefined)?.files);
   const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, (config.deploy as { files?: unknown } | undefined)?.files);
   if (options.deployFiles !== false) deployFiles.push(...await buildAdmissionPolicy(projectDir, config.admissionPolicy, (config.deploy as { files?: unknown } | undefined)?.files));

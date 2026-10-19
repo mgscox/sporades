@@ -12,6 +12,10 @@ _Avoid_: app (too generic), project (the scaffold), deployment (the act)
 A local Node process running the bundled app with file watching, hot rebuild, and SQLite persistence. For iteration speed.
 _Avoid_: dev server (it's more than a server — it's a whole feedback loop)
 
+**AppContext**:
+The immutable, runtime-resolved application identity exposed as `ctx.app`. Its `publicOrigin` is the trusted base URL for Capsule-generated links: local HTTP for Dev and Container, and the canonical HTTPS alias or Host subdomain for Hosted.
+_Avoid_: request origin, Host header, hostedUrl (which continues to identify the Host subdomain)
+
 **Public Dev session**:
 A Dev session mode that deliberately relaxes local access defaults for temporary demos, device testing, or public tunneling. It is never the default and does not apply to Container sessions or Hosted Capsules.
 _Avoid_: open dev, unsafe mode, fully accessible dev
@@ -55,6 +59,16 @@ _Avoid_: host, server, box
 **Host server registry**:
 The Host-server-owned state for Hosted Capsule registration, release pointers, route state, and lifecycle metadata. It is remote hosting state rather than Database adapter state; registry writes use Host server safety mechanisms such as locking and atomic replacement instead of DB Transaction boundaries.
 _Avoid_: database registry, app table, deployment database
+
+**Capsule data backup**:
+An opt-in encrypted restic snapshot of a Hosted Capsule's consistent SQLite data
+and uploaded file bytes, with a release/schema/checksum manifest. Host-owned
+policy selects a local or HTTPS S3 repository, retention, schedule and freshness
+threshold. Create briefly stops the exact container while capturing data; restore
+requires a stopped registered destination and explicit confirmation, verifies
+content before a journaled replacement and preserves destination Host secrets.
+It is distinct from full Host server disaster recovery.
+_Avoid_: Host image, release rollback, automatic schema migration
 
 **Host profile**:
 A local CLI configuration entry that names a Host server plus a Hosted domain, scheme, remote root, and TLS mode. Used so commands can target a configured hosting destination without repeating connection details.
@@ -170,6 +184,10 @@ _Avoid_: payment template, Stripe demo, billing feature
 **Price catalogue**:
 The Capsule-owned server declaration that maps stable application Price names to an explicit one-time or subscription mode, a provider Price identity, and a maximum quantity after deliberate activation. The generated catalogue is empty, contains no live identities, and never belongs in browser code.
 _Avoid_: product list, Stripe Prices API, client price map
+
+**Payment activation snapshot**:
+The immutable Capsule-wide browser view of whether Stripe is active and whether it uses live mode. `createHooks().usePayments()` and framework-neutral `payments.get()` / `payments.subscribe()` expose only `{ stripe: { enabled, livemode } }` from the runtime handshake, defaulting to disabled with null mode before confirmation or while disconnected. It contains no provider IDs or credentials and grants no billing authority; Capsules use it to hide dormant Checkout and Customer Portal actions.
+_Avoid_: billing entitlement, browser Stripe configuration
 
 **capsule()**:
 The initialisation function. Called with the app definition. Registers the schema with SQLite, applies supported schema migrations, configures runtime-owned auth, wires the table API, and registers custom endpoints and message handlers. This is where app bootstrap happens - not an identity function.
@@ -495,6 +513,13 @@ _Avoid_: nested app transaction, hook transaction, partial mutation commit
 An authorization policy declared in Capsule definition code and applied invisibly around the Sporades DB API to accept or reject app-table and file-storage operations. Capsule code continues to use normal `ctx.db` and file APIs rather than calling permission checks directly. ACLs answer whether the current actor may see or change a row or file metadata record; file-specific validation and client-facing upload choices are not ACL concerns. ACLs are allow-by-default when no matching rule is specified; a `write` ACL rule may apply to insert, update, and delete operations unless an operation-specific rule overrides it. Write ACL rules evaluate against previous and next row state where relevant.
 _Avoid_: permission helper, manual auth check, database filter
 
+Server-owned app tables may opt into `.acl(acl.privilegedOnly())` (alias
+`acl.denyAll()`) from `sporades/server`: ordinary reads are filtered and writes
+denied, while explicit audited Privileged execution retains access. Missing
+rules keep their existing allow-by-default behavior. Doctor names tables with
+missing rules and lists tables without any ACL rules as allow-all without
+executing policy functions.
+
 **ACL context**:
 A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It provides scoped helpers such as `ctx.acl.db.get()`, `ctx.acl.db.exists()`, `ctx.acl.storage.get()`, `ctx.acl.storage.exists()`, and explicit-Team `ctx.acl.teams` membership, admin, and declared application-role decisions so database and storage ACL rules can check stable resources without exposing normal runtime APIs or allowing writes. Team helpers never choose a current Team, enumerate memberships, or manage membership state.
 _Avoid_: ctx.db in ACL, admin client, bypass API
@@ -506,6 +531,10 @@ _Avoid_: Privileged server role, bypassACL API, pending-member role
 **Team Join admission policy**:
 The optional Capsule `teams.admitJoin` callback that decides whether one already validated, email-matched Join link may create a membership. Sporades invokes it under the Team lifecycle lock with the joining user as subject, the exact accepted-member count, and a Team-Join-purpose trusted read capability. Its decision, Join-link consumption, and membership insertion commit or roll back atomically; it grants no provisional membership or broader authority.
 _Avoid_: subscription hook, pending member, billing ACL exception
+
+**Destructive Team policy**:
+The opt-in `teams.authorizeDestructive` Capsule policy. Direct SDK and server Team demotion, removal, leave and deletion consult it after current authorization and final-admin checks under the exact Team lifecycle lock, in the operation transaction. A five-second, expiring read-only Capsule database view can inspect cross-owner responsibility without disclosing it to the caller. Only explicit valid allow commits; refusal poisons the enclosing transaction and stays opaque. All protected responsibility writers take server-only `ctx.teams.lockLifecycle` before app reads/writes, including explicit accepted transfers and atomic Stripe consequences. It retains the lock through outer settlement without granting userless code administrative authority. Provider work runs after commit.
+_Avoid_: mutation hook, billing-holder transfer API, provider callback transaction
 
 **Privileged server role**:
 A server-only authority for trusted system-owned execution that intentionally runs without a Sporades user identity, such as scheduled Jobs or platform-owned maintenance. It is separate from Capsule roles, app admin users, browser credentials, users, team members, sessions, and accounts.
@@ -579,6 +608,13 @@ _Avoid_: security middleware, helmet config
 **Server env**:
 A legacy/import-friendly `.env.sporades.server` file at the project root containing server-only environment variables. Sporades still reads it when no Sealed Server env exists and `sporades env import` can migrate it into encrypted Runtime state. Max 64 keys, 64KB total. No `SPORADES_` prefix (reserved).
 _Avoid_: environment file, dot-env (implementation detail)
+
+**Required Server env**:
+The optional `env` declaration in `sporades.json` opts doctor and Host push into
+presence checks for declared keys plus configured SMTP auth, mail webhook and
+enabled Stripe env references. Missing/blank values produce one names-only boot
+error; `env.failClosed: true` refuses startup. Omitting `env` preserves existing
+doctor/push behavior in 0.9.x. Shell env never satisfies Capsule requirements.
 
 **Sealed Server env**:
 Encrypted server-only configuration values managed by Sporades, decryptable by configured local or Host keys, delivered to Dev sessions, Container sessions, and Hosted Capsules at runtime, and exposed to Capsule code through `ctx.env`. It is the hardened successor to plaintext Server env files.
@@ -701,3 +737,12 @@ preflight, journals activation with rollback/recovery, and reports fresh invento
 and pending Capsule coverage. Old history and old-server expectations remain
 operator-owned; no VM or historical database migration is automatic. See
 [diagnostics and migration](docs/reference/telemetry-diagnostics.md).
+
+### Error collection and analytics
+
+Opt-in `observability.errors` and `analytics` project config activate runtime-owned
+Sentry-envelope diagnostics and Umami/Plausible pageviews. A first-party loader
+and same-origin collection tunnel keep provider identities in Server env and
+remove query strings/fragments before delivery. Collection is bounded, best
+effort and independent of transaction/Job outcomes and OTLP Telemetry profiles.
+See [Errors and analytics](docs/reference/errors-and-analytics.md).

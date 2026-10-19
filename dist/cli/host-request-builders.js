@@ -178,11 +178,12 @@ export function createHostBootstrapRequest(profile) {
         },
     };
 }
-export function createHostRegistrationRequest(alias, profile, subname, aliasDomains = []) {
+export function createHostRegistrationRequest(alias, profile, subname, aliasDomains = [], canonicalDomain = null) {
     const bootstrap = createHostBootstrapRequest(profile);
     const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
     const capsuleLog = posixJoin(capsuleDirectory, "logs", "http.log");
     return {
+        ...(canonicalDomain ? { canonicalDomain } : {}),
         ...(aliasDomains.length ? { aliasDomains } : {}),
         subname,
         domain: profile.domain,

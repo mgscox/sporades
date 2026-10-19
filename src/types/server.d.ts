@@ -127,6 +127,9 @@ export type AclHelpers = {
   teams: AclTeamHelpers;
 };
 
+/** Public, non-secret application identity available to server code. */
+export type AppContext = Readonly<{ publicOrigin: string }>;
+
 /**
  * Runtime context available while evaluating table ACL rules.
  *
@@ -136,6 +139,7 @@ export type AclHelpers = {
  * decisions.
  */
 export type TableAclContext = {
+  readonly app: AppContext;
   auth: AuthContext;
   credential: CredentialProvenance;
   acl: AclHelpers;
@@ -172,6 +176,7 @@ export type FileAclOperation = "read" | "publicUrl" | "delete";
  * explicit Team ID stored in the Capsule's own File-policy model.
  */
 export type FileAclContext = {
+  readonly app: AppContext;
   auth: AuthContext;
   credential: CredentialProvenance;
   acl: AclHelpers;
@@ -186,12 +191,12 @@ export type FileAclRuleInput = {
 
 export type FileAclRule = (input: FileAclRuleInput) => MaybePromise<boolean>;
 
-/**
- * Optional rules that extend normal File ownership with explicit Capsule ACL.
- * Owner access and public-URL revocation remain with the File owner; absent
- * rules never widen File access.
- */
-export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>>;
+/** Metadata supplied before an SDK upload URL is issued; name is the stored display filename, falling back to the normalized File path. */
+export type FileUploadMetadata = Readonly<{ sizeBytes: number; mimeType: string; name: string }>;
+/** Opt-in policy for SDK uploads and replacements; absence allows existing behavior. */
+export type FileUploadAclRule = (ctx: FileAclContext, meta: FileUploadMetadata) => MaybePromise<boolean>;
+/** Optional sharing rules plus an upload admission policy. Owner and public-URL revocation authority stay unchanged. */
+export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>> & { upload?: FileUploadAclRule };
 
 export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
 /** Runtime-owned inspector names; Capsule code cannot supply verdicts. */
@@ -200,9 +205,9 @@ export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: 
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
 /** Shared immutable request head supplied to endpoint multipart admission. */
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
-export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
-export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** The endpoint policy may prohibit file parts before staging; it cannot widen limits or provide file claim authority. */
 export type EndpointMultipartAdmissionDecision = Readonly<{ allow: true; allowFiles?: boolean } | { allow: false }>;
 /** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. File bytes use the smaller of maxFileBytes and files.maxSizeBytes. A malformed filename can be classified as a field; file allowances never raise maxFieldBytes. MULTIPART_LIMIT_EXCEEDED errors may include safe details: { partType: "file" | "field", limitKind, limit }. Byte limits report bytes; maxFiles and maxFieldCount report counts. */
@@ -228,6 +233,17 @@ export type CapsuleFilesDefinition<Schema extends SchemaDefinition = SchemaDefin
 export type TableAclRules<Row extends Record<string, unknown> = Record<string, unknown>> = Partial<
   Record<TableAclOperation, TableAclRule<Row>>
 >;
+
+/**
+ * Opt-in table ACL presets. Both names return immutable read/write deny rules.
+ * Ordinary reads are filtered and writes are denied; explicit server-owned
+ * Privileged contexts retain their existing audited, callback-bound access.
+ */
+export const acl: Readonly<{
+  privilegedOnly(): Readonly<{ read: () => boolean; write: () => boolean }>;
+  /** Alias of privilegedOnly(). */
+  denyAll(): Readonly<{ read: () => boolean; write: () => boolean }>;
+}>;
 
 /**
  * A Capsule table definition.
@@ -289,21 +305,21 @@ export type OrderDirection = "asc" | "desc" | "ASC" | "DESC";
 /**
  * Runtime table API exposed as `ctx.db.<tableName>` inside server handlers.
  *
- * Query builders are immutable from an app-author point of view: chain
- * `where`, `orderBy`, and `limit`, then finish with `get()` or `all()`.
- * Inserts and updates return rows including Sporades-managed auto fields.
+ * Chain immutable `where`, `orderBy`, and `limit` builders, then `get` or `all`.
+ * Await terminal operations: even SQLite can defer work behind a transaction.
+ * Inserts/updates include auto fields; reads that outlive their handler fail closed.
  */
 export type TableApi<Row extends Record<string, unknown> = Record<string, unknown>> = {
-  insert(values: InsertValues<Row>): Row;
+  insert(values: InsertValues<Row>): MaybePromise<Row>;
   /** Atomically insert, returning null only for the exactly named declared unique constraint. */
   insertOrIgnore(values: InsertValues<Row>, ...conflictFields: [keyof InsertValues<Row> & string, ...(keyof InsertValues<Row> & string)[]]): MaybePromise<Row | null>;
-  update(id: string, values: UpdateValues<Row>): Row | null;
-  delete(id: string): boolean;
+  update(id: string, values: UpdateValues<Row>): MaybePromise<Row | null>;
+  delete(id: string): MaybePromise<boolean>;
   where<FieldName extends keyof Row & string>(fieldName: FieldName, value: Row[FieldName]): TableApi<Row>;
   orderBy(fieldName: keyof Row & string, direction?: OrderDirection): TableApi<Row>;
   limit(count: number): TableApi<Row>;
-  get(): Row | null;
-  all(): Row[];
+  get(): MaybePromise<Row | null>;
+  all(): MaybePromise<Row[]>;
 };
 /** With operator telemetry enabled, internal statement/transaction spans explain HTTP request database time. No SQL, parameters or rows are exported; authoring and transaction semantics are unchanged. */
 export type DatabaseFromSchema<Schema extends SchemaDefinition> = {
@@ -605,12 +621,37 @@ export type TeamJoinLinkValidation = { valid: boolean };
 export type TeamApplicationRoleChanges = { add: string[]; remove: string[] };
 export type TeamJoinAdmissionInput = { teamId: string; userId: string; currentMemberCount: number };
 export type TeamJoinAdmissionDecision = { allow: boolean };
-export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "auth" | "env" | "log"> & {
+export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "app" | "auth" | "env" | "log"> & {
   /** Transaction-bound app-table reads that bypass the joining user's ordinary row ACLs. Runtime tables and mutations are unavailable. */
   db: ReadOnlyDatabaseFromSchema<Schema>;
   /** Provider-free verified billing state for the exact Team whose Join is being admitted. */
   teamBilling: Pick<CurrentUserTeamBillingApi, "get">;
 };
+/** A destructive transition is proposed only after current Session, Team and final-admin checks under its lifecycle lock. */
+export type TeamDestructivePolicyInput = Readonly<{
+  teamId: string;
+  actorUserId: string;
+  operation: "demote" | "removeMember" | "leave" | "delete";
+  /** Exact affected current membership; deletion currently requires the actor to be the sole member. */
+  member: Readonly<{ userId: string; role: "admin" | "member" }>;
+  /** Deletion affects every responsibility associated with teamId, regardless of its owner or holder. */
+  scope: "member" | "team";
+}>;
+/** Only an own data property `allow: true`, with no additional properties, permits the write. */
+export type TeamDestructivePolicyDecision = { allow: boolean };
+export type TeamDestructivePolicyContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+  app: AppContext;
+  auth: Readonly<AuthContext>;
+  /** Transaction-bound cross-owner Capsule reads bypass row ACLs. No writes, runtime tables, provider operations or nested Privileged capability. Revoked on settle/abort/5-second budget expiry; unreadable or unfinished reads deny even if caught. */
+  db: ReadOnlyDatabaseFromSchema<Schema>;
+  signal: AbortSignal;
+}>;
+/** Snapshot of one optional exact member, read after acquiring the lifecycle lock. No profiles or credentials. */
+export type TeamLifecycleSnapshot = Readonly<{
+  teamId: string;
+  member: Readonly<{ userId: string; role: "admin" | "member" }> | null;
+}>;
+
 export type TeamBillingQuantityPolicy =
   | { kind: "fixed"; value: number }
   | { kind: "team-members"; minimum?: number };
@@ -644,7 +685,7 @@ export type CurrentUserTeamBillingApi = {
   /** Admits only the app's separate local deletion transaction after provider quiescence is durably proven. */
   admitLocalErasure(teamId: string): Promise<{ allowed: true }>;
 };
-export type TeamBillingAuthorityContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "auth" | "env" | "log"> & {
+export type TeamBillingAuthorityContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "app" | "auth" | "env" | "log"> & {
   /** Transaction-bound app-table reads. Runtime billing tables and mutations are unavailable. */
   db: ReadOnlyDatabaseFromSchema<Schema>;
   /** Transaction-bound exact accepted-member count for the Team under authority evaluation. */
@@ -670,6 +711,8 @@ export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefini
   };
 };
 export type CurrentUserTeamsApi = {
+  /** Server-only: lock an administered Team through the existing mutation/endpoint transaction's commit or rollback. Call before any responsibility read/write; validate explicit recipient acceptance and the optional member's current admin role. Normal ctx.db ACLs remain in force. No network calls while locked. Refusal poisons the enclosing transaction. */
+  lockLifecycle(teamId: string, memberUserId?: string): Promise<TeamLifecycleSnapshot>;
   list(): Promise<{ teams: TeamSummary[] }>;
   /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
   create(name: string): Promise<{ team: TeamSummary }>;
@@ -712,6 +755,8 @@ export type CurrentUserTeamsApi = {
  * before the runtime can return a result.
  */
 export type PrivilegedTeamsApi = {
+  /** Retain an exact Team lifecycle lock in an already-active write transaction (including atomic Stripe consequences). This is inspection/serialization only: no user, membership mutation or admin authority. Nontransactional Jobs/Privileged callbacks and expired contexts fail closed. Pending acquisition/member reads that outlive the callback reject and roll back even when caught; successfully admitted locks remain held through outer commit. Call before responsibility reads/writes, without provider network calls. */
+  lockLifecycle(teamId: string, memberUserId?: string): Promise<TeamLifecycleSnapshot>;
   /** Returns the exact accepted-membership total for an existing Team. */
   countMembers(teamId: string): Promise<TeamMemberCountResult>;
   /** Lists the existing safe member projection for an existing Team. */
@@ -840,7 +885,12 @@ export type CurrentUserFilesApi = {
   delete(fileReference: string): Promise<ServerFileMetadata>;
 };
 
+export type PrivilegedListedFileMetadata = PrivilegedOwnedFileMetadata & { createdAt: string; updatedAt: string };
+export type PrivilegedFileListOptions = { createdBefore?: string | Date; cursor?: string | null };
+export type PrivilegedFileListPage = { files: PrivilegedListedFileMetadata[]; cursor: string | null };
 export type PrivilegedFileApi = {
+  /** Up to 100 live uploaded Files, oldest first with ID tie-breaker. Cutoff is exclusive; cursor retains it. Only inside an active Privileged callback. */
+  list(options?: PrivilegedFileListOptions): Promise<PrivilegedResult<PrivilegedFileListPage>>;
   /** Return a private runtime URL for one live Capsule File by id or absolute File path. */
   url(fileReference: string): Promise<PrivilegedResult<{ url: string; file: PrivilegedOwnedFileMetadata }>>;
   /** Create a public URL for one live Capsule File while preserving File runtime boundaries. */
@@ -913,6 +963,7 @@ export type ResourceNotificationIntentStatus = Readonly<{
   recipients: readonly ResourceNotificationRecipientStatus[];
 }>;
 export type ResourceScope<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+  app: AppContext;
   db: DatabaseFromSchema<Schema>;
   jobs: Pick<JobApi, "enqueue">;
   log: Logger;
@@ -938,6 +989,7 @@ export type CapsuleContext<
   Schema extends SchemaDefinition = SchemaDefinition,
   Credential extends CredentialProvenance = CredentialProvenance,
 > = {
+  readonly app: AppContext;
   db: DatabaseFromSchema<Schema>;
   resources: ResourcesApi<Schema>;
   /** Shared across handlers; 10,000 LRU buckets, process-local, reset on restart; independent of transactions. */
@@ -1065,12 +1117,12 @@ export type StripeEventHandler<Schema extends SchemaDefinition = SchemaDefinitio
 /** Narrow transaction-owned context for one atomic Stripe consequence. */
 export type AtomicStripeConsequenceContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<
   PrivilegedContext<Schema>,
-  "auth" | "signal" | "db" | "env" | "log" | "rateLimit"
+  "app" | "auth" | "signal" | "db" | "env" | "log" | "rateLimit"
 > & {
   /** Jobs persist with the consequence and are dispatched only after commit. */
   jobs: Pick<JobApi, "enqueue">;
-  /** Exact read-only Team membership count inside the consequence transaction. */
-  teams: Pick<PrivilegedTeamsApi, "countMembers">;
+  /** Exact membership count and lifecycle serialization inside the consequence transaction. */
+  teams: Pick<PrivilegedTeamsApi, "countMembers" | "lockLifecycle">;
 };
 
 /** Handler for one runtime-serialized, transaction-owned Stripe consequence. */
@@ -1251,7 +1303,7 @@ export type ScheduleInspectionApi = {
   list(): Promise<ScheduleSummary[]>;
 };
 export type ScheduleOccurrence = Readonly<{ scheduleName: string; scheduledFor: string }>;
-export type ScheduleContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ signal: AbortSignal; privileged: PrivilegedApi<Schema> }>;
+export type ScheduleContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; signal: AbortSignal; privileged: PrivilegedApi<Schema> }>;
 /**
  * Calculates ordinary Job input for one occurrence. Factories are for dynamic
  * data population, may run more than once during recovery, and should avoid
@@ -1299,7 +1351,7 @@ export type ScheduleDefinition = {
  */
 export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   name: string;
-  auth?: { registration?: RegistrationAdmission<Schema>; reauthentication?: { purposes: Record<string, { maxAgeSeconds: number }>; authorize?: (ctx: { db: ReadOnlyDatabaseFromSchema<Schema>; auth: AuthContext }, purpose: string) => MaybePromise<boolean> } };
+  auth?: { registration?: RegistrationAdmission<Schema>; reauthentication?: { purposes: Record<string, { maxAgeSeconds: number }>; authorize?: (ctx: { readonly app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; auth: AuthContext }, purpose: string) => MaybePromise<boolean> } };
   accessKeys?: { scopes: readonly string[] };
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
@@ -1315,6 +1367,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
     appRoles?: readonly string[];
     /** Trusted admission policy invoked after Join-link validation and before a new membership is inserted in the same transaction. */
     admitJoin?(ctx: TeamJoinAdmissionContext<Schema>, input: TeamJoinAdmissionInput): MaybePromise<TeamJoinAdmissionDecision>;
+    /** Opt-in atomic policy for every SDK and ctx.teams destructive path. Omission preserves 0.9.x behavior; invalid declaration rejects startup. Explicit valid allow required; failures are opaque TEAM_POLICY_DENIED and roll back app/runtime writes even when caught. All Capsule responsibility writers must take teams.lockLifecycle in the same transaction before reads/writes. */
+    authorizeDestructive?(ctx: TeamDestructivePolicyContext<Schema>, input: TeamDestructivePolicyInput): MaybePromise<TeamDestructivePolicyDecision>;
   };
   /** Optional headless Team Billing control plane. Omission leaves billing dormant and creates no billing storage. */
   teamBilling?: TeamBillingDefinition<Schema>;
@@ -1327,8 +1381,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
 };
 export type RegistrationEvidence = Readonly<{ userId: string; provider: string; email: string | null; displayName: string; picture: string | null; kind: "email" | "oauth" | "local" }>;
 export type RegistrationAdmission<Schema extends SchemaDefinition> = {
-  admit(ctx: { db: ReadOnlyDatabaseFromSchema<Schema>; evidence: RegistrationEvidence; admission: unknown }): MaybePromise<{ allow: false } | { allow: true; state?: unknown }>;
-  finalize(ctx: { db: DatabaseFromSchema<Schema>; evidence: RegistrationEvidence }, input: RegistrationEvidence & { state?: unknown }): MaybePromise<void>;
+  admit(ctx: { readonly app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; evidence: RegistrationEvidence; admission: unknown }): MaybePromise<{ allow: false } | { allow: true; state?: unknown }>;
+  finalize(ctx: { readonly app: AppContext; db: DatabaseFromSchema<Schema>; evidence: RegistrationEvidence }, input: RegistrationEvidence & { state?: unknown }): MaybePromise<void>;
 };
 
 export type Capsule<Definition extends object = CapsuleDefinition> = Definition & {
@@ -1495,3 +1549,6 @@ export type SecurityConfig = {
   /** Hosted Capsules only. maxAgeSeconds is a non-negative safe integer; zero clears HSTS. */
   hsts?: { maxAgeSeconds: number; includeSubDomains?: boolean; preload?: boolean };
 };
+export type { ObservabilityConfig, AnalyticsConfig } from "./observability.js";
+/** Opt-in sporades.json Server env requirements. Explicit keys plus configured SMTP, webhook and enabled Stripe keys are checked. Omit to preserve existing doctor/push behavior; failClosed defaults to false. */
+export type ServerEnvConfig = Readonly<{ required?: readonly string[]; failClosed?: boolean }>;

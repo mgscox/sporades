@@ -1,3 +1,4 @@
+import { validateServerEnvConfig } from "./server-env-requirements.js";
 import { buildAdmissionPolicy, resolveAdmissionPolicy } from "./admission-policy.js";
 import { buildDeployFiles } from "./deploy-files.js";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -19,6 +20,7 @@ const SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
 const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 export async function createBundle(projectDir, config, options = {}) {
     validateHttpHardening(config.security);
+    validateServerEnvConfig(config.env);
     resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
     const deployFiles = options.deployFiles === false ? [] : await buildDeployFiles(projectDir, config.deploy?.files);
     if (options.deployFiles !== false)

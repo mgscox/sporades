@@ -8,6 +8,7 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import NodeWebSocket from "ws";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -26,6 +27,71 @@ const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
 const BASE_IMAGE_RUNTIME_USER = "10001:10001";
 const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DDZjMa6q7iH+jF5bughycSLBOa/ test@example";
+
+test('Container --port overrides use one public origin for launch, links, binding and doctor', async t => {
+  for (const item of [
+    { name: 'effective port fallback', expected: 'http://localhost:5690' },
+    { name: 'explicit environment', envOrigin: 'https://env.example', expected: 'https://env.example' },
+    { name: 'explicit config wins', envOrigin: 'https://env.example', configOrigin: 'https://configured.example', expected: 'https://configured.example' },
+  ]) await t.test(item.name, async () => {
+    await withTempDir(async dir => {
+      const created = await runCli(['create', 'origin-port', '--template', 'blank', '--no-install', '--no-git', '--json'], { cwd: dir });
+      assert.equal(created.code, 0, created.stderr);
+      const projectDir = await realpath(path.join(dir, 'origin-port'));
+      await installFakeReact(projectDir);
+      const configPath = path.join(projectDir, 'sporades.json');
+      const config = JSON.parse(await readFile(configPath, 'utf8'));
+      config.deploy = { ...config.deploy, port: 5689, ...(item.configOrigin ? { publicOrigin: item.configOrigin } : {}) };
+      config.auth = { providers: { anonymous: true, email: true } };
+      await writeFile(configPath, JSON.stringify(config));
+      await writeFile(path.join(projectDir, 'server/index.ts'), `import {capsule,endpoint} from 'sporades/server';
+export default capsule({name:'origin-port',endpoints:{links:endpoint({method:'POST',path:'/links'},async ctx=>{
+  if(!ctx.auth.email) return {status:403};
+  const reset=await ctx.serverAuth.createEmailPasswordResetLink(ctx.auth.email);
+  const {teams}=await ctx.teams.list();
+  const join=await ctx.teams.createJoinLink(teams[0].id,'recipient@example.com');
+  return {status:200,body:{origin:ctx.app.publicOrigin,reset:reset.link,join:join.link}};
+})}});`);
+      const docker = await installFakeDocker(dir, 'origin-container');
+      const env = { ...docker.env, SPORADES_PUBLIC_ORIGIN: item.envOrigin ?? '' };
+      const deployed = await runCli(['deploy', '--port', '5690', '--json'], { cwd: projectDir, env });
+      assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+      const run = firstDockerRunCall(await docker.calls());
+      assert(run.args.includes('5690:4000'));
+      assert(run.args.includes(`SPORADES_PUBLIC_ORIGIN=${item.expected}`));
+      assert(run.args.includes(`SPORADES_CONTAINER_PUBLIC_ORIGIN=${item.expected}`));
+      const binding = JSON.parse(await readFile(path.join(projectDir, '.sporades/binding.json'), 'utf8'));
+      assert.equal(binding.publicOrigin, item.expected);
+      // Doctor must report the deployed snapshot even after config/env changes.
+      config.deploy.publicOrigin = 'https://changed.example';
+      await writeFile(configPath, JSON.stringify(config));
+      const doctor = await runCli(['doctor', '--session', 'container', '--json'], { cwd: projectDir, env });
+      const checks = JSON.parse(doctor.stdout).data.checks;
+      assert.equal(checks.find(c => c.id === 'doctor.public-origin').details.publicOrigin, item.expected);
+      const launchEnv = Object.fromEntries(run.args.filter(arg => /^SPORADES_(?:CONTAINER_PUBLIC_ORIGIN|PUBLIC_ORIGIN|SECURITY_SESSION)=/.test(arg)).map(arg => {
+        const index = arg.indexOf('='); return [arg.slice(0, index), arg.slice(index + 1)];
+      }));
+      const port = await getAvailablePort();
+      const child = spawn(process.execPath, [path.join(projectDir, '.sporades/build/server.mjs')], {
+        cwd: projectDir, env: { ...process.env, ...launchEnv, PORT: String(port), SPORADES_DATABASE_PATH: path.join(projectDir, '.sporades/data.db') }, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let socket;
+      try {
+        await waitForHttp(`http://127.0.0.1:${port}/`, child);
+        socket = await openSocket(`http://127.0.0.1:${port}`, null, item.expected);
+        socket.send(JSON.stringify({ id: 'signup', type: 'auth.signUp', provider: 'email', credentials: { email: 'owner@example.com', password: 'password-123' } }));
+        const signup = await readSocketMessage(socket);
+        assert.equal(signup.error, null, JSON.stringify(signup));
+        const response = await fetch(`http://127.0.0.1:${port}/links`, { method: 'POST', headers: { 'x-sporades-session-token': signup.data.sessionToken } });
+        assert.equal(response.status, 200, await response.clone().text());
+        const links = await response.json();
+        assert.equal(links.origin, item.expected);
+        assert.equal(new URL(links.reset).origin, item.expected);
+        assert.equal(new URL(links.join).origin, item.expected);
+      } finally { socket?.close(); await stopChild(child); }
+    });
+  });
+});
 
 test("Container prerender warnings reach human and structured successful CLI output", async () => {
   await withTempDir(async (dir) => {
@@ -5285,12 +5351,12 @@ test("sporades deploy recognizes Docker no-such-object output as a stale contain
   });
 });
 
-async function openSocket(baseUrl, sessionToken = null) {
+async function openSocket(baseUrl, sessionToken = null, origin = null) {
   const connectionToken = await readPageConnectionToken(baseUrl);
   return new Promise((resolve, reject) => {
     const url = new URL("/__sporades/ws", baseUrl);
     url.searchParams.set("connectionToken", connectionToken);
-    const socket = new WebSocket(url);
+    const socket = origin ? new NodeWebSocket(url, { origin }) : new WebSocket(url);
     installSessionTokenEnvelope(socket, sessionToken);
     socket.addEventListener("open", () => resolve(socket), { once: true });
     socket.addEventListener("error", reject, { once: true });

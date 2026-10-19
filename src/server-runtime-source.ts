@@ -1,3 +1,10 @@
+import { createRuntimeObservability } from "./observability-runtime.js";
+import { redactDiagnosticText } from "./runtime-log-policy.js";
+import { bindAppContext, isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
+import { dirname as pathDirname } from "node:path";
+import { missingServerEnvKeys, missingServerEnvError, validateServerEnvConfig } from "./server-env-requirements.js";
+import { validatePaymentsConfig } from "./stripe-payment-config.js";
+import { resolveFileAllowedMimeTypes } from "./file-policy.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { createCapsuleRateLimiter, resolveRegistrationThrottle } from "./capsule-rate-limit.js";
 import { CLIENT_ADDRESS_TOKEN_HEADER, trustedClientAddress } from "./client-address.js";
@@ -179,7 +186,7 @@ import {
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 
 const mutationResultsWithWrites = new WeakSet<object>();
-const trustedReadPurposes = new Set(["teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
+const trustedReadPurposes = new Set(["teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -708,8 +715,21 @@ export async function openDevDatabase(
     validateEndpointResponseDeclarations(capsuleDefinition);
   }
   validateLogConfig(config);
+  validateServerEnvConfig(config.env);
+  const mailConfig = validateMailConfig(config.mail);
+  const declaredPayments = validatePaymentsConfig(config.payments);
+  const missingEnv = options?.runtimeActionOnly ? [] : missingServerEnvKeys({ ...config, mail: mailConfig, payments: declaredPayments }, serverEnv);
+  const missingEnvEvent = missingEnv.length ? createRuntimeLogSink({
+    database: null, config, serverEnv, dataDir: pathDirname(databasePath),
+  }).emit({
+    category: "platform", event: "env.required.missing", level: "error",
+    message: `Missing required Server env keys: ${missingEnv.join(", ")}`, data: null,
+  }) : null;
+  if (missingEnv.length && config.env?.failClosed === true) throw missingServerEnvError(missingEnv);
+  const observability = createRuntimeObservability({ ...config, release: process.env.SPORADES_RELEASE_ID ?? config.release }, serverEnv);
   const registrationThrottle = resolveRegistrationThrottle(config.auth);
   const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
+  const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
     throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
@@ -717,16 +737,18 @@ export async function openDevDatabase(
   if (capsuleDefinition?.teams?.admitJoin !== undefined && typeof capsuleDefinition.teams.admitJoin !== "function") {
     throw commandError("Invalid Capsule Team admission policy.", "Declare teams.admitJoin as a server function.", "INVALID_TEAM_JOIN_ADMISSION");
   }
+  if (capsuleDefinition?.teams?.authorizeDestructive !== undefined && typeof capsuleDefinition.teams.authorizeDestructive !== "function") {
+    throw commandError("Invalid Capsule Team policy.", "Declare teams.authorizeDestructive as a server function.", "INVALID_TEAM_DESTRUCTIVE_POLICY");
+  }
   const teamApplicationRoles = normalizeTeamApplicationRoles(capsuleDefinition?.teams?.appRoles);
   const teamBillingDefinition = capsuleDefinition?.teamBilling === undefined
     ? null
     : normalizeTeamBillingDefinition(capsuleDefinition.teamBilling);
   if (capsuleDefinition?.files !== undefined && (!capsuleDefinition.files || typeof capsuleDefinition.files !== "object" || Array.isArray(capsuleDefinition.files))) {
-    throw commandError("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete? } }.", "INVALID_FILE_ACL");
+    throw commandError("Invalid Capsule Files declaration.", "Declare files as { acl?: { read?, publicUrl?, delete?, upload? } }.", "INVALID_FILE_ACL");
   }
   const fileAcl = normalizeFileAcl(capsuleDefinition?.files?.acl);
   const path = await import("node:path");
-  const mailConfig = validateMailConfig(config.mail);
   let mailLogSink: LooseRecord | undefined;
   const mail = createMailRuntime(mailConfig, serverEnv, {
     ...options,
@@ -867,6 +889,7 @@ export async function openDevDatabase(
     schedules,
     accessKeyScopes: capsuleDefinition?.accessKeys?.scopes ?? [],
     securitySession: config.__sporadesSession ?? "container",
+    publicOrigin: resolvePublicOrigin(config),
     clock,
     capsuleIdentity: String(config.name ?? "capsule"),
     capsuleIngressOwnerId: capsuleIngressAuthUserId(config.name ?? capsuleDefinition?.name ?? "capsule"),
@@ -902,6 +925,7 @@ export async function openDevDatabase(
     __handlerContextMappingCount: 0,
     rowCache,
     serverEnv,
+    observability,
     paymentsConfig,
     createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
     stripeApiBaseUrl: options?.stripeApiBaseUrl,
@@ -978,7 +1002,7 @@ export async function openDevDatabase(
     authorizeReauthentication: typeof capsuleDefinition?.auth?.reauthentication?.authorize === "function" ? async function (transaction: LooseRecord, auth: LooseRecord, purpose: string) {
       const reauthDatabase = createTransactionDatabase(database, transaction); let active = true; const assertActive = () => { if (!active) throw commandError("Reauthentication access is no longer active.", "Start a new reauthentication attempt.", "REAUTHENTICATION_ACCESS_INACTIVE"); };
       const reauthContext: LooseRecord = { purpose: "auth.reauthentication", auth }; grantPrivilegedDbAccess(reauthContext); const holder = createContextHolder(reauthContext);
-      try { return (await capsuleDefinition.auth.reauthentication.authorize({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, purpose)) === true; }
+      try { return (await capsuleDefinition.auth.reauthentication.authorize(bindAppContext({ db: createEndpointReadOnlyDatabaseApi(reauthDatabase, () => holder.current, assertActive), auth }, database.app), purpose)) === true; }
       finally { active = false; revokePrivilegedDbAccess(reauthContext); }
     } : async () => true,
     passwordResetConfig: resolvePasswordResetConfig(config),
@@ -997,12 +1021,12 @@ export async function openDevDatabase(
         grantPrivilegedDbAccess(readContext); const readHolder = createContextHolder(readContext);
         try {
           let decision: LooseRecord | null = null;
-          try { decision = await capsuleDefinition.auth.registration.admit({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission }); }
+          try { decision = await capsuleDefinition.auth.registration.admit(bindAppContext({ db: createEndpointReadOnlyDatabaseApi(registrationDatabase, () => readHolder.current, assertActive), evidence, admission }, rootDatabase.app)); }
           finally { active = false; revokePrivilegedDbAccess(readContext); }
           if (!decision || decision.allow !== true) return false;
           const finalizeContext: LooseRecord = { purpose: "auth.registration-finalize", evidence };
           grantPrivilegedDbAccess(finalizeContext); const finalizeHolder = createContextHolder(finalizeContext);
-          try { await capsuleDefinition.auth.registration.finalize({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, { ...evidence, state: decision.state }); }
+          try { await capsuleDefinition.auth.registration.finalize(bindAppContext({ db: createEndpointDatabaseApi(registrationDatabase, () => finalizeHolder.current), evidence }, rootDatabase.app), { ...evidence, state: decision.state }); }
           finally { revokePrivilegedDbAccess(finalizeContext); }
           return true;
         } finally { active = false; revokePrivilegedDbAccess(readContext); await drainPendingLogWrites(registrationDatabase); }
@@ -1025,6 +1049,41 @@ export async function openDevDatabase(
           ));
         } finally {
           await drainPendingLogWrites(admissionDatabase);
+        }
+      }
+      : undefined,
+    runTeamDestructivePolicy: typeof capsuleDefinition?.teams?.authorizeDestructive === "function"
+      ? async function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord, signal?: AbortSignal) {
+        const root = this.__rootDatabase ?? this;
+        const transaction = (this as any)[trustedReadTransactionAdapter] ?? transactionAdapter;
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+        const deadline = performance.now() + 5_000;
+        const timer = root.clock.setTimer(abort, 5_000);
+        let removeAbort = () => {};
+        try {
+          return await withTrustedRead(root, {
+            transaction, purpose: "teams.destructive-policy", subject: input, signal: controller.signal,
+            failOnReadError: true,
+          }, async (db, assertActive) => {
+            const evaluation = Promise.resolve().then(() => capsuleDefinition.teams.authorizeDestructive(Object.freeze({
+              app: root.app, auth: Object.freeze({ ...auth }), db, signal: controller.signal,
+            }), input));
+            const aborted = new Promise<never>((_, reject) => {
+              const fail = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));
+              removeAbort = () => controller.signal.removeEventListener("abort", fail);
+              controller.signal.addEventListener("abort", fail, { once: true });
+              if (controller.signal.aborted) fail();
+            });
+            const decision = await Promise.race([evaluation, aborted]);
+            if (performance.now() >= deadline) controller.abort();
+            assertActive();
+            return decision;
+          });
+        } finally {
+          removeAbort(); root.clock.clearTimer(timer); signal?.removeEventListener("abort", abort);
         }
       }
       : undefined,
@@ -1054,6 +1113,7 @@ export async function openDevDatabase(
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes,
+    fileAllowedMimeTypes,
     httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
       database.__scheduleStopped = true;
@@ -1076,6 +1136,7 @@ export async function openDevDatabase(
         const failures: Array<{ index: number; error: unknown }> = [];
         const pending: Promise<void>[] = [];
         const resources = [
+          () => database.observability.close(),
           () => shutdownClamavRuntime(database),
           () => {
             if (mailStartError !== undefined) throw mailStartError;
@@ -1316,6 +1377,11 @@ export async function openDevDatabase(
     serverEnv,
     dataDir: path.dirname(databasePath),
   });
+  database.app = Object.freeze({ get publicOrigin() { return database.publicOrigin; } });
+  if (["hosted", "container"].includes(config.__sporadesSession) && isLocalPublicOrigin(database.publicOrigin) && !options?.runtimeActionOnly) {
+    database.log.emit({ category: "platform", event: "app.publicOrigin.unresolved", level: "error",
+      message: "No non-local public origin resolved. Configure deploy.publicOrigin or SPORADES_PUBLIC_ORIGIN for Container sessions, or the Hosted canonical domain.", data: null });
+  }
   mailLogSink = database.log;
   database.audit = createPrivilegedAuditEmitter(database.log);
   await sqlite.ensureSystemTable();
@@ -1347,6 +1413,12 @@ export async function openDevDatabase(
   // own deadline so a delivered row can sleep until its 24-hour expiry.
   await refreshIngressMaintenanceState(database, { discoverInterruptedDelivery: true });
   await sqlite.ensureLogStorage();
+  if (missingEnvEvent) {
+    try {
+      await sqlite.insertLogIndexEvent(missingEnvEvent);
+      await sqlite.pruneLogIndex(logIndexLimit(config));
+    } catch { /* JSONL remains authoritative. */ }
+  }
   options?.onJobQueueReady?.(database);
   if (!options?.runtimeActionOnly) {
     await reportIngressSweepSelectionFailure(database, await sweepExpiredFileIngress(database, { now: database.clock.now().toISOString() }));
@@ -2619,6 +2691,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   // let middleware smuggle lifecycle APIs across this userless boundary under
   // aliases or closures.
   const privilegedContext: LooseRecord = {
+    app: database.app,
     rateLimit: database.capsuleRateLimiter.consume,
     env: context.env,
     payments: context.payments,
@@ -2742,7 +2815,7 @@ function redactLogData(value: unknown, serverEnv: any): any {
     return null;
   }
   if (typeof value === "string") {
-    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : value;
+    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : redactDiagnosticText(value, serverEnv);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return value;
@@ -3631,6 +3704,7 @@ async function admitCapsuleIngressPrincipal(database: LooseRecord, endpoint: Loo
     signal,
   }, (db) => definition.admit(Object.freeze({
     db,
+    app: database.app,
     env: database.serverEnv,
     signal,
     request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
@@ -3674,6 +3748,7 @@ async function admitEndpointMultipart(database: LooseRecord, endpoint: LooseReco
         auth: Object.freeze({ ...admission.auth }),
         credential: Object.freeze({ ...(admission.credential ?? { kind: "session" }) }),
         db,
+        app: database.app,
         env: database.serverEnv,
         signal: controller.signal,
         request: requestHead,
@@ -3837,6 +3912,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               ordinaryCredential: !runtimeOwnedProviderCallback,
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
+              signal: request.signal ?? (request as LooseRecord).__sporadesEndpointSignal,
             });
             revokeOuterResources = bindOuterResources(transactionDatabase, context, {
               startedAt: outerStartedAt,
@@ -3912,6 +3988,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
+    database.observability?.capture(error, "endpoint");
     if (outerCommitted) throw error;
     if ((endpointRequest as LooseRecord).multipart) {
       try { await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } }); } catch {}
@@ -3966,6 +4043,7 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
     adapter,
     sqlite: adapter,
     __transactionActive: true,
+    __isTeamPolicyTransactionActive: () => isActiveTransactionScopedAdapter(transactionAdapter),
     [trustedReadTransactionAdapter]: transactionAdapter,
     __rootDatabase: database.__rootDatabase ?? database,
     [Symbol.for("sporades.database.outerTransactionAdapter")]: transactionAdapter,
@@ -4104,6 +4182,7 @@ function createAtomicStripeConsequenceContext(database: LooseRecord, parent: Loo
   const context: LooseRecord = {
     rateLimit: database.capsuleRateLimiter.consume,
     auth: parent.auth,
+    app: database.app,
     env: database.serverEnv,
     signal: parent.signal,
     log: createEndpointLogger(database),
@@ -4122,6 +4201,7 @@ function createAtomicStripeConsequenceContext(database: LooseRecord, parent: Loo
   const privilegedTeams = createPrivilegedTeamsApi(database, () => holder.current);
   context.teams = Object.freeze({
     countMembers: privilegedTeams.countMembers.bind(privilegedTeams),
+    lockLifecycle: privilegedTeams.lockLifecycle.bind(privilegedTeams),
   });
   return context;
 }
@@ -4251,6 +4331,8 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   const context: LooseRecord = {
     auth,
     ...(credential ? { credential } : {}),
+    app: database.app,
+    signal: options.signal,
     rateLimit: database.capsuleRateLimiter.consume,
     env: database.serverEnv,
     payments: database.paymentsConfig,
@@ -4367,6 +4449,7 @@ function protectContextIdentity(value: LooseRecord) {
 }
 
 function createContextHolder(context: LooseRecord) {
+  if (context.app) bindAppContext(context, context.app);
   context.resources = unsupportedResources;
   const holder = { current: context };
   Object.defineProperty(context, "__sporadesContextHolder", {
@@ -4530,6 +4613,7 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     ...baseContext,
     kind,
   };
+  bindAppContext(context, database.app);
   bindPendingAclWrites(context, baseContext);
   bindCurrentUserFileDeleteState(context, baseContext);
   bindMutationSecretState(context, baseContext);
@@ -4547,14 +4631,15 @@ async function applyContextMiddleware(database: LooseRecord, baseContext: LooseR
     const previousContext = context;
     const result = await runContextMiddleware(middlewareSource, context);
     const middlewareContext = result ?? context;
-    if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential) {
+    if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential || (middlewareContext.app !== undefined && middlewareContext.app !== database.app)) {
       throw commandError(
         "Invalid Capsule context middleware result.",
-        "Context middleware must preserve the runtime-owned Auth and Credential values.",
+        "Context middleware must preserve the runtime-owned Auth, Credential and app values.",
         "INVALID_CONTEXT_MIDDLEWARE_RESULT",
       );
     }
     context = { ...middlewareContext, auth: canonicalAuth };
+    bindAppContext(context, database.app);
     if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
       context.credential = canonicalCredential;
     } else {
@@ -4686,6 +4771,28 @@ function trustedReadResult(value: any, assertActive: () => void) {
   });
 }
 
+// Mark failed reads even when a policy catches the storage exception itself.
+function trackTrustedPolicyReads(value: LooseRecord, fail: () => void, pending: Set<Promise<any>>): LooseRecord {
+  return new Proxy(value, {
+    get(target, key) {
+      const member = target[key as any];
+      if (typeof member === "function") return (...args: any[]) => {
+        try {
+          const result = member.apply(target, args);
+          if (isPromiseLike(result)) {
+            const tracked = Promise.resolve(result).catch(error => { fail(); throw error; });
+            pending.add(tracked);
+            void tracked.then(() => pending.delete(tracked), () => pending.delete(tracked));
+            return tracked;
+          }
+          return result && typeof result === "object" ? trackTrustedPolicyReads(result, fail, pending) : result;
+        } catch (error) { fail(); throw error; }
+      };
+      return member && typeof member === "object" ? trackTrustedPolicyReads(member, fail, pending) : member;
+    },
+  });
+}
+
 export async function withTrustedRead(database: LooseRecord, options: LooseRecord, callback: (db: LooseRecord, assertActive: () => void) => any) {
   if (!isActiveTransactionScopedAdapter(options?.transaction, database?.adapter)) {
     throw commandError(
@@ -4710,6 +4817,7 @@ export async function withTrustedRead(database: LooseRecord, options: LooseRecor
   if (signal?.aborted) throw abortError();
   const transactionDatabase = createTransactionDatabase(database, options.transaction);
   let active = true;
+  let readFailed = false;
   const assertActive = () => {
     if (!active) {
       throw commandError(
@@ -4718,6 +4826,7 @@ export async function withTrustedRead(database: LooseRecord, options: LooseRecor
         "TRUSTED_READ_ACCESS_INACTIVE",
       );
     }
+    if (readFailed) throw commandError("Trusted app-database read failed.", "The runtime-owned trusted policy could not be evaluated.", "TRUSTED_READ_FAILED");
     if (signal?.aborted) throw abortError();
   };
   const context: LooseRecord = {
@@ -4727,10 +4836,13 @@ export async function withTrustedRead(database: LooseRecord, options: LooseRecor
   };
   grantPrivilegedDbAccess(context);
   const holder = createContextHolder(context);
-  const db = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
+  const pendingReads = new Set<Promise<any>>();
+  const rawDb = createEndpointReadOnlyDatabaseApi(transactionDatabase, () => holder.current, assertActive);
+  const db = options.failOnReadError ? trackTrustedPolicyReads(rawDb, () => { readFailed = true; }, pendingReads) : rawDb;
   try {
     try {
       const result = await callback(db, assertActive);
+      if (pendingReads.size > 0) readFailed = true;
       assertActive();
       return result;
     } catch {
@@ -4745,6 +4857,28 @@ export async function withTrustedRead(database: LooseRecord, options: LooseRecor
     active = false;
     revokePrivilegedDbAccess(context);
   }
+}
+
+function runTableRead(contextGetter: any, read: (activeContext: () => any) => any) {
+  const activeContext = () => {
+    const context = contextGetter?.();
+    if (contextGetter && !context) {
+      throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+    }
+    return context;
+  };
+  activeContext();
+  const result = thenIfPromise(read(activeContext), (value: any) => {
+    // An async ACL can settle after its handler too. Never return rows under
+    // expired authority, including tables with no explicit read ACL.
+    activeContext();
+    return value;
+  });
+  // SQLite reads can become asynchronous behind another transaction. Observe
+  // rejection immediately even if Capsule code discards the result; callers
+  // that await it still receive the original rejection.
+  if (isPromiseLike(result)) void result.then(undefined, () => undefined);
+  return result;
 }
 
 function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query: LooseRecord = {}, contextGetter: any = null) {
@@ -4902,47 +5036,53 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
       return createEndpointTableApi(database, table, { ...query, limit: count }, contextGetter);
     },
     get() {
-      const selected = database.adapter.selectAppRows(table, {
-        where: query.where
-          ? {
-            fieldName: query.where.fieldName,
-            value: serializeFieldValue(
-              table.fields.find((field: { name: any; }) => field.name === query.where.fieldName),
-              query.where.value,
-            ),
+      return runTableRead(contextGetter, (activeContext) => {
+        const selected = database.adapter.selectAppRows(table, {
+          where: query.where
+            ? {
+              fieldName: query.where.fieldName,
+              value: serializeFieldValue(
+                table.fields.find((field: { name: any; }) => field.name === query.where.fieldName),
+                query.where.value,
+              ),
+            }
+            : null,
+          orderBy: query.orderBy,
+          limit: 1,
+        });
+        return thenIfPromise(selected, (rows: null[]) => {
+          const context = activeContext();
+          const row = rows[0] ?? null;
+          if (!row) {
+            return null;
           }
-          : null,
-        orderBy: query.orderBy,
-        limit: 1,
-      });
-      return thenIfPromise(selected, (rows: null[]) => {
-        const row = rows[0] ?? null;
-        if (!row) {
-          return null;
-        }
-        const deserialized = deserializeRow(table, row);
-        const allowed = applyReadAcl(database, table, deserialized, contextGetter?.());
-        return thenIfPromise(allowed, (result: any) => (result ? deserialized : null));
+          const deserialized = deserializeRow(table, row);
+          const allowed = applyReadAcl(database, table, deserialized, context);
+          return thenIfPromise(allowed, (result: any) => (result ? deserialized : null));
+        });
       });
     },
     all() {
-      const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-      const selected = database.adapter.selectAppRows(table, {
-        where: query.where
-          ? {
-            fieldName: query.where.fieldName,
-            value: serializeFieldValue(
-              table.fields.find((field: { name: any; }) => field.name === query.where.fieldName),
-              query.where.value,
-            ),
-          }
-          : null,
-        orderBy: query.orderBy,
-        limit,
-      });
-      return thenIfPromise(selected, (selectedRows: any[]) => {
-        const rows = selectedRows.map((row: any) => deserializeRow(table, row));
-        return filterRowsByReadAcl(database, table, rows, contextGetter?.());
+      return runTableRead(contextGetter, (activeContext) => {
+        const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
+        const selected = database.adapter.selectAppRows(table, {
+          where: query.where
+            ? {
+              fieldName: query.where.fieldName,
+              value: serializeFieldValue(
+                table.fields.find((field: { name: any; }) => field.name === query.where.fieldName),
+                query.where.value,
+              ),
+            }
+            : null,
+          orderBy: query.orderBy,
+          limit,
+        });
+        return thenIfPromise(selected, (selectedRows: any[]) => {
+          const context = activeContext();
+          const rows = selectedRows.map((row: any) => deserializeRow(table, row));
+          return filterRowsByReadAcl(database, table, rows, context);
+        });
       });
     },
   };
@@ -5249,10 +5389,13 @@ export function createWebSocketHub(
         ].join("\r\n"),
       );
 
+      const teamOperationController = new AbortController();
+      socket.once("close", () => teamOperationController.abort());
       const origin = resolveOAuthRequestOrigin(policy, request);
       const now = new Date().toISOString();
       const client: any = {
         id: `client-${(nextClientId++).toString(36)}`,
+        teamOperationSignal: teamOperationController.signal,
         socket,
         buffer: Buffer.alloc(0),
         messageQueue: Promise.resolve(),
@@ -6113,15 +6256,17 @@ export function createWebSocketHub(
 
     if (message.type === "teams.promote" || message.type === "teams.demote" || message.type === "teams.removeMember" || message.type === "teams.leave" || message.type === "teams.delete") {
       try {
+        const teamContext = { credential: { kind: "session" }, signal: client.teamOperationSignal };
+        bindAccessKeyOwnerSession(teamContext, client.session.token);
         const data = message.type === "teams.promote"
           ? await promoteTeamMember(database, client.session.auth, message.teamId, message.userId)
           : message.type === "teams.demote"
-            ? await demoteTeamMember(database, client.session.auth, message.teamId, message.userId)
+            ? await demoteTeamMember(database, client.session.auth, message.teamId, message.userId, teamContext)
             : message.type === "teams.removeMember"
-              ? await removeTeamMember(database, client.session.auth, message.teamId, message.userId)
+              ? await removeTeamMember(database, client.session.auth, message.teamId, message.userId, teamContext)
               : message.type === "teams.leave"
-                ? await leaveCurrentUserTeam(database, client.session.auth, message.teamId)
-                : await deleteCurrentUserTeam(database, client.session.auth, message.teamId);
+                ? await leaveCurrentUserTeam(database, client.session.auth, message.teamId, teamContext)
+                : await deleteCurrentUserTeam(database, client.session.auth, message.teamId, teamContext);
         sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
       } catch (error: any) {
         sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { ...(error?.code ? { code: error.code } : {}), message: error?.message ?? "Could not update Team membership.", hint: error?.hint ?? "Sign in with a Team administrator account and retry." } });
@@ -6232,6 +6377,7 @@ export function createWebSocketHub(
           const result = await runMutation(database, client.session.auth, mutationName, message.args ?? [], {
             sessionToken: client.session.token,
             clientAddress: client.clientAddress,
+            signal: client.teamOperationSignal,
           });
           sendJson(client, formatMutationResult(message, mutationName, result));
           if (result.ok && mutationResultsWithWrites.has(result)) {
@@ -6434,6 +6580,12 @@ export function createWebSocketHub(
         sessionToken: client.session.token,
         auth: client.session.auth,
         providers: authProvidersForClient(database.authConfig, client.origin),
+        payments: {
+          stripe: {
+            enabled: database.paymentsConfig?.stripe.enabled === true,
+            livemode: database.paymentsConfig?.stripe.enabled === true ? database.paymentsConfig.stripe.livemode : null,
+          },
+        },
       },
       error: null,
     });
@@ -6727,6 +6879,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
     if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
     context = await applyContextMiddleware(database, context, "query");
   } catch (error: any) {
+    database.observability?.capture(error, "query");
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -6780,6 +6933,7 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   return { rows, error: null };
   })();
   } catch (error) {
+    database.observability?.capture(error, "query");
     primaryError = error;
     throw error;
   } finally {
@@ -6823,6 +6977,7 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
     assertJsonCompatible(data);
     return { data, error: null as any };
   } catch (error: any) {
+    database.observability?.capture(error, "query");
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
@@ -6925,6 +7080,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         context = createMutationContext(transactionDatabase, auth, {
           sessionToken: options.sessionToken,
           clientAddress: options.clientAddress,
+          signal: options.signal,
           serviceUserMutationAuthority,
           mutationInvocation,
         });
@@ -7011,6 +7167,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
   } catch (error: any) {
+    database.observability?.capture(error, "mutation");
     if (outerCommitted) return createHookErrorResult(error);
     dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
@@ -7201,6 +7358,8 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
   const context: LooseRecord = {
     auth,
     ...(credential ? { credential } : {}),
+    app: database.app,
+    signal: options.signal,
     env: database.serverEnv,
     payments: database.paymentsConfig,
     rateLimit: database.capsuleRateLimiter.consume,
@@ -7434,11 +7593,11 @@ function createTeamJoinAdmissionContext(database: LooseRecord, auth: LooseRecord
       },
     }),
   };
-  return context;
+  return bindAppContext(context, database.app);
 }
 
 function createTeamBillingAuthorityContext(database: LooseRecord, auth: LooseRecord, trustedDb: LooseRecord, teamId: string, assertActive: () => void) {
-  return {
+  return bindAppContext({
     auth: Object.freeze({ ...auth }),
     env: database.serverEnv,
     log: createEndpointLogger(database),
@@ -7460,7 +7619,7 @@ function createTeamBillingAuthorityContext(database: LooseRecord, auth: LooseRec
         return Object.freeze({ totalCount });
       },
     }),
-  };
+  }, database.app);
 }
 
 function deferOrScheduleJobDispatch(database: LooseRecord, queueDatabase: LooseRecord, context: LooseRecord | undefined = undefined) {
@@ -7878,6 +8037,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
             error = atomicStripeAbortError();
           }
         }
+        if (handlerStarted) database.observability?.capture(error, "job");
         const handlerFailure = safeJobFailure(error);
         const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
         const failedAt = database.clock.now().toISOString();

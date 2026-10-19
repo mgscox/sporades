@@ -736,3 +736,11 @@ stored exports plus inventory acknowledgements, then commit the reported pending
 generation. Revoke invalidates both capabilities for that named sender. Preserve
 the protected sender registry during upgrades/backups and explicitly migrate
 legacy shared credentials. See [the lifecycle contract](../reference/sender-credentials.md).
+
+### Optional Capsule backups
+
+Provision restic and protected repository/password/credential files separately, then
+apply `sporades host backup configure --file <policy.json>`. This is opt-in; the
+shared bootstrap path never enables schedules implicitly. Verify a disposable
+[restore rehearsal](../reference/capsule-backups.md) and reconnect resource telemetry
+after helper upgrade for freshness alerts. Local/fake tests require no real Host.

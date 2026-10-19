@@ -240,12 +240,14 @@ import { capsule, mutation, query } from "sporades/server";
 export default capsule({
   name: "bundle-teams",
   schema: {},
-  teams: { appRoles: ["author", "reviewer"] },
+  teams: { appRoles: ["author", "reviewer"], authorizeDestructive: () => ({ allow: false }) },
   queries: {
     ownTeams: query((ctx) => ctx.teams.list()),
   },
   mutations: {
     updateMemberRoles: mutation((ctx, teamId, userId, changes) => ctx.teams.updateApplicationRoles(teamId, userId, changes)),
+    deleteTeam: mutation((ctx, teamId) => ctx.teams.delete(teamId)),
+    lockTeam: mutation((ctx, teamId) => ctx.teams.lockLifecycle(teamId, ctx.auth.userId)),
   },
 });
 `;
@@ -1381,6 +1383,14 @@ test("a generated server bundle lazily lists the current linked user's singleton
       const created = await socket.waitFor((message) => message.id === "teams-create");
       assert.equal(created.type, "teams.create.result");
       assert.equal(created.data.team.role, "admin");
+      socket.send({ id: "policy-sdk-delete", type: "teams.delete", teamId: created.data.team.id });
+      assert.equal((await socket.waitFor(message => message.id === "policy-sdk-delete")).error.code, "TEAM_POLICY_DENIED");
+      socket.send({ id: "policy-app-delete", type: "mutation.run", name: "deleteTeam", args: [created.data.team.id] });
+      assert.equal((await socket.waitFor(message => message.id === "policy-app-delete")).error.code, "TEAM_POLICY_DENIED");
+      socket.send({ id: "policy-lock", type: "mutation.run", name: "lockTeam", args: [created.data.team.id] });
+      const locked = await socket.waitFor(message => message.id === "policy-lock");
+      assert.equal(locked.error, null, JSON.stringify(locked));
+      assert.equal(locked.data.member.role, "admin");
       socket.send({ id: "teams-rename", type: "teams.rename", teamId: created.data.team.id, name: "Generated Renamed Team" });
       const renamed = await socket.waitFor((message) => message.id === "teams-rename");
       assert.equal(renamed.type, "teams.rename.result");
@@ -2699,5 +2709,107 @@ test("generated Hosted, Dev and Container Bundles require Host identity for addr
       assert.equal((await fetch(booted.baseUrl + '/probe',{headers:{...headers,'x-sporades-client-address':'::ffff:192.0.2.1'}})).status,403);
       assert.equal(booted.stderr.includes(token),false);
     } finally { await booted?.stop(); await rm(root,{recursive:true,force:true}); }
+  }
+});
+
+test("a generated Bundle exposes ACL presets and denies client access to Privileged-only tables", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-private-tables-"));
+  let booted;
+  let socket;
+  try {
+    const serverSource = `import { acl, capsule, mutation, query, String, table } from "sporades/server";
+      export default capsule({ name: "private-tables", schema: {
+        secrets: table({ value: String() }).acl(acl.privilegedOnly()),
+        internal: table({ value: String() }).acl(acl.denyAll()),
+        open: table({ value: String() }),
+      },
+      hooks: { init: ctx => ctx.privileged.run({ operation: "private.seed", targetResourceKind: "capsule-db" }, async p => {
+        await p.db.secrets.insert({ value: "bundle-secret" });
+        await p.db.internal.insert({ value: "bundle-internal" });
+      }) },
+      queries: { secrets: query(ctx => ctx.db.secrets.all()), internal: query(ctx => ctx.db.internal.all()) },
+      mutations: {
+        secrets: mutation(ctx => ctx.db.secrets.insert({ value: "forbidden" })),
+        internal: mutation(ctx => ctx.db.internal.insert({ value: "forbidden" })),
+        open: mutation(ctx => ctx.db.open.insert({ value: "compatible" })),
+        inspect: mutation(ctx => ctx.privileged.run({ operation: "private.inspect", targetResourceKind: "capsule-db" }, async p => ({
+          secrets: (await p.db.secrets.all()).map(row => row.value),
+          internal: (await p.db.internal.all()).map(row => row.value),
+        }))),
+      } });`;
+    const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), "server", "index.ts") });
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource, serverModuleSource });
+    await writePublicTree(root, "<!doctype html><html><body></body></html>");
+    booted = await bootBundle({ source, dir: root });
+    socket = await openBundleSocket(booted.baseUrl);
+    for (const name of ["secrets", "internal"]) {
+      socket.send({ id: `read-${name}`, type: "query.subscribe", query: name });
+      const read = await socket.waitFor(message => message.id === `read-${name}`);
+      assert.equal(read.error, null);
+      assert.deepEqual(read.data, []);
+      socket.send({ id: `write-${name}`, type: "mutation.run", mutation: name, args: [] });
+      const denied = await socket.waitFor(message => message.id === `write-${name}`);
+      assert.deepEqual(denied.error, { code: "DENIED", message: "Denied.", hint: "The current user is not allowed to perform this operation." });
+    }
+    socket.send({ id: "inspect", type: "mutation.run", mutation: "inspect", args: [] });
+    const inspected = await socket.waitFor(message => message.id === "inspect");
+    assert.equal(inspected.error, null);
+    assert.deepEqual(inspected.data, { secrets: ["bundle-secret"], internal: ["bundle-internal"] });
+    socket.send({ id: "open", type: "mutation.run", mutation: "open", args: [] });
+    const compatible = await socket.waitFor(message => message.id === "open");
+    assert.equal(compatible.error, null);
+    assert.equal(compatible.data.value, "compatible");
+  } finally {
+    socket?.close();
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated Bundle enforces upload ACL and MIME policy and lists Files only through Privileged code", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-file-policy-"));
+  let booted;
+  let socket;
+  try {
+    const serverSource = `import { capsule, endpoint } from "sporades/server";
+      export default capsule({ name: "file-policy", files: { acl: { upload: (ctx, meta) => ctx.auth.isAuthenticated && !ctx.auth.isGuest && meta.name !== "blocked.txt" } },
+        endpoints: { list: endpoint({ method: "GET", path: "/list" }, async ctx => ({ status: 200, body: await ctx.privileged.run({ operation: "test.files.list", targetResourceKind: "file" }, p => p.files.list()) })) } });`;
+    const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), "server", "index.ts") });
+    const source = await buildBundle({ config: capsuleConfig({ files: { allowedMimeTypes: ["text/plain", "image/png"] } }), serverEnv: {}, serverSource, serverModuleSource });
+    await writePublicTree(root, "<!doctype html><html><body></body></html>");
+    booted = await bootBundle({ source, dir: root });
+    socket = await openBundleSocket(booted.baseUrl);
+    async function pending(id, type) {
+      socket.send({ id, type: "file.uploadUrl", file: { name: `${id}.txt`, type, size: 5 } });
+      return socket.waitFor(message => message.id === id);
+    }
+    assert.equal((await pending("guest", "text/plain")).error.code, "FILE_UPLOAD_DENIED");
+    socket.send({ id: "signup-policy", type: "auth.signUp", provider: "email", credentials: { email: "file-policy@example.com", password: "correct horse battery staple", name: "File Policy" } });
+    assert.equal((await socket.waitFor(message => message.id === "signup-policy")).error, null);
+    socket.send({ id: "canonical-denied", type: "file.uploadUrl", file: { path: "/default/blocked.txt ", type: "text/plain", size: 5 } });
+    const denied = await socket.waitFor(message => message.id === "canonical-denied");
+    assert.equal(denied.error.code, "FILE_UPLOAD_DENIED");
+    assert.equal(denied.data?.uploadUrl, undefined);
+    assert.equal((await pending("disallowed", "application/pdf")).error.code, "FILE_MIME_TYPE_NOT_ALLOWED");
+    const forged = await pending("forged", "image/png");
+    const rejected = await fetch(new URL(forged.data.uploadUrl, booted.baseUrl), { method: "PUT", body: "hello" });
+    assert.equal(rejected.status, 400);
+    assert.equal((await rejected.json()).error.code, "FILE_MIME_TYPE_MISMATCH");
+    const valid = await pending("valid", "text/plain");
+    assert.equal((await fetch(new URL(valid.data.uploadUrl, booted.baseUrl), { method: "PUT", body: "hello" })).status, 200);
+    socket.send({ id: "replacement-canonical-denied", type: "file.uploadUrl", replace: true, fileId: valid.data.file.id, file: { path: "/default/blocked.txt ", type: "text/plain", size: 5 } });
+    const replacementDenied = await socket.waitFor(message => message.id === "replacement-canonical-denied");
+    assert.equal(replacementDenied.error.code, "FILE_UPLOAD_DENIED");
+    assert.equal(replacementDenied.data?.uploadUrl, undefined);
+    const listed = await (await fetch(new URL("/list", booted.baseUrl))).json();
+    assert.equal(listed.ok, true);
+    assert.deepEqual(listed.data.files.map(file => file.id), [valid.data.file.id]);
+    assert.equal(listed.data.cursor, null);
+    assert.equal(listed.data.files[0].version, valid.data.file.version);
+    assert.equal(listed.data.files[0].path, "/default/valid.txt");
+  } finally {
+    socket?.close();
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
   }
 });

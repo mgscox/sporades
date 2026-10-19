@@ -10,6 +10,9 @@ import type {
 } from "./hosted-capsule-contract.js";
 
 export type HostHelperAction =
+  | "capsule.backup.create" | "capsule.backup.list" | "capsule.backup.restore" | "capsule.backup.prune"
+  | "host.backup.configure" | "host.backup.status"
+  | "capsule.canonical.set"
   | "capsule.register"
   | "capsule.sealed-env.rotate-key"
   | "capsule.unregister"
@@ -90,6 +93,7 @@ export type HostHelperRequestBase = JsonObject & {
   rollback?: { releaseId: string };
   lifecycle?: HostLifecycleOptions;
   registration?: HostRegistrationOptions;
+  canonical?: { domain: string | null };
   unregister?: HostRegistrationOptions;
   delete?: HostRegistrationOptions;
   logs?: HostLogsOptions;
@@ -99,11 +103,13 @@ export type HostHelperRequestBase = JsonObject & {
   verification?: HostHelperVerification;
   accessKeys?: JsonObject;
   diagnostics?: { queryCredential: string };
+  backup?: { policy?: import("./host-backups.js").HostBackupPolicy; sourceSubname?: string; id?: string; confirm?: string };
   telemetry?: { tracePropagationOrigins?: string[]; endpoint: string; credential: string; inventoryCredential?: string; inventoryHost?: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
 };
 
 export type HostRegistrationOptions = JsonObject & {
   aliasDomains?: string[];
+  canonicalDomain?: string | null;
   subname?: string;
   domain?: string;
   remoteCapsuleId?: string;
@@ -211,6 +217,8 @@ export type HostAdmissionPublishRequest = HostHelperRequestBase & {
   admission: { contents: string | null };
 };
 export type HostHelperRequest =
+  | (HostHelperRequestBase & { action: "capsule.backup.create" | "capsule.backup.list" | "capsule.backup.restore" | "capsule.backup.prune" | "host.backup.configure" | "host.backup.status" })
+  | (HostHelperRequestBase & { action: "capsule.canonical.set"; capsule: HostHelperCapsuleTarget; canonical: { domain: string | null } })
   | HostAdmissionPublishRequest
   | HostBootstrapRequest
   | HostRegistrationRequest

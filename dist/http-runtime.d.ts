@@ -47,8 +47,9 @@ export declare function prepareHttpSecurity(database: {
     req: IncomingMessage;
 }, admitPreflight?: () => boolean): boolean;
 export declare function resolveRuntimeSecurityPolicy(config?: RuntimeConfig): RuntimeSecurityPolicy;
-export declare function renderPageHtml(html: string | Buffer, response: object, token?: string): string | Buffer<ArrayBufferLike>;
-export declare function injectPageConnectionToken(html: string, token: string, nonce?: string): string;
+export declare function renderPageHtml(html: string | Buffer, response: object, token?: string, database?: LooseRecord): string | Buffer<ArrayBufferLike>;
+/** Every runtime-injected script carries the response nonce so nonce mode never needs 'unsafe-inline'. */
+export declare function injectPageConnectionToken(html: string, token: string, database?: LooseRecord, nonce?: string): string;
 export declare function isDocumentNavigationRequest(request: Pick<IncomingMessage, "headers">): boolean;
 export declare function routeConnectionToken(request: Pick<IncomingMessage, "method" | "url" | "headers" | "socket">, response: Pick<ServerResponse, "writeHead" | "end">, createConnectionToken: (currentToken?: string) => string): boolean;
 export declare function websocketOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeRequestLike): boolean;

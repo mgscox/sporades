@@ -1,3 +1,6 @@
+import { resolvePublicOrigin, normalizePublicOrigin, isLocalPublicOrigin } from "../public-origin.js";
+import { missingServerEnvKeys } from "../server-env-requirements.js";
+import { readProjectServerEnv } from "./server-env-check.js";
 import { spawn, spawnSync } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { connect } from "node:net";
@@ -30,7 +33,11 @@ export async function runDoctorChecks(options) {
     if (!project.config) {
         return checks;
     }
+    if (project.config.env !== undefined)
+        checks.push(await serverEnvCheck(project.config, options.projectDir));
     checks.push(await securityPolicyCheck(project.config, options));
+    if (options.session !== "hosted")
+        checks.push(await localPublicOriginCheck(project.config, options));
     const publicDevCheck = await publicDevPostureCheck(options);
     if (publicDevCheck) {
         checks.push(publicDevCheck);
@@ -62,6 +69,39 @@ export async function runDoctorChecks(options) {
         }
     }
     return checks;
+}
+function publicOriginCheck(origin, session, source) {
+    const warn = source !== "configuration" && ["container", "hosted"].includes(session) && isLocalPublicOrigin(origin);
+    return { id: "doctor.public-origin", title: "Capsule public origin", scope: doctorScope(session),
+        status: warn ? "warn" : "pass", severity: warn ? "warning" : "info",
+        message: `Public origin: ${origin}`,
+        ...(warn ? { hint: "Configure a non-local public origin before sending application links." } : {}),
+        details: { publicOrigin: origin, source } };
+}
+async function localPublicOriginCheck(config, options) {
+    const session = options.session ?? "dev";
+    const file = session === "container" ? "binding.json" : "dev-session.json";
+    const state = await readOptionalJsonFile(path.join(options.projectDir, ".sporades", file));
+    const recorded = session === "container" ? normalizePublicOrigin(state?.publicOrigin)
+        : typeof state?.port === "number" ? `http://localhost:${state.port}` : null;
+    return publicOriginCheck(recorded ?? resolvePublicOrigin({ ...config, __sporadesSession: session,
+        __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN }), session, recorded ? "session" : "configuration");
+}
+async function serverEnvCheck(config, projectDir) {
+    const base = { id: "doctor.server-env", title: "Required Server env", scope: "project" };
+    try {
+        const missingKeys = missingServerEnvKeys(config, await readProjectServerEnv(projectDir));
+        return {
+            ...base, status: missingKeys.length ? "fail" : "pass", severity: missingKeys.length ? "error" : "info",
+            message: missingKeys.length ? `Missing required Server env keys: ${missingKeys.join(", ")}` : "Required Server env keys are present.",
+            details: { missingKeys },
+            ...(missingKeys.length ? { hint: "Set the named keys with `sporades env set <name> --stdin`, then rerun `sporades doctor`." } : {}),
+        };
+    }
+    catch {
+        return { ...base, status: "fail", severity: "error", message: "Server env could not be checked.",
+            hint: "Restore readable Server env and the matching local sealed private key, then rerun `sporades doctor`." };
+    }
 }
 async function projectConfigCheck(projectDir) {
     try {
@@ -277,6 +317,10 @@ async function loadBundledCapsuleDefinition(serverModuleSource) {
 }
 function capsuleAclDeclarationCheck(definition, normalizedSchema) {
     const schema = definition?.schema ?? {};
+    const allowAllTables = Object.entries(schema)
+        .filter(([, table]) => isAppTableDeclaration(table) &&
+        (table.aclRules === undefined || Object.keys(table.aclRules ?? {}).length === 0))
+        .map(([name]) => name);
     const tables = Object.entries(schema)
         .filter(([, table]) => isAppTableDeclaration(table))
         .map(([name, table]) => tableAclPosture(name, table))
@@ -301,11 +345,14 @@ function capsuleAclDeclarationCheck(definition, normalizedSchema) {
         scope: "project",
         status: "warn",
         severity: "warning",
-        message: "Some Capsule app tables are missing ACL declarations; missing ACLs are allow-by-default and not deny-by-default today.",
-        hint: "Add .acl({ read, write }) to app table declarations that should restrict reads or writes. Doctor only inspects declarations and does not evaluate ACL policy outcomes against live user data.",
+        message: `Capsule app tables with missing ACL rules: ${tables.map(table => `${table.name} (${table.missing.join(", ")})`).join("; ")}. ` +
+            (allowAllTables.length ? `Allow-all tables: ${allowAllTables.join(", ")}. ` : "") +
+            "Missing ACLs are allow-by-default and not deny-by-default today.",
+        hint: "Add .acl({ read, write }) to restrict user access, or import acl from sporades/server and use .acl(acl.privilegedOnly()) (alias: acl.denyAll()) for server-owned tables accessed through ctx.privileged.run. Doctor only inspects declarations and does not evaluate ACL policy outcomes against live user data.",
         details: {
             inspectedResource: "app-tables",
             tables,
+            allowAllTables,
         },
     };
 }
@@ -369,11 +416,28 @@ async function hostedCapsuleDoctorChecks(options) {
         runHostJsonCommand(["host", "ssh", target.subname, "--host", target.alias, "--json"], options.projectDir),
     ]);
     checks.push(hostHealthCheck(hostHealth, commands));
+    const backup = runtimeHealth.data?.backups;
+    if (backup?.configured) {
+        const age = backup.ageSeconds === null ? "missing" : `${Math.floor(backup.ageSeconds)} seconds old`;
+        checks.push({
+            id: "doctor.hosted.backups", title: "Capsule data backups", scope: "hosted",
+            severity: backup.stale ? "warning" : "info", status: backup.stale ? "warn" : "pass",
+            message: `Last Capsule backup: ${age}${backup.stale ? " (stale)" : ""}.`,
+            details: { lastBackupAt: backup.lastBackupAt, ageSeconds: backup.ageSeconds, maxAgeSeconds: backup.maxAgeSeconds },
+            commands: [`sporades host backup create --host ${target.alias} --subname ${target.subname} --json`],
+        });
+    }
     const capsule = hostedCapsuleFromList(list, target.subname);
     checks.push(hostedRegistryCheck(list, capsule, commands));
     if (!capsule) {
         return checks;
     }
+    const origin = normalizePublicOrigin(runtimeHealth.data?.runtime?.publicOrigin) ?? normalizePublicOrigin(capsule.publicOrigin);
+    if (origin)
+        checks.push(publicOriginCheck(origin, "hosted", runtimeHealth.data?.runtime?.publicOrigin ? "runtime" : "registry"));
+    else
+        checks.push({ id: "doctor.public-origin", title: "Capsule public origin", scope: "hosted", status: "skip", severity: "info",
+            message: "The Host helper did not report a public origin.", hint: "Upgrade the Host helper and Capsule Bundle to report the effective origin." });
     checks.push(hostedReleaseCheck(capsule, commands));
     checks.push(hostedRuntimeHealthCheck(runtimeHealth, commands));
     if (Object.hasOwn(runtimeHealth.data?.runtime ?? {}, "admissionPolicy") || Object.hasOwn(capsuleStats.data ?? {}, "admissionPolicy")) {

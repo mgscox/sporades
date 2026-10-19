@@ -519,16 +519,18 @@ function serializeCspDirectives(directives) {
         .map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`)
         .join("; ");
 }
-export function renderPageHtml(html, response, token) {
+export function renderPageHtml(html, response, token, database) {
     const nonce = pageNonces.get(response);
     if (!nonce && token === undefined)
         return html;
     const source = typeof html === "string" ? html : html.toString("utf8");
     const rendered = nonce ? source.replaceAll("%SPORADES_NONCE%", nonce) : source;
-    return token === undefined ? rendered : injectPageConnectionToken(rendered, token, nonce);
+    return token === undefined ? rendered : injectPageConnectionToken(rendered, token, database, nonce);
 }
-export function injectPageConnectionToken(html, token, nonce) {
-    const script = `<script${nonce ? ` nonce="${nonce}"` : ""}>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
+/** Every runtime-injected script carries the response nonce so nonce mode never needs 'unsafe-inline'. */
+export function injectPageConnectionToken(html, token, database, nonce) {
+    const attribute = nonce ? ` nonce="${nonce}"` : "";
+    const script = `<script${attribute}>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? `<script${attribute} src="/__sporades/observe.js"></script>` : ""}`;
     if (/<head(\s[^>]*)?>/i.test(html)) {
         return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
     }
@@ -843,7 +845,7 @@ async function createRuntimeHealthResult(database) {
     return {
         ok: ready,
         data: {
-            runtime: { ready, fileMaxSizeBytes: database.fileMaxSizeBytes, httpMaxBodyBytes: database.httpMaxBodyBytes,
+            runtime: { ready, publicOrigin: database.app?.publicOrigin, fileMaxSizeBytes: database.fileMaxSizeBytes, httpMaxBodyBytes: database.httpMaxBodyBytes,
                 ...(database.runtimeTelemetry ? { telemetry: database.runtimeTelemetry } : {}),
                 ...(database.admissionPolicy ? { admissionPolicy: database.admissionPolicy.health() } : {}) },
             checks,

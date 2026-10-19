@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { validateQueryCredential } from "./telemetry-diagnostics.js";
 import { admissionStorageRoot, publishAdmissionPolicy, parseAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS } from "../admission-policy.js";
+import { normalizePublicOrigin } from "../public-origin.js";
 import { inspectAdmissionHealth } from "../admission-evidence.js";
 import { ADMISSION_INSPECTION_SCRIPT } from "./admission-inspection.js";
 import { readDeployFile, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
-import { assertHostnamesAvailable, validateAliasDomains } from "./host-domain-aliases.js";
+import { assertHostnamesAvailable, validateAliasDomains, validateCanonicalDomain, hostedPublicOrigin } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
 import { access, chmod, lstat, mkdir, open, opendir, readdir, readFile, readlink, rename, rm, stat, statfs, symlink, writeFile } from "node:fs/promises";
@@ -27,6 +28,7 @@ import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-con
 import { disableHostTelemetryExports, removeHostTelemetryAgents, checkHostTelemetryDelivery, recoverHostTelemetryActivation, migrateHostTelemetryRelay, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
 import { queueHostInventory, removeHostInventoryWorker, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
+import { configureHostBackups, readHostBackupPolicy, createHostBackup, listHostBackups, pruneHostBackups, restoreHostBackup, recoverHostBackupRestore, hostBackupStatus, atomicBackupJson, trustedBackupPath, publishHostBackupMetric } from "./host-backups.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
 const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
@@ -73,10 +75,14 @@ runHostHelperEntry().catch((error) => {
             ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}),
         },
     }, false);
-    if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host", "--reconcile-inventory"].includes(process.argv[2]))
+    if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host", "--reconcile-inventory", "--backup-host"].includes(process.argv[2]))
         process.exitCode = 1;
 });
 async function runHostHelperEntry() {
+    if (process.argv[2] === "--backup-host") {
+        await backupHostFromTimer();
+        return;
+    }
     if (process.argv[2] === "--install-host-helper" || process.argv[2] === "--install-host-helper-internal") {
         await runHostHelperInstaller();
         return;
@@ -438,6 +444,16 @@ async function runManagedRouteActionProcess(request, input, lockIdentity) {
 }
 function managedRouteMutationLockIdentity(request) {
     switch (request?.action) {
+        case "capsule.backup.create":
+        case "capsule.backup.restore":
+        case "capsule.backup.list":
+        case "capsule.backup.prune":
+            validateLifecycleRequest(request);
+            break;
+        case "host.backup.configure": {
+            const remoteRoot = validateCanonicalHostRouteRoot(request);
+            return { globalLockFile: path.join(remoteRoot, "bin", ".sporades-host-helper.host-route.lock"), routeLockFile: null, domainDirectory: canonicalManagedRouteDomainDirectory(request, remoteRoot) };
+        }
         case "capsule.register":
             validateRegisterRequest(request);
             break;
@@ -459,6 +475,7 @@ function managedRouteMutationLockIdentity(request) {
         case "capsule.shutdown.checkpoint":
         case "capsule.start":
         case "capsule.stop":
+        case "capsule.canonical.set":
         case "capsule.restart":
             validateLifecycleRequest(request);
             break;
@@ -519,6 +536,7 @@ function actionCanProvisionCapsuleHttpLog(action) {
         || action === "capsule.resume"
         || action === "capsule.start"
         || action === "capsule.stop"
+        || action === "capsule.canonical.set"
         || action === "capsule.restart"
         || action === "capsule.sealed-env.rotate-key"
         || action === "capsule.health";
@@ -823,7 +841,7 @@ async function main(request) {
         await dispatchMain(request);
     }
     finally {
-        const mutations = ["capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.migrate", "host.telemetry.reconcile", "host.telemetry.exports-disable", "host.telemetry.enable", "host.telemetry.disable"];
+        const mutations = ["capsule.canonical.set", "capsule.register", "capsule.unregister", "capsule.delete", "capsule.release.install", "capsule.release.rollback", "capsule.release.reconcile", "capsule.start", "capsule.stop", "capsule.restart", "capsule.resume", "host.bootstrap", "host.telemetry.connect", "host.telemetry.migrate", "host.telemetry.reconcile", "host.telemetry.exports-disable", "host.telemetry.enable", "host.telemetry.disable"];
         if (mutations.includes(request.action)) {
             try {
                 if (await queueHostInventory(request.host.remoteRoot))
@@ -833,12 +851,45 @@ async function main(request) {
                 process.stderr.write("Host inventory is pending; periodic reconciliation will retry.\n");
             }
         }
+        if (["capsule.register", "capsule.unregister", "capsule.delete"].includes(request.action)) {
+            try {
+                if (await readHostBackupPolicy(request.host)) {
+                    const record = await readOptionalRegistryRecordForCapsule(request);
+                    await publishHostBackupMetric(request.host, request.capsule.subname, !record || record.status === "unregistered");
+                }
+            }
+            catch {
+                process.stderr.write("Backup freshness metrics need reconciliation; reapply the backup policy.\n");
+            }
+        }
     }
 }
 async function dispatchMain(request) {
     if (request.action === "schedules.inspect")
         validateScheduleInspectionRequest(request);
     hostHelperConfig = await loadHostHelperConfig(request);
+    if (request.action === "host.backup.configure") {
+        const data = await configureHostBackups(request.host, request.backup?.policy);
+        for (const record of await readCapsuleRegistryRecords(request))
+            await publishHostBackupMetric(request.host, record.subname, record.status === "unregistered");
+        writeEnvelope({ ok: true, data, error: null });
+        return;
+    }
+    if (request.action === "host.backup.status") {
+        validateCanonicalHostRouteRoot(request);
+        canonicalManagedRouteDomainDirectory(request);
+        const records = await readCapsuleRegistryRecords(request);
+        const capsules = [];
+        for (const record of records)
+            if (record.status !== "unregistered")
+                capsules.push({ subname: record.subname, ...await hostBackupStatus(request.host, record.subname) });
+        writeEnvelope({ ok: true, data: { configured: !!await readHostBackupPolicy(request.host), capsules }, error: null });
+        return;
+    }
+    if (request.action.startsWith("capsule.backup.")) {
+        await manageCapsuleBackup(request);
+        return;
+    }
     if (request.action.startsWith("host.telemetry.")) {
         const capsuleOperation = request.action === "host.telemetry.enable" || request.action === "host.telemetry.disable";
         if (!request.host || typeof request.host.remoteRoot !== "string" || typeof request.host.domain !== "string" || typeof request.host.alias !== "string" || Boolean(request.capsule) !== capsuleOperation || (!["host.telemetry.connect", "host.telemetry.migrate"].includes(request.action) && request.telemetry)) {
@@ -907,6 +958,10 @@ async function dispatchMain(request) {
             throw helperError("Interrupted deployment requires recovery.", "Run sporades host reconcile first.");
         await publishAdmissionPolicy(admissionStorageRoot(hostedPreservedFilesRoot(paths)), policy.path, bytes);
         writeEnvelope({ ok: true, data: { published: true, removed: bytes === null, digest: bytes ? parseAdmissionPolicy(bytes).digest : null }, error: null });
+        return;
+    }
+    if (request.action === "capsule.canonical.set") {
+        await setCapsuleCanonicalDomain(request);
         return;
     }
     if (request.action === "capsule.register") {
@@ -1110,6 +1165,34 @@ async function bootstrapHost(request) {
         error: null,
     });
 }
+async function setCapsuleCanonicalDomain(request) {
+    validateLifecycleRequest(request);
+    await assertRegistrationRecoveryComplete(request);
+    if (!request.canonical || !Object.hasOwn(request.canonical, "domain"))
+        throw helperError("Missing canonical domain.", "Use host canonical set or clear.");
+    const canonicalDomain = validateCanonicalDomain(request.canonical.domain);
+    let restart = false;
+    let publicOrigin = "";
+    await withRegistryLock(request, async () => {
+        const record = await verifyRegisteredCapsule(request, "lifecycle");
+        const aliases = validateAliasDomains(record.aliasDomains);
+        if (canonicalDomain && !aliases.includes(canonicalDomain))
+            throw helperError("Canonical domain is not a registered alias.", "Select one of this Capsule's registered alias domains.");
+        restart = record.canonicalRestartPending === true || (record.status === "running" && (record.canonicalDomain ?? null) !== canonicalDomain);
+        const next = { ...record, canonicalDomain, ...(restart ? { canonicalRestartPending: true } : {}), updatedAt: new Date().toISOString() };
+        publicOrigin = hostedPublicOrigin(next);
+        if ((record.canonicalDomain ?? null) === canonicalDomain && !restart)
+            return;
+        const registryPath = normaliseRegistration(request, record).registryRecord;
+        await writeRegistryRecordAtomic(registryPath, next);
+    });
+    // The outer Host route lock spans registry publication and recreation. A failed
+    // restart retains the desired origin and pending marker, so an identical retry
+    // repairs interruptions or failed starts. A successful lifecycle start clears it.
+    const restarted = restart ? await restartCapsule(request, { write: false, trustedRegistryLifecycle: true }) : null;
+    writeEnvelope({ ok: !restart || Boolean(restarted), data: { publicOrigin, canonicalDomain, restarted: Boolean(restarted) },
+        error: restart && !restarted ? { message: "Canonical domain saved; Capsule restart failed.", hint: "Inspect Capsule logs, then retry this canonical command or run host start after repair. The saved origin will be used." } : null });
+}
 async function registerCapsule(request) {
     validateRegisterRequest(request);
     const claimPath = path.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "registration-claims", `${request.capsule.subname}.json`);
@@ -1120,12 +1203,15 @@ async function registerCapsule(request) {
     });
     if (pendingClaim) {
         const aliases = validateAliasDomains(pendingClaim.aliasDomains);
+        if (request.registration?.canonicalDomain !== undefined && request.registration.canonicalDomain !== (pendingClaim.canonicalDomain ?? null)) {
+            throw helperError("Hosted Capsule registration recovery is required.", "Retry the original canonical domain before changing it.");
+        }
         if (pendingClaim.domain !== request.host.domain || pendingClaim.subname !== request.capsule.subname
             || (request.registration?.aliasDomains !== undefined
                 && !isDeepStrictEqual([...request.registration.aliasDomains].sort(), [...aliases].sort()))) {
             throw helperError("Hosted Capsule registration recovery is required.", "Repair Caddy and retry the original registration with the same alias domains before changing its aliases.");
         }
-        request = { ...request, registration: { ...request.registration, aliasDomains: aliases } };
+        request = { ...request, registration: { ...request.registration, aliasDomains: aliases, canonicalDomain: pendingClaim.canonicalDomain ?? null } };
     }
     let registration = normaliseRegistration(request);
     await ensureHostedDomainBootstrapped(request, registration);
@@ -1145,6 +1231,7 @@ async function registerCapsule(request) {
         await publishHostHelperBytes(Buffer.from(JSON.stringify({
             domain: registration.domain, subname: registration.subname,
             aliasDomains: registration.aliasDomains,
+            canonicalDomain: registration.canonicalDomain,
             previousAliasDomains: validateAliasDomains(previous?.aliasDomains),
         })), claimPath, 0o600);
         claimWritten = true;
@@ -1167,7 +1254,7 @@ async function registerCapsule(request) {
                     routeAttempted = true;
                     await writeUnavailableRoute(registration.lifecycle);
                     sealedServerEnv = await ensureHostSealedEnvKeyPair(registration, existing);
-                    await writeRegistryRecordAtomic(registration.registryRecord, { ...reactivateRegistrationRecord(existing, sealedServerEnv), aliasDomains: registration.aliasDomains, route: { tls: registration.route.tls } });
+                    await writeRegistryRecordAtomic(registration.registryRecord, { ...reactivateRegistrationRecord(existing, sealedServerEnv), aliasDomains: registration.aliasDomains, canonicalDomain: registration.canonicalDomain, route: { tls: registration.route.tls } });
                     registrationCommitted = true;
                     reactivated = true;
                     return;
@@ -1235,6 +1322,8 @@ async function registerCapsule(request) {
                 domain: registration.domain,
                 hostedUrl: registration.hostedUrl,
                 aliasDomains: registration.aliasDomains,
+                canonicalDomain: registration.canonicalDomain,
+                publicOrigin: hostedPublicOrigin(registration),
                 aliasUrls: registration.aliasDomains.map((hostname) => `https://${hostname}`),
                 remoteCapsuleId: registration.remoteCapsuleId,
             },
@@ -2142,6 +2231,9 @@ async function startCapsule(request, options = {}) {
     await preparePreservedReleaseFiles(request, recordedRelease);
     if (options.containerQuiesced !== true)
         stopAndRemoveContainer(lifecycle.container.name);
+    await rm(path.join(paths.capsule, ".backup-resume.json"), { force: true });
+    // Interrupted restore settlement must precede any container mount or runtime startup.
+    await recoverHostBackupRestore(paths.data);
     if (options.dataPrepared !== true)
         await prepareWritableDataPath(paths.data);
     await recordReleaseStartAttempt(request, releaseId);
@@ -2452,8 +2544,151 @@ function validateSealedServerEnvPrivateKeyPath(release, paths) {
     }
     return releasePrivateKeyPath(paths, release.id);
 }
+async function backupHostFromTimer() {
+    const host = JSON.parse(Buffer.from(process.argv[3] ?? "", "base64url").toString());
+    const request = { action: "host.backup.status", host };
+    validateCanonicalHostRouteRoot(request);
+    canonicalManagedRouteDomainDirectory(request);
+    const policy = await readHostBackupPolicy(host);
+    if (!policy?.schedule)
+        return;
+    const results = [];
+    for (const record of await readCapsuleRegistryRecords(request)) {
+        if (record.status === "unregistered" || !record.currentRelease?.id)
+            continue;
+        let ok = true;
+        for (const operation of ["create", "prune"]) {
+            const child = spawnSync(process.execPath, [process.argv[1]], {
+                input: JSON.stringify({ action: `capsule.backup.${operation}`, host, capsule: { subname: record.subname }, backup: { sourceSubname: record.subname } }),
+                encoding: "utf8", timeout: 3700_000, maxBuffer: 4 * 1024 * 1024,
+            });
+            try {
+                ok = child.status === 0 && JSON.parse(child.stdout).ok === true;
+            }
+            catch {
+                ok = false;
+            }
+            if (!ok)
+                break; // Never prune after an incomplete backup.
+        }
+        results.push({ subname: record.subname, ok });
+    }
+    if (results.some(r => !r.ok))
+        process.exitCode = 1;
+    writeEnvelope({ ok: results.every(r => r.ok), data: { capsules: results }, error: results.some(r => !r.ok) ? { message: "Some Capsule backups failed.", hint: "Inspect host backup status and repository access; successful Capsules were retained." } : null });
+}
+function inspectBackupContainer(request) {
+    const name = createHostedContainerName(request.host.domain, request.capsule.subname);
+    const result = runDocker(["inspect", "--format", "{{json .}}", name]);
+    if (!result.ok) {
+        const names = runDocker(["ps", "-a", "--format", "{{.Names}}"]);
+        if (names.ok && !names.stdout.split(/\r?\n/).includes(name))
+            return null;
+        throw helperError("Cannot inspect backup Capsule container.", "Repair Docker access before retrying backup.");
+    }
+    const container = JSON.parse(result.stdout);
+    if (!/^[a-f0-9]{64}$/.test(container.Id ?? "") || typeof container.State?.Running !== "boolean"
+        || container.Config?.Labels?.["com.sporades.managed"] !== "true"
+        || container.Config?.Labels?.["com.sporades.hosted-domain"] !== request.host.domain
+        || container.Config?.Labels?.["com.sporades.capsule-subname"] !== request.capsule.subname) {
+        throw helperError("Backup container identity does not match the Capsule.", "Resolve the container ownership conflict before retrying.");
+    }
+    return container;
+}
+async function manageCapsuleBackup(request) {
+    const source = request.backup?.sourceSubname ?? request.capsule.subname;
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(source))
+        throw helperError("Invalid backup source subname.", "Use a DNS-safe Capsule subname.");
+    if (request.action !== "capsule.backup.restore" && source !== request.capsule.subname)
+        throw helperError("Backup source does not match Capsule.", "Use the same --subname for this operation.");
+    const policy = await readHostBackupPolicy(request.host);
+    if (!policy)
+        throw helperError("Host backups are not configured.", "Run host backup configure --file <policy.json> first.");
+    let data;
+    if (request.action === "capsule.backup.list")
+        data = { snapshots: await listHostBackups(policy, request.host, source) };
+    else if (request.action === "capsule.backup.prune")
+        data = await pruneHostBackups(policy, request.host, source);
+    else {
+        const record = await verifyRegisteredCapsule(request, "lifecycle");
+        const paths = canonicalReleasePaths(request);
+        if (!record.currentRelease?.id)
+            throw helperError("Backup requires a deployed release.", "Push the intended release to this Capsule first.");
+        if (await pathExists(attemptJournalPath(hostedPreservedFilesRoot(paths))))
+            throw helperError("Interrupted deployment requires recovery before backup.", "Run host reconcile for this Capsule first.");
+        const currentTarget = await readlink(paths.currentLink);
+        if (path.resolve(paths.capsule, currentTarget) !== path.join(paths.releases, record.currentRelease.id))
+            throw helperError("Backup current release pointer requires recovery.", "Run host reconcile and select the intended release before retrying backup.");
+        const config = JSON.parse(await readFile(path.join(paths.releases, record.currentRelease.id, "sporades.json"), "utf8"));
+        if (config.services?.database || config.services?.storage || config.files?.storagePath)
+            throw helperError("Backup supports standard local SQLite and files storage only.", "Use provider-native backup for external services or custom storage paths.");
+        const target = { host: request.host, subname: request.capsule.subname, releaseId: record.currentRelease.id, data: paths.data };
+        let container = inspectBackupContainer(request);
+        const resumeJournal = path.join(paths.capsule, ".backup-resume.json");
+        if (request.action === "capsule.backup.restore") {
+            if (request.backup?.confirm !== request.capsule.subname || !request.backup?.id)
+                throw helperError("Restore requires destination confirmation and a full snapshot ID.", "Pass --confirm <destination-subname> --id <snapshot-id>.");
+            if (container?.State.Running || container?.State.Restarting || record.status === "running")
+                throw helperError("Restore destination must be stopped.", "Run host stop for the destination Capsule before restoring.");
+            data = await restoreHostBackup(policy, target, source, request.backup.id);
+        }
+        else if (request.action === "capsule.backup.create") {
+            // Resume only the exact container we stopped if an earlier backup was interrupted.
+            const pending = await readFile(resumeJournal, "utf8").then(JSON.parse, e => { if (e.code === "ENOENT")
+                return null; throw e; });
+            if ((container?.State.Running || container?.State.Restarting || pending)
+                && container?.Config?.Labels?.["com.sporades.release-id"] !== record.currentRelease.id) {
+                throw helperError("Backup cannot resume a runtime from a different release.", "Restart the Capsule on the intended current release before backing up; a backup must not activate a pending release.");
+            }
+            if (pending) {
+                await trustedBackupPath(resumeJournal, true);
+                if (pending.id !== container?.Id)
+                    throw helperError("Interrupted backup container changed.", "Inspect the Capsule, remove its protected resume journal after recovery, then retry.");
+                if (!container?.State.Running && !runDocker(["start", container.Id]).ok)
+                    throw helperError("Could not resume interrupted backup Capsule.", "Run host start after inspecting Docker.");
+                await rm(resumeJournal);
+                container = inspectBackupContainer(request);
+            }
+            const resume = container?.State.Running === true || container?.State.Restarting === true;
+            let resumed = false;
+            if (resume)
+                await atomicBackupJson(resumeJournal, { id: container.Id });
+            try {
+                if (resume && !runDocker(["stop", "--time", "30", container.Id]).ok)
+                    throw helperError("Could not stop Capsule for backup.", "Inspect Docker before retrying backup.");
+                const stopped = inspectBackupContainer(request);
+                if (stopped?.State.Running || stopped?.State.Restarting)
+                    throw helperError("Capsule remained running during backup.", "Inspect Docker before retrying backup.");
+                await recoverHostBackupRestore(paths.data);
+                data = await createHostBackup(policy, target, async () => {
+                    if (resume) {
+                        if (!runDocker(["start", container.Id]).ok)
+                            throw helperError("Backup Capsule could not resume.", "Inspect Docker and run host start.");
+                        resumed = true;
+                        await rm(resumeJournal);
+                    }
+                });
+            }
+            finally {
+                if (resume && !resumed) {
+                    if (!runDocker(["start", container.Id]).ok)
+                        throw helperError("Backup Capsule could not resume.", "Inspect Docker and run host start; the protected backup resume journal is retained.");
+                    await rm(resumeJournal);
+                }
+            }
+            await publishHostBackupMetric(request.host, source);
+        }
+        else
+            throw helperError("Unknown Capsule backup action.", "Use create, list, restore or prune.");
+    }
+    writeEnvelope({ ok: true, data, error: null });
+}
 async function healthCapsule(request) {
-    writeEnvelope(await evaluateCapsuleHealth(request));
+    const result = await evaluateCapsuleHealth(request);
+    const backups = await hostBackupStatus(request.host, request.capsule.subname);
+    if (backups.configured)
+        Object.assign(result.data, { backups });
+    writeEnvelope(result);
 }
 async function evaluateCapsuleHealth(request, options = {}) {
     validateHealthRequest(request);
@@ -2576,6 +2811,7 @@ async function stopCapsule(request, options = {}) {
     await verifyRegisteredCapsule(request, "lifecycle");
     const lifecycle = normaliseLifecycle(request, await readRegistryRecordForCapsule(request, "lifecycle"));
     stopAndRemoveContainer(lifecycle.container.name);
+    await rm(path.join(canonicalReleasePaths(request).capsule, ".backup-resume.json"), { force: true });
     await writeUnavailableRoute(lifecycle);
     await updateRegistryStatus(request, "stopped");
     const data = {
@@ -2748,6 +2984,8 @@ async function listReleases(request) {
                 subname: record.subname,
                 domain: record.domain,
                 hostedUrl: record.hostedUrl ?? `${request.host.scheme ?? "https"}://${record.subname}.${request.host.domain}`,
+                canonicalDomain: record.canonicalDomain ?? null,
+                publicOrigin: hostedPublicOrigin({ ...record, hostedUrl: record.hostedUrl ?? `${request.host.scheme ?? "https"}://${record.subname}.${request.host.domain}` }),
                 aliasDomains: validateAliasDomains(record.aliasDomains),
                 remoteCapsuleId: record.remoteCapsuleId ?? `${request.host.domain}/${record.subname}`,
             },
@@ -2890,6 +3128,8 @@ async function listCapsules(request) {
             subname: record.subname,
             domain: record.domain,
             hostedUrl: record.hostedUrl ?? `${request.host.scheme ?? "https"}://${record.subname}.${request.host.domain}`,
+            canonicalDomain: record.canonicalDomain ?? null,
+            publicOrigin: hostedPublicOrigin({ ...record, hostedUrl: record.hostedUrl ?? `${request.host.scheme ?? "https"}://${record.subname}.${request.host.domain}` }),
             aliasDomains: validateAliasDomains(record.aliasDomains),
             registry: {
                 remoteCapsuleId: record.remoteCapsuleId ?? `${request.host.domain}/${record.subname}`,
@@ -3118,6 +3358,7 @@ function normaliseLifecycle(request, registryRecord = null, options = {}) {
         routes: canonicalRoutes,
     });
     return {
+        publicOrigin: hostedPublicOrigin({ ...registryRecord, hostedUrl }),
         admissionPolicyPath,
         subname,
         domain,
@@ -3380,6 +3621,7 @@ function normaliseRuntimeHealthBody(body) {
         && (fileInspection === undefined || typeof fileInspection?.ok === "boolean");
     const safe = {
         ready: ready === true,
+        ...(normalizePublicOrigin(body?.data?.runtime?.publicOrigin) ? { publicOrigin: normalizePublicOrigin(body.data.runtime.publicOrigin) } : {}),
         ...(inspectAdmissionHealth(body?.data?.runtime?.admissionPolicy) ? { admissionPolicy: inspectAdmissionHealth(body.data.runtime.admissionPolicy) } : {}),
         ...(validBounds && hasFileMaxSizeBytes ? { fileMaxSizeBytes, httpMaxBodyBytes } : {}),
         checks: {
@@ -3671,6 +3913,13 @@ function normaliseProvidedBaseImage(value) {
 }
 function normaliseRegistration(request, existing = null) {
     const aliasDomains = validateAliasDomains(request.registration?.aliasDomains ?? existing?.aliasDomains);
+    const canonicalDomain = validateCanonicalDomain(request.registration?.canonicalDomain !== undefined
+        ? request.registration.canonicalDomain
+        : request.registration?.aliasDomains !== undefined && !aliasDomains.includes(existing?.canonicalDomain)
+            ? null : existing?.canonicalDomain);
+    if (canonicalDomain && !aliasDomains.includes(canonicalDomain))
+        aliasDomains.push(canonicalDomain);
+    validateAliasDomains(aliasDomains);
     const subname = request.capsule.subname;
     const domain = request.host.domain;
     const remoteRoot = request.host.remoteRoot;
@@ -3697,6 +3946,7 @@ function normaliseRegistration(request, existing = null) {
         hostedUrl,
         remoteCapsuleId,
         aliasDomains,
+        canonicalDomain,
         registryRecord: path.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
         directories: {
             capsule: capsuleDirectory,
@@ -3807,6 +4057,7 @@ function createRegistrationRecord(registration, sealedServerEnv = null) {
         remoteCapsuleId: registration.remoteCapsuleId,
         hostedUrl: registration.hostedUrl,
         aliasDomains: registration.aliasDomains,
+        canonicalDomain: registration.canonicalDomain,
         status: "registered",
         createdAt: now,
         updatedAt: now,
@@ -4687,7 +4938,7 @@ async function dockerRunArgs(lifecycle, releaseId, runtimeProbe, hostedTelemetry
             args.push("--env", "SPORADES_SSH_AUTHORIZED_KEYS_PATH=/run/sporades/ssh/authorized_keys", "--env", "SPORADES_SSH_AUTHORIZED_KEYS_TARGET=/app/data/ssh/authorized_keys");
         }
     }
-    args.push("--volume", formatMount(lifecycle.mounts.data), "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", `SPORADES_ADMISSION_POLICY_PATH=${lifecycle.admissionPolicyPath ?? ""}`, "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbe.token}`, "--env", `SPORADES_PUBLIC_ORIGIN=${lifecycle.hostedUrl}`, "--env", `SPORADES_PUBLIC_ALIASES=${JSON.stringify(validateAliasDomains(lifecycle.routes.running.aliasDomains).map((hostname) => `https://${hostname}`))}`, "--env", `SPORADES_RELEASE_ID=${releaseId}`, "--env", `SPORADES_HOSTED_TELEMETRY_CONFIG=${JSON.stringify(hostedTelemetry)}`);
+    args.push("--volume", formatMount(lifecycle.mounts.data), "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", `SPORADES_ADMISSION_POLICY_PATH=${lifecycle.admissionPolicyPath ?? ""}`, "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${runtimeProbe.token}`, "--env", `SPORADES_PUBLIC_ORIGIN=${lifecycle.publicOrigin ?? lifecycle.hostedUrl}`, "--env", `SPORADES_PUBLIC_ALIASES=${JSON.stringify([...new Set([...(lifecycle.publicOrigin && lifecycle.publicOrigin !== lifecycle.hostedUrl ? [lifecycle.hostedUrl] : []), ...validateAliasDomains(lifecycle.routes.running.aliasDomains).map((hostname) => `https://${hostname}`)])])}`, "--env", `SPORADES_RELEASE_ID=${releaseId}`, "--env", `SPORADES_HOSTED_TELEMETRY_CONFIG=${JSON.stringify(hostedTelemetry)}`);
     args.push("--publish", `127.0.0.1::${lifecycle.routes.running.port ?? 4000}`);
     const sshEnabled = lifecycle.mounts.files.some((mount) => mount.container === "/run/sporades/ssh/authorized_keys");
     if (sshEnabled) {
@@ -5418,6 +5669,8 @@ function reloadCaddy(lifecycle) {
 async function updateRegistryStatus(request, status) {
     await mutateRegistryRecord(request, (record) => {
         record.status = status;
+        if (status === "stopped" || status === "unregistered")
+            delete record.canonicalRestartPending;
         record.updatedAt = new Date().toISOString();
         return record;
     });
@@ -5499,6 +5752,7 @@ async function recordReleaseStarted(request, releaseId) {
         const now = new Date().toISOString();
         record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
         record.status = "running";
+        delete record.canonicalRestartPending;
         record.updatedAt = now;
         record.releases = upsertReleaseEntry(record, releaseId, (entry) => ({
             ...entry,

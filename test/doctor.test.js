@@ -461,7 +461,7 @@ if (request.action === "capsule.list") {
 }
 if (request.action === "capsule.health") {
   if (${JSON.stringify(healthOk)}) {
-    write({ ok: true, data: { capsule: { subname: request.capsule.subname, domain: request.host.domain, registered: true }, release: ${JSON.stringify(currentRelease)}, container: { name: request.health.container.name, running: true }, route: { url: request.health.runtimeHealthUrl, responding: true }, runtime: { ready: true, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } } }, error: null });
+    write({ ok: true, data: { capsule: { subname: request.capsule.subname, domain: request.host.domain, registered: true }, release: ${JSON.stringify(currentRelease)}, container: { name: request.health.container.name, running: true }, route: { url: request.health.runtimeHealthUrl, responding: true }, runtime: { ready: true, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, backups: ${JSON.stringify(overrides.backups)} }, error: null });
   } else {
     write({ ok: false, data: { failure: ${JSON.stringify(healthFailure)}, capsule: { subname: request.capsule.subname }, route: { url: request.health.runtimeHealthUrl, responding: false }, container: { name: request.health.container.name, running: false } }, error: { message: "Hosted Capsule health failed.", hint: "Check Hosted Capsule logs, then retry health." } });
   }
@@ -501,6 +501,7 @@ test("sporades doctor warns when Capsule app tables have no ACL declarations", a
           schema: {
             notes: table({ title: String() }),
             users: table({ name: String() }),
+            emptyRules: table({ value: String() }).acl({}),
           },
         });
       `,
@@ -515,9 +516,13 @@ test("sporades doctor warns when Capsule app tables have no ACL declarations", a
     assert.equal(check.severity, "warning");
     assert.match(check.message, /not deny-by-default today/);
     assert.match(check.hint, /Add \.acl\(\{ read, write \}\)/);
+    assert.match(check.hint, /\.acl\(acl\.privilegedOnly\(\)\)/);
+    assert.match(check.message, /Allow-all tables: notes, users, emptyRules/);
+    assert.deepEqual(check.details.allowAllTables, ["notes", "users", "emptyRules"]);
     assert.deepEqual(check.details.tables, [
       { name: "notes", missing: ["declaration", "read", "write"] },
       { name: "users", missing: ["declaration", "read", "write"] },
+      { name: "emptyRules", missing: ["read", "write"] },
     ]);
   });
 });
@@ -544,11 +549,30 @@ test("sporades doctor distinguishes partial table ACL declarations", async () =>
     const check = findCheck(JSON.parse(result.stdout), "doctor.capsule-authoring.acl-posture");
 
     assert.equal(check.status, "warn");
+    assert.deepEqual(check.details.allowAllTables, []);
+    for (const name of ["readOnlyNotes", "writeOnlyNotes", "insertOnlyNotes"]) assert.ok(check.message.includes(name));
     assert.deepEqual(check.details.tables, [
       { name: "readOnlyNotes", missing: ["write"] },
       { name: "writeOnlyNotes", missing: ["read"] },
       { name: "insertOnlyNotes", missing: ["read", "write"] },
     ]);
+  });
+});
+
+test("sporades doctor accepts privileged-only table ACL helpers in bundled metadata", async () => {
+  await withTempDir(async (dir) => {
+    await writeCapsuleProject(dir, `
+      import { acl, String, capsule, table } from "sporades/server";
+      export default capsule({ schema: {
+        secrets: table({ value: String() }).acl(acl.privilegedOnly()),
+        internal: table({ value: String() }).acl(acl.denyAll()),
+      } });
+    `);
+    const result = await runCli(["doctor", "--strict", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const check = findCheck(JSON.parse(result.stdout), "doctor.capsule-authoring.acl-posture");
+    assert.equal(check.status, "pass");
+    assert.deepEqual(check.details, { tableCount: 2, inspectedResource: "app-tables" });
   });
 });
 
@@ -691,11 +715,11 @@ test("sporades doctor --json returns a stable diagnostic envelope", async () => 
     assert.equal(envelope.data.strict, false);
     assert.equal(envelope.data.session, null);
     assert.deepEqual(envelope.data.summary, {
-      pass: 5,
+      pass: 6,
       warn: 0,
       fail: 0,
       skip: 0,
-      info: 5,
+      info: 6,
       warning: 0,
       error: 0,
     });
@@ -1310,7 +1334,7 @@ test("sporades doctor diagnoses a healthy Hosted Capsule through Host inspection
   await withTempDir(async (dir) => {
     const projectDir = await createProject(dir, "team-notes");
     const configDir = path.join(dir, "machine-config");
-    const fakeSsh = await installDoctorFakeSsh(dir, hostedDoctorFixtureScript());
+    const fakeSsh = await installDoctorFakeSsh(dir, hostedDoctorFixtureScript({ backups: { configured: true, lastBackupAt: "2026-10-18T00:00:00.000Z", ageSeconds: 123, maxAgeSeconds: 93600, stale: false } }));
 
     await withHttpServer((request, response) => {
       response.writeHead(200, { "content-type": "application/json" });
@@ -1351,6 +1375,9 @@ test("sporades doctor diagnoses a healthy Hosted Capsule through Host inspection
       assert.equal(findCheck(envelope, "doctor.hosted.registry").status, "pass");
       assert.equal(findCheck(envelope, "doctor.hosted.release").status, "pass");
       assert.equal(findCheck(envelope, "doctor.hosted.runtime-health").status, "pass");
+      assert.equal(findCheck(envelope, "doctor.hosted.backups").status, "pass");
+      assert.equal(findCheck(envelope, "doctor.hosted.backups").details.ageSeconds, 123);
+      assert.match(findCheck(envelope, "doctor.hosted.backups").message, /123 seconds old/);
       assert.equal(findCheck(envelope, "doctor.hosted.stats").status, "pass");
       assert.equal(findCheck(envelope, "doctor.hosted.sealed-server-env").status, "pass");
       assert.equal(findCheck(envelope, "doctor.hosted.ssh").status, "pass");

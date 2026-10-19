@@ -35,7 +35,8 @@ async function waitForHttp(url, running) {
   while (Date.now() < deadline) {
     if (running.child.exitCode !== null) throw new Error(`Process exited before HTTP readiness: ${JSON.stringify(running.output())}`);
     const response = await fetch(url).catch(() => null);
-    if (response) return response;
+    // Dev binds its port before request telemetry is attached and returns 503 during startup.
+    if (response?.ok) return response;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error(`HTTP readiness timed out: ${JSON.stringify(running.output())}`);

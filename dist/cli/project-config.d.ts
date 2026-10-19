@@ -32,6 +32,7 @@ export declare function readOptionalProjectSecurity(projectDir: string, session:
     };
     hsts?: string | undefined;
 } | null>;
+export declare function validatePublicOriginConfig(config: any): void;
 export declare function validateProjectConfigShape(config: unknown): void;
 export declare function validateSecurityConfig(security: LooseRecord): void;
 export declare function resolveEffectiveSecurityPolicy(config: LooseRecord, session: string): {

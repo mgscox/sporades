@@ -67,7 +67,8 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition, type ServerEnvConfig } from "sporades/server";
+const serverEnvConfig: ServerEnvConfig = { required: ["INTAKE_URL"], failClosed: true };
 import * as publicServerApi from "sporades/server";
 const securityConfig: publicServerApi.SecurityConfig = { csp: { nonce: true, mode: 'enforce', reportTo: '/csp-reports', directives: { 'script-src': ["'self'"] } }, hsts: { maxAgeSeconds: 31536000, includeSubDomains: true, preload: false } };
 // @ts-expect-error nonce opt-in is a boolean.
@@ -75,6 +76,18 @@ const invalidNonceConfig: publicServerApi.SecurityConfig = { csp: { nonce: 'true
 // @ts-expect-error reportTo is a URI string, not a boolean.
 const invalidReportConfig: publicServerApi.SecurityConfig = { csp: { reportTo: true } };
 void securityConfig; void invalidNonceConfig; void invalidReportConfig;
+const errorCollection: publicServerApi.ObservabilityConfig = { errors: { protocol: "sentry", dsnEnv: "ERROR_DSN", client: true, sampleRate: 0.25 } };
+const pageviews: publicServerApi.AnalyticsConfig = { provider: "umami", endpointEnv: "ANALYTICS_ENDPOINT", websiteIdEnv: "WEBSITE_ID", redactQuery: true };
+// @ts-expect-error capability URL redaction cannot be disabled.
+const unsafePageviews: publicServerApi.AnalyticsConfig = { provider: "plausible", endpointEnv: "URL", websiteIdEnv: "ID", redactQuery: false };
+void errorCollection; void pageviews; void unsafePageviews;
+const privateSchema = {
+  secrets: table({ value: String() }).acl(publicServerApi.acl.privilegedOnly()),
+  internal: table({ value: String() }).acl(publicServerApi.acl.denyAll()).unique("value"),
+};
+capsule({ name: "private-data", schema: privateSchema, queries: {
+  secrets: query((ctx) => ctx.db.secrets.all()),
+} });
 const safeHtml: publicServerApi.Html = publicServerApi.html\`<p title="\${'"<&'}">\${[publicServerApi.html\`<b>nested</b>\`, null, undefined, publicServerApi.html.raw('<br>')]}</p>\`;
 const safeMail: publicServerApi.MailSendInput = { to: 'recipient@example.com', subject: 'Welcome', htmlBody: safeHtml };
 const resetCopy: publicServerApi.PasswordResetMailOptions = { textBody: 'Reset: {{link}} before {{expiresAt}}', htmlBody: safeHtml };
@@ -84,6 +97,10 @@ const renderedHtml: string = globalThis.String(safeHtml);
 const forgedHtml: publicServerApi.Html = { toString: () => '<b>unsafe</b>' };
 void safeMail; void resetCopy; void escapedText; void renderedHtml; void forgedHtml;
 const admissionConfig: publicServerApi.AdmissionPolicyConfig = { path: "config/admission.json" };
+declare const publicAppContext: publicServerApi.AppContext;
+const appPublicOrigin: string = publicAppContext.publicOrigin;
+// @ts-expect-error AppContext public origin cannot be reassigned.
+publicAppContext.publicOrigin = "https://changed.example.test";
 const admissionPolicy: publicServerApi.AdmissionPolicy = { version: 1, rules: [{ id: "blocked-path", enabled: true, conditions: [{ kind: "pathname", exact: "/blocked" }, { kind: "method", value: "GET" }], action: { kind: "deny" } }] };
 const quotaPolicy: publicServerApi.AdmissionAction = { kind: "rate-limit", limit: 5, windowMs: 60000 };
 // @ts-expect-error future schema versions are not the v1 policy contract.
@@ -93,11 +110,17 @@ const bypassAdmission: publicServerApi.AdmissionAction = { kind: "allow" };
 void admissionConfig; void admissionPolicy; void quotaPolicy; void futureAdmission; void bypassAdmission;
 
 async function resourceContract(ctx: publicServerApi.CapsuleContext) {
+  const publicOrigin: string = ctx.app.publicOrigin;
+  // @ts-expect-error AppContext and its public origin are immutable.
+  ctx.app.publicOrigin = "https://changed.example.test";
   const support: publicServerApi.ResourceAdapterSupport = { sqlite: "supported", postgres: "supported", libsql: "unsupported" };
   // @ts-expect-error libSQL resource scopes are explicitly unsupported in v1.
   const inventedLibsqlSupport: publicServerApi.ResourceAdapterSupport = { sqlite: "supported", postgres: "supported", libsql: "supported" };
   void support; void inventedLibsqlSupport;
   const answer = await ctx.resources.run({ resource: { table: "anchors", id: "existing" }, operationId: "stable", input: null }, async scope => {
+    const resourceOrigin: string = scope.app.publicOrigin;
+    // @ts-expect-error Resource scopes expose the same immutable AppContext.
+    scope.app.publicOrigin = "https://changed.example.test";
     await scope.jobs.enqueue("child", null);
     const staged = await scope.notifications.accept({ id: "notice", to: ["recipient@example.com"], subject: "Notice", text: "Body" });
     const stagedState: "staged" = staged.state;
@@ -129,9 +152,16 @@ const malformedAdmission: publicServerApi.EndpointMultipartAdmissionDecision = {
 const deniedAdmission: publicServerApi.EndpointMultipartAdmissionDecision = { allow: false, allowFiles: true };
 import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripeCustomerPortalSessionResult, type StripePaymentsDisabledResult, type VerifiedStripeEvent } from "sporades/server/stripe";
 import { importLegacyTeamBillingEvidence, type LegacyTeamBillingEvidence, type TeamBillingImportAdapter } from "sporades/server/team-billing-import";
-import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord } from "sporades/client";
+import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, payments, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord, type PaymentsState } from "sporades/client";
 
 import { auth as emittedAuth } from "${repoRoot}/dist/client.js";
+import { type FileUploadError, type FileUploadErrorCode } from "sporades/client";
+import { type FileUploadErrorCode as EmittedFileUploadErrorCode } from "${repoRoot}/dist/client.js";
+const uploadErrorCode: FileUploadErrorCode = "FILE_MIME_TYPE_MISMATCH";
+const emittedUploadErrorCode: EmittedFileUploadErrorCode = uploadErrorCode;
+const uploadPolicyError = (error: FileUploadError): FileUploadErrorCode => error.code;
+// @ts-expect-error Only the declared upload policy rejection codes belong to this type.
+const invalidUploadPolicyError: FileUploadErrorCode = "ANY_ERROR";
 import { prerender, type PrerenderBoundary } from "sporades/client";
 import { prerender as emittedPrerender } from "${repoRoot}/dist/client.js";
 const boundaries: readonly PrerenderBoundary[] = prerender.discover();
@@ -213,6 +243,26 @@ annotatedUniqueUsers.unique();
 annotatedUniqueUsers.unique("missing");
 
 declare const typedUsers: TableApi<{ id: string; createdAt: string; updatedAt: string; email: string; teamId: string }>;
+// Even SQLite can queue terminal operations behind another transaction.
+// @ts-expect-error A possibly deferred collection must be awaited before mapping.
+typedUsers.all().map(user => user.email);
+// @ts-expect-error A possibly deferred row must be awaited before reading fields.
+typedUsers.get()?.email;
+// @ts-expect-error A possibly deferred insert must be awaited before reading fields.
+typedUsers.insert({ email: "person@example.test", teamId: "team-a" }).id;
+// @ts-expect-error A possibly deferred update must be awaited before reading fields.
+typedUsers.update("user-1", { email: "person@example.test" })?.email;
+// @ts-expect-error A possibly deferred delete is not a synchronous boolean.
+const deletedUser: boolean = typedUsers.delete("user-1");
+async function awaitTableOperations() {
+  const rows = await typedUsers.all();
+  const row = await typedUsers.get();
+  const inserted = await typedUsers.insert({ email: "person@example.test", teamId: "team-a" });
+  const updated = await typedUsers.update(inserted.id, { email: "new@example.test" });
+  const deleted: boolean = await typedUsers.delete(inserted.id);
+  return { emails: rows.map(user => user.email), email: row?.email, updated: updated?.email, deleted };
+}
+void awaitTableOperations;
 typedUsers.insertOrIgnore({ email: "person@example.test", teamId: "team-a" }, "email");
 const serviceInsertOrIgnoreResult: ReturnType<typeof typedUsers.insertOrIgnore> = Promise.resolve({
   id: "user-1",
@@ -242,6 +292,22 @@ typedUsers.insertOrIgnore({ email: "person@example.test" }, "createdAt");
 // @ts-expect-error Managed update timestamps are not insert conflict fields.
 typedUsers.insertOrIgnore({ email: "person@example.test" }, "updatedAt");
 
+async function lifecycleContract(ctx: publicServerApi.CapsuleContext) {
+  const snapshot = await ctx.teams.lockLifecycle("team-id", "recipient-id");
+  snapshot.member?.role satisfies "admin" | "member" | undefined;
+  // @ts-expect-error snapshots cannot be edited into authority.
+  snapshot.teamId = "other-team";
+  // @ts-expect-error browsers cannot lock server transactions.
+  teams.lockLifecycle("team-id");
+}
+const atomicLifecycle = stripeEvent({ consequence: "atomic" }, async (ctx) => {
+  const snapshot = await ctx.teams.lockLifecycle("team-id", "recipient-id");
+  snapshot.member?.role satisfies "admin" | "member" | undefined;
+  // @ts-expect-error atomic consequences do not gain membership mutation authority.
+  ctx.teams.demote("team-id", "recipient-id");
+});
+void lifecycleContract; void atomicLifecycle;
+
 const legacyStripeSubscription = stripeEvent(async (ctx, event) => {
   ctx.log.info("legacy Stripe event", event.providerEventId);
   await ctx.db.todos.all();
@@ -250,10 +316,37 @@ void legacyStripeSubscription;
 
 const app = capsule({
   name: "typed island",
+  auth: { reauthentication: { purposes: { sensitive: { maxAgeSeconds: 60 } }, authorize: (ctx) => {
+    const publicOrigin: string = ctx.app.publicOrigin;
+    // @ts-expect-error Admission app identity is readonly.
+    ctx.app.publicOrigin = "https://changed.example.test";
+    return Promise.resolve(publicOrigin.startsWith("http"));
+  } } },
   accessKeys: { scopes: ["todos:read", "todos:write"] },
   teams: {
     appRoles: ["author", "reviewer"],
+    authorizeDestructive: async (ctx, input) => {
+      const origin: string = ctx.app.publicOrigin;
+      // @ts-expect-error runtime-owned app identity is readonly
+      ctx.app = { publicOrigin: origin };
+      input.operation satisfies "demote" | "removeMember" | "leave" | "delete";
+      input.scope satisfies "team" | "member";
+      input.member.role satisfies "admin" | "member";
+      const signal: AbortSignal = ctx.signal;
+      const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
+      // @ts-expect-error the destructive policy is read-only.
+      ctx.db.todos.insert({ title: "forbidden", ownerId: input.actorUserId });
+      // @ts-expect-error no nested Privileged authority.
+      ctx.privileged.run({}, () => true);
+      // @ts-expect-error the runtime input is immutable.
+      input.member.userId = "another-user";
+      void signal;
+      return { allow: rows.length === 1 };
+    },
     admitJoin: async (ctx, input) => {
+      const publicOrigin: string = ctx.app.publicOrigin;
+      // @ts-expect-error Admission app identity is readonly.
+      ctx.app.publicOrigin = "https://changed.example.test";
       const rowsPromise: Promise<unknown[]> = ctx.db.todos.where("ownerId", input.teamId).all();
       const rowPromise: Promise<unknown> = ctx.db.todos.where("ownerId", input.teamId).get();
       const rows = await rowsPromise;
@@ -286,6 +379,9 @@ const app = capsule({
     },
     portal: { returnPath: "/settings/billing", continuationTtlSeconds: 600 },
     authorize: async (ctx, input) => {
+      const publicOrigin: string = ctx.app.publicOrigin;
+      // @ts-expect-error Team Billing app identity is readonly.
+      ctx.app.publicOrigin = "https://changed.example.test";
       const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
       input.teamRole satisfies "admin" | "member";
       input.operation satisfies "read" | "checkout" | "portal" | "plan-transition" | "erasure";
@@ -300,6 +396,15 @@ const app = capsule({
   files: {
     accessKeys: { read: { scopes: ["todos:read"] } },
     acl: {
+      upload: async (ctx, meta) => {
+        meta.name.toUpperCase();
+        meta.mimeType.toUpperCase();
+        // @ts-expect-error Upload ACL has no mutable database or privileged capabilities.
+        ctx.db.todos.all();
+        // @ts-expect-error Upload metadata cannot be mutated by policy code.
+        meta.sizeBytes = 1;
+        return ctx.auth.isAuthenticated && meta.sizeBytes < 1024;
+      },
       read: async ({ file, ctx }) => {
         file.path.toUpperCase();
         const permitted = await ctx.acl.teams.isMember("00000000-0000-4000-8000-000000000000");
@@ -350,6 +455,11 @@ const app = capsule({
   }),
   jobs: {
     summarise: job(async (ctx, payload) => {
+      const fileApi = ctx.files;
+      if ("list" in fileApi) {
+        const page = await fileApi.list({ createdBefore: new globalThis.Date() });
+        if (page.ok) page.data.files[0]?.createdAt.toUpperCase();
+      }
       // @ts-expect-error A Job may run as the Privileged server role, which has no ordinary Credential provenance.
       ctx.credential.kind;
       if ("credential" in ctx) ctx.credential.kind satisfies "session" | "access-key";
@@ -435,6 +545,7 @@ const app = capsule({
   ],
   queries: {
     sessionGuarded: query(requireAuth({ credentials: ["session"], scopes: ["todos:read"] }, (ctx) => {
+      const publicOrigin: string = ctx.app.publicOrigin;
       ctx.credential.kind satisfies "session";
       // @ts-expect-error Session provenance has no Access-key attribution ID.
       ctx.credential.id;
@@ -451,6 +562,8 @@ const app = capsule({
       return ctx.auth.userId;
     })),
     todos: query(async (ctx) => {
+      // @ts-expect-error Handler app identity is readonly.
+      ctx.app.publicOrigin = "https://changed.example.test";
       await ctx.mail.send({ to: "recipient@example.com", subject: "Query", textBody: "Query" });
       return ctx.db.todos
         .where("ownerId", ctx.auth.userId)
@@ -556,6 +669,12 @@ const app = capsule({
         schedules[0]?.name.toUpperCase();
         const oneSchedule = await privilegedCtx.schedules.get("dynamicSummary");
         oneSchedule?.latestOccurrence?.scheduledFor.toUpperCase();
+        const page = await privilegedCtx.files.list({ createdBefore: new globalThis.Date(), cursor: null });
+        if (page.ok) {
+          page.data.cursor?.toUpperCase();
+          page.data.files[0]?.createdAt.toUpperCase();
+          page.data.files[0]?.ownerId.toUpperCase();
+        }
         const fileUrl = await privilegedCtx.files.url("/reports/private.txt");
         if (fileUrl.ok) {
           fileUrl.data.url.toUpperCase();
@@ -616,6 +735,8 @@ const app = capsule({
         textBody: text,
         provider: { trace: "types" },
       });
+      // @ts-expect-error Listing is available only within an active Privileged callback.
+      ctx.files.list();
       const deletedFile = await ctx.files.delete("/reports/obsolete.txt");
       deletedFile.id.toUpperCase();
       deletedFile.bucket.toUpperCase();
@@ -647,7 +768,7 @@ const app = capsule({
       return {
         path: ctx.request.path,
         userId: requireAuth(ctx).userId,
-        count: ctx.db.todos.all().length,
+        count: (await ctx.db.todos.all()).length,
       };
     }),
     guarded: endpoint({ method: "GET", path: "/guarded" }, requireAuth({ credentials: ["session"] }, (ctx) => ({
@@ -669,7 +790,7 @@ const app = capsule({
       await ctx.privileged.run({
         operation: "messages.auditTyping",
         targetResourceKind: "capsule-db",
-      }, (privilegedCtx) => privilegedCtx.db.todos.all().length);
+      }, async (privilegedCtx) => (await privilegedCtx.db.todos.all()).length);
       const sentToClients: number = ctx.messages.send({ type: "typing", data, scope: "currentUser" });
       return { ok: true, sentToClients };
     }),
@@ -722,6 +843,15 @@ const todos = hooks.useQuery<Array<{ id: string; text: string }>>("todos");
 todos.data?.map((todo) => todo.text.toUpperCase());
 hooks.useMutation("addTodo").run("Ship the types");
 hooks.useAuth().signIn("google");
+const paymentState: PaymentsState = hooks.usePayments();
+paymentState.stripe.enabled satisfies boolean;
+paymentState.stripe.livemode satisfies boolean | null;
+// @ts-expect-error Payment snapshots are read-only.
+paymentState.stripe.enabled = true;
+// @ts-expect-error Provider identities never belong to the browser activation contract.
+paymentState.stripe.customerId;
+payments.get().then(result => result.data?.stripe.livemode);
+payments.subscribe(state => state.stripe.enabled).unsubscribe();
 const vue = createVueComposables({
   reactive<State extends object>(state: State): State { return state; },
   onScopeDispose(cleanup) { void cleanup; },

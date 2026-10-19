@@ -132,7 +132,10 @@ test('approved propagation preserves native invalid-input rejections without sen
           { redirect: 'manual', signal: { get aborted() { throw new Error('private-signal-getter'); } } }]) {
           const expected = await original(input, init).then(() => null, error => error);
           const actual = await fetch(input, init).then(() => null, error => error);
-          assert(expected instanceof TypeError); assert(actual instanceof TypeError);
+          // Native fetch can propagate a caller signal getter's own Error.
+          // Preserve the native rejection class rather than imposing TypeError.
+          assert(expected instanceof Error); assert(actual instanceof Error);
+          assert.equal(actual.constructor, expected.constructor);
           assert.equal(actual.message, expected.message);
         }
       }

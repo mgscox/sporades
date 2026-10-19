@@ -6,6 +6,57 @@ Subscribed client state, authentication workflows, provider configuration, and c
 
 ## Building the Client Side
 
+### Hide checkout while billing is dormant
+
+React and Preact clients obtain `usePayments()` from `createHooks`, alongside
+`useAuth` and `useQuery`. No application query or browser Stripe SDK is needed:
+
+```tsx
+import { useEffect, useState } from "react";
+import { createHooks } from "sporades/client";
+
+const { usePayments } = createHooks({ useEffect, useState });
+
+function BillingSettings() {
+  const { stripe } = usePayments();
+  if (!stripe.enabled) return <p>Billing is not available yet.</p>;
+  return <button onClick={startCheckout}>Choose a plan</button>;
+}
+```
+
+The result is `{ stripe: { enabled: boolean, livemode: boolean | null } }`.
+Dormant billing returns `{ enabled: false, livemode: null }`; activated sandbox
+billing returns `{ enabled: true, livemode: false }`; activated live billing
+returns `{ enabled: true, livemode: true }`. Until the runtime responds, during
+disconnects, or with an older runtime that does not report activation, the
+snapshot is dormant. Reconnecting refreshes it, and unmounting removes the
+subscription.
+
+Hide or disable Checkout, plan-upgrade, and Customer Portal actions while
+`stripe.enabled` is false. Keep existing entitlement displays independent of
+this flag. An enabled integration does not imply that the current user or Team
+may purchase: server-side billing authorization and catalogue validation still
+apply. The snapshot contains no credentials, Server env names, provider IDs,
+Prices, or callback configuration.
+
+Framework-neutral code and other framework adapters can use the same observer:
+
+```ts
+import { payments } from "sporades/client";
+
+const subscription = payments.subscribe(state => renderBilling(state));
+// On disposal:
+subscription.unsubscribe();
+
+const { data, error } = await payments.get();
+```
+
+`subscribe` immediately emits the current immutable snapshot and follows the
+existing runtime handshake across reconnects. `get` refreshes it through that
+transport and returns the usual `{ data, error }` envelope. Activation is
+Capsule-wide and is available to Anonymous visitors; it grants no billing
+authority. This additive 0.9.x API requires no changes to existing Capsules.
+
 ### Use Queries
 
 `useQuery(name)` returns `{ data, error, loading }`:

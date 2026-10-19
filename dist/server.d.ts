@@ -1,8 +1,10 @@
+export type { FileUploadMetadata, FileUploadAclRule, PrivilegedListedFileMetadata, PrivilegedFileListOptions, PrivilegedFileListPage } from "../src/types/server.js";
 export type { RateLimitOptions, RateLimitResult, RegistrationThrottleConfig } from "../src/types/server.js";
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { SecurityConfig, ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 export { escapeHtml, html, type Html } from "./html.js";
-import type { EndpointBodyBytes as CanonicalEndpointBodyBytes, EndpointContext as CanonicalEndpointContext, EndpointFileAttachmentApi as CanonicalEndpointFileAttachmentApi, EndpointFileAttachmentContext as CanonicalEndpointFileAttachmentContext, EndpointFileAttachmentOptions as CanonicalEndpointFileAttachmentOptions, EndpointFileAttachmentReference as CanonicalEndpointFileAttachmentReference, EndpointFileAttachmentResponse as CanonicalEndpointFileAttachmentResponse, EndpointFileIngressApi as CanonicalEndpointFileIngressApi, EndpointFileIngressInspection as CanonicalEndpointFileIngressInspection, EndpointFileIngressLease as CanonicalEndpointFileIngressLease, EndpointFileMetadata as CanonicalEndpointFileMetadata, EndpointRequest as CanonicalEndpointRequest, FileIngressOptions as CanonicalFileIngressOptions, SchemaDefinition as CanonicalSchemaDefinition } from "../src/types/server.js";
+import type { AppContext as CanonicalAppContext, EndpointBodyBytes as CanonicalEndpointBodyBytes, EndpointContext as CanonicalEndpointContext, EndpointFileAttachmentApi as CanonicalEndpointFileAttachmentApi, EndpointFileAttachmentContext as CanonicalEndpointFileAttachmentContext, EndpointFileAttachmentOptions as CanonicalEndpointFileAttachmentOptions, EndpointFileAttachmentReference as CanonicalEndpointFileAttachmentReference, EndpointFileAttachmentResponse as CanonicalEndpointFileAttachmentResponse, EndpointFileIngressApi as CanonicalEndpointFileIngressApi, EndpointFileIngressInspection as CanonicalEndpointFileIngressInspection, EndpointFileIngressLease as CanonicalEndpointFileIngressLease, EndpointFileMetadata as CanonicalEndpointFileMetadata, EndpointRequest as CanonicalEndpointRequest, FileIngressOptions as CanonicalFileIngressOptions, SchemaDefinition as CanonicalSchemaDefinition } from "../src/types/server.js";
+export type AppContext = CanonicalAppContext;
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
 export type UnknownRecord = Record<string, unknown>;
 export type Handler<Args extends unknown[] = any[], Result = unknown> = (...args: Args) => Result | Promise<Result>;
@@ -61,6 +63,7 @@ export type FileIngressAdmissionDecision = Readonly<{
     allowFiles?: boolean;
 }>;
 export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+    app: AppContext;
     db: ReadOnlyDatabaseFromSchema<Schema>;
     env: Readonly<Record<string, string | undefined>>;
     signal?: AbortSignal;
@@ -70,6 +73,7 @@ export type FileIngressAdmissionContext<Schema extends SchemaDefinition = Schema
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
 /** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
 export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+    app: AppContext;
     auth: AuthContext;
     credential: CredentialProvenance;
     db: ReadOnlyDatabaseFromSchema<Schema>;
@@ -328,6 +332,15 @@ export declare function job<const HandlerType extends Handler>(handler: HandlerT
 export declare function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & {
     kind: "schedule";
 };
+/** Table ACL presets. Privileged access still requires an explicit server-owned context. */
+export declare const acl: Readonly<{
+    privilegedOnly: typeof privilegedOnlyTableAcl;
+    denyAll: typeof privilegedOnlyTableAcl;
+}>;
+declare function privilegedOnlyTableAcl(): Readonly<{
+    read: () => false;
+    write: () => false;
+}>;
 export declare function table<const Fields extends UnknownRecord>(fields: Fields): CapsuleTableDefinition<Fields>;
 export declare function String(): FieldBuilder<string>;
 export declare function Boolean(): FieldBuilder<boolean>;
@@ -336,4 +349,5 @@ export declare function Date(): FieldBuilder<string | globalThis.Date | null>;
 export declare function Json<Value extends JsonValue = JsonValue>(): FieldBuilder<Value>;
 export declare function Reference(targetTable: string): ReferenceFieldBuilder;
 export declare function serverRuntimeModuleSource(): string;
+export type { ObservabilityConfig, AnalyticsConfig } from "../src/types/observability.js";
 //# sourceMappingURL=server.d.ts.map

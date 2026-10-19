@@ -149,6 +149,21 @@ export type Subscription = {
   unsubscribe(): void;
 };
 
+/** Public payment activation only. Dormant, unknown, or disconnected state is disabled with a null mode. */
+export type PaymentsState = Readonly<{
+  stripe: Readonly<{ enabled: boolean; livemode: boolean | null }>;
+}>;
+
+/** Runtime-owned activation metadata; never grants billing authority or exposes provider credentials or IDs. */
+export type PaymentsApi = {
+  get(): Promise<SporadesResult<PaymentsState>>;
+  /** Emits immediately, refreshes on reconnect, and becomes dormant when disconnected. */
+  subscribe(listener: (state: PaymentsState) => void): Subscription;
+};
+
+/** Framework-neutral payment activation reader and observer. */
+export const payments: PaymentsApi;
+
 /**
  * App-defined message delivered through the Sporades client transport.
  *
@@ -212,6 +227,10 @@ export type UploadCompleteEvent = {
   type: "complete";
   file: FileMetadata;
 };
+
+export type FileUploadErrorCode = "FILE_UPLOAD_DENIED" | "FILE_UPLOAD_SIZE_MISMATCH" | "FILE_MIME_TYPE_NOT_ALLOWED" | "FILE_MIME_TYPE_MISMATCH";
+/** Policy rejection thrown by files.upload; the original structured payload remains at error. */
+export type FileUploadError = Error & { code: FileUploadErrorCode; hint?: string; error: SporadesError };
 
 /**
  * Options for `files.upload()`.
@@ -333,12 +352,16 @@ export type TeamsApi = {
   /** Promotes an ordinary member in an explicitly identified Team the caller currently administers. */
   promote(teamId: string, userId: string): Promise<SporadesResult<{ updated: true }>>;
   /** Demotes an admin only when another committed Team admin remains. */
+  /** Subject to the Capsule's atomic teams.authorizeDestructive policy when declared. */
   demote(teamId: string, userId: string): Promise<SporadesResult<{ updated: true }>>;
   /** Removes another Team member and their runtime-owned membership authority. Self-removal uses leave(). */
+  /** Subject to the Capsule's atomic teams.authorizeDestructive policy when declared. */
   removeMember(teamId: string, userId: string): Promise<SporadesResult<{ removed: true }>>;
   /** Leaves an explicitly identified Team only while the caller is an ordinary member. */
+  /** Subject to the Capsule's atomic teams.authorizeDestructive policy when declared. */
   leave(teamId: string): Promise<SporadesResult<{ left: true }>>;
   /** Deletes a Team only when the caller is its sole remaining admin member. */
+  /** Subject to the Capsule's atomic teams.authorizeDestructive policy when declared. */
   delete(teamId: string): Promise<SporadesResult<{ deleted: true }>>;
 };
 
@@ -441,6 +464,8 @@ export type SporadesHooks = {
   useQuery<Data = unknown>(name: string, ...args: JsonValue[]): QueryState<Data>;
   useMutation<Result = unknown>(name: string): MutationState<Result>;
   useAuth(): UseAuthState;
+  /** Safe to render before the runtime responds: checkout remains disabled. */
+  usePayments(): PaymentsState;
 };
 
 /** Vue lifecycle/reactivity primitives consumed by `createVueComposables()`. */
@@ -668,14 +693,14 @@ export function onMessage<Data = unknown>(): AppMessageStream<Data>;
 /** Subscribe directly to all App messages and receive an unsubscribe handle. */
 export function onMessage<Data = unknown>(listener: (message: AppMessage<Data>) => void): Subscription;
 /**
- * Bind Sporades query, mutation, and auth hooks to a client framework.
+ * Bind Sporades query, mutation, auth, and payment activation hooks to a client framework.
  *
  * @example
  * ```tsx
  * import { useEffect, useState } from "react";
  * import { createHooks } from "sporades/client";
  *
- * const { useAuth, useMutation, useQuery } = createHooks({ useState, useEffect });
+ * const { useAuth, useMutation, usePayments, useQuery } = createHooks({ useState, useEffect });
  * ```
  */
 export function createHooks(primitives: HookPrimitives): SporadesHooks;

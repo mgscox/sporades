@@ -150,6 +150,10 @@ The repository currently includes:
   registration, release push, start, stop, restart, unregister, storage delete,
   list, stats, logs, SSH inspection, bootstrap, and low-level helper
   invocation.
+- Opt-in encrypted Hosted Capsule SQLite/files backups through local or HTTPS S3
+  restic repositories, explicit stopped-target restore, retention, Host timers,
+  backup-age diagnostics and stale-backup alerts. See the [restore-rehearsal
+  runbook](./reference/capsule-backups.md). Full Host disaster recovery remains separate.
 - Hosted Capsules routed through Caddy with domain-scoped registry, storage,
   route files, deterministic Docker containers, loopback-only published ports,
   Docker ownership labels, and a Host-server-owned unavailable response for
@@ -446,6 +450,14 @@ included in HTTP errors, CLI output, or client transport results.
 preferences and file APIs, app-message helpers, a `createHooks` factory,
 Vue-native composables, Svelte stores, SolidJS signals, Lit reactive
 controllers, and Inferno lifecycle adapters over the same connection.
+`createHooks` also provides `usePayments()`, returning only
+`{ stripe: { enabled: boolean, livemode: boolean | null } }` from the runtime
+handshake. The framework-neutral `payments.get()` and `payments.subscribe()`
+expose the same immutable activation state without an app query. Missing,
+dormant, unknown, and disconnected state defaults to disabled with null mode.
+Clients hide Checkout and Customer Portal actions while disabled; server billing
+authorization remains required. No credentials, Server env names, or provider
+IDs are exposed. The API is additive within 0.9.x.
 The framework-neutral `prerender` API additionally exposes `discover()` for a
 readonly snapshot of opaque, named static-fragment boundary handles and
 `dismiss(name?)` for explicit all-fragment or name-filtered cleanup. Each handle
@@ -656,6 +668,13 @@ same immutable public tree; there is no request-time renderer. See the
 [handover guide](./guide/client.md#hand-over-to-the-interactive-client).
 
 ## Data and Migrations
+
+Server-owned app tables may opt into `.acl(acl.privilegedOnly())`, with
+`acl.denyAll()` as an alias, imported from `sporades/server`. Ordinary reads
+are filtered and writes denied; explicit audited Privileged server execution
+retains access. Existing tables remain allow-by-default in 0.9.x. Doctor names
+tables with missing rules and every table with no rules, suggesting the helper
+without evaluating policy functions.
 
 Sporades uses SQLite through Node `>=22.13 <23` or `>=24` built-in `node:sqlite`. Dev sessions store the
 database at `.sporades/data.db`. Local Container sessions and Hosted Capsules
@@ -1432,6 +1451,28 @@ sealed envelope exists. The CLI accepts a single value over stdin with
 `sporades env set <name> --stdin`, preserving and re-sealing sibling values,
 and exposes value-safe presence checks through `sporades env has <name>`.
 
+Optional `env.required` and `env.failClosed` declarations add required Server env
+presence checks. An `env` stanza opts doctor and Host push into checking explicit
+keys plus configured SMTP auth, mail webhook, and enabled Stripe env references.
+Missing or whitespace-only values fail doctor and refuse push before Host
+contact, unless `--allow-missing-env` is explicit. Boot emits one names-only error;
+`failClosed: true` refuses startup before database initialization. Omission
+preserves existing doctor/push behavior for the 0.9.x patch contract. See
+[required Server env](reference/projects-and-configuration.md#required-server-env).
+
+### Atomic Capsule-owned Team responsibility
+
+Opt-in `teams.authorizeDestructive` protects demote, removeMember, leave and Team
+deletion through one transaction-owned policy for direct SDK and server calls.
+It requires explicit valid allow after current Session/membership/admin checks
+and the exact Team lifecycle lock. Expiring read-only cross-owner Capsule reads
+keep provider evidence private; failures poison app/runtime rollback and remain
+opaque. Server-only `teams.lockLifecycle` lets explicit accepted transfers and
+local billing-state changes share that lock in their existing write transaction,
+including atomic Stripe consequences, without provider calls or wider userless
+administration. Omission preserves 0.9.x behavior without a storage migration.
+See [the Teams contract](reference/teams.md#atomic-destructive-policy).
+
 ## Non-Goals
 
 - Being an interpreted IR sandbox.
@@ -1440,7 +1481,7 @@ and exposes value-safe presence checks through `sporades env has <name>`.
 - Providing file-based routing.
 - Supporting external databases as the primary app store.
 - Making endpoints the main data API.
-- Adding multi-node orchestration, managed backups, DNS automation, or a public
+- Adding multi-node orchestration, full Host disaster recovery, DNS automation, or a public
   hosted management API in the current scope.
 
 ## Log payload cap validation

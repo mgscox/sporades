@@ -218,8 +218,17 @@ Profile commands:
                       Change a Hosted Capsule's Telemetry opt-out
 
 Capsule commands:
+  backup configure --file <policy.json>
+                      Configure encrypted backups and an optional Host timer
+  backup create|list|prune --subname <name>
+                      Manage encrypted SQLite and files snapshots
+  backup restore --subname <source> --id <full-id> --confirm <destination>
+                      Restore a stopped Capsule; optionally --to-subname <destination>
+  backup status       Report last successful backup age for each Capsule
   bind <subname>      Bind this project to a Hosted Capsule
   register <subname>  Register a Hosted Capsule
+  canonical set <subname> <alias>|clear <subname>
+                      Select the public origin; restart a running Capsule
   push                Push and install a Hosted Capsule release
   start <subname>     Start a Hosted Capsule
   stop <subname>      Stop a Hosted Capsule
@@ -252,6 +261,8 @@ Options:
                       Ephemeral operator user:password for check or migrate
   --server <target>   SSH target for host add
   --domain <domain>   Hosted domain for host add
+  --canonical-domain <hostname>
+                      Public HTTPS link origin for register
   --alias-domain <hostname>
                       Custom HTTPS domain for register (repeatable)
   --remote-root <path>
@@ -259,6 +270,7 @@ Options:
   --tls <mode>        TLS mode: automatic or cloudflare-origin
   --subname <name>    Hosted Capsule subname
   --lines <n>, -n <n> Log line count
+  --allow-missing-env  Push despite missing required Server env keys
   --restart           Restart after host push
   --verify            Verify release health after host push
   --fallback-to-previous-release

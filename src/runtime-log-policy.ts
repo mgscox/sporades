@@ -55,3 +55,96 @@ export function isSensitiveLogKey(key: string) {
     /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key))
   );
 }
+
+// Structured credentials are one private value, including nested containers and
+// quoted delimiters. A malformed or truncated container conceals the remainder.
+function structuredCredentialEnd(text: string, start: number) {
+  const closers: string[] = [];
+  let quote = "", quoteSlashes = 0;
+  for (let index = start; index < text.length; index++) {
+    const char = text[index];
+    if (char === "\\") {
+      let end = index;
+      while (text[end] === "\\") end++;
+      const slashes = end - index;
+      // A container can itself be serialized inside a JSON diagnostic string.
+      // Match that quotation layer exactly; its escaped data quotes are deeper.
+      if (quoteSlashes) {
+        if (slashes % (2 * (quoteSlashes + 1)) === quoteSlashes && text[end] === quote) { quote = ""; quoteSlashes = 0; }
+      } else if (!quote && /["'`]/.test(text[end] ?? "")) {
+        quote = text[end]; quoteSlashes = slashes;
+      }
+      index = quote && !quoteSlashes && slashes % 2 === 0 ? end - 1 : end;
+      continue;
+    }
+    if (quote) {
+      if (!quoteSlashes && char === quote) quote = "";
+    } else if (char === '"' || char === "'" || char === "`") quote = char;
+    else if (char === "[") closers.push("]");
+    else if (char === "{") closers.push("}");
+    else if (char === "]" || char === "}") {
+      if (closers.pop() !== char) return text.length;
+      if (!closers.length) return index + 1;
+    }
+  }
+  return text.length;
+}
+
+// Diagnostics are untrusted prose, not a URL serialization format. Whitespace,
+// apostrophes and closing delimiters can all occur in private values (including
+// truncated JSON). Once a URL suffix starts, its whole diagnostic line is private.
+// Never resume at a later URL-looking string or reuse a tentative prose boundary.
+function stripDiagnosticUrlSuffixes(text: string) {
+  let safe = "", copied = 0, scanned = 0;
+  // Match only token starts, then scan each token once. Repeated slashes or a
+  // long scheme-looking word without a suffix must not cause repeated rescans.
+  const starts = /(?<![a-z\d+.-])[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/)/giu;
+  for (const match of text.matchAll(starts)) {
+    if (match.index < scanned) continue;
+    let end = match.index + match[0].length;
+    while (end < text.length && !/[\s?#<>"`]/.test(text[end])
+      && !(text[end] === "%" && /^%(?:3f|23)/i.test(text.slice(end, end + 3)))) end++;
+    scanned = end;
+    if (!/^(?:[?#]|%3f|%23)/i.test(text.slice(end, end + 3))) continue;
+    safe += text.slice(copied, end);
+    // This is the only private boundary: never infer closure from its contents.
+    while (end < text.length && text[end] !== "\r" && text[end] !== "\n") end++;
+    copied = scanned = end;
+  }
+  return safe + text.slice(copied);
+}
+
+/** Shared diagnostic text policy. Stack frames are admitted separately by error collection. */
+export function redactDiagnosticText(value: string, serverEnv: LooseRecord = {}) {
+  // URL syntax must survive until suffix stripping. In particular, an env
+  // value such as https://example.test/ must not hide the start of a URL.
+  let safe = stripDiagnosticUrlSuffixes(value)
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+  for (const secret of Object.values(serverEnv)) {
+    if (typeof secret !== "string" || !secret.length) continue;
+    safe = safe.split(secret).join("[REDACTED]");
+    // A complete URL-valued secret may itself have lost a private suffix.
+    // Conceal its surviving form as well as its original bytes.
+    const stripped = stripDiagnosticUrlSuffixes(secret)
+      .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+    if (stripped && stripped !== secret) safe = safe.split(stripped).join("[REDACTED]");
+  }
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
+  // Unquoted headers can contain spaces and several cookies. Conceal the entire line.
+  // Quoted headers are handled below, where their closing quote bounds the value.
+  safe = safe.replace(/\b(?:authorization|cookie)\s*[:=](?![ \t]*["'])[^\r\n]*/gi, "[REDACTED]");
+  // Scan keys separately so an outer non-sensitive field cannot hide a nested credential.
+  let redacted = "", cursor = 0;
+  for (const match of safe.matchAll(/(["']?)([\w-]+)\1\s*[:=]\s*/g)) {
+    if (match.index < cursor || !(isSensitiveLogKey(match[2]) || /^(?:api[_-]?key|request)$/i.test(match[2]))) continue;
+    const start = match.index + match[0].length;
+    // Admit escaped quotes and spaces, and conceal an unterminated value to the line end.
+    const value = safe.slice(start).match(/^(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|(?=\r?$))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|(?=\r?$))|[^\s,;]+)/m);
+    redacted += safe.slice(cursor, match.index) + "[REDACTED]";
+    cursor = safe[start] === "[" || safe[start] === "{"
+      ? structuredCredentialEnd(safe, start)
+      : start + (value?.[0].length ?? 0);
+  }
+  safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
+  return safe;
+}

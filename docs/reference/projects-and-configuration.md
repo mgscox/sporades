@@ -598,6 +598,90 @@ A typical `sporades.json` looks like this:
 
 Ports follow this cascade: CLI flag, then `sporades.json`, then default.
 
+### Public origin
+
+Server handler and policy contexts expose the immutable `ctx.app.publicOrigin` as
+the trusted base URL for links, callbacks, and other Capsule-owned URLs. It is
+independent of request Host headers and does not change Capsule identity or
+`hostedUrl`.
+
+The `ctx.app` binding itself is non-writable and non-configurable, including in
+table/File ACL, registration, reauthentication and Team policy callbacks.
+
+Dev resolves it to the local HTTP URL using the actual configured CLI port.
+Container resolves `deploy.publicOrigin`, then the `SPORADES_PUBLIC_ORIGIN`
+environment override, then its local HTTP URL using `deploy.port`. Hosted uses
+the Capsule's selected canonical HTTPS alias, or its Host subdomain over HTTPS
+when no alias is selected. The Host subdomain remains routed when an alias is
+canonical, and no redirect is added.
+
+An explicit `deploy.publicOrigin` must be an HTTP(S) origin with no credentials,
+path, query, or fragment. Invalid explicit values fail configuration validation.
+Container deploy snapshots the resolved origin in its launch environment;
+redeploy to apply a configuration change. If a deployed runtime cannot
+observe a valid effective origin, startup logs an error and continues so older
+Capsules keep running; `sporades doctor` reports the effective origin when it
+can observe one.
+### Required Server env
+
+Opt into required Server env checks by adding `env` to `sporades.json`:
+
+```json
+{
+  "env": {
+    "required": ["TICKETS_INTAKE_URL", "PUBLIC_APP_URL"],
+    "failClosed": false
+  }
+}
+```
+
+`env.required` accepts at most 64 key names, each 1–128 characters, matching
+`[A-Za-z_][A-Za-z0-9_]*`. `__proto__` and the reserved `SPORADES_` prefix are
+rejected. Duplicates are checked once. Both fields are optional: `env: {}`
+opts into checks for configuration-implied keys alone. Unknown options and
+malformed declarations fail configuration validation without echoing values.
+
+The required set automatically includes configured
+`mail.smtp.auth.usernameEnv` and `passwordEnv` (except `method: "none"`), every
+enabled mail webhook's `secretEnv`, and `payments.stripe.secretKeyEnv` and
+`webhookSecretEnv` when Stripe is enabled. Disabled Stripe configuration adds
+no keys. OAuth keys are not inferred; declare them explicitly when needed.
+
+`sporades doctor` checks the local release candidate's decrypted Sealed Server
+env and fails with `doctor.server-env` when a required value is absent, empty,
+or whitespace-only. When no sealed envelope exists, doctor uses the legacy
+`.env.sporades.server` fallback, matching local runtime loading. A sealed envelope
+always takes precedence, and an unreadable envelope or missing private key is a
+failed check. Shell environment variables cannot satisfy these requirements.
+This is a project check, including with `--session hosted`; it does not inspect
+or attest the currently running Hosted Capsule's values.
+
+`sporades host push` checks the local sealed values before requesting Host key
+material, building, or uploading the release. Missing keys refuse the push.
+`--allow-missing-env` explicitly bypasses this presence check for that push:
+
+```sh
+sporades host push --host personal --subname team-notes --allow-missing-env
+```
+
+The override does not change `sporades.json`, bypass sealed-env decryption or
+legacy-import requirements, relax Stripe's existing credential validation, or
+override runtime `env.failClosed`. Use `sporades env set <name> --stdin` to set
+missing values, then run doctor again.
+
+At each runtime boot, one platform `error` event, `env.required.missing`, names
+all missing declared and implied keys in the JSONL log (and stdout when enabled).
+Values are never included. The normal log payload cap applies. By default boot
+continues. `env.failClosed: true` rejects startup with
+`MISSING_REQUIRED_SERVER_ENV` before database initialization or HTTP listening.
+Successful boots emit no missing-env event, and restart checks current values
+again. Inspection/operator actions are not new Capsule boots.
+
+This is an opt-in 0.9.x patch contract: omitting `env` preserves existing doctor
+and push behavior. Implied missing keys can still produce a boot diagnostic;
+existing mail-disabled behavior remains available. Stripe's existing fail-closed
+activation requirements remain unchanged.
+
 ### Static prerender configuration (Vite)
 
 `client.prerender` is an optional ordered array of `{ "name": "landing", "module": "client/render/landing.ts" }`
@@ -647,7 +731,10 @@ configuration:
 
 `payments` remains optional so existing Capsules and non-blank demonstration
 templates retain their current behavior. The dormant shape is exact and grants
-no provider authority. Activation is all-or-nothing:
+no provider authority. Use the runtime-provided
+[`usePayments()` or `payments.subscribe()`](./client-auth-and-preferences.md#hide-checkout-while-billing-is-dormant)
+to hide Checkout and Customer Portal actions while billing is dormant, without
+writing an application query. Activation is all-or-nothing:
 
 ```json
 {
@@ -913,6 +1000,14 @@ bytes.
 is omitted, the limit defaults to 10 MiB (10 * 1024 * 1024 bytes). An explicit
 value must be a positive integer byte count. `0`, fractions, non-numeric
 values, and `null` are rejected at startup with `INVALID_FILE_CONFIG`.
+
+`files.allowedMimeTypes` optionally restricts SDK uploads/replacements and
+multipart file ingress to exact lowercase MIME types, for example
+`["image/png", "application/pdf"]`. Omission preserves existing behavior; `[]`
+denies all new uploads. Wildcards, parameters, and non-array values fail with
+`INVALID_FILE_CONFIG`. Signature checks run before publishing bytes for supported
+formats; other types rely on the declared MIME. See [File policy](./files-and-realtime.md#upload-policy-and-mime-validation)
+for typed errors and validation limits. Existing Files are unchanged.
 
 The first Docker Compose Capsule service implementation is local-only. Dev
 sessions and local Container sessions can start, inspect, stop, and reset
@@ -1587,3 +1682,11 @@ These are read-only extensions of existing commands, with no new dashboard,
 public evidence route or Capsule API. No declaration adds no loader, policy
 fields, inspection check or policy logs. See
 [the authority ADR](../adr/0054-request-admission-policy-is-deployer-owned.md).
+
+## Error tracking and analytics
+
+Optional `observability.errors` and `analytics` settings enable protocol-level
+error collection and first-party pageviews through a same-origin tunnel. See
+[Errors and analytics](./errors-and-analytics.md) for configuration, privacy,
+GlitchTip and Umami setup. These settings do not change existing Capsules when
+omitted, and require no provider origins in the browser CSP.

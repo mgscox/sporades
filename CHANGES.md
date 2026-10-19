@@ -7,6 +7,14 @@ Changes since v0.9.31.
 ### 🚀 Features
 
 - Add opt-in CSP nonces, Hosted-only HSTS, explicit CSP report URIs and doctor migration guidance (#235).
+- Add opt-in Sentry-envelope errors and Umami/Plausible pageviews through a redacted same-origin collection tunnel (#234).
+- Add opt-in encrypted Capsule data backups, local/S3 targets, schedules, restore rehearsals and freshness alerts (#238).
+- Add `ctx.app.publicOrigin`, canonical Hosted alias selection, and origin diagnostics (#231).
+- Add opt-in `acl.privilegedOnly()` / `acl.denyAll()` table policies and name allow-all tables in doctor warnings (#239).
+
+- Add opt-in required Server env checks for doctor, Host push, and runtime boot (#236).
+- Expose safe runtime payment activation through `createHooks().usePayments()` and the framework-neutral `payments` API (#237).
+- Add opt-in upload ACL and global MIME policy, plus privileged File listing for orphan cleanup (#233).
 - Add shared Capsule rate limits and trusted-address authentication throttles (#232).
 - Export HTML-safe mail helpers and support password-reset body placeholders (#230).
 - Add pinned monitoring release acceptance verifier (#229) (872f33866).
@@ -18,6 +26,12 @@ Changes since v0.9.31.
 - Add bounded telemetry outage recovery and pipeline visibility (#207) (fc04b41b3).
 
 ### 🐛 Bug Fixes
+
+- Keep the Host exporter textfile directory readable under restrictive umasks during setup and reconciliation, including Hosts without backups (#238).
+- Preserve unconfigured Hosted Capsule start/restart beneath root-owned sticky ancestors when no backup restore journal exists (#238).
+- Prevent authenticated reloads from triggering fatal restarts through discarded, delayed table reads. Preserve Session-resolution scheduling across tracing, deny expired read authority, and describe deferred table results in the SDK types (#255).
+
+- Add opt-in atomic `teams.authorizeDestructive` for direct SDK and server demote, removeMember, leave and Team deletion. Transaction-bound cross-owner responsibility reads fail closed; `ctx.teams.lockLifecycle` shares exact-Team serialization with accepted transfers and atomic billing consequences. Omission preserves 0.9.x behavior; no storage migration. Requires publication of a new 0.9.x package before downstream adoption (#249).
 
 - Bump for vulns (f68221783).
 - Prevent favicon 404s in new scaffolds (#219) (d44aa0970).

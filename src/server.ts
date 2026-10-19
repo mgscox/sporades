@@ -1,8 +1,10 @@
+export type { FileUploadMetadata, FileUploadAclRule, PrivilegedListedFileMetadata, PrivilegedFileListOptions, PrivilegedFileListPage } from "../src/types/server.js";
 export type { RateLimitOptions, RateLimitResult, RegistrationThrottleConfig } from "../src/types/server.js";
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { SecurityConfig, ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 export { escapeHtml, html, type Html } from "./html.js";
 import type {
+  AppContext as CanonicalAppContext,
   EndpointBodyBytes as CanonicalEndpointBodyBytes,
   EndpointContext as CanonicalEndpointContext,
   EndpointFileAttachmentApi as CanonicalEndpointFileAttachmentApi,
@@ -18,6 +20,8 @@ import type {
   FileIngressOptions as CanonicalFileIngressOptions,
   SchemaDefinition as CanonicalSchemaDefinition,
 } from "../src/types/server.js";
+
+export type AppContext = CanonicalAppContext;
 
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
 export type UnknownRecord = Record<string, unknown>;
@@ -66,11 +70,11 @@ export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
 export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
 export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal; allowFiles?: boolean }>;
-export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** Shared immutable request head supplied to endpoint multipart admission. */
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
 /** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
-export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** The endpoint policy may prohibit file parts before staging; it cannot widen limits or provide file claim authority. */
 export type EndpointMultipartAdmissionDecision = Readonly<{ allow: true; allowFiles?: boolean } | { allow: false }>;
 /** Runtime-owned bounds and stable identifiers for one endpoint multipart ingress request. File bytes use the smaller of maxFileBytes and files.maxSizeBytes. A malformed filename can be classified as a field; file allowances never raise maxFieldBytes. MULTIPART_LIMIT_EXCEEDED errors may include safe details: { partType: "file" | "field", limitKind, limit }. Byte limits report bytes; maxFiles and maxFieldCount report counts. */
@@ -410,6 +414,13 @@ export function schedule<const Definition extends ScheduleDefinition>(definition
   return { kind: "schedule", ...definition };
 }
 
+/** Table ACL presets. Privileged access still requires an explicit server-owned context. */
+export const acl = Object.freeze({ privilegedOnly: privilegedOnlyTableAcl, denyAll: privilegedOnlyTableAcl });
+
+function privilegedOnlyTableAcl() {
+  return Object.freeze({ read: () => false, write: () => false });
+}
+
 export function table<const Fields extends UnknownRecord>(fields: Fields): CapsuleTableDefinition<Fields> {
   return tableDefinition(fields);
 }
@@ -686,6 +697,9 @@ export function schedule(definition) {
   return { kind: "schedule", ...definition };
 }
 
+${privilegedOnlyTableAcl.toString()}
+export const acl = Object.freeze({ privilegedOnly: privilegedOnlyTableAcl, denyAll: privilegedOnlyTableAcl });
+
 export function table(fields) {
   return tableDefinition(fields);
 }
@@ -758,3 +772,5 @@ import {
   normalizeRequireUserAuthOptions,
   validateCapsuleAuthRequirements,
 } from "./auth-admission.js";
+
+export type { ObservabilityConfig, AnalyticsConfig } from "../src/types/observability.js";

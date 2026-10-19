@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderHostRelayCollectorConfig, validateHostRelayConnection } from '../dist/cli/host-telemetry-relay.js';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile, chmod, rm, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile, chmod, rm, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -106,7 +106,7 @@ process.stdin.on('end',()=>{
 });
 
 
-test('UMask=0077 Host metrics publication keeps Caddy readable and state private', async t => {
+test('UMask=0077 unconfigured Host metrics setup and reconciliation keep exporter and Caddy readable and state private', async t => {
   const root = await mkdtemp(path.resolve('.sporades/host-metrics-modes-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, 'bin');
@@ -126,8 +126,18 @@ if [ "$1" = adapt ]; then echo '{"apps":{"http":{"servers":{"metrics":{"listen":
   process.env.PATH = bin + path.delimiter + savedPath;
   try {
     const { configureHostMetrics } = await import('../dist/cli/host-metrics.js');
-    for (const operation of ['enable', 'disable']) {
+    for (const operation of ['enable', 'reconcile', 'disable']) {
+      const backupMetrics = path.join(root, 'backup-metrics');
+      // Reconcile must also repair a directory created by an older helper.
+      if (operation === 'reconcile') {
+        await chmod(backupMetrics, 0o700);
+        assert.equal((await lstat(backupMetrics)).mode & 0o777, 0o700);
+      }
       await configureHostMetrics(root, 'apps.example', operation);
+      assert.equal(process.umask(), 0o077);
+      assert.equal((await lstat(backupMetrics)).mode & 0o777, 0o755, `${operation}: exporter textfile directory`);
+      // No backup policy or publication can repair permissions in this fixture.
+      assert.deepEqual(await readdir(backupMetrics), []);
       for (const [file, mode] of Object.entries({ 'caddy/Caddyfile': 0o644, 'telemetry/resources.json': 0o600, 'telemetry/caddy-before-resources.conf': 0o600 })) {
         assert.equal((await lstat(path.join(root, file))).mode & 0o777, mode, `${operation}: ${file}`);
       }

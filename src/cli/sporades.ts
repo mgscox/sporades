@@ -1,13 +1,16 @@
 #!/usr/bin/env node
+import { routeCollection } from "../observability-runtime.js";
+import { resolvePublicOrigin } from "../public-origin.js";
+import { missingServerEnvKeys, missingServerEnvError } from "../server-env-requirements.js";
 import { validateQueryCredential } from "./telemetry-diagnostics.js";
 import { openAdmissionPolicy, type AdmissionHealth, type AdmissionReloadEvent, admissionStorageRoot, publishAdmissionPolicy, resolveAdmissionPolicy, ADMISSION_LIMITS, parseAdmissionPolicy } from "../admission-policy.js";
 import { createAdmissionEvidence } from "../admission-evidence.js";
 import { readDeployFile, assertNoPreservedFileAttempt, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, recordPreservedFileAttempt, resolveDeployFiles, deployFileMounts, preparePreservedFiles, preparePreservedFileStorage, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, removeDeployFileSnapshot } from "../deploy-files.js";
-import { validateAliasDomains } from "./host-domain-aliases.js";
+import { validateAliasDomains, validateCanonicalDomain } from "./host-domain-aliases.js";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync, statSync, watch } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type RequestListener } from "node:http";
 import { appendFile, chmod, cp, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -86,6 +89,7 @@ import {
 } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { resolveSporadesPackageRoot } from "../package-root.js";
+import { validateHostBackupPolicy } from "./host-backups.js";
 import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
@@ -1264,12 +1268,34 @@ function validateServerEnvKeyName(name: string) {
 }
 
 function parseHostArgs(args: string[]): LooseRecord {
+  if (args[0] === "backup") {
+    const operation = args[1];
+    if (!["configure", "create", "list", "restore", "prune", "status"].includes(operation)) throw commandError("Unknown backup operation.", "Use host backup configure|create|list|restore|prune|status.");
+    const options: LooseRecord = { subcommand: "backup", operation, projectDir: process.cwd(), json: false };
+    const names: Record<string, string> = { "--host": "hostAlias", "--subname": "subname", "--to-subname": "toSubname", "--id": "id", "--confirm": "confirm", "--file": "file" };
+    for (let i = 2; i < args.length; i++) {
+      if (args[i] === "--json") { options.json = true; continue; }
+      const name = names[args[i]];
+      if (!name || options[name] !== undefined) throw commandError("Invalid backup option.", "Use --host, --subname, --to-subname, --id, --confirm, --file and --json.");
+      options[name] = readFlagValue(args, ++i, args[i - 1]);
+    }
+    if (options.hostAlias) validateHostAlias(options.hostAlias);
+    for (const name of ["subname", "toSubname", "confirm"]) if (options[name]) validateCapsuleSubname(options[name]);
+    if (!["configure", "status"].includes(operation) && !options.subname) throw commandError("Missing backup Capsule subname.", "Pass --subname <name>.");
+    if (operation === "configure" && (!options.file || options.subname)) throw commandError("Missing backup policy file or unexpected subname.", "Use host backup configure --file <policy.json>.");
+    if (operation !== "configure" && options.file) throw commandError("Unexpected backup policy file.", "Use --file with configure.");
+    if (operation === "restore") {
+      if (!/^[a-f0-9]{64}$/.test(options.id ?? "") || options.confirm !== (options.toSubname ?? options.subname)) throw commandError("Restore requires a snapshot ID and confirmation of the destination.", "Pass --id <full-id> --confirm <destination-subname> and stop the destination Capsule first.");
+    } else if (options.id || options.confirm || options.toSubname) throw commandError("Unexpected restore option.", "Use --id, --confirm and --to-subname only with restore.");
+    return options;
+  }
   const [subcommand, ...rest] = args;
   let json = false;
   let hostAlias = null;
   let server = null;
   let domain = null;
   const aliasDomains: string[] = [];
+  let canonicalDomain: string | null = null;
   let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
   let tlsMode = DEFAULT_HOST_TLS_MODE;
   let subname = null;
@@ -1277,6 +1303,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   let restart = false;
   let verify = false;
   let fallbackToPreviousRelease = false;
+  let allowMissingEnv = false;
   let branch = "main";
   let file = DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW;
   let dryRun = false;
@@ -1308,6 +1335,11 @@ function parseHostArgs(args: string[]): LooseRecord {
 
       case "--server":
         server = readFlagValue(rest, ++index, "--server");
+        break;
+
+      case "--canonical-domain":
+        if (subcommand !== "register") throw commandError("--canonical-domain is only supported by host register.", "Use host canonical set to change an existing registration.");
+        canonicalDomain = validateCanonicalDomain(readFlagValue(rest, ++index, "--canonical-domain"));
         break;
 
       case "--alias-domain":
@@ -1343,6 +1375,10 @@ function parseHostArgs(args: string[]): LooseRecord {
       case "--verify":
         verify = true;
         restart = true;
+        break;
+
+      case "--allow-missing-env":
+        allowMissingEnv = true;
         break;
 
       case "--fallback-to-previous-release":
@@ -1466,6 +1502,16 @@ function parseHostArgs(args: string[]): LooseRecord {
       return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
 
+    case "canonical": {
+      const [operation, name, domain, ...extra] = positional;
+      if (!["set", "clear"].includes(operation) || !name || extra.length || (operation === "set" ? !domain : domain !== undefined)) {
+        throw commandError("Invalid canonical domain command.", "Use host canonical set <subname> <alias> or host canonical clear <subname>.");
+      }
+      validateCapsuleSubname(name);
+      if (hostAlias) validateHostAlias(hostAlias);
+      return { subcommand, subname: name, canonicalDomain: operation === "set" ? validateCanonicalDomain(domain) : null, hostAlias, json, projectDir: process.cwd() };
+    }
+
     case "register": {
       const [positionalSubname, ...extra] = positional;
       if (!positionalSubname) {
@@ -1478,8 +1524,9 @@ function parseHostArgs(args: string[]): LooseRecord {
         validateHostAlias(hostAlias);
       }
       validateCapsuleSubname(positionalSubname);
+      if (canonicalDomain && !aliasDomains.includes(canonicalDomain)) aliasDomains.push(canonicalDomain);
       validateAliasDomains(aliasDomains);
-      return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, canonicalDomain, json, projectDir: process.cwd() };
     }
 
     case "rotate-key": {
@@ -1642,7 +1689,7 @@ function parseHostArgs(args: string[]): LooseRecord {
           "Use `sporades host push --verify --fallback-to-previous-release`.",
         );
       }
-      return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, json, projectDir: process.cwd() };
+      return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, allowMissingEnv, json, projectDir: process.cwd() };
 
     case "github": {
       const [area, action, ...extra] = positional;
@@ -2428,6 +2475,20 @@ async function startDevSession(options: LooseRecord) {
     data: diagnostic.event === "telemetry.export.failed" ? { reason: diagnostic.reason } : null,
   });
   let telemetry!: ReturnType<typeof createHttpRequestTelemetry>;
+  // Bind before runtime initialization: init hooks and startup Jobs need the
+  // actual origin even when the operator asks the OS to choose a port.
+  const starting: RequestListener = (_request, response) => {
+    response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Dev session is starting.");
+  };
+  const server = createServer(starting);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+  });
+  const address = server.address();
+  const actualPort = typeof address === "object" && address ? address.port : port;
+  const url = `http://localhost:${actualPort}`;
   try {
     runtime = await createDevRuntime({
       projectDir: options.projectDir,
@@ -2436,22 +2497,28 @@ async function startDevSession(options: LooseRecord) {
       serverEnv: bundle.serverRuntime.env,
       serviceEnv: capsuleServiceEnv,
       capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-      config: withRuntimeSecuritySession(config, session),
+      config: { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: url },
       runtimeProbeToken: inspectionToken,
       onJobQueueReady(queueDatabase: any) {
         telemetry = createHttpRequestTelemetry(telemetryConfig, emitTelemetryDiagnostic);
         telemetry.bindJobQueue(queueDatabase);
       },
     });
-  } catch (error) { await telemetry?.shutdown(); throw error; }
-  await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
-  runtime.database.log.emit({
-    category: "platform",
-    event: "dev.session.started",
-    level: "info",
-    message: "Dev session started",
-    data: { diagnostics: runtime.database.runtimeDiagnostics },
-  });
+    await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
+    runtime.database.log.emit({
+      category: "platform",
+      event: "dev.session.started",
+      level: "info",
+      message: "Dev session started",
+      data: { diagnostics: runtime.database.runtimeDiagnostics },
+    });
+  } catch (error) {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await runtime?.shutdown();
+    await telemetry?.shutdown();
+    throw error;
+  }
   const devRefresh = createDevRefreshController();
   const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport, {
     // Resolve the current adapter at dispatch/accept time. Operations and close
@@ -2462,7 +2529,8 @@ async function startDevSession(options: LooseRecord) {
     },
   });
 
-  const server = createServer(async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
+  server.removeListener("request", starting);
+  server.on("request", async (request, response) => telemetry.run(request, response, runtime.database.endpoints, async () => {
     try {
       if (prepareHttpSecurity(runtime.database, request, response, () => routeHttpAdmission(runtime.database, request, response))) {
         return;
@@ -2606,7 +2674,8 @@ async function startDevSession(options: LooseRecord) {
       }
 
       if (
-        (await routeSporadesAuth(runtime.database, request, response))
+        (await routeCollection(runtime.database, request, response))
+        || (await routeSporadesAuth(runtime.database, request, response))
         || (await handleFileHttpRoute(runtime.database, request, response, websocketHub as any))
         || (await routeEndpoint(runtime.database, request, response))
       ) {
@@ -2621,7 +2690,7 @@ async function startDevSession(options: LooseRecord) {
           ...(htmlAsset ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }),
         });
         response.end(htmlAsset
-          ? renderPageHtml(publicAsset.body, response, publicAsset.html && isDocumentNavigationRequest(request) ? websocketHub.createConnectionToken() : undefined)
+          ? renderPageHtml(publicAsset.body, response, publicAsset.html && isDocumentNavigationRequest(request) ? websocketHub.createConnectionToken() : undefined, runtime.database)
           : publicAsset.body);
         return;
       }
@@ -2649,14 +2718,6 @@ async function startDevSession(options: LooseRecord) {
     socket.destroy();
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => resolve());
-  });
-
-  const address = server.address();
-  const actualPort = typeof address === "object" && address ? address.port : port;
-  const url = `http://localhost:${actualPort}`;
   let actionBundleCreated = false;
   let watchers: ReturnType<typeof watchDevInputs> = [];
   let onUnhandledRejection: ((reason: any) => void) | null = null;
@@ -2745,7 +2806,7 @@ async function startDevSession(options: LooseRecord) {
         bundle.serverRuntime.env,
         runtimeServiceEnv,
         bundle.serverRuntime.capsuleModuleSource,
-        withRuntimeSecuritySession(config, session),
+        { ...withRuntimeSecuritySession(config, session), __sporadesDevOrigin: url },
         telemetry,
       );
       websocketHub.disconnectAll();
@@ -2845,7 +2906,7 @@ async function startDevSession(options: LooseRecord) {
           rebuild.serverRuntime.env,
           nextCapsuleServiceEnv,
           rebuild.serverRuntime.capsuleModuleSource,
-          withRuntimeSecuritySession(nextConfig, session),
+          { ...withRuntimeSecuritySession(nextConfig, session), __sporadesDevOrigin: url },
           nextTelemetry ?? telemetry,
         ).catch(async (error: unknown) => {
           telemetry.bindJobQueue(runtime.database);
@@ -3958,6 +4019,25 @@ async function ensureHostProfileEnvKey(config: LooseRecord, alias: string | numb
 
 async function manageHost(options: LooseRecord) {
   switch (options.subcommand) {
+    case "backup": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const policy = options.operation === "configure" ? validateHostBackupPolicy(JSON.parse(await readFile(path.resolve(options.file), "utf8"))) : undefined;
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile,
+        action: ["configure", "status"].includes(options.operation) ? `host.backup.${options.operation}` : `capsule.backup.${options.operation}`,
+        subname: options.toSubname ?? options.subname, projectDir: options.projectDir,
+        backup: { ...(policy ? { policy } : {}), ...(options.subname ? { sourceSubname: options.subname } : {}), ...(options.id ? { id: options.id, confirm: options.confirm } : {}) } });
+      if (result.ok && policy) {
+        (config.profiles[resolved.alias] as LooseRecord).backups = policy;
+        await writeHostConfig(config);
+      }
+      if (options.json) writeResult(result, !result.ok);
+      else {
+        if (!result.ok) throw commandError(result.error.message, result.error.hint);
+        process.stdout.write(`${JSON.stringify(result.data, null, 2)}\n`);
+      }
+      return;
+    }
     case "telemetry": {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
@@ -4096,10 +4176,15 @@ async function manageHost(options: LooseRecord) {
           throw commandError(result.error.message, result.error.hint);
         }
         process.stdout.write(`Hosted Capsule runtime healthy: ${health.runtimeHealthUrl}\n`);
+        if (result.data.backups?.configured) process.stdout.write(`Last backup: ${result.data.backups.ageSeconds === null ? "missing" : `${Math.floor(result.data.backups.ageSeconds)} seconds ago`}${result.data.backups.stale ? " (stale)" : ""}\n`);
         return;
       }
 
       const result = await checkHostServerHealth(resolved.alias, resolved.profile);
+      if (resolved.profile.backups) {
+        const backups = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: "host.backup.status", projectDir: options.projectDir });
+        Object.assign(result.data, { backups: backups.ok ? backups.data : { configured: true, unavailable: true } });
+      }
 
       if (options.json) {
         writeResult(result, !result.ok);
@@ -4110,6 +4195,8 @@ async function manageHost(options: LooseRecord) {
         throw commandError(result.error.message, result.error.hint);
       }
       process.stdout.write(`Host server healthy: ${result.data.healthUrl}\n`);
+      const backups = (result.data as LooseRecord).backups;
+      for (const capsule of backups?.capsules ?? []) if (capsule.configured) process.stdout.write(`Backup ${capsule.subname}: ${capsule.ageSeconds === null ? "missing" : `${Math.floor(capsule.ageSeconds)} seconds ago`}${capsule.stale ? " (stale)" : ""}\n`);
       return;
     }
 
@@ -4131,6 +4218,17 @@ async function manageHost(options: LooseRecord) {
       return;
     }
 
+    case "canonical": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile,
+        action: "capsule.canonical.set", subname: options.subname, canonical: { domain: options.canonicalDomain }, projectDir: options.projectDir });
+      if (options.json) writeResult(result, !result.ok);
+      else if (!result.ok) throw commandError(result.error.message, result.error.hint);
+      else process.stdout.write(`Public origin: ${result.data.publicOrigin}\n`);
+      return;
+    }
+
     case "register": {
       await readProjectConfig(options.projectDir);
       const config = await readHostConfig();
@@ -4141,7 +4239,7 @@ async function manageHost(options: LooseRecord) {
         profile: resolved.profile,
         action: "capsule.register",
         subname: options.subname,
-        registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname, options.aliasDomains),
+        registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname, options.aliasDomains, options.canonicalDomain),
         projectDir: options.projectDir,
       });
 
@@ -4153,6 +4251,10 @@ async function manageHost(options: LooseRecord) {
         throw commandError(result.error.message, result.error.hint);
       }
 
+      if (options.canonicalDomain && (result.data?.capsule?.canonicalDomain !== options.canonicalDomain
+        || result.data?.capsule?.publicOrigin !== `https://${options.canonicalDomain}`)) {
+        throw commandError("Host helper did not confirm the canonical domain.", "Upgrade the Host helper and inspect the registration; no local binding was written.");
+      }
       const confirmedAliases = result.data?.capsule?.aliasDomains;
       if (options.aliasDomains.length && (!Array.isArray(confirmedAliases)
         || confirmedAliases.length !== options.aliasDomains.length
@@ -4190,6 +4292,8 @@ async function manageHost(options: LooseRecord) {
       const preserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
       const sshAccess = await resolveHostedCapsuleSshAccessForAudit(projectConfig, options.projectDir);
       const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
+        projectConfig,
+        allowMissingEnv: options.allowMissingEnv,
         projectDir: options.projectDir,
         alias: target.alias,
         profile: target.profile,
@@ -4783,6 +4887,7 @@ function dockerMountField(value: string) {
 async function startContainerSession(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4000;
+  const publicOrigin = resolvePublicOrigin({ ...config, deploy: { ...config.deploy, port }, __sporadesSession: "container", __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN });
   const runtimeDir = path.join(options.projectDir, ".sporades");
   const containerName = `sporades-${config.name ?? path.basename(options.projectDir)}`;
   const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
@@ -4960,6 +5065,10 @@ async function startContainerSession(options: LooseRecord) {
       "--env",
       "SPORADES_SECURITY_SESSION=container",
       "--env",
+      `SPORADES_PUBLIC_ORIGIN=${publicOrigin}`,
+      "--env",
+      `SPORADES_CONTAINER_PUBLIC_ORIGIN=${publicOrigin}`,
+      "--env",
       `SPORADES_ADMISSION_POLICY_PATH=${bundle.deployFiles.find(file => file.update === "admission")?.path ?? ""}`,
       "--env",
       `SPORADES_CONTAINER_TELEMETRY_CONFIG=${JSON.stringify(telemetryConfig)}`,
@@ -5038,6 +5147,7 @@ async function startContainerSession(options: LooseRecord) {
       containerId,
       containerName,
       containerTransactionToken,
+      publicOrigin,
       telemetryDescriptorVersion: 1,
       ...(telemetryProfile !== undefined ? { telemetryProfile } : {}),
       ...(telemetryCaStagePath ? { telemetryCaStagePath } : {}),
@@ -6080,6 +6190,8 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
     capsule: options.subname ? { subname: options.subname } : null,
   };
   if (options.admission) request.admission = options.admission;
+  if (options.backup) request.backup = options.backup;
+  if (options.canonical) request.canonical = options.canonical;
   if (options.bootstrap) {
     request.bootstrap = options.bootstrap;
   }
@@ -6124,6 +6236,7 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
     cwd: options.projectDir,
     encoding: "utf8",
     ...(String(options.action).startsWith("access-keys.") ? { maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER } : {}),
+    ...(String(options.action).includes(".backup.") ? { maxBuffer: 16 * 1024 * 1024 } : {}),
     input: `${JSON.stringify(request)}\n`,
   });
 
@@ -6131,9 +6244,15 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
 }
 
 async function prepareHostPushSealedServerEnv(options: LooseRecord) {
+  const checkRequired = (values: Record<string, string>) => {
+    if (options.projectConfig.env === undefined || options.allowMissingEnv) return;
+    const missing = missingServerEnvKeys(options.projectConfig, values);
+    if (missing.length) throw missingServerEnvError(missing);
+  };
   const paths = sealedServerEnvPaths(options.projectDir);
   const envelope = await readSealedServerEnv(paths);
   if (!envelope) {
+    checkRequired({});
     const legacyEnvFile = await readServerEnvFile(path.join(options.projectDir, ".env.sporades.server"));
     const legacyValues = legacyEnvFile.exists ? parseServerEnv(legacyEnvFile) : {};
     if (Object.keys(legacyValues).length > 0) {
@@ -6170,6 +6289,7 @@ async function prepareHostPushSealedServerEnv(options: LooseRecord) {
     });
   }
 
+  checkRequired(values);
   const hostKey = await readHostedCapsuleSealedEnvPublicKey(options.alias, options.profile, options.subname, options.projectDir);
   const hostEnvelope = sealServerEnv(values, hostKey.publicKey, {
     source: "host-push-auto-reencrypt",

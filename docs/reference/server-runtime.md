@@ -161,6 +161,27 @@ calling permission helpers directly. Rules may be sync or async functions.
 and `delete` unless that operation has its own rule. Missing rules allow the
 operation by default.
 
+For server-owned tables, import `acl` from `sporades/server` and opt into
+`.acl(acl.privilegedOnly())`; `acl.denyAll()` is an alias. Both return read
+and write deny rules, covering insert, update, and delete through the existing
+write fallback. Ordinary reads return no rows (`get()` returns `null`) and
+writes fail with opaque `DENIED` errors. Existing tables without ACL rules keep
+their allow-by-default behavior in 0.9.x.
+
+```ts
+import { acl, String, table } from "sporades/server";
+
+const appSecrets = table({ key: String(), value: String() })
+  .acl(acl.privilegedOnly());
+```
+
+Trusted server code accesses these rows inside an explicit audited
+`ctx.privileged.run({ operation: "secrets.load", targetResourceKind: "capsule-db" },
+privilegedCtx => privilegedCtx.db.appSecrets.all())` callback. The helper grants
+no Privileged authority. Keep authorization and returned data under server
+control: returning secret rows from a query or endpoint still exposes them.
+Privileged table handles expire when the callback ends.
+
 ```ts
 schema: {
   notes: table({
@@ -217,8 +238,12 @@ documents: table({ teamId: String(), body: String() }).acl({
 When an ACL denies a write, clients receive an opaque `DENIED` error rather than
 policy internals. Sporades writes structured internal `acl.denied` log events
 with table name, operation, declared rule, actor shape, row IDs, and non-secret
-field names. `sporades doctor` may later warn about missing ACLs or
-open-to-the-world data; missing ACLs are not deny-by-default today.
+field names. `sporades doctor` names tables with missing ACL rules and lists
+every table with no declared rules (including `.acl({})`) as allow-all. It
+suggests `acl.privilegedOnly()` for server-owned data. Doctor inspects declarations
+without executing policy functions; a complete declaration that always returns
+`true` still passes this structural check. Missing ACLs are not deny-by-default
+today.
 
 ### Read With Queries
 
@@ -245,6 +270,23 @@ ctx.db.projects.get()
 ctx.db.projects.all()
 ```
 
+Await terminal table operations (`get`, `all`, `insert`, `insertOrIgnore`,
+`update`, and `delete`) before using their results. They can return a Promise
+on any adapter, including SQLite while another transaction owns the connection.
+Returning an operation directly from a handler also lets the runtime await it.
+The shipped `TableApi` types describe these results as `MaybePromise<T>`.
+
+```ts
+const projects = await ctx.db.projects.all();
+return projects.map(project => project.name);
+```
+
+Keep reads inside their handler's lifetime. A read whose context expires while
+waiting for storage or an asynchronous ACL rejects with opaque `DENIED` instead
+of exposing rows. The runtime observes discarded read rejections so they cannot
+trigger a fatal restart; discarding a Promise still cannot produce a usable
+synchronous result. Awaiting a live read preserves its ACL result or rejection.
+
 Prefer filtering by `ctx.auth.userId` for per-user data. That keeps privacy in
 the server code where it belongs.
 
@@ -254,11 +296,11 @@ Custom query when a client-selected filter belongs in server code:
 
 ```ts
 queries: {
-  projectsForTeam: query((ctx, teamId: string, options: { archived: boolean }) =>
-    ctx.db.projects
+  projectsForTeam: query(async (ctx, teamId: string, options: { archived: boolean }) =>
+    (await ctx.db.projects
       .where("teamId", teamId)
       .where("ownerId", ctx.auth.userId)
-      .all()
+      .all())
       .filter((project) => options.archived || !project.archived),
   ),
 }
@@ -369,12 +411,12 @@ export default capsule({
       linked: true,
       credentials: ["session"],
       scopes: ["projects:delete"],
-    }, (ctx) => {
+    }, async (ctx) => {
       // Reject guest sessions too: require a linked (non-guest) user.
       const auth = requireUserAuth(ctx, { linked: true });
-      ctx.db.projects.where("ownerId", auth.userId).all().forEach((project) => {
-        ctx.db.projects.delete(project.id);
-      });
+      for (const project of await ctx.db.projects.where("ownerId", auth.userId).all()) {
+        await ctx.db.projects.delete(project.id);
+      }
     })),
   },
   endpoints: {
@@ -629,6 +671,10 @@ A Sealed Server Environment uses public/private keys to encrypt environment
 variables, reducing exposure risk when copying data to and from a Host server.
 It does not require any local keychain or secure storage, and is almost
 transparent to development operations once enabled.
+
+Declare required key names with [`env.required` in sporades.json](./projects-and-configuration.md#required-server-env).
+This opts doctor and Host push into presence checks. Boot logs one names-only
+error for missing keys; `env.failClosed: true` refuses startup.
 
 #### Create and Import Values
 

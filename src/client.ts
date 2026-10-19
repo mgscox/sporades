@@ -1,3 +1,4 @@
+export type { FileUploadError, FileUploadErrorCode } from "../src/types/client.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 
 const runtime = await import(`data:text/javascript,${encodeURIComponent(createClientRuntimeSource())}`);
@@ -9,6 +10,7 @@ export const files = runtime.files;
 export const preferences = runtime.preferences;
 export const teams = runtime.teams;
 export const teamBilling = runtime.teamBilling;
+export const payments: import("../src/types/client.js").PaymentsApi = runtime.payments;
 export const journey = runtime.journey;
 export const mutations = runtime.mutations;
 export const queries = runtime.queries;
