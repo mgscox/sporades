@@ -309,6 +309,7 @@ export declare function listObservabilityBackups(host: HostHelperHost): Promise<
     }[];
 }>;
 export declare function pruneObservabilityBackups(host: HostHelperHost): Promise<{
+    retentionDays?: number | undefined;
     pruned: boolean;
     retention: number;
 }>;

@@ -5,6 +5,8 @@ export type HostBackupPolicy = {
     credentialsFile?: string;
     schedule: "hourly" | "daily" | "weekly" | null;
     retention: number;
+    /** Optional restic `--keep-within <n>d`; combined with `retention`, a snapshot either rule keeps survives. */
+    retentionDays?: number;
     maxAgeHours: number;
 };
 type Snapshot = {
@@ -36,6 +38,7 @@ export declare function readHostBackupPolicy(host: HostHelperHost): Promise<Host
 export declare function restic(policy: HostBackupPolicy, args: string[], cwd?: string): Promise<string>;
 export declare function listHostBackups(policy: HostBackupPolicy, host: HostHelperHost, subname: string): Promise<Snapshot[]>;
 export declare function pruneHostBackups(policy: HostBackupPolicy, host: HostHelperHost, subname: string): Promise<{
+    retentionDays?: number | undefined;
     pruned: boolean;
     retention: number;
 }>;
@@ -84,6 +87,10 @@ export declare function hostBackupStatus(host: HostHelperHost, subname: string):
     maxAgeSeconds: number;
     stale: boolean;
 }>;
+export declare function hostBackupRetention(host: HostHelperHost): Promise<{
+    keepLast: number;
+    keepWithinDays: number | null;
+} | null>;
 export declare function backupTimerUnits(host: HostHelperHost, policy: HostBackupPolicy): {
     name: string;
     service: string;

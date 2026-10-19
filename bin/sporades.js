@@ -147196,7 +147196,7 @@ function absolute(value) {
 function validateHostBackupPolicy(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail2("Invalid Host backup policy.");
   const v2 = value;
-  if (Object.keys(v2).some((k) => !["repository", "passwordFile", "credentialsFile", "schedule", "retention", "maxAgeHours"].includes(k))) fail2("Unknown Host backup policy field.");
+  if (Object.keys(v2).some((k) => !["repository", "passwordFile", "credentialsFile", "schedule", "retention", "retentionDays", "maxAgeHours"].includes(k))) fail2("Unknown Host backup policy field.");
   let repository = absolute(v2.repository);
   if (typeof v2.repository === "string" && v2.repository.startsWith("s3:https://")) {
     let url;
@@ -147207,8 +147207,8 @@ function validateHostBackupPolicy(value) {
     }
     repository = !!url.hostname && !url.username && !url.password && !url.search && !url.hash && /^\/[^/]+/.test(url.pathname);
   }
-  if (!repository || !absolute(v2.passwordFile) || v2.credentialsFile !== void 0 && !absolute(v2.credentialsFile) || ![null, "hourly", "daily", "weekly"].includes(v2.schedule) || !Number.isSafeInteger(v2.retention) || v2.retention < 1 || v2.retention > 1e4 || !Number.isSafeInteger(v2.maxAgeHours) || v2.maxAgeHours < 1 || v2.maxAgeHours > 87600) fail2("Invalid Host backup policy.");
-  return { repository: v2.repository, passwordFile: v2.passwordFile, ...v2.credentialsFile ? { credentialsFile: v2.credentialsFile } : {}, schedule: v2.schedule, retention: v2.retention, maxAgeHours: v2.maxAgeHours };
+  if (!repository || !absolute(v2.passwordFile) || v2.credentialsFile !== void 0 && !absolute(v2.credentialsFile) || ![null, "hourly", "daily", "weekly"].includes(v2.schedule) || !Number.isSafeInteger(v2.retention) || v2.retention < 1 || v2.retention > 1e4 || v2.retentionDays !== void 0 && (!Number.isSafeInteger(v2.retentionDays) || v2.retentionDays < 1 || v2.retentionDays > 3650) || !Number.isSafeInteger(v2.maxAgeHours) || v2.maxAgeHours < 1 || v2.maxAgeHours > 87600) fail2("Invalid Host backup policy.");
+  return { repository: v2.repository, passwordFile: v2.passwordFile, ...v2.credentialsFile ? { credentialsFile: v2.credentialsFile } : {}, schedule: v2.schedule, retention: v2.retention, ...v2.retentionDays !== void 0 ? { retentionDays: v2.retentionDays } : {}, maxAgeHours: v2.maxAgeHours };
 }
 
 // src/dev-clamav-sidecar.ts

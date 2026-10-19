@@ -66,7 +66,7 @@ import { disableHostTelemetryExports, removeHostTelemetryAgents, checkHostTeleme
 import { queueHostInventory, removeHostInventoryWorker, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
 import { enableObservability, disableObservability, statusObservability, provisionObservability, readObservabilityState, backupObservability, listObservabilityBackups, pruneObservabilityBackups, restoreObservability, installObservabilityMonitor, renderObservabilityRoutes, OBSERVABILITY_ROUTE_FILE } from "./host-observability.js";
-import { configureHostBackups, readHostBackupPolicy, createHostBackup, listHostBackups, pruneHostBackups, restoreHostBackup, recoverHostBackupRestore, hostBackupStatus, hostBackupDirectory, atomicBackupJson, trustedBackupPath, publishHostBackupMetric } from "./host-backups.js";
+import { configureHostBackups, readHostBackupPolicy, createHostBackup, listHostBackups, pruneHostBackups, restoreHostBackup, recoverHostBackupRestore, hostBackupStatus, hostBackupRetention, hostBackupDirectory, atomicBackupJson, trustedBackupPath, publishHostBackupMetric } from "./host-backups.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import {
   hostRegistryRetryCommand,
@@ -1008,7 +1008,8 @@ async function dispatchMain(request: HostHelperRequest) {
     const records = await readCapsuleRegistryRecords(request);
     const capsules = [];
     for (const record of records) if (record.status !== "unregistered") capsules.push({ subname: record.subname, ...await hostBackupStatus(request.host, record.subname) });
-    writeEnvelope({ ok: true, data: { configured: !!await readHostBackupPolicy(request.host), capsules }, error: null });
+    const retention = await hostBackupRetention(request.host);
+    writeEnvelope({ ok: true, data: { configured: !!retention, ...(retention ? { retention } : {}), capsules }, error: null });
     return;
   }
   if (request.action.startsWith("capsule.backup.")) {
