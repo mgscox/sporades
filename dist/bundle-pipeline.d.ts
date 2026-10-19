@@ -55,6 +55,7 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
     deployFiles?: boolean;
     telemetryProfile?: string | null;
     containerTelemetry?: boolean;
+    validateRuntimeEnv?: (env: ServerEnv) => void;
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
 }): Promise<{
     paths: {

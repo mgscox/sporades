@@ -32,7 +32,6 @@ const fake = await createStripeTeamBillingFake({
 });
 try {
   // App-owned harness: start the Capsule with the Dev-only origin override.
-  // ADR 0058's Dev configuration seam is shipped separately from the fake.
   const app = await startTestCapsule({
     env: { SPORADES_DEV_STRIPE_API_ORIGIN: fake.origin },
   });
@@ -71,9 +70,8 @@ grant entitlement. Holder transfer remains the Capsule's authorization policy.
 Never navigate the returned Checkout or Portal URLs: their real Stripe hostnames
 satisfy redirect attestations, but the fake provides no hosted pages.
 
-The app harness requires the Dev configuration seam tracked in
-[issue #265](https://github.com/mgscox/sporades/issues/265). The fake also works
-independently of that seam. To test SDK requests directly,
+The app harness uses the [Dev-only origin setting](./teams.md#test-team-billing-with-a-loopback-provider).
+The fake also works independently of that setting. To test SDK requests directly,
 construct the installed `stripe` client using `fake.origin`:
 
 ```ts

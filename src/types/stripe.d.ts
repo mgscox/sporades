@@ -18,7 +18,10 @@ export type StripePaymentIntegrationOptions =
       config: StripeEnabledPaymentsConfig;
       env: Readonly<Record<string, string | undefined>>;
       signal?: AbortSignal;
-      /** Loopback-only provider origin for deterministic local protocol tests. */
+      /** Loopback-only provider origin for deterministic local protocol tests.
+       * Capsule-owned integrations must set this explicitly; the CLI Dev
+       * SPORADES_DEV_STRIPE_API_ORIGIN variable applies to runtime-owned
+       * Team Billing only. Local tests certify nothing about live Stripe. */
       apiBaseUrl?: string;
     }>;
 
