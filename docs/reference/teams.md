@@ -534,8 +534,8 @@ The CLI passes the admitted value to every initial and replacement Dev runtime.
 Checkout, Portal configuration attestation and sessions, managed Subscription
 updates, seat convergence and erasure quiescence share that origin. A test suite
 can start a tiny `node:http` stub on an ephemeral loopback port and pass its
-origin in the child Dev process environment. The stateful fake provider described
-by ADR 0058 is separate work.
+origin in the child Dev process environment. For a stateful provider with signed
+callbacks, see [Test Team Billing without Stripe](./team-billing-testing.md).
 
 The setting is never a `sporades.json` key or a Server env value, and it is never
 exposed through `ctx.env`. All commands outside `sporades dev`, including deploy,

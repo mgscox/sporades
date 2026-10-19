@@ -113,7 +113,20 @@ export function createStripeTeamBillingProvider(options) {
                 throwProviderOperationFailure(error);
             }
             throwIfAborted(options.signal);
-            attestManagedSubscription(updated, input, new Set([input.targetPriceId]), true);
+            if (updated.pending_update != null) {
+                // pending_if_incomplete leaves the applied items unchanged. Attest the
+                // requested tuple in pending_update rather than treating it as applied.
+                attestManagedSubscription(updated, input, new Set([input.sourcePriceId, input.targetPriceId]), false);
+                const pending = updated.pending_update;
+                if (!Number.isSafeInteger(pending.expires_at) || pending.expires_at < 1
+                    || !Array.isArray(pending.subscription_items) || pending.subscription_items.length !== 1) {
+                    throw providerFailure(false);
+                }
+                attestManagedItem(pending.subscription_items[0], input, new Set([input.targetPriceId]), true);
+            }
+            else {
+                attestManagedSubscription(updated, input, new Set([input.targetPriceId]), true);
+            }
             const paymentActionRequired = updated.pending_update != null
                 || ["incomplete", "past_due", "unpaid"].includes(updated.status);
             return Object.freeze({
@@ -343,7 +356,9 @@ function attestManagedSubscription(subscription, input, acceptedPriceIds, requir
         || items?.object !== "list" || items.has_more !== false || !Array.isArray(items.data) || items.data.length !== 1) {
         throw providerFailure(false);
     }
-    const item = items.data[0];
+    attestManagedItem(items.data[0], input, acceptedPriceIds, requireTarget);
+}
+function attestManagedItem(item, input, acceptedPriceIds, requireTarget) {
     const price = item?.price;
     if (item?.object !== "subscription_item" || item.id !== input.subscriptionItemId
         || item.subscription !== input.subscriptionId || !acceptedPriceIds.has(price?.id)

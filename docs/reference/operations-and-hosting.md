@@ -706,3 +706,11 @@ provider marker. Unset the variable before any other CLI command, including
 Dev runtime. Deploy and Host commands refuse while the variable is set.
 See [the setting and refusal codes](./teams.md#test-team-billing-with-a-loopback-provider).
 Local tests certify nothing about live Stripe.
+
+## Run the Stripe test provider
+
+`sporades stripe-fake --json --port 0 --catalogue <file> --webhook-target <url>
+--webhook-secret-stdin` starts the loopback Team Billing fake and its separate
+JSON control server. Pipe the fixture webhook secret to stdin; stop with SIGINT
+or SIGTERM. See [Team Billing testing](./team-billing-testing.md#cli-and-json-controls)
+for the catalogue, startup envelope and control protocol.
