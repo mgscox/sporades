@@ -694,3 +694,11 @@ Database operations are `services backup|backups observability` and
 `services restore observability --id <snapshot> --confirm observability`.
 See [Host-managed observability](./host-observability.md) for the complete
 resource, credential, recovery and monitoring contract.
+
+## Run the Stripe test provider
+
+`sporades stripe-fake --json --port 0 --catalogue <file> --webhook-target <url>
+--webhook-secret-stdin` starts the loopback Team Billing fake and its separate
+JSON control server. Pipe the fixture webhook secret to stdin; stop with SIGINT
+or SIGTERM. See [Team Billing testing](./team-billing-testing.md#cli-and-json-controls)
+for the catalogue, startup envelope and control protocol.

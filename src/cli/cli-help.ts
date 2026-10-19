@@ -5,6 +5,19 @@ const toolchainHelp = CLIENT_TOOLCHAINS.map((toolchain) => toolchain === "vite" 
 const templateHelp = CLIENT_TEMPLATES.join(", ").replace(/, ([^,]+)$/, ", or $1");
 
 const HELP_TEXT = {
+  "stripe-fake": `Usage: sporades stripe-fake --catalogue <file> --webhook-target <url> --webhook-secret-stdin [options]
+
+Run the stateful Team Billing test provider on loopback. Pipe a fixture webhook
+secret to stdin. Prints Stripe and control origins; stop with SIGINT or SIGTERM.
+
+Options:
+  --catalogue <file>       JSON Products, Prices and Portal configurations
+  --webhook-target <url>   Literal loopback Capsule callback URL
+  --webhook-secret-stdin  Read the fixture signing secret from stdin
+  --port <number>         Stripe API port (default: 0, ephemeral)
+  --json                  Write { ok, data: { origin, controlOrigin }, error }
+  --help, -h              Show this help
+`,
   create: `Usage: sporades create <name> [options]
 
 Scaffold a new Capsule.
@@ -320,6 +333,7 @@ Options:
   default: `Usage: sporades <command> [options]
     
     Commands:
+      stripe-fake    Run the local Team Billing test provider
       create <name>  Scaffold a new Capsule
       dev            Start a local Dev session
       auth           Manage local auth configuration and simulation
