@@ -2,37 +2,9 @@
 
 ## Unreleased - 2026-10-19
 
-Changes since v0.9.32.
+Changes since v0.9.33.
 
-### 🚀 Features
-
-- Add opt-in Host-managed GlitchTip and Umami (#258) (ae2a8038).
-- Add opt-in CSP nonces, Hosted HSTS, report URIs and observability forwarding (#248) (5f6931c5).
-- Add opt-in same-origin error and analytics collection (#246) (98dd12ee).
-- Add encrypted Capsule backups, restore and scheduling (#253) (6fb5bf57).
-- Add privileged-only table ACL helpers and doctor guidance (#252) (39c37618).
-- Add opt-in required Server env checks (#250) (93b94739).
-- Add File upload policy and privileged orphan-sweep listing (#245) (27a12114).
-- Add Capsule rate limits and trusted client addresses (#243) (82c67500).
-- Add HTML-safe mail helpers and reset-body placeholders (#242) (736a6a88).
-- Allow documentation PR builds to run concurrently (#247) (e359a6ed).
-
-### 🐛 Bug Fixes
-
-- Fix authenticated reload crashes from delayed table reads (#256) (db7ca81c).
-
-### 📝 Documentation
-
-- Propose Capsule container services (ADR 0056) (#260) (d80e1b26).
-- Reconcile roadmap with v0.9.x delivered work (#257) (6e450668).
-- Expose canonical public origins for Capsule links (#241) (8ebd1147).
-- Protect destructive Team operations with atomic Capsule policy (#254) (d7edadd4).
-- Expose payment activation through usePayments (#251) (06d786a5).
-- Move workflow execution to Tower (e9d03972).
-
-### 📦 Packaging
-
-- Follow the current Node LTS release (9a8ef846).
+No changes detected.
 
 ## v0.9.11 - 2026-09-02
 
@@ -121,6 +93,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
