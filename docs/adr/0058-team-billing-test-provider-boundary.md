@@ -157,19 +157,24 @@ Stripe SDK sends them.
 | `GET /v1/subscriptions?customer=&status=all&limit=100&starting_after=` | Erasure discovery | A real `list` with `has_more` and cursor paging. Tests can shrink the page size to exercise pagination. |
 | `DELETE /v1/subscriptions/:id` | Erasure cancel | Moves the Subscription to `canceled` and emits `customer.subscription.deleted`. Unknown ids return an exact 404. |
 
-Every `POST` and `DELETE` honours `Idempotency-Key` the way Stripe does. The
-same key with the same parameters replays the original status and body, with the
+Every `POST` honours `Idempotency-Key` the way Stripe API v1 does. The same key
+with the same parameters replays the original status and body, with the
 `idempotent-replayed: true` header. The same key with different parameters
-returns a 400 `idempotency_error`. Keys are scoped to the API key. Without this,
-the runtime's stable-idempotency and lost-response guarantees could not be
-tested.
+returns a 400 `idempotency_error`. Keys are scoped to the API key. `GET` and
+`DELETE` ignore idempotency keys and do not cache responses by key, matching
+[Stripe's idempotency contract](https://docs.stripe.com/api/idempotent_requests).
+After a lost cancellation acknowledgement, erasure recovers by retrieving and
+listing provider state, attesting that the Subscription is canceled (or safely
+absent), and canceling any remaining live Subscriptions. Tests must prove this
+reconciliation rather than expect a cached `DELETE` replay.
 
 #### Events the fake must emit
 
 Taken from `SUPPORTED` in `src/team-billing-convergence.ts`. The payloads carry
 every field that `applyCheckout`, `normalizeSubscription` and
 `applyInvoiceFailure` validate, so a well-formed fake event converges. A test
-that wants to see a quarantine must deliberately mutate the event.
+that wants to see a quarantine through the callback must emit malformed
+convergence evidence with a fresh Event ID so admission reaches convergence.
 
 | Event | Emitted when | Fields required by convergence |
 | --- | --- | --- |
@@ -226,16 +231,24 @@ routes, so the runtime can never reach them.
   `events.emit(type, object)` (an arbitrary or unknown type, testing the ignore
   path). `events.deliveries()` returns each attempt's status code. Delivery
   faults include `badSignature`, `staleTimestamp` (more than 300 seconds old)
-  and `mutatePayloadSameId`, which tests the observation-digest quarantine.
+  and `mutatePayloadSameId`. After the original Event ID has been admitted,
+  `mutatePayloadSameId` tests callback deduplication: the callback returns the
+  existing Job, whose original payload is retained and executed. It does not
+  reach observation-digest quarantine. Callback-driven quarantine tests use
+  `events.emit(type, object)` with malformed convergence evidence and a fresh
+  Event ID. Same-ID digest-conflict coverage stays at the lower-level
+  `applyVerifiedTeamBillingObservation` boundary, bypassing callback admission.
   Stripe's real retry schedule is not modelled: a test redelivers on purpose.
 - **Provider faults.** `faults.inject({ operation, status, count, when })`.
   `operation` names one row of the endpoint table, such as
   `"subscriptions.update"`. `status` is `409`, `429`, `500`, `503`, a Stripe 4xx
   rejection, or `"timeout"` (the request is held past `requestTimeoutMs`).
   `when: "before"` fails without changing state. `when: "after"` applies the
-  change and records the idempotent response, then fails the reply. That
-  simulates a lost acknowledgement, so a retried Job must replay the same
-  idempotency key and get the original result. Special faults include
+  change, then fails the reply to simulate a lost acknowledgement. For `POST`,
+  it records the idempotent response, so a retried Job must reuse the same
+  idempotency key and get the original result. For `DELETE`, it records no
+  response by key; erasure must reconcile the canceled or safely absent
+  Subscription through provider reads. Special faults include
   `paymentActionRequired` (the update returns `pending_update`) and
   `completeDuringExpire`, which makes an open Checkout complete while an
   `expire` request is in flight so the ADR 0049 race is exercised.
@@ -261,6 +274,22 @@ fake's endpoint or event tables. An end-to-end test scaffolds a Team Billing
 Capsule, runs `sporades dev` with the override, and covers six paths: Checkout to
 active, seat convergence, Plan transition, past-due, period-end cancellation, and
 erasure quiescence with an injected 409, 429 and 5xx on each provider operation.
+
+Conformance expectations distinguish these boundaries:
+
+- `POST` retries with the same key and parameters replay the cached result;
+  changed parameters produce `idempotency_error`.
+- `GET` and `DELETE` ignore keys. A lost `DELETE` acknowledgement leaves the
+  provider cancellation committed, and erasure retries prove quiescence through
+  retrieve/list reconciliation without relying on a cached cancellation reply.
+- A changed signed payload with an already admitted Event ID returns the
+  existing Job and preserves its original payload, without applying the changed
+  evidence or creating an observation-digest quarantine.
+- Malformed convergence evidence with a fresh Event ID passes real signature
+  verification and Job admission, then quarantines through convergence without
+  granting entitlement. A separate lower-level convergence test submits
+  conflicting digests for the same Event ID directly to
+  `applyVerifiedTeamBillingObservation` and asserts digest quarantine.
 
 ### What this does not certify
 
