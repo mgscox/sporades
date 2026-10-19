@@ -152,6 +152,10 @@ test("concurrent reset confirmations spend a Reset code once before changing the
       assert.equal(userId, row.userId);
       return { changes: 0 };
     },
+    async findEmailCredentialWithUser(email) {
+      // The confirmation's identity fence reads the credential's current owner in its transaction.
+      return email === row.email ? { email, userId: row.userId } : null;
+    },
     async updateEmailCredentialPassword(email, hash, salt) {
       passwordUpdates.push({ email, hash, salt });
       return { changes: 1 };
@@ -804,7 +808,7 @@ test("registered and unregistered reset requests each enqueue one durable reques
     assert.equal(jobs.length, 2, "every public reset request must perform the same durable enqueue");
     assert.deepEqual(
       jobs.map((job) => Object.keys(JSON.parse(job.payload)).sort()),
-      Array.from({ length: 2 }, () => ["code", "email", "htmlBody", "subject", "textBody"]),
+      Array.from({ length: 2 }, () => ["code", "email", "htmlBody", "requestedAt", "subject", "textBody"]),
       "both public paths enqueue the identical request shape",
     );
 
