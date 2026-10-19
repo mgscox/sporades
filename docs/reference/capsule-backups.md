@@ -48,9 +48,49 @@ The applied policy is stored as `backups` in the local Host profile and atomical
 under `<remote-root>/hosts/<domain>/backups/policy.json`. Secret file contents
 stay on the Host server. The helper must be able to read those files unattended.
 Policy fields are closed and validated: `schedule` is `hourly`, `daily`, `weekly`,
-or `null`; `retention` is 1–10000 snapshots **per Capsule**; `maxAgeHours` is
-1–87600. `null` disables an existing timer and keeps manual backups available.
+or `null`; `retention` is 1–10000 snapshots **per Capsule**; optional
+`retentionDays` is an integer 1–3650; `maxAgeHours` is 1–87600. `null` disables
+an existing timer and keeps manual backups available.
 Choose a stale threshold longer than the schedule plus normal upload time.
+
+### Retention by count and by age
+
+`retention` alone keeps the newest *n* snapshots of each Capsule (restic
+`--keep-last <n>`). Every snapshot uses a slot, so manual `host backup create`
+runs, restore-rehearsal preparation and `Persistent=true` catch-up runs shorten
+the period a daily timer covers. To express "keep 30 days of backups", add
+`retentionDays`:
+
+```json
+{
+  "repository": "/srv/capsule-backups",
+  "passwordFile": "/root/backup-password",
+  "schedule": "daily",
+  "retention": 14,
+  "retentionDays": 30,
+  "maxAgeHours": 26
+}
+```
+
+Prune then runs `restic forget --keep-last <retention> --keep-within <retentionDays>d`
+for that Capsule's tag. restic keeps a snapshot when **either** rule keeps it, so
+the policy never retains less than the count rule alone. Every snapshot within
+`retentionDays` days of the Capsule's **newest** snapshot is retained, however
+many manual or catch-up snapshots exist; older snapshots are removed once they
+also fall outside the newest `retention` snapshots. Because the window is
+measured from the newest snapshot rather than the current time, pruning a
+Capsule whose backups have stopped (for example, after it was deleted or while
+its backups fail) keeps its last window instead of pruning towards nothing. Use `"retention": 1` when only the day window
+should apply; the newest snapshot is always kept.
+
+`retentionDays` is optional and policies without it prune exactly as before.
+`host backup status --json` reports the effective rule as
+`retention: { "keepLast": <n>, "keepWithinDays": <days> | null }` and prune
+results include `retentionDays` when it is configured. Upgrade the Host helper
+before applying a policy with `retentionDays`; an older helper refuses the
+unknown field and keeps its existing policy. Remove the field and reconfigure to
+return to count-only retention. Repository storage grows with the number of
+snapshots in the window, deduplicated by restic.
 Reapplying configuration is safe and reconciles the timer. Retry a failed timer
 installation; its persisted policy is retained for recovery.
 
@@ -98,7 +138,8 @@ start/stop clears obsolete backup resume evidence. A successful backup has a ful
 64-character restic snapshot ID; list returns IDs and times scoped to the source
 Capsule. Create and restore return a compact manifest summary with file/directory
 counts; the encrypted snapshot retains the complete checksum inventory. Prune
-keeps the latest `retention` snapshots for that Capsule and reclaims
+keeps the latest `retention` snapshots for that Capsule, plus every snapshot
+within `retentionDays` of its newest snapshot when configured, and reclaims
 unreferenced repository bytes. Listing and pruning retained backups also work
 after the source Capsule has been deleted. Restic owns repository concurrency locking.
 

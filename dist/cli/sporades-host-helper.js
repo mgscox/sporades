@@ -29,7 +29,7 @@ import { disableHostTelemetryExports, removeHostTelemetryAgents, checkHostTeleme
 import { queueHostInventory, removeHostInventoryWorker, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
 import { enableObservability, disableObservability, statusObservability, provisionObservability, readObservabilityState, backupObservability, listObservabilityBackups, pruneObservabilityBackups, restoreObservability, installObservabilityMonitor, renderObservabilityRoutes, OBSERVABILITY_ROUTE_FILE } from "./host-observability.js";
-import { configureHostBackups, readHostBackupPolicy, createHostBackup, listHostBackups, pruneHostBackups, restoreHostBackup, recoverHostBackupRestore, hostBackupStatus, atomicBackupJson, trustedBackupPath, publishHostBackupMetric } from "./host-backups.js";
+import { configureHostBackups, readHostBackupPolicy, createHostBackup, listHostBackups, pruneHostBackups, restoreHostBackup, recoverHostBackupRestore, hostBackupStatus, hostBackupRetention, atomicBackupJson, trustedBackupPath, publishHostBackupMetric } from "./host-backups.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
 const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
@@ -944,7 +944,8 @@ async function dispatchMain(request) {
         for (const record of records)
             if (record.status !== "unregistered")
                 capsules.push({ subname: record.subname, ...await hostBackupStatus(request.host, record.subname) });
-        writeEnvelope({ ok: true, data: { configured: !!await readHostBackupPolicy(request.host), capsules }, error: null });
+        const retention = await hostBackupRetention(request.host);
+        writeEnvelope({ ok: true, data: { configured: !!retention, ...(retention ? { retention } : {}), capsules }, error: null });
         return;
     }
     if (request.action.startsWith("capsule.backup.")) {
