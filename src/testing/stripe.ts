@@ -309,7 +309,8 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     try {
       // Reject live/restricted keys before inspecting routes, logs, idempotency or state.
       const bearer = request.headers.authorization ?? "";
-      if (!/^Bearer sk_test_[A-Za-z0-9_]+$/.test(bearer)) fail("Only sk_test_ keys are accepted.", 401, "invalid_api_key", "authentication_error");
+      const token = bearer.startsWith("Bearer ") ? bearer.slice("Bearer ".length) : "";
+      if (!/^sk_test_[A-Za-z0-9_]+$/.test(token)) fail("Only sk_test_ keys are accepted.", 401, "invalid_api_key", "authentication_error");
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       const route = ENDPOINTS.find(([method, pattern]) => request.method === method && pattern.test(url.pathname));
       const parameters = parseForm(request.method === "GET" ? url.searchParams : new URLSearchParams(await readBody(request)));
