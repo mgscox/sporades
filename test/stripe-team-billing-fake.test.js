@@ -201,6 +201,29 @@ test("pending payment, lifecycle controls, immutable snapshots and a forward-onl
   assert.equal((await provider.retrievePortalConfiguration(portalConfigInput)).ok, true);
 });
 
+test("pending seat changes need successful payment; expiration and cancellation discard the requested changes", async (t) => {
+  for (const resolution of ["complete", "expire", "cancel"]) await t.test(resolution, async (t) => {
+    const f = await fixture(t); const { fake, provider, stripe } = f;
+    const { subscription, item } = await paid(f);
+    const update = updateInput(subscription, item, { targetPriceId: "price_team", targetProductId: "prod_team", operationKind: "seat-convergence" });
+    fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired" });
+    assert.equal((await provider.updateManagedSubscription(update)).outcome, "payment-action-required");
+    assert.equal((await stripe.subscriptions.retrieve(subscription.id)).items.data[0].quantity, 2);
+    if (resolution === "complete") {
+      await fake.subscriptions.setStatus(subscription.id, "active");
+      assert.equal(fake.subscriptions.get(subscription.id).items.data[0].quantity, 2, "status alone does not resolve payment");
+      await fake.subscriptions.completePayment(subscription.id);
+    } else if (resolution === "expire") await fake.clock.advance(3600);
+    else await stripe.subscriptions.cancel(subscription.id);
+    const resolved = await stripe.subscriptions.retrieve(subscription.id);
+    assert.equal(resolved.pending_update, null);
+    assert.equal(resolved.items.data[0].quantity, resolution === "complete" ? 5 : 2);
+    await assert.rejects(fake.subscriptions.completePayment(subscription.id));
+    assert.equal((await provider.updateManagedSubscription(update)).outcome, "payment-action-required", "replay preserves the original pending result");
+    assert.deepEqual((await stripe.subscriptions.retrieve(subscription.id)).items, resolved.items);
+  });
+});
+
 test("literal loopback, sandbox-only authentication, exact API version and unsupported calls fail closed", async (t) => {
   for (const webhookTarget of ["https://stripe.com/webhook", "http://localhost:5218/webhook", "http://127.1:5218/", "http://127.0.0.1:5218@evil.test/", "http://127.0.0.1/"]) {
     await assert.rejects(createStripeTeamBillingFake({ webhookTarget, webhookSecret: secret, catalogue }));
@@ -301,10 +324,37 @@ test("real callback verification and atomic convergence accept the fake's events
   const retained = database.adapter.prepare("SELECT [payload] FROM [sporades_jobs] WHERE [handler] = '_sporades.stripe-event'").all().map((row) => JSON.parse(row.payload));
   assert.equal(retained.find((event) => event.providerEventId === created.id).raw.data.object.status, "active");
   await fake.clock.advance(3600);
-  await provider.updateManagedSubscription(updateInput(subscription, item));
+  fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired" });
+  const update = updateInput(subscription, item);
+  assert.deepEqual(await provider.updateManagedSubscription(update), { ok: true, outcome: "payment-action-required" });
+  const stripe = sdk(fake);
+  const pending = await stripe.subscriptions.retrieve(subscription.id);
+  assert.deepEqual(pending.items.data, subscription.items.data);
+  assert.equal(pending.pending_update.subscription_items[0].price.id, "price_studio");
+  assert.equal(pending.pending_update.subscription_items[0].quantity, 5);
+  const eventCount = fake.state().events.length;
+  const request = fake.requests().find((entry) => entry.operation === "subscriptions.update").parameters;
+  const replay = () => stripe.subscriptions.update(subscription.id, { ...request, items: Object.values(request.items) }, { idempotencyKey: update.idempotencyKey });
+  const pendingReplay = await replay();
+  assert.equal(pendingReplay.lastResponse.headers["idempotent-replayed"], "true");
+  assert.deepEqual(pendingReplay.items, pending.items);
+  assert.deepEqual(pendingReplay.pending_update, pending.pending_update);
+  assert.deepEqual(await provider.updateManagedSubscription(update), { ok: true, outcome: "payment-action-required" });
+  assert.equal(fake.state().events.length, eventCount, "pending replay must not emit another event");
   assert.deepEqual((await fake.events.deliver()).map((entry) => entry.status), [200]);
   await settled(database);
+  assert.deepEqual({ ...projection() }, { state: "active", quantity: 2, productKey: "team", cancelAtPeriodEnd: 0 });
+  await fake.subscriptions.completePayment(subscription.id);
+  await fake.events.deliver(); await settled(database);
   assert.equal(projection().productKey, "studio"); assert.equal(projection().quantity, 5);
+  const resolved = await stripe.subscriptions.retrieve(subscription.id);
+  assert.equal(resolved.pending_update, null);
+  assert.equal(resolved.items.data[0].price.id, "price_studio");
+  assert.equal(resolved.items.data[0].quantity, 5);
+  assert.deepEqual((await replay()).pending_update, pending.pending_update, "POST replay retains its original pending response even after payment");
+  assert.deepEqual(await provider.updateManagedSubscription(update), { ok: true, outcome: "payment-action-required" });
+  assert.equal(fake.events.pending().length, 0, "replay must not overwrite resolved state or emit evidence");
+  assert.deepEqual((await stripe.subscriptions.retrieve(subscription.id)).items, resolved.items);
   await fake.subscriptions.failPayment(subscription.id); await fake.events.deliver(); await settled(database);
   assert.equal(projection().state, "past-due");
   await fake.subscriptions.setStatus(subscription.id, "active"); await fake.events.deliver(); await settled(database);
@@ -373,6 +423,11 @@ test("packaged CLI prints isolated origins, accepts only stdin secrets, and shar
   assert.equal((await control("subscriptions.get", complete.subscription)).status, "active");
   await control("subscriptions.setQuantity", complete.subscription, 4);
   assert.equal((await control("state")).subscriptions[0].items.data[0].quantity, 4);
+  const subscription = await control("subscriptions.get", complete.subscription);
+  await control("faults.inject", { operation: "subscriptions.update", status: "paymentActionRequired" });
+  assert.equal((await provider.updateManagedSubscription(updateInput(subscription, subscription.items.data[0]))).outcome, "payment-action-required");
+  assert.equal((await control("subscriptions.get", complete.subscription)).items.data[0].quantity, 4);
+  assert.equal((await control("subscriptions.completePayment", complete.subscription)).items.data[0].quantity, 5);
   await control("faults.inject", { operation: "subscriptions.retrieve", status: 429 });
   await assert.rejects(sdk(data).subscriptions.retrieve(complete.subscription), (error) => error.statusCode === 429);
   await control("faults.clear"); await control("reset");
@@ -393,6 +448,7 @@ await fake.checkout.complete("cs_test_types");
 await fake.events.deliver(undefined, { badSignature: true });
 fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired", count: 1, when: "after" });
 await fake.subscriptions.setQuantity("sub_types", 3);
+await fake.subscriptions.completePayment("sub_types");
 // @ts-expect-error Live mode is not a fixture option.
 const live: StripeTeamBillingFakeOptions = { ...options, livemode: true };
 // @ts-expect-error Unknown endpoint is not a provider operation.

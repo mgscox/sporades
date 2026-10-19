@@ -148405,6 +148405,7 @@ async function createStripeTeamBillingFake(options) {
     if (status === "canceled") {
       subscription.cancel_at_period_end = false;
       subscription.cancel_at = null;
+      subscription.pending_update = null;
     }
     return subscriptionEvent(subscription);
   }
@@ -148516,9 +148517,16 @@ async function createStripeTeamBillingFake(options) {
         integer(p2.proration_date, 253402300799);
         const targetPrice = price(p2.items[0].price);
         const quantity = integer(p2.items[0].quantity);
-        item.price = targetPrice;
-        item.quantity = quantity;
-        subscription.pending_update = fault?.status === "paymentActionRequired" ? { expires_at: now2 + 3600 } : null;
+        if (fault?.status === "paymentActionRequired") {
+          subscription.pending_update = {
+            expires_at: now2 + 3600,
+            subscription_items: [{ ...copy(item), price: targetPrice, quantity }]
+          };
+        } else {
+          item.price = targetPrice;
+          item.quantity = quantity;
+          subscription.pending_update = null;
+        }
         return subscriptionEvent(subscription);
       }
       case "subscriptions.list": {
@@ -148622,6 +148630,17 @@ async function createStripeTeamBillingFake(options) {
       setStatus,
       setQuantity,
       get: (id3) => copy(get(subscriptions, id3)),
+      async completePayment(id3) {
+        const subscription = liveSubscription(id3);
+        const pending = subscription.pending_update;
+        requireValue(pending && pending.expires_at > now2, "No payable pending update.");
+        const requested = pending.subscription_items[0];
+        subscription.items.data[0].price = copy(requested.price);
+        subscription.items.data[0].quantity = requested.quantity;
+        subscription.pending_update = null;
+        subscription.status = "active";
+        return subscriptionEvent(subscription);
+      },
       async renew(id3) {
         const subscription = liveSubscription(id3);
         const item = subscription.items.data[0];
@@ -148670,6 +148689,10 @@ async function createStripeTeamBillingFake(options) {
       now2 += seconds;
       for (const session of sessions.values()) if (session.status === "open" && session.expires_at <= now2) await expire(session.id);
       for (const sub of subscriptions.values()) if (sub.status !== "canceled" && sub.cancel_at_period_end && sub.cancel_at <= now2) await setStatus(sub.id, "canceled");
+      for (const sub of subscriptions.values()) if (sub.pending_update && sub.pending_update.expires_at <= now2) {
+        sub.pending_update = null;
+        await subscriptionEvent(sub);
+      }
     } },
     events: {
       pending: () => copy(eventLog.filter((event) => !delivered.has(event.id))),
@@ -148742,6 +148765,7 @@ async function createStripeTeamBillingFake(options) {
     "portal.resume": fake.portal.resume,
     "subscriptions.setStatus": fake.subscriptions.setStatus,
     "subscriptions.setQuantity": fake.subscriptions.setQuantity,
+    "subscriptions.completePayment": fake.subscriptions.completePayment,
     "subscriptions.failPayment": fake.subscriptions.failPayment,
     "subscriptions.renew": fake.subscriptions.renew,
     "subscriptions.get": fake.subscriptions.get,

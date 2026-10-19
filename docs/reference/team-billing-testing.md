@@ -106,10 +106,11 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | `portal.cancelAtPeriodEnd(id)`, `portal.resume(id)` | Schedules or removes cancellation and emits an update. |
 | `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `canceled`; canceled Subscriptions stay terminal. |
 | `subscriptions.setQuantity(id, quantity)` | Changes seats and emits an update. |
+| `subscriptions.completePayment(id)` | Applies an unexpired pending Price/quantity update after simulated successful payment, clears `pending_update`, and emits an active update. |
 | `subscriptions.failPayment(id)` | Moves to `past_due` and emits a Dahlia `invoice.payment_failed`. |
 | `subscriptions.renew(id)` | Advances the billing period and emits an active update. |
 | `subscriptions.get(id)`, `customers.subscriptions(customerId)` | Inspects provider state. |
-| `clock.advance(seconds)` | Moves forward, expiring due Checkouts and scheduled cancellations. |
+| `clock.advance(seconds)` | Moves forward, expiring due Checkouts, pending updates and scheduled cancellations. |
 | `requests()`, `state()`, `reset()` | Inspects the request log/state or restores the initial empty state and catalogue. |
 
 Delivery defaults to `"auto"`. With `delivery: "manual"`, `events.pending()`
@@ -149,6 +150,16 @@ to that value or lower. `count` defaults to one. Special statuses
 `"paymentActionRequired"` for `subscriptions.update` and
 `"completeDuringExpire"` for `checkout.sessions.expire` exercise payment action
 and erasure races.
+
+`paymentActionRequired` retains the existing Subscription item Price and quantity.
+The requested item is recorded in `pending_update.subscription_items`, with a
+one-hour expiry. Signed update events therefore retain the existing plan/seats
+until `subscriptions.completePayment(id)` succeeds and emits fresh applied
+evidence. `setStatus(id, "active")` alone does not apply pending changes.
+Expiration or cancellation discards them. Retrieve returns current state;
+idempotent POST replay returns the original pending response even after payment
+or expiration, without reapplying changes or emitting another event. The real
+provider attests the exact requested pending item separately from applied items.
 
 POSTs replay committed results for the same key and parameters, scoped to the
 test API key. Changed parameters return `idempotency_error`. Before-execution

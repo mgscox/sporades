@@ -59,6 +59,8 @@ export type StripeTeamBillingFake = {
   subscriptions: {
     setStatus(id: string, status: "active" | "past_due" | "unpaid" | "canceled"): Promise<StripeFakeObject>;
     setQuantity(id: string, quantity: number): Promise<StripeFakeObject>;
+    /** Applies an unexpired pending update after simulated successful payment. */
+    completePayment(id: string): Promise<StripeFakeObject>;
     failPayment(id: string): Promise<StripeFakeObject>;
     renew(id: string): Promise<StripeFakeObject>;
     get(id: string): StripeFakeObject;

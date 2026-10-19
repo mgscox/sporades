@@ -163,6 +163,9 @@ Checkout, Portal, Subscription updates, erasure discovery/cancellation, faults
 and signed callbacks. A separate loopback control origin drives test outcomes.
 It accepts only test keys and literal-loopback webhook targets. Passing tests
 establish fake-provider acceptance; real Stripe acceptance stays separate.
+Payment-action faults retain applied Price/quantity and store the requested item
+in `pending_update`; only explicit successful payment resolution applies it and
+emits new entitlement evidence. Expired or canceled pending updates are discarded.
 
 **Provider-safe Team erasure**:
 The durable headless Team Billing operation started by `teamBilling.prepareErasure`. Sporades fences provider work, resolves issued Checkout Sessions exactly, immediately cancels every known or newly discovered live Subscription, and persists only provider-free keyed identity tombstones before `ctx.teamBilling.admitLocalErasure(teamId)` may authorize the Capsule's separate local deletion transaction. It never deletes the Stripe Customer, renders confirmation UI, or exposes provider evidence.
