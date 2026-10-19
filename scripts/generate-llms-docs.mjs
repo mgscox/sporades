@@ -29,6 +29,7 @@ export const SPORADES_LLMS_SECTIONS = [
       { title: "Hosting", path: "guide/hosting.md", description: "Publish and operate Capsules on a configured Host server." },
       { title: "Troubleshooting", path: "guide/troubleshooting.md", description: "Failure classification and safe recovery sequence." },
       { title: "Host server installation", path: "server-installation.md", description: "Provision and bootstrap a Linux Host server." },
+      { title: "Host observability", path: "reference/host-observability.md", description: "Opt-in GlitchTip and Umami, per-Capsule sealed env, backups, monitoring, and recovery." },
     ],
   },
   {

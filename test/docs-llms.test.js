@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { generateLlmsDocumentation, SPORADES_LLMS_SECTIONS } from "../scripts/generate-llms-docs.mjs";
 
 test("LLM documentation publishes the split feature reference as focused sources", () => {
+  assert(SPORADES_LLMS_SECTIONS.find(({ heading }) => heading === "Operate").entries.some(({ path }) => path === "reference/host-observability.md"));
   const reference = SPORADES_LLMS_SECTIONS.find(({ heading }) => heading === "Reference");
   assert.deepEqual(reference.entries.map(({ path }) => path).filter(Boolean), [
     "guide/reference.md",
