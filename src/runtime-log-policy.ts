@@ -77,73 +77,87 @@ function structuredCredentialEnd(text: string, start: number) {
   return text.length;
 }
 
-// Apostrophes inside diagnostic text are not reliable boundaries. Look through
-// all of them until the line ends or a separately quoted/assigned URL begins.
-// A known surrounding double-quoted string also bounds this look-ahead; its
-// escaped quotes remain data. This preserves adjacent URL fields and JSON prose.
-function diagnosticUrlContinuation(text: string, start: number, outerQuote: string) {
-  const boundary = text.slice(start).search(/[\r\n]|[ \t](?:[\w.-]+[=:]["']?|["'])(?:https?:\/\/|file:\/\/\/|\/{1,2}|\.\.?\/)/i);
-  let end = boundary < 0 ? text.length : start + boundary;
-  if (outerQuote === '"') {
-    for (let index = start; index < end; index++) {
-      if (text[index] === "\\") index++;
-      else if (text[index] === '"') { end = index; break; }
+const diagnosticUrlClosers: Record<string, string> = { "[": "]", "(": ")", "{": "}", "<": ">" };
+
+// A URL's private suffix belongs to its lexical container, not to individual
+// query parameters. Never infer an end from an apostrophe inside a bare value.
+// Without a trustworthy container, ambiguous text is private to the line end.
+function diagnosticUrlEnd(text: string, start: number, suffix: number) {
+  const tail = text.slice(suffix);
+  const boundary = tail.search(/[\r\n]|[ \t]+\S*?(?:[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))/iu);
+  const limit = boundary < 0 ? text.length : suffix + boundary;
+  const opener = text[start - 1];
+  const closer = diagnosticUrlClosers[opener] ?? opener;
+  const wrapped = !!closer && "\"'`])}>".includes(closer);
+  if (wrapped) {
+    let closing = -1;
+    for (let index = suffix; index < limit; index++) {
+      if (text[index] === "\\") { index++; continue; }
+      if (text[index] !== closer) continue;
+      const after = text.slice(index + 1, limit);
+      // A following JSON field is an explicit container boundary. Other
+      // wrappers use their last closing delimiter, so embedded quotes remain
+      // private. Repeated wrapper quotes are retained together.
+      if (closer === '"' && /^[ \t]*(?:[}\]]|,[ \t]*"(?:\\.|[^"\\])*"[ \t]*:)/.test(after)) return index;
+      closing = /^["'`]*[),.;:!?\]}]*?(?:\s|$)/.test(after) ? index : -1;
+    }
+    if (closing >= 0) {
+      // A putative closer followed by more URL syntax or another kind of
+      // quotation is still private text, not a structural prose boundary.
+      if (/["'`&#=]|%(?:26|23|3[fd])/i.test(text.slice(closing + 1, limit))) return limit;
+      let wrappers = 1;
+      while (text[start - wrappers - 1] === opener) wrappers++;
+      while (wrappers-- > 1 && closing > suffix && text[closing - 1] === closer) closing--;
+      return closing;
+    }
+    return limit;
+  }
+
+  let valueStart = true, proseBoundary = -1;
+  for (let index = suffix; index < limit; index++) {
+    const char = text[index];
+    const escaped = char === "\\" && /["'`]/.test(text[index + 1] ?? "");
+    if (escaped || /["'`]/.test(char)) {
+      // Only an explicit value opener has a closing quote. Any other quote
+      // makes a bare suffix ambiguous, including O', Reilly's without & or #.
+      if (!valueStart) return limit;
+      const quote = escaped ? text[++index] : char;
+      let closing = -1;
+      for (let next = index + 1; next < limit; next++) {
+        if (text[next] === "\\") {
+          if (escaped && text[next + 1] === quote) { closing = next; next++; }
+          else next++;
+        } else if (!escaped && text[next] === quote) closing = next;
+      }
+      if (closing < 0 || !/^[ \t]*(?:[&#=]|%(?:26|23|3[fd])|$)/i.test(text.slice(closing + (escaped ? 2 : 1), limit))) return limit;
+      index = closing + (escaped ? 1 : 0);
+      valueStart = false;
+    } else if (/\s/.test(char)) {
+      if (!valueStart && proseBoundary < 0) proseBoundary = index;
+    } else {
+      // Inspect the whole candidate before accepting whitespace as prose.
+      // Later delimiters or quotation invalidate an earlier apparent boundary.
+      if (/[<>]/.test(char)) return limit;
+      if (/[=?#&]/.test(char)) proseBoundary = -1;
+      valueStart = /[=?#&]/.test(char);
     }
   }
-  return text.slice(start, end);
+  return proseBoundary < 0 ? limit : proseBoundary;
 }
 
-// Once a private suffix starts, scan to the URL boundary with explicit quote
-// state. Whitespace and punctuation inside a quoted value are private data, not
-// prose boundaries. Escaped JSON quotes are delimiters distinct from outer quotes.
 function stripDiagnosticUrlSuffixes(text: string) {
   let redacted = "", cursor = 0;
-  for (const match of text.matchAll(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"]*?)([?#]|%3f|%23)/giu)) {
+  // Identify URL syntax on the original diagnostic before any substitutions.
+  // Scheme URLs and all explicit relative forms work beside quotes/punctuation.
+  for (const match of text.matchAll(/((?:[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"`]*?)([?#]|%3f|%23)/giu)) {
     if (match.index < cursor) continue;
-    const start = match.index + match[1].length;
-    const wrapper = /^["']/.test(match[1]) ? match[1][0] : text[match.index - 1];
-    const outerQuote = wrapper === '"' || wrapper === "'" ? wrapper : "";
-    let end = start + match[2].length;
-    let quote = "", valueStart = true;
-    while (end < text.length && !/[\r\n]/.test(text[end])) {
-      const char = text[end];
-      const delimiter = char === "\\" && /["']/.test(text[end + 1] ?? "")
-        ? text.slice(end, end + 2) : /["']/.test(char) ? char : "";
-      // An apostrophe closes a wrapper only at a prose boundary, never before
-      // URI data such as -Reilly or a query/fragment continuation, even across
-      // repeated apostrophes. Punctuation and spaces cannot hide that suffix.
-      const closesOuter = !!delimiter && delimiter === outerQuote
-        && (delimiter !== "'" || (/^[),.;:!?\]}\x60]*(?:\s|$)/.test(text.slice(end + 1))
-          && !/[&#=']|%(?:26|23|3[fd])/i.test(diagnosticUrlContinuation(text, end + 1, outerQuote))));
-      if (quote) {
-        // A same-quote apostrophe at the structural wrapper boundary also
-        // bounds an ambiguous value opener after a query separator.
-        if (quote === "'" && outerQuote === "'" && closesOuter) break;
-        // A value quote may precede a separator or its surrounding string's
-        // quote. A later matching quote before another separator makes an
-        // earlier apostrophe ambiguous, even when it itself precedes & or #.
-        if (delimiter === quote
-          && (delimiter !== "'" || (/^[ \t]*(?:[&#=]|%(?:26|23|3[fd])|["']|$)/i.test(text.slice(end + 1))
-            && !/'[ \t]*(?:[&#=]|%(?:26|23|3[fd]))/i.test(diagnosticUrlContinuation(text, end + 1, outerQuote))))) quote = "";
-        else if (char === "\\") { end += 2; continue; }
-      } else if (delimiter) {
-        // Classify a value opening before considering the surrounding string's
-        // closing quote. Its first byte may be any whitespace or punctuation.
-        if (valueStart) { quote = delimiter; valueStart = false; }
-        else if (closesOuter) break;
-      } else if (/\s/.test(char)) {
-        // A surrounding quoted URL owns its spaces. Bare query syntax may
-        // have spaces around separators or before a quoted value / next key.
-        const continuation = valueStart || /^[ \t]*[&#=]/.test(text.slice(end));
-        if (!outerQuote && !continuation) break;
-      } else if (!outerQuote && /[<>]/.test(char)) break;
-      else valueStart = /[=?#&]/.test(char);
-      end += delimiter.length || 1;
-    }
-    // Only unquoted trailing prose punctuation survives; it cannot expose any
-    // part of the private suffix. Unterminated values conceal to the line end.
-    const punctuation = quote ? "" : text.slice(start + match[2].length, end).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? "";
-    redacted += text.slice(cursor, match.index) + match[1] + punctuation;
+    const suffix = match.index + match[1].length;
+    const end = diagnosticUrlEnd(text, match.index, suffix + match[2].length);
+    // Retain ordinary trailing punctuation only for unambiguous bare tokens.
+    const punctuation = (end === text.length || /\s/.test(text[end]))
+      && !/["'`]/.test(text.slice(suffix, end))
+      ? text.slice(suffix, end).match(/[),.;:!?\]}]+$/)?.[0] ?? "" : "";
+    redacted += text.slice(cursor, suffix) + punctuation;
     cursor = end;
   }
   return redacted + text.slice(cursor);
@@ -151,9 +165,18 @@ function stripDiagnosticUrlSuffixes(text: string) {
 
 /** Shared diagnostic text policy. Stack frames are admitted separately by error collection. */
 export function redactDiagnosticText(value: string, serverEnv: LooseRecord = {}) {
-  let safe = value;
+  // URL syntax must survive until suffix stripping. In particular, an env
+  // value such as https://example.test/ must not hide the start of a URL.
+  let safe = stripDiagnosticUrlSuffixes(value)
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
   for (const secret of Object.values(serverEnv)) {
-    if (typeof secret === "string" && secret.length > 0) safe = safe.split(secret).join("[REDACTED]");
+    if (typeof secret !== "string" || !secret.length) continue;
+    safe = safe.split(secret).join("[REDACTED]");
+    // A complete URL-valued secret may itself have lost a private suffix.
+    // Conceal its surviving form as well as its original bytes.
+    const stripped = stripDiagnosticUrlSuffixes(secret)
+      .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+    if (stripped && stripped !== secret) safe = safe.split(stripped).join("[REDACTED]");
   }
   if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
   // Unquoted headers can contain spaces and several cookies. Conceal the entire line.
@@ -172,7 +195,5 @@ export function redactDiagnosticText(value: string, serverEnv: LooseRecord = {})
       : start + (value?.[0].length ?? 0);
   }
   safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
-  // Ordinary questions and issue numbers remain prose; only URL suffixes are private.
-  return stripDiagnosticUrlSuffixes(safe)
-    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+  return safe;
 }

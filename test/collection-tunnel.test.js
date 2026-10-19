@@ -199,7 +199,7 @@ const apostropheDiagnostics = [
   const clean = apostropheDiagnosticUrls.map(base => before + base + after);
   return { name,
     message: `Ready? Investigate #234 ${urls.join(' ')} Continue.`,
-    safe: `Ready? Investigate #234 ${clean.join(' ')} Continue.`,
+    safe: `Ready? Investigate #234 ${clean.join(' ')}${name === "bare assignment" ? "" : " Continue."}`,
     stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
     frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
   };
@@ -247,6 +247,77 @@ const escapedQueryDiagnostics = apostropheDiagnosticUrls.map(base => {
     frames: [{ filename: clean, function: 'execute', lineno: 12, colno: 8 }],
   };
 });
+
+// Bare and assigned URLs have no reliable outer quote to end private text.
+const bareSuffixDiagnostics = ['', 'url='].flatMap(prefix => [
+  ["word apostrophe", "O', Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker"],
+  ["another opening apostrophe", "O', 'Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker"],
+  ["space before apostrophes", "O ', 'Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker"],
+  ["encoded continuation", "O', Reilly's%26cap%3Dqa-apostrophe-query-marker%23qa-apostrophe-fragment-marker"],
+  ["no later separator", "O', Reilly's qa-apostrophe-query-marker qa-apostrophe-fragment-marker"],
+].flatMap(([name, suffix]) => apostropheDiagnosticUrls.map(base => ({
+  name: `bare ${prefix}${base}: ${name}`,
+  message: `Before ${prefix}${base}?filter=${suffix}\nNext public #234 line.`,
+  safe: `Before ${prefix}${base}\nNext public #234 line.`,
+  stack: `Error: diagnostic URL\n    at execute (${prefix}${base}?filter=${suffix}:12:8)`,
+  frames: [{ filename: prefix + base, function: 'execute', lineno: 12, colno: 8 }],
+}))));
+const bareSuffixGroups = Array.from({ length: Math.ceil(bareSuffixDiagnostics.length / 16) }, (_, index) => [
+  `bare ambiguous URL suffixes ${index + 1}`, bareSuffixDiagnostics.slice(index * 16, (index + 1) * 16),
+]);
+
+const wrappedAmbiguousDiagnostics = ["'", '"', '`', "''", '""', '``', '   '].map(wrapper => {
+  const close = wrapper.trim();
+  const urls = apostropheDiagnosticUrls.map(base => `${wrapper}${base}?filter=O', 'Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker${close}`);
+  const clean = apostropheDiagnosticUrls.map(base => wrapper + base + close);
+  return { name: `ambiguous suffix with wrapper ${JSON.stringify(wrapper)}`,
+    message: `Before ${urls.join(' ')}\nNext public #234 line.`,
+    safe: `Before ${clean.join(' ')}\nNext public #234 line.`,
+    stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
+    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+  };
+});
+
+for (const close of ['"', '']) for (const continuation of [
+  '&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker',
+  ' qa-apostrophe-query-marker qa-apostrophe-fragment-marker',
+]) {
+  const urls = apostropheDiagnosticUrls.map(base => `"${base}?filter=O", Reilly's${continuation}${close}`);
+  const clean = apostropheDiagnosticUrls.map(base => '"' + base + close);
+  wrappedAmbiguousDiagnostics.push({ name: `embedded double quote before comma, closing=${!!close}, continuation=${continuation}`,
+    message: `Before ${urls.join(' ')}\nNext public #234 line.`,
+    safe: `Before ${clean.join(' ')}\nNext public #234 line.`,
+    stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
+    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+  });
+}
+
+const envPrefixDiagnostics = ["", "'", '"', '`', "''", '""', '``', '   '].map(wrapper => {
+  const close = wrapper.trim();
+  const base = 'https://example.test/inbox';
+  const diagnostic = `${wrapper}${base}?cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker${close}`;
+  return { name: `URL prefix env with wrapper ${JSON.stringify(wrapper)}`,
+    message: `Before ${diagnostic}\nNext public #234 line.`,
+    safe: `Before ${wrapper}[REDACTED]inbox${close}\nNext public #234 line.`,
+    stack: `Error: diagnostic URL\n    at execute (${diagnostic}:12:8)`,
+    frames: [{ filename: `${wrapper}[REDACTED]inbox${close}`, function: 'execute', lineno: 12, colno: 8 }],
+  };
+});
+
+const completeEnvDiagnostic = {
+  name: 'complete URL-valued env remains concealed after suffix stripping',
+  message: 'Before https://example.test/inbox?cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker\nNext public #234 line.',
+  safe: 'Before [REDACTED]\nNext public #234 line.',
+  stack: 'Error: diagnostic URL\n    at execute (https://example.test/inbox?cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker:12:8)',
+  frames: [{ filename: '[REDACTED]', function: 'execute', lineno: 12, colno: 8 }],
+};
+const schemeDiagnostics = ['file:///app/client.js', 'ws://example.test/inbox', 'custom+tls://example.test/inbox'].map(base => ({
+  name: `scheme URL ${base}`,
+  message: `Before ${base}?filter=O', Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker\nNext public #234 line.`,
+  safe: `Before ${base}\nNext public #234 line.`,
+  stack: `Error: diagnostic URL\n    at execute (${base}?filter=O', Reilly's&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker:12:8)`,
+  frames: [{ filename: base, function: 'execute', lineno: 12, colno: 8 }],
+}));
 
 const repeatedApostropheDiagnostics = [
   ["comma then word apostrophe", "'", "'", "O', Reilly's"],
@@ -347,10 +418,15 @@ for (const [name, before, after, suffix] of [
   });
 }
 
-for (const [name, probes] of [
+for (const [name, probes, serverEnv = {}] of [
   ['apostrophes', [...apostropheDiagnostics, ...escapedQueryDiagnostics]],
   ...punctuatedApostropheGroups,
   ['repeated apostrophes', repeatedApostropheDiagnostics],
+  ...bareSuffixGroups,
+  ['ambiguous suffix wrappers', wrappedAmbiguousDiagnostics],
+  ['URL schemes', schemeDiagnostics],
+  ['complete URL env values', [completeEnvDiagnostic], { PUBLIC_URL: 'https://example.test/inbox?cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker' }],
+  ['URL prefix env values', envPrefixDiagnostics, { PUBLIC_URL: 'https://example.test/' }],
   ['structural URL suffixes', structuralQueryDiagnostics],
 ]) test(`${name} stay private at server and tunnel receivers`, async t => {
   const received = [];
@@ -358,7 +434,7 @@ for (const [name, probes] of [
     let body = ''; for await (const part of request) body += part;
     received.push(JSON.parse(body.trim().split('\n')[2])); response.end();
   });
-  const observability = createRuntimeObservability({ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1' });
+  const observability = createRuntimeObservability({ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1', ...serverEnv });
   t.after(() => observability.close());
   const origin = await listen(t, (request, response) => routeCollection({ observability }, request, response));
   for (const probe of probes) await t.test(probe.name, async () => {
@@ -477,7 +553,7 @@ test('tunnel rejects cross-origin, malformed and unsupported events; spoofed for
   assert.equal(received[0].headers['x-forwarded-for'], undefined);
 });
 
-async function generatedCollectionFixture(t) {
+async function generatedCollectionFixture(t, serverEnv = {}) {
   const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
   const path = await import('node:path');
   const { spawn } = await import('node:child_process');
@@ -496,7 +572,7 @@ async function generatedCollectionFixture(t) {
   const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(root, 'server', 'index.ts') });
   await mkdir(path.join(root, 'public'), { recursive: true });
   await writeFile(path.join(root, 'public', 'index.html'), '<!doctype html><html><head></head><body>Collection fixture</body></html>');
-  await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv: { DSN: receiver.replace('http://', 'http://key@') + '/1', ANALYTICS: receiver + '/analytics', WEBSITE: 'website-234', SECRET: 'server-only-secret' }, serverSource, serverModuleSource, epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");' }));
+  await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv: { DSN: receiver.replace('http://', 'http://key@') + '/1', ANALYTICS: receiver + '/analytics', WEBSITE: 'website-234', SECRET: 'server-only-secret', ...serverEnv }, serverSource, serverModuleSource, epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");' }));
   child = spawn(process.execPath, [path.join(root, 'server.mjs')], { cwd: root, env: { ...process.env, PORT: '0', SPORADES_CONFIG_DIR: path.join(root, 'config') }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '', errors = '', origin;
   child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { errors += chunk; });
@@ -582,14 +658,19 @@ test('generated loader redacts diagnostic URL delimiters across all relative for
   });
 });
 
-for (const [name, probes] of [
+for (const [name, probes, serverEnv = {}] of [
   ['apostrophes', [...apostropheDiagnostics, ...escapedQueryDiagnostics]],
   ...punctuatedApostropheGroups,
   ['repeated apostrophes', repeatedApostropheDiagnostics],
+  ...bareSuffixGroups,
+  ['ambiguous suffix wrappers', wrappedAmbiguousDiagnostics],
+  ['URL schemes', schemeDiagnostics],
+  ['complete URL env values', [completeEnvDiagnostic], { PUBLIC_URL: 'https://example.test/inbox?cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker' }],
+  ['URL prefix env values', envPrefixDiagnostics, { PUBLIC_URL: 'https://example.test/' }],
   ['structural URL suffixes', structuralQueryDiagnostics],
 ]) test(`generated loader conceals ${name} in messages and stack filenames`, async t => {
   const { Window } = await import('happy-dom');
-  const { origin, received, script } = await generatedCollectionFixture(t);
+  const { origin, received, script } = await generatedCollectionFixture(t, serverEnv);
   const window = new Window({ url: origin });
   t.after(() => window.happyDOM.abort());
   const sends = [];

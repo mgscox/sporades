@@ -28561,62 +28561,83 @@ function structuredCredentialEnd(text2, start) {
   }
   return text2.length;
 }
-function diagnosticUrlContinuation(text2, start, outerQuote) {
-  const boundary = text2.slice(start).search(/[\r\n]|[ \t](?:[\w.-]+[=:]["']?|["'])(?:https?:\/\/|file:\/\/\/|\/{1,2}|\.\.?\/)/i);
-  let end = boundary < 0 ? text2.length : start + boundary;
-  if (outerQuote === '"') {
-    for (let index = start; index < end; index++) {
-      if (text2[index] === "\\") index++;
-      else if (text2[index] === '"') {
-        end = index;
-        break;
+var diagnosticUrlClosers = { "[": "]", "(": ")", "{": "}", "<": ">" };
+function diagnosticUrlEnd(text2, start, suffix) {
+  const tail = text2.slice(suffix);
+  const boundary = tail.search(/[\r\n]|[ \t]+\S*?(?:[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))/iu);
+  const limit = boundary < 0 ? text2.length : suffix + boundary;
+  const opener = text2[start - 1];
+  const closer = diagnosticUrlClosers[opener] ?? opener;
+  const wrapped = !!closer && "\"'`])}>".includes(closer);
+  if (wrapped) {
+    let closing = -1;
+    for (let index = suffix; index < limit; index++) {
+      if (text2[index] === "\\") {
+        index++;
+        continue;
       }
+      if (text2[index] !== closer) continue;
+      const after = text2.slice(index + 1, limit);
+      if (closer === '"' && /^[ \t]*(?:[}\]]|,[ \t]*"(?:\\.|[^"\\])*"[ \t]*:)/.test(after)) return index;
+      closing = /^["'`]*[),.;:!?\]}]*?(?:\s|$)/.test(after) ? index : -1;
+    }
+    if (closing >= 0) {
+      if (/["'`&#=]|%(?:26|23|3[fd])/i.test(text2.slice(closing + 1, limit))) return limit;
+      let wrappers = 1;
+      while (text2[start - wrappers - 1] === opener) wrappers++;
+      while (wrappers-- > 1 && closing > suffix && text2[closing - 1] === closer) closing--;
+      return closing;
+    }
+    return limit;
+  }
+  let valueStart = true, proseBoundary = -1;
+  for (let index = suffix; index < limit; index++) {
+    const char = text2[index];
+    const escaped = char === "\\" && /["'`]/.test(text2[index + 1] ?? "");
+    if (escaped || /["'`]/.test(char)) {
+      if (!valueStart) return limit;
+      const quote = escaped ? text2[++index] : char;
+      let closing = -1;
+      for (let next = index + 1; next < limit; next++) {
+        if (text2[next] === "\\") {
+          if (escaped && text2[next + 1] === quote) {
+            closing = next;
+            next++;
+          } else next++;
+        } else if (!escaped && text2[next] === quote) closing = next;
+      }
+      if (closing < 0 || !/^[ \t]*(?:[&#=]|%(?:26|23|3[fd])|$)/i.test(text2.slice(closing + (escaped ? 2 : 1), limit))) return limit;
+      index = closing + (escaped ? 1 : 0);
+      valueStart = false;
+    } else if (/\s/.test(char)) {
+      if (!valueStart && proseBoundary < 0) proseBoundary = index;
+    } else {
+      if (/[<>]/.test(char)) return limit;
+      if (/[=?#&]/.test(char)) proseBoundary = -1;
+      valueStart = /[=?#&]/.test(char);
     }
   }
-  return text2.slice(start, end);
+  return proseBoundary < 0 ? limit : proseBoundary;
 }
 function stripDiagnosticUrlSuffixes(text2) {
   let redacted = "", cursor = 0;
-  for (const match of text2.matchAll(/((?:https?:\/\/|file:\/\/\/|(?:^|[^\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"]*?)([?#]|%3f|%23)/giu)) {
+  for (const match of text2.matchAll(/((?:[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"`]*?)([?#]|%3f|%23)/giu)) {
     if (match.index < cursor) continue;
-    const start = match.index + match[1].length;
-    const wrapper = /^["']/.test(match[1]) ? match[1][0] : text2[match.index - 1];
-    const outerQuote = wrapper === '"' || wrapper === "'" ? wrapper : "";
-    let end = start + match[2].length;
-    let quote = "", valueStart = true;
-    while (end < text2.length && !/[\r\n]/.test(text2[end])) {
-      const char = text2[end];
-      const delimiter = char === "\\" && /["']/.test(text2[end + 1] ?? "") ? text2.slice(end, end + 2) : /["']/.test(char) ? char : "";
-      const closesOuter = !!delimiter && delimiter === outerQuote && (delimiter !== "'" || /^[),.;:!?\]}\x60]*(?:\s|$)/.test(text2.slice(end + 1)) && !/[&#=']|%(?:26|23|3[fd])/i.test(diagnosticUrlContinuation(text2, end + 1, outerQuote)));
-      if (quote) {
-        if (quote === "'" && outerQuote === "'" && closesOuter) break;
-        if (delimiter === quote && (delimiter !== "'" || /^[ \t]*(?:[&#=]|%(?:26|23|3[fd])|["']|$)/i.test(text2.slice(end + 1)) && !/'[ \t]*(?:[&#=]|%(?:26|23|3[fd]))/i.test(diagnosticUrlContinuation(text2, end + 1, outerQuote)))) quote = "";
-        else if (char === "\\") {
-          end += 2;
-          continue;
-        }
-      } else if (delimiter) {
-        if (valueStart) {
-          quote = delimiter;
-          valueStart = false;
-        } else if (closesOuter) break;
-      } else if (/\s/.test(char)) {
-        const continuation = valueStart || /^[ \t]*[&#=]/.test(text2.slice(end));
-        if (!outerQuote && !continuation) break;
-      } else if (!outerQuote && /[<>]/.test(char)) break;
-      else valueStart = /[=?#&]/.test(char);
-      end += delimiter.length || 1;
-    }
-    const punctuation2 = quote ? "" : text2.slice(start + match[2].length, end).replaceAll("[REDACTED]", "").match(/[),.;:!?\]}\x60]+$/)?.[0] ?? "";
-    redacted += text2.slice(cursor, match.index) + match[1] + punctuation2;
+    const suffix = match.index + match[1].length;
+    const end = diagnosticUrlEnd(text2, match.index, suffix + match[2].length);
+    const punctuation2 = (end === text2.length || /\s/.test(text2[end])) && !/["'`]/.test(text2.slice(suffix, end)) ? text2.slice(suffix, end).match(/[),.;:!?\]}]+$/)?.[0] ?? "" : "";
+    redacted += text2.slice(cursor, suffix) + punctuation2;
     cursor = end;
   }
   return redacted + text2.slice(cursor);
 }
 function redactDiagnosticText(value, serverEnv = {}) {
-  let safe = value;
+  let safe = stripDiagnosticUrlSuffixes(value).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
   for (const secret of Object.values(serverEnv)) {
-    if (typeof secret === "string" && secret.length > 0) safe = safe.split(secret).join("[REDACTED]");
+    if (typeof secret !== "string" || !secret.length) continue;
+    safe = safe.split(secret).join("[REDACTED]");
+    const stripped = stripDiagnosticUrlSuffixes(secret).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+    if (stripped && stripped !== secret) safe = safe.split(stripped).join("[REDACTED]");
   }
   if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
   safe = safe.replace(/\b(?:authorization|cookie)\s*[:=](?![ \t]*["'])[^\r\n]*/gi, "[REDACTED]");
@@ -28629,7 +28650,7 @@ function redactDiagnosticText(value, serverEnv = {}) {
     cursor = safe[start] === "[" || safe[start] === "{" ? structuredCredentialEnd(safe, start) : start + (value2?.[0].length ?? 0);
   }
   safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
-  return stripDiagnosticUrlSuffixes(safe).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+  return safe;
 }
 
 // src/file-policy.ts

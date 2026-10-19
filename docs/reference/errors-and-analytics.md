@@ -102,7 +102,13 @@ URI punctuation or query separators remain private; ambiguous quotation conceals
 the remainder until a structural boundary or line end. Quoted query values may include
 repeated apostrophes such as `?filter=O', Reilly's&cap=...` or another opening
 apostrophe after punctuation. These quotes cannot hide a later query/fragment
-continuation from redaction. Separately quoted/assigned URL fields, surrounding
+continuation from redaction, even without an outer wrapper or a later separator.
+Ambiguous bare suffixes conceal the rest of their line, including any trailing
+prose; separately recognizable URL fields and following lines remain available.
+URL stripping runs before Server env substitution, so a URL-prefix env value
+such as `https://example.test/` cannot hide a query or fragment from the scanner.
+Complete URL-valued env secrets also remain concealed after suffix stripping.
+Separately quoted/assigned URL fields, surrounding
 JSON fields and following public lines retain their structural boundaries.
 Quoted query values may also include
 leading/trailing spaces or tabs, including JSON-escaped quotation such as

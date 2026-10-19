@@ -4,9 +4,10 @@
  * URLs in messages and stack filenames after punctuation or key/value delimiters.
  * Complete suffixes stay private across quoted whitespace, apostrophes beside
  * URI punctuation or query separators, repeated apostrophes (ambiguous boundaries
- * conceal the remainder), and
+ * conceal the remaining line even without an outer wrapper), and
  * JSON escapes, including percent-encoded query/fragment delimiters. Surrounding
  * quotation and JSON fields are preserved; unterminated values conceal the line.
+ * URL stripping precedes Server env substitution, including URL-prefix env values.
  */
 export type ObservabilityConfig = {
   errors?: {
