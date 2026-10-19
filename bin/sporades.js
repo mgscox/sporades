@@ -81038,13 +81038,16 @@ function validateDevStripeRuntime(payments, serverEnv) {
 function markDevStripeRuntime(database) {
   if (!database.stripeApiBaseUrl) return;
   database.runtimeDiagnostics.payments = { stripe: { providerOrigin: "loopback-test" } };
-  database.log.emit({
-    category: "platform",
-    event: "payments.stripe.test_origin_active",
-    level: "warn",
-    message: database.paymentsConfig?.stripe.enabled ? "Loopback Stripe test provider active; this certifies nothing about live Stripe." : "Loopback Stripe test provider selected while payments are dormant; no provider calls will run.",
-    data: { payments: { stripe: { providerOrigin: "loopback-test" } } }
-  });
+  try {
+    database.log.emit({
+      category: "platform",
+      event: "payments.stripe.test_origin_active",
+      level: "warn",
+      message: database.paymentsConfig?.stripe.enabled ? "Loopback Stripe test provider active; this certifies nothing about live Stripe." : "Loopback Stripe test provider selected while payments are dormant; no provider calls will run.",
+      data: { payments: { stripe: { providerOrigin: "loopback-test" } } }
+    });
+  } catch {
+  }
 }
 
 // src/public-origin.ts

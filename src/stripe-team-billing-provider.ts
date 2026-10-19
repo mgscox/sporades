@@ -488,7 +488,13 @@ function loopbackProvider(value: any) {
   try { url = new URL(value); } catch { throw providerFailure(false); }
   const loopback = url.hostname === "localhost" || url.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
   if (!loopback || !["http:", "https:"].includes(url.protocol) || url.pathname !== "/" || url.search || url.hash || url.username || url.password) throw providerFailure(false);
-  return { protocol: url.protocol.slice(0, -1) as "http" | "https", host: url.hostname, port: url.port };
+  // Node's URL retains IPv6 brackets and elides scheme-default ports; Stripe
+  // needs a bare hostname and otherwise substitutes its own default port (443).
+  return {
+    protocol: url.protocol.slice(0, -1) as "http" | "https",
+    host: url.hostname === "[::1]" ? "::1" : url.hostname,
+    port: url.port ? Number(url.port) : url.protocol === "http:" ? 80 : 443,
+  };
 }
 
 function throwIfAborted(signal: AbortSignal | undefined) {

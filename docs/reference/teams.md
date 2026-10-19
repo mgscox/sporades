@@ -520,7 +520,9 @@ SPORADES_DEV_STRIPE_API_ORIGIN=http://127.0.0.1:52345 sporades dev --json
 
 This process-only setting follows [ADR 0058](../adr/0058-team-billing-test-provider-boundary.md).
 Use an exact `http://127.0.0.1:<port>` or `http://[::1]:<port>` origin (`https`
-is also accepted), with a port from 1 to 65535. Hostnames including `localhost`,
+is also accepted), with a port from 1 to 65535. Explicit scheme-default ports
+are preserved, including `http://127.0.0.1:80` and `https://[::1]:443`.
+Hostnames including `localhost`,
 other loopback addresses, credentials, paths (even `/`), queries and fragments
 are refused with `STRIPE_API_ORIGIN_INVALID`; empty and whitespace values also
 refuse. Enabled Stripe payments must use `livemode: false` and a resolved Sealed

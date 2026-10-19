@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import http, { createServer } from "node:http";
 import { test } from "node:test";
 
 import { createStripeTeamBillingProvider } from "../dist/stripe-team-billing-provider.js";
@@ -253,6 +253,31 @@ test("the internal Team Billing provider sends one exact subscription Checkout e
   assert.equal(observed.params.get("expires_at"), String(input.providerExpiresAt));
   assert.equal(observed.params.get("success_url"), "https://billing.example.test/settings/billing/success");
   assert.equal(observed.params.get("cancel_url"), "https://billing.example.test/settings/billing/cancelled");
+});
+
+test("the Team Billing provider preserves explicit HTTP port 80 at the SDK transport boundary", async t => {
+  const observed = [];
+  await withProvider((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(validPortalConfiguration()));
+  }, async (stubOrigin) => {
+    const request = http.request;
+    // Capture the SDK's destination, then redirect to an ephemeral local stub:
+    // this regression needs neither a privileged port nor a real provider.
+    const interception = t.mock.method(http, "request", options => {
+      observed.push({ host: options.host, port: Number(options.port) });
+      return request({ ...options, port: new URL(stubOrigin).port });
+    });
+    try {
+      const provider = createStripeTeamBillingProvider({
+        config,
+        env: { STRIPE_SECRET_KEY: "sk_test_team_provider" },
+        apiBaseUrl: "http://127.0.0.1:80",
+      });
+      assert.deepEqual(await provider.retrievePortalConfiguration(portalConfigurationInput), { ok: true });
+      assert.deepEqual(observed, [{ host: "127.0.0.1", port: 80 }]);
+    } finally { interception.mock.restore(); }
+  });
 });
 
 test("the internal Team Billing provider attests one explicit Portal configuration before creating a session", async () => {

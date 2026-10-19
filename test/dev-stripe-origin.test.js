@@ -133,8 +133,23 @@ async function socketCall(socket, payload) {
   return result;
 }
 
-test("CLI Dev Checkout uses the loopback stub after start and rebuild; Bundle and doctor stay redacted", { timeout: 60000 }, async t => {
+for (const host of ["127.0.0.1", "::1"]) {
+test(`CLI Dev Checkout uses the ${host} loopback stub after start and rebuild; Bundle and doctor stay redacted`, { timeout: 60000 }, async t => {
   const { project, config } = await fixture(t);
+  const warningFailure = path.join(path.dirname(project), "fail-stripe-warning");
+  const warningAttempt = path.join(path.dirname(project), "stripe-warning-attempted");
+  const preload = path.join(path.dirname(project), "stripe-warning-failure.cjs");
+  await writeFile(preload, `const fs = require("node:fs");
+const append = fs.appendFileSync;
+fs.appendFileSync = function(file, data, ...args) {
+  if (String(data).includes('"event":"payments.stripe.test_origin_active"') && fs.existsSync(${JSON.stringify(warningFailure)})) {
+    fs.writeFileSync(${JSON.stringify(warningAttempt)}, "attempted");
+    throw Object.assign(new Error("fixture warning write failed"), { code: "ENOSPC" });
+  }
+  return append.call(this, file, data, ...args);
+};
+require("node:module").syncBuiltinESMExports();
+`);
   const requests = [];
   const provider = createServer(async (request, response) => {
     let body = ""; for await (const chunk of request) body += chunk;
@@ -145,9 +160,9 @@ test("CLI Dev Checkout uses the loopback stub after start and rebuild; Bundle an
       client_reference_id: params.get("client_reference_id"), expires_at: Number(params.get("expires_at")),
       url: `https://checkout.stripe.com/c/pay/cs_test_local_${requests.length}` }));
   });
-  await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => { provider.once("error", reject); provider.listen(0, host, resolve); });
   t.after(() => new Promise(resolve => { provider.close(resolve); provider.closeAllConnections(); }));
-  const origin = `http://127.0.0.1:${provider.address().port}`;
+  const origin = `http://${host === "::1" ? "[::1]" : host}:${provider.address().port}`;
   const source = `import { capsule, mutation } from "sporades/server";
 export default capsule({ name: "billing", schema: {},
   teamBilling: { checkout: { successPath: "/success", cancelPath: "/cancel" },
@@ -156,7 +171,7 @@ export default capsule({ name: "billing", schema: {},
   mutations: { setup: mutation(ctx => ctx.teams.create("Local test team")) }
 });`;
   await writeFile(path.join(project, "server/index.ts"), source);
-  const child = spawn(process.execPath, [cli, "dev", "--json"], { cwd: project,
+  const child = spawn(process.execPath, ["--require", preload, cli, "dev", "--json"], { cwd: project,
     env: { ...process.env, SPORADES_CONFIG_DIR: path.join(root, ".scratch/issue-265-config"), [variable]: origin }, stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => stop(child));
   const started = await jsonEvent(child, event => event.data?.event === "started");
@@ -178,8 +193,10 @@ export default capsule({ name: "billing", schema: {},
   for (const [index, requestId] of ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"].entries()) {
     if (index) {
       const rebuilt = jsonEvent(child, event => event.data?.event === "rebuild" && event.data?.status === "success");
+      await writeFile(warningFailure, "");
       await writeFile(path.join(project, "server/index.ts"), source + "\n// rebuild\n");
       await rebuilt;
+      assert.equal(await readFile(warningAttempt, "utf8"), "attempted", "replacement warning write failure was exercised");
       socket.close();
       const nextHtml = await (await fetch(started.data.url, { headers: { "sec-fetch-dest": "document" } })).text();
       socketUrl.searchParams.set("connectionToken", /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(nextHtml)[1]);
@@ -218,6 +235,7 @@ export default capsule({ name: "billing", schema: {},
     assert.equal(overridden.serverBundle, normal.serverBundle);
   } finally { if (previous === undefined) delete process.env[variable]; else process.env[variable] = previous; }
 });
+}
 
 test("CLI refusals preserve stable origin and live-mode codes before starting Dev", async t => {
   const { project, config } = await fixture(t);
