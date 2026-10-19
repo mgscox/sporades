@@ -75,3 +75,14 @@ groups:
           target: '{{ $labels.capsule_subname }}.{{ $labels.capsule_domain }} on {{ $labels.sporades_host }}'
           window: 'Backup age exceeded the opt-in Host policy for five minutes. Inspect host backup status and the backup timer journal.'
           dashboard: '__MONITORING_PUBLIC_URL__/alertmanager/'
+      - alert: SporadesObservabilityUnavailable
+        expr: (sporades_observability_enabled == 1) and ((sporades_observability_up == 0) or (time() - sporades_observability_checked_seconds > 180))
+        for: 2m
+        labels: { severity: warning, category: observability }
+        annotations:
+          summary: 'Host-managed observability unavailable or health check stale'
+          target: '{{ $labels.capsule_domain }}'
+          window: 'Inspect host services status observability and its health timer.'
+          errors: 'https://errors.{{ $labels.capsule_domain }}'
+          analytics: 'https://analytics.{{ $labels.capsule_domain }}'
+          dashboard: '__MONITORING_PUBLIC_URL__/alertmanager/'

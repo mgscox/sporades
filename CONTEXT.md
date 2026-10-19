@@ -746,3 +746,11 @@ and same-origin collection tunnel keep provider identities in Server env and
 remove query strings/fragments before delivery. Collection is bounded, best
 effort and independent of transaction/Job outcomes and OTLP Telemetry profiles.
 See [Errors and analytics](docs/reference/errors-and-analytics.md).
+
+**Host-managed observability**:
+An opt-in, release-pinned GlitchTip and Umami stack owned by a Host server.
+It owns private provisioning credentials, per-Capsule API identities, automatic
+TLS routes, health checks and database backups. Registration/connect seals only
+declared integrations into local Server env for the normal push flow. Services
+may live on a dedicated ops Host; ordinary Capsules remain unchanged.
+See [Host-managed observability](docs/reference/host-observability.md).

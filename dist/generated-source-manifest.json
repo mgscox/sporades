@@ -44,6 +44,7 @@
       "src/cli/host-helper-validation.ts",
       "src/cli/host-inventory.ts",
       "src/cli/host-metrics.ts",
+      "src/cli/host-observability.ts",
       "src/cli/host-request-builders.ts",
       "src/cli/host-telemetry-relay.ts",
       "src/cli/host-telemetry-state.ts",
@@ -141,7 +142,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "9ed856dd0813507bb7ced821c9529fffa599169ae191745a28adefc6a016bc09"
+    "digest": "e620bbb34302b883624b3ee1f6f62077d605f8cbcee963fb8a63152debeddc6e"
   },
   "outputs": {
     "files": [
@@ -287,6 +288,10 @@
       "dist/cli/host-metrics.d.ts.map",
       "dist/cli/host-metrics.js",
       "dist/cli/host-metrics.js.map",
+      "dist/cli/host-observability.d.ts",
+      "dist/cli/host-observability.d.ts.map",
+      "dist/cli/host-observability.js",
+      "dist/cli/host-observability.js.map",
       "dist/cli/host-request-builders.d.ts",
       "dist/cli/host-request-builders.d.ts.map",
       "dist/cli/host-request-builders.js",
@@ -629,6 +634,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "4c005fbe4cb701c73c804c8aae77afa73a4d83f0d68bda833492cbefd4392b3f"
+    "digest": "f9c0df27e2f7b5affe13aca54cd30bb00a06cc3a9e989658abc509e928bd5181"
   }
 }

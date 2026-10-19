@@ -1268,6 +1268,23 @@ function validateServerEnvKeyName(name: string) {
 }
 
 function parseHostArgs(args: string[]): LooseRecord {
+  if (args[0] === "services") {
+    const [_, operation, name, ...rest] = args;
+    if (!["enable", "disable", "uninstall", "status", "connect", "backup", "backups", "restore"].includes(operation) || !name || (operation !== "connect" && name !== "observability")) throw commandError("Invalid Host services command.", "Use host services enable|disable|uninstall|status|backup|backups|restore observability or connect <subname>.");
+    const options: LooseRecord = { subcommand: "services", operation, subname: operation === "connect" ? name : undefined, json: false, projectDir: process.cwd() };
+    if (options.subname) validateCapsuleSubname(options.subname);
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--json") { options.json = true; continue; }
+      const field = ({ "--host": "hostAlias", "--on": "servicesAlias", "--id": "id", "--confirm": "confirm" } as Record<string,string>)[rest[i]];
+      if (!field || options[field] !== undefined) throw commandError("Invalid Host services option.", "Use --host <Capsule-host>, --on <services-host> and --json.");
+      options[field] = readFlagValue(rest, ++i, rest[i - 1]);
+    }
+    for (const alias of [options.hostAlias, options.servicesAlias]) if (alias) validateHostAlias(alias);
+    if (operation === "restore") {
+      if (!/^[a-f0-9]{64}$/.test(options.id ?? "") || options.confirm !== "observability") throw commandError("Service restore requires explicit confirmation.", "Use --id <full-snapshot-id> --confirm observability after disabling services.");
+    } else if (options.id || options.confirm) throw commandError("Unexpected restore option.", "Use --id and --confirm only with restore.");
+    return options;
+  }
   if (args[0] === "backup") {
     const operation = args[1];
     if (!["configure", "create", "list", "restore", "prune", "status"].includes(operation)) throw commandError("Unknown backup operation.", "Use host backup configure|create|list|restore|prune|status.");
@@ -1308,6 +1325,7 @@ function parseHostArgs(args: string[]): LooseRecord {
   let file = DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW;
   let dryRun = false;
   let force = false;
+  let servicesAlias: string | null = null;
   let telemetryProfileName: string | null = null;
   let queryCredentialEnv: string | null = null;
   const positional = [];
@@ -1318,6 +1336,12 @@ function parseHostArgs(args: string[]): LooseRecord {
     switch (arg) {
       case "--json":
         json = true;
+        break;
+
+      case "--on":
+        if (subcommand !== "register") throw commandError("--on is only supported by host register and services.", "Select the services Host with --on <alias>.");
+        servicesAlias = readFlagValue(rest, ++index, "--on");
+        validateHostAlias(servicesAlias);
         break;
 
       case "--host":
@@ -1526,7 +1550,7 @@ function parseHostArgs(args: string[]): LooseRecord {
       validateCapsuleSubname(positionalSubname);
       if (canonicalDomain && !aliasDomains.includes(canonicalDomain)) aliasDomains.push(canonicalDomain);
       validateAliasDomains(aliasDomains);
-      return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, canonicalDomain, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, hostAlias, servicesAlias, aliasDomains, canonicalDomain, json, projectDir: process.cwd() };
     }
 
     case "rotate-key": {
@@ -4016,8 +4040,69 @@ async function ensureHostProfileEnvKey(config: LooseRecord, alias: string | numb
   return hostKey;
 }
 
+// Only explicit #234 declarations activate automatic wiring. Existing external
+// values are preserved; connecting never silently takes over another provider.
+async function connectProjectObservability(options: LooseRecord, capsuleHost: LooseRecord, servicesHost: LooseRecord) {
+  const project = await readProjectConfig(options.projectDir);
+  const errors = project.observability?.errors;
+  const analytics = project.analytics?.provider === "umami" ? project.analytics : undefined;
+  if (!errors && !analytics) return { connected: false, reason: "project-not-opted-in" };
+  const paths = sealedServerEnvPaths(options.projectDir);
+  return withSealedServerEnvMutationLock(paths, async () => {
+    const previous = await readSealedServerEnv(paths);
+    let pair = await readKeyPair(paths);
+    if (previous && !pair) throw commandError("Sealed Server env key is unavailable.", "Restore the local private key before connecting services.");
+    pair ??= await ensureSealedServerEnvKeyPair(paths);
+    const values = previous ? unsealServerEnv(previous, pair.privateKey) : {};
+    const legacy = await readServerEnvFile(path.join(options.projectDir, ".env.sporades.server"));
+    if (!previous && legacy.exists && Object.keys(parseServerEnv(legacy)).length) {
+      if (options.automatic) return { connected: false, reason: "legacy-env-needs-import" };
+      throw commandError("Import existing Server env before connecting services.", "Run sporades env import --file .env.sporades.server first.");
+    }
+    const result = invokeRemoteHostHelper({ alias: servicesHost.alias, profile: servicesHost.profile, action: "host.services.connect", projectDir: options.projectDir,
+      services: { domain: capsuleHost.profile.domain, subname: options.subname, publicKey: pair.publicKey, errors: !!errors, analytics: !!analytics } });
+    if (!result.ok) {
+      if (options.automatic && !options.servicesAlias && /Unsupported Host helper action/.test(result.error.message)) return { connected: false, reason: "services-unavailable" };
+      throw commandError(result.error.message, result.error.hint);
+    }
+    if (!result.data.connected) return { connected: false, reason: result.data.reason ?? "services-unavailable" };
+    const incoming = unsealServerEnv(result.data.env, pair.privateKey);
+    const mapped: Record<string,string> = {};
+    if (errors) mapped[errors.dsnEnv] = incoming.ERROR_DSN;
+    if (analytics) { mapped[analytics.endpointEnv] = incoming.ANALYTICS_ENDPOINT; mapped[analytics.websiteIdEnv] = incoming.ANALYTICS_WEBSITE_ID; }
+    const keys = Object.keys(mapped);
+    if (keys.length !== (errors ? 1 : 0) + (analytics ? 2 : 0) || keys.some(k => !isValidServerEnvKeyName(k) || isReservedServerEnvKeyName(k))) throw commandError("Observability env names must be distinct and valid.", "Use separate env names for the DSN, endpoint and website ID.");
+    if (keys.some(k => values[k] && values[k] !== mapped[k])) {
+      if (options.automatic) return { connected: false, reason: "existing-provider-env" };
+      throw commandError("Observability env already selects another provider.", "Remove the selected sealed keys explicitly before connecting Host services.");
+    }
+    Object.assign(values, mapped);
+    if (Object.keys(values).length > 64 || serverEnvPlaintextSize(values) > 64 * 1024) throw commandError("Sealed Server env exceeds its limit.", "Keep at most 64 keys and 64 KiB of plaintext.");
+    await writeSealedServerEnv(paths, sealServerEnv(values, pair.publicKey, { source: "host-services" }));
+    return { connected: true, keys, servicesHost: servicesHost.alias, pushRequired: true };
+  });
+}
+
 async function manageHost(options: LooseRecord) {
   switch (options.subcommand) {
+    case "services": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.operation === "connect" ? options.hostAlias : options.servicesAlias ?? options.hostAlias);
+      let data;
+      if (options.operation === "connect") {
+        await readProjectConfig(options.projectDir);
+        const inspection = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: "capsule.stats", subname: options.subname, projectDir: options.projectDir });
+        if (!inspection.ok) throw commandError(inspection.error.message, inspection.error.hint);
+        data = await connectProjectObservability(options, resolved, options.servicesAlias ? resolveHostProfile(config, options.servicesAlias) : resolved);
+      } else {
+        const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.services.${options.operation}`, projectDir: options.projectDir, backup: { id: options.id, confirm: options.confirm } });
+        if (!result.ok) throw commandError(result.error.message, result.error.hint);
+        data = result.data;
+      }
+      if (options.json) writeResult({ ok: true, data, error: null });
+      else process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
+      return;
+    }
     case "backup": {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
@@ -4270,6 +4355,7 @@ async function manageHost(options: LooseRecord) {
 
       const data = {
         ...result.data,
+        observability: await connectProjectObservability({ ...options, automatic: true }, resolved, options.servicesAlias ? resolveHostProfile(config, options.servicesAlias) : resolved),
         bindingPath,
         binding,
         localBinding: true,
@@ -6189,6 +6275,7 @@ function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseR
     capsule: options.subname ? { subname: options.subname } : null,
   };
   if (options.admission) request.admission = options.admission;
+  if (options.services) request.services = options.services;
   if (options.backup) request.backup = options.backup;
   if (options.canonical) request.canonical = options.canonical;
   if (options.bootstrap) {

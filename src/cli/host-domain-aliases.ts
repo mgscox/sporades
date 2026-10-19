@@ -44,6 +44,10 @@ export async function assertHostnamesAvailable(remoteRoot: string, hostnames: st
   for (const domain of await entries(path.join(remoteRoot, "hosts"))) {
     if (domain.isSymbolicLink()) throw helperError("Cannot inspect Hosted domain ownership.", "Replace symbolic links in the Host registry with canonical directories.");
     if (!domain.isDirectory()) continue;
+    // The protected intent reserves service hostnames through partial installs and disable.
+    const serviceState = path.join(remoteRoot, "hosts", domain.name, "services", "observability", "secrets.json");
+    const installed = await readFile(serviceState, "utf8").then(() => true).catch(e => { if (e.code === "ENOENT") return false; throw e; });
+    if (installed) for (const service of ["errors", "analytics"]) assertUnclaimed(`${service}.${domain.name}`, `observability:${domain.name}`);
     for (const collection of ["capsules", "registration-claims"]) {
       const directory = path.join(remoteRoot, "hosts", domain.name, "registry", collection);
       for (const entry of await entries(directory)) {

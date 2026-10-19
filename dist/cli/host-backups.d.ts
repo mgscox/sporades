@@ -33,6 +33,7 @@ export declare function trustedBackupPath(file: string, secret?: boolean): Promi
 export declare function hostBackupDirectory(host: HostHelperHost): string;
 export declare function atomicBackupJson(file: string, value: unknown): Promise<void>;
 export declare function readHostBackupPolicy(host: HostHelperHost): Promise<HostBackupPolicy | null>;
+export declare function restic(policy: HostBackupPolicy, args: string[], cwd?: string): Promise<string>;
 export declare function listHostBackups(policy: HostBackupPolicy, host: HostHelperHost, subname: string): Promise<Snapshot[]>;
 export declare function pruneHostBackups(policy: HostBackupPolicy, host: HostHelperHost, subname: string): Promise<{
     pruned: boolean;

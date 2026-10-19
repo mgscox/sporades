@@ -6,6 +6,7 @@ Changes since v0.9.31.
 
 ### 🚀 Features
 
+- Add opt-in Host-managed GlitchTip/Umami with sealed per-Capsule wiring, recovery, database backups and health alerts (#240).
 - Add opt-in Sentry-envelope errors and Umami/Plausible pageviews through a redacted same-origin collection tunnel (#234).
 - Add opt-in encrypted Capsule data backups, local/S3 targets, schedules, restore rehearsals and freshness alerts (#238).
 - Add `ctx.app.publicOrigin`, canonical Hosted alias selection, and origin diagnostics (#231).

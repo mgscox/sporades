@@ -28,6 +28,7 @@ import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-con
 import { disableHostTelemetryExports, removeHostTelemetryAgents, checkHostTelemetryDelivery, recoverHostTelemetryActivation, migrateHostTelemetryRelay, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
 import { queueHostInventory, removeHostInventoryWorker, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
+import { enableObservability, disableObservability, statusObservability, provisionObservability, readObservabilityState, backupObservability, listObservabilityBackups, pruneObservabilityBackups, restoreObservability, installObservabilityMonitor, renderObservabilityRoutes, OBSERVABILITY_ROUTE_FILE } from "./host-observability.js";
 import { configureHostBackups, readHostBackupPolicy, createHostBackup, listHostBackups, pruneHostBackups, restoreHostBackup, recoverHostBackupRestore, hostBackupStatus, atomicBackupJson, trustedBackupPath, publishHostBackupMetric } from "./host-backups.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
@@ -75,10 +76,22 @@ runHostHelperEntry().catch((error) => {
             ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}),
         },
     }, false);
-    if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host", "--reconcile-inventory", "--backup-host"].includes(process.argv[2]))
+    if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host", "--reconcile-inventory", "--backup-host", "--observe-host"].includes(process.argv[2]))
         process.exitCode = 1;
 });
 async function runHostHelperEntry() {
+    if (process.argv[2] === "--observe-host") {
+        const host = JSON.parse(Buffer.from(process.argv[3] ?? "", "base64url").toString());
+        const child = spawnSync(process.execPath, [process.argv[1]], { input: JSON.stringify({ action: "host.services.status", host }), encoding: "utf8", timeout: 80_000 });
+        let ok = false;
+        try {
+            ok = child.status === 0 && JSON.parse(child.stdout).ok === true;
+        }
+        catch { /* secret-free failure */ }
+        if (!ok)
+            process.exitCode = 1;
+        return;
+    }
     if (process.argv[2] === "--backup-host") {
         await backupHostFromTimer();
         return;
@@ -450,6 +463,15 @@ function managedRouteMutationLockIdentity(request) {
         case "capsule.backup.prune":
             validateLifecycleRequest(request);
             break;
+        case "host.services.enable":
+        case "host.services.disable":
+        case "host.services.uninstall":
+        case "host.services.connect":
+        case "host.services.status":
+        case "host.services.backup":
+        case "host.services.backups":
+        case "host.services.prune":
+        case "host.services.restore":
         case "host.backup.configure": {
             const remoteRoot = validateCanonicalHostRouteRoot(request);
             return { globalLockFile: path.join(remoteRoot, "bin", ".sporades-host-helper.host-route.lock"), routeLockFile: null, domainDirectory: canonicalManagedRouteDomainDirectory(request, remoteRoot) };
@@ -868,10 +890,49 @@ async function dispatchMain(request) {
     if (request.action === "schedules.inspect")
         validateScheduleInspectionRequest(request);
     hostHelperConfig = await loadHostHelperConfig(request);
+    if (request.action.startsWith("host.services.")) {
+        const operation = request.action.slice("host.services.".length);
+        const host = request.host;
+        if (host.domain.includes(":"))
+            throw helperError("Observability requires a DNS Hosted domain.", "Use a Hosted domain without a port.");
+        let data;
+        if (operation === "enable") {
+            await assertHostnamesAvailable(host.remoteRoot, [`errors.${host.domain}`, `analytics.${host.domain}`], `observability:${host.domain}`);
+            const master = path.join(host.remoteRoot, "caddy", "Caddyfile");
+            if (!await pathExists(master))
+                throw helperError("Bootstrap the Hosted domain first.", "Run host bootstrap before enabling observability.");
+            data = await enableObservability(host, async (ports) => {
+                await applyObservabilityRoutes(request, ports);
+                await installObservabilityMonitor(host, true);
+            });
+        }
+        else if (operation === "disable" || operation === "uninstall")
+            data = await disableObservability(host, () => applyObservabilityRoutes(request, null), operation === "uninstall");
+        else if (operation === "status")
+            data = await statusObservability(host);
+        else if (operation === "connect")
+            data = await provisionObservability(host, request.services);
+        else if (operation === "backup")
+            data = await backupObservability(host);
+        else if (operation === "backups")
+            data = await listObservabilityBackups(host);
+        else if (operation === "prune")
+            data = await pruneObservabilityBackups(host);
+        else if (operation === "restore")
+            data = await restoreObservability(host, request.backup?.id, request.backup?.confirm);
+        else
+            throw helperError("Unknown Host services operation.", "Use enable, disable, uninstall, connect or status.");
+        if (["disable", "uninstall"].includes(operation) && (await readObservabilityState(host)))
+            await installObservabilityMonitor(host, false);
+        writeEnvelope({ ok: true, data, error: null });
+        return;
+    }
     if (request.action === "host.backup.configure") {
         const data = await configureHostBackups(request.host, request.backup?.policy);
         for (const record of await readCapsuleRegistryRecords(request))
             await publishHostBackupMetric(request.host, record.subname, record.status === "unregistered");
+        if (await readObservabilityState(request.host))
+            await publishHostBackupMetric(request.host, "_observability");
         writeEnvelope({ ok: true, data, error: null });
         return;
     }
@@ -1192,6 +1253,27 @@ async function setCapsuleCanonicalDomain(request) {
     const restarted = restart ? await restartCapsule(request, { write: false, trustedRegistryLifecycle: true }) : null;
     writeEnvelope({ ok: !restart || Boolean(restarted), data: { publicOrigin, canonicalDomain, restarted: Boolean(restarted) },
         error: restart && !restarted ? { message: "Canonical domain saved; Capsule restart failed.", hint: "Inspect Capsule logs, then retry this canonical command or run host start after repair. The saved origin will be used." } : null });
+}
+async function applyObservabilityRoutes(request, ports) {
+    const file = path.join(canonicalManagedRouteDomainDirectory(request), OBSERVABILITY_ROUTE_FILE);
+    await assertActiveManagedRouteTrust(null);
+    await assertTrustedRegularFileIfExists(file);
+    const previous = await readFile(file).catch(e => { if (e.code === "ENOENT")
+        return null; throw e; });
+    const contents = renderObservabilityRoutes(request.host, ports);
+    try {
+        await publishHostHelperBytes(Buffer.from(contents), file, 0o644);
+        validateCaddyBootstrap(path.join(request.host.remoteRoot, "caddy", "Caddyfile"));
+        reloadCaddyBootstrap(path.join(request.host.remoteRoot, "caddy", "Caddyfile"));
+    }
+    catch (error) {
+        if (previous)
+            await publishHostHelperBytes(previous, file, 0o644);
+        else
+            await rm(file, { force: true });
+        reloadCaddyBootstrap(path.join(request.host.remoteRoot, "caddy", "Caddyfile"));
+        throw error;
+    }
 }
 async function registerCapsule(request) {
     validateRegisterRequest(request);
@@ -2572,6 +2654,21 @@ async function backupHostFromTimer() {
                 break; // Never prune after an incomplete backup.
         }
         results.push({ subname: record.subname, ok });
+    }
+    if ((await readObservabilityState(host))?.enabled) {
+        let ok = true;
+        for (const operation of ["backup", "prune"]) {
+            const child = spawnSync(process.execPath, [process.argv[1]], { input: JSON.stringify({ action: `host.services.${operation}`, host }), encoding: "utf8", timeout: 3700_000, maxBuffer: 4 * 1024 * 1024 });
+            try {
+                ok = child.status === 0 && JSON.parse(child.stdout).ok === true;
+            }
+            catch {
+                ok = false;
+            }
+            if (!ok)
+                break;
+        }
+        results.push({ subname: "_observability", ok });
     }
     if (results.some(r => !r.ok))
         process.exitCode = 1;

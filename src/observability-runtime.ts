@@ -61,11 +61,13 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
   const errors = config.observability?.errors;
   let sentryUrl: URL | null = null;
   let dsn: string | null = null;
+  let sentryKey: string | null = null;
   if (errors && env[errors.dsnEnv]) {
     try {
       const parsed = new URL(env[errors.dsnEnv]);
       const key = parsed.username;
       if (!key || !/^[a-zA-Z0-9_-]+$/.test(key) || parsed.password || parsed.search || parsed.hash) throw new Error();
+      sentryKey = key;
       parsed.username = "";
       const segments = parsed.pathname.split("/").filter(Boolean);
       const project = segments.pop();
@@ -113,7 +115,7 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
         const payload = JSON.stringify(event);
         const body = `${JSON.stringify({ event_id: event.event_id, dsn })}\n${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}\n${payload}\n`;
         if (!enter()) return;
-        const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope" }).catch(() => {}).finally(() => { active--; pending.delete(task); });
+        const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {}).finally(() => { active--; pending.delete(task); });
         pending.add(task);
       } catch { /* Error reporting must never replace the original failure. */ }
     },
