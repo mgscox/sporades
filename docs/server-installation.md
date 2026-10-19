@@ -745,3 +745,11 @@ Backups are opt-in and require an initialized encrypted restic repository and pr
 Host-side key files. The Host profile owns `backups.schedule`, retention and target
 configuration through `sporades host backup configure`. See the
 [backup contract and restore-rehearsal runbook](./reference/capsule-backups.md).
+
+## Optional Host-managed error tracking and analytics
+
+Install opt-in pinned GlitchTip/Umami after bootstrap with
+`sporades host services enable observability --on <alias> --json`. See the
+[Host observability runbook](./reference/host-observability.md) for resource
+requirements, dedicated ops Hosts, automatic TLS, once-only credentials,
+Capsule wiring, backups, health alerts and disable/uninstall.

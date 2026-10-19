@@ -1587,3 +1587,13 @@ degraded last-known-good state and totals without raw client addresses, request
 values, query strings, credentials, bodies or proxy headers. No-policy sessions
 retain their existing inspection shape. See the configuration reference for
 counter semantics, sampling bounds and unavailable inspection behavior.
+
+### Host-managed error tracking and analytics
+
+Opt-in `host services enable observability` installs release-pinned GlitchTip
+and Umami behind automatic-TLS Caddy routes. Host-local generated credentials
+are disclosed once. Register/connect provisions deterministic per-Capsule API
+identities and seals explicitly declared integration env; existing apps and
+external providers remain unchanged. Resource refusal, retry convergence,
+disable/uninstall, scheduled restic database backups and monitored health are
+part of this contract. See [the operator runbook](./reference/host-observability.md).

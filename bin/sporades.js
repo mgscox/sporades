@@ -80726,11 +80726,13 @@ function createRuntimeObservability(config = {}, env = {}) {
   const errors = config.observability?.errors;
   let sentryUrl = null;
   let dsn = null;
+  let sentryKey = null;
   if (errors && env[errors.dsnEnv]) {
     try {
       const parsed = new URL(env[errors.dsnEnv]);
       const key = parsed.username;
       if (!key || !/^[a-zA-Z0-9_-]+$/.test(key) || parsed.password || parsed.search || parsed.hash) throw new Error();
+      sentryKey = key;
       parsed.username = "";
       const segments = parsed.pathname.split("/").filter(Boolean);
       const project = segments.pop();
@@ -80775,7 +80777,7 @@ ${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}
 ${payload}
 `;
     if (!sentryUrl || !enter()) return;
-    const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope" }).catch(() => {
+    const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {
     }).finally(() => {
       active--;
       pending.delete(task);
@@ -148327,6 +148329,14 @@ Profile commands:
   bootstrap           Provision the remote Host server
   upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
+  services enable|disable|uninstall|status observability [--on <alias>]
+                      Manage pinned GlitchTip and Umami (opt-in)
+  services connect <subname> [--host <Capsule-host>] [--on <ops-host>]
+                      Seal configured error/analytics env; push to activate
+  services backup|backups observability [--on <alias>]
+                      Snapshot or list service databases using Host backup policy
+  services restore observability --id <snapshot> --confirm observability
+                      Restore disabled services; enable again after inspection
   telemetry connect|migrate|reconcile|status|check
   telemetry inventory-export|inventory-reconcile
                       Manage the shared Host Telemetry relay
@@ -152461,6 +152471,26 @@ function validateServerEnvKeyName(name2) {
   }
 }
 function parseHostArgs(args) {
+  if (args[0] === "services") {
+    const [_2, operation, name2, ...rest2] = args;
+    if (!["enable", "disable", "uninstall", "status", "connect", "backup", "backups", "restore"].includes(operation) || !name2 || operation !== "connect" && name2 !== "observability") throw commandError2("Invalid Host services command.", "Use host services enable|disable|uninstall|status|backup|backups|restore observability or connect <subname>.");
+    const options = { subcommand: "services", operation, subname: operation === "connect" ? name2 : void 0, json: false, projectDir: process.cwd() };
+    if (options.subname) validateCapsuleSubname(options.subname);
+    for (let i = 0; i < rest2.length; i++) {
+      if (rest2[i] === "--json") {
+        options.json = true;
+        continue;
+      }
+      const field = { "--host": "hostAlias", "--on": "servicesAlias", "--id": "id", "--confirm": "confirm" }[rest2[i]];
+      if (!field || options[field] !== void 0) throw commandError2("Invalid Host services option.", "Use --host <Capsule-host>, --on <services-host> and --json.");
+      options[field] = readFlagValue(rest2, ++i, rest2[i - 1]);
+    }
+    for (const alias of [options.hostAlias, options.servicesAlias]) if (alias) validateHostAlias(alias);
+    if (operation === "restore") {
+      if (!/^[a-f0-9]{64}$/.test(options.id ?? "") || options.confirm !== "observability") throw commandError2("Service restore requires explicit confirmation.", "Use --id <full-snapshot-id> --confirm observability after disabling services.");
+    } else if (options.id || options.confirm) throw commandError2("Unexpected restore option.", "Use --id and --confirm only with restore.");
+    return options;
+  }
   if (args[0] === "backup") {
     const operation = args[1];
     if (!["configure", "create", "list", "restore", "prune", "status"].includes(operation)) throw commandError2("Unknown backup operation.", "Use host backup configure|create|list|restore|prune|status.");
@@ -152504,6 +152534,7 @@ function parseHostArgs(args) {
   let file = DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW;
   let dryRun = false;
   let force = false;
+  let servicesAlias = null;
   let telemetryProfileName = null;
   let queryCredentialEnv = null;
   const positional = [];
@@ -152512,6 +152543,11 @@ function parseHostArgs(args) {
     switch (arg) {
       case "--json":
         json = true;
+        break;
+      case "--on":
+        if (subcommand !== "register") throw commandError2("--on is only supported by host register and services.", "Select the services Host with --on <alias>.");
+        servicesAlias = readFlagValue(rest, ++index, "--on");
+        validateHostAlias(servicesAlias);
         break;
       case "--host":
         hostAlias = readFlagValue(rest, ++index, "--host");
@@ -152693,7 +152729,7 @@ function parseHostArgs(args) {
       validateCapsuleSubname(positionalSubname);
       if (canonicalDomain && !aliasDomains.includes(canonicalDomain)) aliasDomains.push(canonicalDomain);
       validateAliasDomains(aliasDomains);
-      return { subcommand, subname: positionalSubname, hostAlias, aliasDomains, canonicalDomain, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, hostAlias, servicesAlias, aliasDomains, canonicalDomain, json, projectDir: process.cwd() };
     }
     case "rotate-key": {
       const [positionalSubname, ...extra] = positional;
@@ -155009,8 +155045,76 @@ async function ensureHostProfileEnvKey(config, alias) {
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
 }
+async function connectProjectObservability(options, capsuleHost, servicesHost) {
+  const project = await readProjectConfig(options.projectDir);
+  const errors = project.observability?.errors;
+  const analytics = project.analytics?.provider === "umami" ? project.analytics : void 0;
+  if (!errors && !analytics) return { connected: false, reason: "project-not-opted-in" };
+  const paths = sealedServerEnvPaths(options.projectDir);
+  return withSealedServerEnvMutationLock(paths, async () => {
+    const previous = await readSealedServerEnv(paths);
+    let pair2 = await readKeyPair(paths);
+    if (previous && !pair2) throw commandError2("Sealed Server env key is unavailable.", "Restore the local private key before connecting services.");
+    pair2 ??= await ensureSealedServerEnvKeyPair(paths);
+    const values = previous ? unsealServerEnv(previous, pair2.privateKey) : {};
+    const legacy = await readServerEnvFile(path23.join(options.projectDir, ".env.sporades.server"));
+    if (!previous && legacy.exists && Object.keys(parseServerEnv(legacy)).length) {
+      if (options.automatic) return { connected: false, reason: "legacy-env-needs-import" };
+      throw commandError2("Import existing Server env before connecting services.", "Run sporades env import --file .env.sporades.server first.");
+    }
+    const selectedKeys = [...errors ? [errors.dsnEnv] : [], ...analytics ? [analytics.endpointEnv, analytics.websiteIdEnv] : []];
+    if (options.automatic && selectedKeys.some((key) => values[key])) return { connected: false, reason: "existing-provider-env" };
+    const result = invokeRemoteHostHelper({
+      alias: servicesHost.alias,
+      profile: servicesHost.profile,
+      action: "host.services.connect",
+      projectDir: options.projectDir,
+      services: { domain: capsuleHost.profile.domain, subname: options.subname, publicKey: pair2.publicKey, errors: !!errors, analytics: !!analytics }
+    });
+    if (!result.ok) {
+      if (options.automatic && !options.servicesAlias && /Unsupported Host helper action/.test(result.error.message)) return { connected: false, reason: "services-unavailable" };
+      throw commandError2(result.error.message, result.error.hint);
+    }
+    if (!result.data.connected) return { connected: false, reason: result.data.reason ?? "services-unavailable" };
+    const incoming = unsealServerEnv(result.data.env, pair2.privateKey);
+    const mapped = {};
+    if (errors) mapped[errors.dsnEnv] = incoming.ERROR_DSN;
+    if (analytics) {
+      mapped[analytics.endpointEnv] = incoming.ANALYTICS_ENDPOINT;
+      mapped[analytics.websiteIdEnv] = incoming.ANALYTICS_WEBSITE_ID;
+    }
+    const keys = Object.keys(mapped);
+    if (keys.length !== (errors ? 1 : 0) + (analytics ? 2 : 0) || keys.some((k) => !isValidServerEnvKeyName(k) || isReservedServerEnvKeyName(k))) throw commandError2("Observability env names must be distinct and valid.", "Use separate env names for the DSN, endpoint and website ID.");
+    if (keys.some((k) => values[k] && values[k] !== mapped[k])) {
+      throw commandError2("Observability env already selects another provider.", "Remove the selected sealed keys explicitly before connecting Host services.");
+    }
+    Object.assign(values, mapped);
+    if (Object.keys(values).length > 64 || serverEnvPlaintextSize(values) > 64 * 1024) throw commandError2("Sealed Server env exceeds its limit.", "Keep at most 64 keys and 64 KiB of plaintext.");
+    await writeSealedServerEnv(paths, sealServerEnv(values, pair2.publicKey, { source: "host-services" }));
+    return { connected: true, keys, servicesHost: servicesHost.alias, pushRequired: true };
+  });
+}
 async function manageHost(options) {
   switch (options.subcommand) {
+    case "services": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.operation === "connect" ? options.hostAlias : options.servicesAlias ?? options.hostAlias);
+      let data2;
+      if (options.operation === "connect") {
+        await readProjectConfig(options.projectDir);
+        const inspection = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: "capsule.stats", subname: options.subname, projectDir: options.projectDir });
+        if (!inspection.ok) throw commandError2(inspection.error.message, inspection.error.hint);
+        data2 = await connectProjectObservability(options, resolved, options.servicesAlias ? resolveHostProfile(config, options.servicesAlias) : resolved);
+      } else {
+        const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.services.${options.operation}`, projectDir: options.projectDir, backup: { id: options.id, confirm: options.confirm } });
+        if (!result.ok) throw commandError2(result.error.message, result.error.hint);
+        data2 = result.data;
+      }
+      if (options.json) writeResult({ ok: true, data: data2, error: null });
+      else process.stdout.write(`${JSON.stringify(data2, null, 2)}
+`);
+      return;
+    }
     case "backup": {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
@@ -155266,6 +155370,7 @@ async function manageHost(options) {
 `);
       const data2 = {
         ...result.data,
+        observability: await connectProjectObservability({ ...options, automatic: true }, resolved, options.servicesAlias ? resolveHostProfile(config, options.servicesAlias) : resolved),
         bindingPath,
         binding,
         localBinding: true,
@@ -157061,6 +157166,7 @@ function invokeRemoteHostHelper(options) {
     capsule: options.subname ? { subname: options.subname } : null
   };
   if (options.admission) request.admission = options.admission;
+  if (options.services) request.services = options.services;
   if (options.backup) request.backup = options.backup;
   if (options.canonical) request.canonical = options.canonical;
   if (options.bootstrap) {

@@ -11,7 +11,7 @@
 export type ObservabilityConfig = {
   errors?: {
     protocol: "sentry";
-    /** Server env name containing a Sentry-compatible DSN. Never exposed to browsers. */
+    /** Server env name containing a Sentry-compatible DSN. Never exposed to browsers. Host services connect can seal this key automatically. */
     dsnEnv: string;
     environment?: string;
     /** Error sampling probability from 0 to 1; defaults to 1. */
@@ -24,7 +24,7 @@ export type ObservabilityConfig = {
 /** Opt-in project pageviews. Query strings and fragments are always removed. */
 export type AnalyticsConfig = {
   provider: "umami" | "plausible";
-  /** Server env name containing the exact HTTPS collection endpoint. */
+  /** Server env name containing the exact HTTPS collection endpoint; Host-managed Umami can seal it automatically. */
   endpointEnv: string;
   /** Server env name containing the Umami website ID or Plausible domain. */
   websiteIdEnv: string;

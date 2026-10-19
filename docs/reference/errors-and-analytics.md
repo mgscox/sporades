@@ -44,6 +44,8 @@ No requests are sent when neither integration is active.
 Uncaught query, mutation, Custom endpoint and Job failures produce envelopes
 with redacted messages and parsed stack frames, tagged with Capsule, release
 (`SPORADES_RELEASE_ID` when available), environment and runtime surface.
+The provider transport sends the standard Sentry authentication header using the
+validated DSN public key, including for GlitchTip. It never reaches the browser.
 Expected auth/ACL denials (`DENIED`, `UNAUTHENTICATED`, `FORBIDDEN`, and
 `REAUTHENTICATION_REQUIRED`) and Job/resource cancellations do not create error
 events. The browser filters these codes before counting its error budget. Job
@@ -167,3 +169,9 @@ limited to 16 KiB, messages to 2,048 characters and stacks to 20 frames. Reads a
 requests have two-second timeouts. Saturation drops errors or returns 429 for
 collection. Provider failures and responses stay opaque and never alter Capsule
 transactions. Closing the runtime revokes further delivery.
+
+## Host-managed providers
+
+For automatic GlitchTip project and Umami site creation with sealed env, use
+[Host-managed observability](./host-observability.md). Enabling the Host stack
+is opt-in; the declarations above still control each Capsule integration.

@@ -55,6 +55,7 @@ const report = {
 const leaks = /secret|attacker\.test\/|nonce-|public-key|ERROR_DSN|127\.0\.0\.1:\d+\/|ip_address/;
 
 function envelope(entry) {
+  assert.equal(entry.headers['x-sentry-auth'], 'Sentry sentry_version=7, sentry_key=public-key, sentry_client=sporades');
   const [header, item, event] = entry.body.trim().split('\n').map(line => JSON.parse(line));
   assert.equal(header.event_id, event.event_id);
   assert.equal(item.type, 'event');

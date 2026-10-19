@@ -105,7 +105,7 @@ async function resticEnvironment(policy) {
     }
     return env;
 }
-async function restic(policy, args, cwd) {
+export async function restic(policy, args, cwd) {
     const result = spawnSync("restic", ["--no-cache", "--json", ...args], { env: await resticEnvironment(policy), cwd, encoding: "utf8", timeout: 3600_000, maxBuffer: 8 * 1024 * 1024 });
     // Exit 3 (incomplete backup) must never advance freshness or trigger retention.
     if (result.error || result.status !== 0)

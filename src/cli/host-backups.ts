@@ -90,7 +90,7 @@ async function resticEnvironment(policy: HostBackupPolicy) {
   }
   return env;
 }
-async function restic(policy: HostBackupPolicy, args: string[], cwd?: string) {
+export async function restic(policy: HostBackupPolicy, args: string[], cwd?: string) {
   const result = spawnSync("restic", ["--no-cache", "--json", ...args], { env: await resticEnvironment(policy), cwd, encoding: "utf8", timeout: 3600_000, maxBuffer: 8 * 1024 * 1024 });
   // Exit 3 (incomplete backup) must never advance freshness or trigger retention.
   if (result.error || result.status !== 0) fail("Host backup repository operation failed.");

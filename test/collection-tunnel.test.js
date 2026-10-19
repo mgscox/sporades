@@ -48,7 +48,7 @@ test('Sentry envelopes contain redacted errors, stack frames and Capsule/release
   const received = [];
   const receiver = await listen(t, async (request, response) => {
     let body = ''; for await (const part of request) body += part;
-    received.push({ path: request.url, body }); response.writeHead(200).end();
+    received.push({ path: request.url, headers: request.headers, body }); response.writeHead(200).end();
   });
   const config = { name: 'errors-test', release: { id: 'release-234' }, observability: { errors: { protocol: 'sentry', dsnEnv: 'ERROR_DSN', environment: 'staging', client: true } } };
   const observability = createRuntimeObservability(config, { ERROR_DSN: receiver.replace('http://', 'http://public-key@') + '/prefix/42', API_SECRET: 'sealed-secret' });
@@ -58,6 +58,7 @@ test('Sentry envelopes contain redacted errors, stack frames and Capsule/release
   await observability.flush();
   assert.equal(received.length, 1);
   assert.equal(received[0].path, '/prefix/api/42/envelope/');
+  assert.equal(received[0].headers['x-sentry-auth'], 'Sentry sentry_version=7, sentry_key=public-key, sentry_client=sporades');
   const [header, item, event] = received[0].body.trim().split('\n').map(JSON.parse);
   assert.equal(item.type, 'event'); assert.equal(item.length, Buffer.byteLength(JSON.stringify(event)));
   assert.equal(header.event_id, event.event_id);

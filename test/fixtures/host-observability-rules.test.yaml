@@ -1,0 +1,74 @@
+rule_files:
+  - ../../monitoring/trace/availability-rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'sporades_observability_enabled{capsule_domain="enabled.test"}'
+        values: '1 1 1 1'
+      - series: 'sporades_observability_up{capsule_domain="enabled.test"}'
+        values: '0 0 0 0'
+      - series: 'sporades_observability_checked_seconds{capsule_domain="enabled.test"}'
+        values: '0 60 120 180'
+      - series: 'sporades_observability_enabled{capsule_domain="disabled.test"}'
+        values: '0 0 0 0'
+      - series: 'sporades_observability_up{capsule_domain="disabled.test"}'
+        values: '0 0 0 0'
+      - series: 'sporades_observability_checked_seconds{capsule_domain="disabled.test"}'
+        values: '0 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SporadesObservabilityUnavailable
+        exp_alerts:
+          - exp_labels:
+              capsule_domain: enabled.test
+              severity: warning
+              category: observability
+            exp_annotations:
+              summary: Host-managed observability unavailable or health check stale
+              target: enabled.test
+              window: Inspect host services status observability and its health timer.
+              errors: https://errors.enabled.test
+              analytics: https://analytics.enabled.test
+              dashboard: __MONITORING_PUBLIC_URL__/alertmanager/
+  - interval: 1m
+    input_series:
+      - series: 'sporades_observability_enabled{capsule_domain="stale.test"}'
+        values: '1+0x8'
+      - series: 'sporades_observability_up{capsule_domain="stale.test"}'
+        values: '1+0x8'
+      - series: 'sporades_observability_checked_seconds{capsule_domain="stale.test"}'
+        values: '0+0x8'
+      - series: 'sporades_observability_enabled{capsule_domain="healthy.test"}'
+        values: '1+0x8'
+      - series: 'sporades_observability_up{capsule_domain="healthy.test"}'
+        values: '1+0x8'
+      - series: 'sporades_observability_checked_seconds{capsule_domain="healthy.test"}'
+        values: '0+60x8'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SporadesObservabilityUnavailable
+        exp_alerts:
+          - exp_labels:
+              capsule_domain: stale.test
+              severity: warning
+              category: observability
+            exp_annotations:
+              summary: Host-managed observability unavailable or health check stale
+              target: stale.test
+              window: Inspect host services status observability and its health timer.
+              errors: https://errors.stale.test
+              analytics: https://analytics.stale.test
+              dashboard: __MONITORING_PUBLIC_URL__/alertmanager/
+  - interval: 1m
+    input_series:
+      - series: 'sporades_observability_enabled{capsule_domain="recovered.test"}'
+        values: '1+0x6'
+      - series: 'sporades_observability_up{capsule_domain="recovered.test"}'
+        values: '0 0 0 1 1 1 1'
+      - series: 'sporades_observability_checked_seconds{capsule_domain="recovered.test"}'
+        values: '0+60x6'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SporadesObservabilityUnavailable
+        exp_alerts: []

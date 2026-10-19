@@ -744,3 +744,26 @@ apply `sporades host backup configure --file <policy.json>`. This is opt-in; the
 shared bootstrap path never enables schedules implicitly. Verify a disposable
 [restore rehearsal](../reference/capsule-backups.md) and reconnect resource telemetry
 after helper upgrade for freshness alerts. Local/fake tests require no real Host.
+
+### Optional Host-managed GlitchTip and Umami
+
+Offer [Host-managed observability](../reference/host-observability.md) as an
+opt-in step after bootstrap. Require Docker Compose v2, systemd, automatic TLS
+reachability and DNS for `errors.<domain>` and `analytics.<domain>`. On Ubuntu
+24.04, install `docker-compose-v2` if `docker compose version` is unavailable.
+Provision at least 2 CPUs, 2 GiB Docker RAM and 20 GiB free disk, plus Capsule
+headroom; prefer a dedicated ops Host with 4 GiB or more. Never silently resize.
+
+```sh
+sporades host services enable observability --on "$SPORADES_HOST_ALIAS" --json
+sporades host services status observability --on "$SPORADES_HOST_ALIAS" --json
+```
+
+Save the first enable response in an operator password manager; it is the only
+credential disclosure. Do not put secrets in `sporades-host.env`. Declare the
+runtime error/Umami config before registration; existing Capsules use
+`host services connect <subname> --host <Capsule-host> --on <ops-host>` from
+their local project and then the usual push. A separate services Host requires
+`host register <subname> --host <Capsule-host> --on <ops-host>`. Configure the
+backup policy on that services Host. Verify fresh errors/pageviews, backup
+restore and systemd/TLS behavior on disposable infrastructure before go-live.

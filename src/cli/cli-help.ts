@@ -207,6 +207,14 @@ Profile commands:
   bootstrap           Provision the remote Host server
   upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
+  services enable|disable|uninstall|status observability [--on <alias>]
+                      Manage pinned GlitchTip and Umami (opt-in)
+  services connect <subname> [--host <Capsule-host>] [--on <ops-host>]
+                      Seal configured error/analytics env; push to activate
+  services backup|backups observability [--on <alias>]
+                      Snapshot or list service databases using Host backup policy
+  services restore observability --id <snapshot> --confirm observability
+                      Restore disabled services; enable again after inspection
   telemetry connect|migrate|reconcile|status|check
   telemetry inventory-export|inventory-reconcile
                       Manage the shared Host Telemetry relay

@@ -683,3 +683,14 @@ Use `host telemetry check` for Host-origin delivery stages and
 `host telemetry migrate --profile <destination>` for preflight-verified activation.
 See [Telemetry diagnostics and migration](./telemetry-diagnostics.md) for operator
 query authority, restart reports, inventory expectations and rollback.
+
+## Host-managed error tracking and analytics
+
+`host services enable|disable|uninstall|status observability --on <alias>`
+manages opt-in GlitchTip and Umami. `host services connect <subname> --host
+<Capsule-host> --on <ops-host>` seals declared integration env for the next push.
+`host register` accepts the same `--on` selector for automatic provisioning.
+Database operations are `services backup|backups observability` and
+`services restore observability --id <snapshot> --confirm observability`.
+See [Host-managed observability](./host-observability.md) for the complete
+resource, credential, recovery and monitoring contract.
