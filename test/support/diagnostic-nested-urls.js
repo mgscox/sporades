@@ -1,3 +1,5 @@
+import { failClosedProbe } from './diagnostic-spaced-containers.js';
+
 // Shared receiver/loader cases also drive the disposable Chromium acceptance.
 const outerUrls = ['https://example.test/inbox', '//example.test/inbox', '/inbox', './client.js', '../client.js'];
 const nestedUrls = ['https://nested.test/public', '//nested.test/public', '/public', './public', '../public', 'https://example.test/public'];
@@ -102,6 +104,8 @@ for (const separator of ['?', '#', '%3F', '%23']) {
   }
 }
 nestedUrlProbes.push(...wrappedContainerProbes);
+// Export the current exact-output contract for independent receiver/browser QA.
+for (const probe of nestedUrlProbes) Object.assign(probe, failClosedProbe(probe));
 export const nestedUrlGroups = Array.from({ length: Math.ceil(nestedUrlProbes.length / 16) }, (_, index) => [
   `nested URL values ${index + 1}`, nestedUrlProbes.slice(index * 16, (index + 1) * 16), { PUBLIC_URL: 'https://example.test/' },
 ]);
