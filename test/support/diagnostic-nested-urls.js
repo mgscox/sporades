@@ -48,6 +48,60 @@ for (const base of outerUrls) for (const separator of ['?', '#', '%3F', '%23']) 
     frames: [{ filename: wrapper + envSafe(base), function: 'execute', lineno: 12, colno: 8 }],
   });
 }
+export const wrappedContainerProbes = outerUrls.flatMap(base => ['?', '#', '%3F', '%23'].map(separator => {
+  const value = JSON.stringify({ next: ` /public ${markers}` });
+  const url = `"${base}${separator}filter=${value}"`;
+  const clean = `"${envSafe(base)}"`;
+  return {
+    name: `wrapped object QA reproduction: ${base}${separator}`,
+    message: `Before ${url}\nNext public #234 line.`,
+    safe: `Before ${clean}\nNext public #234 line.`,
+    stack: `Error: diagnostic URL\n    at execute (${url}:12:8)`,
+    frames: [{ filename: clean, function: 'execute', lineno: 12, colno: 8 }],
+  };
+}));
+// Cross enclosing syntax with complete, escaped, and ambiguous private containers.
+const containerWrappers = [
+  ['double', value => `"${value}"`, base => `"${base}"`, '"'],
+  ['single', value => `'${value}'`, base => `'${base}'`, "'"],
+  ['backtick', value => `\`${value}\``, base => `\`${base}\``, '`'],
+  ['repeated double', value => `""${value}""`, base => `""${base}""`, '""'],
+  ['bracket', value => `[${value}]`, base => `[${base}]`, '['],
+  ['parenthesis', value => `(${value})`, base => `(${base})`, '('],
+  ['JSON string', value => JSON.stringify({ url: value, status: 'ready' }), base => JSON.stringify({ url: base, status: 'ready' }), '{"url":"'],
+];
+const containerValues = [
+  ['object', JSON.stringify({ next: ` /public ${markers}` })],
+  ['array', JSON.stringify([` /public ${markers}`])],
+  ['crossed nesting', JSON.stringify({ next: [{ deeper: [` /public ${markers}`] }], after: 'done' })],
+  ['quoted container delimiters', JSON.stringify({ next: ` }]," /public ${markers}`, after: 'done' })],
+  ['escaped backslashes', JSON.stringify({ next: ` \\ /public ${markers} \\`, after: 'done' })],
+  ['single quoted string', `{next:' /public ${markers}'}`],
+  ['backtick string', '{next:` /public ' + markers + '`}'],
+  ['leading spaces', '   ' + JSON.stringify([{ next: ` /public ${markers}` }])],
+  ['prefixed container', 'prefix' + JSON.stringify({ next: ` /public ${markers}` })],
+  ['unterminated string', `{"next":" /public ${markers}`, true],
+  ['crossed closing delimiters', `[{"next":" /public ${markers}"]}`, true],
+];
+for (const separator of ['?', '#', '%3F', '%23']) {
+  for (const [wrapper, wrap, clean, prefix] of containerWrappers) {
+    for (const [shape, value, ambiguous] of containerValues) {
+      const diagnostics = outerUrls.map(base => wrap(`${base}${separator}filter=${value}`));
+      // Separate lines keep an ambiguous container private without borrowing a
+      // later line's quotation. Complete cases also prove separate URL fields.
+      const join = ambiguous ? '\nBefore ' : ' ';
+      const safe = outerUrls.map(base => envSafe(ambiguous ? prefix + base : clean(base)));
+      wrappedContainerProbes.push({
+        name: `${wrapper} wrapper / ${shape}: ${separator}`,
+        message: `Before ${diagnostics.join(join)}\nNext public #234 line.`,
+        safe: `Before ${safe.join(join)}\nNext public #234 line.`,
+        stack: 'Error: diagnostic URL\n' + diagnostics.map(url => `    at execute (${url}:12:8)`).join('\n'),
+        frames: safe.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+      });
+    }
+  }
+}
+nestedUrlProbes.push(...wrappedContainerProbes);
 export const nestedUrlGroups = Array.from({ length: Math.ceil(nestedUrlProbes.length / 16) }, (_, index) => [
   `nested URL values ${index + 1}`, nestedUrlProbes.slice(index * 16, (index + 1) * 16), { PUBLIC_URL: 'https://example.test/' },
 ]);

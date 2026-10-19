@@ -51,16 +51,34 @@ export function isSensitiveLogKey(key) {
 // quoted delimiters. A malformed or truncated container conceals the remainder.
 function structuredCredentialEnd(text, start) {
     const closers = [];
-    let quote = "";
+    let quote = "", quoteSlashes = 0;
     for (let index = start; index < text.length; index++) {
         const char = text[index];
+        if (char === "\\") {
+            let end = index;
+            while (text[end] === "\\")
+                end++;
+            const slashes = end - index;
+            // A container can itself be serialized inside a JSON diagnostic string.
+            // Match that quotation layer exactly; its escaped data quotes are deeper.
+            if (quoteSlashes) {
+                if (slashes % (2 * (quoteSlashes + 1)) === quoteSlashes && text[end] === quote) {
+                    quote = "";
+                    quoteSlashes = 0;
+                }
+            }
+            else if (!quote && /["'`]/.test(text[end] ?? "")) {
+                quote = text[end];
+                quoteSlashes = slashes;
+            }
+            index = quote && !quoteSlashes && slashes % 2 === 0 ? end - 1 : end;
+            continue;
+        }
         if (quote) {
-            if (char === "\\")
-                index++;
-            else if (char === quote)
+            if (!quoteSlashes && char === quote)
                 quote = "";
         }
-        else if (char === '"' || char === "'")
+        else if (char === '"' || char === "'" || char === "`")
             quote = char;
         else if (char === "[")
             closers.push("]");
@@ -127,6 +145,16 @@ function diagnosticUrlContainerEnd(text, start, suffix, limit, boundary = true) 
             wrappers++;
         for (let index = suffix; index < limit; index++) {
             const char = text[index];
+            // Inner containers own their quotes, delimiters, and URL-looking text.
+            // Resolve the complete container before accepting any enclosing boundary.
+            if (char === "[" || char === "{") {
+                const end = structuredCredentialEnd(text, index);
+                if (end > limit)
+                    return undefined;
+                index = end - 1;
+                valueStart = false;
+                continue;
+            }
             if (char === "\\") {
                 index++;
                 continue;
@@ -141,7 +169,8 @@ function diagnosticUrlContainerEnd(text, start, suffix, limit, boundary = true) 
                 valueStart = false;
                 continue;
             }
-            valueStart = /[=?#&]/.test(char);
+            if (!/\s/.test(char))
+                valueStart = /[=?#&]/.test(char);
             if (char !== closer)
                 continue;
             const after = text.slice(index + 1, limit);
@@ -169,7 +198,7 @@ function diagnosticUrlContainerEnd(text, start, suffix, limit, boundary = true) 
             index = end - 1;
             valueStart = false;
         }
-        else if (valueStart && (char === "[" || char === "{")) {
+        else if (char === "[" || char === "{") {
             const end = structuredCredentialEnd(text, index);
             if (end > limit)
                 return undefined;

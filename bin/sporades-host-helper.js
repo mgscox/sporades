@@ -28545,13 +28545,28 @@ function isSensitiveLogKey(key) {
 }
 function structuredCredentialEnd(text2, start) {
   const closers = [];
-  let quote = "";
+  let quote = "", quoteSlashes = 0;
   for (let index = start; index < text2.length; index++) {
     const char = text2[index];
+    if (char === "\\") {
+      let end = index;
+      while (text2[end] === "\\") end++;
+      const slashes = end - index;
+      if (quoteSlashes) {
+        if (slashes % (2 * (quoteSlashes + 1)) === quoteSlashes && text2[end] === quote) {
+          quote = "";
+          quoteSlashes = 0;
+        }
+      } else if (!quote && /["'`]/.test(text2[end] ?? "")) {
+        quote = text2[end];
+        quoteSlashes = slashes;
+      }
+      index = quote && !quoteSlashes && slashes % 2 === 0 ? end - 1 : end;
+      continue;
+    }
     if (quote) {
-      if (char === "\\") index++;
-      else if (char === quote) quote = "";
-    } else if (char === '"' || char === "'") quote = char;
+      if (!quoteSlashes && char === quote) quote = "";
+    } else if (char === '"' || char === "'" || char === "`") quote = char;
     else if (char === "[") closers.push("]");
     else if (char === "{") closers.push("}");
     else if (char === "]" || char === "}") {
@@ -28597,6 +28612,13 @@ function diagnosticUrlContainerEnd(text2, start, suffix, limit, boundary = true)
     while (text2[start - wrappers - 1] === opener) wrappers++;
     for (let index = suffix; index < limit; index++) {
       const char = text2[index];
+      if (char === "[" || char === "{") {
+        const end = structuredCredentialEnd(text2, index);
+        if (end > limit) return void 0;
+        index = end - 1;
+        valueStart2 = false;
+        continue;
+      }
       if (char === "\\") {
         index++;
         continue;
@@ -28608,7 +28630,7 @@ function diagnosticUrlContainerEnd(text2, start, suffix, limit, boundary = true)
         valueStart2 = false;
         continue;
       }
-      valueStart2 = /[=?#&]/.test(char);
+      if (!/\s/.test(char)) valueStart2 = /[=?#&]/.test(char);
       if (char !== closer) continue;
       const after = text2.slice(index + 1, limit);
       if (closer === '"' && /^[ \t]*(?:[}\]]|,[ \t]*"(?:\\.|[^"\\])*"[ \t]*:)/.test(after)) return index;
@@ -28628,7 +28650,7 @@ function diagnosticUrlContainerEnd(text2, start, suffix, limit, boundary = true)
       if (end === void 0 || boundary && !text2.slice(end, limit).trim()) return void 0;
       index = end - 1;
       valueStart = false;
-    } else if (valueStart && (char === "[" || char === "{")) {
+    } else if (char === "[" || char === "{") {
       const end = structuredCredentialEnd(text2, index);
       if (end > limit) return void 0;
       index = end - 1;

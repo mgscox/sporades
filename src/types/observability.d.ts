@@ -9,6 +9,8 @@
  * quotation and JSON fields are preserved; unterminated values conceal the line.
  * URL stripping precedes Server env substitution, including URL-prefix env values.
  * Nested URL-like text stays private until its value quotation/container closes.
+ * Enclosing URL quotes cannot close nested objects/arrays or their escaped strings;
+ * incomplete or crossed container closures conceal the remainder of the line.
  */
 export type ObservabilityConfig = {
   errors?: {

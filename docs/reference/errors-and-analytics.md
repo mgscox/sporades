@@ -112,6 +112,10 @@ A URL-looking string inside a quoted query/fragment or a nested value container
 belongs to the private suffix. Whitespace before `/public` or `scheme://...`
 cannot establish another URL field while that quotation/container remains open,
 including JSON-escaped quotation and encoded query/fragment delimiters.
+Enclosing URL quotes do not close inner objects, arrays, or their quoted strings.
+The scanner resolves nested container depth and quotation before accepting either
+another URL field or a following JSON field. Incomplete or crossed container
+closures conceal the rest of the line.
 Ambiguous quotation also conceals later URL-looking fields on the same line when
 the runtime cannot prove they are outside the value; following lines are retained.
 Separately quoted/assigned URL fields, surrounding

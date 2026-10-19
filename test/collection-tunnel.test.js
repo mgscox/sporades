@@ -207,18 +207,19 @@ const apostropheDiagnostics = [
 });
 
 // URI punctuation on either side of an apostrophe is data, not proof that the
-// surrounding URL string ended. Keep all five forms and exact public prose.
+// surrounding URL string ended. Keep all five forms; ambiguous containers fail closed.
 const punctuatedApostropheDiagnostics = [...'-._~:/?#[]@!$&()*+,;=%'].flatMap(punctuation => [
   ["before", `O'${punctuation}Reilly`], ["after", `O${punctuation}'Reilly`],
 ]).map(([position, value]) => {
   const urls = apostropheDiagnosticUrls.map(base => `'${base}?filter=${value}&cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker'`);
   const clean = apostropheDiagnosticUrls.map(base => `'${base}'`);
+  const ambiguous = /^O[?#&=]'Reilly$/.test(value) || value.includes('[');
   return { name: `apostrophe ${position} URI punctuation: ${value}`,
     message: `Ready? Investigate #234 ${urls.join(' ')} Continue.`,
-    // Ambiguous same-quote fragment/value openers cannot prove the next field closed.
-    safe: `Ready? Investigate #234 ${/^O[?#&=]'Reilly$/.test(value) ? clean[0].slice(0, -1) : clean.join(' ') + ' Continue.'}`,
+    // Same-quote values and unclosed arrays cannot prove the next field closed.
+    safe: `Ready? Investigate #234 ${ambiguous ? clean[0].slice(0, -1) : clean.join(' ') + ' Continue.'}`,
     stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
-    frames: clean.reverse().map(filename => ({ filename: /^O[?#&=]'Reilly$/.test(value) ? filename.slice(0, -1) : filename, function: 'execute', lineno: 12, colno: 8 })),
+    frames: clean.reverse().map(filename => ({ filename: ambiguous ? filename.slice(0, -1) : filename, function: 'execute', lineno: 12, colno: 8 })),
   };
 });
 for (const value of ["'O'&Reilly phrase'", "'O'#Reilly phrase'", "'O'=Reilly phrase'", "'O'& cap = Reilly phrase'"]) {
