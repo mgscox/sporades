@@ -90,136 +90,28 @@ function structuredCredentialEnd(text: string, start: number) {
   return text.length;
 }
 
-const diagnosticUrlClosers: Record<string, string> = { "[": "]", "(": ")", "{": "}", "<": ">" };
-
-// Resolve value quotation before considering URL-looking text as another field.
-// Return the position after the closing delimiter; missing/ambiguous closure
-// leaves the entire candidate private. Word apostrophes are never closers.
-function diagnosticValueEnd(text: string, start: number, limit: number, escaped: boolean, outerQuote = "", wrappers = 0) {
-  const quote = text[start + (escaped ? 1 : 0)];
-  const width = escaped ? 2 : 1;
-  let closing = -1, previous = -1;
-  for (let index = start + width; index < limit; index++) {
-    if (text[index] === "\\") {
-      if (escaped && text[index + 1] === quote) { previous = closing; closing = index; index++; }
-      else index++;
-    } else if (!escaped && text[index] === quote) { previous = closing; closing = index; }
-  }
-  if (closing < 0) return undefined;
-  // Reserve the last matching quote for the enclosing string. This also
-  // prevents an unterminated value from borrowing its wrapper as a closer.
-  if (!escaped && quote === outerQuote) {
-    closing = previous;
-    if (closing < 0) return undefined;
-    while (wrappers-- > 1 && closing > start && text[closing - 1] === quote) closing--;
-  }
-  const after = text.slice(closing + width, limit);
-  if (!/^[ \t]*(?:[&#=]|%(?:26|23|3[fd])|$)/i.test(after)
-    && !(outerQuote && after.startsWith(outerQuote))) return undefined;
-  return closing + width;
-}
-
-// An undefined end means quotation/container state is still open or ambiguous.
-// Such a prefix cannot establish a boundary merely because another URL follows.
-function diagnosticUrlContainerEnd(text: string, start: number, suffix: number, limit: number, boundary = true) {
-  const opener = text[start - 1];
-  const closer = diagnosticUrlClosers[opener] ?? opener;
-  const wrapped = !!closer && "\"'`])}>".includes(closer);
-  if (wrapped) {
-    let closing = -1, valueStart = true, wrappers = 1;
-    while (text[start - wrappers - 1] === opener) wrappers++;
-    for (let index = suffix; index < limit; index++) {
-      const char = text[index];
-      // Inner containers own their quotes, delimiters, and URL-looking text.
-      // Resolve the complete container before accepting any enclosing boundary.
-      if (char === "[" || char === "{") {
-        const end = structuredCredentialEnd(text, index);
-        if (end > limit) return undefined;
-        index = end - 1;
-        valueStart = false;
-        continue;
-      }
-      if (char === "\\") { index++; continue; }
-      if (valueStart && /["'`]/.test(char)) {
-        const end = diagnosticValueEnd(text, index, limit, false, closer, wrappers);
-        if (end === undefined) return undefined;
-        // A same-quote value cannot borrow its enclosing string's only
-        // closer to establish a separate field. Both layers must be closed.
-        index = end - 1;
-        valueStart = false;
-        continue;
-      }
-      if (!/\s/.test(char)) valueStart = /[=?#&]/.test(char);
-      if (char !== closer) continue;
-      const after = text.slice(index + 1, limit);
-      // A real following JSON field is outside the enclosing URL string.
-      if (closer === '"' && /^[ \t]*(?:[}\]]|,[ \t]*"(?:\\.|[^"\\])*"[ \t]*:)/.test(after)) return index;
-      closing = /^["'`]*[),.;:!?\]}]*?(?:\s|$)/.test(after) ? index : -1;
-    }
-    if (closing < 0 || /["'`&#=]|%(?:26|23|3[fd])/i.test(text.slice(closing + 1, limit))) return undefined;
-    while (wrappers-- > 1 && closing > suffix && text[closing - 1] === closer) closing--;
-    return closing;
-  }
-
-  let valueStart = true, proseBoundary = -1;
-  for (let index = suffix; index < limit; index++) {
-    const char = text[index];
-    const escaped = char === "\\" && /["'`]/.test(text[index + 1] ?? "");
-    if (escaped || /["'`]/.test(char)) {
-      if (!valueStart) return undefined;
-      const end = diagnosticValueEnd(text, index, limit, escaped);
-      if (end === undefined || (boundary && !text.slice(end, limit).trim())) return undefined;
-      index = end - 1;
-      valueStart = false;
-    } else if (char === "[" || char === "{") {
-      const end = structuredCredentialEnd(text, index);
-      if (end > limit) return undefined;
-      index = end - 1;
-      valueStart = false;
-    } else if (/\s/.test(char)) {
-      if (!valueStart && proseBoundary < 0) proseBoundary = index;
-    } else {
-      if (/[<>]/.test(char)) return undefined;
-      if (/[=?#&]/.test(char)) proseBoundary = -1;
-      valueStart = /[=?#&]/.test(char);
-    }
-  }
-  if (valueStart) return undefined;
-  return proseBoundary < 0 ? limit : proseBoundary;
-}
-
-// A URL's private suffix belongs to its lexical container. Candidate URL fields
-// are accepted only after the quotation/container scan proves the prefix closed.
-// Nested URLs in open values remain private, including escaped JSON quotation.
-function diagnosticUrlEnd(text: string, start: number, suffix: number) {
-  const newline = text.slice(suffix).search(/[\r\n]/);
-  const lineEnd = newline < 0 ? text.length : suffix + newline;
-  const line = text.slice(suffix, lineEnd);
-  for (const match of line.matchAll(/[ \t]+\S*?(?:[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))/giu)) {
-    const end = diagnosticUrlContainerEnd(text, start, suffix, suffix + match.index);
-    if (end !== undefined) return end;
-  }
-  // With no proven separate field, inspect the complete line for the outer
-  // container's end. Nested URL syntax never bounds this final extent.
-  return diagnosticUrlContainerEnd(text, start, suffix, lineEnd, false) ?? lineEnd;
-}
-
+// Diagnostics are untrusted prose, not a URL serialization format. Whitespace,
+// apostrophes and closing delimiters can all occur in private values (including
+// truncated JSON). Once a URL suffix starts, its whole diagnostic line is private.
+// Never resume at a later URL-looking string or reuse a tentative prose boundary.
 function stripDiagnosticUrlSuffixes(text: string) {
-  let redacted = "", cursor = 0;
-  // Identify URL syntax on the original diagnostic before any substitutions.
-  // Scheme URLs and all explicit relative forms work beside quotes/punctuation.
-  for (const match of text.matchAll(/((?:[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"`]*?)([?#]|%3f|%23)/giu)) {
-    if (match.index < cursor) continue;
-    const suffix = match.index + match[1].length;
-    const end = diagnosticUrlEnd(text, match.index, suffix + match[2].length);
-    // Retain ordinary trailing punctuation only for unambiguous bare tokens.
-    const punctuation = (end === text.length || /\s/.test(text[end]))
-      && !/["'`]/.test(text.slice(suffix, end))
-      ? text.slice(suffix, end).match(/[),.;:!?\]}]+$/)?.[0] ?? "" : "";
-    redacted += text.slice(cursor, suffix) + punctuation;
-    cursor = end;
+  let safe = "", copied = 0, scanned = 0;
+  // Match only token starts, then scan each token once. Repeated slashes or a
+  // long scheme-looking word without a suffix must not cause repeated rescans.
+  const starts = /(?<![a-z\d+.-])[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/)/giu;
+  for (const match of text.matchAll(starts)) {
+    if (match.index < scanned) continue;
+    let end = match.index + match[0].length;
+    while (end < text.length && !/[\s?#<>"`]/.test(text[end])
+      && !(text[end] === "%" && /^%(?:3f|23)/i.test(text.slice(end, end + 3)))) end++;
+    scanned = end;
+    if (!/^(?:[?#]|%3f|%23)/i.test(text.slice(end, end + 3))) continue;
+    safe += text.slice(copied, end);
+    // This is the only private boundary: never infer closure from its contents.
+    while (end < text.length && text[end] !== "\r" && text[end] !== "\n") end++;
+    copied = scanned = end;
   }
-  return redacted + text.slice(cursor);
+  return safe + text.slice(copied);
 }
 
 /** Shared diagnostic text policy. Stack frames are admitted separately by error collection. */

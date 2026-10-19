@@ -80494,117 +80494,20 @@ function structuredCredentialEnd(text3, start) {
   }
   return text3.length;
 }
-var diagnosticUrlClosers = { "[": "]", "(": ")", "{": "}", "<": ">" };
-function diagnosticValueEnd(text3, start, limit, escaped, outerQuote = "", wrappers = 0) {
-  const quote = text3[start + (escaped ? 1 : 0)];
-  const width = escaped ? 2 : 1;
-  let closing = -1, previous = -1;
-  for (let index = start + width; index < limit; index++) {
-    if (text3[index] === "\\") {
-      if (escaped && text3[index + 1] === quote) {
-        previous = closing;
-        closing = index;
-        index++;
-      } else index++;
-    } else if (!escaped && text3[index] === quote) {
-      previous = closing;
-      closing = index;
-    }
-  }
-  if (closing < 0) return void 0;
-  if (!escaped && quote === outerQuote) {
-    closing = previous;
-    if (closing < 0) return void 0;
-    while (wrappers-- > 1 && closing > start && text3[closing - 1] === quote) closing--;
-  }
-  const after = text3.slice(closing + width, limit);
-  if (!/^[ \t]*(?:[&#=]|%(?:26|23|3[fd])|$)/i.test(after) && !(outerQuote && after.startsWith(outerQuote))) return void 0;
-  return closing + width;
-}
-function diagnosticUrlContainerEnd(text3, start, suffix, limit, boundary = true) {
-  const opener = text3[start - 1];
-  const closer = diagnosticUrlClosers[opener] ?? opener;
-  const wrapped = !!closer && "\"'`])}>".includes(closer);
-  if (wrapped) {
-    let closing = -1, valueStart2 = true, wrappers = 1;
-    while (text3[start - wrappers - 1] === opener) wrappers++;
-    for (let index = suffix; index < limit; index++) {
-      const char = text3[index];
-      if (char === "[" || char === "{") {
-        const end = structuredCredentialEnd(text3, index);
-        if (end > limit) return void 0;
-        index = end - 1;
-        valueStart2 = false;
-        continue;
-      }
-      if (char === "\\") {
-        index++;
-        continue;
-      }
-      if (valueStart2 && /["'`]/.test(char)) {
-        const end = diagnosticValueEnd(text3, index, limit, false, closer, wrappers);
-        if (end === void 0) return void 0;
-        index = end - 1;
-        valueStart2 = false;
-        continue;
-      }
-      if (!/\s/.test(char)) valueStart2 = /[=?#&]/.test(char);
-      if (char !== closer) continue;
-      const after = text3.slice(index + 1, limit);
-      if (closer === '"' && /^[ \t]*(?:[}\]]|,[ \t]*"(?:\\.|[^"\\])*"[ \t]*:)/.test(after)) return index;
-      closing = /^["'`]*[),.;:!?\]}]*?(?:\s|$)/.test(after) ? index : -1;
-    }
-    if (closing < 0 || /["'`&#=]|%(?:26|23|3[fd])/i.test(text3.slice(closing + 1, limit))) return void 0;
-    while (wrappers-- > 1 && closing > suffix && text3[closing - 1] === closer) closing--;
-    return closing;
-  }
-  let valueStart = true, proseBoundary = -1;
-  for (let index = suffix; index < limit; index++) {
-    const char = text3[index];
-    const escaped = char === "\\" && /["'`]/.test(text3[index + 1] ?? "");
-    if (escaped || /["'`]/.test(char)) {
-      if (!valueStart) return void 0;
-      const end = diagnosticValueEnd(text3, index, limit, escaped);
-      if (end === void 0 || boundary && !text3.slice(end, limit).trim()) return void 0;
-      index = end - 1;
-      valueStart = false;
-    } else if (char === "[" || char === "{") {
-      const end = structuredCredentialEnd(text3, index);
-      if (end > limit) return void 0;
-      index = end - 1;
-      valueStart = false;
-    } else if (/\s/.test(char)) {
-      if (!valueStart && proseBoundary < 0) proseBoundary = index;
-    } else {
-      if (/[<>]/.test(char)) return void 0;
-      if (/[=?#&]/.test(char)) proseBoundary = -1;
-      valueStart = /[=?#&]/.test(char);
-    }
-  }
-  if (valueStart) return void 0;
-  return proseBoundary < 0 ? limit : proseBoundary;
-}
-function diagnosticUrlEnd(text3, start, suffix) {
-  const newline2 = text3.slice(suffix).search(/[\r\n]/);
-  const lineEnd = newline2 < 0 ? text3.length : suffix + newline2;
-  const line = text3.slice(suffix, lineEnd);
-  for (const match of line.matchAll(/[ \t]+\S*?(?:[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))/giu)) {
-    const end = diagnosticUrlContainerEnd(text3, start, suffix, suffix + match.index);
-    if (end !== void 0) return end;
-  }
-  return diagnosticUrlContainerEnd(text3, start, suffix, lineEnd, false) ?? lineEnd;
-}
 function stripDiagnosticUrlSuffixes(text3) {
-  let redacted = "", cursor = 0;
-  for (const match of text3.matchAll(/((?:[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/))[^\s?#<>"`]*?)([?#]|%3f|%23)/giu)) {
-    if (match.index < cursor) continue;
-    const suffix = match.index + match[1].length;
-    const end = diagnosticUrlEnd(text3, match.index, suffix + match[2].length);
-    const punctuation2 = (end === text3.length || /\s/.test(text3[end])) && !/["'`]/.test(text3.slice(suffix, end)) ? text3.slice(suffix, end).match(/[),.;:!?\]}]+$/)?.[0] ?? "" : "";
-    redacted += text3.slice(cursor, suffix) + punctuation2;
-    cursor = end;
+  let safe = "", copied = 0, scanned = 0;
+  const starts = /(?<![a-z\d+.-])[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/)/giu;
+  for (const match of text3.matchAll(starts)) {
+    if (match.index < scanned) continue;
+    let end = match.index + match[0].length;
+    while (end < text3.length && !/[\s?#<>"`]/.test(text3[end]) && !(text3[end] === "%" && /^%(?:3f|23)/i.test(text3.slice(end, end + 3)))) end++;
+    scanned = end;
+    if (!/^(?:[?#]|%3f|%23)/i.test(text3.slice(end, end + 3))) continue;
+    safe += text3.slice(copied, end);
+    while (end < text3.length && text3[end] !== "\r" && text3[end] !== "\n") end++;
+    copied = scanned = end;
   }
-  return redacted + text3.slice(cursor);
+  return safe + text3.slice(copied);
 }
 function redactDiagnosticText(value, serverEnv = {}) {
   let safe = stripDiagnosticUrlSuffixes(value).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");

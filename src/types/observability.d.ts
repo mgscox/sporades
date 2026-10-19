@@ -2,15 +2,11 @@
  * Opt-in Sentry-envelope error collection. Diagnostics conceal complete sensitive
  * values (including arrays/objects) and URL queries/fragments, including relative
  * URLs in messages and stack filenames after punctuation or key/value delimiters.
- * Complete suffixes stay private across quoted whitespace, apostrophes beside
- * URI punctuation or query separators, repeated apostrophes (ambiguous boundaries
- * conceal the remaining line even without an outer wrapper), and
- * JSON escapes, including percent-encoded query/fragment delimiters. Surrounding
- * quotation and JSON fields are preserved; unterminated values conceal the line.
- * URL stripping precedes Server env substitution, including URL-prefix env values.
- * Nested URL-like text stays private until its value quotation/container closes.
- * Enclosing URL quotes cannot close nested objects/arrays or their escaped strings;
- * incomplete or crossed container closures conceal the remainder of the line.
+ * From the first literal or encoded query/fragment delimiter, the entire remaining
+ * diagnostic line is concealed, including whitespace, quotation, nested containers,
+ * later URL-like text, JSON fields and closing punctuation. Public prefixes and
+ * following lines remain available. URL stripping precedes Server env substitution,
+ * including URL-prefix env values and complete URL-valued secrets.
  */
 export type ObservabilityConfig = {
   errors?: {

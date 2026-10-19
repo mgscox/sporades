@@ -96,39 +96,20 @@ URL queries/fragments are stripped from absolute, protocol-relative (`//host/pat
 root-relative (`/path`) and explicit relative (`./path`, `../path`) URLs, including
 stack filenames. Relative URLs are recognized after punctuation and key/value
 delimiters, including `url=/path`, `[//host/path]`, and `<./path>`.
-Embedded apostrophes such as `?filter=O'Reilly&cap=...` or `?filter=O'-Reilly&cap=...`
-cannot end stripping or expose later query values or fragments. Apostrophes beside
-URI punctuation or query separators remain private; ambiguous quotation conceals
-the remainder until a structural boundary or line end. Quoted query values may include
-repeated apostrophes such as `?filter=O', Reilly's&cap=...` or another opening
-apostrophe after punctuation. These quotes cannot hide a later query/fragment
-continuation from redaction, even without an outer wrapper or a later separator.
-Ambiguous bare suffixes conceal the rest of their line, including any trailing
-prose; separately recognizable URL fields and following lines remain available.
+Diagnostic strings are untrusted prose, so whitespace, apostrophes, wrappers and
+closing delimiters cannot prove where a private suffix ends. For every diagnostic
+line, the first URL-like token with a literal `?` / `#` or encoded `%3F` / `%23`
+keeps its public path and conceals the **entire remainder of that line**. This
+includes quoted values, objects, arrays, incomplete/crossed containers, and any
+later URL-looking strings or JSON fields. For example,
+`Before /inbox?filter=prefix {"next":" /public private"}` becomes `Before /inbox`.
+This deliberately conceals trailing public prose and closing punctuation too;
+put independently useful public diagnostics on separate lines. Text before the
+URL and following lines remain available. Prose without URL suffixes, such as
+`Investigate #234 collection` and `Ready? Continue debugging.`, is preserved.
 URL stripping runs before Server env substitution, so a URL-prefix env value
 such as `https://example.test/` cannot hide a query or fragment from the scanner.
 Complete URL-valued env secrets also remain concealed after suffix stripping.
-A URL-looking string inside a quoted query/fragment or a nested value container
-belongs to the private suffix. Whitespace before `/public` or `scheme://...`
-cannot establish another URL field while that quotation/container remains open,
-including JSON-escaped quotation and encoded query/fragment delimiters.
-Enclosing URL quotes do not close inner objects, arrays, or their quoted strings.
-The scanner resolves nested container depth and quotation before accepting either
-another URL field or a following JSON field. Incomplete or crossed container
-closures conceal the rest of the line.
-Ambiguous quotation also conceals later URL-looking fields on the same line when
-the runtime cannot prove they are outside the value; following lines are retained.
-Separately quoted/assigned URL fields, surrounding
-JSON fields and following public lines retain their structural boundaries.
-Quoted query values may also include
-leading/trailing spaces or tabs, including JSON-escaped quotation such as
-`?filter=\" O'Reilly phrase \"&cap=...`. The runtime scans quoted values and escapes
-through the URL boundary, then removes everything from the first `?` or `#`
-(including percent-encoded `%3F` / `%23`) to that boundary. Encoded query values
-remain private. Surrounding JSON fields are preserved;
-an unterminated quoted value conceals the remaining line.
-Genuine surrounding quotation, punctuation and ordinary prose such as `Investigate
-#234 collection` and `Ready? Continue debugging.` are preserved.
 There are no custom analytics properties,
 page titles, request bodies, cookies or authorization headers in provider events.
 

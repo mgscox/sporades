@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { createRuntimeObservability, routeCollection } from '../dist/observability-runtime.js';
 import { clientAddressBoundaryToken } from '../dist/client-address.js';
 import { nestedUrlGroups } from './support/diagnostic-nested-urls.js';
+import { failClosedProbe, spacedContainerGroups } from './support/diagnostic-spaced-containers.js';
 
 async function listen(t, handler) {
   const server = createServer(handler).listen(0, '127.0.0.1');
@@ -113,7 +114,7 @@ test('diagnostic credentials are redacted at the receiver for server and browser
 const privateDiagnosticUrls = ['//example.test/inbox', './client.js', '../client.js', '/client.js'];
 const privateUrl = base => `${base}?cap=qa-query-marker#qa-fragment-marker`;
 const urlMessage = base => `Ready? Investigate #234 (${privateUrl(base)}). Continue.`;
-const safeUrlMessage = base => `Ready? Investigate #234 (${base}). Continue.`;
+const safeUrlMessage = base => `Ready? Investigate #234 (${base}`;
 
 test('relative diagnostic URLs lose private suffixes in receiver messages and stack filenames', async t => {
   const received = [];
@@ -150,7 +151,7 @@ const diagnosticUrlDelimiters = [
 const delimitedUrls = (before, after, privateValues = true) => privateDiagnosticUrls
   .map(base => before + (privateValues ? privateUrl(base) : base) + after);
 
-test('relative diagnostic URL delimiters preserve prose and conceal suffixes at both receivers', async t => {
+test('relative diagnostic URL delimiters preserve the public prefix and conceal the remaining line', async t => {
   const received = [];
   const receiver = await listen(t, async (request, response) => {
     let body = ''; for await (const part of request) body += part;
@@ -171,8 +172,8 @@ test('relative diagnostic URL delimiters preserve prose and conceal suffixes at 
       assert.equal(received.length, start + 2);
       for (const event of received.slice(start)) {
         assert.doesNotMatch(JSON.stringify(event), /qa-query-marker|qa-fragment-marker/);
-        assert.equal(event.exception.values[0].value, `Ready? Investigate #234 ${before}${base}${after} Continue.`);
-        assert.deepEqual(event.exception.values[0].stacktrace.frames, [{ filename: before + base + after, function: 'execute', lineno: 12, colno: 8 }]);
+        assert.equal(event.exception.values[0].value, `Ready? Investigate #234 ${before}${base}`);
+        assert.deepEqual(event.exception.values[0].stacktrace.frames, [{ filename: before + base, function: 'execute', lineno: 12, colno: 8 }]);
       }
     });
   }
@@ -427,6 +428,7 @@ for (const [name, probes, serverEnv = {}] of [
   ['repeated apostrophes', repeatedApostropheDiagnostics],
   ...bareSuffixGroups,
   ...nestedUrlGroups,
+  ...spacedContainerGroups,
   ['ambiguous suffix wrappers', wrappedAmbiguousDiagnostics],
   ['URL schemes', schemeDiagnostics],
   ['complete URL env values', [completeEnvDiagnostic], { PUBLIC_URL: 'https://example.test/inbox?cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker' }],
@@ -441,7 +443,8 @@ for (const [name, probes, serverEnv = {}] of [
   const observability = createRuntimeObservability({ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: receiver.replace('http://', 'http://key@') + '/1', ...serverEnv });
   t.after(() => observability.close());
   const origin = await listen(t, (request, response) => routeCollection({ observability }, request, response));
-  for (const probe of probes) await t.test(probe.name, async () => {
+  for (const original of probes) await t.test(original.name, async () => {
+    const probe = failClosedProbe(original);
     const start = received.length;
     observability.capture(Object.assign(new Error(probe.message), { stack: probe.stack }), 'mutation');
     await observability.flush();
@@ -449,7 +452,7 @@ for (const [name, probes, serverEnv = {}] of [
     await observability.flush();
     assert.equal(received.length, start + 2);
     for (const event of received.slice(start)) {
-      assert.doesNotMatch(JSON.stringify(event), /qa-apostrophe-query-marker|qa-apostrophe-fragment-marker|Reilly/);
+      assert.doesNotMatch(JSON.stringify(event), /qa-apostrophe-query-marker|qa-apostrophe-fragment-marker|qa-private-a|qa-private-b|Reilly/);
       assert.equal(event.exception.values[0].value, probe.safe);
       assert.deepEqual(event.exception.values[0].stacktrace.frames, probe.frames);
     }
@@ -657,8 +660,8 @@ test('generated loader redacts diagnostic URL delimiters across all relative for
     assert.equal(errors.length, count);
     const event = JSON.parse(errors.at(-1).body.trim().split('\n')[2]);
     assert.doesNotMatch(JSON.stringify(event), /qa-query-marker|qa-fragment-marker/);
-    assert.equal(event.exception.values[0].value, `Ready? Investigate #234 ${delimitedUrls(before, after, false).join(' ')} Continue.`);
-    assert.deepEqual(event.exception.values[0].stacktrace.frames, delimitedUrls(before, after, false).reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })));
+    assert.equal(event.exception.values[0].value, `Ready? Investigate #234 ${before}${privateDiagnosticUrls[0]}`);
+    assert.deepEqual(event.exception.values[0].stacktrace.frames, privateDiagnosticUrls.map(base => before + base).reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })));
   });
 });
 
@@ -668,6 +671,7 @@ for (const [name, probes, serverEnv = {}] of [
   ['repeated apostrophes', repeatedApostropheDiagnostics],
   ...bareSuffixGroups,
   ...nestedUrlGroups,
+  ...spacedContainerGroups,
   ['ambiguous suffix wrappers', wrappedAmbiguousDiagnostics],
   ['URL schemes', schemeDiagnostics],
   ['complete URL env values', [completeEnvDiagnostic], { PUBLIC_URL: 'https://example.test/inbox?cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker' }],
@@ -681,7 +685,8 @@ for (const [name, probes, serverEnv = {}] of [
   const sends = [];
   window.fetch = (url, options) => { const promise = fetch(new URL(url, origin), { ...options, headers: { ...options.headers, origin } }); sends.push(promise); return promise; };
   window.eval(script);
-  for (const [index, probe] of probes.entries()) await t.test(probe.name, async () => {
+  for (const [index, original] of probes.entries()) await t.test(original.name, async () => {
+    const probe = failClosedProbe(original);
     const error = Object.assign(new Error(probe.message), { stack: probe.stack });
     window.dispatchEvent(new window.ErrorEvent('error', { error }));
     await Promise.all(sends);
@@ -689,7 +694,7 @@ for (const [name, probes, serverEnv = {}] of [
     const errors = received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope');
     assert.equal(errors.length, index + 1);
     const event = JSON.parse(errors.at(-1).body.trim().split('\n')[2]);
-    assert.doesNotMatch(JSON.stringify(event), /qa-apostrophe-query-marker|qa-apostrophe-fragment-marker|Reilly/);
+    assert.doesNotMatch(JSON.stringify(event), /qa-apostrophe-query-marker|qa-apostrophe-fragment-marker|qa-private-a|qa-private-b|Reilly/);
     assert.equal(event.exception.values[0].value, probe.safe);
     assert.deepEqual(event.exception.values[0].stacktrace.frames, probe.frames);
   });
