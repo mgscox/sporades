@@ -25,6 +25,7 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
+| Human identity termination | design | Close a human identity atomically with Capsule erasure: remove password/OAuth and reset authority, delete Sessions and retire Access keys, with stable retry results and explicit Team/billing responsibility resolution. ADR proposed; no runtime API ships yet. | [ADR 0057](./adr/0057-human-identity-termination.md), [mgscox/sporades#262](https://github.com/mgscox/sporades/issues/262) |
 | Local Container backups | candidate | Hosted Capsule backups are implemented; extend backup, restore, and retention of SQLite data and uploaded file bytes to local Container sessions (the mapped Docker data paths), reusing the Hosted restic repository and restore semantics where possible. | — |
 | Host backup and restore | candidate | Back up and restore Host-server-owned state beyond individual Capsules: Hosted Capsule registry data, Host-generated sealed env keys, release metadata, route/proxy state, and monitoring connection state. Needs retention, encryption, restore authorization, and disaster-recovery semantics. Should build on the implemented Capsule data backups rather than duplicate them. | — |
 | CSP hardening | ready | Nonce runtime-injected scripts so Capsules can move from report-only to enforced CSP without `unsafe-inline`, and add optional HSTS and `report-uri` to the Security policy. | [mgscox/sporades#235](https://github.com/mgscox/sporades/issues/235) |
