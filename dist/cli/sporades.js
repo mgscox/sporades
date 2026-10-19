@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { routeCollection } from "../observability-runtime.js";
+import { assertStripeTestOriginCommand, resolveDevStripeApiOrigin, validateDevStripeRuntime, markDevStripeRuntime } from "./dev-stripe-origin.js";
 import { resolvePublicOrigin } from "../public-origin.js";
 import { missingServerEnvKeys, missingServerEnvError } from "../server-env-requirements.js";
 import { validateQueryCredential } from "./telemetry-diagnostics.js";
@@ -65,6 +66,7 @@ main().catch((error) => {
         ok: false,
         data: null,
         error: {
+            ...(typeof error.code === "string" && error.code.startsWith("STRIPE_") ? { code: error.code } : {}),
             message: error.message,
             hint: error.hint ?? "Check the command arguments and try again.",
             ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}),
@@ -73,6 +75,7 @@ main().catch((error) => {
 });
 async function main() {
     const rawArgs = process.argv.slice(2);
+    assertStripeTestOriginCommand(rawArgs[0] ?? "-h");
     if (rawArgs.includes("--version") || rawArgs.includes("-v")) {
         await printVersion(parseVersionArgs(rawArgs));
         return;
@@ -2262,6 +2265,7 @@ async function mustPreserveLegacyContainerBundle(projectDir) {
     return Boolean(binding?.containerId && binding.telemetryDescriptorVersion !== 1);
 }
 async function startDevSession(options) {
+    resolveDevStripeApiOrigin();
     await reclaimStaleDevActionBundles(options.projectDir);
     let config = await readProjectConfig(options.projectDir);
     const preserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
@@ -2276,7 +2280,7 @@ async function startDevSession(options) {
             initialDependencySignatures.set(file, readDevInputSignature([{ path: file, dependency: true }]));
         clientDependencies.add(file);
     };
-    let bundle = await createBundle(options.projectDir, config, { preserveServerBundle, devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: recordClientDependency });
+    let bundle = await createBundle(options.projectDir, config, { preserveServerBundle, devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: recordClientDependency, validateRuntimeEnv: env => { validateDevStripeRuntime(config.payments, env); } });
     let telemetryConfig = await resolveLocalTelemetryConfig(config, options.telemetryProfile);
     const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
     const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
@@ -2670,7 +2674,7 @@ async function startDevSession(options) {
                 const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
                 const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
                 const nextClientDependencies = new Set();
-                rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); } });
+                rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); }, validateRuntimeEnv: env => { validateDevStripeRuntime(nextConfig.payments, env); } });
                 const nextTelemetryConfig = await resolveLocalTelemetryConfig(nextConfig, options.telemetryProfile);
                 const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
                     wait: true,
@@ -2832,11 +2836,12 @@ async function startDevSession(options) {
                 }, {
                     message: details.message,
                     hint: details.hint ?? "Fix the build error and save again.",
+                    ...(typeof details.code === "string" && details.code.startsWith("STRIPE_") ? { code: details.code } : {}),
                     ...(details.diagnostics ? { diagnostics: details.diagnostics } : {}),
                 });
             }
         }, () => [...clientDependencies], initialDependencySignatures);
-        emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
+        emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(runtime.database.runtimeDiagnostics.payments ? { payments: runtime.database.runtimeDiagnostics.payments } : {}), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
         let shutdownStarted = false;
         shutdown = async () => {
             if (shutdownStarted)
@@ -3025,10 +3030,12 @@ async function createDevRuntime(options) {
             onJobQueueReady: options.onJobQueueReady,
             createStripeCallbackEndpoint: await stripeCallbackFactory(options.config),
             createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(options.config),
+            stripeApiBaseUrl: validateDevStripeRuntime(options.config.payments, options.serverEnv),
         });
         database.runtimeProbeToken = options.runtimeProbeToken;
         await attachRequiredSidecar(database);
         await database.init();
+        markDevStripeRuntime(database);
         if (admissionPolicy) {
             database.admissionPolicy = admissionPolicy;
             reportAdmissionHealth(admissionPolicy.health());
@@ -3062,6 +3069,7 @@ async function createDevRuntime(options) {
                     onJobQueueReady: (queueDatabase) => jobTelemetry.bindJobQueue(queueDatabase),
                     createStripeCallbackEndpoint: await stripeCallbackFactory(config),
                     createStripeTeamBillingProvider: await stripeTeamBillingProviderFactory(config),
+                    stripeApiBaseUrl: validateDevStripeRuntime(config.payments, serverEnv),
                 });
                 nextDatabase.runtimeProbeToken = options.runtimeProbeToken;
                 if (nextAdmission)
@@ -3073,6 +3081,7 @@ async function createDevRuntime(options) {
                     clamavSidecar = await releaseDevClamavSidecar(clamavSidecar);
                 });
                 const previousAdmission = admissionPolicy;
+                markDevStripeRuntime(database);
                 admissionPath = nextPath;
                 admissionPolicy = nextAdmission;
                 if (changed) {
