@@ -112,9 +112,13 @@ For Plausible, set `provider: "plausible"`, put the configured site domain into
 
 ## Same-origin collection and privacy
 
-On document navigation, active browser integrations add the first-party
-`/__sporades/observe.js` loader before Capsule scripts. It sends JSON to
-`POST /__sporades/collect`. Both routes follow normal request admission.
+On document navigation (`Sec-Fetch-Dest: document`), every built `.html` public
+asset, including secondary pages such as `/pricing.html`, receives the WebSocket
+connection token before Capsule scripts run. Active browser integrations also add
+the first-party `/__sporades/observe.js` loader before Capsule scripts in Dev,
+Container and Hosted sessions. Fetches and iframe loads do not receive these
+injections. HTML responses use `no-store`; built files stay unchanged. The loader
+sends JSON to `POST /__sporades/collect`. Both routes follow normal request admission.
 `script-src 'self'` and `connect-src 'self'` suffice for collection; no provider
 script, DSN, endpoint or website identifier reaches the page. With
 `security.csp.nonce`, the loader carries the response nonce. Browser blocking
