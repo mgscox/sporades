@@ -95,3 +95,13 @@ and release, set an explicit sufficient cap. Values are never silently raised.
 Existing very small caps, numeric strings, and other non-integer values must be
 replaced with valid numeric caps. Changing Capsule identity or release can change
 the required minimum.
+
+## Dev Stripe test origin
+
+`SPORADES_DEV_STRIPE_API_ORIGIN` is a process-only override for runtime-owned
+Team Billing requests in `sporades dev`. It requires an exact literal loopback
+origin with an explicit port and test-mode credentials. It cannot be configured
+in `sporades.json` or Server env, and commands outside Dev refuse while it is
+set. It certifies nothing about live Stripe. See
+[Team Billing testing](../reference/teams.md#test-team-billing-with-a-loopback-provider)
+for refusal codes, diagnostics and the separate payment integration option.

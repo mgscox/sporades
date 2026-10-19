@@ -1697,3 +1697,16 @@ error collection and first-party pageviews through a same-origin tunnel. See
 [Errors and analytics](./errors-and-analytics.md) for configuration, privacy,
 GlitchTip and Umami setup. These settings do not change existing Capsules when
 omitted, and require no provider origins in the browser CSP.
+
+## Dev Stripe test origin
+
+Set the process variable `SPORADES_DEV_STRIPE_API_ORIGIN` only when starting
+`sporades dev` against a local Stripe protocol stub. The accepted forms are
+`http://127.0.0.1:<port>` and `http://[::1]:<port>` (also `https`), without a
+trailing slash, credentials, path, query or fragment. It requires test-mode
+Sealed Server credentials and refuses all other CLI commands while set. It is
+not a project config key, flag or Server env value; no Bundle carries it.
+See [Team Billing testing](./teams.md#test-team-billing-with-a-loopback-provider)
+for `STRIPE_API_ORIGIN_INVALID`, `STRIPE_TEST_ORIGIN_LIVE_MODE`,
+`STRIPE_TEST_ORIGIN_DEV_ONLY`, and the redacted `loopback-test` diagnostics.
+Local protocol tests certify nothing about live Stripe.

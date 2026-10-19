@@ -1,0 +1,1 @@
+{"version":3,"file":"dev-stripe-origin.d.ts","sourceRoot":"","sources":["../../src/cli/dev-stripe-origin.ts"],"names":[],"mappings":"AAMA,wBAAgB,6BAA6B,CAAC,OAAO,EAAE,MAAM,QAK5D;AAID,wBAAgB,yBAAyB,IAAI,MAAM,GAAG,SAAS,CAS9D;AAED,wBAAgB,wBAAwB,CAAC,QAAQ,EAAE,GAAG,EAAE,SAAS,EAAE,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,GAAG,MAAM,GAAG,SAAS,CAW9G;AAED,wBAAgB,oBAAoB,CAAC,QAAQ,EAAE,GAAG,QAWjD"}
