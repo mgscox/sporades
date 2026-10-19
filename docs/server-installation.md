@@ -738,3 +738,10 @@ not stop running Capsules. Non-systemd installations report
 
 Docker documents that `on-failure` does not resume containers after daemon restart:
 [Docker restart policies](https://docs.docker.com/engine/containers/start-containers-automatically/).
+
+## Capsule data backups
+
+Backups are opt-in and require an initialized encrypted restic repository and protected
+Host-side key files. The Host profile owns `backups.schedule`, retention and target
+configuration through `sporades host backup configure`. See the
+[backup contract and restore-rehearsal runbook](./reference/capsule-backups.md).

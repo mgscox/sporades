@@ -87,3 +87,9 @@ A registry lock cleanup failure after commit preserves the committed route and
 reservation. Repair the reported lock cleanup problem, then retry registration
 to complete recovery. Unregister and delete reject Capsules with pending
 registration recovery; complete that recovery first, then tear down normally.
+
+## Capsule data backups
+
+Configure opt-in encrypted local or S3 backups with `sporades host backup configure`.
+See [Capsule backups and restore rehearsals](../reference/capsule-backups.md) for
+create/list/restore/prune, the Host timer, retention and stale-backup alerts.

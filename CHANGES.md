@@ -6,6 +6,7 @@ Changes since v0.9.31.
 
 ### 🚀 Features
 
+- Add opt-in encrypted Capsule data backups, local/S3 targets, schedules, restore rehearsals and freshness alerts (#238).
 - Add `ctx.app.publicOrigin`, canonical Hosted alias selection, and origin diagnostics (#231).
 - Add opt-in `acl.privilegedOnly()` / `acl.denyAll()` table policies and name allow-all tables in doctor warnings (#239).
 
@@ -24,6 +25,8 @@ Changes since v0.9.31.
 
 ### 🐛 Bug Fixes
 
+- Keep the Host exporter textfile directory readable under restrictive umasks during setup and reconciliation, including Hosts without backups (#238).
+- Preserve unconfigured Hosted Capsule start/restart beneath root-owned sticky ancestors when no backup restore journal exists (#238).
 - Prevent authenticated reloads from triggering fatal restarts through discarded, delayed table reads. Preserve Session-resolution scheduling across tracing, deny expired read authority, and describe deferred table results in the SDK types (#255).
 
 - Add opt-in atomic `teams.authorizeDestructive` for direct SDK and server demote, removeMember, leave and Team deletion. Transaction-bound cross-owner responsibility reads fail closed; `ctx.teams.lockLifecycle` shares exact-Team serialization with accepted transfers and atomic billing consequences. Omission preserves 0.9.x behavior; no storage migration. Requires publication of a new 0.9.x package before downstream adoption (#249).

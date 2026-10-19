@@ -60,6 +60,16 @@ _Avoid_: host, server, box
 The Host-server-owned state for Hosted Capsule registration, release pointers, route state, and lifecycle metadata. It is remote hosting state rather than Database adapter state; registry writes use Host server safety mechanisms such as locking and atomic replacement instead of DB Transaction boundaries.
 _Avoid_: database registry, app table, deployment database
 
+**Capsule data backup**:
+An opt-in encrypted restic snapshot of a Hosted Capsule's consistent SQLite data
+and uploaded file bytes, with a release/schema/checksum manifest. Host-owned
+policy selects a local or HTTPS S3 repository, retention, schedule and freshness
+threshold. Create briefly stops the exact container while capturing data; restore
+requires a stopped registered destination and explicit confirmation, verifies
+content before a journaled replacement and preserves destination Host secrets.
+It is distinct from full Host server disaster recovery.
+_Avoid_: Host image, release rollback, automatic schema migration
+
 **Host profile**:
 A local CLI configuration entry that names a Host server plus a Hosted domain, scheme, remote root, and TLS mode. Used so commands can target a configured hosting destination without repeating connection details.
 _Avoid_: host, remote config, environment

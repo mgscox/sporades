@@ -8,6 +8,8 @@ Connected Hosts automatically synchronize [lifecycle inventory](./lifecycle-inve
 with durable pending state and exact Host-scoped recovery. Probe scheduling and
 absence-alert delivery remain separate work.
 
+[Capsule backups and restore rehearsals](./capsule-backups.md) cover encrypted SQLite/files snapshots, local and S3 targets, retention and freshness alerts.
+
 [Back to the feature reference index](../guide/reference.md).
 
 ## Inspect Logs and Data
