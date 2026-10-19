@@ -202,7 +202,11 @@ The repository currently includes:
   same-origin CORS by default, Dev-session localhost/127.0.0.1 ergonomics,
   explicit Public Dev mode, conservative security headers, technology-header
   suppression, report-only CSP defaults, active CSP enforcement, and CLI/Host
-  policy inspection.
+  policy inspection. Opt-in per-response script nonces and authored HTML
+  placeholders allow strict CSP without broad inline-script permission. Optional
+  HSTS is Hosted-only; an explicit CSP report URI selects an existing collector,
+  while `reportTo: "observability"` forwards bounded, redacted violations
+  through the configured `observability.errors` Sentry-envelope sink.
 - Caddy automatic HTTPS as the default Host TLS mode, with
   `cloudflare-origin` TLS available for Hosted domains that use preinstalled
   Cloudflare origin certificates.

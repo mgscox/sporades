@@ -61,6 +61,7 @@
       "src/cli/telemetry-profile.ts",
       "src/client-address.ts",
       "src/client-capabilities.ts",
+      "src/client-csp.ts",
       "src/client-prerender.ts",
       "src/client-toolchain.ts",
       "src/client.ts",
@@ -77,6 +78,7 @@
       "src/file-transaction.ts",
       "src/html.ts",
       "src/http-runtime.ts",
+      "src/http-security-config.ts",
       "src/inspection-sql.ts",
       "src/jobs-runtime.ts",
       "src/live-query-invalidation.ts",
@@ -141,7 +143,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "9ed856dd0813507bb7ced821c9529fffa599169ae191745a28adefc6a016bc09"
+    "digest": "2d47ef540ac62aaaff43e7c5e5e0f670f48556d54121dd81e690c795cec8f355"
   },
   "outputs": {
     "files": [
@@ -355,6 +357,10 @@
       "dist/client-capabilities.d.ts.map",
       "dist/client-capabilities.js",
       "dist/client-capabilities.js.map",
+      "dist/client-csp.d.ts",
+      "dist/client-csp.d.ts.map",
+      "dist/client-csp.js",
+      "dist/client-csp.js.map",
       "dist/client-prerender.d.ts",
       "dist/client-prerender.d.ts.map",
       "dist/client-prerender.js",
@@ -419,6 +425,10 @@
       "dist/http-runtime.d.ts.map",
       "dist/http-runtime.js",
       "dist/http-runtime.js.map",
+      "dist/http-security-config.d.ts",
+      "dist/http-security-config.d.ts.map",
+      "dist/http-security-config.js",
+      "dist/http-security-config.js.map",
       "dist/inspection-sql.d.ts",
       "dist/inspection-sql.d.ts.map",
       "dist/inspection-sql.js",
@@ -629,6 +639,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "4c005fbe4cb701c73c804c8aae77afa73a4d83f0d68bda833492cbefd4392b3f"
+    "digest": "cd36a85522c836427cdb91e89cc4fe492d291f1ac1f384099e40f384db8707a2"
   }
 }

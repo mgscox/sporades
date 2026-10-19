@@ -170,6 +170,11 @@ function securityPostureWarnings(security, session) {
     if (security.cors.allowedOrigins.includes("*")) {
         warnings.push("CORS allows every origin");
     }
+    const scriptSources = security.csp.directives["script-src"] ?? [];
+    const sources = Array.isArray(scriptSources) ? scriptSources : String(scriptSources).split(/\s+/);
+    if (sources.some(value => value === "https:" || value === "'unsafe-inline'")) {
+        warnings.push("CSP script-src permits https: or 'unsafe-inline'; nonce mode is available");
+    }
     const permissiveDirectives = Object.entries(security.csp.directives)
         .filter(([, values]) => Array.isArray(values) && values.some((value) => value === "*" || value === "'unsafe-eval'"))
         .map(([name]) => name);
@@ -188,6 +193,9 @@ function securityPolicyHint(warnings) {
     }
     if (warnings.some((warning) => warning.includes("CSP"))) {
         hints.push("Tighten security.csp.directives and use security.csp.mode `enforce` when the policy is ready.");
+    }
+    if (warnings.some(warning => warning.includes("nonce mode"))) {
+        hints.push('Enable security.csp.nonce, add nonce="%SPORADES_NONCE%" to authored scripts, and remove https: and unsafe-inline from script-src. Replace inline event handlers with addEventListener.');
     }
     return hints.join(" ");
 }

@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { expectedDiagnosticErrorCodes } from "./runtime-errors.js";
 import { redactDiagnosticText } from "./runtime-log-policy.js";
 import { trustedClientAddress } from "./client-address.js";
+import { CSP_REPORT_PATH } from "./http-security-config.js";
 
 type RecordValue = Record<string, any>;
 
@@ -90,6 +91,17 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
     // Provider bodies/headers never flow back to the browser or logs.
     await response.body?.cancel();
   };
+  const eventBase = (platform: string) => ({
+    event_id: randomUUID().replaceAll("-", ""), timestamp: Date.now() / 1000, platform,
+    environment: errors.environment, release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : undefined,
+  });
+  const deliver = (event: RecordValue) => {
+    const payload = JSON.stringify(event);
+    const body = `${JSON.stringify({ event_id: event.event_id, dsn })}\n${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}\n${payload}\n`;
+    if (!sentryUrl || !enter()) return;
+    const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope" }).catch(() => {}).finally(() => { active--; pending.delete(task); });
+    pending.add(task);
+  };
   return {
     enabled: !!analyticsUrl || !!(sentryUrl && errors.client),
     clientErrors: !!(sentryUrl && errors.client),
@@ -104,18 +116,24 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
           return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
         }).reverse() : [];
         const event = {
-          event_id: randomUUID().replaceAll("-", ""), timestamp: Date.now() / 1000, platform: surface === "client" ? "javascript" : "node", level: "error",
-          environment: errors.environment, release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : undefined,
+          ...eventBase(surface === "client" ? "javascript" : "node"), level: "error",
           tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
           exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
           ...(address ? { user: { ip_address: address } } : {}),
         };
-        const payload = JSON.stringify(event);
-        const body = `${JSON.stringify({ event_id: event.event_id, dsn })}\n${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}\n${payload}\n`;
-        if (!enter()) return;
-        const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope" }).catch(() => {}).finally(() => { active--; pending.delete(task); });
-        pending.add(task);
+        deliver(event);
       } catch { /* Error reporting must never replace the original failure. */ }
+    },
+    /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
+    captureCspViolation(violation: CspViolation) {
+      try {
+        if (!sentryUrl || Math.random() >= (errors.sampleRate ?? 1)) return;
+        deliver({
+          ...eventBase("javascript"), level: "warning", logger: "csp",
+          message: `CSP violation: ${violation.directive} blocked ${violation.blocked}`,
+          tags: { capsule: safeText(config.name ?? "capsule", 128), surface: "csp", csp_directive: violation.directive, csp_blocked: violation.blocked, ...(violation.disposition ? { csp_disposition: violation.disposition } : {}) },
+        });
+      } catch { /* Reports are best effort. */ }
     },
     close() { stopped.abort(); },
     async flush() { await Promise.allSettled([...pending]); },
@@ -143,8 +161,12 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
 }
 
 export async function routeCollection(database: RecordValue, request: IncomingMessage, response: ServerResponse): Promise<boolean> {
-  if (!database.observability?.enabled) return false;
   const pathname = request.url?.split("?")[0];
+  if (pathname === CSP_REPORT_PATH && database.securityPolicy?.csp?.reportTo === "observability" && database.observability) {
+    await routeCspReport(database, request, response);
+    return true;
+  }
+  if (!database.observability?.enabled) return false;
   if (pathname === "/__sporades/observe.js" && request.method === "GET") {
     response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
     response.end(collectionLoaderSource(database.observability.clientErrors, database.observability.analytics));
@@ -175,4 +197,72 @@ export async function routeCollection(database: RecordValue, request: IncomingMe
   } catch { if (!response.destroyed) reply(400); }
   finally { clearTimeout(timer); database.observability.leave(); }
   return true;
+}
+
+type CspViolation = { directive: string; blocked: string; disposition?: "enforce" | "report" };
+
+const CSP_REPORT_TYPES = ["application/csp-report", "application/reports+json", "application/json"];
+const CSP_BLOCKED_KEYWORDS = ["inline", "eval", "wasm-eval", "self", "trusted-types-policy", "trusted-types-sink"];
+const CSP_REPORTS_PER_REQUEST = 5;
+
+/** Reduce one browser report to a directive name and blocked origin or keyword. Everything else is discarded. */
+function cspViolation(input: unknown): CspViolation | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const report = input as RecordValue;
+  const raw = report["effective-directive"] ?? report.effectiveDirective ?? report["violated-directive"];
+  const directive = typeof raw === "string" ? raw.trim().split(/\s+/)[0] : "";
+  if (!/^[a-z][a-z-]{0,63}$/.test(directive)) return null;
+  const value = report["blocked-uri"] ?? report.blockedURL;
+  let blocked = "unknown";
+  if (typeof value === "string" && CSP_BLOCKED_KEYWORDS.includes(value)) blocked = value;
+  else if (typeof value === "string" && value.length <= 8192) {
+    try {
+      const url = new URL(value);
+      blocked = /^(https?|wss?):$/.test(url.protocol) ? url.origin : /^[a-z][a-z0-9+.-]{0,31}:$/.test(url.protocol) ? url.protocol : "unknown";
+    } catch { /* Opaque or relative values stay unknown. */ }
+  }
+  const disposition = report.disposition === "enforce" || report.disposition === "report" ? report.disposition : undefined;
+  return { directive, blocked, ...(disposition ? { disposition } : {}) };
+}
+
+function cspViolations(input: unknown): CspViolation[] {
+  if (Array.isArray(input)) {
+    return input.slice(0, 100)
+      .filter(entry => entry && typeof entry === "object" && entry.type === "csp-violation")
+      .slice(0, CSP_REPORTS_PER_REQUEST)
+      .map(entry => cspViolation(entry.body))
+      .filter((entry): entry is CspViolation => entry !== null);
+  }
+  const report = input && typeof input === "object" ? cspViolation((input as RecordValue)["csp-report"]) : null;
+  return report ? [report] : [];
+}
+
+/** Browser CSP reports carry no credentials, so the route accepts only bounded, same-origin-compatible input. */
+async function routeCspReport(database: RecordValue, request: IncomingMessage, response: ServerResponse) {
+  const reply = (code: number) => { if (!response.headersSent) { response.writeHead(code, { "cache-control": "no-store" }); response.end(); } };
+  if (request.method !== "POST") return reply(405);
+  const origin = request.headers.origin;
+  try {
+    if (request.headers["sec-fetch-site"] === "cross-site"
+      || (origin !== undefined && (typeof origin !== "string" || new URL(origin).host !== request.headers.host))) return reply(403);
+  } catch { return reply(403); }
+  const type = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+  if (!CSP_REPORT_TYPES.includes(type)) return reply(415);
+  if (!database.observability.enter()) return reply(429);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const body = await Promise.race([
+      (async () => {
+        const chunks: Buffer[] = []; let size = 0;
+        for await (const chunk of request) { size += Buffer.byteLength(chunk); if (size > 16384) throw Object.assign(new Error(), { status: 413 }); chunks.push(Buffer.from(chunk)); }
+        return Buffer.concat(chunks).toString("utf8");
+      })(),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { reject(new Error()); request.destroy(); }, 2000); }),
+    ]);
+    const violations = cspViolations(JSON.parse(body));
+    if (!violations.length) throw new Error();
+    for (const violation of violations) database.observability.captureCspViolation(violation);
+    reply(204);
+  } catch (error: any) { if (!response.destroyed) reply(error?.status === 413 ? 413 : 400); }
+  finally { clearTimeout(timer); database.observability.leave(); }
 }

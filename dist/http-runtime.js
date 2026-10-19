@@ -103,6 +103,8 @@
 // Upgrade denials use Node's ServerResponse to retain ordinary HTTP serialization and headers.
 // Static builtin imports are supported by the module graph (ADR-0042's constraint has expired).
 import { ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
+import { cspReportDirectives, hstsHeader, validateHttpHardening } from "./http-security-config.js";
 import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
 import { accessKeyGrantsSatisfyScopes } from "./auth-admission.js";
@@ -383,8 +385,21 @@ export function emitHttpFailureLog(database, request, error, context = {}) {
         // A best-effort failure log must never replace the request failure it describes.
     }
 }
+const pageNonces = new WeakMap();
 export function prepareHttpSecurity(database, request, response, admitPreflight) {
     const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
+    const directives = { ...policy.csp.directives };
+    if (policy.csp.nonce) {
+        const nonce = randomBytes(32).toString("base64");
+        pageNonces.set(response, nonce);
+        for (const name of ["script-src", "script-src-elem"]) {
+            if (name === "script-src-elem" && directives[name] === undefined)
+                continue;
+            const values = directives[name] ?? [];
+            const sources = Array.isArray(values) ? values : values.split(/\s+/);
+            directives[name] = [...sources.filter(value => value !== "'none'"), `'nonce-${nonce}'`, "'strict-dynamic'"];
+        }
+    }
     const originalWriteHead = response.writeHead.bind(response);
     response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
         const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : undefined;
@@ -396,7 +411,8 @@ export function prepareHttpSecurity(database, request, response, admitPreflight)
             "x-frame-options": "DENY",
             "permissions-policy": "camera=(), microphone=(), geolocation=()",
             "cross-origin-opener-policy": "same-origin",
-            [policy.csp.header]: serializeCspDirectives(policy.csp.directives),
+            [policy.csp.header]: serializeCspDirectives(directives),
+            ...(policy.hsts ? { "strict-transport-security": policy.hsts } : {}),
         };
         if (isGuardedAttachmentHttpResponse(response)) {
             delete headers["content-security-policy-report-only"];
@@ -448,6 +464,7 @@ export function prepareHttpSecurity(database, request, response, admitPreflight)
 }
 export function resolveRuntimeSecurityPolicy(config = {}) {
     const security = config.security ?? {};
+    validateHttpHardening(security, config.observability);
     const cors = security.cors ?? {};
     const csp = security.csp ?? {};
     const session = config.__sporadesSession ?? "container";
@@ -458,9 +475,13 @@ export function resolveRuntimeSecurityPolicy(config = {}) {
     const directives = {
         ...defaultRuntimeCspDirectives(),
         ...(csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}),
+        ...cspReportDirectives(csp),
     };
     const mode = csp.mode === "enforce" ? "enforce" : "report-only";
     return {
+        ...(session === "hosted" && security.hsts ? {
+            hsts: hstsHeader(security.hsts),
+        } : {}),
         cors: {
             sameOrigin: !publicDev,
             publicDev,
@@ -476,6 +497,8 @@ export function resolveRuntimeSecurityPolicy(config = {}) {
             mode,
             header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
             directives,
+            ...(csp.nonce === true ? { nonce: true } : {}),
+            ...(csp.reportTo === "observability" ? { reportTo: "observability" } : {}),
         },
     };
 }
@@ -497,8 +520,18 @@ function serializeCspDirectives(directives) {
         .map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`)
         .join("; ");
 }
-export function injectPageConnectionToken(html, token, database) {
-    const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? '<script src="/__sporades/observe.js"></script>' : ""}`;
+export function renderPageHtml(html, response, token, database) {
+    const nonce = pageNonces.get(response);
+    if (!nonce && token === undefined)
+        return html;
+    const source = typeof html === "string" ? html : html.toString("utf8");
+    const rendered = nonce ? source.replaceAll("%SPORADES_NONCE%", nonce) : source;
+    return token === undefined ? rendered : injectPageConnectionToken(rendered, token, database, nonce);
+}
+/** Every runtime-injected script carries the response nonce so nonce mode never needs 'unsafe-inline'. */
+export function injectPageConnectionToken(html, token, database, nonce) {
+    const attribute = nonce ? ` nonce="${nonce}"` : "";
+    const script = `<script${attribute}>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? `<script${attribute} src="/__sporades/observe.js"></script>` : ""}`;
     if (/<head(\s[^>]*)?>/i.test(html)) {
         return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
     }

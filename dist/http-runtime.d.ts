@@ -3,6 +3,7 @@ import type { Duplex } from "node:stream";
 type LooseRecord = Record<string, any>;
 type RuntimeConfig = LooseRecord;
 export type RuntimeSecurityPolicy = {
+    hsts?: string;
     cors: {
         sameOrigin: boolean;
         publicDev: boolean;
@@ -16,6 +17,8 @@ export type RuntimeSecurityPolicy = {
         mode: string;
         header: string;
         directives: Record<string, string[] | string>;
+        nonce?: boolean;
+        reportTo?: "observability";
     };
 };
 export type RuntimeRequestLike = {
@@ -45,7 +48,9 @@ export declare function prepareHttpSecurity(database: {
     req: IncomingMessage;
 }, admitPreflight?: () => boolean): boolean;
 export declare function resolveRuntimeSecurityPolicy(config?: RuntimeConfig): RuntimeSecurityPolicy;
-export declare function injectPageConnectionToken(html: string, token: string, database?: LooseRecord): string;
+export declare function renderPageHtml(html: string | Buffer, response: object, token?: string, database?: LooseRecord): string | Buffer<ArrayBufferLike>;
+/** Every runtime-injected script carries the response nonce so nonce mode never needs 'unsafe-inline'. */
+export declare function injectPageConnectionToken(html: string, token: string, database?: LooseRecord, nonce?: string): string;
 export declare function isDocumentNavigationRequest(request: Pick<IncomingMessage, "headers">): boolean;
 export declare function routeConnectionToken(request: Pick<IncomingMessage, "method" | "url" | "headers" | "socket">, response: Pick<ServerResponse, "writeHead" | "end">, createConnectionToken: (currentToken?: string) => string): boolean;
 export declare function websocketOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeRequestLike): boolean;

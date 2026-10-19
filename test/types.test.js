@@ -70,6 +70,13 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition, type ServerEnvConfig } from "sporades/server";
 const serverEnvConfig: ServerEnvConfig = { required: ["INTAKE_URL"], failClosed: true };
 import * as publicServerApi from "sporades/server";
+const securityConfig: publicServerApi.SecurityConfig = { csp: { nonce: true, mode: 'enforce', reportTo: '/csp-reports', directives: { 'script-src': ["'self'"] } }, hsts: { maxAgeSeconds: 31536000, includeSubDomains: true, preload: false } };
+// @ts-expect-error nonce opt-in is a boolean.
+const invalidNonceConfig: publicServerApi.SecurityConfig = { csp: { nonce: 'true' } };
+// @ts-expect-error reportTo is a URI string, not a boolean.
+const invalidReportConfig: publicServerApi.SecurityConfig = { csp: { reportTo: true } };
+const forwardedReports: publicServerApi.SecurityConfig = { csp: { reportTo: 'observability' } };
+void securityConfig; void invalidNonceConfig; void invalidReportConfig; void forwardedReports;
 const errorCollection: publicServerApi.ObservabilityConfig = { errors: { protocol: "sentry", dsnEnv: "ERROR_DSN", client: true, sampleRate: 0.25 } };
 const pageviews: publicServerApi.AnalyticsConfig = { provider: "umami", endpointEnv: "ANALYTICS_ENDPOINT", websiteIdEnv: "WEBSITE_ID", redactQuery: true };
 // @ts-expect-error capability URL redaction cannot be disabled.
