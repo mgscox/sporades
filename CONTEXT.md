@@ -737,3 +737,12 @@ preflight, journals activation with rollback/recovery, and reports fresh invento
 and pending Capsule coverage. Old history and old-server expectations remain
 operator-owned; no VM or historical database migration is automatic. See
 [diagnostics and migration](docs/reference/telemetry-diagnostics.md).
+
+### Error collection and analytics
+
+Opt-in `observability.errors` and `analytics` project config activate runtime-owned
+Sentry-envelope diagnostics and Umami/Plausible pageviews. A first-party loader
+and same-origin collection tunnel keep provider identities in Server env and
+remove query strings/fragments before delivery. Collection is bounded, best
+effort and independent of transaction/Job outcomes and OTLP Telemetry profiles.
+See [Errors and analytics](docs/reference/errors-and-analytics.md).

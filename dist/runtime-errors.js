@@ -83,4 +83,9 @@ export function invalidReferenceError(field) {
 function invalidJsonFieldValueError() {
     return commandError("Invalid JSON field value.", "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null.");
 }
+/** Routine authorization outcomes and cancellations are not diagnostic failures. */
+export const expectedDiagnosticErrorCodes = [
+    "DENIED", "UNAUTHENTICATED", "FORBIDDEN", "REAUTHENTICATION_REQUIRED",
+    "JOB_CANCELLED", "RESOURCE_CANCELLED",
+];
 //# sourceMappingURL=runtime-errors.js.map

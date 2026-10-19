@@ -67,6 +67,7 @@ export default defineConfig({
           { text: "Monitoring maintenance", link: "/reference/monitoring-maintenance" },
           { text: "Sender credentials", link: "/reference/sender-credentials" },
           { text: "Telemetry diagnostics", link: "/reference/telemetry-diagnostics" },
+          { text: "Errors and analytics", link: "/reference/errors-and-analytics" },
           { text: "Monitoring warning policy", link: "/reference/monitoring-performance" },
           { text: "Architecture", link: "/architecture" },
           { text: "Runtime layout", link: "/runtime-layout" },

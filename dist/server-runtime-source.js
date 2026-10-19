@@ -1,3 +1,5 @@
+import { createRuntimeObservability } from "./observability-runtime.js";
+import { redactDiagnosticText } from "./runtime-log-policy.js";
 import { bindAppContext, isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
 import { dirname as pathDirname } from "node:path";
 import { missingServerEnvKeys, missingServerEnvError, validateServerEnvConfig } from "./server-env-requirements.js";
@@ -594,6 +596,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     }) : null;
     if (missingEnv.length && config.env?.failClosed === true)
         throw missingServerEnvError(missingEnv);
+    const observability = createRuntimeObservability({ ...config, release: process.env.SPORADES_RELEASE_ID ?? config.release }, serverEnv);
     const registrationThrottle = resolveRegistrationThrottle(config.auth);
     const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
     const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
@@ -783,6 +786,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         __handlerContextMappingCount: 0,
         rowCache,
         serverEnv,
+        observability,
         paymentsConfig,
         createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
         stripeApiBaseUrl: options?.stripeApiBaseUrl,
@@ -1016,6 +1020,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 const failures = [];
                 const pending = [];
                 const resources = [
+                    () => database.observability.close(),
                     () => shutdownClamavRuntime(database),
                     () => {
                         if (mailStartError !== undefined)
@@ -2753,7 +2758,7 @@ function redactLogData(value, serverEnv) {
         return null;
     }
     if (typeof value === "string") {
-        return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : value;
+        return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : redactDiagnosticText(value, serverEnv);
     }
     if (typeof value === "number" || typeof value === "boolean") {
         return value;
@@ -3833,6 +3838,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request, reque
         return sealCommittedAttachmentResult(result);
     }
     catch (error) {
+        database.observability?.capture(error, "endpoint");
         if (outerCommitted)
             throw error;
         if (endpointRequest.multipart) {
@@ -6647,6 +6653,7 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
                 context = await applyContextMiddleware(database, context, "query");
             }
             catch (error) {
+                database.observability?.capture(error, "query");
                 if (error?.sporadesAuthDenialLogData) {
                     emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
                 }
@@ -6697,6 +6704,7 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
         })();
     }
     catch (error) {
+        database.observability?.capture(error, "query");
         primaryError = error;
         throw error;
     }
@@ -6743,6 +6751,7 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
         return { data, error: null };
     }
     catch (error) {
+        database.observability?.capture(error, "query");
         if (error?.sporadesAuthDenialLogData) {
             emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         }
@@ -6948,6 +6957,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
         return committed;
     }
     catch (error) {
+        database.observability?.capture(error, "mutation");
         if (outerCommitted)
             return createHookErrorResult(error);
         dropPendingCurrentUserFileByteDeletes(context);
@@ -7873,6 +7883,8 @@ export async function runCurrentUserJobWorker(database) {
                         error = atomicStripeAbortError();
                     }
                 }
+                if (handlerStarted)
+                    database.observability?.capture(error, "job");
                 const handlerFailure = safeJobFailure(error);
                 const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
                 const failedAt = database.clock.now().toISOString();
