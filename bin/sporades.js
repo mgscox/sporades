@@ -2288,9 +2288,9 @@ var require_acorn = __commonJS({
         }
         return this.parseIdent();
       };
-      pp$72.parseBindingList = function(close, allowEmpty, allowTrailingComma, allowModifiers) {
+      pp$72.parseBindingList = function(close2, allowEmpty, allowTrailingComma, allowModifiers) {
         var elts = [], first = true;
-        while (!this.eat(close)) {
+        while (!this.eat(close2)) {
           if (first) {
             first = false;
           } else {
@@ -2298,7 +2298,7 @@ var require_acorn = __commonJS({
           }
           if (allowEmpty && this.type === types$12.comma) {
             elts.push(null);
-          } else if (allowTrailingComma && this.afterTrailingComma(close)) {
+          } else if (allowTrailingComma && this.afterTrailingComma(close2)) {
             break;
           } else if (this.type === types$12.ellipsis) {
             var rest = this.parseRestBinding();
@@ -2307,7 +2307,7 @@ var require_acorn = __commonJS({
             if (this.type === types$12.comma) {
               this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
             }
-            this.expect(close);
+            this.expect(close2);
             break;
           } else {
             elts.push(this.parseAssignableListItem(allowModifiers));
@@ -3479,12 +3479,12 @@ var require_acorn = __commonJS({
           this.checkLValInnerPattern(param, BIND_VAR2, allowDuplicates ? null : nameHash);
         }
       };
-      pp$52.parseExprList = function(close, allowTrailingComma, allowEmpty, refDestructuringErrors) {
+      pp$52.parseExprList = function(close2, allowTrailingComma, allowEmpty, refDestructuringErrors) {
         var elts = [], first = true;
-        while (!this.eat(close)) {
+        while (!this.eat(close2)) {
           if (!first) {
             this.expect(types$12.comma);
-            if (allowTrailingComma && this.afterTrailingComma(close)) {
+            if (allowTrailingComma && this.afterTrailingComma(close2)) {
               break;
             }
           } else {
@@ -10257,7 +10257,7 @@ var require_inflate = __commonJS({
       state.distcode = distfix;
       state.distbits = 5;
     }
-    function updatewindow(strm, src, end, copy) {
+    function updatewindow(strm, src, end, copy2) {
       var dist;
       var state = strm.state;
       if (state.window === null) {
@@ -10266,20 +10266,20 @@ var require_inflate = __commonJS({
         state.whave = 0;
         state.window = new utils.Buf8(state.wsize);
       }
-      if (copy >= state.wsize) {
+      if (copy2 >= state.wsize) {
         utils.arraySet(state.window, src, end - state.wsize, state.wsize, 0);
         state.wnext = 0;
         state.whave = state.wsize;
       } else {
         dist = state.wsize - state.wnext;
-        if (dist > copy) {
-          dist = copy;
+        if (dist > copy2) {
+          dist = copy2;
         }
-        utils.arraySet(state.window, src, end - copy, dist, state.wnext);
-        copy -= dist;
-        if (copy) {
-          utils.arraySet(state.window, src, end - copy, copy, 0);
-          state.wnext = copy;
+        utils.arraySet(state.window, src, end - copy2, dist, state.wnext);
+        copy2 -= dist;
+        if (copy2) {
+          utils.arraySet(state.window, src, end - copy2, copy2, 0);
+          state.wnext = copy2;
           state.whave = state.wsize;
         } else {
           state.wnext += dist;
@@ -10302,7 +10302,7 @@ var require_inflate = __commonJS({
       var hold;
       var bits;
       var _in, _out;
-      var copy;
+      var copy2;
       var from;
       var from_source;
       var here = 0;
@@ -10497,11 +10497,11 @@ var require_inflate = __commonJS({
             /* falls through */
             case EXTRA:
               if (state.flags & 1024) {
-                copy = state.length;
-                if (copy > have) {
-                  copy = have;
+                copy2 = state.length;
+                if (copy2 > have) {
+                  copy2 = have;
                 }
-                if (copy) {
+                if (copy2) {
                   if (state.head) {
                     len = state.head.extra_len - state.length;
                     if (!state.head.extra) {
@@ -10513,17 +10513,17 @@ var require_inflate = __commonJS({
                       next,
                       // extra field is limited to 65536 bytes
                       // - no need for additional size check
-                      copy,
+                      copy2,
                       /*len + copy > state.head.extra_max - len ? state.head.extra_max : copy,*/
                       len
                     );
                   }
                   if (state.flags & 512) {
-                    state.check = crc322(state.check, input, copy, next);
+                    state.check = crc322(state.check, input, copy2, next);
                   }
-                  have -= copy;
-                  next += copy;
-                  state.length -= copy;
+                  have -= copy2;
+                  next += copy2;
+                  state.length -= copy2;
                 }
                 if (state.length) {
                   break inf_leave;
@@ -10537,18 +10537,18 @@ var require_inflate = __commonJS({
                 if (have === 0) {
                   break inf_leave;
                 }
-                copy = 0;
+                copy2 = 0;
                 do {
-                  len = input[next + copy++];
+                  len = input[next + copy2++];
                   if (state.head && len && state.length < 65536) {
                     state.head.name += String.fromCharCode(len);
                   }
-                } while (len && copy < have);
+                } while (len && copy2 < have);
                 if (state.flags & 512) {
-                  state.check = crc322(state.check, input, copy, next);
+                  state.check = crc322(state.check, input, copy2, next);
                 }
-                have -= copy;
-                next += copy;
+                have -= copy2;
+                next += copy2;
                 if (len) {
                   break inf_leave;
                 }
@@ -10563,18 +10563,18 @@ var require_inflate = __commonJS({
                 if (have === 0) {
                   break inf_leave;
                 }
-                copy = 0;
+                copy2 = 0;
                 do {
-                  len = input[next + copy++];
+                  len = input[next + copy2++];
                   if (state.head && len && state.length < 65536) {
                     state.head.comment += String.fromCharCode(len);
                   }
-                } while (len && copy < have);
+                } while (len && copy2 < have);
                 if (state.flags & 512) {
-                  state.check = crc322(state.check, input, copy, next);
+                  state.check = crc322(state.check, input, copy2, next);
                 }
-                have -= copy;
-                next += copy;
+                have -= copy2;
+                next += copy2;
                 if (len) {
                   break inf_leave;
                 }
@@ -10709,23 +10709,23 @@ var require_inflate = __commonJS({
               state.mode = COPY;
             /* falls through */
             case COPY:
-              copy = state.length;
-              if (copy) {
-                if (copy > have) {
-                  copy = have;
+              copy2 = state.length;
+              if (copy2) {
+                if (copy2 > have) {
+                  copy2 = have;
                 }
-                if (copy > left) {
-                  copy = left;
+                if (copy2 > left) {
+                  copy2 = left;
                 }
-                if (copy === 0) {
+                if (copy2 === 0) {
                   break inf_leave;
                 }
-                utils.arraySet(output, input, next, copy, put);
-                have -= copy;
-                next += copy;
-                left -= copy;
-                put += copy;
-                state.length -= copy;
+                utils.arraySet(output, input, next, copy2, put);
+                have -= copy2;
+                next += copy2;
+                left -= copy2;
+                put += copy2;
+                state.length -= copy2;
                 break;
               }
               state.mode = TYPE;
@@ -10826,7 +10826,7 @@ var require_inflate = __commonJS({
                       break;
                     }
                     len = state.lens[state.have - 1];
-                    copy = 3 + (hold & 3);
+                    copy2 = 3 + (hold & 3);
                     hold >>>= 2;
                     bits -= 2;
                   } else if (here_val === 17) {
@@ -10842,7 +10842,7 @@ var require_inflate = __commonJS({
                     hold >>>= here_bits;
                     bits -= here_bits;
                     len = 0;
-                    copy = 3 + (hold & 7);
+                    copy2 = 3 + (hold & 7);
                     hold >>>= 3;
                     bits -= 3;
                   } else {
@@ -10858,16 +10858,16 @@ var require_inflate = __commonJS({
                     hold >>>= here_bits;
                     bits -= here_bits;
                     len = 0;
-                    copy = 11 + (hold & 127);
+                    copy2 = 11 + (hold & 127);
                     hold >>>= 7;
                     bits -= 7;
                   }
-                  if (state.have + copy > state.nlen + state.ndist) {
+                  if (state.have + copy2 > state.nlen + state.ndist) {
                     strm.msg = "invalid bit length repeat";
                     state.mode = BAD;
                     break;
                   }
-                  while (copy--) {
+                  while (copy2--) {
                     state.lens[state.have++] = len;
                   }
                 }
@@ -11086,39 +11086,39 @@ var require_inflate = __commonJS({
               if (left === 0) {
                 break inf_leave;
               }
-              copy = _out - left;
-              if (state.offset > copy) {
-                copy = state.offset - copy;
-                if (copy > state.whave) {
+              copy2 = _out - left;
+              if (state.offset > copy2) {
+                copy2 = state.offset - copy2;
+                if (copy2 > state.whave) {
                   if (state.sane) {
                     strm.msg = "invalid distance too far back";
                     state.mode = BAD;
                     break;
                   }
                 }
-                if (copy > state.wnext) {
-                  copy -= state.wnext;
-                  from = state.wsize - copy;
+                if (copy2 > state.wnext) {
+                  copy2 -= state.wnext;
+                  from = state.wsize - copy2;
                 } else {
-                  from = state.wnext - copy;
+                  from = state.wnext - copy2;
                 }
-                if (copy > state.length) {
-                  copy = state.length;
+                if (copy2 > state.length) {
+                  copy2 = state.length;
                 }
                 from_source = state.window;
               } else {
                 from_source = output;
                 from = put - state.offset;
-                copy = state.length;
+                copy2 = state.length;
               }
-              if (copy > left) {
-                copy = left;
+              if (copy2 > left) {
+                copy2 = left;
               }
-              left -= copy;
-              state.length -= copy;
+              left -= copy2;
+              state.length -= copy2;
               do {
                 output[put++] = from_source[from++];
-              } while (--copy);
+              } while (--copy2);
               if (state.length === 0) {
                 state.mode = LEN;
               }
@@ -11772,8 +11772,8 @@ var require_Font = __commonJS({
           var cachedFont = fontCache[fontName];
           if (cachedFont)
             return cachedFont;
-          var json = utils_1.decompressJson(compressedJsonForFontName[fontName]);
-          var font = Object.assign(new Font2(), JSON.parse(json));
+          var json2 = utils_1.decompressJson(compressedJsonForFontName[fontName]);
+          var font = Object.assign(new Font2(), JSON.parse(json2));
           font.CharWidths = font.CharMetrics.reduce(function(acc, metric) {
             acc[metric.N] = metric.WX;
             return acc;
@@ -36660,8 +36660,8 @@ var init_pdf = __esm({
         var max = Math.max;
         var min = Math.min;
         module.exports = function(index, length) {
-          var integer = toIntegerOrInfinity(index);
-          return integer < 0 ? max(integer + length, 0) : min(integer, length);
+          var integer2 = toIntegerOrInfinity(index);
+          return integer2 < 0 ? max(integer2 + length, 0) : min(integer2, length);
         };
       },
       /***/
@@ -37927,7 +37927,7 @@ var init_pdf = __esm({
             var currentOrdered;
             var marked = false;
             var root = true;
-            var json = stringifyWithProperSymbolsConversion(text3, function(key, value) {
+            var json2 = stringifyWithProperSymbolsConversion(text3, function(key, value) {
               key = $String(key);
               if (propertyList) {
                 if (key === END_MARK) {
@@ -37954,16 +37954,16 @@ var init_pdf = __esm({
               }
               return value;
             }, space2);
-            if (typeof json != "string") return json;
-            if (ILL_FORMED_UNICODE) json = replace(json, surrogates, fixIllFormedJSON);
-            if (!marked) return json;
+            if (typeof json2 != "string") return json2;
+            if (ILL_FORMED_UNICODE) json2 = replace(json2, surrogates, fixIllFormedJSON);
+            if (!marked) return json2;
             var result = "";
-            var length = json.length;
+            var length = json2.length;
             for (var i = 0; i < length; i++) {
-              var chr = charAt(json, i);
+              var chr = charAt(json2, i);
               if (chr === '"') {
-                var end = parseJSONString(json, ++i).end - 1;
-                var string2 = slice(json, i, end);
+                var end = parseJSONString(json2, ++i).end - 1;
+                var string2 = slice(json2, i, end);
                 if (slice(string2, 0, RAW_MARK_LENGTH) === RAW_MARK) result += rawStrings[slice(string2, RAW_MARK_LENGTH)];
                 else if (slice(string2, 0, KEY_MARK_LENGTH) === KEY_MARK) result += '"' + slice(string2, KEY_MARK_LENGTH) + '"';
                 else result += '"' + string2 + '"';
@@ -41303,9 +41303,9 @@ var init_pdf = __esm({
         }
         const editors = [];
         for (const editor of this.#selectedEditors) {
-          const serialized = editor.serialize(true);
-          if (serialized) {
-            editors.push(serialized);
+          const serialized2 = editor.serialize(true);
+          if (serialized2) {
+            editors.push(serialized2);
           }
         }
         if (editors.length === 0) {
@@ -41446,15 +41446,15 @@ var init_pdf = __esm({
       }
       clonePage(pageIndex, newPageIndex) {
         for (const editor of this.getEditors(pageIndex)) {
-          const serialized = editor.serialize(editor.mode !== AnnotationEditorType.HIGHLIGHT);
-          if (!serialized) {
+          const serialized2 = editor.serialize(editor.mode !== AnnotationEditorType.HIGHLIGHT);
+          if (!serialized2) {
             continue;
           }
-          serialized.pageIndex = newPageIndex;
-          serialized.id = this.getId();
-          serialized.isClone = true;
-          delete serialized.popupRef;
-          this.#annotationStorage.setValue(serialized.id, serialized);
+          serialized2.pageIndex = newPageIndex;
+          serialized2.id = this.getId();
+          serialized2.isClone = true;
+          delete serialized2.popupRef;
+          this.#annotationStorage.setValue(serialized2.id, serialized2);
         }
       }
       findClonesForPage(layer) {
@@ -43920,17 +43920,17 @@ var init_pdf = __esm({
       setSelectedCommentButton(selected) {
         this.#comment.setSelectedButton(selected);
       }
-      addComment(serialized) {
+      addComment(serialized2) {
         if (this.hasEditedComment) {
           const DEFAULT_POPUP_WIDTH = 180;
           const DEFAULT_POPUP_HEIGHT = 100;
-          const [, , , trY] = serialized.rect;
+          const [, , , trY] = serialized2.rect;
           const [pageWidth] = this.pageDimensions;
           const [pageX] = this.pageTranslation;
           const blX = pageX + pageWidth + 1;
           const blY = trY - DEFAULT_POPUP_HEIGHT;
           const trX = blX + DEFAULT_POPUP_WIDTH;
-          serialized.popup = {
+          serialized2.popup = {
             contents: this.comment.text,
             deleted: this.comment.deleted,
             rect: [blX, blY, trX, trY]
@@ -44904,15 +44904,15 @@ var init_pdf = __esm({
         const context2 = /* @__PURE__ */ Object.create(null);
         let hasBitmap = false;
         for (const [key, val] of this.#storage) {
-          const serialized = val instanceof AnnotationEditor ? val.serialize(false, context2) : val;
+          const serialized2 = val instanceof AnnotationEditor ? val.serialize(false, context2) : val;
           if (val.page) {
             val.pageIndex = val.page._pageIndex;
             delete val.page;
           }
-          if (serialized) {
-            map.set(key, serialized);
-            hash2.update(`${key}:${JSON.stringify(serialized)}`);
-            hasBitmap ||= !!serialized.bitmap;
+          if (serialized2) {
+            map.set(key, serialized2);
+            hash2.update(`${key}:${JSON.stringify(serialized2)}`);
+            hasBitmap ||= !!serialized2.bitmap;
           }
         }
         if (hasBitmap) {
@@ -53571,8 +53571,8 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
                   if (!data2.dataLen) {
                     return null;
                   }
-                  const copy = structuredClone(data2);
-                  this.commonObjs.resolve(id2, copy);
+                  const copy2 = structuredClone(data2);
+                  this.commonObjs.resolve(id2, copy2);
                   return data2.dataLen;
                 }
               }
@@ -53664,15 +53664,15 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           }
         }
         if (this.annotationStorage.size > 0) {
-          const serialized = this.annotationStorage.serializable;
+          const serialized2 = this.annotationStorage.serializable;
           let {
             map
-          } = serialized;
-          if (serialized.transfer?.length) {
+          } = serialized2;
+          if (serialized2.transfer?.length) {
             if (transfer) {
-              transfer.push(...serialized.transfer);
+              transfer.push(...serialized2.transfer);
             } else {
-              transfer = serialized.transfer;
+              transfer = serialized2.transfer;
             }
           }
           const mapping = this.pagesMapper.getMapping();
@@ -58630,30 +58630,30 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
           return this.serializeDeleted();
         }
         const color = AnnotationEditor._colorManager.convert(this.isAttachedToDOM ? getComputedStyle(this.editorDiv).color : this.color);
-        const serialized = Object.assign(super.serialize(isForCopying), {
+        const serialized2 = Object.assign(super.serialize(isForCopying), {
           color,
           fontSize: this.#fontSize,
           value: this.#serializeContent()
         });
-        this.addComment(serialized);
+        this.addComment(serialized2);
         if (isForCopying) {
-          serialized.isCopy = true;
-          return serialized;
+          serialized2.isCopy = true;
+          return serialized2;
         }
-        if (this.annotationElementId && !this.#hasElementChanged(serialized)) {
+        if (this.annotationElementId && !this.#hasElementChanged(serialized2)) {
           return null;
         }
-        serialized.id = this.annotationElementId;
-        return serialized;
+        serialized2.id = this.annotationElementId;
+        return serialized2;
       }
-      #hasElementChanged(serialized) {
+      #hasElementChanged(serialized2) {
         const {
           value,
           fontSize,
           color,
           pageIndex
         } = this._initialData;
-        return this.hasEditedComment || this._hasBeenMoved || serialized.value !== value || serialized.fontSize !== fontSize || serialized.color.some((c, i) => c !== color[i]) || serialized.pageIndex !== pageIndex;
+        return this.hasEditedComment || this._hasBeenMoved || serialized2.value !== value || serialized2.fontSize !== fontSize || serialized2.color.some((c, i) => c !== color[i]) || serialized2.pageIndex !== pageIndex;
       }
       renderAnnotationElement(annotation) {
         const content2 = super.renderAnnotationElement(annotation);
@@ -60824,26 +60824,26 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         if (this.deleted) {
           return this.serializeDeleted();
         }
-        const serialized = super.serialize(isForCopying);
-        Object.assign(serialized, {
+        const serialized2 = super.serialize(isForCopying);
+        Object.assign(serialized2, {
           color: AnnotationEditor._colorManager.convert(this._uiManager.getNonHCMColor(this.color)),
           opacity: this.opacity,
           thickness: this._drawingOptions.thickness,
           quadPoints: this._drawOutlines.serializeQuadPoints(this.pageTranslation, this.pageDimensions),
-          outlines: this._drawOutlines.serialize(serialized.rect, this._drawRotation)
+          outlines: this._drawOutlines.serialize(serialized2.rect, this._drawRotation)
         });
-        this.addComment(serialized);
-        if (this.annotationElementId && !this.#hasElementChanged(serialized)) {
+        this.addComment(serialized2);
+        if (this.annotationElementId && !this.#hasElementChanged(serialized2)) {
           return null;
         }
-        serialized.id = this.annotationElementId;
-        return serialized;
+        serialized2.id = this.annotationElementId;
+        return serialized2;
       }
-      #hasElementChanged(serialized) {
+      #hasElementChanged(serialized2) {
         const {
           color
         } = this._initialData;
-        return this.hasEditedComment || serialized.color.some((c, i) => c !== color[i]);
+        return this.hasEditedComment || serialized2.color.some((c, i) => c !== color[i]);
       }
       renderAnnotationElement(annotation) {
         if (this.deleted) {
@@ -61754,7 +61754,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             "stroke-width": thickness
           }
         } = this;
-        const serialized = Object.assign(super.serialize(isForCopying), {
+        const serialized2 = Object.assign(super.serialize(isForCopying), {
           color: AnnotationEditor._colorManager.convert(stroke),
           opacity,
           thickness,
@@ -61763,25 +61763,25 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             points
           }
         });
-        this.addComment(serialized);
+        this.addComment(serialized2);
         if (isForCopying) {
-          serialized.isCopy = true;
-          return serialized;
+          serialized2.isCopy = true;
+          return serialized2;
         }
-        if (this.annotationElementId && !this.#hasElementChanged(serialized)) {
+        if (this.annotationElementId && !this.#hasElementChanged(serialized2)) {
           return null;
         }
-        serialized.id = this.annotationElementId;
-        return serialized;
+        serialized2.id = this.annotationElementId;
+        return serialized2;
       }
-      #hasElementChanged(serialized) {
+      #hasElementChanged(serialized2) {
         const {
           color,
           thickness,
           opacity,
           pageIndex
         } = this._initialData;
-        return this.hasEditedComment || this._hasBeenMoved || this._hasBeenResized || serialized.color.some((c, i) => c !== color[i]) || serialized.thickness !== thickness || serialized.opacity !== opacity || serialized.pageIndex !== pageIndex;
+        return this.hasEditedComment || this._hasBeenMoved || this._hasBeenResized || serialized2.color.some((c, i) => c !== color[i]) || serialized2.thickness !== thickness || serialized2.opacity !== opacity || serialized2.pageIndex !== pageIndex;
       }
       renderAnnotationElement(annotation) {
         if (this.deleted) {
@@ -62739,30 +62739,30 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             "stroke-width": thickness
           }
         } = this;
-        const serialized = Object.assign(super.serialize(isForCopying), {
+        const serialized2 = Object.assign(super.serialize(isForCopying), {
           isSignature: true,
           areContours: this.#isExtracted,
           color: [0, 0, 0],
           thickness: this.#isExtracted ? 0 : thickness
         });
-        this.addComment(serialized);
+        this.addComment(serialized2);
         if (isForCopying) {
-          serialized.paths = {
+          serialized2.paths = {
             lines,
             points
           };
-          serialized.uuid = this.#signatureUUID;
-          serialized.isCopy = true;
+          serialized2.uuid = this.#signatureUUID;
+          serialized2.isCopy = true;
         } else {
-          serialized.lines = lines;
+          serialized2.lines = lines;
         }
         if (this.#description) {
-          serialized.accessibilityData = {
+          serialized2.accessibilityData = {
             type: "Figure",
             alt: this.#description
           };
         }
-        return serialized;
+        return serialized2;
       }
       static deserializeDraw(pageX, pageY, pageWidth, pageHeight, innerMargin, data2) {
         if (data2.areContours) {
@@ -63381,52 +63381,52 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
         if (this.deleted) {
           return this.serializeDeleted();
         }
-        const serialized = Object.assign(super.serialize(isForCopying), {
+        const serialized2 = Object.assign(super.serialize(isForCopying), {
           bitmapId: this.#bitmapId,
           isSvg: this.#isSvg
         });
-        this.addComment(serialized);
+        this.addComment(serialized2);
         if (isForCopying) {
-          serialized.bitmapUrl = this.#serializeBitmap(true);
-          serialized.accessibilityData = this.serializeAltText(true);
-          serialized.isCopy = true;
-          return serialized;
+          serialized2.bitmapUrl = this.#serializeBitmap(true);
+          serialized2.accessibilityData = this.serializeAltText(true);
+          serialized2.isCopy = true;
+          return serialized2;
         }
         const {
           decorative,
           altText
         } = this.serializeAltText(false);
         if (!decorative && altText) {
-          serialized.accessibilityData = {
+          serialized2.accessibilityData = {
             type: "Figure",
             alt: altText
           };
         }
         if (this.annotationElementId) {
-          const changes = this.#hasElementChanged(serialized);
+          const changes = this.#hasElementChanged(serialized2);
           if (changes.isSame) {
             return null;
           }
           if (changes.isSameAltText) {
-            delete serialized.accessibilityData;
+            delete serialized2.accessibilityData;
           } else {
-            serialized.accessibilityData.structParent = this._initialData.structParent ?? -1;
+            serialized2.accessibilityData.structParent = this._initialData.structParent ?? -1;
           }
-          serialized.id = this.annotationElementId;
-          delete serialized.bitmapId;
-          return serialized;
+          serialized2.id = this.annotationElementId;
+          delete serialized2.bitmapId;
+          return serialized2;
         }
         if (context2 === null) {
-          return serialized;
+          return serialized2;
         }
         context2.stamps ||= /* @__PURE__ */ new Map();
-        const area = this.#isSvg ? (serialized.rect[2] - serialized.rect[0]) * (serialized.rect[3] - serialized.rect[1]) : null;
+        const area = this.#isSvg ? (serialized2.rect[2] - serialized2.rect[0]) * (serialized2.rect[3] - serialized2.rect[1]) : null;
         if (!context2.stamps.has(this.#bitmapId)) {
           context2.stamps.set(this.#bitmapId, {
             area,
-            serialized
+            serialized: serialized2
           });
-          serialized.bitmap = this.#serializeBitmap(false);
+          serialized2.bitmap = this.#serializeBitmap(false);
         } else if (this.#isSvg) {
           const prevData = context2.stamps.get(this.#bitmapId);
           if (area > prevData.area) {
@@ -63435,17 +63435,17 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
             prevData.serialized.bitmap = this.#serializeBitmap(false);
           }
         }
-        return serialized;
+        return serialized2;
       }
-      #hasElementChanged(serialized) {
+      #hasElementChanged(serialized2) {
         const {
           pageIndex,
           accessibilityData: {
             altText
           }
         } = this._initialData;
-        const isSamePageIndex = serialized.pageIndex === pageIndex;
-        const isSameAltText = (serialized.accessibilityData?.alt || "") === altText;
+        const isSamePageIndex = serialized2.pageIndex === pageIndex;
+        const isSameAltText = (serialized2.accessibilityData?.alt || "") === altText;
         return {
           isSame: !this.hasEditedComment && !this._hasBeenMoved && !this._hasBeenResized && isSamePageIndex && isSameAltText,
           isSameAltText
@@ -69546,16 +69546,16 @@ var require_TraceState = __commonJS({
         return currState.get(key);
       }
       serialize() {
-        let serialized = "";
+        let serialized2 = "";
         let index = 0;
         for (const entry of this._getState()) {
           if (index > 0) {
-            serialized = LIST_MEMBERS_SEPARATOR2 + serialized;
+            serialized2 = LIST_MEMBERS_SEPARATOR2 + serialized2;
           }
-          serialized = `${entry[0]}${LIST_MEMBER_KEY_VALUE_SPLITTER2}${entry[1]}` + serialized;
+          serialized2 = `${entry[0]}${LIST_MEMBER_KEY_VALUE_SPLITTER2}${entry[1]}` + serialized2;
           index++;
         }
-        return serialized;
+        return serialized2;
       }
       _getState() {
         if (this._internalState) {
@@ -80357,11 +80357,11 @@ function commandError(message, hint, code = null) {
 }
 function assertJsonCompatible(value) {
   try {
-    const serialized = JSON.stringify(value);
-    if (serialized === void 0) {
+    const serialized2 = JSON.stringify(value);
+    if (serialized2 === void 0) {
       throw invalidJsonFieldValueError();
     }
-    return JSON.parse(serialized);
+    return JSON.parse(serialized2);
   } catch (error) {
     if (error?.hint) {
       throw error;
@@ -80629,23 +80629,23 @@ function trustedClientAddress(database, request) {
 // src/http-security-config.ts
 var CSP_REPORT_PATH = "/__sporades/csp-report";
 function validateHttpHardening(security = {}, observability) {
-  const fail4 = (hint) => {
+  const fail5 = (hint) => {
     throw commandError("Invalid HTTP security configuration.", hint, "INVALID_SECURITY_CONFIG");
   };
   const csp = security.csp ?? {};
   if (csp.nonce !== void 0 && typeof csp.nonce !== "boolean") {
-    fail4("Set security.csp.nonce to a boolean.");
+    fail5("Set security.csp.nonce to a boolean.");
   }
   if (csp.nonce === true) {
     for (const name2 of ["script-src", "script-src-elem"]) {
       const value = csp.directives?.[name2];
       if (value !== void 0 && typeof value !== "string" && !(Array.isArray(value) && value.every((item) => typeof item === "string"))) {
-        fail4("Set CSP script directives to a string or an array of strings.");
+        fail5("Set CSP script directives to a string or an array of strings.");
       }
     }
   }
   if (csp.reportTo === "observability") {
-    if (!observability?.errors) fail4('Configure observability.errors before setting security.csp.reportTo to "observability".');
+    if (!observability?.errors) fail5('Configure observability.errors before setting security.csp.reportTo to "observability".');
   } else if (csp.reportTo !== void 0) {
     const value = csp.reportTo;
     let valid = typeof value === "string" && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]|[;#\\]/.test(value);
@@ -80657,12 +80657,12 @@ function validateHttpHardening(security = {}, observability) {
         valid = false;
       }
     }
-    if (!valid) fail4('Set security.csp.reportTo to "observability", a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.');
+    if (!valid) fail5('Set security.csp.reportTo to "observability", a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.');
   }
   const hsts = security.hsts;
   if (hsts !== void 0) {
     if (!hsts || typeof hsts !== "object" || Array.isArray(hsts) || !Number.isSafeInteger(hsts.maxAgeSeconds) || hsts.maxAgeSeconds < 0 || hsts.includeSubDomains !== void 0 && typeof hsts.includeSubDomains !== "boolean" || hsts.preload !== void 0 && typeof hsts.preload !== "boolean") {
-      fail4("Set security.hsts to an object with a non-negative safe integer maxAgeSeconds and optional boolean includeSubDomains and preload.");
+      fail5("Set security.hsts to an object with a non-negative safe integer maxAgeSeconds and optional boolean includeSubDomains and preload.");
     }
   }
 }
@@ -80676,13 +80676,13 @@ function cspReportDirectives(csp) {
 
 // src/observability-runtime.ts
 function validateObservabilityConfig(config) {
-  const fail4 = () => {
+  const fail5 = () => {
     const error = new Error("Invalid observability or analytics configuration.");
     Object.assign(error, { code: "INVALID_OBSERVABILITY_CONFIG" });
     throw error;
   };
   const object2 = (value, keys) => {
-    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key))) fail4();
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key))) fail5();
   };
   const envName = (value) => typeof value === "string" && /^[A-Z_][A-Z0-9_]*$/i.test(value);
   if (config.observability !== void 0) {
@@ -80690,13 +80690,13 @@ function validateObservabilityConfig(config) {
     if (config.observability.errors !== void 0) {
       const errors = config.observability.errors;
       object2(errors, ["protocol", "dsnEnv", "environment", "sampleRate", "client"]);
-      if (errors.protocol !== "sentry" || !envName(errors.dsnEnv) || errors.client !== void 0 && typeof errors.client !== "boolean" || errors.environment !== void 0 && (typeof errors.environment !== "string" || !/^[\w.-]{1,64}$/.test(errors.environment)) || errors.sampleRate !== void 0 && (typeof errors.sampleRate !== "number" || !Number.isFinite(errors.sampleRate) || errors.sampleRate < 0 || errors.sampleRate > 1)) fail4();
+      if (errors.protocol !== "sentry" || !envName(errors.dsnEnv) || errors.client !== void 0 && typeof errors.client !== "boolean" || errors.environment !== void 0 && (typeof errors.environment !== "string" || !/^[\w.-]{1,64}$/.test(errors.environment)) || errors.sampleRate !== void 0 && (typeof errors.sampleRate !== "number" || !Number.isFinite(errors.sampleRate) || errors.sampleRate < 0 || errors.sampleRate > 1)) fail5();
     }
   }
   if (config.analytics !== void 0) {
     const analytics = config.analytics;
     object2(analytics, ["provider", "endpointEnv", "websiteIdEnv", "redactQuery"]);
-    if (!["umami", "plausible"].includes(analytics.provider) || !envName(analytics.endpointEnv) || !envName(analytics.websiteIdEnv) || analytics.redactQuery !== void 0 && analytics.redactQuery !== true) fail4();
+    if (!["umami", "plausible"].includes(analytics.provider) || !envName(analytics.endpointEnv) || !envName(analytics.websiteIdEnv) || analytics.redactQuery !== void 0 && analytics.redactQuery !== true) fail5();
   }
 }
 function providerUrl(value) {
@@ -81025,36 +81025,36 @@ function isLocalPublicOrigin(origin) {
 // src/server-env-requirements.ts
 function validateServerEnvConfig(value) {
   if (value === void 0) return void 0;
-  const fail4 = () => {
+  const fail5 = () => {
     throw commandError(
       "Invalid Server env requirements.",
       "Set `env.required` to at most 64 Server env key names (1-128 characters, no reserved SPORADES_ prefix) and optional `env.failClosed` to a boolean.",
       "INVALID_SERVER_ENV_CONFIG"
     );
   };
-  if (!value || typeof value !== "object" || Array.isArray(value)) return fail4();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fail5();
   const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) fail4();
+  if (prototype !== Object.prototype && prototype !== null) fail5();
   const entries = /* @__PURE__ */ new Map();
   for (const key of Reflect.ownKeys(value)) {
-    if (key !== "required" && key !== "failClosed") return fail4();
+    if (key !== "required" && key !== "failClosed") return fail5();
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) return fail4();
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) return fail5();
     entries.set(key, descriptor.value);
   }
   const required = entries.get("required");
   const failClosed = entries.get("failClosed");
-  if (entries.has("required") && (!Array.isArray(required) || required.length > 64)) fail4();
+  if (entries.has("required") && (!Array.isArray(required) || required.length > 64)) fail5();
   const keys = [];
   if (Array.isArray(required)) {
     for (let index = 0; index < required.length; index++) {
       const descriptor = Object.getOwnPropertyDescriptor(required, String(index));
       const key = descriptor?.value;
-      if (!descriptor || !Object.hasOwn(descriptor, "value") || typeof key !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key) || key === "__proto__" || key.startsWith("SPORADES_")) fail4();
+      if (!descriptor || !Object.hasOwn(descriptor, "value") || typeof key !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key) || key === "__proto__" || key.startsWith("SPORADES_")) fail5();
       keys.push(key);
     }
   }
-  if (entries.has("failClosed") && typeof failClosed !== "boolean") fail4();
+  if (entries.has("failClosed") && typeof failClosed !== "boolean") fail5();
   return { required: [...new Set(keys)].sort(), failClosed: failClosed === true };
 }
 function requiredServerEnvKeys(config) {
@@ -81956,8 +81956,8 @@ function validateCanonicalDomain(value) {
 import { spawnSync as spawnSync4 } from "node:child_process";
 import { createHash as createHash19, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes11, timingSafeEqual as timingSafeEqual6, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync as readFileSync4, statSync as statSync2, watch } from "node:fs";
-import { createServer as createServer2 } from "node:http";
-import { appendFile, chmod as chmod5, cp as cp2, lstat as lstat13, mkdir as mkdir11, open as open5, readdir as readdir6, readFile as readFile14, rename as rename9, rm as rm10, writeFile as writeFile10 } from "node:fs/promises";
+import { createServer as createServer3 } from "node:http";
+import { appendFile, chmod as chmod5, cp as cp2, lstat as lstat13, mkdir as mkdir11, open as open5, readdir as readdir6, readFile as readFile15, rename as rename9, rm as rm10, writeFile as writeFile10 } from "node:fs/promises";
 import path23 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL6 } from "node:url";
 
@@ -85796,9 +85796,9 @@ pp$7.parseBindingAtom = function() {
   }
   return this.parseIdent();
 };
-pp$7.parseBindingList = function(close, allowEmpty, allowTrailingComma, allowModifiers) {
+pp$7.parseBindingList = function(close2, allowEmpty, allowTrailingComma, allowModifiers) {
   var elts = [], first = true;
-  while (!this.eat(close)) {
+  while (!this.eat(close2)) {
     if (first) {
       first = false;
     } else {
@@ -85806,7 +85806,7 @@ pp$7.parseBindingList = function(close, allowEmpty, allowTrailingComma, allowMod
     }
     if (allowEmpty && this.type === types$1.comma) {
       elts.push(null);
-    } else if (allowTrailingComma && this.afterTrailingComma(close)) {
+    } else if (allowTrailingComma && this.afterTrailingComma(close2)) {
       break;
     } else if (this.type === types$1.ellipsis) {
       var rest = this.parseRestBinding();
@@ -85815,7 +85815,7 @@ pp$7.parseBindingList = function(close, allowEmpty, allowTrailingComma, allowMod
       if (this.type === types$1.comma) {
         this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
       }
-      this.expect(close);
+      this.expect(close2);
       break;
     } else {
       elts.push(this.parseAssignableListItem(allowModifiers));
@@ -86987,12 +86987,12 @@ pp$5.checkParams = function(node, allowDuplicates) {
     this.checkLValInnerPattern(param, BIND_VAR, allowDuplicates ? null : nameHash);
   }
 };
-pp$5.parseExprList = function(close, allowTrailingComma, allowEmpty, refDestructuringErrors) {
+pp$5.parseExprList = function(close2, allowTrailingComma, allowEmpty, refDestructuringErrors) {
   var elts = [], first = true;
-  while (!this.eat(close)) {
+  while (!this.eat(close2)) {
     if (!first) {
       this.expect(types$1.comma);
-      if (allowTrailingComma && this.afterTrailingComma(close)) {
+      if (allowTrailingComma && this.afterTrailingComma(close2)) {
         break;
       }
     } else {
@@ -108879,15 +108879,15 @@ function jobError(code, message, hint) {
   return error;
 }
 function boundedJobJson(value, limit, code, label) {
-  let serialized;
+  let serialized2;
   try {
     assertJsonCompatible(value);
-    serialized = JSON.stringify(value);
+    serialized2 = JSON.stringify(value);
   } catch {
     throw jobError("INVALID_JOB_PAYLOAD", `${label} must be JSON-compatible.`, "Pass plain JSON data without functions, cycles, or live request objects.");
   }
-  if (Buffer.byteLength(serialized, "utf8") > limit) throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
-  return serialized;
+  if (Buffer.byteLength(serialized2, "utf8") > limit) throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
+  return serialized2;
 }
 var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
 function boundedJobIdentityString(value, field, maximum, nullable = false) {
@@ -108914,8 +108914,8 @@ function canonicalJobAuthSnapshot(auth) {
     throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
   }
   const snapshot = auth?.userKind === "service" ? { ...baseSnapshot, userKind: "service" } : baseSnapshot;
-  const serialized = JSON.stringify(snapshot);
-  if (Buffer.byteLength(serialized, "utf8") > JOB_AUTH_SNAPSHOT_MAX_BYTES) {
+  const serialized2 = JSON.stringify(snapshot);
+  if (Buffer.byteLength(serialized2, "utf8") > JOB_AUTH_SNAPSHOT_MAX_BYTES) {
     throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");
   }
   return snapshot;
@@ -109574,9 +109574,9 @@ function resourceCanonicalJson(value) {
     ancestors.delete(input);
     return output;
   };
-  const json = JSON.stringify(visit(value, 0));
-  if (Buffer.byteLength(json, "utf8") > 65536) throw resourceError("RESOURCE_INVALID_INPUT");
-  return json;
+  const json2 = JSON.stringify(visit(value, 0));
+  if (Buffer.byteLength(json2, "utf8") > 65536) throw resourceError("RESOURCE_INVALID_INPUT");
+  return json2;
 }
 function boundedIdentity(value) {
   if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 128 || Buffer.from(value, "utf8").toString("utf8") !== value) throw resourceError("RESOURCE_INVALID_INPUT");
@@ -111460,8 +111460,8 @@ function createLocalFileStorageAdapter({ storagePath }) {
       await writeFile11(localFileVersionPath(storagePath, fileId, version3), bytes);
     },
     async readFileVersion({ fileId, version: version3 }) {
-      const { readFile: readFile15 } = await import("node:fs/promises");
-      return await readFile15(localFileVersionPath(storagePath, fileId, version3));
+      const { readFile: readFile16 } = await import("node:fs/promises");
+      return await readFile16(localFileVersionPath(storagePath, fileId, version3));
     },
     async openFileVersionStream({ fileId, version: version3 }) {
       const { createReadStream: createReadStream2 } = await import("node:fs");
@@ -113468,15 +113468,15 @@ var TreeBuffer = class _TreeBuffer {
   */
   slice(startI, endI, from) {
     let b = this.buffer;
-    let copy = new Uint16Array(endI - startI), len = 0;
+    let copy2 = new Uint16Array(endI - startI), len = 0;
     for (let i = startI, j = 0; i < endI; ) {
-      copy[j++] = b[i++];
-      copy[j++] = b[i++] - from;
-      let to = copy[j++] = b[i++] - from;
-      copy[j++] = b[i++] - startI;
+      copy2[j++] = b[i++];
+      copy2[j++] = b[i++] - from;
+      let to = copy2[j++] = b[i++] - from;
+      copy2[j++] = b[i++] - startI;
       len = Math.max(len, to);
     }
-    return new _TreeBuffer(copy, len, this.set);
+    return new _TreeBuffer(copy2, len, this.set);
   }
 };
 function checkSide(side, pos, from, to) {
@@ -116182,42 +116182,42 @@ var LRParser = class _LRParser extends Parser4 {
   kept from the original parser.
   */
   configure(config) {
-    let copy = Object.assign(Object.create(_LRParser.prototype), this);
+    let copy2 = Object.assign(Object.create(_LRParser.prototype), this);
     if (config.props)
-      copy.nodeSet = this.nodeSet.extend(...config.props);
+      copy2.nodeSet = this.nodeSet.extend(...config.props);
     if (config.top) {
       let info2 = this.topRules[config.top];
       if (!info2)
         throw new RangeError(`Invalid top rule name ${config.top}`);
-      copy.top = info2;
+      copy2.top = info2;
     }
     if (config.tokenizers)
-      copy.tokenizers = this.tokenizers.map((t2) => {
+      copy2.tokenizers = this.tokenizers.map((t2) => {
         let found = config.tokenizers.find((r2) => r2.from == t2);
         return found ? found.to : t2;
       });
     if (config.specializers) {
-      copy.specializers = this.specializers.slice();
-      copy.specializerSpecs = this.specializerSpecs.map((s2, i) => {
+      copy2.specializers = this.specializers.slice();
+      copy2.specializerSpecs = this.specializerSpecs.map((s2, i) => {
         let found = config.specializers.find((r2) => r2.from == s2.external);
         if (!found)
           return s2;
         let spec = Object.assign(Object.assign({}, s2), { external: found.to });
-        copy.specializers[i] = getSpecializer(spec);
+        copy2.specializers[i] = getSpecializer(spec);
         return spec;
       });
     }
     if (config.contextTracker)
-      copy.context = config.contextTracker;
+      copy2.context = config.contextTracker;
     if (config.dialect)
-      copy.dialect = this.parseDialect(config.dialect);
+      copy2.dialect = this.parseDialect(config.dialect);
     if (config.strict != null)
-      copy.strict = config.strict;
+      copy2.strict = config.strict;
     if (config.wrap)
-      copy.wrappers = copy.wrappers.concat(config.wrap);
+      copy2.wrappers = copy2.wrappers.concat(config.wrap);
     if (config.bufferLength != null)
-      copy.bufferLength = config.bufferLength;
-    return copy;
+      copy2.bufferLength = config.bufferLength;
+    return copy2;
   }
   /**
   Tells you whether any [parse wrappers](#lr.ParserConfig.wrap)
@@ -116448,12 +116448,12 @@ var ruleNodeProp = new NodeProp({
       }
       if (cur && cur.mode == take.mode && !take.context && !cur.context)
         continue;
-      let copy = new Rule(take.tags, take.mode, take.context);
+      let copy2 = new Rule(take.tags, take.mode, take.context);
       if (cur)
-        cur.next = copy;
+        cur.next = copy2;
       else
-        root = copy;
-      cur = copy;
+        root = copy2;
+      cur = copy2;
     }
     return root;
   }
@@ -117832,9 +117832,9 @@ function parseArithmeticExpression(src, offset2 = 0, collector) {
         }
       } else {
         pos++;
-        const close = collector?.findClosingParenthesis(pos + offset2, offset2 + len) ?? -1;
-        if (close !== -1) {
-          pos = close - offset2 + 1;
+        const close2 = collector?.findClosingParenthesis(pos + offset2, offset2 + len) ?? -1;
+        if (close2 !== -1) {
+          pos = close2 - offset2 + 1;
         } else {
           let depth2 = 1;
           while (pos < len && depth2 > 0) {
@@ -117859,9 +117859,9 @@ function parseArithmeticExpression(src, offset2 = 0, collector) {
         return node;
       }
     } else if (c === CH_LBRACE) {
-      const close = collector?.findClosingBrace(pos + offset2 + 1, offset2 + len) ?? -1;
-      if (close !== -1) {
-        pos = close - offset2 + 1;
+      const close2 = collector?.findClosingBrace(pos + offset2 + 1, offset2 + len) ?? -1;
+      if (close2 !== -1) {
+        pos = close2 - offset2 + 1;
       } else {
         pos++;
         let depth2 = 1;
@@ -117894,9 +117894,9 @@ function parseArithmeticExpression(src, offset2 = 0, collector) {
         break;
     }
     if (pos > start && pos < len && src.charCodeAt(pos) === CH_LBRACKET) {
-      const close = collector?.findClosingBracket?.(pos + offset2 + 1, offset2 + len) ?? -1;
-      if (close !== -1) {
-        pos = close - offset2 + 1;
+      const close2 = collector?.findClosingBracket?.(pos + offset2 + 1, offset2 + len) ?? -1;
+      if (close2 !== -1) {
+        pos = close2 - offset2 + 1;
       } else {
         pos++;
         let depth2 = 1;
@@ -118571,11 +118571,11 @@ var Lexer = class _Lexer {
     this.pos = start;
     this.srcEnd = Math.min(end, this.srcEnd);
     this.extractBalanced();
-    const close = this._unbalanced ? -1 : this.pos - 1;
+    const close2 = this._unbalanced ? -1 : this.pos - 1;
     this.pos = savedPos;
     this.srcEnd = savedEnd;
     this._unbalanced = savedUnbalanced;
-    return close;
+    return close2;
   }
   /** Find the end of one arithmetic expansion using the canonical lexer scanner. */
   findArithmeticExpansionEnd(start, end = this.srcEnd) {
@@ -118616,9 +118616,9 @@ var Lexer = class _Lexer {
         continue;
       }
       if (ch === CH_LBRACKET) {
-        const close = this.findClosingBracket(this.pos + 1);
-        if (close !== -1) {
-          this.pos = close + 1;
+        const close2 = this.findClosingBracket(this.pos + 1);
+        if (close2 !== -1) {
+          this.pos = close2 + 1;
           continue;
         }
       }
@@ -119911,10 +119911,10 @@ var Lexer = class _Lexer {
           const prefixChar = lastValueChar;
           pos++;
           const innerStart = pos;
-          const close = this.findClosingShellDelimiter(innerStart, len, CH_RPAREN, prefixChar === CH_EQ);
-          const patternEnd = close === -1 ? len : close;
-          pos = close === -1 ? len : close + 1;
-          if (close === -1)
+          const close2 = this.findClosingShellDelimiter(innerStart, len, CH_RPAREN, prefixChar === CH_EQ);
+          const patternEnd = close2 === -1 ? len : close2;
+          pos = close2 === -1 ? len : close2 + 1;
+          if (close2 === -1)
             this.errors.push({ message: "unterminated extended glob", pos: innerStart - 2 });
           lastValueChar = src.charCodeAt(pos - 1);
           if (bt) {
@@ -119943,11 +119943,11 @@ var Lexer = class _Lexer {
           continue;
         }
         if (subscripts && assignmentState >= ASSIGNMENT_INDEX_BASE) {
-          const close = this.findClosingBracket(pos);
-          if (close !== -1) {
-            const spanEnd = close + 1;
+          const close2 = this.findClosingBracket(pos);
+          if (close2 !== -1) {
+            const spanEnd = close2 + 1;
             assignmentState = scanAssignmentPrefix(src, pos, spanEnd, assignmentState);
-            lastValueChar = src.charCodeAt(close);
+            lastValueChar = src.charCodeAt(close2);
             if (bt) {
               const chunk = src.slice(pos, spanEnd);
               text3 += chunk;
@@ -120676,11 +120676,11 @@ var Lexer = class _Lexer {
       return;
     }
     if (ch === CH_LBRACKET) {
-      const close = this.findClosingArithmeticBracket(this.pos + 1);
-      if (close !== -1) {
+      const close2 = this.findClosingArithmeticBracket(this.pos + 1);
+      if (close2 !== -1) {
         const bodyStart = this.pos + 1;
-        const body = src.slice(bodyStart, close);
-        this.pos = close + 1;
+        const body = src.slice(bodyStart, close2);
+        this.pos = close2 + 1;
         const text3 = bt ? src.slice(dollarPos, this.pos) : "";
         this._resultText = text3;
         this._resultIsRaw = true;
@@ -120732,8 +120732,8 @@ var Lexer = class _Lexer {
         if (this._unbalanced)
           this.errors.push({ message: "unterminated command substitution", pos: dollarPos });
       } else if (c === CH_DOLLAR && this.pos + 1 < len && src.charCodeAt(this.pos + 1) === CH_LBRACE) {
-        const close = this.findClosingBrace(this.pos + 2, len);
-        this.pos = close === -1 ? len : close + 1;
+        const close2 = this.findClosingBrace(this.pos + 2, len);
+        this.pos = close2 === -1 ? len : close2 + 1;
       } else if ((c === CH_LT || c === CH_GT) && this.pos + 1 < len && src.charCodeAt(this.pos + 1) === CH_LPAREN) {
         this.pos += 2;
         this.extractBalanced();
@@ -121068,8 +121068,8 @@ var Lexer = class _Lexer {
       return result;
     const sub = (a2, b) => this.parseSubFieldWord(innerStart + a2, innerStart + b);
     const closeBracket = (start) => {
-      const close = this.findClosingBracket(innerStart + start, innerStart + ilen);
-      return close === -1 ? -1 : close - innerStart;
+      const close2 = this.findClosingBracket(innerStart + start, innerStart + ilen);
+      return close2 === -1 ? -1 : close2 - innerStart;
     };
     let i = 0;
     if (inner.charCodeAt(0) === CH_BANG) {
@@ -121257,25 +121257,25 @@ var Lexer = class _Lexer {
       }
       return end;
     }
-    let close;
+    let close2;
     if (ch === CH_DOLLAR) {
       const next = start + 1;
       if (next < end && this.src.charCodeAt(next) === CH_LBRACE) {
-        close = this.findClosingBrace(next + 1, end);
+        close2 = this.findClosingBrace(next + 1, end);
       } else {
         const open6 = skipLineContinuations(this.src, next, end);
         if (open6 >= end || this.src.charCodeAt(open6) !== CH_LPAREN)
           return start;
-        close = this.findClosingParenthesis(open6 + 1, end);
+        close2 = this.findClosingParenthesis(open6 + 1, end);
       }
     } else {
       const open6 = start + 1;
       if (quoted || ch !== CH_LT && ch !== CH_GT || open6 >= end || this.src.charCodeAt(open6) !== CH_LPAREN) {
         return start;
       }
-      close = this.findClosingParenthesis(open6 + 1, end);
+      close2 = this.findClosingParenthesis(open6 + 1, end);
     }
-    return close === -1 ? end : close + 1;
+    return close2 === -1 ? end : close2 + 1;
   }
   scanParamName(s2, start) {
     let i = start;
@@ -123459,11 +123459,11 @@ function pdfIndirectInteger(bytes, reference, entries, deadlineExpired) {
   if (!head || Number(head[1]) !== reference.objectNumber || Number(head[2]) !== reference.generation) return null;
   let cursor = skipPdfTrivia(bytes, entry.offset + head[0].length, bytes.length, false, deadlineExpired);
   if (cursor < 0) return null;
-  const integer = /^(\d{1,20})(?=[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(cursor, Math.min(bytes.length, cursor + 40)).toString("latin1"));
-  if (!integer) return null;
-  const value = Number(integer[1]);
+  const integer2 = /^(\d{1,20})(?=[\x00\x09\x0a\x0c\x0d\x20]|$)/.exec(bytes.subarray(cursor, Math.min(bytes.length, cursor + 40)).toString("latin1"));
+  if (!integer2) return null;
+  const value = Number(integer2[1]);
   if (!Number.isSafeInteger(value) || value > 24e6) return null;
-  cursor = skipPdfTrivia(bytes, cursor + integer[1].length, bytes.length, false, deadlineExpired);
+  cursor = skipPdfTrivia(bytes, cursor + integer2[1].length, bytes.length, false, deadlineExpired);
   if (cursor < 0 || !pdfKeywordAt(bytes, cursor, "endobj")) return null;
   return value;
 }
@@ -124618,8 +124618,8 @@ function shellWordHasPathExpansion(word) {
     if (quote) continue;
     if (index === 0 && character === "~" || character === "*" || character === "?" || character === "[") return true;
     if (character === "{") {
-      const close = raw.indexOf("}", index + 1);
-      if (close > index + 1 && braceBodyIsExpandable(raw.slice(index + 1, close))) return true;
+      const close2 = raw.indexOf("}", index + 1);
+      if (close2 > index + 1 && braceBodyIsExpandable(raw.slice(index + 1, close2))) return true;
     }
   }
   return false;
@@ -124666,34 +124666,34 @@ function shellGlobSegment(segment) {
       continue;
     }
     if (character === "[") {
-      let close = index + 1;
+      let close2 = index + 1;
       let body = "";
       let localeDependent = false;
       let unsupported = false;
-      while (close < segment.length) {
-        if (segment[close] === "[" && [":", ".", "="].includes(segment[close + 1])) {
-          const marker = segment[close + 1];
-          const innerClose = segment.indexOf(`${marker}]`, close + 2);
+      while (close2 < segment.length) {
+        if (segment[close2] === "[" && [":", ".", "="].includes(segment[close2 + 1])) {
+          const marker = segment[close2 + 1];
+          const innerClose = segment.indexOf(`${marker}]`, close2 + 2);
           if (innerClose < 0) break;
-          const token = segment.slice(close + 2, innerClose);
+          const token = segment.slice(close2 + 2, innerClose);
           localeDependent ||= marker === ":" && posixBracketClassNames.has(token);
           unsupported ||= marker !== ":" || !posixBracketClassNames.has(token);
           body += "A";
-          close = innerClose + 2;
+          close2 = innerClose + 2;
           continue;
         }
-        if (segment[close] === "]" && close > index + 1) break;
-        const literal3 = segment[close];
+        if (segment[close2] === "]" && close2 > index + 1) break;
+        const literal3 = segment[close2];
         body += literal3 === "\\" || literal3 === "]" ? `\\${literal3}` : literal3;
-        close += 1;
+        close2 += 1;
       }
-      if (close < segment.length && segment[close] === "]") {
-        if (close - index > 128) return false;
+      if (close2 < segment.length && segment[close2] === "]") {
+        if (close2 - index > 128) return false;
         if (localeDependent || unsupported) return false;
         body = body.replace(/^!/, "^");
         source += `[${body}]`;
         active = true;
-        index = close;
+        index = close2;
         continue;
       }
     }
@@ -125087,7 +125087,7 @@ function signalChildUntil(database, child, signal, deadline) {
       remove();
       resolve2(value || clamavChildTerminated(child));
     };
-    const fail4 = (error) => {
+    const fail5 = (error) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
@@ -125110,7 +125110,7 @@ function signalChildUntil(database, child, signal, deadline) {
       child.kill(signal);
     } catch (error) {
       if (clamavChildTerminated(child)) finish(true);
-      else fail4(error);
+      else fail5(error);
       return;
     }
     if (settled || clamavChildTerminated(child)) {
@@ -125122,7 +125122,7 @@ function signalChildUntil(database, child, signal, deadline) {
       finish(false);
       return;
     }
-    if (database.__clamavTest?.delay) Promise.resolve(database.__clamavTest.delay(remaining)).then(() => finish(false), fail4);
+    if (database.__clamavTest?.delay) Promise.resolve(database.__clamavTest.delay(remaining)).then(() => finish(false), fail5);
     else timer = setTimeout(() => finish(false), remaining);
   });
 }
@@ -130946,7 +130946,7 @@ function logPayloadMaxBytes(config = {}) {
 }
 function validateLogConfig(config = {}) {
   const minimum = minimumLogPayloadMaxBytes(config);
-  const fail4 = (key) => {
+  const fail5 = (key) => {
     throw commandError(
       "Invalid log payload cap.",
       `Set \`${key}.payloadMaxBytes\` to an integer of at least ${minimum} bytes for this Capsule in sporades.json.`,
@@ -130955,9 +130955,9 @@ function validateLogConfig(config = {}) {
   };
   for (const key of ["logs", "logging"]) {
     const value = config[key]?.payloadMaxBytes;
-    if (value !== void 0 && (!Number.isSafeInteger(value) || value < minimum)) fail4(key);
+    if (value !== void 0 && (!Number.isSafeInteger(value) || value < minimum)) fail5(key);
   }
-  if (logPayloadMaxBytes(config) < minimum) fail4("logs");
+  if (logPayloadMaxBytes(config) < minimum) fail5("logs");
 }
 
 // src/mail-config-validation.ts
@@ -131042,7 +131042,7 @@ function validateEmailWebhooksConfig(webhooks) {
 
 // src/mail-config.ts
 function validateMailConfig(mail) {
-  const fail4 = invalidMailConfig;
+  const fail5 = invalidMailConfig;
   const capture = captureMailConfigData;
   const envReference = isServerEnvReference2;
   const optional = (target, name2, value) => {
@@ -131067,13 +131067,13 @@ function validateMailConfig(mail) {
   const host = smtpData.get("host");
   const port = smtpData.get("port");
   if (typeof vendor !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(vendor)) {
-    fail4("Invalid SMTP vendor.", "Set `mail.smtp.vendor` to a lowercase provider identity such as `generic`.");
+    fail5("Invalid SMTP vendor.", "Set `mail.smtp.vendor` to a lowercase provider identity such as `generic`.");
   }
   if (typeof host !== "string" || host.length < 1 || host.length > 253 || /[^\x21-\x7e]/.test(host)) {
-    fail4("Invalid SMTP host.", "Set `mail.smtp.host` to a non-empty DNS name or IP address.");
+    fail5("Invalid SMTP host.", "Set `mail.smtp.host` to a non-empty DNS name or IP address.");
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    fail4("Invalid SMTP port.", "Set `mail.smtp.port` to an integer from 1 through 65535.");
+    fail5("Invalid SMTP port.", "Set `mail.smtp.port` to an integer from 1 through 65535.");
   }
   const tlsData = capture(
     smtpData.get("tls"),
@@ -131085,13 +131085,13 @@ function validateMailConfig(mail) {
   const rejectUnauthorized = tlsData.get("rejectUnauthorized");
   const servername = tlsData.get("servername");
   if (!["implicit", "required-starttls", "opportunistic", "disabled"].includes(tlsMode)) {
-    fail4("Invalid SMTP TLS mode.", "Use `implicit`, `required-starttls`, `opportunistic`, or `disabled`.");
+    fail5("Invalid SMTP TLS mode.", "Use `implicit`, `required-starttls`, `opportunistic`, or `disabled`.");
   }
   if (rejectUnauthorized !== void 0 && typeof rejectUnauthorized !== "boolean") {
-    fail4("Invalid SMTP TLS certificate policy.", "Set `mail.smtp.tls.rejectUnauthorized` to a boolean.");
+    fail5("Invalid SMTP TLS certificate policy.", "Set `mail.smtp.tls.rejectUnauthorized` to a boolean.");
   }
   if (servername !== void 0 && (typeof servername !== "string" || servername.length < 1 || servername.length > 253 || !/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(servername) || servername.split(".").some((label) => label.length < 1 || label.length > 63 || label.startsWith("-") || label.endsWith("-")))) {
-    fail4("Invalid SMTP TLS server name.", "Set `mail.smtp.tls.servername` to the DNS name on the SMTP certificate, especially when `host` is an IP address.");
+    fail5("Invalid SMTP TLS server name.", "Set `mail.smtp.tls.servername` to the DNS name on the SMTP certificate, especially when `host` is an IP address.");
   }
   const authData = capture(
     smtpData.get("auth"),
@@ -131105,31 +131105,31 @@ function validateMailConfig(mail) {
   let auth;
   if (authMethod === "none") {
     if (authData.size !== 1) {
-      fail4("Invalid SMTP authentication configuration.", 'Set exactly `{ "method": "none" }` only for an explicitly trusted unauthenticated relay.');
+      fail5("Invalid SMTP authentication configuration.", 'Set exactly `{ "method": "none" }` only for an explicitly trusted unauthenticated relay.');
     }
     auth = { method: "none" };
   } else {
     if (!["PLAIN", "LOGIN"].includes(authMethod) || typeof usernameEnv !== "string" || typeof passwordEnv !== "string") {
-      fail4("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
+      fail5("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
     }
     if (!envReference(usernameEnv) || !envReference(passwordEnv)) {
-      fail4("Invalid SMTP Server env reference.", "Use uppercase Server env key names without the reserved `SPORADES_` prefix.");
+      fail5("Invalid SMTP Server env reference.", "Use uppercase Server env key names without the reserved `SPORADES_` prefix.");
     }
     auth = { method: authMethod, usernameEnv, passwordEnv };
   }
   if (["opportunistic", "disabled"].includes(tlsMode) && authMethod !== "none") {
-    fail4(
+    fail5(
       "SMTP plaintext delivery requires an explicit unauthenticated relay.",
       'Use required STARTTLS or implicit TLS with credentials; opportunistic and disabled TLS are allowed only with `{ "auth": { "method": "none" } }`.'
     );
   }
   const defaultFrom = smtpData.get("defaultFrom");
   if (defaultFrom !== void 0 && (typeof defaultFrom !== "string" || defaultFrom.length < 1 || defaultFrom.length > 320 || /[\r\n\0]/.test(defaultFrom))) {
-    fail4("Invalid SMTP default sender.", "Set `mail.smtp.defaultFrom` to one email address without control characters.");
+    fail5("Invalid SMTP default sender.", "Set `mail.smtp.defaultFrom` to one email address without control characters.");
   }
   const validateTimeout = (name2, value, maximum, label) => {
     if (value !== void 0 && (!Number.isInteger(value) || value < 100 || value > maximum)) {
-      fail4(`Invalid SMTP ${label} timeout.`, `Set \`mail.smtp.${name2}\` to an integer from 100 through ${maximum} milliseconds.`);
+      fail5(`Invalid SMTP ${label} timeout.`, `Set \`mail.smtp.${name2}\` to an integer from 100 through ${maximum} milliseconds.`);
     }
   };
   const connectionTimeoutMs = smtpData.get("connectionTimeoutMs");
@@ -131716,7 +131716,7 @@ function normalizeMailgunProvider(provider) {
         invalid4("Pass `provider.variables` as a plain JSON dictionary.");
       }
     }
-    const json = serializeMailgunJson(value, `provider.${field}`, maximum);
+    const json2 = serializeMailgunJson(value, `provider.${field}`, maximum);
     if (field === "recipientVariables") {
       const entries = captureMailProviderDataObject(value, "provider.recipientVariables", "Mailgun");
       if (entries.length < 1 || entries.length > 1e3) {
@@ -131732,8 +131732,8 @@ function normalizeMailgunProvider(provider) {
         }
       }
     }
-    foldMailgunJsonHeader(name2, json);
-    headers.push({ name: name2, value: json, json: true });
+    foldMailgunJsonHeader(name2, json2);
+    headers.push({ name: name2, value: json2, json: true });
   }
   for (const [field, name2] of [
     ["templateName", "X-Mailgun-Template-Name"],
@@ -131848,13 +131848,13 @@ function serializeMailgunJson(value, label, maximumBytes) {
     }
     throw new Error(`${path24} is not JSON-compatible`);
   };
-  let json;
+  let json2;
   try {
-    json = JSON.stringify(normalize(value, label));
+    json2 = JSON.stringify(normalize(value, label));
   } catch {
     throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `Pass \`${label}\` as JSON-compatible plain data without accessors, symbols, hidden fields, custom prototypes, cycles, or non-finite numbers.`);
   }
-  const asciiJson = json?.replace(/[^\x20-\x7e]/g, (character) => {
+  const asciiJson = json2?.replace(/[^\x20-\x7e]/g, (character) => {
     const code = character.charCodeAt(0);
     return `\\u${code.toString(16).padStart(4, "0")}`;
   });
@@ -136464,31 +136464,31 @@ function assertLibsqlOpen(closed) {
 function libsqlHasMultipleStatements(sql2) {
   return splitSqlStatements(sql2).length > 1;
 }
-async function libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params = [], close }) {
+async function libsqlExecute({ endpoint, authToken, transaction, sql: sql2, params = [], close: close2 }) {
   const [result] = await libsqlPipeline({
     endpoint,
     authToken,
     transaction,
     requests: [{ type: "execute", stmt: { sql: sql2, args: params.map(libsqlValueFromJs) } }],
-    close
+    close: close2
   });
   return result.result;
 }
-async function libsqlDescribe({ endpoint, authToken, transaction, sql: sql2, close }) {
+async function libsqlDescribe({ endpoint, authToken, transaction, sql: sql2, close: close2 }) {
   const [result] = await libsqlPipeline({
     endpoint,
     authToken,
     transaction,
     requests: [{ type: "describe", sql: sql2 }],
-    close
+    close: close2
   });
   return (result.result?.cols ?? []).map((column) => ({ name: column.name }));
 }
-async function libsqlPipeline({ endpoint, authToken, transaction = null, requests, close = true }) {
+async function libsqlPipeline({ endpoint, authToken, transaction = null, requests, close: close2 = true }) {
   const requestUrl = transaction?.baseUrl ?? endpoint;
   const payload = {
     ...transaction ? { baton: transaction.baton } : {},
-    requests: close ? [...requests, { type: "close" }] : requests
+    requests: close2 ? [...requests, { type: "close" }] : requests
   };
   const response = await fetch(requestUrl, {
     method: "POST",
@@ -137459,10 +137459,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
             signal: controller.signal
           }), input));
           const aborted = new Promise((_2, reject) => {
-            const fail4 = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));
-            removeAbort = () => controller.signal.removeEventListener("abort", fail4);
-            controller.signal.addEventListener("abort", fail4, { once: true });
-            if (controller.signal.aborted) fail4();
+            const fail5 = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));
+            removeAbort = () => controller.signal.removeEventListener("abort", fail5);
+            controller.signal.addEventListener("abort", fail5, { once: true });
+            if (controller.signal.aborted) fail5();
           });
           const decision = await Promise.race([evaluation, aborted]);
           if (performance.now() >= deadline) controller.abort();
@@ -138995,11 +138995,11 @@ function logDataContainsServerEnvValue(value, serverEnv) {
   if (value === null || value === void 0 || typeof value !== "object") {
     return false;
   }
-  const serialized = JSON.stringify(
+  const serialized2 = JSON.stringify(
     value,
     (_key, nestedValue) => typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue
   );
-  return values.some((secret) => serialized.includes(String(secret)));
+  return values.some((secret) => serialized2.includes(String(secret)));
 }
 function isSensitiveLogString(value) {
   return /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value) || /\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(value) || /(^|\n)\s*at\s+.+:\d+:\d+/.test(value);
@@ -139728,14 +139728,14 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
   }
   const namespace = decision?.principal?.namespace;
   const key = decision?.principal?.key;
-  const serialized = (() => {
+  const serialized2 = (() => {
     try {
       return JSON.stringify(decision);
     } catch {
       return "";
     }
   })();
-  if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized, "utf8") > 4096) {
+  if (decision?.allow !== true || typeof namespace !== "string" || !definition.principalNamespaces.includes(namespace) || typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(key) || Buffer.byteLength(serialized2, "utf8") > 4096) {
     throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
   return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash14("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
@@ -140719,7 +140719,7 @@ function trustedReadResult(value, assertActive) {
     return result;
   });
 }
-function trackTrustedPolicyReads(value, fail4, pending) {
+function trackTrustedPolicyReads(value, fail5, pending) {
   return new Proxy(value, {
     get(target, key) {
       const member = target[key];
@@ -140728,20 +140728,20 @@ function trackTrustedPolicyReads(value, fail4, pending) {
           const result = member.apply(target, args);
           if (isPromiseLike(result)) {
             const tracked = Promise.resolve(result).catch((error) => {
-              fail4();
+              fail5();
               throw error;
             });
             pending.add(tracked);
             void tracked.then(() => pending.delete(tracked), () => pending.delete(tracked));
             return tracked;
           }
-          return result && typeof result === "object" ? trackTrustedPolicyReads(result, fail4, pending) : result;
+          return result && typeof result === "object" ? trackTrustedPolicyReads(result, fail5, pending) : result;
         } catch (error) {
-          fail4();
+          fail5();
           throw error;
         }
       };
-      return member && typeof member === "object" ? trackTrustedPolicyReads(member, fail4, pending) : member;
+      return member && typeof member === "object" ? trackTrustedPolicyReads(member, fail5, pending) : member;
     }
   });
 }
@@ -142848,29 +142848,29 @@ function normalizeQueryArgumentValue(value, ancestors) {
       if (Object.getOwnPropertyNames(value).some((key) => key !== "length" && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length))) {
         throw new Error("Query arguments must not contain non-index array properties.");
       }
-      const copy2 = [];
+      const copy3 = [];
       for (let index = 0; index < value.length; index += 1) {
         if (!Object.hasOwn(value, index)) throw new Error("Query arguments must not contain sparse arrays.");
-        copy2.push(normalizeQueryArgumentValue(value[index], ancestors));
+        copy3.push(normalizeQueryArgumentValue(value[index], ancestors));
       }
-      return Object.freeze(copy2);
+      return Object.freeze(copy3);
     }
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
       throw new Error("Query arguments must contain plain objects only.");
     }
-    const copy = /* @__PURE__ */ Object.create(null);
+    const copy2 = /* @__PURE__ */ Object.create(null);
     for (const key of Object.getOwnPropertyNames(value).sort()) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) throw new Error("Query arguments must not contain accessors.");
-      Object.defineProperty(copy, key, {
+      Object.defineProperty(copy2, key, {
         value: normalizeQueryArgumentValue(descriptor.value, ancestors),
         enumerable: true,
         writable: false,
         configurable: false
       });
     }
-    return Object.freeze(copy);
+    return Object.freeze(copy2);
   } finally {
     ancestors.delete(value);
   }
@@ -147620,13 +147620,13 @@ async function startDevClamavSidecar(options) {
       bridges.add(bridge);
       socket.pipe(bridge.stdin);
       bridge.stdout.pipe(socket);
-      const close = () => {
+      const close2 = () => {
         bridges.delete(bridge);
         proxySockets.delete(socket);
         socket.destroy();
       };
-      bridge.once("close", close);
-      bridge.once("error", close);
+      bridge.once("close", close2);
+      bridge.once("error", close2);
       socket.once("error", () => {
         try {
           bridge.kill("SIGTERM");
@@ -148293,11 +148293,784 @@ function posixJoin(...segments) {
   }).filter(Boolean).join("/");
 }
 
+// src/cli/stripe-fake.ts
+import { readFile as readFile10 } from "node:fs/promises";
+
+// src/testing/stripe.ts
+import { createHmac as createHmac4, randomUUID as randomUUID14 } from "node:crypto";
+import { createServer as createServer2 } from "node:http";
+var API_VERSION = "2026-08-26.dahlia";
+var ENDPOINTS = [
+  ["POST", /^\/v1\/checkout\/sessions$/, "checkout.sessions.create"],
+  ["GET", /^\/v1\/checkout\/sessions\/([^/]+)$/, "checkout.sessions.retrieve"],
+  ["POST", /^\/v1\/checkout\/sessions\/([^/]+)\/expire$/, "checkout.sessions.expire"],
+  ["GET", /^\/v1\/billing_portal\/configurations\/([^/]+)$/, "billingPortal.configurations.retrieve"],
+  ["POST", /^\/v1\/billing_portal\/sessions$/, "billingPortal.sessions.create"],
+  ["GET", /^\/v1\/subscriptions$/, "subscriptions.list"],
+  ["GET", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.retrieve"],
+  ["POST", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.update"],
+  ["DELETE", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.cancel"],
+  ["GET", /^\/v1\/customers\/([^/]+)$/, "customers.retrieve"]
+];
+var EVENTS = [
+  "checkout.session.completed",
+  "checkout.session.expired",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+  "invoice.payment_failed"
+];
+var [CHECKOUT_COMPLETED, CHECKOUT_EXPIRED, SUBSCRIPTION_CREATED, SUBSCRIPTION_UPDATED, SUBSCRIPTION_DELETED, INVOICE_FAILED] = EVENTS;
+var copy = (value) => structuredClone(value);
+function fail3(message = "Unsupported Stripe fake request.", status = 400, code = "sporades_fake_unsupported", type = "invalid_request_error") {
+  throw Object.assign(new Error(message), { status, code, type });
+}
+function requireValue(condition2, message) {
+  if (!condition2) fail3(message);
+}
+function loopbackTarget(value) {
+  requireValue(typeof value === "string" && /^https?:\/\/(?:127\.0\.0\.1|\[::1\]):\d+(?:\/|$)/.test(value), "Webhook target must use literal loopback and an explicit port.");
+  const url = new URL(value);
+  requireValue(["127.0.0.1", "[::1]"].includes(url.hostname) && !url.username && !url.password && !url.hash);
+  return url.toString();
+}
+function validateCatalogue(catalogue) {
+  requireValue(catalogue && Array.isArray(catalogue.products) && Array.isArray(catalogue.portalConfigurations), "A catalogue is required.");
+  const products = /* @__PURE__ */ new Map();
+  const prices = /* @__PURE__ */ new Set();
+  const configs = /* @__PURE__ */ new Set();
+  for (const product of catalogue.products) {
+    requireValue(/^prod_[A-Za-z0-9_]+$/.test(product.id) && !products.has(product.id) && Array.isArray(product.prices) && product.prices.length);
+    products.set(product.id, /* @__PURE__ */ new Set());
+    for (const price of product.prices) {
+      requireValue(/^price_[A-Za-z0-9_]+$/.test(price.id) && !prices.has(price.id) && ["month", "year"].includes(price.recurring));
+      prices.add(price.id);
+      products.get(product.id).add(price.id);
+    }
+  }
+  for (const config of catalogue.portalConfigurations) {
+    requireValue(/^bpc_[A-Za-z0-9_]+$/.test(config.id) && !configs.has(config.id) && Array.isArray(config.products) && config.products.length);
+    configs.add(config.id);
+    const seen = /* @__PURE__ */ new Set();
+    for (const product of config.products) {
+      requireValue(!seen.has(product.product) && product.prices.length && new Set(product.prices).size === product.prices.length && product.prices.every((price) => products.get(product.product)?.has(price)));
+      seen.add(product.product);
+    }
+  }
+}
+function json(response, status, body) {
+  response.writeHead(status, { "content-type": "application/json" });
+  response.end(JSON.stringify(body));
+}
+async function readBody(request) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 1048576) fail3("Request too large.", 413);
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+function parseForm(form) {
+  const result = /* @__PURE__ */ Object.create(null);
+  for (const [key, value] of form) {
+    requireValue(/^[a-z_][a-z_0-9]*(?:\[[a-z_0-9]+\])*$/.test(key));
+    const parts = key.match(/[^[\]]+/g);
+    requireValue(parts.every((part) => !["__proto__", "constructor", "prototype"].includes(part)));
+    let current2 = result;
+    for (const [index, part] of parts.entries()) {
+      if (index === parts.length - 1) {
+        requireValue(current2[part] === void 0);
+        current2[part] = value;
+      } else {
+        current2[part] ??= /* @__PURE__ */ Object.create(null);
+        requireValue(typeof current2[part] === "object");
+        current2 = current2[part];
+      }
+    }
+  }
+  return result;
+}
+function exactKeys2(object2, required, optional = []) {
+  requireValue(object2 && typeof object2 === "object" && required.every((key) => Object.hasOwn(object2, key)) && Object.keys(object2).every((key) => required.includes(key) || optional.includes(key)));
+}
+function integer(value, max = 999999) {
+  requireValue(typeof value === "number" || typeof value === "string" && /^\d+$/.test(value));
+  const number2 = Number(value);
+  requireValue(Number.isSafeInteger(number2) && number2 > 0 && number2 <= max);
+  return number2;
+}
+function listen(server, port = 0) {
+  return new Promise((resolve2, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve2(`http://127.0.0.1:${server.address().port}`);
+    });
+  });
+}
+async function close(server) {
+  server.closeAllConnections();
+  await new Promise((resolve2, reject) => server.close((error) => error ? reject(error) : resolve2()));
+}
+async function createStripeTeamBillingFake(options) {
+  const webhookTarget = loopbackTarget(options.webhookTarget);
+  requireValue(typeof options.webhookSecret === "string" && options.webhookSecret.startsWith("whsec_") && options.webhookSecret.length > 6, "A webhook secret is required.");
+  const webhookSecret = options.webhookSecret;
+  const delivery = options.delivery;
+  validateCatalogue(options.catalogue);
+  for (const port of [options.port, options.controlPort]) requireValue(port === void 0 || Number.isInteger(port) && port >= 0 && port <= 65535);
+  requireValue(options.delivery === void 0 || ["auto", "manual"].includes(options.delivery));
+  const timeout = options.requestTimeoutMs ?? 1e4;
+  integer(timeout, 3e5);
+  const pageSize = integer(options.pageSize ?? 100, 100);
+  const catalogue = copy(options.catalogue);
+  const sessions = /* @__PURE__ */ new Map();
+  const customers = /* @__PURE__ */ new Map();
+  const subscriptions = /* @__PURE__ */ new Map();
+  const portalSessions = /* @__PURE__ */ new Map();
+  const eventLog = [];
+  const delivered = /* @__PURE__ */ new Set();
+  const deliveryLog = [];
+  const requests = [];
+  const faults = [];
+  const idempotency = /* @__PURE__ */ new Map();
+  const lastCreated = /* @__PURE__ */ new Map();
+  const timers = /* @__PURE__ */ new Set();
+  const controllers = /* @__PURE__ */ new Set();
+  let now2 = Math.floor(Date.now() / 1e3);
+  const initialNow = now2;
+  let stopped2 = false;
+  const id2 = (prefix) => `${prefix}_${randomUUID14().replaceAll("-", "")}`;
+  function get(map, key) {
+    return map.get(key) ?? fail3(`No such resource: '${key}'.`, 404, "resource_missing");
+  }
+  function price(priceId) {
+    for (const product of catalogue.products) {
+      const entry = product.prices.find((item) => item.id === priceId);
+      if (entry) return {
+        id: entry.id,
+        object: "price",
+        livemode: false,
+        product: product.id,
+        recurring: { interval: entry.recurring, interval_count: 1, usage_type: "licensed" }
+      };
+    }
+    return fail3("Unknown catalogue Price.");
+  }
+  function periodEnd(start, priceValue) {
+    const date = new Date(start * 1e3);
+    const day = date.getUTCDate();
+    date.setUTCDate(1);
+    date.setUTCMonth(date.getUTCMonth() + (priceValue.recurring.interval === "year" ? 12 : 1));
+    const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+    date.setUTCDate(Math.min(day, lastDay));
+    return Math.floor(date.getTime() / 1e3);
+  }
+  async function send(event, fault = {}) {
+    requireValue(!stopped2, "Fake is closed.");
+    const payload = copy(event);
+    if (fault.mutatePayloadSameId) payload.data.object = copy(fault.mutatePayloadSameId);
+    const body = JSON.stringify(payload);
+    const timestamp = Math.floor(Date.now() / 1e3) - (fault.staleTimestamp ? 600 : 0);
+    const signature = createHmac4("sha256", fault.badSignature ? `${webhookSecret}_forged` : webhookSecret).update(`${timestamp}.${body}`).digest("hex");
+    const controller = new AbortController();
+    controllers.add(controller);
+    const timer = setTimeout(() => controller.abort(), timeout);
+    let attempt;
+    try {
+      const response = await fetch(webhookTarget, {
+        method: "POST",
+        redirect: "error",
+        signal: controller.signal,
+        headers: { "content-type": "application/json", "stripe-signature": `t=${timestamp},v1=${signature}` },
+        body
+      });
+      attempt = { eventId: event.id, status: response.status };
+      await response.body?.cancel();
+      if (response.ok) delivered.add(event.id);
+    } catch {
+      attempt = { eventId: event.id, status: null, error: "Webhook delivery failed." };
+    } finally {
+      clearTimeout(timer);
+      controllers.delete(controller);
+    }
+    deliveryLog.push(attempt);
+    return copy(attempt);
+  }
+  async function emit(type, object2, input = {}) {
+    requireValue(typeof type === "string" && object2 && typeof object2 === "object");
+    const objectId = String(object2.id ?? type);
+    if (input.created !== void 0) integer(input.created, 253402300799);
+    const created = input.created ?? Math.max(now2, (lastCreated.get(objectId) ?? 0) + 1);
+    lastCreated.set(objectId, Math.max(created, lastCreated.get(objectId) ?? 0));
+    const event = {
+      id: id2("evt"),
+      object: "event",
+      api_version: API_VERSION,
+      type,
+      created,
+      livemode: false,
+      data: { object: copy(object2) }
+    };
+    eventLog.push(event);
+    if (delivery !== "manual") await send(event);
+    return copy(event);
+  }
+  async function subscriptionEvent(subscription) {
+    await emit(subscription.status === "canceled" ? SUBSCRIPTION_DELETED : SUBSCRIPTION_UPDATED, subscription);
+    return copy(subscription);
+  }
+  async function complete(sessionId, input = {}) {
+    const session = get(sessions, sessionId);
+    requireValue(session.status === "open", "Checkout is not open.");
+    requireValue(!input.customerId || /^cus_[A-Za-z0-9_]{1,120}$/.test(input.customerId));
+    requireValue(!input.customerId || !session.customer || input.customerId === session.customer, "Checkout Customer mismatch.");
+    const customerId = input.customerId ?? session.customer ?? id2("cus");
+    if (!customers.has(customerId)) customers.set(customerId, { id: customerId, object: "customer", livemode: false, metadata: {} });
+    const subscriptionId = id2("sub");
+    const itemPrice = price(session.line_items.data[0].price.id);
+    const subscription = {
+      id: subscriptionId,
+      object: "subscription",
+      livemode: false,
+      customer: customerId,
+      status: "active",
+      cancel_at_period_end: false,
+      cancel_at: null,
+      pending_update: null,
+      metadata: copy(session.subscription_data.metadata),
+      items: { object: "list", has_more: false, data: [{
+        id: id2("si"),
+        object: "subscription_item",
+        subscription: subscriptionId,
+        quantity: session.line_items.data[0].quantity,
+        price: itemPrice,
+        current_period_start: now2,
+        current_period_end: periodEnd(now2, itemPrice)
+      }] }
+    };
+    subscriptions.set(subscriptionId, subscription);
+    Object.assign(session, { status: "complete", customer: customerId, subscription: subscriptionId });
+    await emit(CHECKOUT_COMPLETED, session);
+    await emit(SUBSCRIPTION_CREATED, subscription);
+    return copy(session);
+  }
+  async function expire(sessionId) {
+    const session = get(sessions, sessionId);
+    if (session.status !== "open") fail3(`Only Checkout Sessions with a status in ["open"] can be expired. This Checkout Session has a status of \`${session.status}\`.`, 400);
+    session.status = "expired";
+    await emit(CHECKOUT_EXPIRED, session);
+    return copy(session);
+  }
+  function liveSubscription(subscriptionId) {
+    const subscription = get(subscriptions, subscriptionId);
+    requireValue(subscription.status !== "canceled", "Subscription is canceled.");
+    return subscription;
+  }
+  async function setStatus(subscriptionId, status) {
+    requireValue(["active", "past_due", "unpaid", "canceled"].includes(status));
+    const subscription = liveSubscription(subscriptionId);
+    subscription.status = status;
+    if (status === "canceled") {
+      subscription.cancel_at_period_end = false;
+      subscription.cancel_at = null;
+      subscription.pending_update = null;
+    }
+    return subscriptionEvent(subscription);
+  }
+  async function setQuantity(subscriptionId, quantity) {
+    const subscription = liveSubscription(subscriptionId);
+    subscription.items.data[0].quantity = integer(quantity);
+    return subscriptionEvent(subscription);
+  }
+  async function switchPrice(subscriptionId, priceId) {
+    const subscription = liveSubscription(subscriptionId);
+    subscription.items.data[0].price = price(priceId);
+    return subscriptionEvent(subscription);
+  }
+  async function setCancellation(subscriptionId, cancel) {
+    const subscription = liveSubscription(subscriptionId);
+    subscription.cancel_at_period_end = cancel;
+    subscription.cancel_at = cancel ? subscription.items.data[0].current_period_end : null;
+    return subscriptionEvent(subscription);
+  }
+  function configuration(configId) {
+    const entry = catalogue.portalConfigurations.find((entry2) => entry2.id === configId);
+    if (!entry) fail3("No such Portal configuration.", 404, "resource_missing");
+    return { id: configId, object: "billing_portal.configuration", active: true, livemode: false, features: {
+      payment_method_update: { enabled: true },
+      invoice_history: { enabled: true },
+      subscription_cancel: { enabled: true, mode: "at_period_end" },
+      subscription_update: {
+        enabled: true,
+        default_allowed_updates: ["price"],
+        products: entry.products.map((product) => ({ ...copy(product), adjustable_quantity: { enabled: false } }))
+      }
+    } };
+  }
+  async function operate(operation, resourceId, p2, fault) {
+    switch (operation) {
+      case "checkout.sessions.create": {
+        exactKeys2(p2, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer"]);
+        requireValue(p2.mode === "subscription");
+        exactKeys2(p2.line_items, ["0"]);
+        exactKeys2(p2.line_items[0], ["price", "quantity"]);
+        exactKeys2(p2.metadata, ["sporades_team_billing_operation"]);
+        exactKeys2(p2.subscription_data, ["metadata"]);
+        exactKeys2(p2.subscription_data.metadata, ["sporades_team_billing_operation"]);
+        requireValue(p2.client_reference_id === p2.metadata.sporades_team_billing_operation && p2.client_reference_id === p2.subscription_data.metadata.sporades_team_billing_operation);
+        if (p2.customer) get(customers, p2.customer);
+        const sessionId = id2("cs_test");
+        const session = {
+          id: sessionId,
+          object: "checkout.session",
+          mode: "subscription",
+          status: "open",
+          livemode: false,
+          url: `https://checkout.stripe.com/c/pay/${sessionId}`,
+          customer: p2.customer ?? null,
+          subscription: null,
+          success_url: p2.success_url,
+          cancel_url: p2.cancel_url,
+          client_reference_id: p2.client_reference_id,
+          expires_at: integer(p2.expires_at, 253402300799),
+          metadata: copy(p2.metadata),
+          subscription_data: copy(p2.subscription_data),
+          line_items: { object: "list", has_more: false, data: [{ price: price(p2.line_items[0].price), quantity: integer(p2.line_items[0].quantity) }] }
+        };
+        sessions.set(sessionId, session);
+        return copy(session);
+      }
+      case "checkout.sessions.retrieve":
+        exactKeys2(p2, []);
+        return copy(get(sessions, resourceId));
+      case "checkout.sessions.expire":
+        exactKeys2(p2, []);
+        if (fault?.status === "completeDuringExpire" && get(sessions, resourceId).status === "open") await complete(resourceId);
+        return expire(resourceId);
+      case "billingPortal.configurations.retrieve":
+        exactKeys2(p2, [], ["expand"]);
+        if (p2.expand) {
+          exactKeys2(p2.expand, ["0"]);
+          requireValue(p2.expand[0] === "features.subscription_update.products");
+        }
+        return configuration(resourceId);
+      case "billingPortal.sessions.create": {
+        exactKeys2(p2, ["customer", "configuration", "return_url"]);
+        get(customers, p2.customer);
+        configuration(p2.configuration);
+        const portalId = id2("bps");
+        const session = {
+          ...copy(p2),
+          id: portalId,
+          object: "billing_portal.session",
+          livemode: false,
+          url: `https://billing.stripe.com/p/session/${portalId}`
+        };
+        portalSessions.set(portalId, session);
+        return copy(session);
+      }
+      case "customers.retrieve":
+        exactKeys2(p2, []);
+        return copy(get(customers, resourceId));
+      case "subscriptions.retrieve":
+        exactKeys2(p2, []);
+        return copy(get(subscriptions, resourceId));
+      case "subscriptions.update": {
+        exactKeys2(p2, ["items", "proration_behavior", "proration_date", "payment_behavior"]);
+        exactKeys2(p2.items, ["0"]);
+        exactKeys2(p2.items[0], ["id", "price", "quantity"]);
+        const subscription = liveSubscription(resourceId);
+        const item = subscription.items.data[0];
+        requireValue(p2.items[0].id === item.id && p2.proration_behavior === "create_prorations" && p2.payment_behavior === "pending_if_incomplete");
+        integer(p2.proration_date, 253402300799);
+        const targetPrice = price(p2.items[0].price);
+        const quantity = integer(p2.items[0].quantity);
+        if (fault?.status === "paymentActionRequired") {
+          subscription.pending_update = {
+            expires_at: now2 + 3600,
+            subscription_items: [{ ...copy(item), price: targetPrice, quantity }]
+          };
+        } else {
+          item.price = targetPrice;
+          item.quantity = quantity;
+          subscription.pending_update = null;
+        }
+        return subscriptionEvent(subscription);
+      }
+      case "subscriptions.list": {
+        exactKeys2(p2, ["customer", "status", "limit"], ["starting_after"]);
+        get(customers, p2.customer);
+        requireValue(p2.status === "all");
+        const all = [...subscriptions.values()].filter((item) => item.customer === p2.customer);
+        const cursor = p2.starting_after ? all.findIndex((item) => item.id === p2.starting_after) : -1;
+        requireValue(!p2.starting_after || cursor >= 0);
+        const limit = Math.min(integer(p2.limit, 100), pageSize);
+        const data2 = all.slice(cursor + 1, cursor + 1 + limit);
+        return { object: "list", data: copy(data2), has_more: cursor + 1 + data2.length < all.length, url: "/v1/subscriptions" };
+      }
+      case "subscriptions.cancel":
+        exactKeys2(p2, []);
+        return setStatus(resourceId, "canceled");
+    }
+  }
+  const apiServer = createServer2(serialized(async (request, response) => {
+    try {
+      const bearer = request.headers.authorization ?? "";
+      const token = bearer.startsWith("Bearer ") ? bearer.slice("Bearer ".length) : "";
+      if (!/^sk_test_[A-Za-z0-9_]+$/.test(token)) fail3("Only sk_test_ keys are accepted.", 401, "invalid_api_key", "authentication_error");
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      const route = ENDPOINTS.find(([method, pattern]) => request.method === method && pattern.test(url.pathname));
+      const parameters = parseForm(request.method === "GET" ? url.searchParams : new URLSearchParams(await readBody(request)));
+      const keyHeader = request.headers["idempotency-key"];
+      const key = typeof keyHeader === "string" ? keyHeader : null;
+      const entry = {
+        method: request.method ?? "",
+        path: url.pathname,
+        operation: route?.[2] ?? "unsupported",
+        parameters: copy(parameters),
+        idempotencyKey: key,
+        replay: false
+      };
+      requests.push(entry);
+      requireValue(route);
+      requireValue(!request.headers["stripe-version"] || request.headers["stripe-version"] === API_VERSION, "Unsupported Stripe API version.");
+      const operation = route[2];
+      const resourceId = url.pathname.match(route[1])?.[1] ?? "";
+      const fingerprint = JSON.stringify([request.method, url.pathname, [...request.method === "GET" ? url.searchParams : new URLSearchParams(flatten(parameters))].sort(([a2], [b]) => a2.localeCompare(b))]);
+      const cacheKey = request.method === "POST" && key ? JSON.stringify([bearer, key]) : null;
+      const prior = cacheKey ? idempotency.get(cacheKey) : void 0;
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) fail3("Idempotency key reused with different parameters.", 400, "idempotency_error", "idempotency_error");
+        entry.replay = true;
+        response.setHeader("idempotent-replayed", "true");
+        json(response, prior.status, prior.body);
+        return;
+      }
+      const fault = faults.find((fault2) => fault2.operation === operation && (fault2.count ?? 1) > 0);
+      if (fault) fault.count = (fault.count ?? 1) - 1;
+      const special = fault && typeof fault.status === "string" && fault.status !== "timeout";
+      const faultResponse = () => {
+        if (fault.status === "timeout") {
+          const timer = setTimeout(() => {
+            timers.delete(timer);
+            response.destroy();
+          }, timeout + 250);
+          timers.add(timer);
+          response.once("close", () => {
+            clearTimeout(timer);
+            timers.delete(timer);
+          });
+        } else json(response, Number(fault.status), { error: { type: "api_error", code: "sporades_fake_fault", message: "Injected provider fault." } });
+      };
+      if (fault && !special && fault.when !== "after") {
+        faultResponse();
+        return;
+      }
+      const body = await operate(operation, resourceId, parameters, fault);
+      if (cacheKey) idempotency.set(cacheKey, { fingerprint, status: 200, body: copy(body) });
+      if (fault && !special && fault.when === "after") {
+        faultResponse();
+        return;
+      }
+      json(response, 200, body);
+    } catch (error) {
+      json(response, error.status ?? 400, { error: {
+        type: error.type ?? "invalid_request_error",
+        code: error.code ?? "sporades_fake_unsupported",
+        message: error.status ? error.message : "Unsupported Stripe fake request."
+      } });
+    }
+  }));
+  const fake = {
+    origin: "",
+    controlOrigin: "",
+    async close() {
+      if (stopped2) return;
+      stopped2 = true;
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+      for (const controller of controllers) controller.abort();
+      await Promise.all([close(apiServer), close(controlServer)]);
+    },
+    checkout: { complete, expire },
+    portal: { switchPrice, cancelAtPeriodEnd: (id3) => setCancellation(id3, true), resume: (id3) => setCancellation(id3, false) },
+    subscriptions: {
+      setStatus,
+      setQuantity,
+      get: (id3) => copy(get(subscriptions, id3)),
+      async completePayment(id3) {
+        const subscription = liveSubscription(id3);
+        const pending = subscription.pending_update;
+        requireValue(pending && pending.expires_at > now2, "No payable pending update.");
+        const requested = pending.subscription_items[0];
+        subscription.items.data[0].price = copy(requested.price);
+        subscription.items.data[0].quantity = requested.quantity;
+        subscription.pending_update = null;
+        subscription.status = "active";
+        return subscriptionEvent(subscription);
+      },
+      async renew(id3) {
+        const subscription = liveSubscription(id3);
+        const item = subscription.items.data[0];
+        requireValue(!subscription.cancel_at_period_end, "Subscription is scheduled for cancellation.");
+        item.current_period_start = item.current_period_end;
+        item.current_period_end = periodEnd(item.current_period_start, item.price);
+        subscription.status = "active";
+        return subscriptionEvent(subscription);
+      },
+      async failPayment(id3) {
+        const subscription = liveSubscription(id3);
+        subscription.status = "past_due";
+        const item = subscription.items.data[0];
+        const invoiceId = idForInvoice();
+        const invoice = {
+          id: invoiceId,
+          object: "invoice",
+          livemode: false,
+          customer: subscription.customer,
+          status: "open",
+          paid: false,
+          attempt_count: 1,
+          parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } },
+          lines: { object: "list", has_more: false, data: [{
+            id: idForLine(),
+            object: "line_item",
+            invoice: invoiceId,
+            livemode: false,
+            parent: { type: "subscription_item_details", subscription_item_details: { subscription: subscription.id, subscription_item: item.id, proration: false } },
+            pricing: { type: "price_details", price_details: { price: item.price.id, product: item.price.product } },
+            quantity: item.quantity,
+            period: { start: item.current_period_start, end: item.current_period_end }
+          }] }
+        };
+        await emit(INVOICE_FAILED, invoice, { created: Math.max(now2, (lastCreated.get(subscription.id) ?? 0) + 1) });
+        lastCreated.set(subscription.id, Math.max(now2, eventLog.at(-1).created));
+        return copy(invoice);
+      }
+    },
+    customers: { subscriptions: (id3) => {
+      get(customers, id3);
+      return copy([...subscriptions.values()].filter((item) => item.customer === id3));
+    } },
+    clock: { async advance(seconds) {
+      requireValue(Number.isSafeInteger(seconds) && seconds >= 0 && now2 + seconds <= 253402300799);
+      now2 += seconds;
+      for (const session of sessions.values()) if (session.status === "open" && session.expires_at <= now2) await expire(session.id);
+      for (const sub of subscriptions.values()) if (sub.status !== "canceled" && sub.cancel_at_period_end && sub.cancel_at <= now2) await setStatus(sub.id, "canceled");
+      for (const sub of subscriptions.values()) if (sub.pending_update && sub.pending_update.expires_at <= now2) {
+        sub.pending_update = null;
+        await subscriptionEvent(sub);
+      }
+    } },
+    events: {
+      pending: () => copy(eventLog.filter((event) => !delivered.has(event.id))),
+      async deliver(eventId, fault) {
+        const events = eventId ? [eventLog.find((entry) => entry.id === eventId) ?? fail3("Unknown event.")] : eventLog.filter((event) => !delivered.has(event.id));
+        const result = [];
+        for (const event of events) result.push(await send(event, fault));
+        return result;
+      },
+      async deliverInOrder(ids) {
+        const result = [];
+        for (const id3 of ids) result.push(...await fake.events.deliver(id3));
+        return result;
+      },
+      async redeliver(id3, fault) {
+        return (await fake.events.deliver(id3, fault))[0];
+      },
+      emit,
+      deliveries: () => copy(deliveryLog)
+    },
+    faults: {
+      inject(fault) {
+        requireValue(ENDPOINTS.some((entry) => entry[2] === fault.operation));
+        requireValue(typeof fault.status === "number" ? Number.isInteger(fault.status) && fault.status >= 400 && fault.status <= 599 : ["timeout", "paymentActionRequired", "completeDuringExpire"].includes(fault.status));
+        requireValue(fault.when === void 0 || ["before", "after"].includes(fault.when));
+        if (fault.status === "paymentActionRequired") requireValue(fault.operation === "subscriptions.update");
+        if (fault.status === "completeDuringExpire") requireValue(fault.operation === "checkout.sessions.expire");
+        faults.push({ ...copy(fault), count: integer(fault.count ?? 1) });
+      },
+      clear() {
+        faults.length = 0;
+      }
+    },
+    requests: () => copy(requests),
+    state: () => copy({
+      catalogue,
+      now: now2,
+      customers: [...customers.values()],
+      subscriptions: [...subscriptions.values()],
+      checkouts: [...sessions.values()],
+      portalSessions: [...portalSessions.values()],
+      events: eventLog
+    }),
+    reset() {
+      sessions.clear();
+      customers.clear();
+      subscriptions.clear();
+      portalSessions.clear();
+      idempotency.clear();
+      lastCreated.clear();
+      eventLog.length = 0;
+      delivered.clear();
+      deliveryLog.length = 0;
+      requests.length = 0;
+      faults.length = 0;
+      now2 = initialNow;
+    }
+  };
+  function idForInvoice() {
+    return id2("in");
+  }
+  function idForLine() {
+    return id2("il");
+  }
+  const controls2 = {
+    "checkout.complete": fake.checkout.complete,
+    "checkout.expire": fake.checkout.expire,
+    "portal.switchPrice": fake.portal.switchPrice,
+    "portal.cancelAtPeriodEnd": fake.portal.cancelAtPeriodEnd,
+    "portal.resume": fake.portal.resume,
+    "subscriptions.setStatus": fake.subscriptions.setStatus,
+    "subscriptions.setQuantity": fake.subscriptions.setQuantity,
+    "subscriptions.completePayment": fake.subscriptions.completePayment,
+    "subscriptions.failPayment": fake.subscriptions.failPayment,
+    "subscriptions.renew": fake.subscriptions.renew,
+    "subscriptions.get": fake.subscriptions.get,
+    "customers.subscriptions": fake.customers.subscriptions,
+    "clock.advance": fake.clock.advance,
+    "events.pending": fake.events.pending,
+    "events.deliver": fake.events.deliver,
+    "events.deliverInOrder": fake.events.deliverInOrder,
+    "events.redeliver": fake.events.redeliver,
+    "events.emit": fake.events.emit,
+    "events.deliveries": fake.events.deliveries,
+    "faults.inject": fake.faults.inject,
+    "faults.clear": fake.faults.clear,
+    requests: fake.requests,
+    state: fake.state,
+    reset: fake.reset
+  };
+  const controlServer = createServer2(async (request, response) => {
+    try {
+      requireValue(request.method === "POST" && request.url?.startsWith("/__control/"));
+      requireValue(!request.headers.origin && request.headers["content-type"]?.split(";")[0] === "application/json");
+      const operation = request.url.slice("/__control/".length);
+      requireValue(Object.hasOwn(controls2, operation));
+      const input = JSON.parse(await readBody(request));
+      exactKeys2(input, ["args"]);
+      requireValue(Array.isArray(input.args));
+      const result = await controls2[operation](...input.args);
+      json(response, 200, { ok: true, data: result ?? null });
+    } catch {
+      json(response, 400, { ok: false, error: "Invalid fake control request." });
+    }
+  });
+  try {
+    fake.origin = await listen(apiServer, options.port);
+    fake.controlOrigin = await listen(controlServer, options.controlPort);
+  } catch (error) {
+    if (apiServer.listening) await close(apiServer);
+    if (controlServer.listening) await close(controlServer);
+    throw error;
+  }
+  return fake;
+}
+function flatten(object2, prefix = "") {
+  return Object.entries(object2).flatMap(([key, value]) => {
+    const name2 = prefix ? `${prefix}[${key}]` : key;
+    return typeof value === "object" ? flatten(value, name2) : [[name2, String(value)]];
+  });
+}
+function serialized(handler) {
+  let lane = Promise.resolve();
+  return (request, response) => {
+    lane = lane.then(() => handler(request, response)).catch(() => {
+      response.destroy();
+    });
+  };
+}
+
+// src/cli/stripe-fake.ts
+async function runStripeFake(args) {
+  let delivery = "auto";
+  let cataloguePath;
+  let target;
+  let port = 0;
+  let json2 = false;
+  let stdin = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--json") json2 = true;
+    else if (arg === "--webhook-secret-stdin") stdin = true;
+    else if (["--catalogue", "--webhook-target", "--port", "--delivery"].includes(arg)) {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) throw new Error(`Missing ${arg} value.`);
+      if (arg === "--catalogue") cataloguePath = value;
+      else if (arg === "--webhook-target") target = value;
+      else if (arg === "--delivery") {
+        if (value !== "auto" && value !== "manual") throw new Error("Invalid delivery mode: use auto or manual.");
+        delivery = value;
+      } else {
+        if (!/^\d+$/.test(value)) throw new Error("Invalid fake port.");
+        port = Number(value);
+      }
+    } else throw new Error(`Unknown stripe-fake option: ${arg}`);
+  }
+  if (!cataloguePath || !target || !stdin) throw new Error("stripe-fake requires --catalogue, --webhook-target and --webhook-secret-stdin.");
+  if (process.stdin.isTTY) throw new Error("Pipe the fixture webhook secret to stdin.");
+  let secret = "";
+  for await (const chunk of process.stdin) {
+    secret += chunk.toString();
+    if (secret.length > 4096) throw new Error("Fixture webhook secret is too long.");
+  }
+  const fake = await createStripeTeamBillingFake({
+    catalogue: JSON.parse(await readFile10(cataloguePath, "utf8")),
+    webhookTarget: target,
+    webhookSecret: secret.trim(),
+    port,
+    delivery
+  });
+  const data2 = { origin: fake.origin, controlOrigin: fake.controlOrigin };
+  process.stdout.write(json2 ? `${JSON.stringify({ ok: true, data: data2, error: null })}
+` : `Stripe fake: ${fake.origin}
+Control: ${fake.controlOrigin}
+`);
+  await new Promise((resolve2) => {
+    const stop = () => {
+      void fake.close().finally(() => {
+        process.off("SIGINT", stop);
+        process.off("SIGTERM", stop);
+        resolve2();
+      });
+    };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+  });
+}
+
 // src/cli/cli-help.ts
 var frameworkHelp = [...CLIENT_FRAMEWORKS.filter((framework) => framework !== "vanilla"), "vanilla"].join(", ").replace(/, ([^,]+)$/, ", or $1");
 var toolchainHelp = CLIENT_TOOLCHAINS.map((toolchain) => toolchain === "vite" ? "Vite" : toolchain).join(" or ");
 var templateHelp = CLIENT_TEMPLATES.join(", ").replace(/, ([^,]+)$/, ", or $1");
 var HELP_TEXT = {
+  "stripe-fake": `Usage: sporades stripe-fake --catalogue <file> --webhook-target <url> --webhook-secret-stdin [options]
+
+Run the stateful Team Billing test provider on loopback. Pipe a fixture webhook
+secret to stdin. Prints Stripe and control origins; stop with SIGINT or SIGTERM.
+
+Options:
+  --catalogue <file>       JSON Products, Prices and Portal configurations
+  --webhook-target <url>   Literal loopback Capsule callback URL
+  --webhook-secret-stdin  Read the fixture signing secret from stdin
+  --port <number>         Stripe API port (default: 0, ephemeral)
+  --delivery <mode>       Webhook delivery: auto (default) or manual
+  --json                  Write { ok, data: { origin, controlOrigin }, error }
+  --help, -h              Show this help
+`,
   create: `Usage: sporades create <name> [options]
 
 Scaffold a new Capsule.
@@ -148613,6 +149386,7 @@ Options:
   default: `Usage: sporades <command> [options]
 
     Commands:
+      stripe-fake    Run the local Team Billing test provider
       create <name>  Scaffold a new Capsule
       dev            Start a local Dev session
       auth           Manage local auth configuration and simulation
@@ -148642,14 +149416,14 @@ function renderCliHelp(command) {
 import { spawn as spawn2, spawnSync as spawnSync2 } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { createHash as createHash17, randomBytes as randomBytes10 } from "node:crypto";
-import { chown, chmod as chmod3, lstat as lstat11, mkdir as mkdir9, open as open4, readFile as readFile11, readdir as readdir5, rename as rename8, rm as rm9, writeFile as writeFile8 } from "node:fs/promises";
+import { chown, chmod as chmod3, lstat as lstat11, mkdir as mkdir9, open as open4, readFile as readFile12, readdir as readdir5, rename as rename8, rm as rm9, writeFile as writeFile8 } from "node:fs/promises";
 import path19 from "node:path";
 import { pathToFileURL as pathToFileURL5 } from "node:url";
 
 // src/cli/monitoring-stack.ts
 import { spawnSync } from "node:child_process";
 import { createHash as createHash16 } from "node:crypto";
-import { chmod as chmod2, cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
+import { chmod as chmod2, cp, lstat as lstat10, mkdir as mkdir8, readFile as readFile11, readdir as readdir4, writeFile as writeFile7 } from "node:fs/promises";
 import path18 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
 var STACK_SCHEMA = 4;
@@ -148687,7 +149461,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
   prerequisite();
   const source = path18.join(packageRoot, "monitoring", "trace");
   const target = path18.resolve(directory);
-  const packageInfo = JSON.parse(await readFile10(path18.join(packageRoot, "package.json"), "utf8"));
+  const packageInfo = JSON.parse(await readFile11(path18.join(packageRoot, "package.json"), "utf8"));
   const version3 = packageInfo.version;
   const manifestPath = path18.join(target, "stack-manifest.json");
   if (action === "init") await mkdir8(target, { recursive: true });
@@ -148697,7 +149471,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
   let prior = null;
   if (manifestStat) {
     try {
-      prior = JSON.parse(await readFile10(manifestPath, "utf8"));
+      prior = JSON.parse(await readFile11(manifestPath, "utf8"));
     } catch {
       throw commandError2("Invalid monitoring stack manifest.", "Back up the directory and inspect stack-manifest.json before continuing.");
     }
@@ -148709,7 +149483,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
   for (const name2 of ASSETS) {
     const sourcePath = path18.join(source, name2 === ".gitignore" ? "gitignore.template" : name2);
     const destination = path18.join(target, name2);
-    const sourceBytes = await readFile10(sourcePath);
+    const sourceBytes = await readFile11(sourcePath);
     const current2 = await existingFile(destination);
     if (!current2 && action === "init") {
       await cp(sourcePath, destination, { errorOnExist: true, force: false });
@@ -148718,12 +149492,12 @@ async function runMonitoringStack(action, directory, packageRoot) {
     } else if (!current2) missingAssets.push(name2);
     else {
       if (!current2.isFile()) throw commandError2(`Monitoring stack asset is not a regular file: ${name2}`, "Inspect the stack directory and remove unsafe links before continuing.");
-      const destinationBytes = await readFile10(destination);
+      const destinationBytes = await readFile11(destination);
       if (createHash16("sha256").update(sourceBytes).digest("hex") !== createHash16("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
     }
   }
   if (action === "init" && !manifestStat && !preexistingContent) {
-    await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash16("sha256").update(await readFile10(path18.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
+    await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash16("sha256").update(await readFile11(path18.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
 `, { flag: "wx", mode: 420 });
     await chmod2(manifestPath, 420);
     created.push("stack-manifest.json");
@@ -148737,7 +149511,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
     const setup = await import(pathToFileURL4(path18.join(source, "setup.mjs")).href);
     const env = await existingFile(path18.join(target, ".env"));
     if (!env) missing = [".env"];
-    else ({ missing, notificationDelivery } = setup.inspectEnvironment(await readFile10(path18.join(target, ".env"), "utf8")));
+    else ({ missing, notificationDelivery } = setup.inspectEnvironment(await readFile11(path18.join(target, ".env"), "utf8")));
   }
   return {
     path: target,
@@ -148755,7 +149529,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
 
 // src/cli/monitoring-maintenance.ts
 var digest = (bytes) => createHash17("sha256").update(bytes).digest("hex");
-function fail3() {
+function fail4() {
   throw commandError2("Monitoring maintenance could not complete.", "Keep services stopped. Check protected paths, stack provenance, configuration and the maintenance guide; retry with the same inputs. No backend history or Capsule data is deleted.");
 }
 async function exists(file) {
@@ -148768,12 +149542,12 @@ async function exists(file) {
 }
 async function regular(file) {
   const st = await lstat11(file);
-  if (!st.isFile() || st.isSymbolicLink() || st.mode & 18) fail3();
-  return readFile11(file);
+  if (!st.isFile() || st.isSymbolicLink() || st.mode & 18) fail4();
+  return readFile12(file);
 }
 async function safeDirectory(dir, privateMode = false) {
   const st = await lstat11(dir);
-  if (!st.isDirectory() || st.isSymbolicLink() || st.mode & (privateMode ? 63 : 18) || process.geteuid && st.uid !== process.geteuid()) fail3();
+  if (!st.isDirectory() || st.isSymbolicLink() || st.mode & (privateMode ? 63 : 18) || process.geteuid && st.uid !== process.geteuid()) fail4();
 }
 async function atomic(file, bytes, mode = 384, owner) {
   const temp = `${file}.${randomBytes10(8).toString("hex")}.tmp`;
@@ -148796,29 +149570,29 @@ async function atomic(file, bytes, mode = 384, owner) {
 }
 function docker(args, cwd) {
   const r2 = spawnSync2("docker", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 12e4, maxBuffer: 8 * 1024 * 1024 });
-  if (r2.status !== 0 || r2.error) fail3();
+  if (r2.status !== 0 || r2.error) fail4();
   return r2.stdout.trim();
 }
 var compose = (dir, args) => docker(["compose", "--env-file", ".compose.env", ...args], dir);
 function stopped(dir) {
   const ids = compose(dir, ["ps", "--all", "--quiet"]).split(/\s+/).filter(Boolean);
-  if (ids.length && JSON.parse(docker(["inspect", ...ids], dir)).some((c) => c.State?.Running || c.State?.Restarting || c.State?.Paused)) fail3();
+  if (ids.length && JSON.parse(docker(["inspect", ...ids], dir)).some((c) => c.State?.Running || c.State?.Restarting || c.State?.Paused)) fail4();
 }
 function manifest(bytes) {
   const m3 = JSON.parse(bytes.toString());
-  if (![3, 4].includes(m3.schemaVersion) || typeof m3.packageVersion !== "string" || !/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(m3.packageVersion)) fail3();
-  if (m3.assets && (typeof m3.assets !== "object" || Array.isArray(m3.assets) || Object.entries(m3.assets).some(([k, v2]) => !ASSETS.includes(k) || typeof v2 !== "string" || !/^[a-f0-9]{64}$/.test(v2)))) fail3();
+  if (![3, 4].includes(m3.schemaVersion) || typeof m3.packageVersion !== "string" || !/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(m3.packageVersion)) fail4();
+  if (m3.assets && (typeof m3.assets !== "object" || Array.isArray(m3.assets) || Object.entries(m3.assets).some(([k, v2]) => !ASSETS.includes(k) || typeof v2 !== "string" || !/^[a-f0-9]{64}$/.test(v2)))) fail4();
   return m3;
 }
 async function sourceAssets(packageRoot) {
   const assets = {};
-  for (const name2 of ASSETS) assets[name2] = digest(await readFile11(path19.join(packageRoot, "monitoring/trace", name2 === ".gitignore" ? "gitignore.template" : name2)));
-  const version3 = JSON.parse(await readFile11(path19.join(packageRoot, "package.json"), "utf8")).version;
+  for (const name2 of ASSETS) assets[name2] = digest(await readFile12(path19.join(packageRoot, "monitoring/trace", name2 === ".gitignore" ? "gitignore.template" : name2)));
+  const version3 = JSON.parse(await readFile12(path19.join(packageRoot, "package.json"), "utf8")).version;
   return { schemaVersion: STACK_SCHEMA, packageVersion: version3, assets };
 }
 async function validateEnvironment(dir, packageRoot) {
   const setup = await import(pathToFileURL5(path19.join(packageRoot, "monitoring/trace/setup.mjs")).href);
-  if (setup.inspectEnvironment((await regular(path19.join(dir, ".env"))).toString()).missing.length) fail3();
+  if (setup.inspectEnvironment((await regular(path19.join(dir, ".env"))).toString()).missing.length) fail4();
   await regular(path19.join(dir, ".compose.env"));
 }
 async function generation(file) {
@@ -148847,7 +149621,7 @@ async function apply(dir, stateDir, next, recordPrevious = true) {
   await rm9(path19.join(stateDir, "journal.json"));
 }
 function validImage(image) {
-  if (!image || typeof image !== "object" || Array.isArray(image) || Object.entries(image).some(([k, v2]) => !ASSETS.includes(k) && k !== "stack-manifest.json" || v2 !== null && (typeof v2 !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(v2)))) fail3();
+  if (!image || typeof image !== "object" || Array.isArray(image) || Object.entries(image).some(([k, v2]) => !ASSETS.includes(k) && k !== "stack-manifest.json" || v2 !== null && (typeof v2 !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(v2)))) fail4();
   return image;
 }
 async function recover(dir, stateDir) {
@@ -148863,13 +149637,13 @@ async function recover(dir, stateDir) {
     return;
   }
   for (const values of [record.original, record.intended]) {
-    if (!values || typeof values !== "object" || Array.isArray(values) || !same(Object.keys(before), Object.keys(values))) fail3();
+    if (!values || typeof values !== "object" || Array.isArray(values) || !same(Object.keys(before), Object.keys(values))) fail4();
     for (const value of Object.values(values)) {
-      if (value !== null && (typeof value !== "object" || !/^[a-f0-9]{64}$/.test(value.hash) || !Number.isSafeInteger(value.mode) || value.mode < 0 || value.mode > 511 || value.mode & 18 || !Number.isSafeInteger(value.uid) || value.uid < 0 || !Number.isSafeInteger(value.gid) || value.gid < 0)) fail3();
+      if (value !== null && (typeof value !== "object" || !/^[a-f0-9]{64}$/.test(value.hash) || !Number.isSafeInteger(value.mode) || value.mode < 0 || value.mode > 511 || value.mode & 18 || !Number.isSafeInteger(value.uid) || value.uid < 0 || !Number.isSafeInteger(value.gid) || value.gid < 0)) fail4();
     }
   }
   for (const [name2, value] of Object.entries(before)) {
-    if ((record.original[name2]?.hash ?? null) !== (value === null ? null : digest(Buffer.from(value, "base64")))) fail3();
+    if ((record.original[name2]?.hash ?? null) !== (value === null ? null : digest(Buffer.from(value, "base64")))) fail4();
     const current2 = await generation(path19.join(dir, name2));
     if (!same({ current: current2 }, { current: record.original[name2] }) && !same({ current: current2 }, { current: record.intended[name2] })) recoveryConflict();
   }
@@ -148892,14 +149666,14 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
     await safeDirectory(dir);
     await mkdir9(stateDir, { mode: 448 });
   } catch (e) {
-    if (e.code !== "EEXIST") fail3();
+    if (e.code !== "EEXIST") fail4();
   }
   try {
-    if (!["upgrade", "rollback", "backup", "restore"].includes(action) || options.backup && !["backup", "restore"].includes(action) || options.baseline && action !== "upgrade") fail3();
+    if (!["upgrade", "rollback", "backup", "restore"].includes(action) || options.backup && !["backup", "restore"].includes(action) || options.baseline && action !== "upgrade") fail4();
     await safeDirectory(stateDir, true);
     const lockPath = path19.join(stateDir, "lock.sqlite");
     const lockStat = await exists(lockPath);
-    if (lockStat && (!lockStat.isFile() || lockStat.isSymbolicLink() || lockStat.mode & 63 || process.geteuid && lockStat.uid !== process.geteuid())) fail3();
+    if (lockStat && (!lockStat.isFile() || lockStat.isSymbolicLink() || lockStat.mode & 63 || process.geteuid && lockStat.uid !== process.geteuid())) fail4();
     const { DatabaseSync } = await import("node:sqlite");
     lock = new DatabaseSync(lockPath);
     await chmod3(lockPath, 384);
@@ -148916,7 +149690,7 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
     if (action === "rollback") {
       const previous = JSON.parse((await regular(path19.join(stateDir, "previous.json"))).toString());
       validImage(previous.before);
-      if (!previous.after || Object.keys(previous.after).length !== Object.keys(previous.before).length || Object.keys(previous.before).some((k) => !(k in previous.after))) fail3();
+      if (!previous.after || Object.keys(previous.after).length !== Object.keys(previous.before).length || Object.keys(previous.before).some((k) => !(k in previous.after))) fail4();
       let alreadyRestored = true;
       for (const [name2, bytes] of Object.entries(previous.before)) {
         const f2 = path19.join(dir, name2);
@@ -148924,20 +149698,20 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
       }
       if (alreadyRestored) return { path: dir, action, changed: false, overrides: overrides2 };
       for (const [name2, expected] of Object.entries(previous.after)) {
-        if (!ASSETS.includes(name2) && name2 !== "stack-manifest.json") fail3();
+        if (!ASSETS.includes(name2) && name2 !== "stack-manifest.json") fail4();
         const f2 = path19.join(dir, name2);
-        if ((await exists(f2) ? digest(await regular(f2)) : null) !== expected) fail3();
+        if ((await exists(f2) ? digest(await regular(f2)) : null) !== expected) fail4();
       }
       Object.assign(next, previous.before);
     } else {
       const prior = manifest(await regular(path19.join(dir, "stack-manifest.json")));
       let baseline = prior.assets;
       if (!baseline) {
-        if (!options.baseline) fail3();
+        if (!options.baseline) fail4();
         const bdir = path19.resolve(options.baseline);
         await safeDirectory(bdir);
         const b = manifest(await regular(path19.join(bdir, "stack-manifest.json")));
-        if (b.packageVersion !== prior.packageVersion || b.schemaVersion !== prior.schemaVersion) fail3();
+        if (b.packageVersion !== prior.packageVersion || b.schemaVersion !== prior.schemaVersion) fail4();
         baseline = {};
         for (const name2 of ASSETS) if (await exists(path19.join(bdir, name2))) baseline[name2] = digest(await regular(path19.join(bdir, name2)));
       }
@@ -148949,7 +149723,7 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
           overrides2.push(name2);
           continue;
         }
-        const fresh = await readFile11(path19.join(packageRoot, "monitoring/trace", name2 === ".gitignore" ? "gitignore.template" : name2));
+        const fresh = await readFile12(path19.join(packageRoot, "monitoring/trace", name2 === ".gitignore" ? "gitignore.template" : name2));
         if (!bytes2 || digest(bytes2) !== digest(fresh)) next[name2] = fresh.toString("base64");
       }
       const bytes = Buffer.from(JSON.stringify(current2, null, 2) + "\n");
@@ -148960,20 +149734,20 @@ async function runMonitoringMaintenance(action, directory, packageRoot, options 
     await rm9(candidate, { recursive: true, force: true });
     await mkdir9(candidate, { mode: 448 });
     await copyTree(dir, candidate, excluded);
-    if (!same(inputs, await hashes(candidate))) fail3();
+    if (!same(inputs, await hashes(candidate))) fail4();
     for (const [name2, bytes] of Object.entries(next)) {
       if (bytes === null) await rm9(path19.join(candidate, name2), { force: true });
       else await atomic(path19.join(candidate, name2), Buffer.from(bytes, "base64"), 420);
     }
     compose(candidate, ["config", "--quiet"]);
     await validateComponents(candidate, packageRoot);
-    if (!same(inputs, await hashes(dir, "", excluded)) || !same(inputMetadata, await metadata(dir, excluded))) fail3();
+    if (!same(inputs, await hashes(dir, "", excluded)) || !same(inputMetadata, await metadata(dir, excluded))) fail4();
     await apply(dir, stateDir, next, action !== "rollback");
     await rm9(candidate, { recursive: true, force: true });
     return { path: dir, action, changed: true, overrides: overrides2 };
   } catch (error) {
     if (error instanceof Error && error.message === "Monitoring maintenance could not complete.") throw error;
-    return fail3();
+    return fail4();
   } finally {
     lock?.close();
   }
@@ -148985,7 +149759,7 @@ async function copyTree(source, target, exclude = /* @__PURE__ */ new Set()) {
   for (const entry of await readdir5(source, { withFileTypes: true })) {
     if (exclude.has(entry.name)) continue;
     const from = path19.join(source, entry.name), to = path19.join(target, entry.name);
-    if (entry.isSymbolicLink()) fail3();
+    if (entry.isSymbolicLink()) fail4();
     if (entry.isDirectory()) {
       await mkdir9(to, { mode: 448 });
       await copyTree(from, to);
@@ -148993,7 +149767,7 @@ async function copyTree(source, target, exclude = /* @__PURE__ */ new Set()) {
       const mode = (await lstat11(from)).mode & 511;
       await writeFile8(to, await regular(from), { flag: "wx", mode });
       await chmod3(to, mode);
-    } else fail3();
+    } else fail4();
   }
 }
 var STORAGE = { traces: ["jaeger", "/badger"], metrics: ["prometheus", "/prometheus"], grafana: ["grafana", "/var/lib/grafana"], inventory: ["gateway", "/inventory"] };
@@ -149002,12 +149776,12 @@ function volumes(dir) {
   const names = {};
   for (const [key, [service, target]] of Object.entries(STORAGE)) {
     const mounts = config.services?.[service]?.volumes?.filter((v3) => v3.target === target);
-    if (mounts?.length !== 1 || mounts[0].type !== "volume" || mounts[0].source !== key) fail3();
+    if (mounts?.length !== 1 || mounts[0].type !== "volume" || mounts[0].source !== key) fail4();
     const v2 = config.volumes?.[key];
-    if (!v2 || v2.external || v2.driver_opts || v2.driver && v2.driver !== "local" || typeof v2.name !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,200}$/.test(v2.name)) fail3();
+    if (!v2 || v2.external || v2.driver_opts || v2.driver && v2.driver !== "local" || typeof v2.name !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,200}$/.test(v2.name)) fail4();
     names[key] = v2.name;
   }
-  if (new Set(Object.values(names)).size !== 4) fail3();
+  if (new Set(Object.values(names)).size !== 4) fail4();
   return names;
 }
 async function hashes(dir, prefix = "", exclude = /* @__PURE__ */ new Set()) {
@@ -149015,23 +149789,23 @@ async function hashes(dir, prefix = "", exclude = /* @__PURE__ */ new Set()) {
   for (const e of await readdir5(dir, { withFileTypes: true })) {
     if (exclude.has(e.name)) continue;
     const file = path19.join(dir, e.name), name2 = prefix + e.name;
-    if (e.isSymbolicLink()) fail3();
+    if (e.isSymbolicLink()) fail4();
     if (e.isDirectory()) Object.assign(result, await hashes(file, name2 + "/"));
     else if (e.isFile()) {
       const st = await lstat11(file);
-      if (!st.isFile() || st.isSymbolicLink() || st.mode & 18) fail3();
+      if (!st.isFile() || st.isSymbolicLink() || st.mode & 18) fail4();
       const hash2 = createHash17("sha256");
       for await (const chunk of createReadStream(file)) hash2.update(chunk);
       result[name2] = hash2.digest("hex");
-    } else fail3();
+    } else fail4();
   }
   return result;
 }
 function idleVolumes(dir, names) {
-  for (const name2 of Object.values(names)) if (docker(["ps", "--quiet", "--filter", `volume=${name2}`], dir)) fail3();
+  for (const name2 of Object.values(names)) if (docker(["ps", "--quiet", "--filter", `volume=${name2}`], dir)) fail4();
 }
 function archive(dir, volume, backup, file, restore = false) {
-  if (backup.includes(",")) fail3();
+  if (backup.includes(",")) fail4();
   return docker([
     "run",
     "--rm",
@@ -149053,12 +149827,12 @@ function archive(dir, volume, backup, file, restore = false) {
   ], dir);
 }
 async function checkArchive(dir, backup, file) {
-  if (backup.includes(",")) fail3();
+  if (backup.includes(",")) fail4();
   const run2 = (flag) => docker(["run", "--rm", "--network", "none", "--mount", `type=bind,src=${backup},dst=/backup,readonly`, "busybox:1.37.0", "tar", flag, `/backup/${file}`], dir);
   for (const name2 of run2("-tf").split("\n")) {
-    if (!name2 || name2.startsWith("/") || name2.split("/").includes("..") || /[\r\x00-\x1f]/.test(name2)) fail3();
+    if (!name2 || name2.startsWith("/") || name2.split("/").includes("..") || /[\r\x00-\x1f]/.test(name2)) fail4();
   }
-  if (run2("-tvf").split("\n").some((line) => !/^[-d]/.test(line))) fail3();
+  if (run2("-tvf").split("\n").some((line) => !/^[-d]/.test(line))) fail4();
 }
 async function storageGuards(dir, names) {
   const owner = randomBytes10(16).toString("hex");
@@ -149117,7 +149891,7 @@ async function storageGuards(dir, names) {
           });
         });
         const meta2 = JSON.parse(docker(["inspect", name2], dir))[0];
-        if (meta2?.Config?.Labels?.["com.sporades.storage-guard"] !== owner || !meta2.State?.Running || typeof meta2.Id !== "string") fail3();
+        if (meta2?.Config?.Labels?.["com.sporades.storage-guard"] !== owner || !meta2.State?.Running || typeof meta2.Id !== "string") fail4();
         guards.push({ id: meta2.Id, child, closed });
       } catch {
         child.stdin?.end();
@@ -149128,7 +149902,7 @@ async function storageGuards(dir, names) {
         }
         child.kill("SIGTERM");
         await closed;
-        fail3();
+        fail4();
       }
     }
     return {
@@ -149136,34 +149910,34 @@ async function storageGuards(dir, names) {
       check: () => {
         for (const guard of guards) {
           const meta2 = JSON.parse(docker(["inspect", guard.id], dir))[0];
-          if (meta2?.Config?.Labels?.["com.sporades.storage-guard"] !== owner || !meta2.State?.Running) fail3();
+          if (meta2?.Config?.Labels?.["com.sporades.storage-guard"] !== owner || !meta2.State?.Running) fail4();
         }
       }
     };
   } catch {
     await release();
-    fail3();
+    fail4();
   }
 }
 function ownedVolume(dir, name2, id2) {
   const meta2 = JSON.parse(docker(["volume", "inspect", name2], dir))[0];
-  if (meta2?.Name !== name2 || meta2.Driver !== "local" || meta2.Labels?.["com.sporades.restore"] !== id2) fail3();
+  if (meta2?.Name !== name2 || meta2.Driver !== "local" || meta2.Labels?.["com.sporades.restore"] !== id2) fail4();
 }
 async function storageMaintenance(action, dir, packageRoot, backup) {
-  if (!backup) fail3();
+  if (!backup) fail4();
   const location = path19.resolve(backup);
-  if (location === dir || location.startsWith(dir + path19.sep) || dir.startsWith(location + path19.sep)) fail3();
+  if (location === dir || location.startsWith(dir + path19.sep) || dir.startsWith(location + path19.sep)) fail4();
   await safeDirectory(path19.dirname(location));
   if (action === "backup") {
     await validateEnvironment(dir, packageRoot);
     const stack = manifest(await regular(path19.join(dir, "stack-manifest.json")));
     const names2 = volumes(dir);
     idleVolumes(dir, names2);
-    if (await exists(path19.join(dir, ".private/senders/.lock"))) fail3();
+    if (await exists(path19.join(dir, ".private/senders/.lock"))) fail4();
     const excluded = /* @__PURE__ */ new Set([".maintenance", "backups", "data"]);
     const beforeFiles = await hashes(dir, "", excluded);
     const configMetadata = await metadata(dir, excluded);
-    if (await exists(location)) fail3();
+    if (await exists(location)) fail4();
     const stage = `${location}.partial-${randomBytes10(8).toString("hex")}`;
     await mkdir9(stage, { mode: 448 });
     try {
@@ -149177,34 +149951,34 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
         await chmod3(path19.join(stage, `${key}.tar`), 384);
       }
       const files = await hashes(stage);
-      if (!same(beforeFiles, await hashes(path19.join(stage, "config"))) || !same(beforeFiles, await hashes(dir, "", excluded)) || !same(configMetadata, await metadata(dir, excluded)) || await exists(path19.join(dir, ".private/senders/.lock"))) fail3();
+      if (!same(beforeFiles, await hashes(path19.join(stage, "config"))) || !same(beforeFiles, await hashes(dir, "", excluded)) || !same(configMetadata, await metadata(dir, excluded)) || await exists(path19.join(dir, ".private/senders/.lock"))) fail4();
       await atomic(path19.join(stage, "backup-manifest.json"), JSON.stringify({ schemaVersion: 1, stack, volumes: Object.keys(names2), files, configMetadata }));
       await rename8(stage, location);
     } catch {
       await rm9(stage, { recursive: true, force: true });
-      fail3();
+      fail4();
     }
     return { path: dir, action, changed: true, overrides: [] };
   }
   await safeDirectory(location, true);
   const bytes = await regular(path19.join(location, "backup-manifest.json"));
   const snapshot = JSON.parse(bytes.toString());
-  if (snapshot.schemaVersion !== 1 || !snapshot.files || typeof snapshot.files !== "object" || Array.isArray(snapshot.files) || JSON.stringify(snapshot.volumes) !== JSON.stringify(Object.keys(STORAGE))) fail3();
+  if (snapshot.schemaVersion !== 1 || !snapshot.files || typeof snapshot.files !== "object" || Array.isArray(snapshot.files) || JSON.stringify(snapshot.volumes) !== JSON.stringify(Object.keys(STORAGE))) fail4();
   manifest(Buffer.from(JSON.stringify(snapshot.stack)));
   const actual = await hashes(location);
   delete actual["backup-manifest.json"];
-  if (Object.keys(actual).some((k) => !k.startsWith("config/") && !Object.keys(STORAGE).some((n) => k === `${n}.tar`)) || Object.keys(actual).some((k) => /^config\/(?:\.maintenance|backups|data)(?:\/|$)/.test(k))) fail3();
-  if (Object.keys(actual).length !== Object.keys(snapshot.files).length || Object.entries(actual).some(([k, v2]) => snapshot.files[k] !== v2)) fail3();
+  if (Object.keys(actual).some((k) => !k.startsWith("config/") && !Object.keys(STORAGE).some((n) => k === `${n}.tar`)) || Object.keys(actual).some((k) => /^config\/(?:\.maintenance|backups|data)(?:\/|$)/.test(k))) fail4();
+  if (Object.keys(actual).length !== Object.keys(snapshot.files).length || Object.entries(actual).some(([k, v2]) => snapshot.files[k] !== v2)) fail4();
   for (const name2 of Object.keys(STORAGE)) {
-    if (!actual[`${name2}.tar`]) fail3();
+    if (!actual[`${name2}.tar`]) fail4();
     await checkArchive(dir, location, `${name2}.tar`);
   }
   await validateEnvironment(path19.join(location, "config"), packageRoot);
   const journal = path19.join(dir, ".maintenance/restore.json");
   const id2 = digest(bytes);
   const prior = await exists(journal) ? JSON.parse((await regular(journal)).toString()) : null;
-  if (prior && prior.id !== id2) fail3();
-  if (!prior && (await readdir5(dir)).some((n) => n !== ".maintenance")) fail3();
+  if (prior && prior.id !== id2) fail4();
+  if (!prior && (await readdir5(dir)).some((n) => n !== ".maintenance")) fail4();
   if (!prior) await atomic(journal, JSON.stringify({ id: id2, complete: false }));
   async function install(from, to) {
     for (const e of await readdir5(from, { withFileTypes: true })) {
@@ -149212,12 +149986,12 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
       if (e.isDirectory()) {
         if (!await exists(dst)) await mkdir9(dst, { mode: 448 });
         const st = await lstat11(dst);
-        if (!st.isDirectory() || st.isSymbolicLink() || st.mode & 18) fail3();
+        if (!st.isDirectory() || st.isSymbolicLink() || st.mode & 18) fail4();
         await install(src, dst);
       } else {
         const b = await regular(src);
         if (await exists(dst)) {
-          if (digest(await regular(dst)) !== digest(b)) fail3();
+          if (digest(await regular(dst)) !== digest(b)) fail4();
         } else await atomic(dst, b, snapshot.configMetadata?.[path19.relative(path19.join(location, "config"), src)]?.mode ?? 384);
       }
     }
@@ -149229,7 +150003,7 @@ async function storageMaintenance(action, dir, packageRoot, backup) {
   const guards = await storageGuards(dir, names);
   try {
     idleVolumes(dir, names);
-    if (prior?.names && JSON.stringify(prior.names) !== JSON.stringify(names)) fail3();
+    if (prior?.names && JSON.stringify(prior.names) !== JSON.stringify(names)) fail4();
     const existing = docker(["volume", "ls", "--format", "{{.Name}}"], dir).split("\n");
     for (const name2 of Object.values(names)) if (existing.includes(name2)) ownedVolume(dir, name2, id2);
     if (prior?.complete) return { path: dir, action, changed: false, overrides: [] };
@@ -149255,18 +150029,18 @@ async function metadata(dir, exclude = /* @__PURE__ */ new Set(), prefix = "") {
   for (const e of await readdir5(dir, { withFileTypes: true })) {
     if (exclude.has(e.name)) continue;
     const file = path19.join(dir, e.name), st = await lstat11(file), name2 = prefix + e.name;
-    if (!st.isFile() && !st.isDirectory() || st.isSymbolicLink() || st.mode & 18) fail3();
+    if (!st.isFile() && !st.isDirectory() || st.isSymbolicLink() || st.mode & 18) fail4();
     values[name2] = { mode: st.mode & 511, uid: st.uid, gid: st.gid };
     if (st.isDirectory()) Object.assign(values, await metadata(file, /* @__PURE__ */ new Set(), name2 + "/"));
   }
   return values;
 }
 async function restoreMetadata(dir, values) {
-  if (!values || typeof values !== "object" || Array.isArray(values)) fail3();
+  if (!values || typeof values !== "object" || Array.isArray(values)) fail4();
   for (const [name2, v2] of Object.entries(values)) {
-    if (path19.isAbsolute(name2) || name2.split("/").some((p2) => !p2 || p2 === "." || p2 === "..") || !Number.isSafeInteger(v2?.mode) || v2.mode < 0 || v2.mode > 511 || v2.mode & 18 || !Number.isSafeInteger(v2.uid) || v2.uid < 0 || v2.uid > 4294967295 || !Number.isSafeInteger(v2.gid) || v2.gid < 0 || v2.gid > 4294967295) fail3();
+    if (path19.isAbsolute(name2) || name2.split("/").some((p2) => !p2 || p2 === "." || p2 === "..") || !Number.isSafeInteger(v2?.mode) || v2.mode < 0 || v2.mode > 511 || v2.mode & 18 || !Number.isSafeInteger(v2.uid) || v2.uid < 0 || v2.uid > 4294967295 || !Number.isSafeInteger(v2.gid) || v2.gid < 0 || v2.gid > 4294967295) fail4();
     const file = path19.join(dir, name2), st = await lstat11(file);
-    if (st.isSymbolicLink() || !st.isFile() && !st.isDirectory()) fail3();
+    if (st.isSymbolicLink() || !st.isFile() && !st.isDirectory()) fail4();
   }
   for (const [name2, v2] of Object.entries(values).sort(([a2], [b]) => b.length - a2.length)) {
     const file = path19.join(dir, name2);
@@ -149279,7 +150053,7 @@ async function validateComponents(dir, packageRoot) {
   const config = JSON.parse(compose(dir, ["config", "--format", "json"]) || "{}");
   const expected = { collector: /^otel\/opentelemetry-collector-contrib:[\w.-]+$/, jaeger: /^cr\.jaegertracing\.io\/jaegertracing\/jaeger:[\w.-]+$/, prometheus: /^prom\/prometheus:[\w.-]+$/ };
   for (const [name2, pattern] of Object.entries(expected)) {
-    if (!pattern.test(config.services?.[name2]?.image ?? "")) fail3();
+    if (!pattern.test(config.services?.[name2]?.image ?? "")) fail4();
   }
   const setup = await import(pathToFileURL5(path19.join(packageRoot, "monitoring/trace/setup.mjs")).href);
   const env = setup.parseEnvironment((await regular(path19.join(dir, ".compose.env"))).toString());
@@ -149296,23 +150070,23 @@ async function validateComponents(dir, packageRoot) {
   };
   for (const name2 of Object.keys(expected)) {
     const service = config.services[name2];
-    if (service.entrypoint != null || service.configs?.length || service.secrets?.length || JSON.stringify(service.command) !== JSON.stringify(commands[name2])) fail3();
+    if (service.entrypoint != null || service.configs?.length || service.secrets?.length || JSON.stringify(service.command) !== JSON.stringify(commands[name2])) fail4();
     const environment = service.environment ?? {};
-    if (typeof environment !== "object" || Array.isArray(environment) || Object.entries(environment).some(([key, value]) => name2 !== "jaeger" || key !== "TRACE_RETENTION" || typeof value !== "string" || value.length > 256 || value.includes("\0"))) fail3();
+    if (typeof environment !== "object" || Array.isArray(environment) || Object.entries(environment).some(([key, value]) => name2 !== "jaeger" || key !== "TRACE_RETENTION" || typeof value !== "string" || value.length > 256 || value.includes("\0"))) fail4();
   }
   const mount = async (service, target, optional = false) => {
     const matches2 = config.services[service].volumes?.filter((v2) => v2.target === target);
     if (optional && !matches2?.length) return [];
-    if (matches2?.length !== 1 || matches2[0].type !== "bind" || matches2[0].read_only !== true) fail3();
+    if (matches2?.length !== 1 || matches2[0].type !== "bind" || matches2[0].read_only !== true) fail4();
     const source = matches2[0].source;
-    if (typeof source !== "string" || source.includes(",") || source !== path19.resolve(source) || !source.startsWith(dir + path19.sep)) fail3();
+    if (typeof source !== "string" || source.includes(",") || source !== path19.resolve(source) || !source.startsWith(dir + path19.sep)) fail4();
     const relative = path19.relative(dir, source);
-    if (relative.split(path19.sep).some((p2) => !p2 || p2 === "." || p2 === "..")) fail3();
+    if (relative.split(path19.sep).some((p2) => !p2 || p2 === "." || p2 === "..")) fail4();
     let parent = dir;
     for (const component of relative.split(path19.sep).slice(0, -1)) {
       parent = path19.join(parent, component);
       const st = await lstat11(parent);
-      if (!st.isDirectory() || st.isSymbolicLink() || st.mode & 18) fail3();
+      if (!st.isDirectory() || st.isSymbolicLink() || st.mode & 18) fail4();
     }
     await regular(source);
     return ["--mount", `type=bind,src=${source},dst=${target},readonly`];
@@ -149323,7 +150097,7 @@ async function validateComponents(dir, packageRoot) {
     prometheus: ["/etc/prometheus/prometheus.yml", "/etc/prometheus/pipeline-rules.yaml", "/etc/prometheus/availability-rules.yaml", "/etc/prometheus/performance-rules.yaml", "/prometheus"]
   };
   for (const [name2, targets] of Object.entries(supportedTargets)) {
-    if (config.services[name2].volumes?.some((v2) => !targets.includes(v2.target))) fail3();
+    if (config.services[name2].volumes?.some((v2) => !targets.includes(v2.target))) fail4();
   }
   const base = ["run", "--rm", "--network", "none", "--user", "0", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec"];
   docker([...base, ...await mount("collector", "/etc/otelcol/config.yaml"), config.services.collector.image, "validate", "--config=/etc/otelcol/config.yaml"], dir);
@@ -149333,7 +150107,7 @@ async function validateComponents(dir, packageRoot) {
   for (const name2 of ASSETS.filter((n) => n.endsWith(".json"))) JSON.parse((await regular(path19.join(dir, name2))).toString());
   for (const name2 of ASSETS.filter((n) => n.endsWith(".mjs"))) {
     const result = spawnSync2(process.execPath, ["--check", path19.join(dir, name2)], { encoding: "utf8", timeout: 1e4 });
-    if (result.status !== 0) fail3();
+    if (result.status !== 0) fail4();
   }
 }
 
@@ -149423,7 +150197,7 @@ async function readProjectServerEnv(projectDir) {
 
 // src/cli/doctor.ts
 import { spawn as spawn3, spawnSync as spawnSync3 } from "node:child_process";
-import { lstat as lstat12, readFile as readFile13, realpath as realpath5 } from "node:fs/promises";
+import { lstat as lstat12, readFile as readFile14, realpath as realpath5 } from "node:fs/promises";
 import { connect } from "node:net";
 import path22 from "node:path";
 
@@ -149463,7 +150237,7 @@ async function readAdmissionInspection(response) {
 
 // src/cli/project-config.ts
 import { createHash as createHash18 } from "node:crypto";
-import { chmod as chmod4, mkdir as mkdir10, readFile as readFile12, writeFile as writeFile9 } from "node:fs/promises";
+import { chmod as chmod4, mkdir as mkdir10, readFile as readFile13, writeFile as writeFile9 } from "node:fs/promises";
 import path21 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var DEFAULT_CSP_DIRECTIVES = {
@@ -149540,30 +150314,30 @@ var PASSWORD_RESET_MAX_TTL_MS3 = 24 * 60 * 60 * 1e3;
 function validatePasswordResetConfig(auth) {
   const passwordReset = auth?.email?.passwordReset;
   if (passwordReset === void 0) return;
-  const fail4 = (message, hint) => {
+  const fail5 = (message, hint) => {
     const error = new Error(message);
     error.code = "INVALID_AUTH_CONFIG";
     error.hint = hint;
     throw error;
   };
   if (!passwordReset || typeof passwordReset !== "object" || Array.isArray(passwordReset)) {
-    fail4("Invalid password reset configuration.", "Set `auth.email.passwordReset` to an object with optional `path` and `ttlMs`.");
+    fail5("Invalid password reset configuration.", "Set `auth.email.passwordReset` to an object with optional `path` and `ttlMs`.");
   }
   const unknown = Object.keys(passwordReset).filter((key) => key !== "path" && key !== "ttlMs");
   if (unknown.length > 0) {
-    fail4(
+    fail5(
       `Unsupported password reset option: ${unknown.sort().join(", ")}`,
       "Configure only `auth.email.passwordReset.path` and `auth.email.passwordReset.ttlMs`."
     );
   }
   if (passwordReset.path !== void 0 && !isSameOriginResetPath(passwordReset.path)) {
-    fail4(
+    fail5(
       "Invalid password reset page path.",
       "Set `auth.email.passwordReset.path` to a same-origin absolute path such as `/reset-password`, not a URL."
     );
   }
   if (passwordReset.ttlMs !== void 0 && (typeof passwordReset.ttlMs !== "number" || !Number.isFinite(passwordReset.ttlMs) || passwordReset.ttlMs < PASSWORD_RESET_MIN_TTL_MS3 || passwordReset.ttlMs > PASSWORD_RESET_MAX_TTL_MS3)) {
-    fail4(
+    fail5(
       "Invalid password reset code lifetime.",
       "Set `auth.email.passwordReset.ttlMs` between 300000 (5 minutes) and 86400000 (24 hours)."
     );
@@ -149576,21 +150350,21 @@ function isSameOriginResetPath(value) {
 }
 function validateTeamsConfig(teams) {
   if (teams === void 0) return;
-  const fail4 = (message, hint) => {
+  const fail5 = (message, hint) => {
     const error = new Error(message);
     error.code = "INVALID_TEAMS_CONFIG";
     error.hint = hint;
     throw error;
   };
   if (!teams || typeof teams !== "object" || Array.isArray(teams) || Object.keys(teams).some((key) => key !== "join")) {
-    fail4("Invalid Teams configuration.", "Configure only `teams.join.path` in sporades.json.");
+    fail5("Invalid Teams configuration.", "Configure only `teams.join.path` in sporades.json.");
   }
   if (teams.join === void 0) return;
   if (!teams.join || typeof teams.join !== "object" || Array.isArray(teams.join) || Object.keys(teams.join).some((key) => key !== "path")) {
-    fail4("Invalid Team Join configuration.", "Configure only `teams.join.path`.");
+    fail5("Invalid Team Join configuration.", "Configure only `teams.join.path`.");
   }
   if (teams.join.path !== void 0 && !isSameOriginResetPath(teams.join.path)) {
-    fail4("Invalid Team Join page path.", "Set `teams.join.path` to a same-origin absolute path such as `/join`, not a URL.");
+    fail5("Invalid Team Join page path.", "Set `teams.join.path` to a same-origin absolute path such as `/join`, not a URL.");
   }
 }
 function validateClientConfig(client) {
@@ -149791,7 +150565,7 @@ function readBaseImageUpdatePolicy(config) {
 }
 async function readRequiredFile2(filePath, message, hint) {
   try {
-    return await readFile12(filePath, "utf8");
+    return await readFile13(filePath, "utf8");
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       throw commandError2(message, hint);
@@ -149801,7 +150575,7 @@ async function readRequiredFile2(filePath, message, hint) {
 }
 async function readAuthorizedKeysFile(filePath, index) {
   try {
-    return await readFile12(filePath, "utf8");
+    return await readFile13(filePath, "utf8");
   } catch {
     throw commandError2(
       `Unable to read SSH authorized key file at ssh.authorizedKeys[${index}].`,
@@ -150136,7 +150910,7 @@ async function publicDevPostureCheck(options) {
 }
 async function readRunningPublicDevSession(projectDir) {
   try {
-    const session = JSON.parse(await readFile13(path22.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+    const session = JSON.parse(await readFile14(path22.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
     return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
   } catch {
     return false;
@@ -150194,7 +150968,7 @@ async function capsuleAuthoringAclPostureCheck(options) {
   const projectDir = typeof options.projectDir === "string" ? options.projectDir : process.cwd();
   const serverEntry = path22.join(projectDir, "server", "index.ts");
   try {
-    const serverSource = await readFile13(serverEntry, "utf8");
+    const serverSource = await readFile14(serverEntry, "utf8");
     const serverModuleSource = await bundleServerCapsuleModule({
       serverSource,
       serverSourcePath: serverEntry
@@ -150414,7 +151188,7 @@ async function resolveHostedDoctorTarget(options) {
 }
 async function readDoctorRemoteBinding(projectDir) {
   try {
-    const binding = JSON.parse(await readFile13(path22.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
+    const binding = JSON.parse(await readFile14(path22.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
     return binding && typeof binding === "object" && !Array.isArray(binding) ? binding : null;
   } catch {
     return null;
@@ -151094,7 +151868,7 @@ async function generatedComposeCheck(capsuleServices, projectDir, scope) {
   const composePath = path22.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   let raw = "";
   try {
-    raw = await readFile13(composePath, "utf8");
+    raw = await readFile14(composePath, "utf8");
   } catch (error) {
     if (errorDetails(error).code !== "ENOENT") {
       throw error;
@@ -151244,7 +152018,7 @@ function dockerStatus(args, cwd) {
 }
 async function readOptionalJsonFile(filePath) {
   try {
-    return JSON.parse(await readFile13(filePath, "utf8"));
+    return JSON.parse(await readFile14(filePath, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return null;
@@ -151628,6 +152402,13 @@ async function main() {
       });
       return;
     }
+    case "stripe-fake":
+      if (isHelp) {
+        printHelp("stripe-fake");
+        return;
+      }
+      await runStripeFake(args);
+      return;
     case "dev":
       if (isHelp) {
         printHelp("dev");
@@ -151693,24 +152474,24 @@ async function main() {
       let directory = process.cwd();
       let backup;
       let baseline;
-      let json = false;
+      let json2 = false;
       for (let index = 2; index < args.length; index++) {
         if (args[index] === "--dir") directory = readFlagValue(args, ++index, "--dir");
         else if (args[index] === "--backup") backup = readFlagValue(args, ++index, "--backup");
         else if (args[index] === "--baseline") baseline = readFlagValue(args, ++index, "--baseline");
-        else if (args[index] === "--json") json = true;
+        else if (args[index] === "--json") json2 = true;
         else throw commandError2("Unknown monitoring option.", "Use `--dir <path>` and optional `--json`.");
       }
       if (!["init", "validate"].includes(args[1])) {
         const data3 = await runMonitoringMaintenance(args[1], directory, resolveSporadesPackageRoot(), { backup, baseline });
-        if (json) writeResult({ ok: true, data: data3, error: null });
+        if (json2) writeResult({ ok: true, data: data3, error: null });
         else process.stdout.write(`Monitoring stack ${args[1]}: ${data3.path}
 `);
         return;
       }
       if (backup || baseline) throw commandError2("Unexpected maintenance option.", "Use --backup for backup/restore and --baseline for legacy upgrades.");
       const data2 = await runMonitoringStack(args[1], directory, resolveSporadesPackageRoot());
-      if (json) writeResult({ ok: true, data: data2, error: null });
+      if (json2) writeResult({ ok: true, data: data2, error: null });
       else {
         process.stdout.write(`Monitoring stack ${args[1]}: ${data2.path}
 `);
@@ -151772,14 +152553,14 @@ function printHelp(cmd) {
 }
 function parseVersionArgs(args) {
   let hostAlias = null;
-  let json = false;
+  let json2 = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--version" || arg === "-v") {
       continue;
     }
     if (arg === "--json") {
-      json = true;
+      json2 = true;
       continue;
     }
     if (arg === "--host") {
@@ -151791,7 +152572,7 @@ function parseVersionArgs(args) {
   if (hostAlias) {
     validateHostAlias(hostAlias);
   }
-  return { hostAlias, json, projectDir: process.cwd() };
+  return { hostAlias, json: json2, projectDir: process.cwd() };
 }
 async function printVersion(options) {
   if (!options.hostAlias) {
@@ -151828,7 +152609,7 @@ function parseCreateArgs(args) {
   let template = "blank";
   let install = true;
   let git = true;
-  let json = false;
+  let json2 = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     switch (arg) {
@@ -151848,7 +152629,7 @@ function parseCreateArgs(args) {
         git = false;
         break;
       case "--json":
-        json = true;
+        json2 = true;
         break;
       default:
         if (arg.startsWith("--")) {
@@ -151886,7 +152667,7 @@ function parseCreateArgs(args) {
     localTemplateDir,
     install,
     git,
-    json,
+    json: json2,
     projectDir: path23.resolve(process.cwd(), name2)
   };
 }
@@ -151899,7 +152680,7 @@ async function runMonitoringSenderCommand(args) {
     throw commandError2("Unknown sender operation.", "Run `sporades monitoring --help`.");
   }
   let directory = process.cwd();
-  let json = false;
+  let json2 = false;
   const options = {};
   for (let index = 2; index < args.length; index++) {
     const arg = args[index];
@@ -151909,7 +152690,7 @@ async function runMonitoringSenderCommand(args) {
     else if (arg === "--out" && action === "export") options.out = readFlagValue(args, ++index, arg);
     else if (arg === "--generation" && action === "commit") options.generation = Number(readFlagValue(args, ++index, arg));
     else if (arg === "--ingest" && action === "legacy-revoke") options.ingest = true;
-    else if (arg === "--json") json = true;
+    else if (arg === "--json") json2 = true;
     else throw commandError2("Unknown sender option.", "Run `sporades monitoring --help`.");
   }
   if (action === "legacy-revoke" && (options.sender || !!options.host === !!options.ingest)) {
@@ -151924,7 +152705,7 @@ async function runMonitoringSenderCommand(args) {
   } catch (error) {
     throw commandError2("Sender credential operation failed.", error instanceof Error && !("code" in error) ? error.message : "Initialize the stack and inspect protected file permissions and output paths.");
   }
-  if (json) writeResult({ ok: true, data: data2, error: null });
+  if (json2) writeResult({ ok: true, data: data2, error: null });
   else process.stdout.write(JSON.stringify(data2, null, 2) + "\n");
 }
 async function runTelemetryProfileCommand(args) {
@@ -151935,12 +152716,12 @@ async function runTelemetryProfileCommand(args) {
   const name2 = operation === "list" ? null : args[2];
   if (operation !== "list" && !name2) throw commandError2("Missing Telemetry profile name.", "Pass a profile name after the operation.");
   const rest = args.slice(operation === "list" ? 2 : 3);
-  let json = false;
+  let json2 = false;
   const input = {};
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     if (arg === "--json") {
-      json = true;
+      json2 = true;
       continue;
     }
     if (operation === "add") {
@@ -152000,14 +152781,14 @@ async function runTelemetryProfileCommand(args) {
       ...input.eventLoopDelayResolutionMs !== void 0 ? { eventLoopDelayResolutionMs: input.eventLoopDelayResolutionMs } : {}
     };
     const saved = await changeTelemetryProfile("add", name2, profile);
-    if (json) writeResult({ ok: true, data: { name: name2, profile: saved }, error: null });
+    if (json2) writeResult({ ok: true, data: { name: name2, profile: saved }, error: null });
     else process.stdout.write(`Telemetry profile added: ${name2}
 `);
     return;
   }
   if (operation === "remove") {
     await changeTelemetryProfile("remove", name2);
-    if (json) writeResult({ ok: true, data: { name: name2, removed: true }, error: null });
+    if (json2) writeResult({ ok: true, data: { name: name2, removed: true }, error: null });
     else process.stdout.write(`Telemetry profile removed: ${name2}
 `);
     return;
@@ -152016,12 +152797,12 @@ async function runTelemetryProfileCommand(args) {
   if (operation === "show") {
     const profile = Object.hasOwn(profiles, name2) ? profiles[name2] : void 0;
     if (!profile) throw commandError2("Unknown Telemetry profile.", "Run `sporades telemetry profile list` to inspect registered names.");
-    if (json) writeResult({ ok: true, data: { name: name2, profile }, error: null });
+    if (json2) writeResult({ ok: true, data: { name: name2, profile }, error: null });
     else process.stdout.write(`${name2}	${profile.endpoint}
 `);
     return;
   }
-  if (json) writeResult({ ok: true, data: { profiles }, error: null });
+  if (json2) writeResult({ ok: true, data: { profiles }, error: null });
   else for (const [alias, profile] of Object.entries(profiles)) process.stdout.write(`${alias}	${profile.endpoint}
 `);
 }
@@ -152030,7 +152811,7 @@ function parseDevArgs(args) {
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
   const rest = subcommand === "start" ? args : args.slice(1);
   let port = null;
-  let json = false;
+  let json2 = false;
   let publicDev = false;
   let telemetryProfile = null;
   for (let index = 0; index < rest.length; index += 1) {
@@ -152048,7 +152829,7 @@ function parseDevArgs(args) {
         break;
       }
       case "--json":
-        json = true;
+        json2 = true;
         break;
       case "--public":
         if (subcommand !== "start") {
@@ -152067,7 +152848,7 @@ function parseDevArgs(args) {
   return {
     subcommand,
     port,
-    json,
+    json: json2,
     publicDev,
     telemetryProfile,
     projectDir: process.cwd()
@@ -152087,15 +152868,15 @@ async function policyPublicationBytes(options) {
 }
 function parseDeployArgs(args) {
   if (args[0] === "policy") {
-    const json2 = args.includes("--json");
+    const json3 = args.includes("--json");
     const operation = parsePolicyOperation(args.slice(1).filter((arg) => arg !== "--json"));
-    return { subcommand: "policy", ...operation, json: json2, projectDir: process.cwd() };
+    return { subcommand: "policy", ...operation, json: json3, projectDir: process.cwd() };
   }
   const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "restart", "remove", "reconcile", "reset", "ssh", "jobs", "schedules"]);
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
   const rest = subcommand === "start" ? args : args.slice(1);
   let port = null;
-  let json = false;
+  let json2 = false;
   let force = false;
   let telemetryProfile;
   for (let index = 0; index < rest.length; index += 1) {
@@ -152108,7 +152889,7 @@ function parseDeployArgs(args) {
         port = readPort(readFlagValue(rest, ++index, "--port"));
         break;
       case "--json":
-        json = true;
+        json2 = true;
         break;
       case "--force":
         if (subcommand !== "start") {
@@ -152133,13 +152914,13 @@ function parseDeployArgs(args) {
     port,
     force,
     telemetryProfile,
-    json,
+    json: json2,
     projectDir: process.cwd()
   };
 }
 function parseSecurityArgs(args) {
   let session = "dev";
-  let json = false;
+  let json2 = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     switch (arg) {
@@ -152147,7 +152928,7 @@ function parseSecurityArgs(args) {
         session = readFlagValue(args, ++index, "--session");
         break;
       case "--json":
-        json = true;
+        json2 = true;
         break;
       default:
         throw commandError2(
@@ -152164,7 +152945,7 @@ function parseSecurityArgs(args) {
   }
   return {
     session,
-    json,
+    json: json2,
     projectDir: process.cwd()
   };
 }
@@ -152180,7 +152961,7 @@ function parseAccessKeyOperatorArgs(args) {
   let cursor = null;
   let limit = null;
   let status = null;
-  let json = false;
+  let json2 = false;
   let yes = false;
   const positional = [];
   for (let index = 0; index < rest.length; index += 1) {
@@ -152211,7 +152992,7 @@ function parseAccessKeyOperatorArgs(args) {
         if (!["active", "expired", "revoked"].includes(status)) throw commandError2("Invalid Access-key status filter.", "Use active, expired, or revoked.");
         break;
       case "--json":
-        json = true;
+        json2 = true;
         break;
       case "--yes":
         yes = true;
@@ -152254,7 +153035,7 @@ function parseAccessKeyOperatorArgs(args) {
     cursor,
     limit,
     status,
-    json,
+    json: json2,
     yes,
     projectDir: process.cwd()
   };
@@ -152355,7 +153136,7 @@ function parseDoctorArgs(args) {
   let host = null;
   let subname = null;
   let strict = false;
-  let json = false;
+  let json2 = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     switch (arg) {
@@ -152372,7 +153153,7 @@ function parseDoctorArgs(args) {
         strict = true;
         break;
       case "--json":
-        json = true;
+        json2 = true;
         break;
       default:
         throw commandError2(
@@ -152396,7 +153177,7 @@ function parseDoctorArgs(args) {
     host,
     subname,
     strict,
-    json,
+    json: json2,
     projectDir: process.cwd()
   };
 }
@@ -152405,7 +153186,7 @@ function parseAuthArgs(args) {
   const provider = subcommand === "set" ? args[1] : null;
   const simulatedProvider = subcommand === "as" ? args[1] : null;
   const rest = subcommand === "set" ? args.slice(2) : subcommand === "as" ? args.slice(2) : args.slice(1);
-  let json = false;
+  let json2 = false;
   let clientId = null;
   let clientSecret = null;
   let clientJson = null;
@@ -152425,7 +153206,7 @@ function parseAuthArgs(args) {
     const arg = rest[index];
     switch (arg) {
       case "--json":
-        json = true;
+        json2 = true;
         break;
       case "--client-id":
         clientId = readFlagValue(rest, ++index, "--client-id");
@@ -152489,14 +153270,14 @@ function parseAuthArgs(args) {
   }
   switch (subcommand) {
     case "status":
-      return { subcommand, json, projectDir: process.cwd() };
+      return { subcommand, json: json2, projectDir: process.cwd() };
     case "clients":
-      return { subcommand, json, port, projectDir: process.cwd() };
+      return { subcommand, json: json2, port, projectDir: process.cwd() };
     case "as":
       if (!simulatedProvider) {
         throw commandError2("Missing simulated auth provider.", "Use `sporades auth as email --email <address> --json`.");
       }
-      return { subcommand, provider: simulatedProvider, email, displayName, picture, registration, port, client, json, projectDir: process.cwd() };
+      return { subcommand, provider: simulatedProvider, email, displayName, picture, registration, port, client, json: json2, projectDir: process.cwd() };
     case "set":
       if (!provider || !["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
         break;
@@ -152536,7 +153317,7 @@ function parseAuthArgs(args) {
           );
         }
       }
-      return { subcommand, provider, clientId, clientSecret, tenant, teamId, keyId, privateKey, graphVersion, disable, json, projectDir: process.cwd() };
+      return { subcommand, provider, clientId, clientSecret, tenant, teamId, keyId, privateKey, graphVersion, disable, json: json2, projectDir: process.cwd() };
     default:
       break;
   }
@@ -152553,7 +153334,7 @@ function isValidMicrosoftTenantSelection(value) {
 }
 function parseEnvArgs(args) {
   const [subcommand, ...rest] = args;
-  let json = false;
+  let json2 = false;
   let file = null;
   let hostAlias = null;
   let subname = null;
@@ -152565,7 +153346,7 @@ function parseEnvArgs(args) {
     const arg = rest[index];
     switch (arg) {
       case "--json":
-        json = true;
+        json2 = true;
         break;
       case "--file":
         file = readFlagValue(rest, ++index, "--file");
@@ -152604,13 +153385,13 @@ function parseEnvArgs(args) {
         throw commandError2("Missing stdin input flag.", "Pipe the value to `sporades env set <name> --stdin`.");
       }
       validateServerEnvKeyName(positional[0]);
-      return { subcommand, name: positional[0], stdin, json, projectDir: process.cwd() };
+      return { subcommand, name: positional[0], stdin, json: json2, projectDir: process.cwd() };
     case "has":
       if (positional.length !== 1) {
         throw commandError2("Missing Server env key name.", "Use `sporades env has <name>`.");
       }
       validateServerEnvKeyName(positional[0]);
-      return { subcommand, name: positional[0], json, projectDir: process.cwd() };
+      return { subcommand, name: positional[0], json: json2, projectDir: process.cwd() };
     case "init":
     case "import":
     case "status":
@@ -152625,7 +153406,7 @@ function parseEnvArgs(args) {
       if (subname) {
         validateCapsuleSubname(subname);
       }
-      return { subcommand, file, hostAlias, subname, output, sealed, json, projectDir: process.cwd() };
+      return { subcommand, file, hostAlias, subname, output, sealed, json: json2, projectDir: process.cwd() };
     default:
       throw commandError2(
         `Unknown env command: ${subcommand ?? ""}`.trim(),
@@ -152687,7 +153468,7 @@ function parseHostArgs(args) {
     return options;
   }
   const [subcommand, ...rest] = args;
-  let json = false;
+  let json2 = false;
   let hostAlias = null;
   let server = null;
   let domain = null;
@@ -152713,7 +153494,7 @@ function parseHostArgs(args) {
     const arg = rest[index];
     switch (arg) {
       case "--json":
-        json = true;
+        json2 = true;
         break;
       case "--on":
         if (subcommand !== "register") throw commandError2("--on is only supported by host register and services.", "Select the services Host with --on <alias>.");
@@ -152806,7 +153587,7 @@ function parseHostArgs(args) {
       if (hostAlias) validateHostAlias(hostAlias);
       if (queryCredentialEnv && !["check", "migrate"].includes(operation)) throw commandError2("Unexpected operator query credential.", "Use --query-credential-env only with host telemetry check or migrate.");
       if (queryCredentialEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(queryCredentialEnv)) throw commandError2("Invalid query credential environment reference.", "Use an environment variable name.");
-      return { subcommand, operation, subname: extra[0], telemetryProfileName, queryCredentialEnv, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, operation, subname: extra[0], telemetryProfileName, queryCredentialEnv, hostAlias, json: json2, projectDir: process.cwd() };
     }
     case "add": {
       const [alias, ...extra] = positional;
@@ -152829,7 +153610,7 @@ function parseHostArgs(args) {
       validateHostedDomain(domain);
       validateHostRemoteRoot(remoteRoot);
       validateHostTlsMode(tlsMode);
-      return { subcommand, alias, server, domain, remoteRoot, tlsMode, json, projectDir: process.cwd() };
+      return { subcommand, alias, server, domain, remoteRoot, tlsMode, json: json2, projectDir: process.cwd() };
     }
     case "use": {
       const [alias, ...extra] = positional;
@@ -152840,7 +153621,7 @@ function parseHostArgs(args) {
         throw commandError2("Too many positional arguments.", "Use `sporades host use <alias>`.");
       }
       validateHostAlias(alias);
-      return { subcommand, alias, json, projectDir: process.cwd() };
+      return { subcommand, alias, json: json2, projectDir: process.cwd() };
     }
     case "current":
       if (positional.length > 0) {
@@ -152849,7 +153630,7 @@ function parseHostArgs(args) {
       if (hostAlias) {
         validateHostAlias(hostAlias);
       }
-      return { subcommand, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, hostAlias, json: json2, projectDir: process.cwd() };
     case "health": {
       const [positionalSubname, ...extra] = positional;
       if (extra.length > 0) {
@@ -152861,7 +153642,7 @@ function parseHostArgs(args) {
       if (positionalSubname) {
         validateCapsuleSubname(positionalSubname);
       }
-      return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname ?? null, hostAlias, json: json2, projectDir: process.cwd() };
     }
     case "bind": {
       const [positionalSubname, ...extra] = positional;
@@ -152875,7 +153656,7 @@ function parseHostArgs(args) {
         validateHostAlias(hostAlias);
       }
       validateCapsuleSubname(positionalSubname);
-      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, hostAlias, json: json2, projectDir: process.cwd() };
     }
     case "canonical": {
       const [operation, name2, domain2, ...extra] = positional;
@@ -152884,7 +153665,7 @@ function parseHostArgs(args) {
       }
       validateCapsuleSubname(name2);
       if (hostAlias) validateHostAlias(hostAlias);
-      return { subcommand, subname: name2, canonicalDomain: operation === "set" ? validateCanonicalDomain(domain2) : null, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, subname: name2, canonicalDomain: operation === "set" ? validateCanonicalDomain(domain2) : null, hostAlias, json: json2, projectDir: process.cwd() };
     }
     case "register": {
       const [positionalSubname, ...extra] = positional;
@@ -152900,7 +153681,7 @@ function parseHostArgs(args) {
       validateCapsuleSubname(positionalSubname);
       if (canonicalDomain && !aliasDomains.includes(canonicalDomain)) aliasDomains.push(canonicalDomain);
       validateAliasDomains(aliasDomains);
-      return { subcommand, subname: positionalSubname, hostAlias, servicesAlias, aliasDomains, canonicalDomain, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, hostAlias, servicesAlias, aliasDomains, canonicalDomain, json: json2, projectDir: process.cwd() };
     }
     case "rotate-key": {
       const [positionalSubname, ...extra] = positional;
@@ -152914,7 +153695,7 @@ function parseHostArgs(args) {
         validateHostAlias(hostAlias);
       }
       validateCapsuleSubname(positionalSubname);
-      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, hostAlias, json: json2, projectDir: process.cwd() };
     }
     case "bootstrap":
       if (positional.length > 0) {
@@ -152923,7 +153704,7 @@ function parseHostArgs(args) {
       if (hostAlias) {
         validateHostAlias(hostAlias);
       }
-      return { subcommand, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, hostAlias, json: json2, projectDir: process.cwd() };
     case "upgrade":
       if (positional.length > 0) {
         throw commandError2("Too many positional arguments.", "Use `sporades host upgrade --host <alias> --json`.");
@@ -152931,7 +153712,7 @@ function parseHostArgs(args) {
       if (hostAlias) {
         validateHostAlias(hostAlias);
       }
-      return { subcommand, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, hostAlias, json: json2, projectDir: process.cwd() };
     case "list":
       if (positional.length > 0) {
         throw commandError2("Too many positional arguments.", "Use `sporades host list --host <alias> --json`.");
@@ -152939,7 +153720,7 @@ function parseHostArgs(args) {
       if (hostAlias) {
         validateHostAlias(hostAlias);
       }
-      return { subcommand, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, hostAlias, json: json2, projectDir: process.cwd() };
     case "stats": {
       const [positionalSubname, ...extra] = positional;
       if (extra.length > 0) {
@@ -152951,13 +153732,13 @@ function parseHostArgs(args) {
       if (positionalSubname) {
         validateCapsuleSubname(positionalSubname);
       }
-      return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname ?? null, hostAlias, json: json2, projectDir: process.cwd() };
     }
     case "policy": {
       if (!hostAlias || !subname) throw commandError2("Missing Host policy target.", "Pass --host <alias> --subname <name>.");
       validateHostAlias(hostAlias);
       validateCapsuleSubname(subname);
-      return { subcommand, ...parsePolicyOperation(positional), hostAlias, subname, json, projectDir: process.cwd() };
+      return { subcommand, ...parsePolicyOperation(positional), hostAlias, subname, json: json2, projectDir: process.cwd() };
     }
     case "jobs":
       if (positional.length > 0) throw commandError2("Too many positional arguments.", "Use `sporades host jobs --host <alias> --subname <name>`.");
@@ -152985,7 +153766,7 @@ function parseHostArgs(args) {
       if (selectedSubname) {
         validateCapsuleSubname(selectedSubname);
       }
-      return { subcommand, subname: selectedSubname, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, subname: selectedSubname, hostAlias, json: json2, projectDir: process.cwd() };
     }
     case "start":
     case "stop":
@@ -153004,7 +153785,7 @@ function parseHostArgs(args) {
         validateHostAlias(hostAlias);
       }
       validateCapsuleSubname(positionalSubname);
-      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, hostAlias, json: json2, projectDir: process.cwd() };
     }
     case "releases": {
       const [positionalSubname, ...extra] = positional;
@@ -153018,7 +153799,7 @@ function parseHostArgs(args) {
         validateHostAlias(hostAlias);
       }
       validateCapsuleSubname(positionalSubname);
-      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, hostAlias, json: json2, projectDir: process.cwd() };
     }
     case "rollback": {
       const [positionalSubname, releaseId, ...extra] = positional;
@@ -153036,7 +153817,7 @@ function parseHostArgs(args) {
       }
       validateCapsuleSubname(positionalSubname);
       validateHostReleaseId(releaseId);
-      return { subcommand, subname: positionalSubname, releaseId, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, subname: positionalSubname, releaseId, hostAlias, json: json2, projectDir: process.cwd() };
     }
     case "push":
       if (positional.length > 0) {
@@ -153054,7 +153835,7 @@ function parseHostArgs(args) {
           "Use `sporades host push --verify --fallback-to-previous-release`."
         );
       }
-      return { subcommand, hostAlias, subname, restart, verify: verify2, fallbackToPreviousRelease, allowMissingEnv, json, projectDir: process.cwd() };
+      return { subcommand, hostAlias, subname, restart, verify: verify2, fallbackToPreviousRelease, allowMissingEnv, json: json2, projectDir: process.cwd() };
     case "github": {
       const [area, action, ...extra] = positional;
       if (area !== "workflow" || action !== "write") {
@@ -153079,7 +153860,7 @@ function parseHostArgs(args) {
       validateCapsuleSubname(subname);
       validateGithubWorkflowBranch(branch);
       validateGithubWorkflowFile(file);
-      return { subcommand, github: { area, action }, hostAlias, subname, branch, file, dryRun, force, json, projectDir: process.cwd() };
+      return { subcommand, github: { area, action }, hostAlias, subname, branch, file, dryRun, force, json: json2, projectDir: process.cwd() };
     }
     case "logs": {
       const [source = "http", ...extra] = positional;
@@ -153093,7 +153874,7 @@ function parseHostArgs(args) {
       if (subname) {
         validateCapsuleSubname(subname);
       }
-      return { subcommand, source, hostAlias, subname, lines, json, projectDir: process.cwd() };
+      return { subcommand, source, hostAlias, subname, lines, json: json2, projectDir: process.cwd() };
     }
     case "invoke": {
       const [action, ...extra] = positional;
@@ -153110,7 +153891,7 @@ function parseHostArgs(args) {
       if (subname) {
         validateCapsuleSubname(subname);
       }
-      return { subcommand, action, subname, hostAlias, json, projectDir: process.cwd() };
+      return { subcommand, action, subname, hostAlias, json: json2, projectDir: process.cwd() };
     }
     default:
       throw commandError2(
@@ -153181,7 +153962,7 @@ function providerLabel2(provider) {
   return `${provider[0]?.toUpperCase() ?? ""}${provider.slice(1)}`;
 }
 function parseLogsArgs(args) {
-  let json = false;
+  let json2 = false;
   let port = null;
   let subcommand = "recent";
   for (let index = 0; index < args.length; index += 1) {
@@ -153194,7 +153975,7 @@ function parseLogsArgs(args) {
         port = readPort(readFlagValue(args, ++index, "--port"));
         break;
       case "--json":
-        json = true;
+        json2 = true;
         break;
       default:
         throw commandError2(`Unknown flag: ${arg}`, "Use `sporades logs [tail] --json`.");
@@ -153202,14 +153983,14 @@ function parseLogsArgs(args) {
   }
   return {
     subcommand,
-    json,
+    json: json2,
     port,
     projectDir: process.cwd()
   };
 }
 function parseDbArgs(args) {
   const [subcommand, ...rest] = args;
-  let json = false;
+  let json2 = false;
   let port = null;
   const positional = [];
   for (let index = 0; index < rest.length; index += 1) {
@@ -153219,7 +154000,7 @@ function parseDbArgs(args) {
         port = readPort(readFlagValue(rest, ++index, "--port"));
         break;
       case "--json":
-        json = true;
+        json2 = true;
         break;
       default:
         positional.push(arg);
@@ -153231,12 +154012,12 @@ function parseDbArgs(args) {
       if (positional.length > 0) {
         throw commandError2("Too many positional arguments.", `Use \`sporades db ${subcommand} --json\`.`);
       }
-      return { subcommand, json, port, projectDir: process.cwd() };
+      return { subcommand, json: json2, port, projectDir: process.cwd() };
     case "query":
       if (positional.length === 0) {
         throw commandError2("Missing SQL query.", "Use `sporades db query <sql>`.");
       }
-      return { subcommand, sql: positional.join(" "), json, port, projectDir: process.cwd() };
+      return { subcommand, sql: positional.join(" "), json: json2, port, projectDir: process.cwd() };
     default:
       throw commandError2(
         `Unknown db command: ${subcommand ?? ""}`.trim(),
@@ -153347,7 +154128,7 @@ async function createProjectFromLocalTemplate(options) {
 async function readLocalTemplateIgnoreRules(sourceDir) {
   let contents = "";
   try {
-    contents = await readFile14(path23.join(sourceDir, ".gitignore"), "utf8");
+    contents = await readFile15(path23.join(sourceDir, ".gitignore"), "utf8");
   } catch {
     return [];
   }
@@ -153379,8 +154160,8 @@ async function finalizeLocalTemplateProject(options, projectDir) {
   let packageJson;
   let projectConfig;
   try {
-    packageJson = JSON.parse(await readFile14(packagePath, "utf8"));
-    projectConfig = JSON.parse(await readFile14(configPath, "utf8"));
+    packageJson = JSON.parse(await readFile15(packagePath, "utf8"));
+    projectConfig = JSON.parse(await readFile15(configPath, "utf8"));
   } catch {
     throw commandError2(
       "Local template must include valid package.json and sporades.json files.",
@@ -153589,7 +154370,7 @@ async function inspectDevSchedules(options) {
 }
 async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
   try {
-    return JSON.parse(await readFile14(path23.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+    return JSON.parse(await readFile15(path23.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
   } catch (error) {
     if (errorDetails(error).code !== "ENOENT") throw commandError2("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
   }
@@ -153604,7 +154385,7 @@ async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
   const filePath = path23.join(projectDir, DEV_DATABASE_ENV_FILE);
   await mkdir11(path23.dirname(filePath), { recursive: true });
-  const previous = await readFile14(filePath).catch((error) => {
+  const previous = await readFile15(filePath).catch((error) => {
     if (errorDetails(error).code === "ENOENT") return null;
     throw error;
   });
@@ -153772,7 +154553,7 @@ async function startDevSession(options) {
     response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
     response.end("Dev session is starting.");
   };
-  const server = createServer2(starting);
+  const server = createServer3(starting);
   await new Promise((resolve2, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => {
@@ -154171,7 +154952,7 @@ async function startDevSession(options) {
           });
         }
         rollbackLegacy = await rebuild.publishLegacy({ preserveServerBundle: nextPreserveServerBundle });
-        const previousActionBundle = await readFile14(actionBundlePath);
+        const previousActionBundle = await readFile15(actionBundlePath);
         rollbackActionBundle = async () => replaceFileAtomically(actionBundlePath, previousActionBundle);
         await replaceFileAtomically(actionBundlePath, rebuild.serverBundle);
         if (affectsServerRuntime) {
@@ -154365,7 +155146,7 @@ async function startDevSession(options) {
       process.off("SIGINT", shutdown);
       process.off("SIGHUP", shutdown);
     }
-    const ownedSession = await readFile14(sessionFilePath, "utf8").then(JSON.parse).catch(() => null);
+    const ownedSession = await readFile15(sessionFilePath, "utf8").then(JSON.parse).catch(() => null);
     if (ownedSession?.pid === process.pid && ownedSession.actionBundleId === actionBundleId) {
       try {
         await rm10(sessionFilePath, { force: true });
@@ -155163,7 +155944,7 @@ function stripOneTrailingLineEnding(value) {
 async function readPortableSealedServerEnvEnvelope(filePath) {
   let envelope;
   try {
-    envelope = JSON.parse(await readFile14(filePath, "utf8"));
+    envelope = JSON.parse(await readFile15(filePath, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       throw commandError2(
@@ -155289,7 +156070,7 @@ async function manageHost(options) {
     case "backup": {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
-      const policy = options.operation === "configure" ? validateHostBackupPolicy(JSON.parse(await readFile14(path23.resolve(options.file), "utf8"))) : void 0;
+      const policy = options.operation === "configure" ? validateHostBackupPolicy(JSON.parse(await readFile15(path23.resolve(options.file), "utf8"))) : void 0;
       const result = invokeRemoteHostHelper({
         alias: resolved.alias,
         profile: resolved.profile,
@@ -156825,7 +157606,7 @@ async function removeOwnedDevActionBundle(projectDir, id2) {
   }
   const ownerPath = path23.join(directory, "owner.json");
   const ownerStat = await lstat13(ownerPath).catch(() => null);
-  const owner = ownerStat?.isFile() && !ownerStat.isSymbolicLink() && ownerStat.size <= 1024 ? await readFile14(ownerPath, "utf8").then(JSON.parse).catch(() => null) : null;
+  const owner = ownerStat?.isFile() && !ownerStat.isSymbolicLink() && ownerStat.size <= 1024 ? await readFile15(ownerPath, "utf8").then(JSON.parse).catch(() => null) : null;
   if (owner?.id !== id2 || owner.pid !== process.pid) {
     throw commandError2("Dev action Bundle ownership changed.", "Preserve the unexpected entry for inspection.");
   }
@@ -156849,7 +157630,7 @@ async function reclaimStaleDevActionBundles(projectDir) {
     const ownerPath = path23.join(directory, "owner.json");
     const ownerStat = await lstat13(ownerPath).catch(() => null);
     if (!ownerStat?.isFile() || ownerStat.isSymbolicLink() || ownerStat.size > 1024) continue;
-    const owner = await readFile14(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+    const owner = await readFile15(ownerPath, "utf8").then(JSON.parse).catch(() => null);
     if (owner?.id !== id2 || !Number.isInteger(owner.pid) || owner.pid <= 0 || owner.processStart !== null && typeof owner.processStart !== "string") continue;
     const actualStart = await getProcessStartIdentity(owner.pid);
     if (owner.processStart === null ? processIsLiveForContainerLock(owner.pid) : actualStart === owner.processStart || actualStart === null && processIsLiveForContainerLock(owner.pid)) continue;
@@ -157176,7 +157957,7 @@ async function writeAuthConfiguration(configPath, envPath, config, envValues) {
 }
 async function readRequiredFile3(filePath, message, hint) {
   try {
-    return await readFile14(filePath, "utf8");
+    return await readFile15(filePath, "utf8");
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       throw commandError2(message, hint);
@@ -157186,7 +157967,7 @@ async function readRequiredFile3(filePath, message, hint) {
 }
 async function readContainerBinding(bindingPath) {
   try {
-    return JSON.parse(await readFile14(bindingPath, "utf8"));
+    return JSON.parse(await readFile15(bindingPath, "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return null;
@@ -157202,7 +157983,7 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile14(path23.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile15(path23.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return null;
@@ -157232,7 +158013,7 @@ async function resolveHostPushTarget(config, options) {
 }
 async function readHostConfig() {
   try {
-    const parsed = JSON.parse(await readFile14(hostConfigPath(), "utf8"));
+    const parsed = JSON.parse(await readFile15(hostConfigPath(), "utf8"));
     return normaliseHostConfig(parsed);
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
@@ -157543,7 +158324,7 @@ async function createHostReleaseArchive(options) {
 `)
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile10(path23.join(packageDir, ".env.sporades.server"), await readFile14(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile10(path23.join(packageDir, ".env.sporades.server"), await readFile15(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
     await writeFile10(
@@ -157992,7 +158773,7 @@ async function writeGithubAutodeployWorkflow(options) {
     };
   }
   try {
-    await readFile14(outputPath, "utf8");
+    await readFile15(outputPath, "utf8");
     if (!options.force) {
       throw commandError2(
         "GitHub Actions workflow already exists.",
@@ -159009,13 +159790,13 @@ async function acquireContainerLifecycleLock(projectDir) {
       await writeFile10(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
 `);
       return async () => {
-        const owner = await readFile14(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        const owner = await readFile15(ownerPath, "utf8").then(JSON.parse).catch(() => null);
         if (owner?.token !== token) throw commandError2("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
         await rm10(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile14(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+      const owner = await readFile15(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       if (owner === null) {
         const age = Date.now() - await lstat13(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (age <= 1e3) {
