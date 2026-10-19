@@ -4,7 +4,9 @@
 
 Changes since v0.9.33.
 
-No changes detected.
+### 🚀 Features
+
+- Add Mutation-only `ctx.serverAuth.terminateHumanIdentity(userId)` and `reserveTerminateHumanIdentity(userId)` for atomic, terminal human identity closure (ADR 0057, #264). One shared Database adapter transition tombstones the human and removes email credentials, Provider identities, Sessions, OAuth attempts, Reset codes and preferences while retiring Access keys as `owner-deleted`, in the Capsule's own transaction; repeats return `already-terminated`. Sign-in, password-reset confirmation, delayed reset delivery, Team membership writers and user Jobs recheck the tombstone. Existing APIs are unchanged.
 
 ## v0.9.11 - 2026-09-02
 

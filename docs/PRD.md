@@ -227,6 +227,13 @@ The repository currently includes:
   management, immutable grants, one-time secret disclosure, atomic rotation and
   retirement, Credential provenance through durable Jobs, and metadata-only
   Privileged/operator inspection and revocation through a running Capsule.
+- Terminal human identity closure through Mutation-only
+  `ctx.serverAuth.terminateHumanIdentity(userId)` and its validated-continuation
+  reservation. It atomically tombstones one linked human without Team
+  memberships and removes credentials, Provider identities, Sessions, Reset
+  codes and preferences while retiring Access keys, with the Capsule's own
+  erasure writes; repeats return `already-terminated` and the email is
+  released for fresh registration (ADR 0057).
 - Server-only SMTP mail through `ctx.mail.send(...)`, including an optional
   validated `autoSubmitted` field for the standard automated-message header,
   with one portable `sporades.json` contract for Dev sessions, local Container sessions, and

@@ -1,6 +1,6 @@
 # ADR-0057: Human identity termination is an atomic, terminal transition
 
-Status: Proposed
+Status: Accepted (implemented in #264)
 
 Capsules need to close a human account without writing runtime auth tables.
 [ADR 0052](./0052-human-security-retirement-is-transaction-bound.md) retires
