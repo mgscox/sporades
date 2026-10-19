@@ -455,7 +455,9 @@ test("a delayed reset request accepted before re-registration cannot reach the r
     const delivery = await prepareEmailPasswordResetDelivery(database, { email: "delayed@example.test", code: null, requestedAt });
     assert.equal(delivery, null, "the delayed request belongs to the terminated identity");
     assert.equal(await countRows(database, "sporades_auth_password_reset_codes", "email", "delayed@example.test"), 0);
-    const fresh = await prepareEmailPasswordResetDelivery(database, { email: "delayed@example.test", code: null, requestedAt: new Date().toISOString() });
+    const replacement = await database.adapter.findEmailCredentialWithUser("delayed@example.test");
+    const fresh = await prepareEmailPasswordResetDelivery(database, { email: replacement.email, code: null,
+      requestedAt: new Date(Date.parse(replacement.createdAt) + 1).toISOString() });
     assert.equal(fresh?.to, "delayed@example.test", "a request accepted after re-registration is delivered normally");
 
     // A Reset code bound to the old identity (for example one a racing writer inserted) can never
