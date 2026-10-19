@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { createRuntimeObservability, routeCollection } from '../dist/observability-runtime.js';
 import { clientAddressBoundaryToken } from '../dist/client-address.js';
+import { nestedUrlGroups } from './support/diagnostic-nested-urls.js';
 
 async function listen(t, handler) {
   const server = createServer(handler).listen(0, '127.0.0.1');
@@ -199,7 +200,7 @@ const apostropheDiagnostics = [
   const clean = apostropheDiagnosticUrls.map(base => before + base + after);
   return { name,
     message: `Ready? Investigate #234 ${urls.join(' ')} Continue.`,
-    safe: `Ready? Investigate #234 ${clean.join(' ')}${name === "bare assignment" ? "" : " Continue."}`,
+    safe: `Ready? Investigate #234 ${name === "bare assignment" ? clean[0] : clean.join(' ')}${name === "bare assignment" ? "" : " Continue."}`,
     stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
     frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
   };
@@ -214,9 +215,10 @@ const punctuatedApostropheDiagnostics = [...'-._~:/?#[]@!$&()*+,;=%'].flatMap(pu
   const clean = apostropheDiagnosticUrls.map(base => `'${base}'`);
   return { name: `apostrophe ${position} URI punctuation: ${value}`,
     message: `Ready? Investigate #234 ${urls.join(' ')} Continue.`,
-    safe: `Ready? Investigate #234 ${clean.join(' ')} Continue.`,
+    // Ambiguous same-quote fragment/value openers cannot prove the next field closed.
+    safe: `Ready? Investigate #234 ${/^O[?#&=]'Reilly$/.test(value) ? clean[0].slice(0, -1) : clean.join(' ') + ' Continue.'}`,
     stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
-    frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
+    frames: clean.reverse().map(filename => ({ filename: /^O[?#&=]'Reilly$/.test(value) ? filename.slice(0, -1) : filename, function: 'execute', lineno: 12, colno: 8 })),
   };
 });
 for (const value of ["'O'&Reilly phrase'", "'O'#Reilly phrase'", "'O'=Reilly phrase'", "'O'& cap = Reilly phrase'"]) {
@@ -272,7 +274,7 @@ const wrappedAmbiguousDiagnostics = ["'", '"', '`', "''", '""', '``', '   '].map
   const clean = apostropheDiagnosticUrls.map(base => wrapper + base + close);
   return { name: `ambiguous suffix with wrapper ${JSON.stringify(wrapper)}`,
     message: `Before ${urls.join(' ')}\nNext public #234 line.`,
-    safe: `Before ${clean.join(' ')}\nNext public #234 line.`,
+    safe: `Before ${close ? clean.join(' ') : clean[0]}\nNext public #234 line.`,
     stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
     frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
   };
@@ -286,7 +288,7 @@ for (const close of ['"', '']) for (const continuation of [
   const clean = apostropheDiagnosticUrls.map(base => '"' + base + close);
   wrappedAmbiguousDiagnostics.push({ name: `embedded double quote before comma, closing=${!!close}, continuation=${continuation}`,
     message: `Before ${urls.join(' ')}\nNext public #234 line.`,
-    safe: `Before ${clean.join(' ')}\nNext public #234 line.`,
+    safe: `Before ${close ? clean.join(' ') : clean[0]}\nNext public #234 line.`,
     stack: 'Error: diagnostic URL\n' + urls.map(url => `    at execute (${url}:12:8)`).join('\n'),
     frames: clean.reverse().map(filename => ({ filename, function: 'execute', lineno: 12, colno: 8 })),
   });
@@ -423,6 +425,7 @@ for (const [name, probes, serverEnv = {}] of [
   ...punctuatedApostropheGroups,
   ['repeated apostrophes', repeatedApostropheDiagnostics],
   ...bareSuffixGroups,
+  ...nestedUrlGroups,
   ['ambiguous suffix wrappers', wrappedAmbiguousDiagnostics],
   ['URL schemes', schemeDiagnostics],
   ['complete URL env values', [completeEnvDiagnostic], { PUBLIC_URL: 'https://example.test/inbox?cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker' }],
@@ -663,6 +666,7 @@ for (const [name, probes, serverEnv = {}] of [
   ...punctuatedApostropheGroups,
   ['repeated apostrophes', repeatedApostropheDiagnostics],
   ...bareSuffixGroups,
+  ...nestedUrlGroups,
   ['ambiguous suffix wrappers', wrappedAmbiguousDiagnostics],
   ['URL schemes', schemeDiagnostics],
   ['complete URL env values', [completeEnvDiagnostic], { PUBLIC_URL: 'https://example.test/inbox?cap=qa-apostrophe-query-marker#qa-apostrophe-fragment-marker' }],

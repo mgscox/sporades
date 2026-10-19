@@ -20,11 +20,12 @@ URI punctuation or query separators, repeated apostrophes (ambiguous boundaries
 conceal the remaining line even without an outer wrapper), and
 JSON escapes, including percent-encoded query/fragment delimiters. Surrounding
 quotation and JSON fields are preserved; unterminated values conceal the line.
-URL stripping precedes Server env substitution, including URL-prefix env values.</p>
+URL stripping precedes Server env substitution, including URL-prefix env values.
+Nested URL-like text stays private until its value quotation/container closes.</p>
 </div></section>
 <div class="tsd-signature"><span class="tsd-signature-keyword">type</span> <span class="tsd-kind-type-alias">ObservabilityConfig</span> <span class="tsd-signature-symbol">=</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-property" href="#errors">errors</a><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-symbol">{</span><br/>        <span class="tsd-kind-property">client</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">boolean</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">dsnEnv</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">environment</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">protocol</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">&quot;sentry&quot;</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">sampleRate</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">number</span><span class="tsd-signature-symbol">;</span><br/>    <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/observability.d.ts#L12">observability.d.ts:12</a></li></ul></aside>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/observability.d.ts#L13">observability.d.ts:13</a></li></ul></aside>
 <section class="tsd-panel-group tsd-index-group">
 <section class="tsd-panel tsd-index-panel">
 <details class="tsd-index-content tsd-accordion" open><summary class="tsd-accordion-summary tsd-index-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
@@ -60,7 +61,7 @@ URL stripping precedes Server env substitution, including URL-prefix env values.
 <div class="tsd-comment tsd-typography"><p>Error sampling probability from 0 to 1; defaults to 1.</p>
 </div></li></ul></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/observability.d.ts#L13">observability.d.ts:13</a></li></ul></aside></section></section></details></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/observability.d.ts#L14">observability.d.ts:14</a></li></ul></aside></section></section></details></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">

@@ -108,6 +108,12 @@ prose; separately recognizable URL fields and following lines remain available.
 URL stripping runs before Server env substitution, so a URL-prefix env value
 such as `https://example.test/` cannot hide a query or fragment from the scanner.
 Complete URL-valued env secrets also remain concealed after suffix stripping.
+A URL-looking string inside a quoted query/fragment or a nested value container
+belongs to the private suffix. Whitespace before `/public` or `scheme://...`
+cannot establish another URL field while that quotation/container remains open,
+including JSON-escaped quotation and encoded query/fragment delimiters.
+Ambiguous quotation also conceals later URL-looking fields on the same line when
+the runtime cannot prove they are outside the value; following lines are retained.
 Separately quoted/assigned URL fields, surrounding
 JSON fields and following public lines retain their structural boundaries.
 Quoted query values may also include

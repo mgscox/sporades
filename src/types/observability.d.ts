@@ -8,6 +8,7 @@
  * JSON escapes, including percent-encoded query/fragment delimiters. Surrounding
  * quotation and JSON fields are preserved; unterminated values conceal the line.
  * URL stripping precedes Server env substitution, including URL-prefix env values.
+ * Nested URL-like text stays private until its value quotation/container closes.
  */
 export type ObservabilityConfig = {
   errors?: {
