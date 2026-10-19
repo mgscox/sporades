@@ -508,3 +508,52 @@ Team administrative outcomes are ordinary redacted security events, not Privileg
 Team admin authority manages membership. Membership application roles express Capsule-declared responsibilities. Capsule ACL authority is the explicit policy the Capsule writes with `ctx.acl.teams`. The Privileged server role is separate userless server authority: it is not a Team admin, member, application role, or browser credential. Inside an active audited `ctx.privileged.run(...)` callback, `privilegedCtx.teams` offers only exact-Team read-only inspection: `countMembers`, `listMembers`, `listJoinLinks`, and `inspectJoinLink`. The first three require an existing explicit Team ID and otherwise fail with `TEAM_NOT_FOUND`; `inspectJoinLink` keeps its safe invalid-capability result. This projection never lists a current user's Teams, validates email-bound links, or changes Team state, and it exposes no raw rows, target emails, or recoverable Join capabilities. Detached or aborted in-flight inspection fails closed before it can return a result.
 
 For precise browser and server signatures, see the generated [client Teams API](/api/types/client.TeamsApi.html), [server current-user Teams API](/api/types/server.CurrentUserTeamsApi.html), and [server Privileged Teams API](/api/types/server.PrivilegedTeamsApi.html).
+
+## Test Team Billing with a loopback provider
+
+A Dev session can send all runtime-owned Team Billing Stripe requests to a local
+protocol stub instead of Stripe:
+
+```sh
+SPORADES_DEV_STRIPE_API_ORIGIN=http://127.0.0.1:52345 sporades dev --json
+```
+
+This process-only setting follows [ADR 0058](../adr/0058-team-billing-test-provider-boundary.md).
+Use an exact `http://127.0.0.1:<port>` or `http://[::1]:<port>` origin (`https`
+is also accepted), with a port from 1 to 65535. Hostnames including `localhost`,
+other loopback addresses, credentials, paths (even `/`), queries and fragments
+are refused with `STRIPE_API_ORIGIN_INVALID`; empty and whitespace values also
+refuse. Enabled Stripe payments must use `livemode: false` and a resolved Sealed
+Server secret beginning with `sk_test_`, or startup refuses with
+`STRIPE_TEST_ORIGIN_LIVE_MODE`. A dormant configuration is accepted with a warning
+and performs no provider work.
+
+The CLI passes the admitted value to every initial and replacement Dev runtime.
+Checkout, Portal configuration attestation and sessions, managed Subscription
+updates, seat convergence and erasure quiescence share that origin. A test suite
+can start a tiny `node:http` stub on an ephemeral loopback port and pass its
+origin in the child Dev process environment. The stateful fake provider described
+by ADR 0058 is separate work.
+
+The setting is never a `sporades.json` key or a Server env value, and it is never
+exposed through `ctx.env`. All commands outside `sporades dev`, including deploy,
+Host operations and explicit builds, refuse while it is set with
+`STRIPE_TEST_ORIGIN_DEV_ONLY`. Unset it before running those commands. Bundles,
+including private Dev action Bundles, and Container/Hosted launch state never
+carry the value. Container and Hosted runtimes do not read it.
+
+`sporades dev --json` reports `payments.stripe.providerOrigin: "loopback-test"`
+in the `started` event. Each runtime start emits the platform warning
+`payments.stripe.test_origin_active`. With the variable unset in the diagnostic
+shell, `sporades doctor --session dev --json` reports the same marker from the
+running runtime, without revealing the stub origin or port. Public Dev sessions
+may also use the override.
+
+Capsule-owned `createStripePaymentIntegration` calls, including the generated
+payment foundation, keep their explicit `apiBaseUrl` option; this variable is
+not injected into them. Webhook verification remains local HMAC verification.
+
+Passing a local stub test certifies **nothing about live Stripe**: it does not
+attest Stripe's sandbox/live API behavior, Dashboard Portal configuration,
+payment methods, tax, SCA, delivery timing, or production readiness. Real Stripe
+acceptance remains a separately authorized human check.

@@ -694,3 +694,15 @@ Database operations are `services backup|backups observability` and
 `services restore observability --id <snapshot> --confirm observability`.
 See [Host-managed observability](./host-observability.md) for the complete
 resource, credential, recovery and monitoring contract.
+
+### Dev Stripe protocol tests
+
+Start a test Dev session with
+`SPORADES_DEV_STRIPE_API_ORIGIN=http://127.0.0.1:52345 sporades dev --json`.
+This redirects runtime-owned Team Billing operations to a literal loopback
+protocol stub, requires test-mode credentials and emits a `loopback-test`
+provider marker. Unset the variable before any other CLI command, including
+`sporades doctor --session dev --json`, which reads that marker from the running
+Dev runtime. Deploy and Host commands refuse while the variable is set.
+See [the setting and refusal codes](./teams.md#test-team-billing-with-a-loopback-provider).
+Local tests certify nothing about live Stripe.

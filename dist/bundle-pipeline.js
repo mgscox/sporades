@@ -60,6 +60,7 @@ export async function createBundle(projectDir, config, options = {}) {
         ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey)
         : parseServerEnv(serverEnvFile);
     validateAuthConfig(config, serverEnv);
+    options.validateRuntimeEnv?.(serverEnv);
     validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
     const [serverSource, clientSource] = await Promise.all([
         readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.")

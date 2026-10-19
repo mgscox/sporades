@@ -50,6 +50,9 @@ export async function runDoctorChecks(options) {
     if (options.session) {
         if (options.session === "dev" || options.session === "public-dev") {
             checks.push(...await devSessionChecks(options));
+            const stripeProvider = await devStripeProviderCheck(options.projectDir);
+            if (stripeProvider)
+                checks.push(stripeProvider);
             if (project.config.admissionPolicy)
                 checks.push(await localAdmissionCheck(options));
             checks.push(...await localCapsuleServiceChecks(project.config, options));
@@ -810,6 +813,25 @@ async function runHostJsonCommand(args, projectDir) {
             }
         });
     });
+}
+async function devStripeProviderCheck(projectDir) {
+    const session = await readOptionalJsonFile(path.join(projectDir, ".sporades", "dev-session.json"));
+    if (!Number.isInteger(session?.port) || session.port < 1 || session.port > 65535 || !/^[a-f0-9]{64}$/.test(session?.inspectionToken))
+        return null;
+    try {
+        const response = await fetch(`http://127.0.0.1:${session.port}/__sporades/health/runtime`, {
+            headers: { "x-sporades-host-probe": session.inspectionToken }, signal: AbortSignal.timeout(1500), redirect: "error",
+        });
+        const health = await response.json();
+        if (health?.data?.runtime?.payments?.stripe?.providerOrigin !== "loopback-test")
+            return null;
+        return { id: "doctor.dev.stripe-provider", title: "Stripe test provider", scope: "dev", status: "warn", severity: "warning",
+            message: "Loopback Stripe test provider active; this certifies nothing about live Stripe.",
+            details: { payments: { stripe: { providerOrigin: "loopback-test" } } } };
+    }
+    catch {
+        return null;
+    }
 }
 async function devSessionChecks(options) {
     const session = await readOptionalJsonFile(path.join(options.projectDir, ".sporades", "dev-session.json"));

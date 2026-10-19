@@ -28,6 +28,7 @@
       "src/cli/cli-help.ts",
       "src/cli/cli-support.ts",
       "src/cli/cli-version.ts",
+      "src/cli/dev-stripe-origin.ts",
       "src/cli/doctor.ts",
       "src/cli/github-autodeploy-workflow.ts",
       "src/cli/host-autostart.ts",
@@ -144,7 +145,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "03386660ec4dab9320794806e489b3a7536e8a8d2dc97effff50b7908f087a81"
+    "digest": "e3099bf767d53c51f90c05dc840a1b2df2a5f2c4122c861ca789c880fa5a11d4"
   },
   "outputs": {
     "files": [
@@ -226,6 +227,10 @@
       "dist/cli/cli-version.d.ts.map",
       "dist/cli/cli-version.js",
       "dist/cli/cli-version.js.map",
+      "dist/cli/dev-stripe-origin.d.ts",
+      "dist/cli/dev-stripe-origin.d.ts.map",
+      "dist/cli/dev-stripe-origin.js",
+      "dist/cli/dev-stripe-origin.js.map",
       "dist/cli/doctor.d.ts",
       "dist/cli/doctor.d.ts.map",
       "dist/cli/doctor.js",
@@ -644,6 +649,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "a5d6d2d627b064472df15e3be5756c7d2d81313b21ccb4da9165a095d9f2162d"
+    "digest": "427f8d96ddbf43b945e4ce4f1574c9e6282cf20aeec2c6122c0d1822addb301c"
   }
 }
