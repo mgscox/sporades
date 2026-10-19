@@ -3525,6 +3525,45 @@ test("a delayed retired socket close cannot stop restored Journey capture", asyn
   }
 });
 
+test("generated client preserves the browser error budget after real ACL denials", async () => {
+  const { collectionLoaderSource } = await import("../dist/templates/observability-loader.js");
+  const { mutation, table, String: Text } = await import("../dist/server.js");
+  const { runMutation, resolveAnonymousSession } = await import("../dist/server-runtime-source.js");
+  const root = await mkdtemp(path.join(process.cwd(), ".scratch", "collection-client-"));
+  const db = await openDevDatabase(path.join(root, "data.db"), "", {}, {}, {
+    schema: { notes: table({ text: Text() }).acl({ insert: () => false }) },
+    mutations: { denied: mutation(ctx => ctx.db.notes.insert({ text: "denied" })) },
+  });
+  await db.init();
+  const { auth } = await resolveAnonymousSession(db);
+  const browser = installBrowserFakes(auth, { handlers: {
+    "mutation.run": async () => {
+      const result = await runMutation(db, auth, "denied", []);
+      return { type: "mutation.result", data: null, error: result.error };
+    },
+  } });
+  const sent = [];
+  window.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+  window.dispatchEvent = event => browser.emitWindow(event.type, event);
+  window.fetch = async (url, options) => { sent.push({ url, ...JSON.parse(options.body) }); };
+  try {
+    runInNewContext(collectionLoaderSource(true, false), { window });
+    const client = await importClientRuntime();
+    for (let i = 0; i < 20; i++) assert.equal((await client.mutations.run("denied")).error.code, "DENIED");
+    for (const code of ["UNAUTHENTICATED", "FORBIDDEN", "REAUTHENTICATION_REQUIRED", "JOB_CANCELLED", "RESOURCE_CANCELLED"]) {
+      browser.sockets[0].emit("message", { data: JSON.stringify({ type: "error", error: { code, message: "expected" } }) });
+      browser.emitWindow("unhandledrejection", { reason: Object.assign(new Error("expected"), { code }) });
+    }
+    assert.deepEqual(sent, [], "expected denials must never become browser collection requests");
+    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "error", error: { code: "INTERNAL", message: "real failure" } }) });
+    assert.deepEqual(sent, [{ url: "/__sporades/collect", type: "error", message: "real failure" }]);
+  } finally {
+    browser.cleanup();
+    await db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("client File upload policy failures retain their typed code at negotiation and PUT", async () => {
   for (const [stage, code] of [["negotiation", "FILE_UPLOAD_DENIED"], ["negotiation", "FILE_MIME_TYPE_NOT_ALLOWED"], ["put", "FILE_MIME_TYPE_MISMATCH"], ["put", "FILE_UPLOAD_SIZE_MISMATCH"]]) {
     const error = { code, message: "File rejected.", hint: "Check the File policy." };

@@ -1,3 +1,4 @@
+import { validateObservabilityConfig } from "../observability-runtime.js";
 import { normalizePublicOrigin } from "../public-origin.js";
 import { validateServerEnvConfig } from "../server-env-requirements.js";
 import { resolveFileAllowedMimeTypes } from "../file-policy.js";
@@ -36,6 +37,8 @@ const DEFAULT_CSP_DIRECTIVES = {
 
 const SUPPORTED_PROJECT_KEYS = new Set([
   "admissionPolicy",
+  "analytics",
+  "observability",
   "auth",
   "baseImage",
   "capsule",
@@ -76,6 +79,7 @@ export async function readProjectConfig(projectDir: string) {
   resolveAdmissionPolicy(config.admissionPolicy, config.deploy?.files);
   validatePublicOriginConfig(config);
   validateLogConfig(config);
+  validateObservabilityConfig(config);
   if (config.env !== undefined) config.env = validateServerEnvConfig(config.env);
   resolveFileAllowedMimeTypes(config.files);
   validateSecurityConfig(config.security);

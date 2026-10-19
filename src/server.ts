@@ -772,3 +772,5 @@ import {
   normalizeRequireUserAuthOptions,
   validateCapsuleAuthRequirements,
 } from "./auth-admission.js";
+
+export type { ObservabilityConfig, AnalyticsConfig } from "../src/types/observability.js";

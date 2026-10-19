@@ -497,8 +497,8 @@ function serializeCspDirectives(directives) {
         .map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`)
         .join("; ");
 }
-export function injectPageConnectionToken(html, token) {
-    const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
+export function injectPageConnectionToken(html, token, database) {
+    const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? '<script src="/__sporades/observe.js"></script>' : ""}`;
     if (/<head(\s[^>]*)?>/i.test(html)) {
         return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
     }

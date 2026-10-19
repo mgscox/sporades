@@ -120,3 +120,25 @@ test("shipped CLI agrees with configuration loading at both sides of the floor",
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("unconfigured log metadata preserves prose punctuation and strips URL credentials", () => {
+  const data = {
+    note: "Investigate #234 collection", next: "Ready? Continue debugging. Either/or? 20/21? café/route? cafe\u0301/route?",
+    links: ["See https://example.test/inbox?request=link-secret#fragment-secret", "/inbox?token=relative-secret#fragment-secret", "(//example.test/inbox?cap=protocol-secret#fragment-secret).", "See ./inbox?cap=dot-secret#fragment-secret, then ../outbox#parent-secret!"],
+    url: 'See https://example.test/inbox?filter="query phrase"#fragment-secret then continue.',
+  };
+  const envelope = createLogEnvelope({ config: {}, data });
+  assert.equal(envelope.data.note, data.note);
+  assert.equal(envelope.data.next, data.next);
+  assert.equal(envelope.data.url, "See https://example.test/inbox");
+  assert.deepEqual(envelope.data.links, ["See https://example.test/inbox", "/inbox", "(//example.test/inbox", "See ./inbox"]);
+});
+
+test("log metadata conceals unterminated URL query quotes and preserves apostrophes in paths", () => {
+  const envelope = createLogEnvelope({ config: {}, data: {
+    truncated: "See /inbox?filter='O'Reilly phrase&cap=qa-cap-marker#qa-fragment-marker Continued\nNext public line.",
+    author: "/authors/O'Reilly?cap=qa-path-marker#qa-path-fragment",
+  } });
+  assert.equal(envelope.data.truncated, "See /inbox\nNext public line.");
+  assert.equal(envelope.data.author, "/authors/O'Reilly");
+});

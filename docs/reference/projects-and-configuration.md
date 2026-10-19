@@ -1588,3 +1588,11 @@ These are read-only extensions of existing commands, with no new dashboard,
 public evidence route or Capsule API. No declaration adds no loader, policy
 fields, inspection check or policy logs. See
 [the authority ADR](../adr/0054-request-admission-policy-is-deployer-owned.md).
+
+## Error tracking and analytics
+
+Optional `observability.errors` and `analytics` settings enable protocol-level
+error collection and first-party pageviews through a same-origin tunnel. See
+[Errors and analytics](./errors-and-analytics.md) for configuration, privacy,
+GlitchTip and Umami setup. These settings do not change existing Capsules when
+omitted, and require no provider origins in the browser CSP.

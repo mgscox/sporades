@@ -923,6 +923,9 @@ function createConnection() {
         }
         return;
       }` : ""}
+      if (message.error && typeof window !== "undefined" && typeof window.CustomEvent === "function") {
+        window.dispatchEvent(new window.CustomEvent("sporades:error", { detail: message.error }));
+      }
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message, openedSocket);
       }

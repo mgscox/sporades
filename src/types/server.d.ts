@@ -1535,5 +1535,6 @@ export type CapsuleFileAccessKeyPolicy = { read: { scopes?: readonly string[] } 
  * Client resets during opaque 403/429 upgrade denials close only the affected connection. */
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "./admission-policy.js";
 
+export type { ObservabilityConfig, AnalyticsConfig } from "./observability.js";
 /** Opt-in sporades.json Server env requirements. Explicit keys plus configured SMTP, webhook and enabled Stripe keys are checked. Omit to preserve existing doctor/push behavior; failClosed defaults to false. */
 export type ServerEnvConfig = Readonly<{ required?: readonly string[]; failClosed?: boolean }>;

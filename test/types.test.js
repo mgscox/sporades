@@ -70,6 +70,11 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition, type ServerEnvConfig } from "sporades/server";
 const serverEnvConfig: ServerEnvConfig = { required: ["INTAKE_URL"], failClosed: true };
 import * as publicServerApi from "sporades/server";
+const errorCollection: publicServerApi.ObservabilityConfig = { errors: { protocol: "sentry", dsnEnv: "ERROR_DSN", client: true, sampleRate: 0.25 } };
+const pageviews: publicServerApi.AnalyticsConfig = { provider: "umami", endpointEnv: "ANALYTICS_ENDPOINT", websiteIdEnv: "WEBSITE_ID", redactQuery: true };
+// @ts-expect-error capability URL redaction cannot be disabled.
+const unsafePageviews: publicServerApi.AnalyticsConfig = { provider: "plausible", endpointEnv: "URL", websiteIdEnv: "ID", redactQuery: false };
+void errorCollection; void pageviews; void unsafePageviews;
 const privateSchema = {
   secrets: table({ value: String() }).acl(publicServerApi.acl.privilegedOnly()),
   internal: table({ value: String() }).acl(publicServerApi.acl.denyAll()).unique("value"),
