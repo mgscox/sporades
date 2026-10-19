@@ -1,7 +1,8 @@
 # Sporades Roadmap
 
 This roadmap captures candidate features before they are promoted into concrete
-PRDs and implementation issues under `.scratch/` or GitHub Issues.
+PRDs and implementation issues in GitHub Issues. Older planning links into
+`.scratch/` are retained only as historical traceability.
 
 Last reconciled: 2026-10-18 (after v0.9.32 and the unreleased changes on `main`).
 
@@ -114,9 +115,11 @@ no longer belong in the next-feature queue. Newest first.
 
 When a roadmap item becomes concrete enough to build:
 
-1. Use the "To Issues" skill to create `.scratch/<feature-slug>/PRD.md` with implementation split into `.scratch/<feature-slug>/issues/<NN>-<slug>.md`,
-   or open a GitHub Issue PRD with linked ticket issues (see `docs/agents/issue-tracker.md`).
-   Ensure each feature PRD links to the relevant planning artifact from this roadmap. Ensure the PRD explicitly requires this roadmap to be updated.
+1. Publish the PRD as a GitHub issue and split implementation into ticket
+   sub-issues, following `docs/agents/issue-tracker.md`. Do not create new
+   planning artifacts under `.scratch/`. Ensure each feature PRD links back to
+   this roadmap, link the PRD issue from the roadmap row, and ensure the PRD
+   explicitly requires this roadmap to be updated.
 2. Update the roadmap status as idea maturation progresses and work moves from
    `candidate` to `design`, `ready`, or `active`. Once work is implemented and
    documented, move it out of the candidate/recommended queue into Recently
