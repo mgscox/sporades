@@ -45,6 +45,9 @@ async function registerEmailAccount(database, email, password) {
   const session = await resolveAnonymousSession(database, null);
   const result = await signUpWithEmail(database, session, "email", { email, password });
   assert.equal(result.ok, true, result.error?.message);
+  // These fixtures request fresh links, outside the deliberately ambiguous signup millisecond.
+  const registeredAt = Date.now();
+  while (Date.now() <= registeredAt) await new Promise((resolve) => setTimeout(resolve, 1));
   return result;
 }
 
