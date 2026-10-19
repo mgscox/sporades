@@ -549,6 +549,16 @@ export type MailApi = {
 };
 
 /**
+ * Closed result of {@link ServerAuthApi.terminateHumanIdentity}. `terminated` is returned by the
+ * committing first call; every later authorized call for the same user ID returns
+ * `already-terminated`, including after restart and after the email is registered again.
+ */
+export type TerminateHumanIdentityResult = Readonly<{
+  userId: string;
+  status: "terminated" | "already-terminated";
+}>;
+
+/**
  * Server-only auth management API.
  *
  * Available to trusted Capsule handlers. Lets server code update email
@@ -563,6 +573,18 @@ export type ServerAuthApi = {
    */
   revokeHumanSecurity(userId: string): Promise<{ userId: string; revokedSessionCount: number; revokedAccessKeyCount: number }>;
   reserveRevokeHumanSecurity(userId: string): ValidatedLifecycleOperation<{ userId: string; revokedSessionCount: number; revokedAccessKeyCount: number }>;
+  /**
+   * Terminally close one exact linked human identity in the enclosing Mutation transaction
+   * (ADR-0057): the user becomes a non-authenticating tombstone, email credentials, Provider
+   * identities, Sessions, OAuth attempts, Reset codes and preferences are deleted, and current
+   * Access keys retire with cause `owner-deleted`. Requires a current authenticated human Session
+   * and initiation during the Mutation's initial dispatch; every other caller, surface and target
+   * kind fails with `HUMAN_IDENTITY_TERMINATION_DENIED`. A human with any Team membership fails with
+   * `HUMAN_IDENTITY_TERMINATION_BLOCKED`. The Capsule owns administrator policy and reauthentication.
+   */
+  terminateHumanIdentity(userId: string): Promise<TerminateHumanIdentityResult>;
+  /** Write-free, one-shot reservation of {@link terminateHumanIdentity} for `ctx.lifecycle.continue`. */
+  reserveTerminateHumanIdentity(userId: string): ValidatedLifecycleOperation<TerminateHumanIdentityResult>;
   /** Update the password for an existing email credential. Throws if the email is not registered. */
   setEmailPassword(email: string, newPassword: string): Promise<void>;
   /**

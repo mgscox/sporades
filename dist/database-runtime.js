@@ -1021,6 +1021,54 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             ]);
             return thenIfPromise(sequence, () => ({ revokedCount, records, revokedAt }));
         },
+        // ADR-0057: the one terminal human-identity transition, for every engine. The caller owns the
+        // enclosing transaction; this method only ever runs inside it. The user row is locked first, so
+        // a concurrent termination, Team Join or sign-in that also locks or updates that row observes the
+        // committed tombstone instead of racing it. Outcomes are deliberately coarse: unknown, guest,
+        // service and reserved targets are all `denied`, so callers cannot learn a target's kind.
+        async terminateHumanIdentity(input) {
+            const userId = input?.userId;
+            if (typeof userId !== "string" || userId.length === 0 || isReservedAuthUserId(userId))
+                return { status: "denied" };
+            const locked = await this.lockAuthUserFileAuthority(userId);
+            if (!locked || (locked.userKind ?? "human") !== "human")
+                return { status: "denied" };
+            if (locked.lifecycleStatus === "terminated")
+                return { status: "already-terminated" };
+            const live = await this.prepare(sql("SELECT [u].[id] FROM [sporades_auth_users] [u] WHERE [u].[id] = ? AND [u].[lifecycleStatus] = 'active' " +
+                "AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND (" +
+                "EXISTS (SELECT 1 FROM [sporades_auth_email_credentials] [c] WHERE [c].[userId] = [u].[id]) OR " +
+                "EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id]))")).get(userId);
+            if (!live)
+                return { status: "denied" };
+            const membership = await this.prepare(sql("SELECT [teamId] FROM [sporades_team_memberships] WHERE [userId] = ? LIMIT 1")).get(userId);
+            if (membership)
+                return { status: "blocked" };
+            await this.prepare(sql("DELETE FROM [sporades_auth_password_reset_codes] WHERE [userId] = ?")).run(userId);
+            // OAuth attempts are bound to a Session, not a user; spend every attempt that could still
+            // attach an identity or mint a Session for this human before the Sessions themselves go.
+            await this.prepare(sql("DELETE FROM [sporades_auth_oauth_states] WHERE [reauthUserId] = ? OR [sessionToken] IN " +
+                "(SELECT [token] FROM [sporades_auth_sessions] WHERE [userId] = ?)")).run(userId, userId);
+            await this.prepare(sql("DELETE FROM [sporades_auth_email_credentials] WHERE [userId] = ?")).run(userId);
+            await this.prepare(sql("DELETE FROM [sporades_auth_identities] WHERE [userId] = ?")).run(userId);
+            await this.deleteAuthSessionsForUser(userId);
+            const revokedAccessKeys = await this.bulkRevokeAccessKeysForOwner({
+                ownerUserId: userId,
+                revocationTime: input.revocationTime,
+                revocationCause: "owner-deleted",
+            });
+            await this.prepare(sql("DELETE FROM [sporades_user_preferences] WHERE [userId] = ?")).run(userId);
+            // An empty bootstrap claim keeps the tombstone from ever receiving a fresh personal Team.
+            await this.prepare(sql("INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, '', ?) " +
+                "ON CONFLICT ([userId]) DO NOTHING")).run(userId, "1970-01-01T00:00:00.000Z");
+            const tombstoned = await this.prepare(sql("UPDATE [sporades_auth_users] SET [displayName] = '', [email] = NULL, [picture] = NULL, " +
+                "[isAuthenticated] = 0, [isGuest] = 0, [provider] = 'unknown', [lifecycleStatus] = 'terminated', " +
+                "[disabledAt] = NULL WHERE [id] = ? AND [userKind] = 'human' AND [lifecycleStatus] = 'active'")).run(userId);
+            if (Number(tombstoned?.changes ?? 0) !== 1) {
+                throw Object.assign(new Error("Human identity termination lost its user row."), { code: "HUMAN_IDENTITY_TERMINATION_CONFLICT" });
+            }
+            return { status: "terminated", revokedAccessKeys };
+        },
         ensureUserPreferencesStorage() {
             return createUserPreferencesTables(this);
         },
@@ -1114,7 +1162,8 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 "[u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] " +
                 "FROM [sporades_auth_sessions] [s] " +
                 "JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] " +
-                "WHERE [s].[token] = ?")).get(token), (row) => (isReservedAuthUserId(row?.userId) ? null : row ?? null));
+                // A Session inserted by a login that raced termination never resolves to the tombstone.
+                "WHERE [s].[token] = ? AND ([u].[lifecycleStatus] IS NULL OR [u].[lifecycleStatus] <> 'terminated')")).get(token), (row) => (isReservedAuthUserId(row?.userId) ? null : row ?? null));
         },
         insertOAuthState(row) {
             const provider = row.provider ?? "google";
@@ -1145,11 +1194,11 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             return this.prepare(sql("UPDATE [sporades_auth_email_credentials] SET [passwordHash] = ?, [passwordSalt] = ? WHERE [email] = ?")).run(passwordHash, passwordSalt, email);
         },
         findEmailCredentialWithUser(email) {
-            return thenIfPromise(this.prepare(sql("SELECT [c].[email], [c].[userId], [c].[passwordHash], [c].[passwordSalt], [u].[displayName], [u].[picture], " +
+            return thenIfPromise(this.prepare(sql("SELECT [c].[email], [c].[userId], [c].[passwordHash], [c].[passwordSalt], [c].[createdAt], [u].[displayName], [u].[picture], " +
                 "[u].[isAuthenticated], [u].[isGuest] " +
                 "FROM [sporades_auth_email_credentials] [c] " +
                 "JOIN [sporades_auth_users] [u] ON [u].[id] = [c].[userId] " +
-                "WHERE [c].[email] = ?")).get(email), (row) => (isReservedAuthUserId(row?.userId) ? null : row ?? null));
+                "WHERE [c].[email] = ? AND ([u].[lifecycleStatus] IS NULL OR [u].[lifecycleStatus] <> 'terminated')")).get(email), (row) => (isReservedAuthUserId(row?.userId) ? null : row ?? null));
         },
         replaceReauthenticationProof(row) {
             return chainMaybePromise([

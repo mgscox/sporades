@@ -2144,6 +2144,10 @@ export async function prepareEmailPasswordResetDelivery(database: LooseRecord, p
   const email = typeof payload?.email === "string" ? payload.email.trim().toLowerCase() : "";
   const credential = email ? await database.adapter.findEmailCredentialWithUser(email) : null;
   if (!credential) return null;
+  // ADR-0057 generation fence: a request accepted before this credential existed belonged to an
+  // earlier identity at the same address (or to none), so it must not reach the newer account.
+  const requestedAt = typeof payload?.requestedAt === "string" ? Date.parse(payload.requestedAt) : Number.NaN;
+  if (Number.isFinite(requestedAt) && Date.parse(credential.createdAt) > requestedAt) return null;
   const issued = await issuePasswordResetCode(database, credential, payload?.code ?? null, attempt === 1);
   if (!issued) return null;
   const body = passwordResetMailBody(issued.link);
@@ -2256,6 +2260,12 @@ export async function confirmPasswordReset(database: LooseRecord, _session: Loos
     }
     const consumed = await tx.deletePasswordResetCode(row.selector);
     if (consumed?.changes !== 1) {
+      return { ok: false, error: invalidPasswordResetCodeError() };
+    }
+    // ADR-0057 identity fence: a code issued to one identity can never set the password of a
+    // later account that registered the same email after the first was terminated.
+    const credential = await tx.findEmailCredentialWithUser(row.email);
+    if (credential?.userId !== row.userId) {
       return { ok: false, error: invalidPasswordResetCodeError() };
     }
     await tx.updateEmailCredentialPassword(row.email, password.hash, password.salt);
@@ -2905,6 +2915,7 @@ export async function signUpWithEmail(database: LooseRecord, session: LooseRecor
     provider: "email",
   };
   return await withRegistrationTransaction(database, async (tx: LooseRecord) => {
+    if (await sessionUserWasTerminated(tx, auth.userId)) return terminatedSessionUserError();
     const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
     if (!registration.ok) return registration;
     await tx.insertEmailCredential({
@@ -2928,6 +2939,16 @@ export async function signUpWithEmail(database: LooseRecord, session: LooseRecor
   });
 }
 
+// ADR-0057: a sign-up or provider link whose Session was resolved before a concurrent human
+// identity termination committed must not attach a credential or identity to the tombstone. The
+// row lock serializes with termination, which holds the same lock until it commits.
+async function sessionUserWasTerminated(tx: LooseRecord, userId: unknown) {
+  if (typeof userId !== "string" || !userId) return false;
+  return (await tx.lockAuthUserFileAuthority(userId))?.lifecycleStatus === "terminated";
+}
+function terminatedSessionUserError() {
+  return { ok: false, error: { code: "AUTH_SESSION_INVALID", message: "This sign-in Session is no longer valid.", hint: "Reload the page and sign in again." } };
+}
 function registrationDenied() { return { ok: false, error: { code: "REGISTRATION_DENIED", message: "Registration was not admitted.", hint: "Use valid registration admission and retry." } }; }
 const registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
 function registrationDeniedRollback(cause?: any) {
@@ -3009,6 +3030,10 @@ export async function signInWithEmail(database: LooseRecord, session: any, crede
     await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_auth_users] SET [provider] = 'email' WHERE [id] = ? AND [isAuthenticated] = 1 AND [isGuest] = 0",
     )).run(auth.userId);
+    // ADR-0057: the UPDATE above waits for a concurrent termination's row lock. Recheck the
+    // credential afterwards so a sign-in that verified the old password cannot mint a Session.
+    const current = await tx.findEmailCredentialWithUser(normalized.email);
+    if (current?.userId !== auth.userId) return { ok: false, error: invalidEmailCredentialsError() };
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
 }
@@ -3030,6 +3055,7 @@ export async function linkProviderIdentity(database: LooseRecord, session: Loose
   }
 
   return await withRegistrationTransaction(database, async (tx: LooseRecord) => {
+    if (await sessionUserWasTerminated(tx, session.auth.userId)) return terminatedSessionUserError();
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {

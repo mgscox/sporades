@@ -1611,7 +1611,7 @@ async function deletePrivateFileOperation(
     bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
     if (requireLiveActor) {
       const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
-      if (!actor || (actor.userKind === "service" && actor.lifecycleStatus !== "active")) {
+      if (!actor || actor.lifecycleStatus === "terminated" || (actor.userKind === "service" && actor.lifecycleStatus !== "active")) {
         return {
           ok: false,
           error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
