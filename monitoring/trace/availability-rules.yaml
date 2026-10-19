@@ -66,3 +66,12 @@ groups:
           target: '{{ $labels.job }}'
           window: 'Failure for 60 seconds; probe or inventory results may be stale.'
           dashboard: '__MONITORING_PUBLIC_URL__/alertmanager/'
+      - alert: SporadesCapsuleBackupStale
+        expr: time() - sporades_backup_last_success_seconds > sporades_backup_max_age_seconds
+        for: 5m
+        labels: { severity: critical, category: backup }
+        annotations:
+          summary: 'Capsule backup missing or stale for {{ $labels.capsule_subname }}'
+          target: '{{ $labels.capsule_subname }}.{{ $labels.capsule_domain }} on {{ $labels.sporades_host }}'
+          window: 'Backup age exceeded the opt-in Host policy for five minutes. Inspect host backup status and the backup timer journal.'
+          dashboard: '__MONITORING_PUBLIC_URL__/alertmanager/'

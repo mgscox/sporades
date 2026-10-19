@@ -32,6 +32,7 @@
       "src/cli/github-autodeploy-workflow.ts",
       "src/cli/host-autostart.ts",
       "src/cli/host-availability.ts",
+      "src/cli/host-backups.ts",
       "src/cli/host-domain-aliases.ts",
       "src/cli/host-helper-archive.ts",
       "src/cli/host-helper-config.ts",
@@ -127,6 +128,7 @@
       "src/templates/server-bundle-module-graph.ts",
       "src/types/admission-policy.d.ts",
       "src/types/client.d.ts",
+      "src/types/host-backups.d.ts",
       "src/types/monitoring.d.ts",
       "src/types/server.d.ts",
       "src/types/stripe.d.ts",
@@ -136,7 +138,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "f7e2051c0e98c4af6b836a1252541bf82494856d801501bd0220cb78cceb2d01"
+    "digest": "b537d8c8183389091d3d890adc6d7dc43a8848000a389f7ce64f84af81b1b85f"
   },
   "outputs": {
     "files": [
@@ -234,6 +236,10 @@
       "dist/cli/host-availability.d.ts.map",
       "dist/cli/host-availability.js",
       "dist/cli/host-availability.js.map",
+      "dist/cli/host-backups.d.ts",
+      "dist/cli/host-backups.d.ts.map",
+      "dist/cli/host-backups.js",
+      "dist/cli/host-backups.js.map",
       "dist/cli/host-domain-aliases.d.ts",
       "dist/cli/host-domain-aliases.d.ts.map",
       "dist/cli/host-domain-aliases.js",
@@ -612,6 +618,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "ca8609c3e5b395f15edd831d46953e565eab0c4c0877e6c8343f12121a33c7db"
+    "digest": "ed6b6def92d018625e69a69f8270a5b03d87eb5a3f827447abaef57d0d6551e4"
   }
 }
