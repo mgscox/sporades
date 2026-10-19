@@ -10536,6 +10536,46 @@ test("sporades host helper rejects caller-controlled Docker lifecycle authority 
   }
 });
 
+test("unconfigured Hosted Capsules start and restart beneath a root-owned sticky ancestor", async () => {
+  const scratch = path.join(repoRoot, ".sporades");
+  await mkdir(scratch, { recursive: true });
+  const dir = await mkdtemp(path.join(scratch, "host-sticky-start-"));
+  try {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
+    // Model /tmp metadata without requiring root or writing outside the worktree.
+    const preload = path.join(dir, "sticky-ancestor.mjs");
+    await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const lstat = fs.promises.lstat;
+fs.promises.lstat = async function(file, ...args) {
+  const details = await lstat.call(this, file, ...args);
+  if (String(file) === ${JSON.stringify(dir)}) {
+    details.uid = 0;
+    details.mode = (details.mode & ~0o7777) | 0o1777;
+  }
+  return details;
+}; syncBuiltinESMExports();`);
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const journal = path.join(fixture.capsuleDir, ".backup-restore.json");
+    const bytes = await readFile(path.join(fixture.dataDir, "data.db"));
+    for (const action of ["capsule.start", "capsule.restart"]) {
+      await assert.rejects(lstat(journal), { code: "ENOENT" });
+      const result = await runHostHelper({
+        action,
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+      }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${preload}` } });
+      const output = JSON.parse(result.stdout);
+      assert.equal(result.code, 0, `${action}: ${result.stdout}\n${result.stderr}`);
+      assert.equal(output.ok, true, `${action}: ${result.stdout}`);
+      assert.equal(output.data.release.id, fixture.currentReleaseId);
+      assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
+      assert.deepEqual(await readFile(path.join(fixture.dataDir, "data.db")), bytes);
+      await assert.rejects(lstat(journal), { code: "ENOENT" });
+    }
+    assert.equal((await docker.calls()).filter(call => call.args[0] === "run").length, 2);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("sporades host helper starts a retained old-image release from the current builder lifecycle DTO", async () => {
   await withTempDir(async (dir) => {
     const fixture = await writeHostedCapsuleRollbackFixture(dir, {

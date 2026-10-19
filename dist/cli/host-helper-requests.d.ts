@@ -1,7 +1,7 @@
 import type { DeployFile } from "../deploy-files.js";
 import type { JsonObject, JsonValue } from "./host-helper-json.js";
 import type { HostHelperCapsuleTarget, HostHelperHost, HostHelperSealedServerEnv, HostLifecycleOptions, HostedCapsuleBaseImage, HostTlsMode } from "./hosted-capsule-contract.js";
-export type HostHelperAction = "capsule.canonical.set" | "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.release.reconcile" | "capsule.shutdown.checkpoint" | "capsule.resume" | "capsule.start" | "capsule.stop" | "capsule.admission.publish" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "jobs.inspect" | "schedules.inspect" | "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete" | "capsule.list" | "host.stats" | "host.logs" | "host.version" | "host.bootstrap" | "host.telemetry.migrate" | "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" | "host.telemetry.exports-disable" | "host.telemetry.remove-agents" | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable";
+export type HostHelperAction = "capsule.backup.create" | "capsule.backup.list" | "capsule.backup.restore" | "capsule.backup.prune" | "host.backup.configure" | "host.backup.status" | "capsule.canonical.set" | "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.release.reconcile" | "capsule.shutdown.checkpoint" | "capsule.resume" | "capsule.start" | "capsule.stop" | "capsule.admission.publish" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "jobs.inspect" | "schedules.inspect" | "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete" | "capsule.list" | "host.stats" | "host.logs" | "host.version" | "host.bootstrap" | "host.telemetry.migrate" | "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" | "host.telemetry.exports-disable" | "host.telemetry.remove-agents" | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable";
 export type HostHelperVerification = JsonObject & {
     enabled?: boolean;
     fallbackToPreviousRelease?: boolean;
@@ -59,6 +59,12 @@ export type HostHelperRequestBase = JsonObject & {
     accessKeys?: JsonObject;
     diagnostics?: {
         queryCredential: string;
+    };
+    backup?: {
+        policy?: import("./host-backups.js").HostBackupPolicy;
+        sourceSubname?: string;
+        id?: string;
+        confirm?: string;
     };
     telemetry?: {
         tracePropagationOrigins?: string[];
@@ -206,6 +212,8 @@ export type HostAdmissionPublishRequest = HostHelperRequestBase & {
     };
 };
 export type HostHelperRequest = (HostHelperRequestBase & {
+    action: "capsule.backup.create" | "capsule.backup.list" | "capsule.backup.restore" | "capsule.backup.prune" | "host.backup.configure" | "host.backup.status";
+}) | (HostHelperRequestBase & {
     action: "capsule.canonical.set";
     capsule: HostHelperCapsuleTarget;
     canonical: {
