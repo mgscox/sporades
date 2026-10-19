@@ -116,6 +116,8 @@ export declare function observabilityCompose(host: HostHelperHost, state: State)
                 REDIS_URL: string;
                 SECRET_KEY: string;
                 GLITCHTIP_DOMAIN: string;
+                CSRF_TRUSTED_ORIGINS: string;
+                ALLOWED_HOSTS: string;
                 DEFAULT_FROM_EMAIL: string;
                 EMAIL_URL: string;
                 ENABLE_USER_REGISTRATION: string;
@@ -155,6 +157,8 @@ export declare function observabilityCompose(host: HostHelperHost, state: State)
                 REDIS_URL: string;
                 SECRET_KEY: string;
                 GLITCHTIP_DOMAIN: string;
+                CSRF_TRUSTED_ORIGINS: string;
+                ALLOWED_HOSTS: string;
                 DEFAULT_FROM_EMAIL: string;
                 EMAIL_URL: string;
                 ENABLE_USER_REGISTRATION: string;

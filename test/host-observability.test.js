@@ -29,6 +29,8 @@ test('pinned stack keeps databases private, logs bounded and identities isolated
  assert.equal(compose.services['errors-db'].ports,undefined);
  assert.equal(compose.services['analytics-db'].ports,undefined);
  assert.equal(compose.services.web.environment.ENABLE_USER_REGISTRATION,'false');
+ assert.equal(compose.services.web.environment.CSRF_TRUSTED_ORIGINS,'https://errors.ops.example.test');
+ assert.equal(compose.services.web.environment.ALLOWED_HOSTS,'errors.ops.example.test,127.0.0.1');
  assert.notEqual(observabilityProject(host),observabilityProject({...host,remoteRoot:'/srv/other'}));
  const units=observabilityMonitorUnits({...host,remoteRoot:'/srv/host$unit%'});
  assert.match(units.service,/host\$\$unit%%/);assert.match(units.timer,/OnUnitActiveSec=60/);

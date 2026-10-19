@@ -22,6 +22,10 @@ try {
   const second = await enableObservability(host, async()=>{});
   assert.equal(second.credentials, undefined);
   process.stdout.write("Repeated enable verified.\n");
+  // Caddy terminates HTTPS and forwards HTTP: a valid browser CSRF token must
+  // pass the exact public Origin check even though the upstream hop is HTTP.
+  const csrfCheck=`from django.test import RequestFactory\nfrom django.middleware.csrf import CsrfViewMiddleware,get_token\nfrom django.http import HttpResponse\nr=RequestFactory().post('/',HTTP_HOST='errors.${host.domain}',HTTP_ORIGIN='https://errors.${host.domain}')\ntoken=get_token(r)\nr.COOKIES['csrftoken']=r.META['CSRF_COOKIE']\nr.META['HTTP_X_CSRFTOKEN']=token\nview=lambda request:HttpResponse()\nassert CsrfViewMiddleware(view).process_view(r,view,(),{}) is None\n`;
+  observabilityDocker(host,['exec','-T','web','./manage.py','shell','-c',csrfCheck]);
   const connection = await provisionObservability(host,target);
   const values = unsealServerEnv(connection.env,privateKey);
   const again = await provisionObservability(host,target);

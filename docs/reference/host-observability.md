@@ -42,7 +42,8 @@ or rotate them. If output is lost, an authorized Host administrator can recover
 the passwords from that protected file. Do not copy it into a Capsule or commit
 it. Status never returns passwords or provider tokens. The GlitchTip admin is
 `ops@<hosted-domain>`; the Umami admin is `admin`. Public self-registration is
-disabled. No SMTP credentials are provisioned: configure notification delivery
+disabled. GlitchTip host and CSRF origin checks explicitly allow its managed
+HTTPS hostname (plus loopback API access). No SMTP credentials are provisioned: configure notification delivery
 separately if email alerts are wanted.
 
 Retry the same enable after a failed installation. Intent is written before
