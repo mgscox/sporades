@@ -108,6 +108,7 @@ import {
   createHostStatsRequest,
   createHostUnregisterRequest,
 } from "./host-request-builders.js";
+import { runStripeFake } from "./stripe-fake.js";
 import { renderCliHelp } from "./cli-help.js";
 import { runMonitoringMaintenance, type MonitoringMaintenanceAction } from "./monitoring-maintenance.js";
 import { runMonitoringStack } from "./monitoring-stack.js";
@@ -227,6 +228,11 @@ async function main() {
       });
       return;
     }
+
+    case "stripe-fake":
+      if (isHelp) { printHelp("stripe-fake"); return; }
+      await runStripeFake(args);
+      return;
 
     case "dev":
       if (isHelp) {

@@ -58,6 +58,7 @@
       "src/cli/server-env-check.ts",
       "src/cli/sporades-host-helper.ts",
       "src/cli/sporades.ts",
+      "src/cli/stripe-fake.ts",
       "src/cli/telemetry-diagnostics.ts",
       "src/cli/telemetry-profile.ts",
       "src/client-address.ts",
@@ -131,12 +132,14 @@
       "src/templates/server-bundle-entry.ts",
       "src/templates/server-bundle-inputs.d.ts",
       "src/templates/server-bundle-module-graph.ts",
+      "src/testing/stripe.ts",
       "src/types/admission-policy.d.ts",
       "src/types/client.d.ts",
       "src/types/host-backups.d.ts",
       "src/types/monitoring.d.ts",
       "src/types/observability.d.ts",
       "src/types/server.d.ts",
+      "src/types/stripe-testing.d.ts",
       "src/types/stripe.d.ts",
       "src/types/team-billing-import.d.ts",
       "src/user-preferences-runtime.ts",
@@ -144,7 +147,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "c2f94550f2fdd375b0e178e5abf1bba1c631269229b0d00d27c5811715ba1824"
+    "digest": "fbefdb1920fdd96dc72a288bd54c439c4eba3156a403eb1aaf5478e6790c4943"
   },
   "outputs": {
     "files": [
@@ -346,6 +349,10 @@
       "dist/cli/sporades.d.ts.map",
       "dist/cli/sporades.js",
       "dist/cli/sporades.js.map",
+      "dist/cli/stripe-fake.d.ts",
+      "dist/cli/stripe-fake.d.ts.map",
+      "dist/cli/stripe-fake.js",
+      "dist/cli/stripe-fake.js.map",
       "dist/cli/telemetry-diagnostics.d.ts",
       "dist/cli/telemetry-diagnostics.d.ts.map",
       "dist/cli/telemetry-diagnostics.js",
@@ -638,12 +645,16 @@
       "dist/templates/server-bundle-module-graph.d.ts.map",
       "dist/templates/server-bundle-module-graph.js",
       "dist/templates/server-bundle-module-graph.js.map",
+      "dist/testing/stripe.d.ts",
+      "dist/testing/stripe.d.ts.map",
+      "dist/testing/stripe.js",
+      "dist/testing/stripe.js.map",
       "dist/user-preferences-runtime.d.ts",
       "dist/user-preferences-runtime.d.ts.map",
       "dist/user-preferences-runtime.js",
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "37aad9aa301af5bf7a428d4d29b684a30af362ca1ab31673bd43471f9534f7bf"
+    "digest": "dbf606c65c317a0afe89a44ee0c07b9f9b366e1db1cc5822ca8fe6bf086401a3"
   }
 }
