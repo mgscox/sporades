@@ -7,7 +7,7 @@ import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {assertObservabilityResources,OBSERVABILITY_IMAGES,observabilityCompose,observabilityProject,observabilityDirectory,readObservabilityState,observabilityMonitorUnits,provisionObservability} from '../dist/cli/host-observability.js';
 import {assertHostnamesAvailable} from '../dist/cli/host-domain-aliases.js';
-import {unsealServerEnv,readSealedServerEnv,readKeyPair,sealedServerEnvPaths} from '../dist/sealed-server-env.js';
+import {unsealServerEnv,readSealedServerEnv,readKeyPair,sealedServerEnvPaths,ensureSealedServerEnvKeyPair,sealServerEnv,writeSealedServerEnv} from '../dist/sealed-server-env.js';
 const run=promisify(execFile);
 const root=process.cwd();
 const cli=path.join(root,'bin/sporades.js');
@@ -82,6 +82,44 @@ test('CLI registration and dedicated ops connect seal custom env names without d
  const rejected=await run(process.execPath,[cli,'host','services','connect','hello','--host','app','--on','ops','--json'],{cwd:project,env}).then(()=>null,e=>e);
  assert.ok(rejected);
 }));
+test('CLI registration preserves external provider env without contacting unavailable Host services',async t=>{
+ for(const [name,values,on] of [
+  ['external error DSN',{CUSTOM_DSN:'https://external-key@errors.external.example/7',OTHER_SECRET:'preserved'},[]],
+  ['external analytics endpoint',{CUSTOM_ENDPOINT:'https://analytics.external.example/api/send',OTHER_SECRET:'preserved'},['--on','ops']],
+  ['external analytics website',{CUSTOM_SITE:'22222222-2222-4222-a222-222222222222',OTHER_SECRET:'preserved'},['--on','ops']],
+ ])await t.test(name,()=>fixture(async dir=>{
+  const env={...process.env,SPORADES_CONFIG_DIR:path.join(dir,'config')};
+  const fake=path.join(dir,'tools');await mkdir(fake);
+  const ledger=path.join(dir,'requests.jsonl');
+  await writeFile(path.join(fake,'ssh'),`#!/usr/bin/env node\nimport fs from 'node:fs';\nlet input='';for await(const c of process.stdin)input+=c;const r=JSON.parse(input);fs.appendFileSync(${JSON.stringify(ledger)},JSON.stringify(r)+'\\n');process.stdout.write(JSON.stringify(r.action==='host.services.connect'?{ok:false,data:null,error:{message:'Host observability operation failed',hint:'Disposable services are unavailable.'}}:{ok:true,data:{registered:true,capsule:{subname:r.capsule?.subname}},error:null}));\n`,{mode:0o755});
+  env.PATH=`${fake}${path.delimiter}${process.env.PATH}`;
+  const invoke=async(args,cwd=dir)=>JSON.parse((await run(process.execPath,[cli,...args],{cwd,env})).stdout);
+  await invoke(['create','capsule','--no-install','--no-git','--json']);
+  const project=path.join(dir,'capsule'),file=path.join(project,'sporades.json');
+  const config=JSON.parse(await readFile(file,'utf8'));
+  config.observability={errors:{protocol:'sentry',dsnEnv:'CUSTOM_DSN'}};
+  config.analytics={provider:'umami',endpointEnv:'CUSTOM_ENDPOINT',websiteIdEnv:'CUSTOM_SITE'};
+  await writeFile(file,JSON.stringify(config));
+  for(const [alias,domain] of [['app','apps.example.test'],['ops','ops.example.test']])await invoke(['host','add',alias,'--server',`${alias}@fake.invalid`,'--domain',domain,'--json']);
+  const paths=sealedServerEnvPaths(project),pair=await ensureSealedServerEnvKeyPair(paths);
+  await writeSealedServerEnv(paths,sealServerEnv(values,pair.publicKey,{source:'import'}));
+  const before=await readFile(paths.envelope,'utf8');
+  const registration=await invoke(['host','register','hello','--host','app',...on,'--json'],project);
+  assert.equal(registration.ok,true);
+  assert.equal(registration.data.registered,true);
+  assert.deepEqual(registration.data.observability,{connected:false,reason:'existing-provider-env'});
+  assert.equal(await readFile(paths.envelope,'utf8'),before);
+  assert.deepEqual(unsealServerEnv(await readSealedServerEnv(paths),pair.privateKey),values);
+  const requests=(await readFile(ledger,'utf8')).trim().split('\n').map(JSON.parse);
+  assert.ok(requests.some(r=>r.action==='capsule.register'));
+  assert.ok(!requests.some(r=>r.action==='host.services.connect'));
+  // Explicit connect still reports service failures instead of hiding them.
+  await assert.rejects(invoke(['host','services','connect','hello','--host','app',...on,'--json'],project),error=>{
+   assert.equal(JSON.parse(error.stdout).error.message,'Host observability operation failed');return true;
+  });
+  assert.equal(await readFile(paths.envelope,'utf8'),before);
+ }));
+});
 test('real pinned observability providers acceptance', {skip:process.env.SPORADES_REAL_OBSERVABILITY_DOCKER!=='1'?'Set SPORADES_REAL_OBSERVABILITY_DOCKER=1 for disposable local Docker coverage.':false,timeout:900_000}, async()=>{
  await run(process.execPath,['scripts/verify-host-observability.mjs'],{timeout:890_000,maxBuffer:2*1024*1024});
 });

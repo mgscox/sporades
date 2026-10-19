@@ -79,8 +79,10 @@ locally, and let the normal Host push encrypt them for the Capsule. Custom env
 names are honored; names must be distinct and must not be reserved. No provider
 values are printed. Import nonempty legacy Server env explicitly before
 connecting. Registration reports that import is needed without changing it.
-Existing external provider env is preserved; explicit connect requires removing
-conflicting sealed keys first.
+If any declared provider env value is already populated, registration skips
+automatic provisioning without contacting the service Host and leaves the sealed
+env unchanged. External providers therefore remain usable during a managed-service
+outage. Explicit connect requires removing conflicting sealed keys first.
 
 Provider identity is deterministic from the exact Capsule subname and Hosted
 domain, so retrying after an API success or local sealing failure reuses the same

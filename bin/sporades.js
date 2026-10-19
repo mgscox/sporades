@@ -154788,6 +154788,8 @@ async function connectProjectObservability(options, capsuleHost, servicesHost) {
       if (options.automatic) return { connected: false, reason: "legacy-env-needs-import" };
       throw commandError2("Import existing Server env before connecting services.", "Run sporades env import --file .env.sporades.server first.");
     }
+    const selectedKeys = [...errors ? [errors.dsnEnv] : [], ...analytics ? [analytics.endpointEnv, analytics.websiteIdEnv] : []];
+    if (options.automatic && selectedKeys.some((key) => values[key])) return { connected: false, reason: "existing-provider-env" };
     const result = invokeRemoteHostHelper({
       alias: servicesHost.alias,
       profile: servicesHost.profile,
@@ -154810,7 +154812,6 @@ async function connectProjectObservability(options, capsuleHost, servicesHost) {
     const keys = Object.keys(mapped);
     if (keys.length !== (errors ? 1 : 0) + (analytics ? 2 : 0) || keys.some((k) => !isValidServerEnvKeyName(k) || isReservedServerEnvKeyName(k))) throw commandError2("Observability env names must be distinct and valid.", "Use separate env names for the DSN, endpoint and website ID.");
     if (keys.some((k) => values[k] && values[k] !== mapped[k])) {
-      if (options.automatic) return { connected: false, reason: "existing-provider-env" };
       throw commandError2("Observability env already selects another provider.", "Remove the selected sealed keys explicitly before connecting Host services.");
     }
     Object.assign(values, mapped);
