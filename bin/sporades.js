@@ -148801,6 +148801,7 @@ function serialized(handler) {
 
 // src/cli/stripe-fake.ts
 async function runStripeFake(args) {
+  let delivery = "auto";
   let cataloguePath;
   let target;
   let port = 0;
@@ -148810,12 +148811,15 @@ async function runStripeFake(args) {
     const arg = args[index];
     if (arg === "--json") json2 = true;
     else if (arg === "--webhook-secret-stdin") stdin = true;
-    else if (["--catalogue", "--webhook-target", "--port"].includes(arg)) {
+    else if (["--catalogue", "--webhook-target", "--port", "--delivery"].includes(arg)) {
       const value = args[++index];
       if (!value || value.startsWith("--")) throw new Error(`Missing ${arg} value.`);
       if (arg === "--catalogue") cataloguePath = value;
       else if (arg === "--webhook-target") target = value;
-      else {
+      else if (arg === "--delivery") {
+        if (value !== "auto" && value !== "manual") throw new Error("Invalid delivery mode: use auto or manual.");
+        delivery = value;
+      } else {
         if (!/^\d+$/.test(value)) throw new Error("Invalid fake port.");
         port = Number(value);
       }
@@ -148832,7 +148836,8 @@ async function runStripeFake(args) {
     catalogue: JSON.parse(await readFile10(cataloguePath, "utf8")),
     webhookTarget: target,
     webhookSecret: secret.trim(),
-    port
+    port,
+    delivery
   });
   const data2 = { origin: fake.origin, controlOrigin: fake.controlOrigin };
   process.stdout.write(json2 ? `${JSON.stringify({ ok: true, data: data2, error: null })}
@@ -148867,6 +148872,7 @@ Options:
   --webhook-target <url>   Literal loopback Capsule callback URL
   --webhook-secret-stdin  Read the fixture signing secret from stdin
   --port <number>         Stripe API port (default: 0, ephemeral)
+  --delivery <mode>       Webhook delivery: auto (default) or manual
   --json                  Write { ok, data: { origin, controlOrigin }, error }
   --help, -h              Show this help
 `,

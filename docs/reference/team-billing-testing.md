@@ -168,7 +168,8 @@ printf '%s' 'whsec_app_fixture' | sporades stripe-fake --json --port 0 \
   --catalogue ./test/stripe-catalogue.json --webhook-secret-stdin
 ```
 
-The catalogue file has the `catalogue` shape above. Startup prints
+Add `--delivery manual` to queue webhooks for explicit JSON delivery controls;
+the default is `auto`. The catalogue file has the `catalogue` shape above. Startup prints
 `{ ok: true, data: { origin, controlOrigin }, error: null }`.
 The secret is accepted only on stdin. Stop with SIGINT or SIGTERM.
 Both servers bind to `127.0.0.1`; the API accepts only `sk_test_` bearer keys.

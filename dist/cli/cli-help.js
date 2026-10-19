@@ -13,6 +13,7 @@ Options:
   --webhook-target <url>   Literal loopback Capsule callback URL
   --webhook-secret-stdin  Read the fixture signing secret from stdin
   --port <number>         Stripe API port (default: 0, ephemeral)
+  --delivery <mode>       Webhook delivery: auto (default) or manual
   --json                  Write { ok, data: { origin, controlOrigin }, error }
   --help, -h              Show this help
 `,

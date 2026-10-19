@@ -347,7 +347,7 @@ test("auto delivery signs committed state and never follows a webhook redirect",
 test("packaged CLI prints isolated origins, accepts only stdin secrets, and shares the JSON control contract", async (t) => {
   const dir = await scratch(t); const cataloguePath = path.join(dir, "catalogue.json");
   await writeFile(cataloguePath, JSON.stringify(catalogue));
-  const child = spawn(process.execPath, ["bin/sporades.js", "stripe-fake", "--json", "--port", "0", "--catalogue", cataloguePath,
+  const child = spawn(process.execPath, ["bin/sporades.js", "stripe-fake", "--json", "--port", "0", "--delivery", "manual", "--catalogue", cataloguePath,
     "--webhook-target", "http://127.0.0.1:5218/stripe/webhook", "--webhook-secret-stdin"],
     { env: { ...process.env, SPORADES_CONFIG_DIR: path.join(dir, "cli-config") }, stdio: ["pipe", "pipe", "pipe"] });
   const exited = once(child, "exit");
@@ -366,8 +366,9 @@ test("packaged CLI prints isolated origins, accepts only stdin secrets, and shar
   }
   const provider = createStripeTeamBillingProvider({ config, env, apiBaseUrl: data.origin });
   const checkout = await provider.create(input);
-  // Automatic delivery failure is recorded; it cannot reach a non-loopback service or roll back state.
   const complete = await control("checkout.complete", checkout.sessionId);
+  assert.equal((await control("events.pending")).length, 2);
+  assert.equal((await control("events.deliveries")).length, 0, "manual CLI mode queues transitions for controlled delivery");
   assert.equal((await control("subscriptions.get", complete.subscription)).status, "active");
   await control("subscriptions.setQuantity", complete.subscription, 4);
   assert.equal((await control("state")).subscriptions[0].items.data[0].quantity, 4);
