@@ -104,6 +104,7 @@
 // Static builtin imports are supported by the module graph (ADR-0042's constraint has expired).
 import { ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
+import { parse as parseHtml } from "parse5";
 import { cspReportDirectives, hstsHeader, validateHttpHardening } from "./http-security-config.js";
 import { traceRuntimeOperation } from "./runtime-request-context.js";
 import { emitAuthDeniedLog, resolveAnonymousSession } from "./auth-runtime.js";
@@ -532,10 +533,38 @@ export function renderPageHtml(html, response, token, database) {
 export function injectPageConnectionToken(html, token, database, nonce) {
     const attribute = nonce ? ` nonce="${nonce}"` : "";
     const script = `<script${attribute}>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? `<script${attribute} src="/__sporades/observe.js"></script>` : ""}`;
-    if (/<head(\s[^>]*)?>/i.test(html)) {
-        return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
+    // Use the browser's HTML parsing rules: tag-like text in comments, quoted
+    // attributes, raw-text elements or templates is not the document's head.
+    // Splice at its source location without serializing or changing author HTML.
+    const document = parseHtml(html, { sourceCodeLocationInfo: true });
+    const root = document.childNodes.find((node) => "tagName" in node && node.tagName === "html");
+    const head = root?.childNodes.find((node) => "tagName" in node && node.tagName === "head");
+    const headEnd = head?.sourceCodeLocation?.startTag?.endOffset;
+    if (headEnd !== undefined) {
+        return `${html.slice(0, headEnd)}\n${script}${html.slice(headEnd)}`;
     }
-    return `${script}\n${html}`;
+    // An omitted head is valid HTML. Executable markup before its doctype makes
+    // browsers ignore the doctype and enter quirks mode, changing Capsule layout.
+    // Keep the original prologue (including comments and quoted doctype values)
+    // ahead of the scripts; the parser then creates the implicit head for us.
+    // Scan comments once, without backtracking when there is no doctype.
+    let start = html.charCodeAt(0) === 0xfeff ? 1 : 0;
+    while (start < html.length) {
+        const code = html.charCodeAt(start);
+        if (code === 32 || code === 9 || code === 10 || code === 12 || code === 13) {
+            start++;
+            continue;
+        }
+        if (!html.startsWith("<!--", start))
+            break;
+        const end = html.indexOf("-->", start + 4);
+        if (end === -1)
+            break;
+        start = end + 3;
+    }
+    const doctype = /^<!doctype[\t\n\f\r ](?:[^>"']|"[^"]*"|'[^']*')*>/i.exec(html.slice(start));
+    const offset = doctype ? start + doctype[0].length : 0;
+    return `${html.slice(0, offset)}${script}\n${html.slice(offset)}`;
 }
 export function isDocumentNavigationRequest(request) {
     return request.headers["sec-fetch-dest"] === "document";

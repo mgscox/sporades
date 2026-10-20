@@ -8,6 +8,14 @@ Changes since v0.9.33.
 
 - Add Mutation-only `ctx.serverAuth.terminateHumanIdentity(userId)` and `reserveTerminateHumanIdentity(userId)` for atomic, terminal human identity closure (ADR 0057, #264). One shared Database adapter transition tombstones the human and removes email credentials, Provider identities, Sessions, OAuth attempts, Reset codes and preferences while retiring Access keys as `owner-deleted`, in the Capsule's own transaction; repeats return `already-terminated`. Sign-in, password-reset confirmation, delayed reset delivery, Team membership writers and user Jobs recheck the tombstone. Existing APIs are unchanged.
 
+### 🐛 Fixes
+
+- Inject the WebSocket connection token and enabled observability loader into
+  every built HTML document navigation in Dev, Container and Hosted sessions,
+  so secondary pages connect on their first attempt and report pageviews.
+  Preserve their doctype and standards-mode layout when optional head tags are omitted.
+  Ignore head-like text in comments, attributes and raw-text elements when placing scripts.
+
 ## v0.9.11 - 2026-09-02
 
 Corrects the incomplete `0.9.10` npm package, which was published from a stale
