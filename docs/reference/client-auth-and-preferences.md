@@ -794,7 +794,10 @@ A committed termination:
   not delivered to the new account.
 
 Reset-code issuance shares the identity lock with termination and rechecks
-credential ownership before inserting or reusing a code. Pending mail Jobs with
+credential ownership before inserting or reusing a code. Verification and
+confirmation also accept a code only while its owner is a live human who still
+owns that email credential, so a code bound to a terminated or replaced
+identity returns the normal invalid-code response. Pending mail Jobs with
 missing, malformed or same-millisecond identity-generation timestamps safely
 complete without delivery; request a fresh link. The public request response
 stays identical for registered and unregistered addresses.

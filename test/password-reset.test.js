@@ -159,6 +159,10 @@ test("concurrent reset confirmations spend a Reset code once before changing the
       // The confirmation's identity fence reads the credential's current owner in its transaction.
       return email === row.email ? { email, userId: row.userId } : null;
     },
+    async findAuthUserFileAuthority(userId) {
+      // Verification only accepts codes whose owner is still a live human identity.
+      return userId === row.userId ? { id: userId, userKind: "human", lifecycleStatus: "active" } : null;
+    },
     async updateEmailCredentialPassword(email, hash, salt) {
       passwordUpdates.push({ email, hash, salt });
       return { changes: 1 };
@@ -220,6 +224,12 @@ test("a stale Reset code cannot consume a newly issued sibling", async () => {
     // still read this old row from its snapshot.
     async findPasswordResetCode(selector) {
       return selector === staleRow.selector ? staleRow : null;
+    },
+    async findAuthUserFileAuthority(userId) {
+      return userId === staleRow.userId ? { id: userId, userKind: "human", lifecycleStatus: "active" } : null;
+    },
+    async findEmailCredentialWithUser(email) {
+      return email === staleRow.email ? { email, userId: staleRow.userId } : null;
     },
     async deletePasswordResetCode(selector) {
       assert.equal(selector, staleRow.selector);

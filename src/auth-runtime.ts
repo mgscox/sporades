@@ -2241,7 +2241,14 @@ async function readPasswordResetCode(database: LooseRecord, code: any) {
   if (!row || !matches) {
     return null;
   }
-  return database.clock.now().getTime() >= Date.parse(row.expiresAt) ? null : row;
+  if (database.clock.now().getTime() >= Date.parse(row.expiresAt)) return null;
+  // ADR-0057 verification fence: a code is valid only for the live human identity it was issued
+  // to. A row left for a terminated tombstone, or for an earlier identity at a reused email, is
+  // indistinguishable from an unknown code. Inside confirmation this reads the transaction's view.
+  const owner = await database.adapter.findAuthUserFileAuthority(row.userId);
+  if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") return null;
+  const credential = await database.adapter.findEmailCredentialWithUser(row.email);
+  return credential?.userId === row.userId ? row : null;
 }
 
 export async function verifyPasswordResetCode(database: LooseRecord, _session: LooseRecord, code: any) {

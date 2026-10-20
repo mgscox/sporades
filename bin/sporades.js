@@ -128722,7 +128722,11 @@ async function readPasswordResetCode(database, code) {
   if (!row || !matches2) {
     return null;
   }
-  return database.clock.now().getTime() >= Date.parse(row.expiresAt) ? null : row;
+  if (database.clock.now().getTime() >= Date.parse(row.expiresAt)) return null;
+  const owner = await database.adapter.findAuthUserFileAuthority(row.userId);
+  if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") return null;
+  const credential = await database.adapter.findEmailCredentialWithUser(row.email);
+  return credential?.userId === row.userId ? row : null;
 }
 async function verifyPasswordResetCode(database, _session, code) {
   if (!database.authConfig.providers.email.enabled) {

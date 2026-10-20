@@ -471,6 +471,40 @@ test("a delayed reset request accepted before re-registration cannot reach the r
   });
 });
 
+test("a Reset code left for a terminated or replaced identity never verifies or confirms", async () => {
+  await withRuntime(async (database) => {
+    const admin = await register(database, "verify-admin@example.test");
+    const original = await register(database, "verify-stale@example.test");
+    await clearTeams(database, original);
+    assert.equal((await call(database, admin, "terminate", [original.auth.userId])).error, null);
+    // Simulate the row a raced issuer could have written for the tombstone after termination.
+    const strandedCode = async (suffix) => {
+      const selector = `stranded-selector-${suffix}`;
+      const verifier = `stranded-verifier-${suffix}-000000000000000000000`;
+      await database.adapter.insertPasswordResetCode({
+        selector, verifierHash: hashPasswordResetVerifier(verifier), email: "verify-stale@example.test", userId: original.auth.userId,
+        createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      });
+      return `${selector}.${verifier}`;
+    };
+    const tombstoneCode = await strandedCode("tombstone");
+    assert.equal((await verifyPasswordResetCode(database, null, tombstoneCode)).ok, false, "a tombstone's code must not verify");
+    assert.equal((await confirmPasswordReset(database, null, tombstoneCode, "attacker-password")).ok, false);
+
+    await register(database, "verify-stale@example.test", "replacement-password");
+    const reusedCode = await strandedCode("reused");
+    assert.equal((await verifyPasswordResetCode(database, null, tombstoneCode)).ok, false, "email reuse must not revive the tombstone's code");
+    assert.equal((await verifyPasswordResetCode(database, null, reusedCode)).ok, false, "an old identity's code must not verify for the replacement");
+    assert.equal((await confirmPasswordReset(database, null, reusedCode, "attacker-password")).ok, false);
+    assert.equal((await signIn(database, "verify-stale@example.test", "replacement-password")).ok, true);
+
+    const current = await resetCode(database, "verify-stale@example.test");
+    assert.deepEqual(await verifyPasswordResetCode(database, null, current), { ok: true, email: "verify-stale@example.test" });
+    assert.equal((await confirmPasswordReset(database, null, current, "next-password")).ok, true);
+    assert.equal((await signIn(database, "verify-stale@example.test", "next-password")).ok, true);
+  });
+});
+
 async function proveAdapterTermination(serverEnv, runtimeConfig) {
   await withRuntime(async (database) => {
     const admin = await register(database, `admin-${randomUUID()}@example.test`);
