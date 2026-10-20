@@ -765,6 +765,107 @@ facades are frozen, so later object mutation or method replacement cannot
 redirect the approved target. Prefer the direct API for simple flows; use the validated
 continuation when authorization genuinely depends on async application state.
 
+### Terminate a Human Identity
+
+`ctx.serverAuth.terminateHumanIdentity(userId)` closes one exact linked human
+account in the same transaction as the Capsule's own erasure writes
+([ADR 0057](../adr/0057-human-identity-termination.md)). It resolves to the
+closed result `{ userId, status: "terminated" }` on the committing first call
+and `{ userId, status: "already-terminated" }` on every later authorized call
+for the same ID, including after restart and after the email is registered
+again. Unknown IDs never count as terminated.
+
+A committed termination:
+
+- replaces the user with a non-authenticating tombstone keyed only by the
+  original user ID; email, display name, picture, provider summary and
+  current-user preferences are removed, and the ID can never sign in, be
+  relinked or bootstrap a new personal Team;
+- deletes every email credential (password hash and salt) and every linked
+  OAuth Provider identity, and spends OAuth attempts bound to the human's
+  Sessions. This is local unlinking; it does not delete or revoke the external
+  provider account;
+- deletes every Session and retires every current Access key, including
+  expired current keys, with cause `owner-deleted`. Previously revoked keys
+  stay revoked;
+- deletes every outstanding Reset code, including verified-but-unspent codes.
+  Old links then fail with the normal invalid-code response, and a delayed
+  reset request accepted before a later re-registration of the same email is
+  not delivered to the new account.
+
+Reset-code issuance shares the identity lock with termination and rechecks
+credential ownership before inserting or reusing a code. Verification and
+confirmation also accept a code only while its owner is a live human who still
+owns that email credential, so a code bound to a terminated or replaced
+identity returns the normal invalid-code response. Pending mail Jobs with
+missing, malformed or same-millisecond identity-generation timestamps safely
+complete without delivery; request a fresh link. The public request response
+stays identical for registered and unregistered addresses.
+
+Existing WebSocket connections of the terminated human are moved to a fresh
+Anonymous session after commit, before the Mutation result is sent and before
+subscriptions refresh. Every affected subscription reruns under the replacement
+actor, including auth-only queries and queries whose tables did not change.
+In-flight results from the old actor cannot publish after replacement. OAuth
+callbacks lock the resolved identity's owner and recheck its provider mapping
+before writing profile or Session data, so a raced callback cannot restore a
+terminated identity. Durable user Jobs captured from the human fail with
+`JOB_ACTOR_UNAVAILABLE` instead of running under the old authority. The
+closing Mutation itself keeps its original actor until it settles, so its
+authorized app erasure can finish.
+
+The same rules as `revokeHumanSecurity` govern the call. Only a Capsule
+Mutation with a current authenticated, non-guest human Session may initiate
+it, during the handler's initial synchronous dispatch; the runtime drains a
+forgotten `await` and a rejection rolls back the whole Mutation even if Capsule
+code catches it. Queries, Custom endpoints, App messages, Jobs, Access-key and
+Service-User callers, post-`await` initiation and retained aliases are refused.
+Unknown, malformed, guest, Service-User and Privileged/operator targets share
+the bounded `HUMAN_IDENTITY_TERMINATION_DENIED` error with every caller refusal.
+A tombstone replay still requires a current authorized human Session.
+Caller and target identities are locked in deterministic order, followed by a
+live check of the exact Session retained through commit. If two humans try to
+terminate each other concurrently, only one can succeed; the terminated
+caller's operation fails with `HUMAN_IDENTITY_TERMINATION_DENIED`.
+
+Termination refuses with `HUMAN_IDENTITY_TERMINATION_BLOCKED` while the human
+has any Team membership, including the automatically created personal Team.
+Sporades never leaves Teams, deletes Teams or transfers billing on the
+Capsule's behalf: transfer or remove memberships through the supported Team
+APIs first, and resolve app-owned billing holders and Service-User
+responsibilities before asking for termination. The Capsule owns consent,
+administrator policy, purpose-bound reauthentication, its domain audit and
+any external erasure.
+
+Self-closure passes `ctx.auth.userId`. Because asynchronous checks such as
+deleting the personal Team must run before termination, reserve the operation
+synchronously and continue it:
+
+```ts
+closeAccount: mutation(async (ctx) => {
+  const termination = ctx.serverAuth.reserveTerminateHumanIdentity(ctx.auth.userId);
+  const { teams } = await ctx.teams.list();
+  for (const team of teams) await ctx.teams.delete(team.id);
+  return ctx.lifecycle.continue(termination, async (result) => {
+    await ctx.db.closureReceipts.insert({ userId: result.userId });
+    return result;
+  });
+}),
+```
+
+Reservations are write-free, one-shot and bound to the owning Mutation, exactly
+like `reserveRevokeHumanSecurity`. In a reservation array, a second
+termination of the same non-caller target observes `already-terminated`, and
+self-termination must be the last lifecycle operation because later operations
+still require the caller's live Session. If a self-closure response is lost,
+that Session cannot retry; an independently authorized human administrator can
+replay the original target ID.
+
+After termination the old normalized email and `(provider, subject)` pair are
+released for ordinary registration. A new account receives a new user ID and
+fresh authority, with no inherited preferences, Teams, keys or Reset codes,
+and the old password never signs in to it. Termination is not an email ban.
+
 ### Simulate Local Identities
 
 For local browser testing, start a Dev session, then run:

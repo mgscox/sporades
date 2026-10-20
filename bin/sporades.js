@@ -105008,6 +105008,7 @@ async function joinCurrentUserTeam(database, auth, code, eventContext) {
         if (Number(claim?.changes ?? 0) !== 1) {
           throw commandError("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
         }
+        await lockLiveMembershipUser(tx, joiningUserId, teamJoinDenied);
         await tx.prepare(sql2(
           "INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)"
         )).run(row.teamId, joiningUserId, now2);
@@ -105289,6 +105290,7 @@ async function createAdditionalTeam(database, auth, name2, eventContext) {
   requireAuth({ auth }, { linked: true });
   const normalizedName = normalizeTeamName(name2);
   const team = await withTeamTransaction(database, async (tx) => {
+    await lockLiveMembershipUser(tx, String(auth.userId), teamDenied);
     await ensureInitialTeamOnAdapter(tx, auth.userId);
     await ensureMembershipCounterOnAdapter(tx, auth.userId);
     const claim = await tx.prepare(tx.dialect.sql(
@@ -105632,10 +105634,15 @@ async function ensureInitialTeamOnAdapter(tx, userId) {
     if (existing?.teamId) return String(existing.teamId);
     throw new Error("Team bootstrap claim was not committed.");
   }
+  await lockLiveMembershipUser(tx, String(userId), teamDenied);
   await tx.prepare(sql2("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id2, INITIAL_TEAM_NAME, now2, userId);
   await tx.prepare(sql2("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id2, userId, now2);
   await tx.prepare(sql2("INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) VALUES (?, 1)")).run(userId);
   return id2;
+}
+async function lockLiveMembershipUser(tx, userId, denied2) {
+  const row = await tx.lockAuthUserFileAuthority(userId);
+  if (row?.lifecycleStatus === "terminated") throw denied2();
 }
 async function ensureMembershipCounterOnAdapter(tx, userId) {
   const sql2 = tx.dialect.sql;
@@ -112712,7 +112719,7 @@ async function deletePrivateFileOperation(database, auth, fileReference, credent
     bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
     if (requireLiveActor) {
       const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
-      if (!actor || actor.userKind === "service" && actor.lifecycleStatus !== "active") {
+      if (!actor || actor.lifecycleStatus === "terminated" || actor.userKind === "service" && actor.lifecycleStatus !== "active") {
         return {
           ok: false,
           error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
@@ -128622,6 +128629,15 @@ function hashPasswordResetVerifier(verifier) {
   return nodeCryptoModule3.createHash("sha256").update(verifier).digest("base64url");
 }
 async function issuePasswordResetCode(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
+  return await withAuthTransaction(database, async (tx) => {
+    const owner = await tx.lockAuthUserFileAuthority(credential.userId);
+    if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") return null;
+    const current2 = await tx.findEmailCredentialWithUser(credential.email);
+    if (!current2 || current2.userId !== credential.userId || current2.createdAt !== credential.createdAt) return null;
+    return await issuePasswordResetCodeOnAdapter({ ...database, adapter: tx }, current2, requestedCode, allowRequestedCodeInsert);
+  });
+}
+async function issuePasswordResetCodeOnAdapter(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
   const { selector, code, verifierHash, now: now2 } = passwordResetCodeParts(database, requestedCode);
   if (requestedCode) {
     const existing = await database.adapter.findPasswordResetCode(selector);
@@ -128657,6 +128673,9 @@ async function prepareEmailPasswordResetDelivery(database, payload, attempt = 1)
   const email = typeof payload?.email === "string" ? payload.email.trim().toLowerCase() : "";
   const credential = email ? await database.adapter.findEmailCredentialWithUser(email) : null;
   if (!credential) return null;
+  const requestedAt = canonicalAuthInstant(payload?.requestedAt);
+  const createdAt = canonicalAuthInstant(credential.createdAt);
+  if (requestedAt === null || createdAt === null || createdAt >= requestedAt) return null;
   const issued = await issuePasswordResetCode(database, credential, payload?.code ?? null, attempt === 1);
   if (!issued) return null;
   const body = passwordResetMailBody(issued.link);
@@ -128721,7 +128740,11 @@ async function readPasswordResetCode(database, code) {
   if (!row || !matches2) {
     return null;
   }
-  return database.clock.now().getTime() >= Date.parse(row.expiresAt) ? null : row;
+  if (database.clock.now().getTime() >= Date.parse(row.expiresAt)) return null;
+  const owner = await database.adapter.findAuthUserFileAuthority(row.userId);
+  if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") return null;
+  const credential = await database.adapter.findEmailCredentialWithUser(row.email);
+  return credential?.userId === row.userId ? row : null;
 }
 async function verifyPasswordResetCode(database, _session, code) {
   if (!database.authConfig.providers.email.enabled) {
@@ -128752,6 +128775,10 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
     }
     const consumed = await tx.deletePasswordResetCode(row.selector);
     if (consumed?.changes !== 1) {
+      return { ok: false, error: invalidPasswordResetCodeError() };
+    }
+    const credential = await tx.findEmailCredentialWithUser(row.email);
+    if (credential?.userId !== row.userId) {
       return { ok: false, error: invalidPasswordResetCodeError() };
     }
     await tx.updateEmailCredentialPassword(row.email, password.hash, password.salt);
@@ -129248,6 +129275,7 @@ async function signUpWithEmail(database, session, provider, credentials, registr
     provider: "email"
   };
   return await withRegistrationTransaction(database, async (tx) => {
+    if (await sessionUserWasTerminated(tx, auth.userId)) return terminatedSessionUserError();
     const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
     if (!registration.ok) return registration;
     await tx.insertEmailCredential({
@@ -129269,6 +129297,13 @@ async function signUpWithEmail(database, session, provider, credentials, registr
     await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
+}
+async function sessionUserWasTerminated(tx, userId) {
+  if (typeof userId !== "string" || !userId) return false;
+  return (await tx.lockAuthUserFileAuthority(userId))?.lifecycleStatus === "terminated";
+}
+function terminatedSessionUserError() {
+  return { ok: false, error: { code: "AUTH_SESSION_INVALID", message: "This sign-in Session is no longer valid.", hint: "Reload the page and sign in again." } };
 }
 function registrationDenied() {
   return { ok: false, error: { code: "REGISTRATION_DENIED", message: "Registration was not admitted.", hint: "Use valid registration admission and retry." } };
@@ -129347,6 +129382,8 @@ async function signInWithEmail(database, session, credentials) {
     await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_auth_users] SET [provider] = 'email' WHERE [id] = ? AND [isAuthenticated] = 1 AND [isGuest] = 0"
     )).run(auth.userId);
+    const current2 = await tx.findEmailCredentialWithUser(normalized.email);
+    if (current2?.userId !== auth.userId) return { ok: false, error: invalidEmailCredentialsError() };
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
 }
@@ -129364,8 +129401,10 @@ async function linkProviderIdentity(database, session, provider, profile, sealed
     };
   }
   return await withRegistrationTransaction(database, async (tx) => {
+    if (await sessionUserWasTerminated(tx, session.auth.userId)) return terminatedSessionUserError();
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
+    let recoveredLegacyIdentity = false;
+    let email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {
       const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
       if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
@@ -129389,6 +129428,15 @@ async function linkProviderIdentity(database, session, provider, profile, sealed
         };
       }
       identity = legacyIdentities[0] ?? null;
+      recoveredLegacyIdentity = Boolean(identity);
+    }
+    if (identity) {
+      const owner = await tx.lockAuthUserFileAuthority(identity.userId);
+      if (!owner || owner.lifecycleStatus === "terminated") return terminatedSessionUserError();
+      const current2 = recoveredLegacyIdentity ? await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email) : [await tx.findAuthIdentityByProviderSubject(provider, subject)];
+      if (current2.length !== 1 || current2[0]?.id !== identity.id || current2[0]?.userId !== identity.userId || current2[0]?.subject !== identity.subject) return terminatedSessionUserError();
+      identity = current2[0];
+      email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity.email ?? null;
     }
     const bootstrapInitialTeam = !identity && session.auth.isGuest;
     let registration = { ok: true };
@@ -129759,7 +129807,7 @@ var oauthRegistrationRetentionKey = (keyId) => `oauth-registration-key:retain:${
 var oauthRegistrationKeyId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{22}$/.test(value);
 var oauthRegistrationMaterial = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 var OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1e3;
-function oauthRegistrationInstant(value) {
+function canonicalAuthInstant(value) {
   if (typeof value !== "string") return null;
   const instant = Date.parse(value);
   return Number.isFinite(instant) && new Date(instant).toISOString() === value ? instant : null;
@@ -129776,7 +129824,7 @@ async function oauthRegistrationOutstandingExpiry(adapter, keyId, now2) {
 function oauthRegistrationAlias(value, now2) {
   try {
     const parsed = JSON.parse(String(value ?? ""));
-    const expiresAt = oauthRegistrationInstant(parsed?.expiresAt);
+    const expiresAt = canonicalAuthInstant(parsed?.expiresAt);
     return oauthRegistrationKeyId(parsed?.keyId) && expiresAt !== null && expiresAt > now2 ? { keyId: parsed.keyId, expiresAt } : null;
   } catch {
     return null;
@@ -129846,7 +129894,7 @@ async function retireOAuthRegistrationKeys(database, options = {}) {
       if (!oauthRegistrationKeyId(keyId) || keyId === current2.keyId) continue;
       let retainUntil = null;
       try {
-        retainUntil = oauthRegistrationInstant(JSON.parse(String(row.value))?.expiresAt);
+        retainUntil = canonicalAuthInstant(JSON.parse(String(row.value))?.expiresAt);
       } catch {
         retainUntil = null;
       }
@@ -134753,6 +134801,49 @@ function createSharedDatabaseAdapterMethods(dialect) {
       ]);
       return thenIfPromise(sequence, () => ({ revokedCount, records, revokedAt }));
     },
+    // ADR-0057: the one terminal human-identity transition, for every engine. The caller owns the
+    // enclosing transaction; this method only ever runs inside it. The user row is locked first, so
+    // a concurrent termination, Team Join or sign-in that also locks or updates that row observes the
+    // committed tombstone instead of racing it. Outcomes are deliberately coarse: unknown, guest,
+    // service and reserved targets are all `denied`, so callers cannot learn a target's kind.
+    async terminateHumanIdentity(input) {
+      const userId = input?.userId;
+      if (typeof userId !== "string" || userId.length === 0 || isReservedAuthUserId(userId)) return { status: "denied" };
+      const locked = await this.lockAuthUserFileAuthority(userId);
+      if (!locked || (locked.userKind ?? "human") !== "human") return { status: "denied" };
+      if (locked.lifecycleStatus === "terminated") return { status: "already-terminated" };
+      const live = await this.prepare(sql2(
+        "SELECT [u].[id] FROM [sporades_auth_users] [u] WHERE [u].[id] = ? AND [u].[lifecycleStatus] = 'active' AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND (EXISTS (SELECT 1 FROM [sporades_auth_email_credentials] [c] WHERE [c].[userId] = [u].[id]) OR EXISTS (SELECT 1 FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [u].[id]))"
+      )).get(userId);
+      if (!live) return { status: "denied" };
+      const membership = await this.prepare(sql2(
+        "SELECT [teamId] FROM [sporades_team_memberships] WHERE [userId] = ? LIMIT 1"
+      )).get(userId);
+      if (membership) return { status: "blocked" };
+      await this.prepare(sql2("DELETE FROM [sporades_auth_password_reset_codes] WHERE [userId] = ?")).run(userId);
+      await this.prepare(sql2(
+        "DELETE FROM [sporades_auth_oauth_states] WHERE [reauthUserId] = ? OR [sessionToken] IN (SELECT [token] FROM [sporades_auth_sessions] WHERE [userId] = ?)"
+      )).run(userId, userId);
+      await this.prepare(sql2("DELETE FROM [sporades_auth_email_credentials] WHERE [userId] = ?")).run(userId);
+      await this.prepare(sql2("DELETE FROM [sporades_auth_identities] WHERE [userId] = ?")).run(userId);
+      await this.deleteAuthSessionsForUser(userId);
+      const revokedAccessKeys = await this.bulkRevokeAccessKeysForOwner({
+        ownerUserId: userId,
+        revocationTime: input.revocationTime,
+        revocationCause: "owner-deleted"
+      });
+      await this.prepare(sql2("DELETE FROM [sporades_user_preferences] WHERE [userId] = ?")).run(userId);
+      await this.prepare(sql2(
+        "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, '', ?) ON CONFLICT ([userId]) DO NOTHING"
+      )).run(userId, "1970-01-01T00:00:00.000Z");
+      const tombstoned = await this.prepare(sql2(
+        "UPDATE [sporades_auth_users] SET [displayName] = '', [email] = NULL, [picture] = NULL, [isAuthenticated] = 0, [isGuest] = 0, [provider] = 'unknown', [lifecycleStatus] = 'terminated', [disabledAt] = NULL WHERE [id] = ? AND [userKind] = 'human' AND [lifecycleStatus] = 'active'"
+      )).run(userId);
+      if (Number(tombstoned?.changes ?? 0) !== 1) {
+        throw Object.assign(new Error("Human identity termination lost its user row."), { code: "HUMAN_IDENTITY_TERMINATION_CONFLICT" });
+      }
+      return { status: "terminated", revokedAccessKeys };
+    },
     ensureUserPreferencesStorage() {
       return createUserPreferencesTables(this);
     },
@@ -134893,7 +134984,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       return thenIfPromise(
         this.prepare(
           sql2(
-            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[userKind], [u].[displayName], [u].[email], [u].[picture], [u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ?"
+            "SELECT [s].[token], [s].[expiresAt], [u].[id] AS [userId], [u].[userKind], [u].[displayName], [u].[email], [u].[picture], [u].[isAuthenticated], [u].[isGuest], [s].[provider] AS [provider] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND ([u].[lifecycleStatus] IS NULL OR [u].[lifecycleStatus] <> 'terminated')"
           )
         ).get(token),
         (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
@@ -134946,7 +135037,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       return thenIfPromise(
         this.prepare(
           sql2(
-            "SELECT [c].[email], [c].[userId], [c].[passwordHash], [c].[passwordSalt], [u].[displayName], [u].[picture], [u].[isAuthenticated], [u].[isGuest] FROM [sporades_auth_email_credentials] [c] JOIN [sporades_auth_users] [u] ON [u].[id] = [c].[userId] WHERE [c].[email] = ?"
+            "SELECT [c].[email], [c].[userId], [c].[passwordHash], [c].[passwordSalt], [c].[createdAt], [u].[displayName], [u].[picture], [u].[isAuthenticated], [u].[isGuest] FROM [sporades_auth_email_credentials] [c] JOIN [sporades_auth_users] [u] ON [u].[id] = [c].[userId] WHERE [c].[email] = ? AND ([u].[lifecycleStatus] IS NULL OR [u].[lifecycleStatus] <> 'terminated')"
           )
         ).get(email),
         (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
@@ -136889,6 +136980,7 @@ async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
 
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
+var terminatedHumanIdentitiesByMutationResult = /* @__PURE__ */ new WeakMap();
 var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
@@ -140374,6 +140466,12 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     revokeHumanSecurity(_userId) {
       throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
     },
+    terminateHumanIdentity(_userId) {
+      throw humanIdentityTerminationDenied();
+    },
+    reserveTerminateHumanIdentity(_userId) {
+      throw humanIdentityTerminationDenied();
+    },
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
@@ -142220,6 +142318,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
             clientAddress: client.clientAddress,
             signal: client.teamOperationSignal
           });
+          const terminatedUserIds = terminatedHumanIdentitiesByMutationResult.get(result);
+          if (terminatedUserIds) await retireTerminatedHumanClients(database, terminatedUserIds);
           sendJson(client, formatMutationResult(message, mutationName, result));
           if (result.ok && mutationResultsWithWrites.has(result)) {
             setTimeout(refreshQueries, 0);
@@ -142306,6 +142406,10 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     });
   }
   async function sendQueryResult(client, subscription, onError, operation = startOperation(client, "query", subscription.name)) {
+    if (client.replacingTerminatedSession) {
+      operation.end("cancelled");
+      return;
+    }
     queryOperations.get(subscription)?.end("cancelled");
     queryOperations.set(subscription, operation);
     return operation.run(async () => {
@@ -142350,7 +142454,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     const dirty = takeLiveQueryDirtyTables();
     const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
     for (const client of clients) {
-      if (client.closing || client.socket.destroyed) continue;
+      if (client.closing || client.socket.destroyed || client.replacingTerminatedSession) continue;
       for (const subscription of client.subscriptions.values()) {
         const running = queryRefreshes.get(subscription);
         if (running) {
@@ -142398,6 +142502,40 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     } finally {
       if (queryRefreshes.get(subscription) === running) queryRefreshes.delete(subscription);
     }
+  }
+  async function retireTerminatedHumanClients(database, userIds) {
+    const terminated = new Set(userIds);
+    const affected = [...clients].filter((client) => terminated.has(client.session?.auth?.userId));
+    for (const client of affected) {
+      client.replacingTerminatedSession = true;
+      for (const subscription of client.subscriptions.values()) {
+        subscription.generation = (subscription.generation ?? 0) + 1;
+        cancelQueryRefresh(subscription);
+        subscription.readTables = null;
+      }
+    }
+    for (const client of affected) {
+      retireJourney(client);
+      try {
+        const replacement = await resolveAnonymousSession(database, null);
+        client.session = { ...replacement, clientAddress: client.clientAddress };
+        sendJson(client, {
+          id: null,
+          type: "auth.session.replace",
+          data: { sessionToken: replacement.token, auth: replacement.auth },
+          error: null
+        });
+      } catch {
+        client.session = { token: null, auth: { userId: null, isAuthenticated: false, isGuest: true }, clientAddress: client.clientAddress };
+        try {
+          client.socket.destroy();
+        } catch {
+        }
+      } finally {
+        client.replacingTerminatedSession = false;
+      }
+    }
+    if (affected.length) setTimeout(refreshQueries, 0);
   }
   async function sendAuthResult(client, id2) {
     const database = getDatabase();
@@ -142517,6 +142655,9 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
   await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
     email: cleanEmail,
     code,
+    // Wall-clock, like the credential's own createdAt, so the delivery-time generation fence
+    // compares two values from one clock.
+    requestedAt: (/* @__PURE__ */ new Date()).toISOString(),
     subject: typeof options.subject === "string" ? options.subject : "Reset your password",
     textBody: typeof options.textBody === "string" ? options.textBody : null,
     htmlBody: typeof htmlBody === "string" ? htmlBody : null
@@ -142831,6 +142972,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
   let resourceAttempted = false;
   let resourceLogPublicationError;
   const writeState = { didWrite: false };
+  const lifecycleEffects = { terminatedUserIds: [] };
   try {
     const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
     const declaredMutationHandler = declaredHandler ? materializeHandler(declaredHandler) : null;
@@ -142842,6 +142984,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       const mutationInvocation = { active: true };
+      lifecycleEffects.terminatedUserIds = [];
       return mutationExecution.run(mutationInvocation, async () => {
         let handlerFailed = false;
         let revokeOuterResources;
@@ -142851,7 +142994,8 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
             clientAddress: options.clientAddress,
             signal: options.signal,
             serviceUserMutationAuthority,
-            mutationInvocation
+            mutationInvocation,
+            lifecycleEffects
           });
           revokeOuterResources = bindOuterResources(transactionDatabase, context2, {
             startedAt: outerStartedAt,
@@ -142930,6 +143074,9 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     if (writeState.didWrite) {
       database.rowCache.clear();
       mutationResultsWithWrites.add(committed);
+    }
+    if (lifecycleEffects.terminatedUserIds.length > 0 && committed && typeof committed === "object") {
+      terminatedHumanIdentitiesByMutationResult.set(committed, [...new Set(lifecycleEffects.terminatedUserIds)]);
     }
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
@@ -143236,6 +143383,15 @@ function createMutationContext(database, auth, options = {}) {
     const [targetUserId] = assertJsonCompatible([userId]);
     return reserveValidatedLifecycle(options, "human-security", () => revokeHumanSecurityExecutor(targetUserId));
   };
+  context2.serverAuth.terminateHumanIdentity = (userId) => {
+    assertLiveMutationInvocation(options, "human-identity");
+    return trackMutationContextWork(context2, terminateHumanIdentityInMutation(database, auth, credential, options, userId));
+  };
+  const terminateHumanIdentityExecutor = context2.serverAuth.terminateHumanIdentity;
+  context2.serverAuth.reserveTerminateHumanIdentity = (userId) => {
+    const [targetUserId] = assertJsonCompatible([userId]);
+    return reserveValidatedLifecycle(options, "human-identity", () => terminateHumanIdentityExecutor(targetUserId));
+  };
   context2.lifecycle = {
     continue(operations, continuation) {
       const list = Array.isArray(operations) ? operations : [operations];
@@ -143293,8 +143449,36 @@ function assertLiveMutationInvocation(options, capability = "human-security") {
     if (capability === "service-user") {
       throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
     }
+    if (capability === "human-identity") throw humanIdentityTerminationDenied();
     throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
   }
+}
+function humanIdentityTerminationDenied() {
+  return commandError("Human identity termination denied.", "Use a current authenticated human Session inside a Capsule mutation and select one existing linked human.", "HUMAN_IDENTITY_TERMINATION_DENIED");
+}
+function humanIdentityTerminationBlocked() {
+  return commandError("Human identity termination is blocked.", "Transfer or remove the human's Team memberships, and resolve app-owned responsibilities, before terminating the identity.", "HUMAN_IDENTITY_TERMINATION_BLOCKED");
+}
+async function terminateHumanIdentityInMutation(database, auth, credential, options, userId) {
+  if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || credential?.kind !== "session" || typeof options.sessionToken !== "string" || typeof userId !== "string" || userId.length === 0 || userId.length > 256) {
+    throw humanIdentityTerminationDenied();
+  }
+  for (const identityId of [.../* @__PURE__ */ new Set([auth.userId, userId])].sort()) {
+    await database.adapter.lockAuthUserFileAuthority(identityId);
+  }
+  const actorSession = await database.adapter.prepare(database.adapter.dialect.sql(
+    "SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND [u].[userKind] = 'human' AND [u].[lifecycleStatus] = 'active'" + (database.adapter.dialect.name === "postgres" ? " FOR UPDATE OF [s]" : "")
+  )).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
+  if (!actorSession) throw humanIdentityTerminationDenied();
+  const outcome = await database.adapter.terminateHumanIdentity({
+    userId,
+    revocationTime: () => database.clock.now().toISOString()
+  });
+  if (outcome?.status === "blocked") throw humanIdentityTerminationBlocked();
+  if (outcome?.status === "already-terminated") return Object.freeze({ userId, status: "already-terminated" });
+  if (outcome?.status !== "terminated") throw humanIdentityTerminationDenied();
+  options.lifecycleEffects?.terminatedUserIds.push(userId);
+  return Object.freeze({ userId, status: "terminated" });
 }
 function invokeWithLifecycleInitiation(operation) {
   const invocation = mutationExecution.getStore();
@@ -143727,6 +143911,10 @@ async function runCurrentUserJobWorker(database) {
         } else {
           const auth = readJobAuthSnapshot(row);
           const credential = readJobCredentialProvenance(row);
+          const actorRow = await database.adapter.findAuthUserFileAuthority(String(row.actorUserId));
+          if (actorRow?.lifecycleStatus === "terminated") {
+            throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The Job's user identity was terminated; enqueue new work under a live actor.");
+          }
           if (database.__jobStopped) {
             await relinquishUnstartedJobClaim(database, row.id, claimToken);
             return;

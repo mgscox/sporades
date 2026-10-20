@@ -72,6 +72,9 @@ import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
+// ADR-0057: user IDs whose human identity a committed Mutation terminated, so the WebSocket hub can
+// move their live connections off the old actor before any subscription refreshes.
+const terminatedHumanIdentitiesByMutationResult = new WeakMap();
 const trustedReadPurposes = new Set(["teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
@@ -4220,6 +4223,12 @@ function createEndpointContext(database, endpointRequest, session, options = {})
         revokeHumanSecurity(_userId) {
             throw commandError("Human security transition is unavailable.", "Run this operation inside an authenticated Capsule mutation.", "HUMAN_SECURITY_TRANSITION_UNAVAILABLE");
         },
+        terminateHumanIdentity(_userId) {
+            throw humanIdentityTerminationDenied();
+        },
+        reserveTerminateHumanIdentity(_userId) {
+            throw humanIdentityTerminationDenied();
+        },
         async setEmailPassword(email, newPassword) {
             const result = await setEmailPassword(database, { auth }, email, newPassword);
             if (!result.ok)
@@ -6181,6 +6190,9 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                         clientAddress: client.clientAddress,
                         signal: client.teamOperationSignal,
                     });
+                    const terminatedUserIds = terminatedHumanIdentitiesByMutationResult.get(result);
+                    if (terminatedUserIds)
+                        await retireTerminatedHumanClients(database, terminatedUserIds);
                     sendJson(client, formatMutationResult(message, mutationName, result));
                     if (result.ok && mutationResultsWithWrites.has(result)) {
                         setTimeout(refreshQueries, 0);
@@ -6268,6 +6280,10 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         });
     }
     async function sendQueryResult(client, subscription, onError, operation = startOperation(client, "query", subscription.name)) {
+        if (client.replacingTerminatedSession) {
+            operation.end("cancelled");
+            return;
+        }
         queryOperations.get(subscription)?.end("cancelled");
         queryOperations.set(subscription, operation);
         return operation.run(async () => {
@@ -6320,7 +6336,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         const dirty = takeLiveQueryDirtyTables();
         const scoped = getDatabase()?.adapter?.[liveQueryTablesTracked] === true;
         for (const client of clients) {
-            if (client.closing || client.socket.destroyed)
+            if (client.closing || client.socket.destroyed || client.replacingTerminatedSession)
                 continue;
             for (const subscription of client.subscriptions.values()) {
                 const running = queryRefreshes.get(subscription);
@@ -6380,6 +6396,50 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             if (queryRefreshes.get(subscription) === running)
                 queryRefreshes.delete(subscription);
         }
+    }
+    // ADR-0057: a committed termination replaces every live connection of the terminated human with a
+    // fresh Anonymous session before the Mutation's own result is sent and before subscriptions refresh.
+    // A connection whose replacement cannot be resolved is closed rather than left on the old actor.
+    async function retireTerminatedHumanClients(database, userIds) {
+        const terminated = new Set(userIds);
+        const affected = [...clients].filter((client) => terminated.has(client.session?.auth?.userId));
+        // Fence every affected reader before the first asynchronous replacement:
+        // another client's old query can settle while Anonymous sessions are made.
+        for (const client of affected) {
+            client.replacingTerminatedSession = true;
+            for (const subscription of client.subscriptions.values()) {
+                subscription.generation = (subscription.generation ?? 0) + 1;
+                cancelQueryRefresh(subscription);
+                // Actor changes invalidate even auth-only queries and untouched tables.
+                subscription.readTables = null;
+            }
+        }
+        for (const client of affected) {
+            retireJourney(client);
+            try {
+                const replacement = await resolveAnonymousSession(database, null);
+                client.session = { ...replacement, clientAddress: client.clientAddress };
+                sendJson(client, {
+                    id: null,
+                    type: "auth.session.replace",
+                    data: { sessionToken: replacement.token, auth: replacement.auth },
+                    error: null,
+                });
+            }
+            catch {
+                client.session = { token: null, auth: { userId: null, isAuthenticated: false, isGuest: true }, clientAddress: client.clientAddress };
+                try {
+                    client.socket.destroy();
+                }
+                catch { /* already closed */ }
+            }
+            finally {
+                client.replacingTerminatedSession = false;
+            }
+        }
+        // Run after the Mutation response, independently of app-table dirtiness.
+        if (affected.length)
+            setTimeout(refreshQueries, 0);
     }
     async function sendAuthResult(client, id) {
         const database = getDatabase();
@@ -6499,6 +6559,9 @@ export async function sendEmailPasswordResetLink(database, session, email, optio
     await enqueueRuntimeJob(database, PASSWORD_RESET_REQUEST_JOB, {
         email: cleanEmail,
         code,
+        // Wall-clock, like the credential's own createdAt, so the delivery-time generation fence
+        // compares two values from one clock.
+        requestedAt: new Date().toISOString(),
         subject: typeof options.subject === "string" ? options.subject : "Reset your password",
         textBody: typeof options.textBody === "string" ? options.textBody : null,
         htmlBody: typeof htmlBody === "string" ? htmlBody : null,
@@ -6840,6 +6903,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
     let resourceAttempted = false;
     let resourceLogPublicationError;
     const writeState = { didWrite: false };
+    const lifecycleEffects = { terminatedUserIds: [] };
     try {
         const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
         const declaredMutationHandler = declaredHandler ? materializeHandler(declaredHandler) : null;
@@ -6851,6 +6915,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
         const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
             const mutationInvocation = { active: true };
+            lifecycleEffects.terminatedUserIds = [];
             return mutationExecution.run(mutationInvocation, async () => {
                 let handlerFailed = false;
                 let revokeOuterResources;
@@ -6861,6 +6926,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
                         signal: options.signal,
                         serviceUserMutationAuthority,
                         mutationInvocation,
+                        lifecycleEffects,
                     });
                     revokeOuterResources = bindOuterResources(transactionDatabase, context, {
                         startedAt: outerStartedAt,
@@ -6951,6 +7017,9 @@ export async function runMutation(database, auth, mutationName, args, options = 
         if (writeState.didWrite) {
             database.rowCache.clear();
             mutationResultsWithWrites.add(committed);
+        }
+        if (lifecycleEffects.terminatedUserIds.length > 0 && committed && typeof committed === "object") {
+            terminatedHumanIdentitiesByMutationResult.set(committed, [...new Set(lifecycleEffects.terminatedUserIds)]);
         }
         if (resourceLogPublicationError)
             throw resourceLogPublicationError;
@@ -7257,6 +7326,15 @@ function createMutationContext(database, auth, options = {}) {
         const [targetUserId] = assertJsonCompatible([userId]);
         return reserveValidatedLifecycle(options, "human-security", () => revokeHumanSecurityExecutor(targetUserId));
     };
+    context.serverAuth.terminateHumanIdentity = (userId) => {
+        assertLiveMutationInvocation(options, "human-identity");
+        return trackMutationContextWork(context, terminateHumanIdentityInMutation(database, auth, credential, options, userId));
+    };
+    const terminateHumanIdentityExecutor = context.serverAuth.terminateHumanIdentity;
+    context.serverAuth.reserveTerminateHumanIdentity = (userId) => {
+        const [targetUserId] = assertJsonCompatible([userId]);
+        return reserveValidatedLifecycle(options, "human-identity", () => terminateHumanIdentityExecutor(targetUserId));
+    };
     context.lifecycle = {
         continue(operations, continuation) {
             const list = Array.isArray(operations) ? operations : [operations];
@@ -7319,8 +7397,49 @@ function assertLiveMutationInvocation(options, capability = "human-security") {
         if (capability === "service-user") {
             throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
         }
+        if (capability === "human-identity")
+            throw humanIdentityTerminationDenied();
         throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
     }
+}
+function humanIdentityTerminationDenied() {
+    return commandError("Human identity termination denied.", "Use a current authenticated human Session inside a Capsule mutation and select one existing linked human.", "HUMAN_IDENTITY_TERMINATION_DENIED");
+}
+function humanIdentityTerminationBlocked() {
+    return commandError("Human identity termination is blocked.", "Transfer or remove the human's Team memberships, and resolve app-owned responsibilities, before terminating the identity.", "HUMAN_IDENTITY_TERMINATION_BLOCKED");
+}
+// ADR-0057. The caller's exact Session and live human actor are rechecked inside the Mutation's
+// transaction; nothing read from the context object can supply that authority. The adapter then
+// performs the whole transition, and the result is published only after the Mutation commits.
+async function terminateHumanIdentityInMutation(database, auth, credential, options, userId) {
+    if (!database.__transactionActive || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service"
+        || credential?.kind !== "session" || typeof options.sessionToken !== "string"
+        || typeof userId !== "string" || userId.length === 0 || userId.length > 256) {
+        throw humanIdentityTerminationDenied();
+    }
+    // Retain both identities through commit, in the same order for opposing callers. Checking the
+    // Session before these locks allows two humans to authorize each other's termination at once.
+    for (const identityId of [...new Set([auth.userId, userId])].sort()) {
+        await database.adapter.lockAuthUserFileAuthority(identityId);
+    }
+    const actorSession = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [s].[token] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] " +
+        "WHERE [s].[token] = ? AND [s].[userId] = ? AND [s].[expiresAt] > ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 " +
+        "AND [u].[userKind] = 'human' AND [u].[lifecycleStatus] = 'active'" +
+        (database.adapter.dialect.name === "postgres" ? " FOR UPDATE OF [s]" : ""))).get(options.sessionToken, auth.userId, database.clock.now().toISOString());
+    if (!actorSession)
+        throw humanIdentityTerminationDenied();
+    const outcome = await database.adapter.terminateHumanIdentity({
+        userId,
+        revocationTime: () => database.clock.now().toISOString(),
+    });
+    if (outcome?.status === "blocked")
+        throw humanIdentityTerminationBlocked();
+    if (outcome?.status === "already-terminated")
+        return Object.freeze({ userId, status: "already-terminated" });
+    if (outcome?.status !== "terminated")
+        throw humanIdentityTerminationDenied();
+    options.lifecycleEffects?.terminatedUserIds.push(userId);
+    return Object.freeze({ userId, status: "terminated" });
 }
 function invokeWithLifecycleInitiation(operation) {
     const invocation = mutationExecution.getStore();
@@ -7801,6 +7920,11 @@ export async function runCurrentUserJobWorker(database) {
                 else {
                     const auth = readJobAuthSnapshot(row);
                     const credential = readJobCredentialProvenance(row);
+                    // ADR-0057: captured provenance never restores authority to a terminated human.
+                    const actorRow = await database.adapter.findAuthUserFileAuthority(String(row.actorUserId));
+                    if (actorRow?.lifecycleStatus === "terminated") {
+                        throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The Job's user identity was terminated; enqueue new work under a live actor.");
+                    }
                     if (database.__jobStopped) {
                         await relinquishUnstartedJobClaim(database, row.id, claimToken);
                         return;

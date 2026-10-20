@@ -506,6 +506,7 @@ export async function joinCurrentUserTeam(database, auth, code, eventContext) {
                 if (Number(claim?.changes ?? 0) !== 1) {
                     throw commandError("Team limit reached.", `A user can belong to at most ${TEAM_MEMBERSHIP_MAX} Teams.`, "TEAM_LIMIT_REACHED");
                 }
+                await lockLiveMembershipUser(tx, joiningUserId, teamJoinDenied);
                 await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)")).run(row.teamId, joiningUserId, now);
                 membership = { role: "member" };
             }
@@ -790,6 +791,7 @@ export async function createAdditionalTeam(database, auth, name, eventContext) {
     requireAuth({ auth }, { linked: true });
     const normalizedName = normalizeTeamName(name);
     const team = await withTeamTransaction(database, async (tx) => {
+        await lockLiveMembershipUser(tx, String(auth.userId), teamDenied);
         await ensureInitialTeamOnAdapter(tx, auth.userId);
         await ensureMembershipCounterOnAdapter(tx, auth.userId);
         const claim = await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_membership_counters] SET [membershipCount] = [membershipCount] + 1 " +
@@ -1199,10 +1201,20 @@ async function ensureInitialTeamOnAdapter(tx, userId) {
             return String(existing.teamId);
         throw new Error("Team bootstrap claim was not committed.");
     }
+    await lockLiveMembershipUser(tx, String(userId), teamDenied);
     await tx.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)")).run(id, INITIAL_TEAM_NAME, now, userId);
     await tx.prepare(sql("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)")).run(id, userId, now);
     await tx.prepare(sql("INSERT INTO [sporades_team_membership_counters] ([userId], [membershipCount]) VALUES (?, 1)")).run(userId);
     return id;
+}
+// ADR-0057: every membership writer takes the member's user-row lock, the same lock human-identity
+// termination holds while it checks that no membership remains. Whichever commits first wins: a
+// Join that waited observes the tombstone and fails, and a termination that waited observes the
+// committed membership and is blocked. The lock is ordered after any Team lifecycle lock.
+async function lockLiveMembershipUser(tx, userId, denied) {
+    const row = await tx.lockAuthUserFileAuthority(userId);
+    if (row?.lifecycleStatus === "terminated")
+        throw denied();
 }
 async function ensureMembershipCounterOnAdapter(tx, userId) {
     const sql = tx.dialect.sql;

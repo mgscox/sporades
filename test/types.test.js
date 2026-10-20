@@ -637,6 +637,8 @@ const app = capsule({
         privilegedCtx.serviceUsers.disable("service-user-id");
         // @ts-expect-error Privileged callbacks cannot revoke human security state.
         privilegedCtx.serverAuth.revokeHumanSecurity("human-user-id");
+        // @ts-expect-error Privileged callbacks cannot terminate human identities.
+        privilegedCtx.serverAuth.terminateHumanIdentity("human-user-id");
         const privilegedMemberCount = await privilegedCtx.teams.countMembers("00000000-0000-4000-8000-000000000000");
         privilegedMemberCount.totalCount.valueOf();
         const privilegedMembers = await privilegedCtx.teams.listMembers("00000000-0000-4000-8000-000000000000", { limit: 25 });
@@ -716,6 +718,17 @@ const app = capsule({
       // @ts-expect-error service-User identity fields cannot be supplied by Capsule code.
       await ctx.serviceUsers.create({ displayName: "Forged", email: "bot@example.test", accessKey: { name: "bad" } });
       return listed.totalCount;
+    }),
+    closeAccount: mutation(async (ctx) => {
+      const direct = await ctx.serverAuth.terminateHumanIdentity("human-user-id");
+      direct.status satisfies "terminated" | "already-terminated";
+      // @ts-expect-error termination results carry no revocation counts or profile data.
+      direct.revokedSessionCount.valueOf();
+      const reservation = ctx.serverAuth.reserveTerminateHumanIdentity(ctx.auth.userId);
+      return ctx.lifecycle.continue(reservation, (result) => {
+        result.userId.toUpperCase();
+        return result.status;
+      });
     }),
     addTodo: mutation(async (ctx, text) => {
       await Promise.resolve();

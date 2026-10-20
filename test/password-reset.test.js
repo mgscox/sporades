@@ -45,6 +45,9 @@ async function registerEmailAccount(database, email, password) {
   const session = await resolveAnonymousSession(database, null);
   const result = await signUpWithEmail(database, session, "email", { email, password });
   assert.equal(result.ok, true, result.error?.message);
+  // These fixtures request fresh links, outside the deliberately ambiguous signup millisecond.
+  const registeredAt = Date.now();
+  while (Date.now() <= registeredAt) await new Promise((resolve) => setTimeout(resolve, 1));
   return result;
 }
 
@@ -152,6 +155,14 @@ test("concurrent reset confirmations spend a Reset code once before changing the
       assert.equal(userId, row.userId);
       return { changes: 0 };
     },
+    async findEmailCredentialWithUser(email) {
+      // The confirmation's identity fence reads the credential's current owner in its transaction.
+      return email === row.email ? { email, userId: row.userId } : null;
+    },
+    async findAuthUserFileAuthority(userId) {
+      // Verification only accepts codes whose owner is still a live human identity.
+      return userId === row.userId ? { id: userId, userKind: "human", lifecycleStatus: "active" } : null;
+    },
     async updateEmailCredentialPassword(email, hash, salt) {
       passwordUpdates.push({ email, hash, salt });
       return { changes: 1 };
@@ -213,6 +224,12 @@ test("a stale Reset code cannot consume a newly issued sibling", async () => {
     // still read this old row from its snapshot.
     async findPasswordResetCode(selector) {
       return selector === staleRow.selector ? staleRow : null;
+    },
+    async findAuthUserFileAuthority(userId) {
+      return userId === staleRow.userId ? { id: userId, userKind: "human", lifecycleStatus: "active" } : null;
+    },
+    async findEmailCredentialWithUser(email) {
+      return email === staleRow.email ? { email, userId: staleRow.userId } : null;
     },
     async deletePasswordResetCode(selector) {
       assert.equal(selector, staleRow.selector);
@@ -804,7 +821,7 @@ test("registered and unregistered reset requests each enqueue one durable reques
     assert.equal(jobs.length, 2, "every public reset request must perform the same durable enqueue");
     assert.deepEqual(
       jobs.map((job) => Object.keys(JSON.parse(job.payload)).sort()),
-      Array.from({ length: 2 }, () => ["code", "email", "htmlBody", "subject", "textBody"]),
+      Array.from({ length: 2 }, () => ["code", "email", "htmlBody", "requestedAt", "subject", "textBody"]),
       "both public paths enqueue the identical request shape",
     );
 
@@ -827,8 +844,10 @@ test("registered and unregistered reset requests each enqueue one durable reques
 test("retrying a durable reset request reuses its one Reset code", async () => {
   await withMailDatabase(async (database) => {
     await registerEmailAccount(database, "retry@example.com", "original-password");
+    const credential = await database.adapter.findEmailCredentialWithUser("retry@example.com");
     const payload = {
       email: "retry@example.com",
+      requestedAt: new Date(Date.parse(credential.createdAt) + 1).toISOString(),
       code: `${"selector".padEnd(16, "x")}.${"verifier".padEnd(32, "x")}`,
       subject: "Reset your password",
       textBody: null,

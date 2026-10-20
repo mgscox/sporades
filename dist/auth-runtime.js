@@ -1839,6 +1839,20 @@ export function hashPasswordResetVerifier(verifier) {
 // cannot kill a link the user is about to click. The outstanding count is capped
 // instead. Returns null when the account is already at the cap.
 export async function issuePasswordResetCode(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
+    // Every issuer (worker, retry and custom-delivery link) shares termination's identity fence.
+    // The initial email lookup is only a hint: under the retained lock, re-read both the terminal
+    // marker and credential ownership before inspecting, reusing or inserting any Reset code.
+    return await withAuthTransaction(database, async (tx) => {
+        const owner = await tx.lockAuthUserFileAuthority(credential.userId);
+        if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active")
+            return null;
+        const current = await tx.findEmailCredentialWithUser(credential.email);
+        if (!current || current.userId !== credential.userId || current.createdAt !== credential.createdAt)
+            return null;
+        return await issuePasswordResetCodeOnAdapter({ ...database, adapter: tx }, current, requestedCode, allowRequestedCodeInsert);
+    });
+}
+async function issuePasswordResetCodeOnAdapter(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
     const { selector, code, verifierHash, now } = passwordResetCodeParts(database, requestedCode);
     if (requestedCode) {
         const existing = await database.adapter.findPasswordResetCode(selector);
@@ -1881,6 +1895,14 @@ export async function prepareEmailPasswordResetDelivery(database, payload, attem
     const email = typeof payload?.email === "string" ? payload.email.trim().toLowerCase() : "";
     const credential = email ? await database.adapter.findEmailCredentialWithUser(email) : null;
     if (!credential)
+        return null;
+    // ADR-0057 generation fence: a request accepted before this credential existed belonged to an
+    // earlier identity at the same address (or to none), so it must not reach the newer account.
+    const requestedAt = canonicalAuthInstant(payload?.requestedAt);
+    const createdAt = canonicalAuthInstant(credential.createdAt);
+    // Missing/invalid legacy evidence and equal-millisecond generations are ambiguous. Fail closed:
+    // a caller can request a fresh link, but an old Job must never select a replacement identity.
+    if (requestedAt === null || createdAt === null || createdAt >= requestedAt)
         return null;
     const issued = await issuePasswordResetCode(database, credential, payload?.code ?? null, attempt === 1);
     if (!issued)
@@ -1952,7 +1974,16 @@ async function readPasswordResetCode(database, code) {
     if (!row || !matches) {
         return null;
     }
-    return database.clock.now().getTime() >= Date.parse(row.expiresAt) ? null : row;
+    if (database.clock.now().getTime() >= Date.parse(row.expiresAt))
+        return null;
+    // ADR-0057 verification fence: a code is valid only for the live human identity it was issued
+    // to. A row left for a terminated tombstone, or for an earlier identity at a reused email, is
+    // indistinguishable from an unknown code. Inside confirmation this reads the transaction's view.
+    const owner = await database.adapter.findAuthUserFileAuthority(row.userId);
+    if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active")
+        return null;
+    const credential = await database.adapter.findEmailCredentialWithUser(row.email);
+    return credential?.userId === row.userId ? row : null;
 }
 export async function verifyPasswordResetCode(database, _session, code) {
     if (!database.authConfig.providers.email.enabled) {
@@ -1990,6 +2021,12 @@ export async function confirmPasswordReset(database, _session, code, newPassword
         }
         const consumed = await tx.deletePasswordResetCode(row.selector);
         if (consumed?.changes !== 1) {
+            return { ok: false, error: invalidPasswordResetCodeError() };
+        }
+        // ADR-0057 identity fence: a code issued to one identity can never set the password of a
+        // later account that registered the same email after the first was terminated.
+        const credential = await tx.findEmailCredentialWithUser(row.email);
+        if (credential?.userId !== row.userId) {
             return { ok: false, error: invalidPasswordResetCodeError() };
         }
         await tx.updateEmailCredentialPassword(row.email, password.hash, password.salt);
@@ -2590,6 +2627,8 @@ export async function signUpWithEmail(database, session, provider, credentials, 
         provider: "email",
     };
     return await withRegistrationTransaction(database, async (tx) => {
+        if (await sessionUserWasTerminated(tx, auth.userId))
+            return terminatedSessionUserError();
         const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
         if (!registration.ok)
             return registration;
@@ -2612,6 +2651,17 @@ export async function signUpWithEmail(database, session, provider, credentials, 
         await bootstrapInitialTeamForLinkedUser(tx, auth.userId);
         return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
     });
+}
+// ADR-0057: a sign-up or provider link whose Session was resolved before a concurrent human
+// identity termination committed must not attach a credential or identity to the tombstone. The
+// row lock serializes with termination, which holds the same lock until it commits.
+async function sessionUserWasTerminated(tx, userId) {
+    if (typeof userId !== "string" || !userId)
+        return false;
+    return (await tx.lockAuthUserFileAuthority(userId))?.lifecycleStatus === "terminated";
+}
+function terminatedSessionUserError() {
+    return { ok: false, error: { code: "AUTH_SESSION_INVALID", message: "This sign-in Session is no longer valid.", hint: "Reload the page and sign in again." } };
 }
 function registrationDenied() { return { ok: false, error: { code: "REGISTRATION_DENIED", message: "Registration was not admitted.", hint: "Use valid registration admission and retry." } }; }
 const registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
@@ -2706,6 +2756,11 @@ export async function signInWithEmail(database, session, credentials) {
         // Only the summary label changes. Do not replay profile/authority values read
         // before this transaction over a concurrent unlink or profile update.
         await tx.prepare(tx.dialect.sql("UPDATE [sporades_auth_users] SET [provider] = 'email' WHERE [id] = ? AND [isAuthenticated] = 1 AND [isGuest] = 0")).run(auth.userId);
+        // ADR-0057: the UPDATE above waits for a concurrent termination's row lock. Recheck the
+        // credential afterwards so a sign-in that verified the old password cannot mint a Session.
+        const current = await tx.findEmailCredentialWithUser(normalized.email);
+        if (current?.userId !== auth.userId)
+            return { ok: false, error: invalidEmailCredentialsError() };
         return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
     });
 }
@@ -2725,8 +2780,11 @@ export async function linkProviderIdentity(database, session, provider, profile,
         };
     }
     return await withRegistrationTransaction(database, async (tx) => {
+        if (await sessionUserWasTerminated(tx, session.auth.userId))
+            return terminatedSessionUserError();
         let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-        const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
+        let recoveredLegacyIdentity = false;
+        let email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
         if (!identity && email && provider === "google") {
             const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
             if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
@@ -2750,6 +2808,23 @@ export async function linkProviderIdentity(database, session, provider, profile,
                 };
             }
             identity = legacyIdentities[0] ?? null;
+            recoveredLegacyIdentity = Boolean(identity);
+        }
+        if (identity) {
+            // A guest callback can resolve a different human from its Session's user.
+            // Fence that owner against termination before replaying any profile or
+            // Session writes, then re-read the provider evidence under the same lock.
+            const owner = await tx.lockAuthUserFileAuthority(identity.userId);
+            if (!owner || owner.lifecycleStatus === "terminated")
+                return terminatedSessionUserError();
+            const current = recoveredLegacyIdentity
+                ? await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email)
+                : [await tx.findAuthIdentityByProviderSubject(provider, subject)];
+            if (current.length !== 1 || current[0]?.id !== identity.id || current[0]?.userId !== identity.userId
+                || current[0]?.subject !== identity.subject)
+                return terminatedSessionUserError();
+            identity = current[0];
+            email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity.email ?? null;
         }
         // Decide only after legacy recovery. A pre-Teams Google account is already
         // linked even when its old identity must be recovered by verified email.
@@ -3153,7 +3228,7 @@ const oauthRegistrationRetentionKey = (keyId) => `oauth-registration-key:retain:
 const oauthRegistrationKeyId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{22}$/.test(value);
 const oauthRegistrationMaterial = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 const OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1000;
-function oauthRegistrationInstant(value) {
+function canonicalAuthInstant(value) {
     if (typeof value !== "string")
         return null;
     const instant = Date.parse(value);
@@ -3169,7 +3244,7 @@ async function oauthRegistrationOutstandingExpiry(adapter, keyId, now) {
 function oauthRegistrationAlias(value, now) {
     try {
         const parsed = JSON.parse(String(value ?? ""));
-        const expiresAt = oauthRegistrationInstant(parsed?.expiresAt);
+        const expiresAt = canonicalAuthInstant(parsed?.expiresAt);
         return oauthRegistrationKeyId(parsed?.keyId) && expiresAt !== null && expiresAt > now
             ? { keyId: parsed.keyId, expiresAt }
             : null;
@@ -3272,7 +3347,7 @@ export async function retireOAuthRegistrationKeys(database, options = {}) {
                 continue;
             let retainUntil = null;
             try {
-                retainUntil = oauthRegistrationInstant(JSON.parse(String(row.value))?.expiresAt);
+                retainUntil = canonicalAuthInstant(JSON.parse(String(row.value))?.expiresAt);
             }
             catch {
                 retainUntil = null;

@@ -549,6 +549,16 @@ export type MailApi = {
 };
 
 /**
+ * Closed result of {@link ServerAuthApi.terminateHumanIdentity}. `terminated` is returned by the
+ * committing first call; every later authorized call for the same user ID returns
+ * `already-terminated`, including after restart and after the email is registered again.
+ */
+export type TerminateHumanIdentityResult = Readonly<{
+  userId: string;
+  status: "terminated" | "already-terminated";
+}>;
+
+/**
  * Server-only auth management API.
  *
  * Available to trusted Capsule handlers. Lets server code update email
@@ -563,14 +573,26 @@ export type ServerAuthApi = {
    */
   revokeHumanSecurity(userId: string): Promise<{ userId: string; revokedSessionCount: number; revokedAccessKeyCount: number }>;
   reserveRevokeHumanSecurity(userId: string): ValidatedLifecycleOperation<{ userId: string; revokedSessionCount: number; revokedAccessKeyCount: number }>;
+  /**
+   * Terminally close one exact linked human in the Mutation transaction (ADR-0057), leaving a
+   * non-authenticating tombstone. Deletes email credentials, Provider identities, Sessions, OAuth
+   * attempts, Reset codes and preferences; retires current Access keys with cause `owner-deleted`.
+   * Requires initial Mutation dispatch and a current authenticated human Session; caller/target
+   * identity locks and the exact live Session fence remain held through commit. Other callers,
+   * surfaces and target kinds fail with `HUMAN_IDENTITY_TERMINATION_DENIED`; any Team membership
+   * fails with `HUMAN_IDENTITY_TERMINATION_BLOCKED`. The Capsule owns admin policy and reauthentication.
+   */
+  terminateHumanIdentity(userId: string): Promise<TerminateHumanIdentityResult>;
+  /** Write-free, one-shot reservation of {@link terminateHumanIdentity} for `ctx.lifecycle.continue`. */
+  reserveTerminateHumanIdentity(userId: string): ValidatedLifecycleOperation<TerminateHumanIdentityResult>;
   /** Update the password for an existing email credential. Throws if the email is not registered. */
   setEmailPassword(email: string, newPassword: string): Promise<void>;
   /**
    * Issue a Reset code and deliver it over the runtime SMTP transport.
    *
-   * Resolves identically whether or not the email is registered, so it cannot
-   * be used to enumerate accounts. Throws only when mail is not configured or
-   * email auth is disabled.
+   * Resolves identically for registered and unregistered emails. Ambiguous legacy or
+   * same-millisecond generation evidence skips delivery; request a fresh link. Issuance serializes
+   * with termination. Throws only if mail is unconfigured or email auth is disabled.
    */
   sendEmailPasswordResetLink(email: string, options?: PasswordResetMailOptions): Promise<void>;
   /**
