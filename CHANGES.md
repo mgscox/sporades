@@ -1,20 +1,29 @@
 # Changes
 
-## Unreleased - 2026-10-19
+## Unreleased - 2026-10-20
 
-Changes since v0.9.33.
+Changes since v0.9.34.
 
 ### 🚀 Features
 
-- Add Mutation-only `ctx.serverAuth.terminateHumanIdentity(userId)` and `reserveTerminateHumanIdentity(userId)` for atomic, terminal human identity closure (ADR 0057, #264). One shared Database adapter transition tombstones the human and removes email credentials, Provider identities, Sessions, OAuth attempts, Reset codes and preferences while retiring Access keys as `owner-deleted`, in the Capsule's own transaction; repeats return `already-terminated`. Sign-in, password-reset confirmation, delayed reset delivery, Team membership writers and user Jobs recheck the tombstone. Existing APIs are unchanged.
+- Add atomic human identity termination (ADR 0057) (#273) (769df876).
+- Add day-based Host backup retention (retentionDays / keep-within) (#275) (3724e2ad).
+- Allow loopback Stripe API origins in Dev sessions (#270) (57a9aec3).
 
-### 🐛 Fixes
+### 🐛 Bug Fixes
 
-- Inject the WebSocket connection token and enabled observability loader into
-  every built HTML document navigation in Dev, Container and Hosted sessions,
-  so secondary pages connect on their first attempt and report pageviews.
-  Preserve their doctype and standards-mode layout when optional head tags are omitted.
-  Ignore head-like text in comments, attributes and raw-text elements when placing scripts.
+- Fix runtime injection on secondary HTML documents (#274) (91e06995).
+
+### 🔧 Improvements
+
+- Bump ignore (b2e1be97).
+
+### 📝 Documentation
+
+- Ship a stateful Stripe Team Billing fake (#269) (bceed0bc).
+- Propose a supported Team Billing test-provider boundary (ADR 0058) (#268) (e62eaf87).
+- Propose atomic human identity termination in ADR 0057 (#267) (29995233).
+- Forbid Compose merge keys and value-bind Host elevation in ADR 0056 (#261) (edf701a6).
 
 ## v0.9.11 - 2026-09-02
 
@@ -103,6 +112,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
