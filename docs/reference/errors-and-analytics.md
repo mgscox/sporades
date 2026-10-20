@@ -117,7 +117,9 @@ asset, including secondary pages such as `/pricing.html`, receives the WebSocket
 connection token before Capsule scripts run. Active browser integrations also add
 the first-party `/__sporades/observe.js` loader before Capsule scripts in Dev,
 Container and Hosted sessions. Fetches and iframe loads do not receive these
-injections. HTML responses use `no-store`; built files stay unchanged. The loader
+injections. HTML responses use `no-store`; built files stay unchanged. Injection
+preserves the document's doctype and rendering mode when optional `<head>` tags
+are omitted; injected scripts still precede Capsule scripts. The loader
 sends JSON to `POST /__sporades/collect`. Both routes follow normal request admission.
 `script-src 'self'` and `connect-src 'self'` suffice for collection; no provider
 script, DSN, endpoint or website identifier reaches the page. With

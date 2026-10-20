@@ -577,7 +577,26 @@ export function injectPageConnectionToken(html: string, token: string, database?
   if (/<head(\s[^>]*)?>/i.test(html)) {
     return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
   }
-  return `${script}\n${html}`;
+  // An omitted head is valid HTML. Executable markup before its doctype makes
+  // browsers ignore the doctype and enter quirks mode, changing Capsule layout.
+  // Keep the original prologue (including comments and quoted doctype values)
+  // ahead of the scripts; the parser then creates the implicit head for us.
+  // Scan comments once, without backtracking when there is no doctype.
+  let start = html.charCodeAt(0) === 0xfeff ? 1 : 0;
+  while (start < html.length) {
+    const code = html.charCodeAt(start);
+    if (code === 32 || code === 9 || code === 10 || code === 12 || code === 13) {
+      start++;
+      continue;
+    }
+    if (!html.startsWith("<!--", start)) break;
+    const end = html.indexOf("-->", start + 4);
+    if (end === -1) break;
+    start = end + 3;
+  }
+  const doctype = /^<!doctype[\t\n\f\r ](?:[^>"']|"[^"]*"|'[^']*')*>/i.exec(html.slice(start));
+  const offset = doctype ? start + doctype[0].length : 0;
+  return `${html.slice(0, offset)}${script}\n${html.slice(offset)}`;
 }
 
 export function isDocumentNavigationRequest(request: Pick<IncomingMessage, "headers">) {

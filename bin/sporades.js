@@ -126479,8 +126479,22 @@ function injectPageConnectionToken(html2, token, database, nonce) {
     return html2.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
 ${script}`);
   }
-  return `${script}
-${html2}`;
+  let start = html2.charCodeAt(0) === 65279 ? 1 : 0;
+  while (start < html2.length) {
+    const code = html2.charCodeAt(start);
+    if (code === 32 || code === 9 || code === 10 || code === 12 || code === 13) {
+      start++;
+      continue;
+    }
+    if (!html2.startsWith("<!--", start)) break;
+    const end = html2.indexOf("-->", start + 4);
+    if (end === -1) break;
+    start = end + 3;
+  }
+  const doctype = /^<!doctype[\t\n\f\r ](?:[^>"']|"[^"]*"|'[^']*')*>/i.exec(html2.slice(start));
+  const offset2 = doctype ? start + doctype[0].length : 0;
+  return `${html2.slice(0, offset2)}${script}
+${html2.slice(offset2)}`;
 }
 function isDocumentNavigationRequest(request) {
   return request.headers["sec-fetch-dest"] === "document";
