@@ -317,7 +317,6 @@ async function routePublicAsset(request, response, publicRoot, hub) {
     if (!stats?.isFile() || stats.isSymbolicLink())
         return false;
     const body = await readFile(filePath);
-    const html = relativePath === "index.html";
     const htmlAsset = path.extname(relativePath).toLowerCase() === ".html";
     // The Vite pipeline emits assets/[name]-[hash][extname] with an eight-character
     // URL-safe hash. Directory membership alone does not make a file immutable.
@@ -330,7 +329,7 @@ async function routePublicAsset(request, response, publicRoot, hub) {
             : { "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache" }),
     });
     response.end(htmlAsset
-        ? renderPageHtml(body, response, html && isDocumentNavigationRequest(request) ? hub.createConnectionToken() : undefined, database)
+        ? renderPageHtml(body, response, isDocumentNavigationRequest(request) ? hub.createConnectionToken() : undefined, database)
         : body);
     return true;
 }

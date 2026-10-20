@@ -2503,7 +2503,7 @@ async function startDevSession(options) {
                     ...(htmlAsset ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }),
                 });
                 response.end(htmlAsset
-                    ? renderPageHtml(publicAsset.body, response, publicAsset.html && isDocumentNavigationRequest(request) ? websocketHub.createConnectionToken() : undefined, runtime.database)
+                    ? renderPageHtml(publicAsset.body, response, isDocumentNavigationRequest(request) ? websocketHub.createConnectionToken() : undefined, runtime.database)
                     : publicAsset.body);
                 return;
             }

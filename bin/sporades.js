@@ -126475,12 +126475,30 @@ function renderPageHtml(html2, response, token, database) {
 function injectPageConnectionToken(html2, token, database, nonce) {
   const attribute = nonce ? ` nonce="${nonce}"` : "";
   const script = `<script${attribute}>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? `<script${attribute} src="/__sporades/observe.js"></script>` : ""}`;
-  if (/<head(\s[^>]*)?>/i.test(html2)) {
-    return html2.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
-${script}`);
+  const document2 = parse4(html2, { sourceCodeLocationInfo: true });
+  const root = document2.childNodes.find((node) => "tagName" in node && node.tagName === "html");
+  const head = root?.childNodes.find((node) => "tagName" in node && node.tagName === "head");
+  const headEnd = head?.sourceCodeLocation?.startTag?.endOffset;
+  if (headEnd !== void 0) {
+    return `${html2.slice(0, headEnd)}
+${script}${html2.slice(headEnd)}`;
   }
-  return `${script}
-${html2}`;
+  let start = html2.charCodeAt(0) === 65279 ? 1 : 0;
+  while (start < html2.length) {
+    const code = html2.charCodeAt(start);
+    if (code === 32 || code === 9 || code === 10 || code === 12 || code === 13) {
+      start++;
+      continue;
+    }
+    if (!html2.startsWith("<!--", start)) break;
+    const end = html2.indexOf("-->", start + 4);
+    if (end === -1) break;
+    start = end + 3;
+  }
+  const doctype = /^<!doctype[\t\n\f\r ](?:[^>"']|"[^"]*"|'[^']*')*>/i.exec(html2.slice(start));
+  const offset2 = doctype ? start + doctype[0].length : 0;
+  return `${html2.slice(0, offset2)}${script}
+${html2.slice(offset2)}`;
 }
 function isDocumentNavigationRequest(request) {
   return request.headers["sec-fetch-dest"] === "document";
@@ -154662,7 +154680,7 @@ async function startDevSession(options) {
           "content-type": publicAsset2.contentType,
           ...htmlAsset ? { "cache-control": "no-store", pragma: "no-cache" } : { "cache-control": "no-cache" }
         });
-        response.end(htmlAsset ? renderPageHtml(publicAsset2.body, response, publicAsset2.html && isDocumentNavigationRequest(request) ? websocketHub.createConnectionToken() : void 0, runtime.database) : publicAsset2.body);
+        response.end(htmlAsset ? renderPageHtml(publicAsset2.body, response, isDocumentNavigationRequest(request) ? websocketHub.createConnectionToken() : void 0, runtime.database) : publicAsset2.body);
         return;
       }
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });

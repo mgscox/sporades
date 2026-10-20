@@ -142,7 +142,7 @@ for (const toolchain of ['esbuild', 'vite']) test(`nonce HTML and runtime inject
             if (script[0].includes('id="unmarked')) assert.ok(!script[0].includes('nonce='), script[0]);
             else assert.ok(script[0].includes(`nonce="${nonce}"`), script[0]);
           }
-          assert.equal(body.includes(`nonce="${nonce}">window.__SPORADES_CONNECTION_TOKEN=`), navigation && pathname !== '/landing.html');
+          assert.equal(body.includes(`nonce="${nonce}">window.__SPORADES_CONNECTION_TOKEN=`), navigation);
           nonces.push(nonce);
         }
       }

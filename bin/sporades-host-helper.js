@@ -8706,12 +8706,12 @@ var require_PDFCrossRefStream = __commonJS({
     var PDFRef_1 = tslib_1.__importDefault(require_PDFRef());
     var PDFFlateStream_1 = tslib_1.__importDefault(require_PDFFlateStream());
     var utils_1 = require_utils2();
-    var EntryType;
-    (function(EntryType2) {
-      EntryType2[EntryType2["Deleted"] = 0] = "Deleted";
-      EntryType2[EntryType2["Uncompressed"] = 1] = "Uncompressed";
-      EntryType2[EntryType2["Compressed"] = 2] = "Compressed";
-    })(EntryType = exports.EntryType || (exports.EntryType = {}));
+    var EntryType2;
+    (function(EntryType3) {
+      EntryType3[EntryType3["Deleted"] = 0] = "Deleted";
+      EntryType3[EntryType3["Uncompressed"] = 1] = "Uncompressed";
+      EntryType3[EntryType3["Compressed"] = 2] = "Compressed";
+    })(EntryType2 = exports.EntryType || (exports.EntryType = {}));
     var PDFCrossRefStream = (
       /** @class */
       (function(_super) {
@@ -8743,15 +8743,15 @@ var require_PDFCrossRefStream = __commonJS({
             var entryTuples = new Array(_this.entries.length);
             for (var idx = 0, len = _this.entries.length; idx < len; idx++) {
               var entry = _this.entries[idx];
-              if (entry.type === EntryType.Deleted) {
+              if (entry.type === EntryType2.Deleted) {
                 var type = entry.type, nextFreeObjectNumber = entry.nextFreeObjectNumber, ref2 = entry.ref;
                 entryTuples[idx] = [type, nextFreeObjectNumber, ref2.generationNumber];
               }
-              if (entry.type === EntryType.Uncompressed) {
+              if (entry.type === EntryType2.Uncompressed) {
                 var type = entry.type, offset2 = entry.offset, ref2 = entry.ref;
                 entryTuples[idx] = [type, offset2, ref2.generationNumber];
               }
-              if (entry.type === EntryType.Compressed) {
+              if (entry.type === EntryType2.Compressed) {
                 var type = entry.type, objectStreamRef = entry.objectStreamRef, index = entry.index;
                 entryTuples[idx] = [type, objectStreamRef.objectNumber, index];
               }
@@ -8783,7 +8783,7 @@ var require_PDFCrossRefStream = __commonJS({
           return _this;
         }
         PDFCrossRefStream2.prototype.addDeletedEntry = function(ref2, nextFreeObjectNumber) {
-          var type = EntryType.Deleted;
+          var type = EntryType2.Deleted;
           this.entries.push({ type, ref: ref2, nextFreeObjectNumber });
           this.entryTuplesCache.invalidate();
           this.maxByteWidthsCache.invalidate();
@@ -8791,7 +8791,7 @@ var require_PDFCrossRefStream = __commonJS({
           this.contentsCache.invalidate();
         };
         PDFCrossRefStream2.prototype.addUncompressedEntry = function(ref2, offset2) {
-          var type = EntryType.Uncompressed;
+          var type = EntryType2.Uncompressed;
           this.entries.push({ type, ref: ref2, offset: offset2 });
           this.entryTuplesCache.invalidate();
           this.maxByteWidthsCache.invalidate();
@@ -8799,7 +8799,7 @@ var require_PDFCrossRefStream = __commonJS({
           this.contentsCache.invalidate();
         };
         PDFCrossRefStream2.prototype.addCompressedEntry = function(ref2, objectStreamRef, index) {
-          var type = EntryType.Compressed;
+          var type = EntryType2.Compressed;
           this.entries.push({ type, ref: ref2, objectStreamRef, index });
           this.entryTuplesCache.invalidate();
           this.maxByteWidthsCache.invalidate();
@@ -10272,9 +10272,9 @@ var require_UPNG = __commonJS({
                 z = w + (_ >>> 3) + A(N, d, _ & 7);
                 d += _ & 7;
               }
-              var $ = C[e(N, d) & u];
-              d += $ & 15;
-              var s = $ >>> 4, Y = b.c[s], a = (Y >>> 4) + n(N, d, Y & 15);
+              var $2 = C[e(N, d) & u];
+              d += $2 & 15;
+              var s = $2 >>> 4, Y = b.c[s], a = (Y >>> 4) + n(N, d, Y & 15);
               d += Y & 15;
               while (w < z) {
                 W[w] = W[w++ - a];
@@ -16908,7 +16908,7 @@ var require_svgPath = __commonJS({
       ["Z", 0],
       ["z", 0]
     ]);
-    var parse5 = function(path15) {
+    var parse6 = function(path15) {
       var cmd;
       var ret = [];
       var args = [];
@@ -17230,7 +17230,7 @@ var require_svgPath = __commonJS({
       return result;
     };
     exports.svgPathToOperators = function(path15) {
-      return apply(parse5(path15));
+      return apply(parse6(path15));
     };
   }
 });
@@ -23847,7 +23847,7 @@ var require_decoder = __commonJS({
           }).bind(this);
           xhr.send(null);
         },
-        parse: function parse5(data2) {
+        parse: function parse6(data2) {
           var maxResolutionInPixels = this.opts.maxResolutionInMP * 1e3 * 1e3;
           var offset2 = 0, length = data2.length;
           function readUint16() {
@@ -24892,7 +24892,7 @@ var require_parser = __commonJS({
     "use strict";
     var constants3 = require_constants2();
     var CrcCalculator = require_crc();
-    var Parser5 = module.exports = function(options, dependencies) {
+    var Parser6 = module.exports = function(options, dependencies) {
       this._options = options;
       options.checkCRC = options.checkCRC !== false;
       this._hasIHDR = false;
@@ -24920,10 +24920,10 @@ var require_parser = __commonJS({
       this.headersFinished = dependencies.headersFinished || function() {
       };
     };
-    Parser5.prototype.start = function() {
+    Parser6.prototype.start = function() {
       this.read(constants3.PNG_SIGNATURE.length, this._parseSignature.bind(this));
     };
-    Parser5.prototype._parseSignature = function(data2) {
+    Parser6.prototype._parseSignature = function(data2) {
       let signature = constants3.PNG_SIGNATURE;
       for (let i = 0; i < signature.length; i++) {
         if (data2[i] !== signature[i]) {
@@ -24933,7 +24933,7 @@ var require_parser = __commonJS({
       }
       this.read(8, this._parseChunkBegin.bind(this));
     };
-    Parser5.prototype._parseChunkBegin = function(data2) {
+    Parser6.prototype._parseChunkBegin = function(data2) {
       let length = data2.readUInt32BE(0);
       let type = data2.readUInt32BE(4);
       let name2 = "";
@@ -24956,13 +24956,13 @@ var require_parser = __commonJS({
       }
       this.read(length + 4, this._skipChunk.bind(this));
     };
-    Parser5.prototype._skipChunk = function() {
+    Parser6.prototype._skipChunk = function() {
       this.read(8, this._parseChunkBegin.bind(this));
     };
-    Parser5.prototype._handleChunkEnd = function() {
+    Parser6.prototype._handleChunkEnd = function() {
       this.read(4, this._parseChunkEnd.bind(this));
     };
-    Parser5.prototype._parseChunkEnd = function(data2) {
+    Parser6.prototype._parseChunkEnd = function(data2) {
       let fileCrc = data2.readInt32BE(0);
       let calcCrc = this._crc.crc32();
       if (this._options.checkCRC && calcCrc !== fileCrc) {
@@ -24973,10 +24973,10 @@ var require_parser = __commonJS({
         this.read(8, this._parseChunkBegin.bind(this));
       }
     };
-    Parser5.prototype._handleIHDR = function(length) {
+    Parser6.prototype._handleIHDR = function(length) {
       this.read(length, this._parseIHDR.bind(this));
     };
-    Parser5.prototype._parseIHDR = function(data2) {
+    Parser6.prototype._parseIHDR = function(data2) {
       this._crc.write(data2);
       let width = data2.readUInt32BE(0);
       let height = data2.readUInt32BE(4);
@@ -25021,10 +25021,10 @@ var require_parser = __commonJS({
       });
       this._handleChunkEnd();
     };
-    Parser5.prototype._handlePLTE = function(length) {
+    Parser6.prototype._handlePLTE = function(length) {
       this.read(length, this._parsePLTE.bind(this));
     };
-    Parser5.prototype._parsePLTE = function(data2) {
+    Parser6.prototype._parsePLTE = function(data2) {
       this._crc.write(data2);
       let entries = Math.floor(data2.length / 3);
       for (let i = 0; i < entries; i++) {
@@ -25033,11 +25033,11 @@ var require_parser = __commonJS({
       this.palette(this._palette);
       this._handleChunkEnd();
     };
-    Parser5.prototype._handleTRNS = function(length) {
+    Parser6.prototype._handleTRNS = function(length) {
       this.simpleTransparency();
       this.read(length, this._parseTRNS.bind(this));
     };
-    Parser5.prototype._parseTRNS = function(data2) {
+    Parser6.prototype._parseTRNS = function(data2) {
       this._crc.write(data2);
       if (this._colorType === constants3.COLORTYPE_PALETTE_COLOR) {
         if (this._palette.length === 0) {
@@ -25065,22 +25065,22 @@ var require_parser = __commonJS({
       }
       this._handleChunkEnd();
     };
-    Parser5.prototype._handleGAMA = function(length) {
+    Parser6.prototype._handleGAMA = function(length) {
       this.read(length, this._parseGAMA.bind(this));
     };
-    Parser5.prototype._parseGAMA = function(data2) {
+    Parser6.prototype._parseGAMA = function(data2) {
       this._crc.write(data2);
       this.gamma(data2.readUInt32BE(0) / constants3.GAMMA_DIVISION);
       this._handleChunkEnd();
     };
-    Parser5.prototype._handleIDAT = function(length) {
+    Parser6.prototype._handleIDAT = function(length) {
       if (!this._emittedHeadersFinished) {
         this._emittedHeadersFinished = true;
         this.headersFinished();
       }
       this.read(-length, this._parseIDAT.bind(this, length));
     };
-    Parser5.prototype._parseIDAT = function(length, data2) {
+    Parser6.prototype._parseIDAT = function(length, data2) {
       this._crc.write(data2);
       if (this._colorType === constants3.COLORTYPE_PALETTE_COLOR && this._palette.length === 0) {
         throw new Error("Expected palette not found");
@@ -25093,10 +25093,10 @@ var require_parser = __commonJS({
         this._handleChunkEnd();
       }
     };
-    Parser5.prototype._handleIEND = function(length) {
+    Parser6.prototype._handleIEND = function(length) {
       this.read(length, this._parseIEND.bind(this));
     };
-    Parser5.prototype._parseIEND = function(data2) {
+    Parser6.prototype._parseIEND = function(data2) {
       this._crc.write(data2);
       this._hasIEND = true;
       this._handleChunkEnd();
@@ -25444,12 +25444,12 @@ var require_parser_async = __commonJS({
     var zlib2 = __require("zlib");
     var ChunkStream = require_chunkstream();
     var FilterAsync = require_filter_parse_async();
-    var Parser5 = require_parser();
+    var Parser6 = require_parser();
     var bitmapper = require_bitmapper();
     var formatNormaliser = require_format_normaliser();
     var ParserAsync = module.exports = function(options) {
       ChunkStream.call(this);
-      this._parser = new Parser5(options, {
+      this._parser = new Parser6(options, {
         read: this.read.bind(this),
         error: this._handleError.bind(this),
         metadata: this._handleMetaData.bind(this),
@@ -26211,7 +26211,7 @@ var require_parser_sync = __commonJS({
     }
     var SyncReader = require_sync_reader();
     var FilterSync = require_filter_parse_sync();
-    var Parser5 = require_parser();
+    var Parser6 = require_parser();
     var bitmapper = require_bitmapper();
     var formatNormaliser = require_format_normaliser();
     module.exports = function(buffer, options) {
@@ -26246,7 +26246,7 @@ var require_parser_sync = __commonJS({
         inflateDataList.push(inflatedData2);
       }
       let reader = new SyncReader(buffer);
-      let parser2 = new Parser5(options, {
+      let parser2 = new Parser6(options, {
         read: reader.read.bind(reader),
         error: handleError,
         metadata: handleMetaData,
@@ -26343,10 +26343,10 @@ var require_packer_sync = __commonJS({
 var require_png_sync = __commonJS({
   "node_modules/pngjs/lib/png-sync.js"(exports) {
     "use strict";
-    var parse5 = require_parser_sync();
+    var parse6 = require_parser_sync();
     var pack = require_packer_sync();
     exports.read = function(buffer, options) {
-      return parse5(buffer, options || {});
+      return parse6(buffer, options || {});
     };
     exports.write = function(png, options) {
       return pack(png, options);
@@ -26360,7 +26360,7 @@ var require_png2 = __commonJS({
     "use strict";
     var util = __require("util");
     var Stream = __require("stream");
-    var Parser5 = require_parser_async();
+    var Parser6 = require_parser_async();
     var Packer = require_packer_async();
     var PNGSync = require_png_sync();
     var PNG2 = exports.PNG = function(options) {
@@ -26374,7 +26374,7 @@ var require_png2 = __commonJS({
       }
       this.gamma = 0;
       this.readable = this.writable = true;
-      this._parser = new Parser5(options);
+      this._parser = new Parser6(options);
       this._parser.on("error", this.emit.bind(this, "error"));
       this._parser.on("close", this._handleClose.bind(this));
       this._parser.on("metadata", this._metadata.bind(this));
@@ -28966,6 +28966,1034 @@ import { randomUUID as randomUUID4 } from "node:crypto";
 // src/runtime-telemetry.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
 
+// node_modules/parse5/dist/common/unicode.js
+var CODE_POINTS;
+(function(CODE_POINTS2) {
+  CODE_POINTS2[CODE_POINTS2["EOF"] = -1] = "EOF";
+  CODE_POINTS2[CODE_POINTS2["NULL"] = 0] = "NULL";
+  CODE_POINTS2[CODE_POINTS2["TABULATION"] = 9] = "TABULATION";
+  CODE_POINTS2[CODE_POINTS2["CARRIAGE_RETURN"] = 13] = "CARRIAGE_RETURN";
+  CODE_POINTS2[CODE_POINTS2["LINE_FEED"] = 10] = "LINE_FEED";
+  CODE_POINTS2[CODE_POINTS2["FORM_FEED"] = 12] = "FORM_FEED";
+  CODE_POINTS2[CODE_POINTS2["SPACE"] = 32] = "SPACE";
+  CODE_POINTS2[CODE_POINTS2["EXCLAMATION_MARK"] = 33] = "EXCLAMATION_MARK";
+  CODE_POINTS2[CODE_POINTS2["QUOTATION_MARK"] = 34] = "QUOTATION_MARK";
+  CODE_POINTS2[CODE_POINTS2["AMPERSAND"] = 38] = "AMPERSAND";
+  CODE_POINTS2[CODE_POINTS2["APOSTROPHE"] = 39] = "APOSTROPHE";
+  CODE_POINTS2[CODE_POINTS2["HYPHEN_MINUS"] = 45] = "HYPHEN_MINUS";
+  CODE_POINTS2[CODE_POINTS2["SOLIDUS"] = 47] = "SOLIDUS";
+  CODE_POINTS2[CODE_POINTS2["DIGIT_0"] = 48] = "DIGIT_0";
+  CODE_POINTS2[CODE_POINTS2["DIGIT_9"] = 57] = "DIGIT_9";
+  CODE_POINTS2[CODE_POINTS2["SEMICOLON"] = 59] = "SEMICOLON";
+  CODE_POINTS2[CODE_POINTS2["LESS_THAN_SIGN"] = 60] = "LESS_THAN_SIGN";
+  CODE_POINTS2[CODE_POINTS2["EQUALS_SIGN"] = 61] = "EQUALS_SIGN";
+  CODE_POINTS2[CODE_POINTS2["GREATER_THAN_SIGN"] = 62] = "GREATER_THAN_SIGN";
+  CODE_POINTS2[CODE_POINTS2["QUESTION_MARK"] = 63] = "QUESTION_MARK";
+  CODE_POINTS2[CODE_POINTS2["LATIN_CAPITAL_A"] = 65] = "LATIN_CAPITAL_A";
+  CODE_POINTS2[CODE_POINTS2["LATIN_CAPITAL_Z"] = 90] = "LATIN_CAPITAL_Z";
+  CODE_POINTS2[CODE_POINTS2["RIGHT_SQUARE_BRACKET"] = 93] = "RIGHT_SQUARE_BRACKET";
+  CODE_POINTS2[CODE_POINTS2["GRAVE_ACCENT"] = 96] = "GRAVE_ACCENT";
+  CODE_POINTS2[CODE_POINTS2["LATIN_SMALL_A"] = 97] = "LATIN_SMALL_A";
+  CODE_POINTS2[CODE_POINTS2["LATIN_SMALL_Z"] = 122] = "LATIN_SMALL_Z";
+})(CODE_POINTS || (CODE_POINTS = {}));
+
+// node_modules/parse5/dist/common/error-codes.js
+var ERR;
+(function(ERR2) {
+  ERR2["controlCharacterInInputStream"] = "control-character-in-input-stream";
+  ERR2["noncharacterInInputStream"] = "noncharacter-in-input-stream";
+  ERR2["surrogateInInputStream"] = "surrogate-in-input-stream";
+  ERR2["nonVoidHtmlElementStartTagWithTrailingSolidus"] = "non-void-html-element-start-tag-with-trailing-solidus";
+  ERR2["endTagWithAttributes"] = "end-tag-with-attributes";
+  ERR2["endTagWithTrailingSolidus"] = "end-tag-with-trailing-solidus";
+  ERR2["unexpectedSolidusInTag"] = "unexpected-solidus-in-tag";
+  ERR2["unexpectedNullCharacter"] = "unexpected-null-character";
+  ERR2["unexpectedQuestionMarkInsteadOfTagName"] = "unexpected-question-mark-instead-of-tag-name";
+  ERR2["invalidFirstCharacterOfTagName"] = "invalid-first-character-of-tag-name";
+  ERR2["unexpectedEqualsSignBeforeAttributeName"] = "unexpected-equals-sign-before-attribute-name";
+  ERR2["missingEndTagName"] = "missing-end-tag-name";
+  ERR2["unexpectedCharacterInAttributeName"] = "unexpected-character-in-attribute-name";
+  ERR2["unknownNamedCharacterReference"] = "unknown-named-character-reference";
+  ERR2["missingSemicolonAfterCharacterReference"] = "missing-semicolon-after-character-reference";
+  ERR2["unexpectedCharacterAfterDoctypeSystemIdentifier"] = "unexpected-character-after-doctype-system-identifier";
+  ERR2["unexpectedCharacterInUnquotedAttributeValue"] = "unexpected-character-in-unquoted-attribute-value";
+  ERR2["eofBeforeTagName"] = "eof-before-tag-name";
+  ERR2["eofInTag"] = "eof-in-tag";
+  ERR2["missingAttributeValue"] = "missing-attribute-value";
+  ERR2["missingWhitespaceBetweenAttributes"] = "missing-whitespace-between-attributes";
+  ERR2["missingWhitespaceAfterDoctypePublicKeyword"] = "missing-whitespace-after-doctype-public-keyword";
+  ERR2["missingWhitespaceBetweenDoctypePublicAndSystemIdentifiers"] = "missing-whitespace-between-doctype-public-and-system-identifiers";
+  ERR2["missingWhitespaceAfterDoctypeSystemKeyword"] = "missing-whitespace-after-doctype-system-keyword";
+  ERR2["missingQuoteBeforeDoctypePublicIdentifier"] = "missing-quote-before-doctype-public-identifier";
+  ERR2["missingQuoteBeforeDoctypeSystemIdentifier"] = "missing-quote-before-doctype-system-identifier";
+  ERR2["missingDoctypePublicIdentifier"] = "missing-doctype-public-identifier";
+  ERR2["missingDoctypeSystemIdentifier"] = "missing-doctype-system-identifier";
+  ERR2["abruptDoctypePublicIdentifier"] = "abrupt-doctype-public-identifier";
+  ERR2["abruptDoctypeSystemIdentifier"] = "abrupt-doctype-system-identifier";
+  ERR2["cdataInHtmlContent"] = "cdata-in-html-content";
+  ERR2["incorrectlyOpenedComment"] = "incorrectly-opened-comment";
+  ERR2["eofInScriptHtmlCommentLikeText"] = "eof-in-script-html-comment-like-text";
+  ERR2["eofInDoctype"] = "eof-in-doctype";
+  ERR2["nestedComment"] = "nested-comment";
+  ERR2["abruptClosingOfEmptyComment"] = "abrupt-closing-of-empty-comment";
+  ERR2["eofInComment"] = "eof-in-comment";
+  ERR2["incorrectlyClosedComment"] = "incorrectly-closed-comment";
+  ERR2["eofInCdata"] = "eof-in-cdata";
+  ERR2["absenceOfDigitsInNumericCharacterReference"] = "absence-of-digits-in-numeric-character-reference";
+  ERR2["nullCharacterReference"] = "null-character-reference";
+  ERR2["surrogateCharacterReference"] = "surrogate-character-reference";
+  ERR2["characterReferenceOutsideUnicodeRange"] = "character-reference-outside-unicode-range";
+  ERR2["controlCharacterReference"] = "control-character-reference";
+  ERR2["noncharacterCharacterReference"] = "noncharacter-character-reference";
+  ERR2["missingWhitespaceBeforeDoctypeName"] = "missing-whitespace-before-doctype-name";
+  ERR2["missingDoctypeName"] = "missing-doctype-name";
+  ERR2["invalidCharacterSequenceAfterDoctypeName"] = "invalid-character-sequence-after-doctype-name";
+  ERR2["duplicateAttribute"] = "duplicate-attribute";
+  ERR2["nonConformingDoctype"] = "non-conforming-doctype";
+  ERR2["missingDoctype"] = "missing-doctype";
+  ERR2["misplacedDoctype"] = "misplaced-doctype";
+  ERR2["endTagWithoutMatchingOpenElement"] = "end-tag-without-matching-open-element";
+  ERR2["closingOfElementWithOpenChildElements"] = "closing-of-element-with-open-child-elements";
+  ERR2["disallowedContentInNoscriptInHead"] = "disallowed-content-in-noscript-in-head";
+  ERR2["openElementsLeftAfterEof"] = "open-elements-left-after-eof";
+  ERR2["abandonedHeadElementChild"] = "abandoned-head-element-child";
+  ERR2["misplacedStartTagForHeadElement"] = "misplaced-start-tag-for-head-element";
+  ERR2["nestedNoscriptInHead"] = "nested-noscript-in-head";
+  ERR2["eofInElementThatCanContainOnlyText"] = "eof-in-element-that-can-contain-only-text";
+})(ERR || (ERR = {}));
+
+// node_modules/parse5/dist/tokenizer/preprocessor.js
+var DEFAULT_BUFFER_WATERLINE = 1 << 16;
+
+// node_modules/parse5/dist/common/token.js
+var TokenType;
+(function(TokenType4) {
+  TokenType4[TokenType4["CHARACTER"] = 0] = "CHARACTER";
+  TokenType4[TokenType4["NULL_CHARACTER"] = 1] = "NULL_CHARACTER";
+  TokenType4[TokenType4["WHITESPACE_CHARACTER"] = 2] = "WHITESPACE_CHARACTER";
+  TokenType4[TokenType4["START_TAG"] = 3] = "START_TAG";
+  TokenType4[TokenType4["END_TAG"] = 4] = "END_TAG";
+  TokenType4[TokenType4["COMMENT"] = 5] = "COMMENT";
+  TokenType4[TokenType4["DOCTYPE"] = 6] = "DOCTYPE";
+  TokenType4[TokenType4["EOF"] = 7] = "EOF";
+  TokenType4[TokenType4["HIBERNATION"] = 8] = "HIBERNATION";
+})(TokenType || (TokenType = {}));
+
+// node_modules/parse5/dist/common/html.js
+var NS;
+(function(NS2) {
+  NS2["HTML"] = "http://www.w3.org/1999/xhtml";
+  NS2["MATHML"] = "http://www.w3.org/1998/Math/MathML";
+  NS2["SVG"] = "http://www.w3.org/2000/svg";
+  NS2["XLINK"] = "http://www.w3.org/1999/xlink";
+  NS2["XML"] = "http://www.w3.org/XML/1998/namespace";
+  NS2["XMLNS"] = "http://www.w3.org/2000/xmlns/";
+})(NS || (NS = {}));
+var ATTRS;
+(function(ATTRS2) {
+  ATTRS2["TYPE"] = "type";
+  ATTRS2["ACTION"] = "action";
+  ATTRS2["ENCODING"] = "encoding";
+  ATTRS2["PROMPT"] = "prompt";
+  ATTRS2["NAME"] = "name";
+  ATTRS2["COLOR"] = "color";
+  ATTRS2["FACE"] = "face";
+  ATTRS2["SIZE"] = "size";
+})(ATTRS || (ATTRS = {}));
+var DOCUMENT_MODE;
+(function(DOCUMENT_MODE2) {
+  DOCUMENT_MODE2["NO_QUIRKS"] = "no-quirks";
+  DOCUMENT_MODE2["QUIRKS"] = "quirks";
+  DOCUMENT_MODE2["LIMITED_QUIRKS"] = "limited-quirks";
+})(DOCUMENT_MODE || (DOCUMENT_MODE = {}));
+var TAG_NAMES;
+(function(TAG_NAMES2) {
+  TAG_NAMES2["A"] = "a";
+  TAG_NAMES2["ADDRESS"] = "address";
+  TAG_NAMES2["ANNOTATION_XML"] = "annotation-xml";
+  TAG_NAMES2["APPLET"] = "applet";
+  TAG_NAMES2["AREA"] = "area";
+  TAG_NAMES2["ARTICLE"] = "article";
+  TAG_NAMES2["ASIDE"] = "aside";
+  TAG_NAMES2["B"] = "b";
+  TAG_NAMES2["BASE"] = "base";
+  TAG_NAMES2["BASEFONT"] = "basefont";
+  TAG_NAMES2["BGSOUND"] = "bgsound";
+  TAG_NAMES2["BIG"] = "big";
+  TAG_NAMES2["BLOCKQUOTE"] = "blockquote";
+  TAG_NAMES2["BODY"] = "body";
+  TAG_NAMES2["BR"] = "br";
+  TAG_NAMES2["BUTTON"] = "button";
+  TAG_NAMES2["CAPTION"] = "caption";
+  TAG_NAMES2["CENTER"] = "center";
+  TAG_NAMES2["CODE"] = "code";
+  TAG_NAMES2["COL"] = "col";
+  TAG_NAMES2["COLGROUP"] = "colgroup";
+  TAG_NAMES2["DD"] = "dd";
+  TAG_NAMES2["DESC"] = "desc";
+  TAG_NAMES2["DETAILS"] = "details";
+  TAG_NAMES2["DIALOG"] = "dialog";
+  TAG_NAMES2["DIR"] = "dir";
+  TAG_NAMES2["DIV"] = "div";
+  TAG_NAMES2["DL"] = "dl";
+  TAG_NAMES2["DT"] = "dt";
+  TAG_NAMES2["EM"] = "em";
+  TAG_NAMES2["EMBED"] = "embed";
+  TAG_NAMES2["FIELDSET"] = "fieldset";
+  TAG_NAMES2["FIGCAPTION"] = "figcaption";
+  TAG_NAMES2["FIGURE"] = "figure";
+  TAG_NAMES2["FONT"] = "font";
+  TAG_NAMES2["FOOTER"] = "footer";
+  TAG_NAMES2["FOREIGN_OBJECT"] = "foreignObject";
+  TAG_NAMES2["FORM"] = "form";
+  TAG_NAMES2["FRAME"] = "frame";
+  TAG_NAMES2["FRAMESET"] = "frameset";
+  TAG_NAMES2["H1"] = "h1";
+  TAG_NAMES2["H2"] = "h2";
+  TAG_NAMES2["H3"] = "h3";
+  TAG_NAMES2["H4"] = "h4";
+  TAG_NAMES2["H5"] = "h5";
+  TAG_NAMES2["H6"] = "h6";
+  TAG_NAMES2["HEAD"] = "head";
+  TAG_NAMES2["HEADER"] = "header";
+  TAG_NAMES2["HGROUP"] = "hgroup";
+  TAG_NAMES2["HR"] = "hr";
+  TAG_NAMES2["HTML"] = "html";
+  TAG_NAMES2["I"] = "i";
+  TAG_NAMES2["IMG"] = "img";
+  TAG_NAMES2["IMAGE"] = "image";
+  TAG_NAMES2["INPUT"] = "input";
+  TAG_NAMES2["IFRAME"] = "iframe";
+  TAG_NAMES2["KEYGEN"] = "keygen";
+  TAG_NAMES2["LABEL"] = "label";
+  TAG_NAMES2["LI"] = "li";
+  TAG_NAMES2["LINK"] = "link";
+  TAG_NAMES2["LISTING"] = "listing";
+  TAG_NAMES2["MAIN"] = "main";
+  TAG_NAMES2["MALIGNMARK"] = "malignmark";
+  TAG_NAMES2["MARQUEE"] = "marquee";
+  TAG_NAMES2["MATH"] = "math";
+  TAG_NAMES2["MENU"] = "menu";
+  TAG_NAMES2["META"] = "meta";
+  TAG_NAMES2["MGLYPH"] = "mglyph";
+  TAG_NAMES2["MI"] = "mi";
+  TAG_NAMES2["MO"] = "mo";
+  TAG_NAMES2["MN"] = "mn";
+  TAG_NAMES2["MS"] = "ms";
+  TAG_NAMES2["MTEXT"] = "mtext";
+  TAG_NAMES2["NAV"] = "nav";
+  TAG_NAMES2["NOBR"] = "nobr";
+  TAG_NAMES2["NOFRAMES"] = "noframes";
+  TAG_NAMES2["NOEMBED"] = "noembed";
+  TAG_NAMES2["NOSCRIPT"] = "noscript";
+  TAG_NAMES2["OBJECT"] = "object";
+  TAG_NAMES2["OL"] = "ol";
+  TAG_NAMES2["OPTGROUP"] = "optgroup";
+  TAG_NAMES2["OPTION"] = "option";
+  TAG_NAMES2["P"] = "p";
+  TAG_NAMES2["PARAM"] = "param";
+  TAG_NAMES2["PLAINTEXT"] = "plaintext";
+  TAG_NAMES2["PRE"] = "pre";
+  TAG_NAMES2["RB"] = "rb";
+  TAG_NAMES2["RP"] = "rp";
+  TAG_NAMES2["RT"] = "rt";
+  TAG_NAMES2["RTC"] = "rtc";
+  TAG_NAMES2["RUBY"] = "ruby";
+  TAG_NAMES2["S"] = "s";
+  TAG_NAMES2["SCRIPT"] = "script";
+  TAG_NAMES2["SEARCH"] = "search";
+  TAG_NAMES2["SECTION"] = "section";
+  TAG_NAMES2["SELECT"] = "select";
+  TAG_NAMES2["SOURCE"] = "source";
+  TAG_NAMES2["SMALL"] = "small";
+  TAG_NAMES2["SPAN"] = "span";
+  TAG_NAMES2["STRIKE"] = "strike";
+  TAG_NAMES2["STRONG"] = "strong";
+  TAG_NAMES2["STYLE"] = "style";
+  TAG_NAMES2["SUB"] = "sub";
+  TAG_NAMES2["SUMMARY"] = "summary";
+  TAG_NAMES2["SUP"] = "sup";
+  TAG_NAMES2["TABLE"] = "table";
+  TAG_NAMES2["TBODY"] = "tbody";
+  TAG_NAMES2["TEMPLATE"] = "template";
+  TAG_NAMES2["TEXTAREA"] = "textarea";
+  TAG_NAMES2["TFOOT"] = "tfoot";
+  TAG_NAMES2["TD"] = "td";
+  TAG_NAMES2["TH"] = "th";
+  TAG_NAMES2["THEAD"] = "thead";
+  TAG_NAMES2["TITLE"] = "title";
+  TAG_NAMES2["TR"] = "tr";
+  TAG_NAMES2["TRACK"] = "track";
+  TAG_NAMES2["TT"] = "tt";
+  TAG_NAMES2["U"] = "u";
+  TAG_NAMES2["UL"] = "ul";
+  TAG_NAMES2["SVG"] = "svg";
+  TAG_NAMES2["VAR"] = "var";
+  TAG_NAMES2["WBR"] = "wbr";
+  TAG_NAMES2["XMP"] = "xmp";
+})(TAG_NAMES || (TAG_NAMES = {}));
+var TAG_ID;
+(function(TAG_ID2) {
+  TAG_ID2[TAG_ID2["UNKNOWN"] = 0] = "UNKNOWN";
+  TAG_ID2[TAG_ID2["A"] = 1] = "A";
+  TAG_ID2[TAG_ID2["ADDRESS"] = 2] = "ADDRESS";
+  TAG_ID2[TAG_ID2["ANNOTATION_XML"] = 3] = "ANNOTATION_XML";
+  TAG_ID2[TAG_ID2["APPLET"] = 4] = "APPLET";
+  TAG_ID2[TAG_ID2["AREA"] = 5] = "AREA";
+  TAG_ID2[TAG_ID2["ARTICLE"] = 6] = "ARTICLE";
+  TAG_ID2[TAG_ID2["ASIDE"] = 7] = "ASIDE";
+  TAG_ID2[TAG_ID2["B"] = 8] = "B";
+  TAG_ID2[TAG_ID2["BASE"] = 9] = "BASE";
+  TAG_ID2[TAG_ID2["BASEFONT"] = 10] = "BASEFONT";
+  TAG_ID2[TAG_ID2["BGSOUND"] = 11] = "BGSOUND";
+  TAG_ID2[TAG_ID2["BIG"] = 12] = "BIG";
+  TAG_ID2[TAG_ID2["BLOCKQUOTE"] = 13] = "BLOCKQUOTE";
+  TAG_ID2[TAG_ID2["BODY"] = 14] = "BODY";
+  TAG_ID2[TAG_ID2["BR"] = 15] = "BR";
+  TAG_ID2[TAG_ID2["BUTTON"] = 16] = "BUTTON";
+  TAG_ID2[TAG_ID2["CAPTION"] = 17] = "CAPTION";
+  TAG_ID2[TAG_ID2["CENTER"] = 18] = "CENTER";
+  TAG_ID2[TAG_ID2["CODE"] = 19] = "CODE";
+  TAG_ID2[TAG_ID2["COL"] = 20] = "COL";
+  TAG_ID2[TAG_ID2["COLGROUP"] = 21] = "COLGROUP";
+  TAG_ID2[TAG_ID2["DD"] = 22] = "DD";
+  TAG_ID2[TAG_ID2["DESC"] = 23] = "DESC";
+  TAG_ID2[TAG_ID2["DETAILS"] = 24] = "DETAILS";
+  TAG_ID2[TAG_ID2["DIALOG"] = 25] = "DIALOG";
+  TAG_ID2[TAG_ID2["DIR"] = 26] = "DIR";
+  TAG_ID2[TAG_ID2["DIV"] = 27] = "DIV";
+  TAG_ID2[TAG_ID2["DL"] = 28] = "DL";
+  TAG_ID2[TAG_ID2["DT"] = 29] = "DT";
+  TAG_ID2[TAG_ID2["EM"] = 30] = "EM";
+  TAG_ID2[TAG_ID2["EMBED"] = 31] = "EMBED";
+  TAG_ID2[TAG_ID2["FIELDSET"] = 32] = "FIELDSET";
+  TAG_ID2[TAG_ID2["FIGCAPTION"] = 33] = "FIGCAPTION";
+  TAG_ID2[TAG_ID2["FIGURE"] = 34] = "FIGURE";
+  TAG_ID2[TAG_ID2["FONT"] = 35] = "FONT";
+  TAG_ID2[TAG_ID2["FOOTER"] = 36] = "FOOTER";
+  TAG_ID2[TAG_ID2["FOREIGN_OBJECT"] = 37] = "FOREIGN_OBJECT";
+  TAG_ID2[TAG_ID2["FORM"] = 38] = "FORM";
+  TAG_ID2[TAG_ID2["FRAME"] = 39] = "FRAME";
+  TAG_ID2[TAG_ID2["FRAMESET"] = 40] = "FRAMESET";
+  TAG_ID2[TAG_ID2["H1"] = 41] = "H1";
+  TAG_ID2[TAG_ID2["H2"] = 42] = "H2";
+  TAG_ID2[TAG_ID2["H3"] = 43] = "H3";
+  TAG_ID2[TAG_ID2["H4"] = 44] = "H4";
+  TAG_ID2[TAG_ID2["H5"] = 45] = "H5";
+  TAG_ID2[TAG_ID2["H6"] = 46] = "H6";
+  TAG_ID2[TAG_ID2["HEAD"] = 47] = "HEAD";
+  TAG_ID2[TAG_ID2["HEADER"] = 48] = "HEADER";
+  TAG_ID2[TAG_ID2["HGROUP"] = 49] = "HGROUP";
+  TAG_ID2[TAG_ID2["HR"] = 50] = "HR";
+  TAG_ID2[TAG_ID2["HTML"] = 51] = "HTML";
+  TAG_ID2[TAG_ID2["I"] = 52] = "I";
+  TAG_ID2[TAG_ID2["IMG"] = 53] = "IMG";
+  TAG_ID2[TAG_ID2["IMAGE"] = 54] = "IMAGE";
+  TAG_ID2[TAG_ID2["INPUT"] = 55] = "INPUT";
+  TAG_ID2[TAG_ID2["IFRAME"] = 56] = "IFRAME";
+  TAG_ID2[TAG_ID2["KEYGEN"] = 57] = "KEYGEN";
+  TAG_ID2[TAG_ID2["LABEL"] = 58] = "LABEL";
+  TAG_ID2[TAG_ID2["LI"] = 59] = "LI";
+  TAG_ID2[TAG_ID2["LINK"] = 60] = "LINK";
+  TAG_ID2[TAG_ID2["LISTING"] = 61] = "LISTING";
+  TAG_ID2[TAG_ID2["MAIN"] = 62] = "MAIN";
+  TAG_ID2[TAG_ID2["MALIGNMARK"] = 63] = "MALIGNMARK";
+  TAG_ID2[TAG_ID2["MARQUEE"] = 64] = "MARQUEE";
+  TAG_ID2[TAG_ID2["MATH"] = 65] = "MATH";
+  TAG_ID2[TAG_ID2["MENU"] = 66] = "MENU";
+  TAG_ID2[TAG_ID2["META"] = 67] = "META";
+  TAG_ID2[TAG_ID2["MGLYPH"] = 68] = "MGLYPH";
+  TAG_ID2[TAG_ID2["MI"] = 69] = "MI";
+  TAG_ID2[TAG_ID2["MO"] = 70] = "MO";
+  TAG_ID2[TAG_ID2["MN"] = 71] = "MN";
+  TAG_ID2[TAG_ID2["MS"] = 72] = "MS";
+  TAG_ID2[TAG_ID2["MTEXT"] = 73] = "MTEXT";
+  TAG_ID2[TAG_ID2["NAV"] = 74] = "NAV";
+  TAG_ID2[TAG_ID2["NOBR"] = 75] = "NOBR";
+  TAG_ID2[TAG_ID2["NOFRAMES"] = 76] = "NOFRAMES";
+  TAG_ID2[TAG_ID2["NOEMBED"] = 77] = "NOEMBED";
+  TAG_ID2[TAG_ID2["NOSCRIPT"] = 78] = "NOSCRIPT";
+  TAG_ID2[TAG_ID2["OBJECT"] = 79] = "OBJECT";
+  TAG_ID2[TAG_ID2["OL"] = 80] = "OL";
+  TAG_ID2[TAG_ID2["OPTGROUP"] = 81] = "OPTGROUP";
+  TAG_ID2[TAG_ID2["OPTION"] = 82] = "OPTION";
+  TAG_ID2[TAG_ID2["P"] = 83] = "P";
+  TAG_ID2[TAG_ID2["PARAM"] = 84] = "PARAM";
+  TAG_ID2[TAG_ID2["PLAINTEXT"] = 85] = "PLAINTEXT";
+  TAG_ID2[TAG_ID2["PRE"] = 86] = "PRE";
+  TAG_ID2[TAG_ID2["RB"] = 87] = "RB";
+  TAG_ID2[TAG_ID2["RP"] = 88] = "RP";
+  TAG_ID2[TAG_ID2["RT"] = 89] = "RT";
+  TAG_ID2[TAG_ID2["RTC"] = 90] = "RTC";
+  TAG_ID2[TAG_ID2["RUBY"] = 91] = "RUBY";
+  TAG_ID2[TAG_ID2["S"] = 92] = "S";
+  TAG_ID2[TAG_ID2["SCRIPT"] = 93] = "SCRIPT";
+  TAG_ID2[TAG_ID2["SEARCH"] = 94] = "SEARCH";
+  TAG_ID2[TAG_ID2["SECTION"] = 95] = "SECTION";
+  TAG_ID2[TAG_ID2["SELECT"] = 96] = "SELECT";
+  TAG_ID2[TAG_ID2["SOURCE"] = 97] = "SOURCE";
+  TAG_ID2[TAG_ID2["SMALL"] = 98] = "SMALL";
+  TAG_ID2[TAG_ID2["SPAN"] = 99] = "SPAN";
+  TAG_ID2[TAG_ID2["STRIKE"] = 100] = "STRIKE";
+  TAG_ID2[TAG_ID2["STRONG"] = 101] = "STRONG";
+  TAG_ID2[TAG_ID2["STYLE"] = 102] = "STYLE";
+  TAG_ID2[TAG_ID2["SUB"] = 103] = "SUB";
+  TAG_ID2[TAG_ID2["SUMMARY"] = 104] = "SUMMARY";
+  TAG_ID2[TAG_ID2["SUP"] = 105] = "SUP";
+  TAG_ID2[TAG_ID2["TABLE"] = 106] = "TABLE";
+  TAG_ID2[TAG_ID2["TBODY"] = 107] = "TBODY";
+  TAG_ID2[TAG_ID2["TEMPLATE"] = 108] = "TEMPLATE";
+  TAG_ID2[TAG_ID2["TEXTAREA"] = 109] = "TEXTAREA";
+  TAG_ID2[TAG_ID2["TFOOT"] = 110] = "TFOOT";
+  TAG_ID2[TAG_ID2["TD"] = 111] = "TD";
+  TAG_ID2[TAG_ID2["TH"] = 112] = "TH";
+  TAG_ID2[TAG_ID2["THEAD"] = 113] = "THEAD";
+  TAG_ID2[TAG_ID2["TITLE"] = 114] = "TITLE";
+  TAG_ID2[TAG_ID2["TR"] = 115] = "TR";
+  TAG_ID2[TAG_ID2["TRACK"] = 116] = "TRACK";
+  TAG_ID2[TAG_ID2["TT"] = 117] = "TT";
+  TAG_ID2[TAG_ID2["U"] = 118] = "U";
+  TAG_ID2[TAG_ID2["UL"] = 119] = "UL";
+  TAG_ID2[TAG_ID2["SVG"] = 120] = "SVG";
+  TAG_ID2[TAG_ID2["VAR"] = 121] = "VAR";
+  TAG_ID2[TAG_ID2["WBR"] = 122] = "WBR";
+  TAG_ID2[TAG_ID2["XMP"] = 123] = "XMP";
+})(TAG_ID || (TAG_ID = {}));
+var TAG_NAME_TO_ID = /* @__PURE__ */ new Map([
+  [TAG_NAMES.A, TAG_ID.A],
+  [TAG_NAMES.ADDRESS, TAG_ID.ADDRESS],
+  [TAG_NAMES.ANNOTATION_XML, TAG_ID.ANNOTATION_XML],
+  [TAG_NAMES.APPLET, TAG_ID.APPLET],
+  [TAG_NAMES.AREA, TAG_ID.AREA],
+  [TAG_NAMES.ARTICLE, TAG_ID.ARTICLE],
+  [TAG_NAMES.ASIDE, TAG_ID.ASIDE],
+  [TAG_NAMES.B, TAG_ID.B],
+  [TAG_NAMES.BASE, TAG_ID.BASE],
+  [TAG_NAMES.BASEFONT, TAG_ID.BASEFONT],
+  [TAG_NAMES.BGSOUND, TAG_ID.BGSOUND],
+  [TAG_NAMES.BIG, TAG_ID.BIG],
+  [TAG_NAMES.BLOCKQUOTE, TAG_ID.BLOCKQUOTE],
+  [TAG_NAMES.BODY, TAG_ID.BODY],
+  [TAG_NAMES.BR, TAG_ID.BR],
+  [TAG_NAMES.BUTTON, TAG_ID.BUTTON],
+  [TAG_NAMES.CAPTION, TAG_ID.CAPTION],
+  [TAG_NAMES.CENTER, TAG_ID.CENTER],
+  [TAG_NAMES.CODE, TAG_ID.CODE],
+  [TAG_NAMES.COL, TAG_ID.COL],
+  [TAG_NAMES.COLGROUP, TAG_ID.COLGROUP],
+  [TAG_NAMES.DD, TAG_ID.DD],
+  [TAG_NAMES.DESC, TAG_ID.DESC],
+  [TAG_NAMES.DETAILS, TAG_ID.DETAILS],
+  [TAG_NAMES.DIALOG, TAG_ID.DIALOG],
+  [TAG_NAMES.DIR, TAG_ID.DIR],
+  [TAG_NAMES.DIV, TAG_ID.DIV],
+  [TAG_NAMES.DL, TAG_ID.DL],
+  [TAG_NAMES.DT, TAG_ID.DT],
+  [TAG_NAMES.EM, TAG_ID.EM],
+  [TAG_NAMES.EMBED, TAG_ID.EMBED],
+  [TAG_NAMES.FIELDSET, TAG_ID.FIELDSET],
+  [TAG_NAMES.FIGCAPTION, TAG_ID.FIGCAPTION],
+  [TAG_NAMES.FIGURE, TAG_ID.FIGURE],
+  [TAG_NAMES.FONT, TAG_ID.FONT],
+  [TAG_NAMES.FOOTER, TAG_ID.FOOTER],
+  [TAG_NAMES.FOREIGN_OBJECT, TAG_ID.FOREIGN_OBJECT],
+  [TAG_NAMES.FORM, TAG_ID.FORM],
+  [TAG_NAMES.FRAME, TAG_ID.FRAME],
+  [TAG_NAMES.FRAMESET, TAG_ID.FRAMESET],
+  [TAG_NAMES.H1, TAG_ID.H1],
+  [TAG_NAMES.H2, TAG_ID.H2],
+  [TAG_NAMES.H3, TAG_ID.H3],
+  [TAG_NAMES.H4, TAG_ID.H4],
+  [TAG_NAMES.H5, TAG_ID.H5],
+  [TAG_NAMES.H6, TAG_ID.H6],
+  [TAG_NAMES.HEAD, TAG_ID.HEAD],
+  [TAG_NAMES.HEADER, TAG_ID.HEADER],
+  [TAG_NAMES.HGROUP, TAG_ID.HGROUP],
+  [TAG_NAMES.HR, TAG_ID.HR],
+  [TAG_NAMES.HTML, TAG_ID.HTML],
+  [TAG_NAMES.I, TAG_ID.I],
+  [TAG_NAMES.IMG, TAG_ID.IMG],
+  [TAG_NAMES.IMAGE, TAG_ID.IMAGE],
+  [TAG_NAMES.INPUT, TAG_ID.INPUT],
+  [TAG_NAMES.IFRAME, TAG_ID.IFRAME],
+  [TAG_NAMES.KEYGEN, TAG_ID.KEYGEN],
+  [TAG_NAMES.LABEL, TAG_ID.LABEL],
+  [TAG_NAMES.LI, TAG_ID.LI],
+  [TAG_NAMES.LINK, TAG_ID.LINK],
+  [TAG_NAMES.LISTING, TAG_ID.LISTING],
+  [TAG_NAMES.MAIN, TAG_ID.MAIN],
+  [TAG_NAMES.MALIGNMARK, TAG_ID.MALIGNMARK],
+  [TAG_NAMES.MARQUEE, TAG_ID.MARQUEE],
+  [TAG_NAMES.MATH, TAG_ID.MATH],
+  [TAG_NAMES.MENU, TAG_ID.MENU],
+  [TAG_NAMES.META, TAG_ID.META],
+  [TAG_NAMES.MGLYPH, TAG_ID.MGLYPH],
+  [TAG_NAMES.MI, TAG_ID.MI],
+  [TAG_NAMES.MO, TAG_ID.MO],
+  [TAG_NAMES.MN, TAG_ID.MN],
+  [TAG_NAMES.MS, TAG_ID.MS],
+  [TAG_NAMES.MTEXT, TAG_ID.MTEXT],
+  [TAG_NAMES.NAV, TAG_ID.NAV],
+  [TAG_NAMES.NOBR, TAG_ID.NOBR],
+  [TAG_NAMES.NOFRAMES, TAG_ID.NOFRAMES],
+  [TAG_NAMES.NOEMBED, TAG_ID.NOEMBED],
+  [TAG_NAMES.NOSCRIPT, TAG_ID.NOSCRIPT],
+  [TAG_NAMES.OBJECT, TAG_ID.OBJECT],
+  [TAG_NAMES.OL, TAG_ID.OL],
+  [TAG_NAMES.OPTGROUP, TAG_ID.OPTGROUP],
+  [TAG_NAMES.OPTION, TAG_ID.OPTION],
+  [TAG_NAMES.P, TAG_ID.P],
+  [TAG_NAMES.PARAM, TAG_ID.PARAM],
+  [TAG_NAMES.PLAINTEXT, TAG_ID.PLAINTEXT],
+  [TAG_NAMES.PRE, TAG_ID.PRE],
+  [TAG_NAMES.RB, TAG_ID.RB],
+  [TAG_NAMES.RP, TAG_ID.RP],
+  [TAG_NAMES.RT, TAG_ID.RT],
+  [TAG_NAMES.RTC, TAG_ID.RTC],
+  [TAG_NAMES.RUBY, TAG_ID.RUBY],
+  [TAG_NAMES.S, TAG_ID.S],
+  [TAG_NAMES.SCRIPT, TAG_ID.SCRIPT],
+  [TAG_NAMES.SEARCH, TAG_ID.SEARCH],
+  [TAG_NAMES.SECTION, TAG_ID.SECTION],
+  [TAG_NAMES.SELECT, TAG_ID.SELECT],
+  [TAG_NAMES.SOURCE, TAG_ID.SOURCE],
+  [TAG_NAMES.SMALL, TAG_ID.SMALL],
+  [TAG_NAMES.SPAN, TAG_ID.SPAN],
+  [TAG_NAMES.STRIKE, TAG_ID.STRIKE],
+  [TAG_NAMES.STRONG, TAG_ID.STRONG],
+  [TAG_NAMES.STYLE, TAG_ID.STYLE],
+  [TAG_NAMES.SUB, TAG_ID.SUB],
+  [TAG_NAMES.SUMMARY, TAG_ID.SUMMARY],
+  [TAG_NAMES.SUP, TAG_ID.SUP],
+  [TAG_NAMES.TABLE, TAG_ID.TABLE],
+  [TAG_NAMES.TBODY, TAG_ID.TBODY],
+  [TAG_NAMES.TEMPLATE, TAG_ID.TEMPLATE],
+  [TAG_NAMES.TEXTAREA, TAG_ID.TEXTAREA],
+  [TAG_NAMES.TFOOT, TAG_ID.TFOOT],
+  [TAG_NAMES.TD, TAG_ID.TD],
+  [TAG_NAMES.TH, TAG_ID.TH],
+  [TAG_NAMES.THEAD, TAG_ID.THEAD],
+  [TAG_NAMES.TITLE, TAG_ID.TITLE],
+  [TAG_NAMES.TR, TAG_ID.TR],
+  [TAG_NAMES.TRACK, TAG_ID.TRACK],
+  [TAG_NAMES.TT, TAG_ID.TT],
+  [TAG_NAMES.U, TAG_ID.U],
+  [TAG_NAMES.UL, TAG_ID.UL],
+  [TAG_NAMES.SVG, TAG_ID.SVG],
+  [TAG_NAMES.VAR, TAG_ID.VAR],
+  [TAG_NAMES.WBR, TAG_ID.WBR],
+  [TAG_NAMES.XMP, TAG_ID.XMP]
+]);
+var $ = TAG_ID;
+var SPECIAL_ELEMENTS = {
+  [NS.HTML]: /* @__PURE__ */ new Set([
+    $.ADDRESS,
+    $.APPLET,
+    $.AREA,
+    $.ARTICLE,
+    $.ASIDE,
+    $.BASE,
+    $.BASEFONT,
+    $.BGSOUND,
+    $.BLOCKQUOTE,
+    $.BODY,
+    $.BR,
+    $.BUTTON,
+    $.CAPTION,
+    $.CENTER,
+    $.COL,
+    $.COLGROUP,
+    $.DD,
+    $.DETAILS,
+    $.DIR,
+    $.DIV,
+    $.DL,
+    $.DT,
+    $.EMBED,
+    $.FIELDSET,
+    $.FIGCAPTION,
+    $.FIGURE,
+    $.FOOTER,
+    $.FORM,
+    $.FRAME,
+    $.FRAMESET,
+    $.H1,
+    $.H2,
+    $.H3,
+    $.H4,
+    $.H5,
+    $.H6,
+    $.HEAD,
+    $.HEADER,
+    $.HGROUP,
+    $.HR,
+    $.HTML,
+    $.IFRAME,
+    $.IMG,
+    $.INPUT,
+    $.LI,
+    $.LINK,
+    $.LISTING,
+    $.MAIN,
+    $.MARQUEE,
+    $.MENU,
+    $.META,
+    $.NAV,
+    $.NOEMBED,
+    $.NOFRAMES,
+    $.NOSCRIPT,
+    $.OBJECT,
+    $.OL,
+    $.P,
+    $.PARAM,
+    $.PLAINTEXT,
+    $.PRE,
+    $.SCRIPT,
+    $.SECTION,
+    $.SELECT,
+    $.SOURCE,
+    $.STYLE,
+    $.SUMMARY,
+    $.TABLE,
+    $.TBODY,
+    $.TD,
+    $.TEMPLATE,
+    $.TEXTAREA,
+    $.TFOOT,
+    $.TH,
+    $.THEAD,
+    $.TITLE,
+    $.TR,
+    $.TRACK,
+    $.UL,
+    $.WBR,
+    $.XMP
+  ]),
+  [NS.MATHML]: /* @__PURE__ */ new Set([$.MI, $.MO, $.MN, $.MS, $.MTEXT, $.ANNOTATION_XML]),
+  [NS.SVG]: /* @__PURE__ */ new Set([$.TITLE, $.FOREIGN_OBJECT, $.DESC]),
+  [NS.XLINK]: /* @__PURE__ */ new Set(),
+  [NS.XML]: /* @__PURE__ */ new Set(),
+  [NS.XMLNS]: /* @__PURE__ */ new Set()
+};
+var NUMBERED_HEADERS = /* @__PURE__ */ new Set([$.H1, $.H2, $.H3, $.H4, $.H5, $.H6]);
+var UNESCAPED_TEXT = /* @__PURE__ */ new Set([
+  TAG_NAMES.STYLE,
+  TAG_NAMES.SCRIPT,
+  TAG_NAMES.XMP,
+  TAG_NAMES.IFRAME,
+  TAG_NAMES.NOEMBED,
+  TAG_NAMES.NOFRAMES,
+  TAG_NAMES.PLAINTEXT
+]);
+
+// node_modules/parse5/dist/tokenizer/index.js
+var State;
+(function(State2) {
+  State2[State2["DATA"] = 0] = "DATA";
+  State2[State2["RCDATA"] = 1] = "RCDATA";
+  State2[State2["RAWTEXT"] = 2] = "RAWTEXT";
+  State2[State2["SCRIPT_DATA"] = 3] = "SCRIPT_DATA";
+  State2[State2["PLAINTEXT"] = 4] = "PLAINTEXT";
+  State2[State2["TAG_OPEN"] = 5] = "TAG_OPEN";
+  State2[State2["END_TAG_OPEN"] = 6] = "END_TAG_OPEN";
+  State2[State2["TAG_NAME"] = 7] = "TAG_NAME";
+  State2[State2["RCDATA_LESS_THAN_SIGN"] = 8] = "RCDATA_LESS_THAN_SIGN";
+  State2[State2["RCDATA_END_TAG_OPEN"] = 9] = "RCDATA_END_TAG_OPEN";
+  State2[State2["RCDATA_END_TAG_NAME"] = 10] = "RCDATA_END_TAG_NAME";
+  State2[State2["RAWTEXT_LESS_THAN_SIGN"] = 11] = "RAWTEXT_LESS_THAN_SIGN";
+  State2[State2["RAWTEXT_END_TAG_OPEN"] = 12] = "RAWTEXT_END_TAG_OPEN";
+  State2[State2["RAWTEXT_END_TAG_NAME"] = 13] = "RAWTEXT_END_TAG_NAME";
+  State2[State2["SCRIPT_DATA_LESS_THAN_SIGN"] = 14] = "SCRIPT_DATA_LESS_THAN_SIGN";
+  State2[State2["SCRIPT_DATA_END_TAG_OPEN"] = 15] = "SCRIPT_DATA_END_TAG_OPEN";
+  State2[State2["SCRIPT_DATA_END_TAG_NAME"] = 16] = "SCRIPT_DATA_END_TAG_NAME";
+  State2[State2["SCRIPT_DATA_ESCAPE_START"] = 17] = "SCRIPT_DATA_ESCAPE_START";
+  State2[State2["SCRIPT_DATA_ESCAPE_START_DASH"] = 18] = "SCRIPT_DATA_ESCAPE_START_DASH";
+  State2[State2["SCRIPT_DATA_ESCAPED"] = 19] = "SCRIPT_DATA_ESCAPED";
+  State2[State2["SCRIPT_DATA_ESCAPED_DASH"] = 20] = "SCRIPT_DATA_ESCAPED_DASH";
+  State2[State2["SCRIPT_DATA_ESCAPED_DASH_DASH"] = 21] = "SCRIPT_DATA_ESCAPED_DASH_DASH";
+  State2[State2["SCRIPT_DATA_ESCAPED_LESS_THAN_SIGN"] = 22] = "SCRIPT_DATA_ESCAPED_LESS_THAN_SIGN";
+  State2[State2["SCRIPT_DATA_ESCAPED_END_TAG_OPEN"] = 23] = "SCRIPT_DATA_ESCAPED_END_TAG_OPEN";
+  State2[State2["SCRIPT_DATA_ESCAPED_END_TAG_NAME"] = 24] = "SCRIPT_DATA_ESCAPED_END_TAG_NAME";
+  State2[State2["SCRIPT_DATA_DOUBLE_ESCAPE_START"] = 25] = "SCRIPT_DATA_DOUBLE_ESCAPE_START";
+  State2[State2["SCRIPT_DATA_DOUBLE_ESCAPED"] = 26] = "SCRIPT_DATA_DOUBLE_ESCAPED";
+  State2[State2["SCRIPT_DATA_DOUBLE_ESCAPED_DASH"] = 27] = "SCRIPT_DATA_DOUBLE_ESCAPED_DASH";
+  State2[State2["SCRIPT_DATA_DOUBLE_ESCAPED_DASH_DASH"] = 28] = "SCRIPT_DATA_DOUBLE_ESCAPED_DASH_DASH";
+  State2[State2["SCRIPT_DATA_DOUBLE_ESCAPED_LESS_THAN_SIGN"] = 29] = "SCRIPT_DATA_DOUBLE_ESCAPED_LESS_THAN_SIGN";
+  State2[State2["SCRIPT_DATA_DOUBLE_ESCAPE_END"] = 30] = "SCRIPT_DATA_DOUBLE_ESCAPE_END";
+  State2[State2["BEFORE_ATTRIBUTE_NAME"] = 31] = "BEFORE_ATTRIBUTE_NAME";
+  State2[State2["ATTRIBUTE_NAME"] = 32] = "ATTRIBUTE_NAME";
+  State2[State2["AFTER_ATTRIBUTE_NAME"] = 33] = "AFTER_ATTRIBUTE_NAME";
+  State2[State2["BEFORE_ATTRIBUTE_VALUE"] = 34] = "BEFORE_ATTRIBUTE_VALUE";
+  State2[State2["ATTRIBUTE_VALUE_DOUBLE_QUOTED"] = 35] = "ATTRIBUTE_VALUE_DOUBLE_QUOTED";
+  State2[State2["ATTRIBUTE_VALUE_SINGLE_QUOTED"] = 36] = "ATTRIBUTE_VALUE_SINGLE_QUOTED";
+  State2[State2["ATTRIBUTE_VALUE_UNQUOTED"] = 37] = "ATTRIBUTE_VALUE_UNQUOTED";
+  State2[State2["AFTER_ATTRIBUTE_VALUE_QUOTED"] = 38] = "AFTER_ATTRIBUTE_VALUE_QUOTED";
+  State2[State2["SELF_CLOSING_START_TAG"] = 39] = "SELF_CLOSING_START_TAG";
+  State2[State2["BOGUS_COMMENT"] = 40] = "BOGUS_COMMENT";
+  State2[State2["MARKUP_DECLARATION_OPEN"] = 41] = "MARKUP_DECLARATION_OPEN";
+  State2[State2["COMMENT_START"] = 42] = "COMMENT_START";
+  State2[State2["COMMENT_START_DASH"] = 43] = "COMMENT_START_DASH";
+  State2[State2["COMMENT"] = 44] = "COMMENT";
+  State2[State2["COMMENT_LESS_THAN_SIGN"] = 45] = "COMMENT_LESS_THAN_SIGN";
+  State2[State2["COMMENT_LESS_THAN_SIGN_BANG"] = 46] = "COMMENT_LESS_THAN_SIGN_BANG";
+  State2[State2["COMMENT_LESS_THAN_SIGN_BANG_DASH"] = 47] = "COMMENT_LESS_THAN_SIGN_BANG_DASH";
+  State2[State2["COMMENT_LESS_THAN_SIGN_BANG_DASH_DASH"] = 48] = "COMMENT_LESS_THAN_SIGN_BANG_DASH_DASH";
+  State2[State2["COMMENT_END_DASH"] = 49] = "COMMENT_END_DASH";
+  State2[State2["COMMENT_END"] = 50] = "COMMENT_END";
+  State2[State2["COMMENT_END_BANG"] = 51] = "COMMENT_END_BANG";
+  State2[State2["DOCTYPE"] = 52] = "DOCTYPE";
+  State2[State2["BEFORE_DOCTYPE_NAME"] = 53] = "BEFORE_DOCTYPE_NAME";
+  State2[State2["DOCTYPE_NAME"] = 54] = "DOCTYPE_NAME";
+  State2[State2["AFTER_DOCTYPE_NAME"] = 55] = "AFTER_DOCTYPE_NAME";
+  State2[State2["AFTER_DOCTYPE_PUBLIC_KEYWORD"] = 56] = "AFTER_DOCTYPE_PUBLIC_KEYWORD";
+  State2[State2["BEFORE_DOCTYPE_PUBLIC_IDENTIFIER"] = 57] = "BEFORE_DOCTYPE_PUBLIC_IDENTIFIER";
+  State2[State2["DOCTYPE_PUBLIC_IDENTIFIER_DOUBLE_QUOTED"] = 58] = "DOCTYPE_PUBLIC_IDENTIFIER_DOUBLE_QUOTED";
+  State2[State2["DOCTYPE_PUBLIC_IDENTIFIER_SINGLE_QUOTED"] = 59] = "DOCTYPE_PUBLIC_IDENTIFIER_SINGLE_QUOTED";
+  State2[State2["AFTER_DOCTYPE_PUBLIC_IDENTIFIER"] = 60] = "AFTER_DOCTYPE_PUBLIC_IDENTIFIER";
+  State2[State2["BETWEEN_DOCTYPE_PUBLIC_AND_SYSTEM_IDENTIFIERS"] = 61] = "BETWEEN_DOCTYPE_PUBLIC_AND_SYSTEM_IDENTIFIERS";
+  State2[State2["AFTER_DOCTYPE_SYSTEM_KEYWORD"] = 62] = "AFTER_DOCTYPE_SYSTEM_KEYWORD";
+  State2[State2["BEFORE_DOCTYPE_SYSTEM_IDENTIFIER"] = 63] = "BEFORE_DOCTYPE_SYSTEM_IDENTIFIER";
+  State2[State2["DOCTYPE_SYSTEM_IDENTIFIER_DOUBLE_QUOTED"] = 64] = "DOCTYPE_SYSTEM_IDENTIFIER_DOUBLE_QUOTED";
+  State2[State2["DOCTYPE_SYSTEM_IDENTIFIER_SINGLE_QUOTED"] = 65] = "DOCTYPE_SYSTEM_IDENTIFIER_SINGLE_QUOTED";
+  State2[State2["AFTER_DOCTYPE_SYSTEM_IDENTIFIER"] = 66] = "AFTER_DOCTYPE_SYSTEM_IDENTIFIER";
+  State2[State2["BOGUS_DOCTYPE"] = 67] = "BOGUS_DOCTYPE";
+  State2[State2["CDATA_SECTION"] = 68] = "CDATA_SECTION";
+  State2[State2["CDATA_SECTION_BRACKET"] = 69] = "CDATA_SECTION_BRACKET";
+  State2[State2["CDATA_SECTION_END"] = 70] = "CDATA_SECTION_END";
+  State2[State2["CHARACTER_REFERENCE"] = 71] = "CHARACTER_REFERENCE";
+  State2[State2["AMBIGUOUS_AMPERSAND"] = 72] = "AMBIGUOUS_AMPERSAND";
+})(State || (State = {}));
+var TokenizerMode = {
+  DATA: State.DATA,
+  RCDATA: State.RCDATA,
+  RAWTEXT: State.RAWTEXT,
+  SCRIPT_DATA: State.SCRIPT_DATA,
+  PLAINTEXT: State.PLAINTEXT,
+  CDATA_SECTION: State.CDATA_SECTION
+};
+
+// node_modules/parse5/dist/parser/open-element-stack.js
+var IMPLICIT_END_TAG_REQUIRED = /* @__PURE__ */ new Set([TAG_ID.DD, TAG_ID.DT, TAG_ID.LI, TAG_ID.OPTGROUP, TAG_ID.OPTION, TAG_ID.P, TAG_ID.RB, TAG_ID.RP, TAG_ID.RT, TAG_ID.RTC]);
+var IMPLICIT_END_TAG_REQUIRED_THOROUGHLY = /* @__PURE__ */ new Set([
+  ...IMPLICIT_END_TAG_REQUIRED,
+  TAG_ID.CAPTION,
+  TAG_ID.COLGROUP,
+  TAG_ID.TBODY,
+  TAG_ID.TD,
+  TAG_ID.TFOOT,
+  TAG_ID.TH,
+  TAG_ID.THEAD,
+  TAG_ID.TR
+]);
+var SCOPING_ELEMENTS_HTML = /* @__PURE__ */ new Set([
+  TAG_ID.APPLET,
+  TAG_ID.CAPTION,
+  TAG_ID.HTML,
+  TAG_ID.MARQUEE,
+  TAG_ID.OBJECT,
+  TAG_ID.TABLE,
+  TAG_ID.TD,
+  TAG_ID.TEMPLATE,
+  TAG_ID.TH
+]);
+var SCOPING_ELEMENTS_HTML_LIST = /* @__PURE__ */ new Set([...SCOPING_ELEMENTS_HTML, TAG_ID.OL, TAG_ID.UL]);
+var SCOPING_ELEMENTS_HTML_BUTTON = /* @__PURE__ */ new Set([...SCOPING_ELEMENTS_HTML, TAG_ID.BUTTON]);
+var SCOPING_ELEMENTS_MATHML = /* @__PURE__ */ new Set([TAG_ID.ANNOTATION_XML, TAG_ID.MI, TAG_ID.MN, TAG_ID.MO, TAG_ID.MS, TAG_ID.MTEXT]);
+var SCOPING_ELEMENTS_SVG = /* @__PURE__ */ new Set([TAG_ID.DESC, TAG_ID.FOREIGN_OBJECT, TAG_ID.TITLE]);
+var TABLE_ROW_CONTEXT = /* @__PURE__ */ new Set([TAG_ID.TR, TAG_ID.TEMPLATE, TAG_ID.HTML]);
+var TABLE_BODY_CONTEXT = /* @__PURE__ */ new Set([TAG_ID.TBODY, TAG_ID.TFOOT, TAG_ID.THEAD, TAG_ID.TEMPLATE, TAG_ID.HTML]);
+var TABLE_CONTEXT = /* @__PURE__ */ new Set([TAG_ID.TABLE, TAG_ID.TEMPLATE, TAG_ID.HTML]);
+var TABLE_CELLS = /* @__PURE__ */ new Set([TAG_ID.TD, TAG_ID.TH]);
+
+// node_modules/parse5/dist/parser/formatting-element-list.js
+var EntryType;
+(function(EntryType2) {
+  EntryType2[EntryType2["Marker"] = 0] = "Marker";
+  EntryType2[EntryType2["Element"] = 1] = "Element";
+})(EntryType || (EntryType = {}));
+var MARKER = { type: EntryType.Marker };
+
+// node_modules/parse5/dist/common/doctype.js
+var QUIRKS_MODE_PUBLIC_ID_PREFIXES = [
+  "+//silmaril//dtd html pro v0r11 19970101//",
+  "-//as//dtd html 3.0 aswedit + extensions//",
+  "-//advasoft ltd//dtd html 3.0 aswedit + extensions//",
+  "-//ietf//dtd html 2.0 level 1//",
+  "-//ietf//dtd html 2.0 level 2//",
+  "-//ietf//dtd html 2.0 strict level 1//",
+  "-//ietf//dtd html 2.0 strict level 2//",
+  "-//ietf//dtd html 2.0 strict//",
+  "-//ietf//dtd html 2.0//",
+  "-//ietf//dtd html 2.1e//",
+  "-//ietf//dtd html 3.0//",
+  "-//ietf//dtd html 3.2 final//",
+  "-//ietf//dtd html 3.2//",
+  "-//ietf//dtd html 3//",
+  "-//ietf//dtd html level 0//",
+  "-//ietf//dtd html level 1//",
+  "-//ietf//dtd html level 2//",
+  "-//ietf//dtd html level 3//",
+  "-//ietf//dtd html strict level 0//",
+  "-//ietf//dtd html strict level 1//",
+  "-//ietf//dtd html strict level 2//",
+  "-//ietf//dtd html strict level 3//",
+  "-//ietf//dtd html strict//",
+  "-//ietf//dtd html//",
+  "-//metrius//dtd metrius presentational//",
+  "-//microsoft//dtd internet explorer 2.0 html strict//",
+  "-//microsoft//dtd internet explorer 2.0 html//",
+  "-//microsoft//dtd internet explorer 2.0 tables//",
+  "-//microsoft//dtd internet explorer 3.0 html strict//",
+  "-//microsoft//dtd internet explorer 3.0 html//",
+  "-//microsoft//dtd internet explorer 3.0 tables//",
+  "-//netscape comm. corp.//dtd html//",
+  "-//netscape comm. corp.//dtd strict html//",
+  "-//o'reilly and associates//dtd html 2.0//",
+  "-//o'reilly and associates//dtd html extended 1.0//",
+  "-//o'reilly and associates//dtd html extended relaxed 1.0//",
+  "-//sq//dtd html 2.0 hotmetal + extensions//",
+  "-//softquad software//dtd hotmetal pro 6.0::19990601::extensions to html 4.0//",
+  "-//softquad//dtd hotmetal pro 4.0::19971010::extensions to html 4.0//",
+  "-//spyglass//dtd html 2.0 extended//",
+  "-//sun microsystems corp.//dtd hotjava html//",
+  "-//sun microsystems corp.//dtd hotjava strict html//",
+  "-//w3c//dtd html 3 1995-03-24//",
+  "-//w3c//dtd html 3.2 draft//",
+  "-//w3c//dtd html 3.2 final//",
+  "-//w3c//dtd html 3.2//",
+  "-//w3c//dtd html 3.2s draft//",
+  "-//w3c//dtd html 4.0 frameset//",
+  "-//w3c//dtd html 4.0 transitional//",
+  "-//w3c//dtd html experimental 19960712//",
+  "-//w3c//dtd html experimental 970421//",
+  "-//w3c//dtd w3 html//",
+  "-//w3o//dtd w3 html 3.0//",
+  "-//webtechs//dtd mozilla html 2.0//",
+  "-//webtechs//dtd mozilla html//"
+];
+var QUIRKS_MODE_NO_SYSTEM_ID_PUBLIC_ID_PREFIXES = [
+  ...QUIRKS_MODE_PUBLIC_ID_PREFIXES,
+  "-//w3c//dtd html 4.01 frameset//",
+  "-//w3c//dtd html 4.01 transitional//"
+];
+var LIMITED_QUIRKS_PUBLIC_ID_PREFIXES = ["-//w3c//dtd xhtml 1.0 frameset//", "-//w3c//dtd xhtml 1.0 transitional//"];
+var LIMITED_QUIRKS_WITH_SYSTEM_ID_PUBLIC_ID_PREFIXES = [
+  ...LIMITED_QUIRKS_PUBLIC_ID_PREFIXES,
+  "-//w3c//dtd html 4.01 frameset//",
+  "-//w3c//dtd html 4.01 transitional//"
+];
+
+// node_modules/parse5/dist/common/foreign-content.js
+var SVG_ATTRS_ADJUSTMENT_MAP = new Map([
+  "attributeName",
+  "attributeType",
+  "baseFrequency",
+  "baseProfile",
+  "calcMode",
+  "clipPathUnits",
+  "diffuseConstant",
+  "edgeMode",
+  "filterUnits",
+  "glyphRef",
+  "gradientTransform",
+  "gradientUnits",
+  "kernelMatrix",
+  "kernelUnitLength",
+  "keyPoints",
+  "keySplines",
+  "keyTimes",
+  "lengthAdjust",
+  "limitingConeAngle",
+  "markerHeight",
+  "markerUnits",
+  "markerWidth",
+  "maskContentUnits",
+  "maskUnits",
+  "numOctaves",
+  "pathLength",
+  "patternContentUnits",
+  "patternTransform",
+  "patternUnits",
+  "pointsAtX",
+  "pointsAtY",
+  "pointsAtZ",
+  "preserveAlpha",
+  "preserveAspectRatio",
+  "primitiveUnits",
+  "refX",
+  "refY",
+  "repeatCount",
+  "repeatDur",
+  "requiredExtensions",
+  "requiredFeatures",
+  "specularConstant",
+  "specularExponent",
+  "spreadMethod",
+  "startOffset",
+  "stdDeviation",
+  "stitchTiles",
+  "surfaceScale",
+  "systemLanguage",
+  "tableValues",
+  "targetX",
+  "targetY",
+  "textLength",
+  "viewBox",
+  "viewTarget",
+  "xChannelSelector",
+  "yChannelSelector",
+  "zoomAndPan"
+].map((attr) => [attr.toLowerCase(), attr]));
+var XML_ATTRS_ADJUSTMENT_MAP = /* @__PURE__ */ new Map([
+  ["xlink:actuate", { prefix: "xlink", name: "actuate", namespace: NS.XLINK }],
+  ["xlink:arcrole", { prefix: "xlink", name: "arcrole", namespace: NS.XLINK }],
+  ["xlink:href", { prefix: "xlink", name: "href", namespace: NS.XLINK }],
+  ["xlink:role", { prefix: "xlink", name: "role", namespace: NS.XLINK }],
+  ["xlink:show", { prefix: "xlink", name: "show", namespace: NS.XLINK }],
+  ["xlink:title", { prefix: "xlink", name: "title", namespace: NS.XLINK }],
+  ["xlink:type", { prefix: "xlink", name: "type", namespace: NS.XLINK }],
+  ["xml:lang", { prefix: "xml", name: "lang", namespace: NS.XML }],
+  ["xml:space", { prefix: "xml", name: "space", namespace: NS.XML }],
+  ["xmlns", { prefix: "", name: "xmlns", namespace: NS.XMLNS }],
+  ["xmlns:xlink", { prefix: "xmlns", name: "xlink", namespace: NS.XMLNS }]
+]);
+var SVG_TAG_NAMES_ADJUSTMENT_MAP = new Map([
+  "altGlyph",
+  "altGlyphDef",
+  "altGlyphItem",
+  "animateColor",
+  "animateMotion",
+  "animateTransform",
+  "clipPath",
+  "feBlend",
+  "feColorMatrix",
+  "feComponentTransfer",
+  "feComposite",
+  "feConvolveMatrix",
+  "feDiffuseLighting",
+  "feDisplacementMap",
+  "feDistantLight",
+  "feFlood",
+  "feFuncA",
+  "feFuncB",
+  "feFuncG",
+  "feFuncR",
+  "feGaussianBlur",
+  "feImage",
+  "feMerge",
+  "feMergeNode",
+  "feMorphology",
+  "feOffset",
+  "fePointLight",
+  "feSpecularLighting",
+  "feSpotLight",
+  "feTile",
+  "feTurbulence",
+  "foreignObject",
+  "glyphRef",
+  "linearGradient",
+  "radialGradient",
+  "textPath"
+].map((tn) => [tn.toLowerCase(), tn]));
+var EXITS_FOREIGN_CONTENT = /* @__PURE__ */ new Set([
+  TAG_ID.B,
+  TAG_ID.BIG,
+  TAG_ID.BLOCKQUOTE,
+  TAG_ID.BODY,
+  TAG_ID.BR,
+  TAG_ID.CENTER,
+  TAG_ID.CODE,
+  TAG_ID.DD,
+  TAG_ID.DIV,
+  TAG_ID.DL,
+  TAG_ID.DT,
+  TAG_ID.EM,
+  TAG_ID.EMBED,
+  TAG_ID.H1,
+  TAG_ID.H2,
+  TAG_ID.H3,
+  TAG_ID.H4,
+  TAG_ID.H5,
+  TAG_ID.H6,
+  TAG_ID.HEAD,
+  TAG_ID.HR,
+  TAG_ID.I,
+  TAG_ID.IMG,
+  TAG_ID.LI,
+  TAG_ID.LISTING,
+  TAG_ID.MENU,
+  TAG_ID.META,
+  TAG_ID.NOBR,
+  TAG_ID.OL,
+  TAG_ID.P,
+  TAG_ID.PRE,
+  TAG_ID.RUBY,
+  TAG_ID.S,
+  TAG_ID.SMALL,
+  TAG_ID.SPAN,
+  TAG_ID.STRONG,
+  TAG_ID.STRIKE,
+  TAG_ID.SUB,
+  TAG_ID.SUP,
+  TAG_ID.TABLE,
+  TAG_ID.TT,
+  TAG_ID.U,
+  TAG_ID.UL,
+  TAG_ID.VAR
+]);
+
+// node_modules/parse5/dist/parser/index.js
+var InsertionMode;
+(function(InsertionMode2) {
+  InsertionMode2[InsertionMode2["INITIAL"] = 0] = "INITIAL";
+  InsertionMode2[InsertionMode2["BEFORE_HTML"] = 1] = "BEFORE_HTML";
+  InsertionMode2[InsertionMode2["BEFORE_HEAD"] = 2] = "BEFORE_HEAD";
+  InsertionMode2[InsertionMode2["IN_HEAD"] = 3] = "IN_HEAD";
+  InsertionMode2[InsertionMode2["IN_HEAD_NO_SCRIPT"] = 4] = "IN_HEAD_NO_SCRIPT";
+  InsertionMode2[InsertionMode2["AFTER_HEAD"] = 5] = "AFTER_HEAD";
+  InsertionMode2[InsertionMode2["IN_BODY"] = 6] = "IN_BODY";
+  InsertionMode2[InsertionMode2["TEXT"] = 7] = "TEXT";
+  InsertionMode2[InsertionMode2["IN_TABLE"] = 8] = "IN_TABLE";
+  InsertionMode2[InsertionMode2["IN_TABLE_TEXT"] = 9] = "IN_TABLE_TEXT";
+  InsertionMode2[InsertionMode2["IN_CAPTION"] = 10] = "IN_CAPTION";
+  InsertionMode2[InsertionMode2["IN_COLUMN_GROUP"] = 11] = "IN_COLUMN_GROUP";
+  InsertionMode2[InsertionMode2["IN_TABLE_BODY"] = 12] = "IN_TABLE_BODY";
+  InsertionMode2[InsertionMode2["IN_ROW"] = 13] = "IN_ROW";
+  InsertionMode2[InsertionMode2["IN_CELL"] = 14] = "IN_CELL";
+  InsertionMode2[InsertionMode2["IN_SELECT"] = 15] = "IN_SELECT";
+  InsertionMode2[InsertionMode2["IN_SELECT_IN_TABLE"] = 16] = "IN_SELECT_IN_TABLE";
+  InsertionMode2[InsertionMode2["IN_TEMPLATE"] = 17] = "IN_TEMPLATE";
+  InsertionMode2[InsertionMode2["AFTER_BODY"] = 18] = "AFTER_BODY";
+  InsertionMode2[InsertionMode2["IN_FRAMESET"] = 19] = "IN_FRAMESET";
+  InsertionMode2[InsertionMode2["AFTER_FRAMESET"] = 20] = "AFTER_FRAMESET";
+  InsertionMode2[InsertionMode2["AFTER_AFTER_BODY"] = 21] = "AFTER_AFTER_BODY";
+  InsertionMode2[InsertionMode2["AFTER_AFTER_FRAMESET"] = 22] = "AFTER_AFTER_FRAMESET";
+})(InsertionMode || (InsertionMode = {}));
+var TABLE_STRUCTURE_TAGS = /* @__PURE__ */ new Set([TAG_ID.TABLE, TAG_ID.TBODY, TAG_ID.TFOOT, TAG_ID.THEAD, TAG_ID.TR]);
+var TABLE_VOID_ELEMENTS = /* @__PURE__ */ new Set([TAG_ID.CAPTION, TAG_ID.COL, TAG_ID.COLGROUP, TAG_ID.TBODY, TAG_ID.TD, TAG_ID.TFOOT, TAG_ID.TH, TAG_ID.THEAD, TAG_ID.TR]);
+
+// node_modules/parse5/dist/serializer/index.js
+var VOID_ELEMENTS = /* @__PURE__ */ new Set([
+  TAG_NAMES.AREA,
+  TAG_NAMES.BASE,
+  TAG_NAMES.BASEFONT,
+  TAG_NAMES.BGSOUND,
+  TAG_NAMES.BR,
+  TAG_NAMES.COL,
+  TAG_NAMES.EMBED,
+  TAG_NAMES.FRAME,
+  TAG_NAMES.HR,
+  TAG_NAMES.IMG,
+  TAG_NAMES.INPUT,
+  TAG_NAMES.KEYGEN,
+  TAG_NAMES.LINK,
+  TAG_NAMES.META,
+  TAG_NAMES.PARAM,
+  TAG_NAMES.SOURCE,
+  TAG_NAMES.TRACK,
+  TAG_NAMES.WBR
+]);
+
 // src/auth-admission.ts
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 var ACCESS_KEY_SCOPE_LIMIT = 1024;
@@ -29178,7 +30206,7 @@ function isIdentifierChar(code, astral) {
   }
   return isInAstralSet(code, astralIdentifierStartCodes) || isInAstralSet(code, astralIdentifierCodes);
 }
-var TokenType = function TokenType2(label, conf) {
+var TokenType2 = function TokenType3(label, conf) {
   if (conf === void 0) conf = {};
   this.label = label;
   this.keyword = conf.keyword;
@@ -29192,7 +30220,7 @@ var TokenType = function TokenType2(label, conf) {
   this.updateContext = null;
 };
 function binop(name2, prec) {
-  return new TokenType(name2, { beforeExpr: true, binop: prec });
+  return new TokenType2(name2, { beforeExpr: true, binop: prec });
 }
 var beforeExpr = { beforeExpr: true };
 var startsExpr = { startsExpr: true };
@@ -29200,34 +30228,34 @@ var keywords = {};
 function kw(name2, options) {
   if (options === void 0) options = {};
   options.keyword = name2;
-  return keywords[name2] = new TokenType(name2, options);
+  return keywords[name2] = new TokenType2(name2, options);
 }
 var types$1 = {
-  num: new TokenType("num", startsExpr),
-  regexp: new TokenType("regexp", startsExpr),
-  string: new TokenType("string", startsExpr),
-  name: new TokenType("name", startsExpr),
-  privateId: new TokenType("privateId", startsExpr),
-  eof: new TokenType("eof"),
+  num: new TokenType2("num", startsExpr),
+  regexp: new TokenType2("regexp", startsExpr),
+  string: new TokenType2("string", startsExpr),
+  name: new TokenType2("name", startsExpr),
+  privateId: new TokenType2("privateId", startsExpr),
+  eof: new TokenType2("eof"),
   // Punctuation token types.
-  bracketL: new TokenType("[", { beforeExpr: true, startsExpr: true }),
-  bracketR: new TokenType("]"),
-  braceL: new TokenType("{", { beforeExpr: true, startsExpr: true }),
-  braceR: new TokenType("}"),
-  parenL: new TokenType("(", { beforeExpr: true, startsExpr: true }),
-  parenR: new TokenType(")"),
-  comma: new TokenType(",", beforeExpr),
-  semi: new TokenType(";", beforeExpr),
-  colon: new TokenType(":", beforeExpr),
-  dot: new TokenType("."),
-  question: new TokenType("?", beforeExpr),
-  questionDot: new TokenType("?."),
-  arrow: new TokenType("=>", beforeExpr),
-  template: new TokenType("template"),
-  invalidTemplate: new TokenType("invalidTemplate"),
-  ellipsis: new TokenType("...", beforeExpr),
-  backQuote: new TokenType("`", startsExpr),
-  dollarBraceL: new TokenType("${", { beforeExpr: true, startsExpr: true }),
+  bracketL: new TokenType2("[", { beforeExpr: true, startsExpr: true }),
+  bracketR: new TokenType2("]"),
+  braceL: new TokenType2("{", { beforeExpr: true, startsExpr: true }),
+  braceR: new TokenType2("}"),
+  parenL: new TokenType2("(", { beforeExpr: true, startsExpr: true }),
+  parenR: new TokenType2(")"),
+  comma: new TokenType2(",", beforeExpr),
+  semi: new TokenType2(";", beforeExpr),
+  colon: new TokenType2(":", beforeExpr),
+  dot: new TokenType2("."),
+  question: new TokenType2("?", beforeExpr),
+  questionDot: new TokenType2("?."),
+  arrow: new TokenType2("=>", beforeExpr),
+  template: new TokenType2("template"),
+  invalidTemplate: new TokenType2("invalidTemplate"),
+  ellipsis: new TokenType2("...", beforeExpr),
+  backQuote: new TokenType2("`", startsExpr),
+  dollarBraceL: new TokenType2("${", { beforeExpr: true, startsExpr: true }),
   // Operators. These carry several kinds of properties to help the
   // parser use them properly (the presence of these properties is
   // what categorizes them as operators).
@@ -29241,10 +30269,10 @@ var types$1 = {
   // `isAssign` marks all of `=`, `+=`, `-=` etcetera, which act as
   // binary operators with a very low precedence, that should result
   // in AssignmentExpression nodes.
-  eq: new TokenType("=", { beforeExpr: true, isAssign: true }),
-  assign: new TokenType("_=", { beforeExpr: true, isAssign: true }),
-  incDec: new TokenType("++/--", { prefix: true, postfix: true, startsExpr: true }),
-  prefix: new TokenType("!/~", { beforeExpr: true, prefix: true, startsExpr: true }),
+  eq: new TokenType2("=", { beforeExpr: true, isAssign: true }),
+  assign: new TokenType2("_=", { beforeExpr: true, isAssign: true }),
+  incDec: new TokenType2("++/--", { prefix: true, postfix: true, startsExpr: true }),
+  prefix: new TokenType2("!/~", { beforeExpr: true, prefix: true, startsExpr: true }),
   logicalOR: binop("||", 1),
   logicalAND: binop("&&", 2),
   bitwiseOR: binop("|", 3),
@@ -29253,11 +30281,11 @@ var types$1 = {
   equality: binop("==/!=/===/!==", 6),
   relational: binop("</>/<=/>=", 7),
   bitShift: binop("<</>>/>>>", 8),
-  plusMin: new TokenType("+/-", { beforeExpr: true, binop: 9, prefix: true, startsExpr: true }),
+  plusMin: new TokenType2("+/-", { beforeExpr: true, binop: 9, prefix: true, startsExpr: true }),
   modulo: binop("%", 10),
   star: binop("*", 10),
   slash: binop("/", 10),
-  starstar: new TokenType("**", { beforeExpr: true }),
+  starstar: new TokenType2("**", { beforeExpr: true }),
   coalesce: binop("??", 1),
   // Keyword token types.
   _break: kw("break"),
@@ -29533,7 +30561,7 @@ var BIND_LEXICAL = 2;
 var BIND_FUNCTION = 3;
 var BIND_SIMPLE_CATCH = 4;
 var BIND_OUTSIDE = 5;
-var Parser = function Parser2(options, input, startPos) {
+var Parser2 = function Parser3(options, input, startPos) {
   this.options = options = getOptions(options);
   this.sourceFile = options.sourceFile;
   this.keywords = wordsRegexp(keywords$1[options.ecmaVersion >= 6 ? 6 : options.sourceType === "module" ? "5module" : 5]);
@@ -29584,7 +30612,7 @@ var Parser = function Parser2(options, input, startPos) {
   this.privateNameStack = [];
 };
 var prototypeAccessors = { inFunction: { configurable: true }, inGenerator: { configurable: true }, inAsync: { configurable: true }, canAwait: { configurable: true }, allowReturn: { configurable: true }, allowSuper: { configurable: true }, allowDirectSuper: { configurable: true }, treatFunctionsAsVar: { configurable: true }, allowNewDotTarget: { configurable: true }, allowUsing: { configurable: true }, inClassStaticBlock: { configurable: true } };
-Parser.prototype.parse = function parse() {
+Parser2.prototype.parse = function parse() {
   var this$1$1 = this;
   var node = this.options.program || this.startNode();
   this.nextToken();
@@ -29658,7 +30686,7 @@ prototypeAccessors.allowUsing.get = function() {
 prototypeAccessors.inClassStaticBlock.get = function() {
   return (this.currentVarScope().flags & SCOPE_CLASS_STATIC_BLOCK) > 0;
 };
-Parser.extend = function extend() {
+Parser2.extend = function extend() {
   var plugins = [], len = arguments.length;
   while (len--) plugins[len] = arguments[len];
   var cls = this;
@@ -29667,19 +30695,19 @@ Parser.extend = function extend() {
   }
   return cls;
 };
-Parser.parse = function parse2(input, options) {
+Parser2.parse = function parse2(input, options) {
   return new this(options, input).parse();
 };
-Parser.parseExpressionAt = function parseExpressionAt(input, pos, options) {
+Parser2.parseExpressionAt = function parseExpressionAt(input, pos, options) {
   var parser2 = new this(options, input, pos);
   parser2.nextToken();
   return parser2.parseExpression();
 };
-Parser.tokenizer = function tokenizer(input, options) {
+Parser2.tokenizer = function tokenizer(input, options) {
   return new this(options, input);
 };
-Object.defineProperties(Parser.prototype, prototypeAccessors);
-var pp$9 = Parser.prototype;
+Object.defineProperties(Parser2.prototype, prototypeAccessors);
+var pp$9 = Parser2.prototype;
 var literal = /^(?:'((?:\\[^]|[^'\\])*?)'|"((?:\\[^]|[^"\\])*?)")/;
 pp$9.strictDirective = function(start) {
   if (this.options.ecmaVersion < 5) {
@@ -29818,7 +30846,7 @@ pp$9.isSimpleAssignTarget = function(expr) {
   }
   return expr.type === "Identifier" || expr.type === "MemberExpression";
 };
-var pp$8 = Parser.prototype;
+var pp$8 = Parser2.prototype;
 pp$8.parseTopLevel = function(node) {
   var exports$1 = /* @__PURE__ */ Object.create(null);
   if (!node.body) {
@@ -30977,7 +32005,7 @@ pp$8.isDirectiveCandidate = function(statement) {
   return this.options.ecmaVersion >= 5 && statement.type === "ExpressionStatement" && statement.expression.type === "Literal" && typeof statement.expression.value === "string" && // Reject parenthesized strings.
   (this.input[statement.start] === '"' || this.input[statement.start] === "'");
 };
-var pp$7 = Parser.prototype;
+var pp$7 = Parser2.prototype;
 pp$7.toAssignable = function(node, isBinding, refDestructuringErrors) {
   if (this.options.ecmaVersion >= 6 && node) {
     switch (node.type) {
@@ -31238,7 +32266,7 @@ var types = {
   f_expr_gen: new TokContext("function", true, false, null, true),
   f_gen: new TokContext("function", false, false, null, true)
 };
-var pp$6 = Parser.prototype;
+var pp$6 = Parser2.prototype;
 pp$6.initialContext = function() {
   return [types.b_stat];
 };
@@ -31359,7 +32387,7 @@ types$1.name.updateContext = function(prevType) {
   }
   this.exprAllowed = allowed;
 };
-var pp$5 = Parser.prototype;
+var pp$5 = Parser2.prototype;
 pp$5.checkPropClash = function(prop, propHash, refDestructuringErrors) {
   if (this.options.ecmaVersion >= 9 && prop.type === "SpreadElement") {
     return;
@@ -32411,7 +33439,7 @@ pp$5.parseAwait = function(forInit) {
   node.argument = this.parseMaybeUnary(null, true, false, forInit);
   return this.finishNode(node, "AwaitExpression");
 };
-var pp$4 = Parser.prototype;
+var pp$4 = Parser2.prototype;
 pp$4.raise = function(pos, message) {
   var loc = getLineInfo(this.input, pos);
   message += " (" + loc.line + ":" + loc.column + ")";
@@ -32430,7 +33458,7 @@ pp$4.curPosition = function() {
     return new Position(this.curLine, this.pos - this.lineStart);
   }
 };
-var pp$3 = Parser.prototype;
+var pp$3 = Parser2.prototype;
 var Scope = function Scope2(flags) {
   this.flags = flags;
   this.var = [];
@@ -32524,7 +33552,7 @@ var Node = function Node2(parser2, pos, loc) {
     this.range = [pos, 0];
   }
 };
-var pp$2 = Parser.prototype;
+var pp$2 = Parser2.prototype;
 pp$2.startNode = function() {
   return new Node(this, this.start, this.startLoc);
 };
@@ -32616,7 +33644,7 @@ for (i = 0, list = [9, 10, 11, 12, 13, 14]; i < list.length; i += 1) {
 var ecmaVersion;
 var i;
 var list;
-var pp$1 = Parser.prototype;
+var pp$1 = Parser2.prototype;
 var BranchID = function BranchID2(parent, base) {
   this.parent = parent;
   this.base = base || this;
@@ -33920,7 +34948,7 @@ var Token = function Token2(p) {
     this.range = [p.start, p.end];
   }
 };
-var pp = Parser.prototype;
+var pp = Parser2.prototype;
 pp.next = function(ignoreEscapeSequenceInKeyword) {
   if (!ignoreEscapeSequenceInKeyword && this.type.keyword && this.containsEsc) {
     this.raiseRecoverable(this.start, "Escape sequence in keyword " + this.type.keyword);
@@ -34757,15 +35785,15 @@ pp.readWord = function() {
   return this.finishToken(type, word);
 };
 var version = "8.17.0";
-Parser.acorn = {
-  Parser,
+Parser2.acorn = {
+  Parser: Parser2,
   version,
   defaultOptions,
   Position,
   SourceLocation,
   getLineInfo,
   Node,
-  TokenType,
+  TokenType: TokenType2,
   tokTypes: types$1,
   keywordTypes: keywords,
   TokContext,
@@ -36276,7 +37304,7 @@ function balanceRange(balanceType, children, positions, from, to, start, length,
   divide(children, positions, from, to, 0);
   return (mkTop || mkTree)(localChildren, localPositions, length);
 }
-var Parser3 = class {
+var Parser4 = class {
   /**
   Start a parse, returning a [partial parse](#common.PartialParse)
   object. [`fragments`](#common.TreeFragment) can be passed in to
@@ -36297,9 +37325,9 @@ var Parser3 = class {
   Run a full parse, returning the resulting tree.
   */
   parse(input, fragments, ranges) {
-    let parse5 = this.startParse(input, fragments, ranges);
+    let parse6 = this.startParse(input, fragments, ranges);
     for (; ; ) {
-      let done = parse5.advance();
+      let done = parse6.advance();
       if (done)
         return done;
     }
@@ -37764,7 +38792,7 @@ var ContextTracker = class {
     this.strict = spec.strict !== false;
   }
 };
-var LRParser = class _LRParser extends Parser3 {
+var LRParser = class _LRParser extends Parser4 {
   /**
   @internal
   */
@@ -37835,10 +38863,10 @@ var LRParser = class _LRParser extends Parser3 {
     this.top = this.topRules[Object.keys(this.topRules)[0]];
   }
   createParse(input, fragments, ranges) {
-    let parse5 = new Parse(this, input, fragments, ranges);
+    let parse6 = new Parse(this, input, fragments, ranges);
     for (let w of this.wrappers)
-      parse5 = w(parse5, input, fragments, ranges);
-    return parse5;
+      parse6 = w(parse6, input, fragments, ranges);
+    return parse6;
   }
   /**
   Get a goto table entry @internal
@@ -43571,12 +44599,12 @@ function ownEmpty(values) {
   return values.length === 0 ? [] : values;
 }
 function parse3(source) {
-  return new Parser4(source, 0, source.length).run();
+  return new Parser5(source, 0, source.length).run();
 }
 function parseRegion(source, start, end, depth2 = 0) {
-  return new Parser4(source, start, end, depth2).run();
+  return new Parser5(source, start, end, depth2).run();
 }
-var Parser4 = class {
+var Parser5 = class {
   tok;
   source;
   start;
