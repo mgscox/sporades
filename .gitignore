@@ -12,3 +12,4 @@ dummy/
 *.env*
 *.tgz
 .DS_Store
+backup-s3.json*
