@@ -119,7 +119,9 @@ the first-party `/__sporades/observe.js` loader before Capsule scripts in Dev,
 Container and Hosted sessions. Fetches and iframe loads do not receive these
 injections. HTML responses use `no-store`; built files stay unchanged. Injection
 preserves the document's doctype and rendering mode when optional `<head>` tags
-are omitted; injected scripts still precede Capsule scripts. The loader
+are omitted; injected scripts still precede Capsule scripts. Only the parsed
+document head is used: `<head>` text inside comments, attributes or script and
+other raw-text content stays intact. The loader
 sends JSON to `POST /__sporades/collect`. Both routes follow normal request admission.
 `script-src 'self'` and `connect-src 'self'` suffice for collection; no provider
 script, DSN, endpoint or website identifier reaches the page. With

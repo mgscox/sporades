@@ -8,6 +8,7 @@ Changes since v0.9.33.
   every built HTML document navigation in Dev, Container and Hosted sessions,
   so secondary pages connect on their first attempt and report pageviews.
   Preserve their doctype and standards-mode layout when optional head tags are omitted.
+  Ignore head-like text in comments, attributes and raw-text elements when placing scripts.
 
 ## v0.9.11 - 2026-09-02
 

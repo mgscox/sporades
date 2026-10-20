@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { Window } from 'happy-dom';
 import { parse } from 'parse5';
+import { injectPageConnectionToken } from '../dist/http-runtime.js';
 import { createBundle } from '../dist/bundle-pipeline.js';
 import { createServerBundleModuleSource } from '../dist/templates/server-bundle-module-graph.js';
 
@@ -16,6 +17,7 @@ const page = '<!doctype html><html><head><script nonce="%SPORADES_NONCE%" src="/
 const headlessPage = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Pricing</title>
 <link rel="icon" href="data:,">
 <script nonce="%SPORADES_NONCE%">
+window.capsuleExecuted = true;
 window.tokenBeforeCapsule = typeof window.__SPORADES_CONNECTION_TOKEN === 'string';
 window.loaderBeforeCapsule = !!document.querySelector('script[src="/__sporades/observe.js"]');
 const socket = new WebSocket(location.origin.replace(/^http/, 'ws') + '/__sporades/ws?connectionToken=' + encodeURIComponent(window.__SPORADES_CONNECTION_TOKEN));
@@ -26,7 +28,30 @@ const headlessDocuments = {
   'omitted-root.html': headlessPage.replace('<html lang="en">', '').replace('</html>', ''),
   'prologue.html': headlessPage.replace('<!doctype html>', '\uFEFF \n<!-- Pricing page -->\n<!DOCTYPE html SYSTEM "about:legacy-compat">'),
   'quirks.html': headlessPage.replace('<!doctype html>', '<!-- No doctype -->\n'.repeat(64)),
+  'comment-head.html': headlessPage.replace('<meta', '<!-- optional <head> omitted -->\n<meta'),
+  'script-head.html': headlessPage.replace('window.capsuleExecuted', 'window.example="<head>";\nwindow.capsuleExecuted'),
 };
+
+test('injection uses the parsed document head rather than tag-like text', () => {
+  const sources = [
+    '<!doctype html><!-- optional <head> omitted --><script>window.example="<head>";</script>',
+    '<!doctype html><html data-example="<head>"><HEAD data-example=\'x > y\'><script>window.example="<head>";</script></HEAD></html>',
+    '<!doctype html><!-- <head> --><html><head><title>Pricing</title></head></html>',
+    ...['script', 'style', 'title', 'textarea', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext'].map(tag =>
+      `<!doctype html><html><${tag}>optional <head> omitted</${tag}></html>`),
+    '<!doctype html><html><body><template><head></head></template></body></html>',
+  ];
+  for (const source of sources) {
+    const injected = injectPageConnectionToken(source, 'test-token', { observability: { enabled: true } }, 'test-nonce');
+    const document = parse(injected);
+    const head = document.childNodes.find(node => node.tagName === 'html').childNodes.find(node => node.tagName === 'head');
+    const scripts = head.childNodes.filter(node => node.tagName === 'script');
+    assert.equal(scripts.filter(node => node.childNodes[0]?.value.includes('window.__SPORADES_CONNECTION_TOKEN=')).length, 1, source);
+    assert.equal(scripts.filter(node => node.attrs.some(attr => attr.name === 'src' && attr.value === '/__sporades/observe.js')).length, 1, source);
+    assert.equal(document.mode, 'no-quirks', source);
+    assert.ok(injected.includes('<script nonce="test-nonce">window.__SPORADES_CONNECTION_TOKEN='), source);
+  }
+});
 
 async function fixture(t, mode = 'dev', analytics = true, documentSource = page) {
   const root = await mkdtemp(path.join(repo, '.scratch', 'html-documents-'));
@@ -255,10 +280,11 @@ for (const mode of ['dev', 'container', 'docker']) test(`Chromium preserves stan
   tab.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   const tokenRefetches = [];
   tab.on('request', request => { if (new URL(request.url()).pathname === '/__sporades/connection-token') tokenRefetches.push(request.url()); });
-  for (const name of ['pricing.html', 'omitted-root.html', 'prologue.html']) {
-    const collected = tab.waitForResponse(response => new URL(response.url()).pathname === '/__sporades/collect' && response.status() === 204);
+  for (const name of ['pricing.html', 'omitted-root.html', 'prologue.html', 'comment-head.html', 'script-head.html']) await t.test(name, async () => {
+    const collected = tab.waitForResponse(response => new URL(response.url()).pathname === '/__sporades/collect' && response.status() === 204, { timeout: 3000 }).catch(() => null);
     await tab.goto(new URL('/' + name, origin).href);
-    await collected;
+    assert.equal(await tab.evaluate(() => window.capsuleExecuted), true, 'the Capsule script executes');
+    assert.equal(await tab.evaluate(() => window.example), name === 'script-head.html' ? '<head>' : undefined, 'script text stays intact');
     assert.deepEqual(await tab.evaluate(() => ({
       mode: document.compatMode,
       doctype: document.doctype && { name: document.doctype.name, publicId: document.doctype.publicId, systemId: document.doctype.systemId },
@@ -269,8 +295,9 @@ for (const mode of ['dev', 'container', 'docker']) test(`Chromium preserves stan
     })), { mode: 'CSS1Compat', doctype: { name: 'html', publicId: '', systemId: name === 'prologue.html' ? 'about:legacy-compat' : '' }, boxHeight: 40, tokenBeforeCapsule: true,
       loaderBeforeCapsule: true, loaderCount: 1, loaderNonce: true }, name);
     await tab.waitForFunction(() => window.socketOpened === true);
+    assert.ok(await collected, 'the initial pageview is collected');
     assert.equal(received.at(-1)?.payload.url, '/' + name);
-  }
+  });
   assert.deepEqual(tokenRefetches, []);
   assert.deepEqual(errors, []);
 });

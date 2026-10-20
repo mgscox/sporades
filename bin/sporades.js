@@ -126475,9 +126475,13 @@ function renderPageHtml(html2, response, token, database) {
 function injectPageConnectionToken(html2, token, database, nonce) {
   const attribute = nonce ? ` nonce="${nonce}"` : "";
   const script = `<script${attribute}>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? `<script${attribute} src="/__sporades/observe.js"></script>` : ""}`;
-  if (/<head(\s[^>]*)?>/i.test(html2)) {
-    return html2.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
-${script}`);
+  const document2 = parse4(html2, { sourceCodeLocationInfo: true });
+  const root = document2.childNodes.find((node) => "tagName" in node && node.tagName === "html");
+  const head = root?.childNodes.find((node) => "tagName" in node && node.tagName === "head");
+  const headEnd = head?.sourceCodeLocation?.startTag?.endOffset;
+  if (headEnd !== void 0) {
+    return `${html2.slice(0, headEnd)}
+${script}${html2.slice(headEnd)}`;
   }
   let start = html2.charCodeAt(0) === 65279 ? 1 : 0;
   while (start < html2.length) {

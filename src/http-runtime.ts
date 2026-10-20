@@ -105,6 +105,7 @@
 
 import { ServerResponse, type IncomingHttpHeaders, type IncomingMessage, type OutgoingHttpHeaders } from "node:http";
 import { randomBytes } from "node:crypto";
+import { parse as parseHtml, type DefaultTreeAdapterTypes } from "parse5";
 import { cspReportDirectives, hstsHeader, validateHttpHardening } from "./http-security-config.js";
 import type { Duplex } from "node:stream";
 import type { Socket } from "node:net";
@@ -574,8 +575,15 @@ export function renderPageHtml(html: string | Buffer, response: object, token?: 
 export function injectPageConnectionToken(html: string, token: string, database?: LooseRecord, nonce?: string) {
   const attribute = nonce ? ` nonce="${nonce}"` : "";
   const script = `<script${attribute}>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>${database?.observability?.enabled ? `<script${attribute} src="/__sporades/observe.js"></script>` : ""}`;
-  if (/<head(\s[^>]*)?>/i.test(html)) {
-    return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
+  // Use the browser's HTML parsing rules: tag-like text in comments, quoted
+  // attributes, raw-text elements or templates is not the document's head.
+  // Splice at its source location without serializing or changing author HTML.
+  const document = parseHtml(html, { sourceCodeLocationInfo: true });
+  const root = document.childNodes.find((node): node is DefaultTreeAdapterTypes.Element => "tagName" in node && node.tagName === "html");
+  const head = root?.childNodes.find((node): node is DefaultTreeAdapterTypes.Element => "tagName" in node && node.tagName === "head");
+  const headEnd = head?.sourceCodeLocation?.startTag?.endOffset;
+  if (headEnd !== undefined) {
+    return `${html.slice(0, headEnd)}\n${script}${html.slice(headEnd)}`;
   }
   // An omitted head is valid HTML. Executable markup before its doctype makes
   // browsers ignore the doctype and enter quirks mode, changing Capsule layout.
