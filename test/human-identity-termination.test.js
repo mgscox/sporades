@@ -690,51 +690,69 @@ export default capsule({
 });
 
 for (const mode of ["delivery", "retry", "link"]) {
-  test(`Postgres reset issuance rechecks identity after paused credential lookup (${mode})`, { skip: POSTGRES_SKIP_REASON, timeout: 15_000 }, async () => {
-    await withPostgresAdapter(async () => {
-      const serverEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
-      const runtimeConfig = { ...config, services: { database: { engine: "postgres" } } };
-      const first = await openDevDatabase("", "", serverEnv, runtimeConfig, definition);
-      const second = await openDevDatabase("", "", serverEnv, runtimeConfig, definition);
-      const entered = Promise.withResolvers();
-      const release = Promise.withResolvers();
-      let attempt;
-      try {
-        const admin = await register(first, "reset-race-admin@example.test");
-        const target = await register(first, "reset-race-target@example.test");
-        await clearTeams(first, target);
-        const credential = await second.adapter.findEmailCredentialWithUser("reset-race-target@example.test");
-        const code = "reset-race-selector-0001.reset-race-verifier-000000000000000001";
-        const payload = { email: credential.email, code, requestedAt: new Date(Date.parse(credential.createdAt) + 1).toISOString() };
-        if (mode === "retry") assert.ok(await prepareEmailPasswordResetDelivery(second, payload));
-        const lookup = second.adapter.findEmailCredentialWithUser.bind(second.adapter);
-        let paused = false;
-        second.adapter.findEmailCredentialWithUser = async (...args) => {
-          const result = await lookup(...args);
-          if (!paused) { paused = true; entered.resolve(); await release.promise; }
-          return result;
-        };
-        attempt = mode === "link"
-          ? createEmailPasswordResetLink(second, null, credential.email)
-          : prepareEmailPasswordResetDelivery(second, payload, mode === "retry" ? 2 : 1);
-        await entered.promise;
-        assert.equal((await call(first, admin, "terminate", [target.auth.userId])).data?.status, "terminated");
-        release.resolve();
-        const result = await attempt;
-        if (mode === "link") assert.equal(result.ok, false, "the custom delivery path cannot return a link");
-        else assert.equal(result, null, "the mail worker must not deliver a link");
-        assert.equal(await countRows(first, "sporades_auth_password_reset_codes", "userId", target.auth.userId), 0, "no recreated Reset row");
-        assert.equal((await verifyPasswordResetCode(first, null, code)).ok, false, "no verifiable code after termination");
-        await register(first, credential.email, "replacement-password");
-        assert.equal(await prepareEmailPasswordResetDelivery(second, payload), null, "replaying old work cannot reach a replacement identity");
-      } finally {
-        release.resolve();
-        await attempt?.catch(() => {});
-        await second.close();
-        await first.close();
-      }
+  for (const replaceDuringLookup of [false, true]) {
+    test(`Postgres reset issuance rechecks identity after paused credential lookup (${mode}, ${replaceDuringLookup ? "email reused" : "terminated"})`, { skip: POSTGRES_SKIP_REASON, timeout: 15_000 }, async () => {
+      await withPostgresAdapter(async () => {
+        const serverEnv = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+        const runtimeConfig = { ...config, services: { database: { engine: "postgres" } } };
+        const first = await openDevDatabase("", "", serverEnv, runtimeConfig, definition);
+        const second = await openDevDatabase("", "", serverEnv, runtimeConfig, definition);
+        const entered = Promise.withResolvers();
+        const release = Promise.withResolvers();
+        let attempt;
+        try {
+          const admin = await register(first, "reset-race-admin@example.test");
+          const target = await register(first, "reset-race-target@example.test");
+          await clearTeams(first, target);
+          const credential = await second.adapter.findEmailCredentialWithUser("reset-race-target@example.test");
+          const code = "reset-race-selector-0001.reset-race-verifier-000000000000000001";
+          const payload = { email: credential.email, code, requestedAt: new Date(Date.parse(credential.createdAt) + 1).toISOString() };
+          if (mode === "retry") assert.ok(await prepareEmailPasswordResetDelivery(second, payload));
+          const lookup = second.adapter.findEmailCredentialWithUser.bind(second.adapter);
+          let paused = false;
+          second.adapter.findEmailCredentialWithUser = async (...args) => {
+            const result = await lookup(...args);
+            if (!paused) { paused = true; entered.resolve(); await release.promise; }
+            return result;
+          };
+          attempt = mode === "link"
+            ? createEmailPasswordResetLink(second, null, credential.email)
+            : prepareEmailPasswordResetDelivery(second, payload, mode === "retry" ? 2 : 1);
+          await entered.promise;
+          assert.equal((await call(first, admin, "terminate", [target.auth.userId])).data?.status, "terminated");
+          let replacement;
+          if (replaceDuringLookup) {
+            replacement = await register(first, credential.email, "replacement-password");
+            assert.notEqual(replacement.auth.userId, target.auth.userId);
+            // Match creation times deliberately: ownership must be checked by immutable user ID,
+            // even when wall-clock evidence cannot distinguish the two credential generations.
+            await first.adapter.prepare(first.adapter.dialect.sql(
+              "UPDATE [sporades_auth_email_credentials] SET [createdAt] = ? WHERE [userId] = ?",
+            )).run(credential.createdAt, replacement.auth.userId);
+          }
+          release.resolve();
+          const result = await attempt;
+          if (mode === "link") assert.equal(result.ok, false, "the custom delivery path cannot return a link");
+          else assert.equal(result, null, "the mail worker must not deliver a link");
+          assert.equal(await countRows(first, "sporades_auth_password_reset_codes", "userId", target.auth.userId), 0, "no recreated Reset row");
+          if (replacement) {
+            assert.equal(await countRows(first, "sporades_auth_password_reset_codes", "userId", replacement.auth.userId), 0, "the paused issuer cannot retarget a replacement identity");
+            assert.equal((await signIn(first, credential.email, "replacement-password")).ok, true, "the replacement remains usable");
+          }
+          assert.equal((await verifyPasswordResetCode(first, null, code)).ok, false, "no verifiable code after termination");
+          if (!replacement) {
+            await register(first, credential.email, "replacement-password");
+            assert.equal(await prepareEmailPasswordResetDelivery(second, payload), null, "replaying old work cannot reach a replacement identity");
+          }
+        } finally {
+          release.resolve();
+          await attempt?.catch(() => {});
+          await second.close();
+          await first.close();
+        }
+      });
     });
-  });
+  }
 }
 
 test("Postgres mutual termination retains live caller authority until commit", { skip: POSTGRES_SKIP_REASON, timeout: 15_000 }, async () => {
