@@ -241,7 +241,7 @@ export function bindOuterResources(database, context, hooks) {
         if (!["where", "orderBy", "limit"].includes(path.at(-1)))
             touched = true;
     });
-    for (const name of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    for (const name of ["db", "log", "files", "mail", "ai", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
         if (!context[name])
             continue;
         context[name] = guardCapability(name, context[name]);
@@ -535,7 +535,7 @@ export function bindJobResources(database, context, claim, hooks) {
     let touched = false;
     const privileged = hooks.privileged === true;
     const actorDigest = resourceActorDigest(context, privileged);
-    for (const name of ["db", "log", "files", "mail", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    for (const name of ["db", "log", "files", "mail", "ai", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
         if (!context[name])
             continue;
         context[name] = wrapCapability(context[name], (path) => {

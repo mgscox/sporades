@@ -13,6 +13,7 @@ import { validateCapsuleServicesConfig } from "../capsule-services.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, supportsClientCapability } from "../client-capabilities.js";
 import { validateLogConfig } from "../log-envelope.js";
 import { validateMailConfig } from "../mail-config.js";
+import { validateAiConfig } from "../ai-config.js";
 import { validatePaymentsConfig } from "../stripe-payment-config.js";
 import { validateTelemetryProjectConfig } from "./telemetry-profile.js";
 import { commandError, errorDetails, type LooseRecord } from "./cli-support.js";
@@ -20,6 +21,7 @@ import { readClientPrerenderConfig } from "../client-prerender.js";
 import { cspReportDirectives, hstsHeader, validateHttpHardening } from "../http-security-config.js";
 
 export { validateMailConfig } from "../mail-config.js";
+export { validateAiConfig } from "../ai-config.js";
 export { validatePaymentsConfig } from "../stripe-payment-config.js";
 
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
@@ -38,6 +40,7 @@ const DEFAULT_CSP_DIRECTIVES = {
 
 const SUPPORTED_PROJECT_KEYS = new Set([
   "admissionPolicy",
+  "ai",
   "analytics",
   "observability",
   "auth",
@@ -88,6 +91,7 @@ export async function readProjectConfig(projectDir: string) {
   validateSchedulingConfig(config.scheduling);
   if (config.payments !== undefined) config.payments = validatePaymentsConfig(config.payments);
   if (config.mail !== undefined) config.mail = validateMailConfig(config.mail);
+  validateAiConfig(config.ai);
   validatePasswordResetConfig(config.auth);
   resolveRegistrationThrottle(config.auth);
   validateTeamsConfig(config.teams);
