@@ -110,6 +110,35 @@ const futureAdmission: publicServerApi.AdmissionPolicy = { version: 2, rules: []
 const bypassAdmission: publicServerApi.AdmissionAction = { kind: "allow" };
 void admissionConfig; void admissionPolicy; void quotaPolicy; void futureAdmission; void bypassAdmission;
 
+async function aiContract(ctx: publicServerApi.CapsuleContext, privilegedCtx: publicServerApi.PrivilegedContext) {
+  const dormant: boolean = ctx.ai.enabled;
+  const result: publicServerApi.AiChatResult = await ctx.ai.chat({
+    system: "Answer yes or no.",
+    messages: [{ role: "user", content: "Is GB123456789 a VAT number?" }],
+    maxTokens: 16, timeoutMs: 2000, temperature: 0,
+    jsonSchema: { type: "object", properties: { plausible: { type: "boolean" } }, required: ["plausible"], additionalProperties: false },
+    provider: { api: "responses", baseUrl: "http://ollama:11434/v1", model: "llama3", apiKey: "local" },
+  });
+  if (result.ok) {
+    const text: string = result.text;
+    const total: number | null = result.usage.totalTokens;
+    void text; void total; void result.json;
+  } else {
+    const code: publicServerApi.AiErrorCode = result.code;
+    const status: number | undefined = result.status;
+    void code; void status;
+  }
+  // @ts-expect-error system instructions use the separate system field.
+  await ctx.ai.chat({ messages: [{ role: "system", content: "x" }] });
+  // @ts-expect-error only the two OpenAI-compatible wire APIs are supported.
+  await ctx.ai.chat({ messages: [], provider: { api: "completions" } });
+  // @ts-expect-error enabled is read-only.
+  ctx.ai.enabled = true;
+  const privileged: Promise<publicServerApi.AiChatResult> = privilegedCtx.ai.chat({ messages: [{ role: "assistant", content: "x" }] });
+  void dormant; void privileged;
+}
+void aiContract;
+
 async function resourceContract(ctx: publicServerApi.CapsuleContext) {
   const publicOrigin: string = ctx.app.publicOrigin;
   // @ts-expect-error AppContext and its public origin are immutable.

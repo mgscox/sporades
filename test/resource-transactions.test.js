@@ -4185,6 +4185,27 @@ test('resource entry locks out parent DB but permits outcome logging after settl
   } finally { await f.close(); }
 });
 
+test('ctx.ai is an external effect: unavailable inside a resource scope and locks out a later scope', async () => {
+  const observed = [];
+  const f = await fixture(async (ctx, before) => {
+    if (before) {
+      observed.push((await ctx.ai.chat({ messages: [{ role: 'user', content: 'x' }] })).code);
+      await assert.rejects(ctx.resources.run(options(), () => null), { code: 'RESOURCE_CONTEXT_UNSUPPORTED' });
+    } else {
+      await ctx.resources.run(options(), () => {
+        assert.throws(() => ctx.ai.chat({ messages: [{ role: 'user', content: 'x' }] }), { code: 'RESOURCE_EFFECT_UNSUPPORTED' });
+        return true;
+      });
+    }
+    return true;
+  });
+  try {
+    assert.equal((await f.enqueue(false)).status, 'succeeded');
+    assert.equal((await f.enqueue(true)).status, 'succeeded');
+    assert.deepEqual(observed, ['AI_UNCONFIGURED']);
+  } finally { await f.close(); }
+});
+
 test('same-runtime resource acquisition is busy behind a transaction but roots queue behind a resource', async () => {
   const f = await fixture(() => null);
   const barrier = () => { let release; const promise = new Promise(resolve => { release = resolve; }); return { promise, release }; };

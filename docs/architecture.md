@@ -132,6 +132,21 @@ sockets are destroyed during runtime shutdown, and connection/response
 timeouts keep a stalled peer from holding a handler or lifecycle transition
 indefinitely.
 
+### Runtime-owned AI client
+
+`ctx.ai` is a server-only, provider-neutral client for OpenAI-compatible
+endpoints. Capsule code passes neutral messages and receives a closed result
+object; the Chat Completions and Responses wire shapes exist only inside two
+adapters in `ai-runtime.ts`, and the build-time validator lives separately in
+`ai-config.ts` so project validation never imports the HTTP client. The
+`sporades.json` `ai` block names the endpoint, model, and the Sealed Server env
+key; the key is resolved only at call time, and an unset key leaves the client
+dormant rather than failing boot, doctor, or push. Calls never throw or retry,
+refuse redirects, bound time and response size, send Responses requests with
+`store: false`, and emit one content-free `ai.call` metering event. Like mail,
+an AI call is an external effect outside every database Transaction and
+resource scope.
+
 ## Capsule Model
 
 A Capsule is the deployable unit of Sporades. It combines:

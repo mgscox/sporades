@@ -40,3 +40,14 @@ the Job handler. Job execution is at least once, so make delivery idempotent at
 the application level—for example, retain a stable notification key and a sent
 record, and tolerate an interrupted attempt being recovered. See the complete
 [durable mail Job example](./configuration.md#durable-mail-with-jobs).
+
+## Ask a model from trusted server code
+
+Declare an OpenAI-compatible endpoint under [`ai`](./ai.md#configure-a-provider)
+in `sporades.json`, store its key in Sealed Server env, then call
+`ctx.ai.chat({ messages, system?, maxTokens?, timeoutMs?, temperature?, jsonSchema?, provider? })`.
+The call never throws and never retries: it resolves `{ ok: true, text, json?, usage, model }`
+or `{ ok: false, code }` with one of `AI_UNCONFIGURED`, `AI_INVALID_REQUEST`,
+`AI_TIMEOUT`, `AI_ABORTED`, `AI_UPSTREAM_ERROR` (with `status`), or
+`AI_INVALID_RESPONSE`. Prompt and response content is never logged. See the
+[AI checks guide](./ai.md).

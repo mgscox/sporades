@@ -990,6 +990,32 @@ Transaction. Use a [durable mail Job](../guide/configuration.md#durable-mail-wit
 for important notifications, and design application-level idempotency for the
 Job Queue's at-least-once execution.
 
+### Call an OpenAI-compatible model
+
+`ctx.ai.chat(input)` sends one provider-neutral request to the endpoint declared
+by `sporades.json` `ai` (Chat Completions by default, or the Responses API with
+`store: false`). Input is `{ messages, system?, maxTokens?, timeoutMs?, temperature?, jsonSchema?, provider?, signal? }`;
+`messages` holds 1–64 `user`/`assistant` turns, `timeoutMs` defaults to 2000 and
+is bounded to 100–30000, and `provider: { api?, baseUrl?, model?, apiKey? }`
+overrides the project settings for one call without being able to activate an
+undeclared or disabled declaration.
+
+The call never throws and never retries. It resolves
+`{ ok: true, text, json?, usage: { inputTokens, outputTokens, totalTokens }, model }`
+or `{ ok: false, code, message, status? }` with `AI_UNCONFIGURED`,
+`AI_INVALID_REQUEST`, `AI_TIMEOUT`, `AI_ABORTED`, `AI_UPSTREAM_ERROR` (`status`
+for non-2xx answers) or `AI_INVALID_RESPONSE`. `json` is present for
+`jsonSchema` calls and is parsed, not schema-validated. When the key named by
+`ai.keyEnv` is unset the Capsule still starts, `ctx.ai.enabled` is `false`, and
+calls resolve `AI_UNCONFIGURED`; the key is not a required Server env key.
+
+Requests use `redirect: "error"`, read at most 1 MiB of response, and discard
+provider error bodies. Prompt and response content never reaches logs: each
+call emits one `ai.call` metering event with api, model, outcome, optional
+status, `usage.input`/`usage.output`/`usage.total` token counts, and latency.
+A model call is external and cannot roll back with a failed mutation. See the
+[AI checks guide](../guide/ai.md).
+
 ### Add Middleware
 
 Use middleware when multiple handlers need the same derived context or guard:
