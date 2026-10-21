@@ -141,6 +141,8 @@ returned or logged.
 
 A model call is external: it cannot roll back with a failed mutation, and a
 mutation awaiting it keeps its database transaction open until the call
-settles. Keep `timeoutMs` short on mutation paths, or call `ctx.ai` from a query
-or Custom endpoint before writing. For work that may take longer than a request
-should wait, call it from a [Job](./background-work.md).
+settles. Keep `timeoutMs` short on mutation paths, or call `ctx.ai` from a
+Custom endpoint or App message before writing. Avoid it in subscribed queries:
+a live query reruns whenever a table it read changes, and each rerun is another
+model call. For work that may take longer than a request should wait, call it
+from a [Job](./background-work.md).
