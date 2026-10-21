@@ -530,6 +530,38 @@ test("published docs and API describe production SMTP mail parity", async () => 
   assert.match(apiInput, /not an arbitrary provider API payload/);
 });
 
+test("published docs and API describe the runtime-owned ctx.ai contract", async () => {
+  const [guide, serverGuide, reference, configuration, prd, architecture, sidebar, changes, declarations, apiAi, apiResult] = await Promise.all([
+    readProjectFile("docs/guide/ai.md"),
+    readProjectFile("docs/guide/server.md"),
+    readProjectFile("docs/reference/server-runtime.md"),
+    readProjectFile("docs/reference/projects-and-configuration.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/architecture.md"),
+    readProjectFile("docs/.vitepress/config.mts"),
+    readProjectFile("CHANGES.md"),
+    readProjectFile("src/types/server.d.ts"),
+    readProjectFile("docs/api/types/server.AiApi.html"),
+    readProjectFile("docs/api/types/server.AiChatResult.html"),
+  ]);
+  for (const code of ["AI_UNCONFIGURED", "AI_INVALID_REQUEST", "AI_TIMEOUT", "AI_ABORTED", "AI_UPSTREAM_ERROR", "AI_INVALID_RESPONSE"]) {
+    for (const [name, text] of Object.entries({ guide, reference, declarations })) assert.match(text, new RegExp(code), `${name} documents ${code}`);
+  }
+  for (const required of [/"chat-completions"/, /"responses"/, /store: false/, /redirect: "error"/, /AI_API_KEY/, /never throws and never retries/i, /never logged/i, /ai\.call/, /Ollama/, /not\*\* part of the \[required Server env\]/]) {
+    assert.match(guide, required);
+  }
+  assert.match(guide, /Defaults to 2000/);
+  assert.match(serverGuide, /ctx\.ai\.chat/);
+  assert.match(configuration, /ai\.keyEnv[\s\S]*never inferred/);
+  assert.match(prd, /`ctx\.ai`/);
+  assert.match(architecture, /Runtime-owned AI client/);
+  assert.match(sidebar, /link: "\/guide\/ai"/);
+  assert.match(changes, /ctx\.ai[\s\S]*#276/);
+  assert.match(declarations, /ai: AiApi;/);
+  assert.match(apiAi, /OpenAI-compatible endpoints/);
+  assert.match(apiResult, /never rejects and never retries/);
+});
+
 test("the Mail guide documents provider delivery events without claiming registration tooling", async () => {
   const [configuration, mail, navigation] = await Promise.all([
     readProjectFile("docs/guide/configuration.md"),

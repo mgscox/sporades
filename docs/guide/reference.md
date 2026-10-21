@@ -51,6 +51,7 @@ Tables, queries, mutations, authorization, Server env, mail, middleware, actors,
 ##### [Push to a Hosted Capsule](../reference/server-runtime.md#push-to-a-hosted-capsule) {#push-to-a-hosted-capsule}
 ##### [Recover from Lost Keys](../reference/server-runtime.md#recover-from-lost-keys) {#recover-from-lost-keys}
 #### [Send SMTP mail](../reference/server-runtime.md#send-smtp-mail) {#send-smtp-mail}
+#### [Call an OpenAI-compatible model](../reference/server-runtime.md#call-an-openai-compatible-model) {#call-an-openai-compatible-model}
 #### [Add Middleware](../reference/server-runtime.md#add-middleware) {#add-middleware}
 #### [Choosing a server actor](../reference/server-runtime.md#choosing-a-server-actor) {#choosing-a-server-actor}
 ### [Custom HTTP Endpoints](../reference/server-runtime.md#custom-http-endpoints) {#custom-http-endpoints}
