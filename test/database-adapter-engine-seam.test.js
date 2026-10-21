@@ -202,6 +202,12 @@ const MIGRATED_RUNTIME_MODULES = [
   // emitted list in this same batch.
   { file: "mail-runtime.js", atLeast: 20, sentinel: "encodeMimeHeaderValue" },
   { file: "mail-config.js", atLeast: 0, sentinel: "validateMailConfig" },
+  // The ctx.ai client. The config module is also consumed by the CLI at build time, so it stays a
+  // separate file; the runtime module owns request resolution, the two OpenAI-compatible wire
+  // adapters and metering. Both sentinels are private: the non-public-host rule that decides when
+  // plain HTTP may carry a bearer key, and the resolver every Capsule input passes through.
+  { file: "ai-config.js", atLeast: 6, sentinel: "isNonPublicHostname" },
+  { file: "ai-runtime.js", atLeast: 14, sentinel: "resolveRequest" },
   // Shared CLI/runtime env admission travels with every deployed Capsule.
   { file: "server-env-requirements.js", atLeast: 3, sentinel: "validateServerEnvConfig" },
   // Provider callbacks travel as their own cohesive runtime modules. The config
