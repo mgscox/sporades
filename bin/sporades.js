@@ -132737,9 +132737,15 @@ function parseResponses(payload) {
 }
 async function readBoundedJson(response) {
   const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > AI_MAX_RESPONSE_BYTES) throw new AiFailure("AI_INVALID_RESPONSE");
+  if (Number.isFinite(declared) && declared > AI_MAX_RESPONSE_BYTES) {
+    await discardBody(response);
+    throw new AiFailure("AI_INVALID_RESPONSE");
+  }
   const reader = response.body?.getReader();
-  if (!reader) throw new AiFailure("AI_INVALID_RESPONSE");
+  if (!reader) {
+    await discardBody(response);
+    throw new AiFailure("AI_INVALID_RESPONSE");
+  }
   const chunks = [];
   let total = 0;
   try {
@@ -132815,6 +132821,7 @@ async function send(request) {
     return { ...parsed, json: json2 };
   } finally {
     clearTimeout(timer);
+    timeout.abort();
   }
 }
 function meter(emit, data2) {

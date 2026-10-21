@@ -396,6 +396,60 @@ test("invalid requests and unreachable providers never throw and send nothing", 
   }
 });
 
+test("rejected responses release their transport promptly instead of holding it open", async () => {
+  // A provider that advertises more than the 1 MiB bound (or streams past it), sends part of the
+  // body, then stalls. Every rejected call must release its response and the connection carrying
+  // it, rather than leave them for the peer or the OS to time out. Undici may then open a fresh
+  // idle pool connection with no request on it; that is the global fetch pool, not this call.
+  const open = new Set();
+  let mode = "declared";
+  const server = createServer((request, response) => {
+    request.resume();
+    open.add(response);
+    open.add(request.socket);
+    response.on("close", () => open.delete(response));
+    request.socket.on("close", () => open.delete(request.socket));
+    if (mode === "declared") {
+      response.writeHead(200, { "content-type": "application/json", "content-length": String(2 * 1024 * 1024) });
+      response.write('{"choices":[{"message":{"content":"');
+    } else {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"choices":[{"message":{"content":"' + "x".repeat(1024 * 1024 + 16));
+    }
+    // ...and never finish.
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const runtime = createAiRuntime(
+    validateAiConfig({ baseUrl: `http://127.0.0.1:${server.address().port}/v1`, model: "m" }),
+    { AI_API_KEY: API_KEY },
+  );
+  const events = [];
+  const emit = (event) => { events.push(event); };
+  const waitForClosed = async () => {
+    const deadline = Date.now() + 500;
+    while (open.size > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    return open.size;
+  };
+  try {
+    for (const current of ["declared", "streamed"]) {
+      mode = current;
+      events.length = 0;
+      const results = await Promise.all(Array.from({ length: 8 }, () => runtime.chat(ask({ timeoutMs: 100 }), { emit })));
+      for (const result of results) {
+        assert.deepEqual(result, { ok: false, code: "AI_INVALID_RESPONSE", message: "The AI provider returned an invalid response." });
+      }
+      assert.equal(events.length, 8, "exactly one metering event per call");
+      assert.ok(events.every((event) => event.event === "ai.call" && event.data.outcome === "AI_INVALID_RESPONSE"));
+      assert.equal(await waitForClosed(), 0, `${current} oversized responses must not leave unfinished responses or their connections open`);
+    }
+  } finally {
+    server.closeAllConnections();
+    server.close();
+    await once(server, "close");
+  }
+});
+
 test("caller and Job cancellation resolve AI_ABORTED", async () => {
   const emulator = await startEmulator();
   emulator.respond(() => ({ hang: true }));

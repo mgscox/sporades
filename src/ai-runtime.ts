@@ -257,9 +257,16 @@ function parseResponses(payload: unknown): { text: string; usage: Usage } {
 
 async function readBoundedJson(response: Response) {
   const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > AI_MAX_RESPONSE_BYTES) throw new AiFailure("AI_INVALID_RESPONSE");
+  if (Number.isFinite(declared) && declared > AI_MAX_RESPONSE_BYTES) {
+    // Rejecting without reading still owns the body: release it, or the transport stays open.
+    await discardBody(response);
+    throw new AiFailure("AI_INVALID_RESPONSE");
+  }
   const reader = response.body?.getReader();
-  if (!reader) throw new AiFailure("AI_INVALID_RESPONSE");
+  if (!reader) {
+    await discardBody(response);
+    throw new AiFailure("AI_INVALID_RESPONSE");
+  }
   const chunks: Buffer[] = [];
   let total = 0;
   try {
@@ -331,6 +338,10 @@ async function send(request: Request) {
     return { ...parsed, json };
   } finally {
     clearTimeout(timer);
+    // Backstop: once the call has a result, nothing may keep reading. Aborting the per-call
+    // controller tears down any response body a failure path did not release. After a complete
+    // read this is a no-op, because the body has already been fully consumed.
+    timeout.abort();
   }
 }
 
