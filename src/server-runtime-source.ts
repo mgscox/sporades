@@ -1,4 +1,5 @@
 import { createRuntimeObservability } from "./observability-runtime.js";
+import { createAiRuntime } from "./ai-runtime.js";
 import { redactDiagnosticText } from "./runtime-log-policy.js";
 import { bindAppContext, isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
 import { dirname as pathDirname } from "node:path";
@@ -730,6 +731,7 @@ export async function openDevDatabase(
   }) : null;
   if (missingEnv.length && config.env?.failClosed === true) throw missingServerEnvError(missingEnv);
   const observability = createRuntimeObservability({ ...config, release: process.env.SPORADES_RELEASE_ID ?? config.release }, serverEnv);
+  const ai = createAiRuntime(config.ai, serverEnv);
   const registrationThrottle = resolveRegistrationThrottle(config.auth);
   const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
   const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
@@ -929,6 +931,7 @@ export async function openDevDatabase(
     rowCache,
     serverEnv,
     observability,
+    ai,
     paymentsConfig,
     createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
     stripeApiBaseUrl: options?.stripeApiBaseUrl,
@@ -1140,6 +1143,7 @@ export async function openDevDatabase(
         const pending: Promise<void>[] = [];
         const resources = [
           () => database.observability.close(),
+          () => database.ai.close(),
           () => shutdownClamavRuntime(database),
           () => {
             if (mailStartError !== undefined) throw mailStartError;
@@ -2745,6 +2749,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
     (transactionAdapter: LooseRecord) => createTransactionDatabase(database, transactionAdapter),
   );
   privilegedContext.mail = database.mail;
+  privilegedContext.ai = createContextAiApi(database, () => privilegedContext.signal);
   return privilegedContext;
 }
 
@@ -3615,8 +3620,12 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
 
   const requestAbort = new AbortController();
   const abortRequest = () => requestAbort.abort();
-  if (request.aborted || request.destroyed) abortRequest();
+  // Node destroys a fully read request stream, so `destroyed` alone is not a client abort.
+  // The body is read before the handler runs, so a later disconnect shows only as the response closing early.
+  const abortOnResponseClose = () => { if (!response.writableFinished) abortRequest(); };
+  if (request.aborted || (request.destroyed && request.complete === false)) abortRequest();
   else request.once?.("aborted", abortRequest);
+  response.once?.("close", abortOnResponseClose);
   (request as LooseRecord).__sporadesEndpointSignal = requestAbort.signal;
   const closeIncompleteMultipartRequest = () => {
     if (endpoint.options?.body?.multipart && request.complete === false) {
@@ -3654,7 +3663,7 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
     closeIncompleteMultipartRequest();
     emitHttpFailureLog(database as LooseRecord, request, error);
     writeEndpointError(response, error);
-  } finally { request.removeListener?.("aborted", abortRequest); delete (request as LooseRecord).__sporadesEndpointSignal; delete (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied; }
+  } finally { request.removeListener?.("aborted", abortRequest); response.removeListener?.("close", abortOnResponseClose); delete (request as LooseRecord).__sporadesEndpointSignal; delete (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied; }
   return true;
 }
 
@@ -3915,7 +3924,8 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               ordinaryCredential: !runtimeOwnedProviderCallback,
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
-              signal: request.signal ?? (request as LooseRecord).__sporadesEndpointSignal,
+              // Not Node 24's request.signal: it aborts once the body is consumed, not on client abort.
+              signal: (request as LooseRecord).__sporadesEndpointSignal ?? request.signal,
             });
             revokeOuterResources = bindOuterResources(transactionDatabase, context, {
               startedAt: outerStartedAt,
@@ -4123,6 +4133,7 @@ function bindOrdinaryJobResourceContext(database: LooseRecord, context: LooseRec
         ...(context.credential ? { credential: context.credential } : { ordinaryCredential: false }),
       });
       scoped.signal = signal;
+      scoped.ai = createContextAiApi(scopedDatabase, () => scoped.signal, database.log);
       scoped.__jobEnqueuedBy = context.__jobEnqueuedBy;
       if (privileged) {
         scoped.__privilegedRunActive = true;
@@ -4385,6 +4396,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
       return database.mail.send(input, (event: LooseRecord) => database.log?.emit(event));
     },
   };
+  context.ai = createContextAiApi(database, () => context.signal);
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.teamBilling = createCurrentUserTeamBillingErasureApi(
     database,
@@ -7376,6 +7388,19 @@ function isAllAppMessageScope(scope: any) {
   return scope === "all" || scope?.scope === "all";
 }
 
+// Server-only and result-shaped: calls never throw, and each emits one content-free metering event.
+// The signal is read per call because Job paths attach it after the context is built. The log sink
+// is captured up front: resource scopes later silence their logger, but a provider call is an
+// external, billable effect that is metered whether or not the transaction commits.
+function createContextAiApi(database: LooseRecord, getSignal: () => AbortSignal | undefined, log: LooseRecord | undefined = database.log) {
+  return Object.freeze({
+    enabled: database.ai.enabled,
+    chat(input: LooseRecord) {
+      return database.ai.chat(input, { signal: getSignal(), log: (event: LooseRecord) => log?.emit(event) });
+    },
+  });
+}
+
 function createMessageContext(database: LooseRecord, auth: any, sendAppMessage: any, sessionToken?: string | null) {
   const context = createMutationContext(database, auth, { sessionToken });
   context.messages = {
@@ -7453,6 +7478,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
       return database.mail.send(input, (event: LooseRecord) => database.log?.emit(event));
     },
   };
+  context.ai = createContextAiApi(database, () => context.signal);
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.teamBilling = createCurrentUserTeamBillingErasureApi(
     database,

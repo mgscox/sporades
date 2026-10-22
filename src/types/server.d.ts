@@ -548,6 +548,79 @@ export type MailApi = {
   send(message: MailSendInput): Promise<MailSendResult>;
 };
 
+/** Optional `ai` section of sporades.json. The key value lives in Server env under `keyEnv` (default `AI_API_KEY`). */
+export type AiConfig = Readonly<{ enabled: false; api?: "chat-completions" | "responses"; baseUrl?: string; model?: string; keyEnv?: string }> | Readonly<{
+  /** Defaults to true. `false` keeps the integration dormant. */
+  enabled?: true;
+  /** Wire protocol: `"chat-completions"` (default; `{baseUrl}/chat/completions`) or `"responses"` (`{baseUrl}/responses`, sent with `store: false`). */
+  api?: "chat-completions" | "responses";
+  /** OpenAI-compatible API base, e.g. `https://api.example.com/v1`. Plain HTTP only for localhost and host.docker.internal. */
+  baseUrl: string;
+  model: string;
+  keyEnv?: string;
+}>;
+
+/** One chat message sent to the configured OpenAI-compatible model. */
+export type AiChatMessage = Readonly<{ role: "system" | "user" | "assistant"; content: string }>;
+
+/** Structured JSON output constrained by a JSON Schema; the parsed value is returned as `json`. */
+export type AiJsonSchema = Readonly<{ name: string; schema: { [key: string]: JsonValue }; strict?: boolean }>;
+
+/**
+ * Per-call provider values. Each one present takes precedence over `sporades.json` `ai` and its
+ * Server env key, even when `ai` is absent or disabled. `baseUrl` follows the `ai.baseUrl` rules.
+ * The project key is used only with the project base URL; a different `baseUrl` needs `apiKey`.
+ */
+export type AiProviderOverride = Readonly<{ api?: "chat-completions" | "responses"; baseUrl?: string; model?: string; apiKey?: string }>;
+
+/** Input for {@link AiApi.chat}. At most 64 messages and 131,072 content characters in total. */
+export type AiChatInput = Readonly<{
+  messages: readonly AiChatMessage[];
+  /** Instructions that precede the conversation. */
+  system?: string;
+  /** Maximum output tokens, 1-32768. Some providers enforce a higher minimum. */
+  maxTokens?: number;
+  /** Whole-call deadline in milliseconds, 1-30000. Defaults to 2000. */
+  timeoutMs?: number;
+  /** 0-2. Omitted uses the provider default. */
+  temperature?: number;
+  jsonSchema?: AiJsonSchema;
+  provider?: AiProviderOverride;
+}>;
+
+/** Provider-reported token counts; `null` when the provider omits one. */
+export type AiUsage = Readonly<{ promptTokens: number | null; completionTokens: number | null; totalTokens: number | null }>;
+/** Why generation stopped: `length` means `maxTokens` truncated the output. */
+export type AiFinishReason = "stop" | "length" | "content_filter" | "other";
+export type AiChatData = Readonly<{ text: string; model: string; finishReason: AiFinishReason | null; usage: AiUsage }>;
+
+/**
+ * `AI_UNCONFIGURED`: no base URL, model, or key after applying `provider` over the project default. `AI_INVALID_REQUEST`: input
+ * outside the documented bounds. `AI_TIMEOUT`: `timeoutMs` elapsed. `AI_ABORTED`: the handler
+ * signal or runtime shutdown cancelled the call. `AI_UPSTREAM_ERROR`: network failure or non-2xx
+ * (see `status`). `AI_INVALID_RESPONSE`: unparseable, oversized, contentless, or schema JSON that
+ * does not parse.
+ */
+export type AiErrorCode = "AI_UNCONFIGURED" | "AI_INVALID_REQUEST" | "AI_TIMEOUT" | "AI_ABORTED" | "AI_UPSTREAM_ERROR" | "AI_INVALID_RESPONSE";
+export type AiError = Readonly<{ code: AiErrorCode; message: string; /** Upstream HTTP status when one was received. */ status?: number }>;
+export type AiResult<Data> = Readonly<{ ok: true; data: Data }> | Readonly<{ ok: false; error: AiError }>;
+
+/**
+ * Server-only, provider-neutral client for the OpenAI-compatible endpoint configured in
+ * `sporades.json` `ai` (Chat Completions or Responses). Calls never throw and never retry, so callers can fail open. Prompt and
+ * response content is never logged; each call emits one `ai.call` metering event with model,
+ * token counts, latency, and outcome.
+ */
+export type AiApi = {
+  /**
+   * Whether the project default is usable: `false` while `ai` is absent or disabled, or its named
+   * key is unset. Calls then return `AI_UNCONFIGURED` unless `provider` supplies the missing values.
+   */
+  readonly enabled: boolean;
+  chat<Json = JsonValue>(input: AiChatInput & { jsonSchema: AiJsonSchema }): Promise<AiResult<AiChatData & Readonly<{ json: Json }>>>;
+  chat(input: AiChatInput): Promise<AiResult<AiChatData>>;
+};
+
 /**
  * Closed result of {@link ServerAuthApi.terminateHumanIdentity}. `terminated` is returned by the
  * committing first call; every later authorized call for the same user ID returns
@@ -1032,6 +1105,8 @@ export type CapsuleContext<
   jobs: JobApi;
   /** Server-only SMTP delivery. Present even when mail is disabled. */
   mail: MailApi;
+  /** Server-only AI completions. Present even when AI is unconfigured. */
+  ai: AiApi;
   /** Server-only auth management (e.g. password reset). */
   serverAuth: ServerAuthApi;
   /** Runtime-owned current-user Teams with normal linked-user authorization. */

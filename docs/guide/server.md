@@ -22,6 +22,14 @@ For inbound HTTP integrations, continue with
 
 Keep browser concerns in the [client](./client.md), and use [Jobs and Schedules](./background-work.md) for durable background work.
 
+## Call an AI model from trusted server code
+
+Configure an OpenAI-compatible endpoint under `ai` in `sporades.json`, then call
+`ctx.ai.chat(...)` from server handlers for short checks such as validating an
+answer on submit. Calls return result objects instead of throwing, so handlers
+can accept the input when the model is slow or unavailable. See the
+[AI guide](./ai.md).
+
 ## Send email from trusted server code
 
 Configure one SMTP provider in [`sporades.json`](./configuration.md#smtp-mail),

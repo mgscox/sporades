@@ -520,6 +520,11 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     // HTML escaping and immutable mail fragments; no SQL walker, dialect,
     // emitted statement, adapter primitive, or database normalization behavior.
     "html.js",
+    // The provider-neutral AI client, its interface and OpenAI-compatible wire adapters: outbound
+    // HTTP only, with no SQL walker, dialect, emitted statement, or database normalization.
+    "ai-runtime.js",
+    "ai-provider.js",
+    "ai-openai-adapters.js",
   ]);
 
   const carried = runtimeGraphModules();

@@ -220,6 +220,10 @@ _Avoid_: Mailjet event, delivery row, SMTP response
 The optional single Capsule handler declared with `emailEvents: emailEvent(handler)`. The consolidated runtime dispatcher invokes it under the Privileged server role for each Verified email event, independent of the provider-specific callback shape.
 _Avoid_: provider handler, EventEmitter listener, webhook endpoint
 
+**AI client**:
+The server-only, provider-neutral `ctx.ai` surface for short synchronous model calls. `sporades.json` `ai` selects an OpenAI-compatible base URL, model and wire protocol (Chat Completions or Responses) and names the Sealed Server env key; per-call `provider` values override them. It is dormant without a key, never throws or retries, refuses redirects, and logs one content-free `ai.call` metering event per call. Provider wire formats stay inside runtime adapters.
+_Avoid_: OpenAI client, LLM SDK, AI provider bridge
+
 **Message handler**:
 A Capsule-defined app-message handler declared with `message((ctx, data) => ...)`. Client-origin App messages enter server code through these handlers before any response or fan-out.
 _Avoid_: socket listener, raw WebSocket handler

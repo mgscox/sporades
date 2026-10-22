@@ -1,4 +1,5 @@
 import { createRuntimeObservability } from "./observability-runtime.js";
+import { createAiRuntime } from "./ai-runtime.js";
 import { redactDiagnosticText } from "./runtime-log-policy.js";
 import { bindAppContext, isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
 import { dirname as pathDirname } from "node:path";
@@ -600,6 +601,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     if (missingEnv.length && config.env?.failClosed === true)
         throw missingServerEnvError(missingEnv);
     const observability = createRuntimeObservability({ ...config, release: process.env.SPORADES_RELEASE_ID ?? config.release }, serverEnv);
+    const ai = createAiRuntime(config.ai, serverEnv);
     const registrationThrottle = resolveRegistrationThrottle(config.auth);
     const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
     const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
@@ -790,6 +792,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         rowCache,
         serverEnv,
         observability,
+        ai,
         paymentsConfig,
         createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
         stripeApiBaseUrl: options?.stripeApiBaseUrl,
@@ -1024,6 +1027,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 const pending = [];
                 const resources = [
                     () => database.observability.close(),
+                    () => database.ai.close(),
                     () => shutdownClamavRuntime(database),
                     () => {
                         if (mailStartError !== undefined)
@@ -2687,6 +2691,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
     grantPrivilegedAccessKeyAccess(privilegedContext);
     privilegedContext.accessKeys = createPrivilegedAccessKeysApi(database, () => holder.current, (transactionAdapter) => createTransactionDatabase(database, transactionAdapter));
     privilegedContext.mail = database.mail;
+    privilegedContext.ai = createContextAiApi(database, () => privilegedContext.signal);
     return privilegedContext;
 }
 export async function runRuntimeAccessKeyOperatorAction(database, action, input = {}, executionSource = "runtime-action") {
@@ -3436,10 +3441,15 @@ export async function routeEndpoint(database, request, response) {
     }
     const requestAbort = new AbortController();
     const abortRequest = () => requestAbort.abort();
-    if (request.aborted || request.destroyed)
+    // Node destroys a fully read request stream, so `destroyed` alone is not a client abort.
+    // The body is read before the handler runs, so a later disconnect shows only as the response closing early.
+    const abortOnResponseClose = () => { if (!response.writableFinished)
+        abortRequest(); };
+    if (request.aborted || (request.destroyed && request.complete === false))
         abortRequest();
     else
         request.once?.("aborted", abortRequest);
+    response.once?.("close", abortOnResponseClose);
     request.__sporadesEndpointSignal = requestAbort.signal;
     const closeIncompleteMultipartRequest = () => {
         if (endpoint.options?.body?.multipart && request.complete === false) {
@@ -3482,6 +3492,7 @@ export async function routeEndpoint(database, request, response) {
     }
     finally {
         request.removeListener?.("aborted", abortRequest);
+        response.removeListener?.("close", abortOnResponseClose);
         delete request.__sporadesEndpointSignal;
         delete request.__sporadesCapsuleIngressAdmissionDenied;
     }
@@ -3747,7 +3758,8 @@ export async function runEndpoint(database, endpoint, requestUrl, request, reque
                             ordinaryCredential: !runtimeOwnedProviderCallback,
                             credential: accessKeyAdmission?.credential,
                             accessKeyGrants: accessKeyAdmission?.grants,
-                            signal: request.signal ?? request.__sporadesEndpointSignal,
+                            // Not Node 24's request.signal: it aborts once the body is consumed, not on client abort.
+                            signal: request.__sporadesEndpointSignal ?? request.signal,
                         });
                         revokeOuterResources = bindOuterResources(transactionDatabase, context, {
                             startedAt: outerStartedAt,
@@ -3962,6 +3974,7 @@ function bindOrdinaryJobResourceContext(database, context, claim, privileged = f
                 ...(context.credential ? { credential: context.credential } : { ordinaryCredential: false }),
             });
             scoped.signal = signal;
+            scoped.ai = createContextAiApi(scopedDatabase, () => scoped.signal, database.log);
             scoped.__jobEnqueuedBy = context.__jobEnqueuedBy;
             if (privileged) {
                 scoped.__privilegedRunActive = true;
@@ -4215,6 +4228,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
             return database.mail.send(input, (event) => database.log?.emit(event));
         },
     };
+    context.ai = createContextAiApi(database, () => context.signal);
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
     context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => handlerContextByDatabase.get(database)?.() === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
@@ -7166,6 +7180,18 @@ function validateAppMessageType(type) {
 function isAllAppMessageScope(scope) {
     return scope === "all" || scope?.scope === "all";
 }
+// Server-only and result-shaped: calls never throw, and each emits one content-free metering event.
+// The signal is read per call because Job paths attach it after the context is built. The log sink
+// is captured up front: resource scopes later silence their logger, but a provider call is an
+// external, billable effect that is metered whether or not the transaction commits.
+function createContextAiApi(database, getSignal, log = database.log) {
+    return Object.freeze({
+        enabled: database.ai.enabled,
+        chat(input) {
+            return database.ai.chat(input, { signal: getSignal(), log: (event) => log?.emit(event) });
+        },
+    });
+}
 function createMessageContext(database, auth, sendAppMessage, sessionToken) {
     const context = createMutationContext(database, auth, { sessionToken });
     context.messages = {
@@ -7238,6 +7264,7 @@ function createMutationContext(database, auth, options = {}) {
             return database.mail.send(input, (event) => database.log?.emit(event));
         },
     };
+    context.ai = createContextAiApi(database, () => context.signal);
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
     context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => database.__transactionActive
         ? handlerContextByDatabase.get(database)?.() === candidate

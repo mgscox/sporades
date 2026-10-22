@@ -1,4 +1,5 @@
 import { validateObservabilityConfig } from "../observability-runtime.js";
+import { validateAiConfig } from "../ai-runtime.js";
 import { normalizePublicOrigin } from "../public-origin.js";
 import { validateServerEnvConfig } from "../server-env-requirements.js";
 import { resolveFileAllowedMimeTypes } from "../file-policy.js";
@@ -38,6 +39,7 @@ const DEFAULT_CSP_DIRECTIVES = {
 
 const SUPPORTED_PROJECT_KEYS = new Set([
   "admissionPolicy",
+  "ai",
   "analytics",
   "observability",
   "auth",
@@ -88,6 +90,7 @@ export async function readProjectConfig(projectDir: string) {
   validateSchedulingConfig(config.scheduling);
   if (config.payments !== undefined) config.payments = validatePaymentsConfig(config.payments);
   if (config.mail !== undefined) config.mail = validateMailConfig(config.mail);
+  if (config.ai !== undefined) config.ai = validateAiConfig(config.ai);
   validatePasswordResetConfig(config.auth);
   resolveRegistrationThrottle(config.auth);
   validateTeamsConfig(config.teams);

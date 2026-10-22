@@ -1,0 +1,1 @@
+{"version":3,"file":"ai-openai-adapters.d.ts","sourceRoot":"","sources":["../src/ai-openai-adapters.ts"],"names":[],"mappings":"AAAA,OAAO,EAAkD,KAAK,iBAAiB,EAAgB,MAAM,kBAAkB,CAAC;AAWxH,yGAAyG;AACzG,eAAO,MAAM,sBAAsB,6BA4BjC,CAAC;AAEH;;;GAGG;AACH,eAAO,MAAM,gBAAgB,6BAmC3B,CAAC;AAEH,eAAO,MAAM,oBAAoB;;;EAA6F,CAAC;AAC/H,MAAM,MAAM,UAAU,GAAG,MAAM,OAAO,oBAAoB,CAAC"}

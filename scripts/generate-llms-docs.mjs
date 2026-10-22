@@ -19,6 +19,7 @@ export const SPORADES_LLMS_SECTIONS = [
       { title: "Files", path: "guide/files.md", description: "Private uploads, File references, publication, replacement, and deletion." },
       { title: "Realtime", path: "guide/realtime.md", description: "App messages and consented transient User Journey state." },
       { title: "Jobs and Schedules", path: "guide/background-work.md", description: "Durable background work, actors, recurrence, and inspection." },
+      { title: "AI", path: "guide/ai.md", description: "Server-only OpenAI-compatible model calls with fail-open results and metering." },
       { title: "Configuration", path: "guide/configuration.md", description: "Capsule config, security, Sealed Server env, preferences, and local services." },
     ],
   },

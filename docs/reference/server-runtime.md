@@ -990,6 +990,24 @@ Transaction. Use a [durable mail Job](../guide/configuration.md#durable-mail-wit
 for important notifications, and design application-level idempotency for the
 Job Queue's at-least-once execution.
 
+### Call an AI model
+
+`ctx.ai.chat(...)` sends one bounded request to the OpenAI-compatible endpoint
+configured by `sporades.json` `ai` (`baseUrl`, `model`, `api`, and the Server env
+key named by `keyEnv`), or to per-call `provider` overrides, which take
+precedence. `api` selects Chat Completions (default) or Responses; Capsule code
+sees only provider-neutral input and results. Calls never throw and never retry:
+they resolve to `{ ok: true, data: { text, json?, model, finishReason, usage } }`
+or `{ ok: false, error: { code, message, status? } }` with `AI_UNCONFIGURED`,
+`AI_INVALID_REQUEST`, `AI_TIMEOUT`, `AI_ABORTED`, `AI_UPSTREAM_ERROR`, or
+`AI_INVALID_RESPONSE`. `timeoutMs` defaults to 2000 and is capped at 30000.
+
+The integration is dormant while its key is unset and is not part of the
+required Server env set. Redirects are refused, the Responses API is called with
+`store: false`, and prompt or reply content never reaches logs or errors. Each
+call emits one `ai.call` metering event with api, model, outcome, latency, HTTP
+status and token counts. See the [AI guide](../guide/ai.md).
+
 ### Add Middleware
 
 Use middleware when multiple handlers need the same derived context or guard:

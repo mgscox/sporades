@@ -69711,7 +69711,7 @@ var require_lodash_merge = __commonJS({
     var hasOwnProperty2 = objectProto.hasOwnProperty;
     var symToStringTag = Symbol ? Symbol.toStringTag : void 0;
     var nativeObjectToString = objectProto.toString;
-    function isPlainObject3(value) {
+    function isPlainObject4(value) {
       if (!isObjectLike(value) || baseGetTag(value) !== objectTag) {
         return false;
       }
@@ -69722,7 +69722,7 @@ var require_lodash_merge = __commonJS({
       const Ctor = hasOwnProperty2.call(proto, "constructor") && proto.constructor;
       return typeof Ctor == "function" && Ctor instanceof Ctor && funcToString.call(Ctor) === objectCtorString;
     }
-    exports.isPlainObject = isPlainObject3;
+    exports.isPlainObject = isPlainObject4;
     function isObjectLike(value) {
       return value != null && typeof value == "object";
     }
@@ -130183,6 +130183,358 @@ function restartPolicyStatus(mode, overrides2 = {}) {
   };
 }
 
+// src/ai-runtime.ts
+import { randomUUID as randomUUID10 } from "node:crypto";
+
+// src/mail-config-validation.ts
+function invalidMailConfig(message, hint) {
+  const error = new Error(message);
+  error.code = "INVALID_MAIL_CONFIG";
+  error.hint = hint;
+  throw error;
+}
+function captureMailConfigData(value, allowed, message, hint) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalidMailConfig(message, hint);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) invalidMailConfig(message, hint);
+  const entries = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") invalidMailConfig(message, hint);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+      invalidMailConfig(message, hint);
+    }
+    if (!allowed.includes(key)) invalidMailConfig(message, hint);
+    entries.push([key, descriptor.value]);
+  }
+  return new Map(entries);
+}
+function isServerEnvReference2(value) {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
+}
+
+// src/ai-provider.ts
+function isPlainObject3(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+var tokenCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+
+// src/ai-openai-adapters.ts
+var modelName = (value) => typeof value === "string" && value.length <= 256 ? value : null;
+function chatFinishReason(value) {
+  if (typeof value !== "string") return null;
+  return value === "stop" || value === "length" || value === "content_filter" ? value : "other";
+}
+var chatCompletionsAdapter = Object.freeze({
+  path: "/chat/completions",
+  encode(request, model) {
+    const body = {
+      model,
+      messages: [...request.system !== null ? [{ role: "system", content: request.system }] : [], ...request.messages.map(({ role, content: content2 }) => ({ role, content: content2 }))],
+      stream: false
+    };
+    if (request.maxTokens !== null) body.max_tokens = request.maxTokens;
+    if (request.temperature !== null) body.temperature = request.temperature;
+    if (request.jsonSchema) {
+      body.response_format = { type: "json_schema", json_schema: { name: request.jsonSchema.name, schema: request.jsonSchema.schema, strict: request.jsonSchema.strict } };
+    }
+    return body;
+  },
+  decode(body) {
+    if (!isPlainObject3(body)) return null;
+    const choice = Array.isArray(body.choices) ? body.choices[0] : void 0;
+    const text3 = choice?.message?.content;
+    if (typeof text3 !== "string") return null;
+    const usage = isPlainObject3(body.usage) ? body.usage : {};
+    return {
+      text: text3,
+      model: modelName(body.model),
+      finishReason: chatFinishReason(choice.finish_reason),
+      usage: { prompt: tokenCount(usage.prompt_tokens), completion: tokenCount(usage.completion_tokens), total: tokenCount(usage.total_tokens) }
+    };
+  }
+});
+var responsesAdapter = Object.freeze({
+  path: "/responses",
+  encode(request, model) {
+    const body = {
+      model,
+      input: request.messages.map(({ role, content: content2 }) => ({ role, content: content2 })),
+      store: false,
+      stream: false
+    };
+    if (request.system !== null) body.instructions = request.system;
+    if (request.maxTokens !== null) body.max_output_tokens = request.maxTokens;
+    if (request.temperature !== null) body.temperature = request.temperature;
+    if (request.jsonSchema) {
+      body.text = { format: { type: "json_schema", name: request.jsonSchema.name, schema: request.jsonSchema.schema, strict: request.jsonSchema.strict } };
+    }
+    return body;
+  },
+  decode(body) {
+    if (!isPlainObject3(body) || !Array.isArray(body.output)) return null;
+    if (body.status !== "completed" && body.status !== "incomplete") return null;
+    const parts = [];
+    for (const item of body.output) {
+      if (!isPlainObject3(item) || item.type !== "message" || !Array.isArray(item.content)) continue;
+      for (const part of item.content) if (isPlainObject3(part) && part.type === "output_text" && typeof part.text === "string") parts.push(part.text);
+    }
+    if (!parts.length) return null;
+    const reason = isPlainObject3(body.incomplete_details) ? body.incomplete_details.reason : void 0;
+    const usage = isPlainObject3(body.usage) ? body.usage : {};
+    return {
+      text: parts.join(""),
+      model: modelName(body.model),
+      finishReason: body.status === "completed" ? "stop" : reason === "max_output_tokens" ? "length" : reason === "content_filter" ? "content_filter" : "other",
+      usage: { prompt: tokenCount(usage.input_tokens), completion: tokenCount(usage.output_tokens), total: tokenCount(usage.total_tokens) }
+    };
+  }
+});
+var AI_PROTOCOL_ADAPTERS = Object.freeze({ "chat-completions": chatCompletionsAdapter, responses: responsesAdapter });
+
+// src/ai-runtime.ts
+var AI_DEFAULT_TIMEOUT_MS = 2e3;
+var AI_MAX_TIMEOUT_MS = 3e4;
+var DEFAULT_KEY_ENV = "AI_API_KEY";
+var MAX_RESPONSE_BYTES = 1024 * 1024;
+var MAX_MESSAGES = 64;
+var MAX_CONTENT_CHARS = 32768;
+var MAX_TOTAL_CHARS = 131072;
+var MAX_TOKENS = 32768;
+var MAX_SCHEMA_BYTES = 65536;
+var LOCAL_HTTP_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "[::1]", "host.docker.internal"]);
+function invalidAiConfig(hint) {
+  throw Object.assign(new Error("Invalid AI configuration."), { code: "INVALID_AI_CONFIG", hint });
+}
+function plainEntries(value, allowed, hint) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalidAiConfig(hint);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) invalidAiConfig(hint);
+  const entries = /* @__PURE__ */ new Map();
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (typeof key !== "string" || !allowed.includes(key) || !descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) invalidAiConfig(hint);
+    entries.set(key, descriptor.value);
+  }
+  return entries;
+}
+var validModel = (value) => typeof value === "string" && value.length <= 256 && /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/.test(value);
+var validKey = (value) => typeof value === "string" && value.length <= 4096 && /^[\x21-\x7e]+$/.test(value);
+var validApi = (value) => typeof value === "string" && Object.hasOwn(AI_PROTOCOL_ADAPTERS, value);
+function normalizeBaseUrl(value) {
+  let url;
+  try {
+    if (typeof value !== "string" || value.length > 2048) throw new Error();
+    url = new URL(value);
+  } catch {
+    return invalidAiConfig("Set `ai.baseUrl` to an absolute OpenAI-compatible API base URL such as `https://api.example.com/v1`.");
+  }
+  const localHttp = url.protocol === "http:" && (LOCAL_HTTP_HOSTS.has(url.hostname) || url.hostname.endsWith(".localhost"));
+  if (url.protocol !== "https:" && !localHttp || url.username || url.password || url.search || url.hash) {
+    invalidAiConfig("Use HTTPS for `ai.baseUrl` (plain HTTP is accepted only for localhost and host.docker.internal), without credentials, query, or fragment.");
+  }
+  return url.href.replace(/\/+$/, "");
+}
+function validateAiConfig(value) {
+  if (value === void 0) return void 0;
+  const hint = "Configure `ai` as { enabled?, api?, baseUrl, model, keyEnv? }.";
+  const data2 = plainEntries(value, ["enabled", "api", "baseUrl", "model", "keyEnv"], hint);
+  const enabled = data2.get("enabled") ?? true;
+  if (typeof enabled !== "boolean") invalidAiConfig("Set `ai.enabled` to true or false.");
+  const api = data2.get("api") ?? "chat-completions";
+  if (!validApi(api)) invalidAiConfig('Set `ai.api` to "chat-completions" or "responses".');
+  const keyEnv = data2.get("keyEnv") ?? DEFAULT_KEY_ENV;
+  if (!isServerEnvReference2(keyEnv)) invalidAiConfig("Set `ai.keyEnv` to an uppercase Server env key without the reserved `SPORADES_` prefix.");
+  const baseUrl = data2.has("baseUrl") || enabled ? normalizeBaseUrl(data2.get("baseUrl")) : null;
+  const model = data2.get("model");
+  if ((data2.has("model") || enabled) && !validModel(model)) {
+    invalidAiConfig("Set `ai.model` to the provider's model name (printable ASCII, at most 256 characters).");
+  }
+  return enabled ? Object.freeze({ enabled: true, api, baseUrl, model, keyEnv }) : Object.freeze({ enabled: false });
+}
+function parseProviderOverride(value) {
+  if (value === void 0) return {};
+  if (!isPlainObject3(value) || Object.keys(value).some((key) => !["api", "baseUrl", "model", "apiKey"].includes(key))) return null;
+  const { api, baseUrl, model, apiKey } = value;
+  if (api !== void 0 && !validApi(api) || model !== void 0 && !validModel(model) || apiKey !== void 0 && !validKey(apiKey)) return null;
+  let normalizedBaseUrl;
+  try {
+    normalizedBaseUrl = baseUrl === void 0 ? void 0 : normalizeBaseUrl(baseUrl);
+  } catch {
+    return null;
+  }
+  return { api, baseUrl: normalizedBaseUrl, model, apiKey };
+}
+function parseChatInput(input) {
+  if (!isPlainObject3(input) || Object.keys(input).some((key) => !["messages", "system", "maxTokens", "timeoutMs", "temperature", "jsonSchema", "provider"].includes(key))) return null;
+  const { messages, system, maxTokens, timeoutMs = AI_DEFAULT_TIMEOUT_MS, temperature, jsonSchema } = input;
+  const provider = parseProviderOverride(input.provider);
+  if (!provider) return null;
+  if (!Array.isArray(messages) || messages.length < 1 || messages.length > MAX_MESSAGES) return null;
+  if (system !== void 0 && (typeof system !== "string" || system.length > MAX_CONTENT_CHARS)) return null;
+  let total = typeof system === "string" ? system.length : 0;
+  const normalized = [];
+  for (const message of messages) {
+    if (!isPlainObject3(message) || Object.keys(message).some((key) => key !== "role" && key !== "content")) return null;
+    if (!["system", "user", "assistant"].includes(message.role) || typeof message.content !== "string" || message.content.length > MAX_CONTENT_CHARS) return null;
+    total += message.content.length;
+    normalized.push(Object.freeze({ role: message.role, content: message.content }));
+  }
+  if (total > MAX_TOTAL_CHARS) return null;
+  if (maxTokens !== void 0 && (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > MAX_TOKENS)) return null;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > AI_MAX_TIMEOUT_MS) return null;
+  if (temperature !== void 0 && (typeof temperature !== "number" || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)) return null;
+  let schema = null;
+  if (jsonSchema !== void 0) {
+    if (!isPlainObject3(jsonSchema) || Object.keys(jsonSchema).some((key) => !["name", "schema", "strict"].includes(key))) return null;
+    if (typeof jsonSchema.name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(jsonSchema.name)) return null;
+    if (jsonSchema.strict !== void 0 && typeof jsonSchema.strict !== "boolean") return null;
+    let serialized2;
+    try {
+      serialized2 = JSON.stringify(jsonSchema.schema);
+    } catch {
+      return null;
+    }
+    if (!isPlainObject3(jsonSchema.schema) || Buffer.byteLength(serialized2) > MAX_SCHEMA_BYTES) return null;
+    schema = Object.freeze({ name: jsonSchema.name, schema: JSON.parse(serialized2), strict: jsonSchema.strict ?? true });
+  }
+  return {
+    request: Object.freeze({ system: system ?? null, messages: Object.freeze(normalized), maxTokens: maxTokens ?? null, temperature: temperature ?? null, jsonSchema: schema }),
+    timeoutMs,
+    provider
+  };
+}
+async function readBounded(response) {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks = [];
+  let size = 0;
+  for (; ; ) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => {
+      });
+      throw Object.assign(new Error("oversize"), { aiOversize: true });
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+var MESSAGES = {
+  AI_UNCONFIGURED: "AI is not configured for this Capsule.",
+  AI_INVALID_REQUEST: "Invalid AI request.",
+  AI_TIMEOUT: "The AI provider did not respond in time.",
+  AI_ABORTED: "The AI call was cancelled.",
+  AI_UPSTREAM_ERROR: "The AI provider request failed.",
+  AI_INVALID_RESPONSE: "The AI provider returned an unusable response."
+};
+function createAiRuntime(config, serverEnv = {}, options = {}) {
+  const normalized = validateAiConfig(config);
+  const configured = normalized?.enabled ? normalized : null;
+  const rawKey = configured ? serverEnv[configured.keyEnv] : void 0;
+  const projectKey = typeof rawKey === "string" && validKey(rawKey.trim()) ? rawKey.trim() : null;
+  const enabled = !!configured && projectKey !== null;
+  const stopped2 = new AbortController();
+  async function chat(input, callOptions = {}) {
+    const startedAt = performance.now();
+    let status = null;
+    let usage = { prompt: null, completion: null, total: null };
+    let responseModel = null;
+    let model = configured?.model ?? null;
+    let api = configured?.api ?? null;
+    const settle = (outcome, data3) => {
+      try {
+        void Promise.resolve((callOptions.log ?? options.log)?.({
+          category: "ai",
+          event: "ai.call",
+          level: outcome === "ok" ? "info" : "warn",
+          message: outcome === "ok" ? "AI call completed." : "AI call failed.",
+          data: { api, model: responseModel ?? model, outcome, latencyMs: Math.round(performance.now() - startedAt), status, usage },
+          request: null,
+          release: null,
+          correlation: { ai: `ai_${randomUUID10()}` }
+        })).catch(() => {
+        });
+      } catch {
+      }
+      if (outcome === "ok") return Object.freeze({ ok: true, data: Object.freeze(data3) });
+      return Object.freeze({ ok: false, error: Object.freeze({ code: outcome, message: MESSAGES[outcome], ...status !== null ? { status } : {} }) });
+    };
+    let parsedInput;
+    try {
+      parsedInput = parseChatInput(input);
+    } catch {
+      parsedInput = null;
+    }
+    if (!parsedInput) return settle("AI_INVALID_REQUEST");
+    const { request, timeoutMs, provider } = parsedInput;
+    api = provider.api ?? api ?? "chat-completions";
+    model = provider.model ?? model;
+    const baseUrl = provider.baseUrl ?? configured?.baseUrl;
+    const key = provider.apiKey ?? (baseUrl === configured?.baseUrl ? projectKey : null);
+    if (!baseUrl || !model || !key) return settle("AI_UNCONFIGURED");
+    const adapter = AI_PROTOCOL_ADAPTERS[api];
+    if (callOptions.signal?.aborted || stopped2.signal.aborted) return settle("AI_ABORTED");
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const signals = [timeout, stopped2.signal, ...callOptions.signal ? [callOptions.signal] : []];
+    const failure = () => timeout.aborted ? "AI_TIMEOUT" : signals.some((signal) => signal.aborted) ? "AI_ABORTED" : "AI_UPSTREAM_ERROR";
+    let text3;
+    try {
+      const response = await fetch(`${baseUrl}${adapter.path}`, {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.any(signals),
+        headers: { "content-type": "application/json", accept: "application/json", authorization: `Bearer ${key}` },
+        body: JSON.stringify(adapter.encode(request, model))
+      });
+      status = response.status;
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {
+        });
+        return settle(failure());
+      }
+      text3 = await readBounded(response);
+    } catch (error) {
+      return settle(error?.aiOversize ? "AI_INVALID_RESPONSE" : failure());
+    }
+    let reply;
+    try {
+      reply = adapter.decode(JSON.parse(text3));
+    } catch {
+      return settle("AI_INVALID_RESPONSE");
+    }
+    if (!reply) return settle("AI_INVALID_RESPONSE");
+    usage = { ...reply.usage };
+    responseModel = reply.model;
+    const data2 = {
+      text: reply.text,
+      model: reply.model ?? model,
+      finishReason: reply.finishReason,
+      usage: Object.freeze({ promptTokens: reply.usage.prompt, completionTokens: reply.usage.completion, totalTokens: reply.usage.total })
+    };
+    if (request.jsonSchema) {
+      try {
+        data2.json = JSON.parse(reply.text);
+      } catch {
+        return settle("AI_INVALID_RESPONSE");
+      }
+    }
+    return settle("ok", data2);
+  }
+  return Object.freeze({
+    enabled,
+    chat,
+    /** Aborts in-flight calls at runtime shutdown; later calls settle as AI_ABORTED. */
+    close() {
+      stopped2.abort();
+    }
+  });
+}
+
 // src/server-runtime-source.ts
 import { dirname as pathDirname } from "node:path";
 
@@ -130220,11 +130572,11 @@ function resolveRegistrationThrottle(auth) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash14, randomBytes as randomBytes7, randomUUID as randomUUID13 } from "node:crypto";
+import { createHash as createHash14, randomBytes as randomBytes7, randomUUID as randomUUID14 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync as readFileSync3 } from "node:fs";
 
 // src/log-envelope.ts
-import { randomUUID as randomUUID11 } from "node:crypto";
+import { randomUUID as randomUUID12 } from "node:crypto";
 
 // src/runtime-telemetry.ts
 init_esm();
@@ -130233,7 +130585,7 @@ var import_exporter_metrics_otlp_http = __toESM(require_src7(), 1);
 var import_resources = __toESM(require_src3(), 1);
 var import_sdk_metrics = __toESM(require_src4(), 1);
 var import_sdk_trace_base = __toESM(require_index_shim(), 1);
-import { randomUUID as randomUUID10 } from "node:crypto";
+import { randomUUID as randomUUID11 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
 import { constants as performanceConstants, monitorEventLoopDelay, performance as performance4, PerformanceObserver } from "node:perf_hooks";
@@ -130426,7 +130778,7 @@ function safeMethod(method) {
   const value = typeof method === "string" ? method.toUpperCase() : "OTHER";
   return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
 }
-var processInstanceId = randomUUID10();
+var processInstanceId = randomUUID11();
 function activeRuntimeLogIdentity() {
   const scope = runtimeRequestScope.getStore();
   if (!scope) return void 0;
@@ -130487,7 +130839,7 @@ function createProfileExporters(traceOptions, metricOptions) {
 }
 function createHttpRequestTelemetry(config, onDiagnostic) {
   if (!config) return { websocket: disabledWebSocketTelemetry, bindJobQueue: (_database) => {
-  }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID10() }, handle), shutdown: async () => {
+  }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID11() }, handle), shutdown: async () => {
   } };
   const propagationOrigins = new Set(validateTracePropagationOrigins(config.tracePropagationOrigins));
   if (config.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1e3)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
@@ -130778,7 +131130,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
         }
       };
       websocketEnds.add(end);
-      const scope = { requestId: randomUUID10(), span, tracer: websocketTracer, isOpen: () => !ended && !closing };
+      const scope = { requestId: randomUUID11(), span, tracer: websocketTracer, isOpen: () => !ended && !closing };
       return { run: (handle) => runtimeRequestScope.run(scope, handle), end };
     }
   };
@@ -130952,7 +131304,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       request.once("aborted", () => end("abort"));
       try {
         const isOpen = () => !ended && !closing;
-        const result = runtimeRequestScope.run({ requestId: randomUUID10(), span, operation, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
+        const result = runtimeRequestScope.run({ requestId: randomUUID11(), span, operation, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
         if (result && typeof result.then === "function") {
           return Promise.resolve(result).catch((error) => {
             end("error");
@@ -131005,7 +131357,7 @@ function uncappedLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request || identity ? {
-      id: input.request?.id ?? identity?.requestId ?? randomUUID11(),
+      id: input.request?.id ?? identity?.requestId ?? randomUUID12(),
       method: input.request?.method ?? null,
       path: input.request?.path ?? null
     } : null,
@@ -131047,33 +131399,6 @@ function validateLogConfig(config = {}) {
     if (value !== void 0 && (!Number.isSafeInteger(value) || value < minimum)) fail5(key);
   }
   if (logPayloadMaxBytes(config) < minimum) fail5("logs");
-}
-
-// src/mail-config-validation.ts
-function invalidMailConfig(message, hint) {
-  const error = new Error(message);
-  error.code = "INVALID_MAIL_CONFIG";
-  error.hint = hint;
-  throw error;
-}
-function captureMailConfigData(value, allowed, message, hint) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) invalidMailConfig(message, hint);
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) invalidMailConfig(message, hint);
-  const entries = [];
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string") invalidMailConfig(message, hint);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
-      invalidMailConfig(message, hint);
-    }
-    if (!allowed.includes(key)) invalidMailConfig(message, hint);
-    entries.push([key, descriptor.value]);
-  }
-  return new Map(entries);
-}
-function isServerEnvReference2(value) {
-  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value) && !value.startsWith("SPORADES_");
 }
 
 // src/email-events-config.ts
@@ -133236,7 +133561,7 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid4) {
 }
 
 // src/database-runtime.ts
-import { randomUUID as randomUUID12 } from "node:crypto";
+import { randomUUID as randomUUID13 } from "node:crypto";
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql2) {
@@ -136777,7 +137102,7 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     const occupiedNames = new Set(tableNames);
     let tempTableName;
     do {
-      tempTableName = `__sporades_migrating_${randomUUID12().replaceAll("-", "")}`;
+      tempTableName = `__sporades_migrating_${randomUUID13().replaceAll("-", "")}`;
     } while (occupiedNames.has(tempTableName));
     return chainMaybePromise([
       ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
@@ -137197,6 +137522,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   }) : null;
   if (missingEnv.length && config.env?.failClosed === true) throw missingServerEnvError(missingEnv);
   const observability = createRuntimeObservability({ ...config, release: process.env.SPORADES_RELEASE_ID ?? config.release }, serverEnv);
+  const ai = createAiRuntime(config.ai, serverEnv);
   const registrationThrottle = resolveRegistrationThrottle(config.auth);
   const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
   const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
@@ -137372,6 +137698,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     rowCache,
     serverEnv,
     observability,
+    ai,
     paymentsConfig,
     createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
     stripeApiBaseUrl: options?.stripeApiBaseUrl,
@@ -137611,6 +137938,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         const pending = [];
         const resources = [
           () => database.observability.close(),
+          () => database.ai.close(),
           () => shutdownClamavRuntime(database),
           () => {
             if (mailStartError !== void 0) throw mailStartError;
@@ -138001,7 +138329,7 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID13() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID14() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
@@ -138312,7 +138640,7 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id2 = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID13();
+  const token = randomUUID14();
   const now2 = database.clock.now();
   const nowIso2 = now2.toISOString();
   const fullLeaseExpiresAt = jobTimestampAfter(now2, RUNTIME_CLAIM_LEASE_MS);
@@ -139037,6 +139365,7 @@ function createPrivilegedHandlerContext(database, context2, signal) {
     (transactionAdapter) => createTransactionDatabase(database, transactionAdapter)
   );
   privilegedContext.mail = database.mail;
+  privilegedContext.ai = createContextAiApi(database, () => privilegedContext.signal);
   return privilegedContext;
 }
 function createLogEnvelope(input) {
@@ -139743,8 +140072,12 @@ async function routeEndpoint(database, request, response) {
   }
   const requestAbort = new AbortController();
   const abortRequest = () => requestAbort.abort();
-  if (request.aborted || request.destroyed) abortRequest();
+  const abortOnResponseClose = () => {
+    if (!response.writableFinished) abortRequest();
+  };
+  if (request.aborted || request.destroyed && request.complete === false) abortRequest();
   else request.once?.("aborted", abortRequest);
+  response.once?.("close", abortOnResponseClose);
   request.__sporadesEndpointSignal = requestAbort.signal;
   const closeIncompleteMultipartRequest = () => {
     if (endpoint.options?.body?.multipart && request.complete === false) {
@@ -139780,6 +140113,7 @@ async function routeEndpoint(database, request, response) {
     writeEndpointError(response, error);
   } finally {
     request.removeListener?.("aborted", abortRequest);
+    response.removeListener?.("close", abortOnResponseClose);
     delete request.__sporadesEndpointSignal;
     delete request.__sporadesCapsuleIngressAdmissionDenied;
   }
@@ -140000,7 +140334,8 @@ async function runEndpoint(database, endpoint, requestUrl, request, requestPath 
               ordinaryCredential: !runtimeOwnedProviderCallback,
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
-              signal: request.signal ?? request.__sporadesEndpointSignal
+              // Not Node 24's request.signal: it aborts once the body is consumed, not on client abort.
+              signal: request.__sporadesEndpointSignal ?? request.signal
             });
             revokeOuterResources = bindOuterResources(transactionDatabase, context2, {
               startedAt: outerStartedAt,
@@ -140212,6 +140547,7 @@ function bindOrdinaryJobResourceContext(database, context2, claim, privileged = 
         ...context2.credential ? { credential: context2.credential } : { ordinaryCredential: false }
       });
       scoped.signal = signal;
+      scoped.ai = createContextAiApi(scopedDatabase, () => scoped.signal, database.log);
       scoped.__jobEnqueuedBy = context2.__jobEnqueuedBy;
       if (privileged) {
         scoped.__privilegedRunActive = true;
@@ -140448,6 +140784,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
       return database.mail.send(input, (event) => database.log?.emit(event));
     }
   };
+  context2.ai = createContextAiApi(database, () => context2.signal);
   context2.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context2.teamBilling = createCurrentUserTeamBillingErasureApi(
     database,
@@ -140922,7 +141259,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID13(),
+        id: randomUUID14(),
         createdAt: now2,
         updatedAt: now2
       };
@@ -140959,7 +141296,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID13(),
+        id: randomUUID14(),
         createdAt: now2,
         updatedAt: now2
       };
@@ -141782,7 +142119,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
               const currentAuth = { userId: current2.userId, displayName: current2.displayName, email: current2.email, picture: current2.picture, isAuthenticated: Boolean(current2.isAuthenticated), isGuest: Boolean(current2.isGuest), provider: current2.provider };
               if (!await tx.claimEmailCredentialVersion(normalized.email, credential.passwordHash, credential.passwordSalt)) return;
               if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
-              await tx.replaceReauthenticationProof({ id: randomUUID13(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
+              await tx.replaceReauthenticationProof({ id: randomUUID14(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now2.toISOString(), expiresAt });
               ok = true;
               await tx.clearEmailReauthenticationAttempts(reauthenticationThrottleKeys);
             });
@@ -142621,7 +142958,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor], [enqueueTraceContext]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL, ?)"
     )
   ).run(
-    randomUUID13(),
+    randomUUID14(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
@@ -143218,6 +143555,14 @@ function validateAppMessageType(type) {
 function isAllAppMessageScope(scope) {
   return scope === "all" || scope?.scope === "all";
 }
+function createContextAiApi(database, getSignal, log = database.log) {
+  return Object.freeze({
+    enabled: database.ai.enabled,
+    chat(input) {
+      return database.ai.chat(input, { signal: getSignal(), log: (event) => log?.emit(event) });
+    }
+  });
+}
 function createMessageContext(database, auth, sendAppMessage, sessionToken) {
   const context2 = createMutationContext(database, auth, { sessionToken });
   context2.messages = {
@@ -143288,6 +143633,7 @@ function createMutationContext(database, auth, options = {}) {
       return database.mail.send(input, (event) => database.log?.emit(event));
     }
   };
+  context2.ai = createContextAiApi(database, () => context2.signal);
   context2.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context2.teamBilling = createCurrentUserTeamBillingErasureApi(
     database,
@@ -143866,7 +144212,7 @@ async function runCurrentUserJobWorker(database) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;
       }
-      const claimToken = randomUUID13();
+      const claimToken = randomUUID14();
       const claimed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')"
       )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
@@ -144065,7 +144411,7 @@ async function runInsertMutation(database, context2, mutationName, args) {
   }
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID13(),
+    id: randomUUID14(),
     createdAt: now2,
     updatedAt: now2
   };
@@ -148389,7 +148735,7 @@ function posixJoin(...segments) {
 import { readFile as readFile10 } from "node:fs/promises";
 
 // src/testing/stripe.ts
-import { createHmac as createHmac4, randomUUID as randomUUID14 } from "node:crypto";
+import { createHmac as createHmac4, randomUUID as randomUUID15 } from "node:crypto";
 import { createServer as createServer2 } from "node:http";
 var API_VERSION = "2026-08-26.dahlia";
 var ENDPOINTS = [
@@ -148534,7 +148880,7 @@ async function createStripeTeamBillingFake(options) {
   let now2 = Math.floor(Date.now() / 1e3);
   const initialNow = now2;
   let stopped2 = false;
-  const id2 = (prefix) => `${prefix}_${randomUUID14().replaceAll("-", "")}`;
+  const id2 = (prefix) => `${prefix}_${randomUUID15().replaceAll("-", "")}`;
   function get(map, key) {
     return map.get(key) ?? fail3(`No such resource: '${key}'.`, 404, "resource_missing");
   }
@@ -150345,6 +150691,7 @@ var DEFAULT_CSP_DIRECTIVES = {
 };
 var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
   "admissionPolicy",
+  "ai",
   "analytics",
   "observability",
   "auth",
@@ -150394,6 +150741,7 @@ async function readProjectConfig(projectDir) {
   validateSchedulingConfig(config.scheduling);
   if (config.payments !== void 0) config.payments = validatePaymentsConfig(config.payments);
   if (config.mail !== void 0) config.mail = validateMailConfig(config.mail);
+  if (config.ai !== void 0) config.ai = validateAiConfig(config.ai);
   validatePasswordResetConfig(config.auth);
   resolveRegistrationThrottle(config.auth);
   validateTeamsConfig(config.teams);

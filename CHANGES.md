@@ -6,12 +6,18 @@ Changes since v0.9.34.
 
 ### 🚀 Features
 
+- Add server-only `ctx.ai` for OpenAI-compatible Chat Completions and Responses
+  endpoints behind a provider-neutral interface, with `sporades.json` `ai`
+  config, a Sealed Server env key, per-call provider overrides, fail-open result
+  codes, and content-free `ai.call` metering (#276).
 - Add atomic human identity termination (ADR 0057) (#273) (769df876).
 - Add day-based Host backup retention (retentionDays / keep-within) (#275) (3724e2ad).
 - Allow loopback Stripe API origins in Dev sessions (#270) (57a9aec3).
 
 ### 🐛 Bug Fixes
 
+- Stop Custom endpoint `ctx.signal` starting aborted on Node 24, where the
+  request's own signal aborts once its body has been read (#276).
 - Fix runtime injection on secondary HTML documents (#274) (91e06995).
 
 ### 🔧 Improvements

@@ -28884,6 +28884,90 @@ function redactDiagnosticText(value, serverEnv = {}) {
   return safe;
 }
 
+// src/ai-provider.ts
+function isPlainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+var tokenCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+
+// src/ai-openai-adapters.ts
+var modelName = (value) => typeof value === "string" && value.length <= 256 ? value : null;
+function chatFinishReason(value) {
+  if (typeof value !== "string") return null;
+  return value === "stop" || value === "length" || value === "content_filter" ? value : "other";
+}
+var chatCompletionsAdapter = Object.freeze({
+  path: "/chat/completions",
+  encode(request2, model) {
+    const body = {
+      model,
+      messages: [...request2.system !== null ? [{ role: "system", content: request2.system }] : [], ...request2.messages.map(({ role, content: content2 }) => ({ role, content: content2 }))],
+      stream: false
+    };
+    if (request2.maxTokens !== null) body.max_tokens = request2.maxTokens;
+    if (request2.temperature !== null) body.temperature = request2.temperature;
+    if (request2.jsonSchema) {
+      body.response_format = { type: "json_schema", json_schema: { name: request2.jsonSchema.name, schema: request2.jsonSchema.schema, strict: request2.jsonSchema.strict } };
+    }
+    return body;
+  },
+  decode(body) {
+    if (!isPlainObject(body)) return null;
+    const choice = Array.isArray(body.choices) ? body.choices[0] : void 0;
+    const text2 = choice?.message?.content;
+    if (typeof text2 !== "string") return null;
+    const usage = isPlainObject(body.usage) ? body.usage : {};
+    return {
+      text: text2,
+      model: modelName(body.model),
+      finishReason: chatFinishReason(choice.finish_reason),
+      usage: { prompt: tokenCount(usage.prompt_tokens), completion: tokenCount(usage.completion_tokens), total: tokenCount(usage.total_tokens) }
+    };
+  }
+});
+var responsesAdapter = Object.freeze({
+  path: "/responses",
+  encode(request2, model) {
+    const body = {
+      model,
+      input: request2.messages.map(({ role, content: content2 }) => ({ role, content: content2 })),
+      store: false,
+      stream: false
+    };
+    if (request2.system !== null) body.instructions = request2.system;
+    if (request2.maxTokens !== null) body.max_output_tokens = request2.maxTokens;
+    if (request2.temperature !== null) body.temperature = request2.temperature;
+    if (request2.jsonSchema) {
+      body.text = { format: { type: "json_schema", name: request2.jsonSchema.name, schema: request2.jsonSchema.schema, strict: request2.jsonSchema.strict } };
+    }
+    return body;
+  },
+  decode(body) {
+    if (!isPlainObject(body) || !Array.isArray(body.output)) return null;
+    if (body.status !== "completed" && body.status !== "incomplete") return null;
+    const parts = [];
+    for (const item of body.output) {
+      if (!isPlainObject(item) || item.type !== "message" || !Array.isArray(item.content)) continue;
+      for (const part of item.content) if (isPlainObject(part) && part.type === "output_text" && typeof part.text === "string") parts.push(part.text);
+    }
+    if (!parts.length) return null;
+    const reason = isPlainObject(body.incomplete_details) ? body.incomplete_details.reason : void 0;
+    const usage = isPlainObject(body.usage) ? body.usage : {};
+    return {
+      text: parts.join(""),
+      model: modelName(body.model),
+      finishReason: body.status === "completed" ? "stop" : reason === "max_output_tokens" ? "length" : reason === "content_filter" ? "content_filter" : "other",
+      usage: { prompt: tokenCount(usage.input_tokens), completion: tokenCount(usage.output_tokens), total: tokenCount(usage.total_tokens) }
+    };
+  }
+});
+var AI_PROTOCOL_ADAPTERS = Object.freeze({ "chat-completions": chatCompletionsAdapter, responses: responsesAdapter });
+
+// src/ai-runtime.ts
+var MAX_RESPONSE_BYTES = 1024 * 1024;
+
 // src/file-policy.ts
 var signatures = [
   ["image/png", [137, 80, 78, 71, 13, 10, 26, 10], 0],
