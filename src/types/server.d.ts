@@ -555,9 +555,10 @@ export type AiApiKind = "chat-completions" | "responses";
 export type AiMessage = { role: "user" | "assistant"; content: string };
 
 /**
- * Per-call overrides of the project `ai` declaration. They refine a declared, enabled project; they
- * cannot activate an undeclared or `enabled: false` one. `baseUrl` follows the same HTTPS rule as
- * `ai.baseUrl`. `apiKey` is used for this call only and is never logged.
+ * Per-call provider values. Each takes precedence over the project `ai` declaration and its Server
+ * env key, including when `ai` is undeclared or `enabled: false`; omitted values fall back to the
+ * declaration. The project key is sent only to the project base URL, so a different `baseUrl` needs
+ * `apiKey`. `baseUrl` follows the same HTTPS rule as `ai.baseUrl`. `apiKey` is never logged.
  */
 export type AiProviderOverride = {
   api?: AiApiKind;

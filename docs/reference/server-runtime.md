@@ -997,8 +997,11 @@ by `sporades.json` `ai` (Chat Completions by default, or the Responses API with
 `store: false`). Input is `{ messages, system?, maxTokens?, timeoutMs?, temperature?, jsonSchema?, provider?, signal? }`;
 `messages` holds 1–64 `user`/`assistant` turns, `timeoutMs` defaults to 2000 and
 is bounded to 100–30000, and `provider: { api?, baseUrl?, model?, apiKey? }`
-overrides the project settings for one call without being able to activate an
-undeclared or disabled declaration.
+overrides the project settings for one call. Overrides work even when `ai` is
+undeclared or `enabled: false`; values a call omits fall back to whatever `ai`
+declares, and a call with no override leaves a disabled or undeclared project
+dormant. The project key is sent only to the project base URL, so a call to any
+other base URL must pass its own `apiKey` or it resolves `AI_UNCONFIGURED`.
 
 The call never throws and never retries. It resolves
 `{ ok: true, text, json?, usage: { inputTokens, outputTokens, totalTokens }, model }`

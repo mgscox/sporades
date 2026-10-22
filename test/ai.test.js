@@ -191,8 +191,7 @@ test("a declared but key-less ai runtime boots dormant and reports AI_UNCONFIGUR
     });
     await withRuntime({}, { AI_API_KEY: API_KEY }, async (database) => {
       assert.deepEqual((await runQuery(database, user, "aiState")).data, { enabled: false });
-      const result = (await runMutation(database, user, "check", [ask({ provider: { baseUrl: emulator.baseUrl, model: "m", apiKey: API_KEY } })])).data;
-      assert.equal(result.code, "AI_UNCONFIGURED", "per-call overrides cannot stand in for the project declaration");
+      assert.equal((await runMutation(database, user, "check", [ask()])).data.code, "AI_UNCONFIGURED");
     });
     await withRuntime({ ai: { enabled: false, baseUrl: emulator.baseUrl, model: "m" } }, { AI_API_KEY: API_KEY }, async (database) => {
       assert.equal((await runMutation(database, user, "check", [ask()])).data.code, "AI_UNCONFIGURED");
@@ -387,7 +386,8 @@ test("invalid requests and unreachable providers never throw and send nothing", 
       }
       assert.equal(emulator.requests.length, 0);
 
-      const unreachable = await database.ai.chat(ask({ provider: { baseUrl: "http://127.0.0.1:9/v1" } }));
+      // Another base URL needs its own key: the project key never follows a caller-chosen URL.
+      const unreachable = await database.ai.chat(ask({ provider: { baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-elsewhere" } }));
       assert.equal(unreachable.code, "AI_UPSTREAM_ERROR");
       assert.equal(unreachable.status, undefined);
     });
