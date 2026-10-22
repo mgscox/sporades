@@ -3626,8 +3626,12 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
 
   const requestAbort = new AbortController();
   const abortRequest = () => requestAbort.abort();
-  if (request.aborted || request.destroyed) abortRequest();
+  // Node destroys a fully read request stream, so `destroyed` alone is not a client abort. The body
+  // is read before the handler runs, so a later disconnect shows only as the response closing early.
+  const abortOnResponseClose = () => { if (!response.writableFinished) abortRequest(); };
+  if (request.aborted || (request.destroyed && request.complete === false)) abortRequest();
   else request.once?.("aborted", abortRequest);
+  response.once?.("close", abortOnResponseClose);
   (request as LooseRecord).__sporadesEndpointSignal = requestAbort.signal;
   const closeIncompleteMultipartRequest = () => {
     if (endpoint.options?.body?.multipart && request.complete === false) {
@@ -3665,7 +3669,7 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
     closeIncompleteMultipartRequest();
     emitHttpFailureLog(database as LooseRecord, request, error);
     writeEndpointError(response, error);
-  } finally { request.removeListener?.("aborted", abortRequest); delete (request as LooseRecord).__sporadesEndpointSignal; delete (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied; }
+  } finally { request.removeListener?.("aborted", abortRequest); response.removeListener?.("close", abortOnResponseClose); delete (request as LooseRecord).__sporadesEndpointSignal; delete (request as LooseRecord).__sporadesCapsuleIngressAdmissionDenied; }
   return true;
 }
 
@@ -3926,7 +3930,8 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
               ordinaryCredential: !runtimeOwnedProviderCallback,
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
-              signal: request.signal ?? (request as LooseRecord).__sporadesEndpointSignal,
+              // Not Node 24's request.signal: it aborts once the body is consumed, not on client abort.
+              signal: (request as LooseRecord).__sporadesEndpointSignal ?? request.signal,
             });
             revokeOuterResources = bindOuterResources(transactionDatabase, context, {
               startedAt: outerStartedAt,

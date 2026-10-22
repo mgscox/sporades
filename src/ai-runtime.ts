@@ -149,17 +149,21 @@ function resolveRequest(config: AiConfig | undefined, serverEnv: Record<string, 
     throw new AiFailure("AI_INVALID_REQUEST");
   }
 
-  // The project declaration is the deployer's opt-in. Per-call overrides refine it; they cannot
-  // stand in for it, so an undeclared or disabled project stays dormant whatever the call carries.
-  if (!config?.enabled) throw new AiFailure("AI_UNCONFIGURED");
-  const projectKey = Object.getOwnPropertyDescriptor(serverEnv, config.keyEnv)?.value;
-  const apiKey = overrideKey ?? (typeof projectKey === "string" && projectKey.trim().length > 0 ? projectKey.trim() : null);
-  const baseUrl = overrideBaseUrl ?? config.baseUrl;
-  const model = (overrideModel as string | undefined) ?? config.model;
+  // Per-call values take precedence over the project declaration and can stand in for an absent
+  // or disabled one; values a call omits fall back to whatever `ai` declares. Without any override,
+  // an undeclared or `enabled: false` project stays dormant.
+  const overriding = [...provider.values()].some(value => value !== undefined);
+  if (!config?.enabled && !overriding) throw new AiFailure("AI_UNCONFIGURED");
+  const baseUrl = overrideBaseUrl ?? config?.baseUrl;
+  const model = (overrideModel as string | undefined) ?? config?.model;
+  // The project key belongs to the project base URL. A call aimed anywhere else brings its own key,
+  // so a caller-chosen base URL can never receive the sealed project credential.
+  const projectKey = config && baseUrl === config.baseUrl ? Object.getOwnPropertyDescriptor(serverEnv, config.keyEnv)?.value : undefined;
+  const apiKey = (overrideKey as string | undefined) ?? (typeof projectKey === "string" && projectKey.trim().length > 0 ? projectKey.trim() : null);
   if (!apiKey || !baseUrl || !model) throw new AiFailure("AI_UNCONFIGURED");
   const signals = [signal as AbortSignal | undefined, contextSignal ?? undefined].filter(isAbortSignal);
   return {
-    api: (api as AiApiKind | undefined) ?? config.api,
+    api: (api as AiApiKind | undefined) ?? config?.api ?? "chat-completions",
     baseUrl, model, apiKey,
     system: typeof system === "string" ? system : null,
     messages,

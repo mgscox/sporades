@@ -136733,15 +136733,16 @@ function resolveRequest(config, serverEnv, input, contextSignal) {
   if (overrideKey !== void 0 && (typeof overrideKey !== "string" || !/^[\x21-\x7e]{1,4096}$/.test(overrideKey))) {
     throw new AiFailure("AI_INVALID_REQUEST");
   }
-  if (!config?.enabled) throw new AiFailure("AI_UNCONFIGURED");
-  const projectKey = Object.getOwnPropertyDescriptor(serverEnv, config.keyEnv)?.value;
+  const overriding = [...provider.values()].some((value) => value !== void 0);
+  if (!config?.enabled && !overriding) throw new AiFailure("AI_UNCONFIGURED");
+  const baseUrl = overrideBaseUrl ?? config?.baseUrl;
+  const model = overrideModel ?? config?.model;
+  const projectKey = config && baseUrl === config.baseUrl ? Object.getOwnPropertyDescriptor(serverEnv, config.keyEnv)?.value : void 0;
   const apiKey = overrideKey ?? (typeof projectKey === "string" && projectKey.trim().length > 0 ? projectKey.trim() : null);
-  const baseUrl = overrideBaseUrl ?? config.baseUrl;
-  const model = overrideModel ?? config.model;
   if (!apiKey || !baseUrl || !model) throw new AiFailure("AI_UNCONFIGURED");
   const signals = [signal, contextSignal ?? void 0].filter(isAbortSignal);
   return {
-    api: api ?? config.api,
+    api: api ?? config?.api ?? "chat-completions",
     baseUrl,
     model,
     apiKey,
@@ -140528,8 +140529,12 @@ async function routeEndpoint(database, request, response) {
   }
   const requestAbort = new AbortController();
   const abortRequest = () => requestAbort.abort();
-  if (request.aborted || request.destroyed) abortRequest();
+  const abortOnResponseClose = () => {
+    if (!response.writableFinished) abortRequest();
+  };
+  if (request.aborted || request.destroyed && request.complete === false) abortRequest();
   else request.once?.("aborted", abortRequest);
+  response.once?.("close", abortOnResponseClose);
   request.__sporadesEndpointSignal = requestAbort.signal;
   const closeIncompleteMultipartRequest = () => {
     if (endpoint.options?.body?.multipart && request.complete === false) {
@@ -140565,6 +140570,7 @@ async function routeEndpoint(database, request, response) {
     writeEndpointError(response, error);
   } finally {
     request.removeListener?.("aborted", abortRequest);
+    response.removeListener?.("close", abortOnResponseClose);
     delete request.__sporadesEndpointSignal;
     delete request.__sporadesCapsuleIngressAdmissionDenied;
   }
@@ -140785,7 +140791,8 @@ async function runEndpoint(database, endpoint, requestUrl, request, requestPath 
               ordinaryCredential: !runtimeOwnedProviderCallback,
               credential: accessKeyAdmission?.credential,
               accessKeyGrants: accessKeyAdmission?.grants,
-              signal: request.signal ?? request.__sporadesEndpointSignal
+              // Not Node 24's request.signal: it aborts once the body is consumed, not on client abort.
+              signal: request.__sporadesEndpointSignal ?? request.signal
             });
             revokeOuterResources = bindOuterResources(transactionDatabase, context2, {
               startedAt: outerStartedAt,

@@ -17,7 +17,7 @@ At most 64 messages and 256 KiB of combined <code>system</code> and message cont
 </div></section>
 <div class="tsd-signature"><span class="tsd-signature-keyword">type</span> <span class="tsd-kind-type-alias">AiChatInput</span> <span class="tsd-signature-symbol">=</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-property" href="#jsonschema">jsonSchema</a><span class="tsd-signature-symbol">?:</span> <a href="server.JsonObject.html" class="tsd-signature-type tsd-kind-type-alias">JsonObject</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#maxtokens">maxTokens</a><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">number</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#messages">messages</a><span class="tsd-signature-symbol">:</span> <a href="server.AiMessage.html" class="tsd-signature-type tsd-kind-type-alias">AiMessage</a><span class="tsd-signature-symbol">[]</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#provider">provider</a><span class="tsd-signature-symbol">?:</span> <a href="server.AiProviderOverride.html" class="tsd-signature-type tsd-kind-type-alias">AiProviderOverride</a><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#signal">signal</a><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">AbortSignal</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#system">system</a><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#temperature">temperature</a><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">number</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-property" href="#timeoutms">timeoutMs</a><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">number</span><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L573">server.d.ts:573</a></li></ul></aside>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L574">server.d.ts:574</a></li></ul></aside>
 <section class="tsd-panel-group tsd-index-group">
 <section class="tsd-panel tsd-index-panel">
 <details class="tsd-index-content tsd-accordion" open><summary class="tsd-accordion-summary tsd-index-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
@@ -44,50 +44,50 @@ At most 64 messages and 256 KiB of combined <code>system</code> and message cont
 text is parsed as JSON into <code>json</code>; Sporades does not validate it against the schema.</p>
 </div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L586">server.d.ts:586</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L587">server.d.ts:587</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="maxtokens"><code class="tsd-tag">Optional</code><span>max<wbr/>Tokens</span><a href="#maxtokens" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">maxTokens</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">number</span></div>
 <div class="tsd-comment tsd-typography"><p>Upper bound on generated tokens, 1-131072.</p>
 </div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L577">server.d.ts:577</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L578">server.d.ts:578</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="messages"><span>messages</span><a href="#messages" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">messages</span><span class="tsd-signature-symbol">:</span> <a href="server.AiMessage.html" class="tsd-signature-type tsd-kind-type-alias">AiMessage</a><span class="tsd-signature-symbol">[]</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L574">server.d.ts:574</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L575">server.d.ts:575</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="provider"><code class="tsd-tag">Optional</code><span>provider</span><a href="#provider" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">provider</span><span class="tsd-signature-symbol">?:</span> <a href="server.AiProviderOverride.html" class="tsd-signature-type tsd-kind-type-alias">AiProviderOverride</a></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L587">server.d.ts:587</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L588">server.d.ts:588</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="signal"><code class="tsd-tag">Optional</code><span>signal</span><a href="#signal" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">signal</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">AbortSignal</span></div>
 <div class="tsd-comment tsd-typography"><p>Cancels the call with <code>AI_ABORTED</code>. A Job or Privileged <code>ctx.signal</code> is also honoured.</p>
 </div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L589">server.d.ts:589</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L590">server.d.ts:590</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="system"><code class="tsd-tag">Optional</code><span>system</span><a href="#system" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">system</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">string</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L575">server.d.ts:575</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L576">server.d.ts:576</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="temperature"><code class="tsd-tag">Optional</code><span>temperature</span><a href="#temperature" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">temperature</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">number</span></div>
 <div class="tsd-comment tsd-typography"><p>0-2.</p>
 </div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L581">server.d.ts:581</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L582">server.d.ts:582</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="timeoutms"><code class="tsd-tag">Optional</code><span>timeout<wbr/>Ms</span><a href="#timeoutms" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">timeoutMs</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">number</span></div>
 <div class="tsd-comment tsd-typography"><p>Whole-call deadline in milliseconds, 100-30000. Defaults to 2000.</p>
 </div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L579">server.d.ts:579</a></li></ul></aside></section></section></details></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L580">server.d.ts:580</a></li></ul></aside></section></section></details></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">

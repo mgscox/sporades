@@ -98,8 +98,31 @@ and calling it first prevents the same handler from entering one.
 | `timeoutMs` | Whole-call deadline, 100–30000 ms. **Defaults to 2000.** |
 | `temperature` | Optional, 0–2. |
 | `jsonSchema` | Optional JSON Schema object (≤ 64 KiB) requested in strict structured-output mode. The text is parsed into `json`; Sporades does not validate it against the schema, so check the shape you rely on. |
-| `provider` | Optional `{ api?, baseUrl?, model?, apiKey? }` overriding the project settings for this call only. Overrides refine a declared, enabled `ai` block; they cannot activate an undeclared or disabled one. |
+| `provider` | Optional `{ api?, baseUrl?, model?, apiKey? }` overriding the project settings and Server env key for this call only. See [per-call providers](#per-call-providers). |
 | `signal` | Optional `AbortSignal`. A Job's or Privileged callback's `ctx.signal` is honoured automatically. |
+
+### Per-call providers
+
+Each value in `provider` takes precedence over the `ai` declaration and its
+Server env key, and works even when `ai` is omitted or `enabled: false`. Values
+a call leaves out fall back to whatever `ai` declares. A call with no override
+leaves an undeclared or disabled project dormant.
+
+The project key belongs to the project base URL: it is sent only when the
+call's resolved base URL is the declared `ai.baseUrl`. A call aimed at any other
+base URL must pass its own `apiKey`, otherwise it resolves `AI_UNCONFIGURED`
+without sending anything. `provider.baseUrl` follows the same HTTPS rule as
+`ai.baseUrl`.
+
+```ts
+// Staging points at a local model; elsewhere the project default applies.
+const provider = ctx.env.AI_STAGING_URL
+  ? { baseUrl: ctx.env.AI_STAGING_URL, model: "llama3.2", apiKey: ctx.env.AI_STAGING_KEY }
+  : undefined;
+const result = await ctx.ai.chat({ messages, provider });
+```
+
+`ctx.ai.enabled` describes only the project default.
 
 Combined `system` and message content is limited to 256 KiB. Unknown fields,
 accessor properties and non-JSON schema values are rejected.
@@ -115,7 +138,7 @@ accessor properties and non-JSON schema values are rejected.
 
 | Code | When |
 | --- | --- |
-| `AI_UNCONFIGURED` | `ai` is omitted or `enabled: false`, or no key/base URL/model resolves. |
+| `AI_UNCONFIGURED` | No base URL, model, or key resolves after applying `provider` over the `ai` declaration, including another base URL without its own `apiKey`. A call with no override is unconfigured while `ai` is omitted or `enabled: false`. |
 | `AI_INVALID_REQUEST` | The input failed validation. Nothing was sent. Input is validated before configuration, so a dormant Capsule still reports malformed calls. |
 | `AI_TIMEOUT` | `timeoutMs` elapsed before the complete response arrived. |
 | `AI_ABORTED` | The caller's or context's signal aborted the call. |
@@ -135,7 +158,8 @@ returned or logged.
   bearer key to another origin. The Responses API is always sent with
   `store: false`. Choose a zero-data-retention provider or a local model for
   personal data; Sporades does not control what the provider retains.
-- A per-call `provider.apiKey` is used only for that request.
+- A per-call `provider.apiKey` is used only for that request, and the project
+  key is never sent to a base URL other than `ai.baseUrl`.
 
 ## Transactions
 

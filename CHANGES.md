@@ -18,6 +18,12 @@ Changes since v0.9.34.
 
 ### 🐛 Bug Fixes
 
+- Send the `ctx.ai` project key only to the project base URL; a per-call
+  `provider.baseUrl` elsewhere now needs its own `provider.apiKey` (#280).
+- Let per-call `ctx.ai` provider values activate an undeclared or disabled `ai`
+  section, falling back to any declared values (#280).
+- Stop Custom endpoint `ctx.signal` starting aborted on Node 24, which made every
+  endpoint `ctx.ai` call resolve `AI_ABORTED`; a client disconnect now aborts it (#280).
 - Fix runtime injection on secondary HTML documents (#274) (91e06995).
 
 ### 🔧 Improvements

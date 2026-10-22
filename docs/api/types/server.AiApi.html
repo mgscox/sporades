@@ -20,7 +20,7 @@ event with api, model, token usage, latency, and outcome.</p>
 </div></section>
 <div class="tsd-signature"><span class="tsd-signature-keyword">type</span> <span class="tsd-kind-type-alias">AiApi</span> <span class="tsd-signature-symbol">=</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-property" href="#enabled">enabled</a><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">boolean</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#chat-1">chat</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">input</span><span class="tsd-signature-symbol">:</span> <a href="server.AiChatInput.html" class="tsd-signature-type tsd-kind-type-alias">AiChatInput</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="server.AiChatResult.html" class="tsd-signature-type tsd-kind-type-alias">AiChatResult</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L619">server.d.ts:619</a></li></ul></aside>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L620">server.d.ts:620</a></li></ul></aside>
 <section class="tsd-panel-group tsd-index-group">
 <section class="tsd-panel tsd-index-panel">
 <details class="tsd-index-content tsd-accordion" open><summary class="tsd-accordion-summary tsd-index-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
@@ -40,12 +40,13 @@ event with api, model, token usage, latency, and outcome.</p>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="enabled"><code class="tsd-tag">Readonly</code><span>enabled</span><a href="#enabled" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-property">enabled</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">boolean</span></div>
-<div class="tsd-comment tsd-typography"><p>Whether the project declares an enabled <code>ai</code> block and its <code>keyEnv</code> Server env value is set.
-<code>false</code> leaves the Capsule running; calls resolve <code>AI_UNCONFIGURED</code> unless a per-call
-<code>provider.apiKey</code> supplies the key for a declared, enabled project.</p>
+<div class="tsd-comment tsd-typography"><p>Whether the project default is usable: an enabled <code>ai</code> block whose <code>keyEnv</code> Server env value is
+set. It describes only the default. When <code>false</code>, a call with no <code>provider</code> override resolves
+<code>AI_UNCONFIGURED</code>, but per-call <code>provider</code> values can still supply the missing base URL, model,
+or key, even when <code>ai</code> is undeclared or <code>enabled: false</code>.</p>
 </div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L625">server.d.ts:625</a></li></ul></aside></section></section></details>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L627">server.d.ts:627</a></li></ul></aside></section></section></details>
 <details class="tsd-panel-group tsd-member-group tsd-accordion" open><summary class="tsd-accordion-summary" data-key="section-Methods"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
 <h2 class="tsd-anchor-link" id="methods-1">Methods<a href="#methods-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2></summary>
 <section>
@@ -61,7 +62,7 @@ event with api, model, token usage, latency, and outcome.</p>
 <li><span><span class="tsd-kind-parameter">input</span>: <a href="server.AiChatInput.html" class="tsd-signature-type tsd-kind-type-alias">AiChatInput</a></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="server.AiChatResult.html" class="tsd-signature-type tsd-kind-type-alias">AiChatResult</a><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L626">server.d.ts:626</a></li></ul></aside></div></li></ul></section></section></details></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L628">server.d.ts:628</a></li></ul></aside></div></li></ul></section></section></details></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">
