@@ -2,20 +2,9 @@
 
 ## Unreleased - 2026-10-22
 
-Changes since v0.9.35.
+Changes since v0.9.36.
 
-### 🚀 Features
-
-- Add opt-in Capsule MCP bridge (ADR 0059) (#279) (e277f5c1).
-- Add runtime-owned ctx.ai client for OpenAI-compatible endpoints (#277) (466fe71a).
-
-### 🐛 Bug Fixes
-
-- Fix ctx.ai key scoping, per-call override activation, and Node 24 endpoint signal (#281) (d73bb8af).
-
-### 📦 Packaging
-
-- Fail fast when npm registry calls error or hang in package script (#282) (57ed5f7d).
+No changes detected.
 
 ## v0.9.11 - 2026-09-02
 
@@ -104,6 +93,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
