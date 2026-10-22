@@ -332,6 +332,39 @@ test("change generator describes tagged release baselines", async () => {
   assert.doesNotMatch(changes, /No release tag was found/);
 });
 
+test("packaged release notes survive regeneration and the next release", async () => {
+  const options = {
+    baseline: { ref: "v0.9.35", label: "v0.9.35", kind: "tag" },
+    commits: [{ hash: "abc123", subject: "Add runtime-owned ctx.ai client (#276)" }],
+    workingTreeChanges: [],
+    date: "2026-10-22",
+    releaseVersion: "0.9.36",
+    existing: "# Changes\n\n## Unreleased - 2026-10-21\n\nDraft detail.\n\n## v0.9.35 - 2026-10-20\n\nPrevious release.\n",
+    write: false,
+  };
+  const released = await generateChanges(options);
+  assert.match(released, /^# Changes\n\n## v0\.9\.36 - 2026-10-22/);
+  assert.doesNotMatch(released, /Draft detail/);
+
+  const nextOptions = {
+    ...options,
+    baseline: { ref: "v0.9.36", label: "v0.9.36", kind: "tag" },
+    commits: [],
+    existing: released,
+  };
+  const draft = await generateChanges({ ...nextOptions, releaseVersion: undefined });
+  assert.match(draft, /^# Changes\n\n## Unreleased/);
+  assert.match(draft, /## v0\.9\.36[\s\S]*ctx\.ai[\s\S]*#276/);
+
+  const nextRelease = await generateChanges({ ...nextOptions, existing: draft, releaseVersion: "0.9.37" });
+  assert.match(nextRelease, /^# Changes\n\n## v0\.9\.37 - 2026-10-22/);
+  assert.match(nextRelease, /No changes detected\.[\s\S]*## v0\.9\.36[\s\S]*ctx\.ai[\s\S]*#276/);
+  assert.match(nextRelease, /## v0\.9\.35[\s\S]*Previous release/);
+  assert.doesNotMatch(nextRelease, /## Unreleased/);
+  const directRelease = await generateChanges({ ...nextOptions, releaseVersion: "0.9.37" });
+  assert.equal(directRelease.trimEnd(), nextRelease.trimEnd());
+});
+
 test("change generator preserves a versioned release section when adding Unreleased notes", () => {
   const existing = `# Changes\n\n## v1.2.3 - 2026-09-01\n\nRequired release detail.\n\n## v1.2.2 - 2026-08-01\n\nOlder detail.\n`;
   const next = upsertTopSection(existing, "## Unreleased - 2026-09-02\n\nNo changes detected.");

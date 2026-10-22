@@ -593,7 +593,7 @@ export async function packageForNpm(args = process.argv.slice(2)) {
   assertRemoteReleaseTagAvailable(releaseTag, releaseUpstream.remote, remoteTag);
 
   await run("npm", ["run", "docs:api"]);
-  await generateChanges();
+  await generateChanges({ releaseVersion: nextVersion });
   console.log("Updated CHANGES.md.");
   await updatePackageVersion(nextVersion);
   console.log(`Version bumped to ${nextVersion}.`);
