@@ -124294,7 +124294,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
           (columnMetadata) => thenIfPromise(statement.all(), (allRows) => ({
             ok: true,
             data: {
-              columns: columnMetadata.map((column) => column.name),
+              columns: columnMetadata?.map((column) => column.name) ?? Object.keys(allRows[0] ?? {}),
               rows: allRows.filter((row) => !isInternalLogIndexMetadataRow(row, sql3))
             },
             error: null
@@ -124314,6 +124314,19 @@ function createSharedDatabaseAdapterMethods(dialect) {
       }
     }
   };
+}
+function describeSqliteColumns(connection, statement, sql2) {
+  if (typeof statement.columns === "function") return statement.columns();
+  let row;
+  try {
+    row = connection.prepare(
+      `SELECT __sporades_columns.* FROM (SELECT 1) LEFT JOIN (${sqlWithoutTrailingTerminator(sql2)}
+) AS __sporades_columns ON 1 LIMIT 1`
+    ).get();
+  } catch {
+    return null;
+  }
+  return Object.keys(row ?? {}).map((name2) => ({ name: name2 }));
 }
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
@@ -124365,7 +124378,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             }));
           },
           columns() {
-            return run2(() => useConnection(() => connection.prepare(sql2).columns()));
+            return run2(() => useConnection(() => describeSqliteColumns(connection, connection.prepare(sql2), sql2)));
           }
         };
       }
@@ -124417,7 +124430,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                 recordLiveQueryStatementWrite(sql2, result);
                 return result;
               },
-              columns: () => statement.columns()
+              columns: () => describeSqliteColumns(dedicated, statement, sql2)
             });
           }
         };
