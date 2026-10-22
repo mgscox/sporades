@@ -1000,7 +1000,11 @@ Implemented command families:
 - `sporades logs`
 - `sporades db list|dump|query`
 - `sporades auth status|set|clients|as`
-- `sporades host add|use|current|bind|register|push|start|stop|restart|unregister|delete|list|stats|logs|ssh|bootstrap|invoke`
+- `sporades host add|use|current|bind|register|push|start|stop|restart|unregister|delete|list|stats|logs|ssh|db|bootstrap|invoke`
+
+`sporades host db list|dump|query` reads a running Hosted Capsule's database
+read-only through the Host helper over the operator's SSH access, with the same
+JSON envelope and read-only enforcement as `sporades db` against a Dev session.
 
 `sporades dev --json` streams JSON Lines for start and rebuild lifecycle events.
 The JSONL log stream used by app `ctx.log` and platform runtime events is a

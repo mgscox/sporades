@@ -508,6 +508,9 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     // Runtime-owned validation for the five bounded operator action envelopes. It is carried by
     // the boot program but owns no database statement, SQL walker, dialect, or normalization.
     "cli/access-key-operator-envelope.js",
+    // The `sporades host db` action names and response frame (#285). The boot program's db actions
+    // call the existing database-runtime inspection helpers; this module emits no statement.
+    "cli/database-inspection-envelope.js",
     // Shared immutable Access-key bounds and header names; constants only, with
     // no SQL walker, dialect, emitted statement, or normalization function.
     "access-key-contract.js",

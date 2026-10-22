@@ -248,6 +248,8 @@ Capsule commands:
                       Restore a stopped Capsule; optionally --to-subname <destination>
   backup status       Report last successful backup age for each Capsule
   bind <subname>      Bind this project to a Hosted Capsule
+  db list|dump|query <sql> [--subname <name>]
+                      Read a running Hosted Capsule's database over SSH
   register <subname>  Register a Hosted Capsule
   canonical set <subname> <alias>|clear <subname>
                       Select the public origin; restart a running Capsule

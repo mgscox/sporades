@@ -26,12 +26,14 @@ import path from "node:path";
 import {
   createRuntimeInspectionAdapter,
   createWebSocketHub,
+  dumpDatabase,
   handleFileHttpRoute,
   renderPageHtml,
   isDocumentNavigationRequest,
   inspectRuntimeJobs,
   inspectRuntimeSchedules,
   interpretHttpRequestTarget,
+  listDatabaseTables,
   openDevDatabase,
   prepareHttpSecurity,
   runRuntimeAccessKeyOperatorAction,
@@ -41,6 +43,7 @@ import {
   routeWebSocketAdmission,
   routeRuntimeHealth,
   routeSporadesAuth,
+  runReadOnlyQuery,
   shutdownAndCloseDatabase,
   shutdownHttpServerAndRuntime,
   writeUnhandledHttpError,
@@ -49,6 +52,7 @@ import {
 import { publicTreePathFromRequest } from "../public-tree-contract.js";
 import { publicAccessKeyManagementError } from "../access-keys-runtime.js";
 import { ACCESS_KEY_OPERATOR_ACTIONS, validateAccessKeyOperatorActionInput } from "../cli/access-key-operator-envelope.js";
+import { DATABASE_INSPECTION_ACTIONS } from "../cli/database-inspection-envelope.js";
 import { createStripeCallbackEndpoint } from "../stripe-webhook-runtime.js";
 import { createStripeTeamBillingProvider } from "../stripe-team-billing-provider.js";
 import { createHttpRequestTelemetry } from "../runtime-telemetry.js";
@@ -128,9 +132,16 @@ if (sporadesAction) {
   // must not corrupt the CLI/Host-helper response frame.
   process.env.SPORADES_LOG_STDOUT = "0";
   const accessKeyActions: readonly string[] = ACCESS_KEY_OPERATOR_ACTIONS;
-  if (!["jobs.inspect", "schedules.inspect", ...accessKeyActions].includes(sporadesAction)) {
+  const databaseActions: readonly string[] = DATABASE_INSPECTION_ACTIONS;
+  if (!["jobs.inspect", "schedules.inspect", ...accessKeyActions, ...databaseActions].includes(sporadesAction)) {
     process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\n");
     process.exit(1);
+  }
+  if (databaseActions.includes(sporadesAction)) {
+    const envelope = await runDatabaseInspectionAction(sporadesAction, sporadesActionInput);
+    // A large dump can outlast a synchronous write on a pipe; exit only once stdout has it.
+    await new Promise((resolve) => process.stdout.write(JSON.stringify(envelope) + "\n", resolve));
+    process.exit(envelope.ok ? 0 : 1);
   }
   if (accessKeyActions.includes(sporadesAction)) {
     sporadesActionInput = validateAccessKeyOperatorActionInput(sporadesAction, sporadesActionInput, () => {
@@ -422,4 +433,36 @@ function unsealRuntimeServerEnv(envelope: any, privateKey: string) {
     ]).toString("utf8");
   }
   return values;
+}
+
+// `sporades host db` (#285). The Dev debug routes' own functions answer, so a Hosted Capsule gives
+// the same JSON and `db.query` keeps the same read-only gate. The connection is read-only and
+// query-only, and it is opened by this one-shot process as the container's runtime user: the live
+// Capsule keeps running, and no WAL or shared-memory file changes owner.
+async function runDatabaseInspectionAction(action: string, input: any) {
+  const invalidInput = action === "db.query"
+    ? !input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).join() !== "sql" || typeof input.sql !== "string"
+    : !input || typeof input !== "object" || Object.keys(input).length > 0;
+  if (invalidInput) {
+    return { ok: false, data: null, error: { message: "Invalid database inspection input.", hint: "Upgrade the Sporades CLI and generated Bundle together." } };
+  }
+  let adapter: any = null;
+  try {
+    adapter = await createRuntimeInspectionAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
+    if (!adapter) {
+      return { ok: false, data: null, error: { message: "The Capsule database does not exist yet.", hint: "Start the Capsule so it creates its database, then retry the command." } };
+    }
+    if (adapter.engine === "sqlite") {
+      await adapter.exec("PRAGMA busy_timeout = 1000");
+      await adapter.exec("PRAGMA query_only = ON");
+    }
+    const database = { adapter, sqlite: adapter };
+    if (action === "db.list") return { ok: true, data: { tables: await listDatabaseTables(database) }, error: null };
+    if (action === "db.dump") return { ok: true, data: { tables: await dumpDatabase(database) }, error: null };
+    return await runReadOnlyQuery(database, input.sql);
+  } catch {
+    return { ok: false, data: null, error: { message: "Capsule database inspection failed.", hint: "Retry the command. If it keeps failing, check the Capsule logs." } };
+  } finally {
+    await adapter?.close();
+  }
 }

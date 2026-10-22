@@ -30,6 +30,7 @@
       "src/cli/cli-help.ts",
       "src/cli/cli-support.ts",
       "src/cli/cli-version.ts",
+      "src/cli/database-inspection-envelope.ts",
       "src/cli/dev-stripe-origin.ts",
       "src/cli/doctor.ts",
       "src/cli/github-autodeploy-workflow.ts",
@@ -152,7 +153,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "a6f866acff64ee43aa3e350c93cac611544139b397c9511a4f8007148152bc29"
+    "digest": "1baeec14881861349b8b7900c09d18da4b3062731b95dce4e78fefa07e615a5a"
   },
   "outputs": {
     "files": [
@@ -242,6 +243,10 @@
       "dist/cli/cli-version.d.ts.map",
       "dist/cli/cli-version.js",
       "dist/cli/cli-version.js.map",
+      "dist/cli/database-inspection-envelope.d.ts",
+      "dist/cli/database-inspection-envelope.d.ts.map",
+      "dist/cli/database-inspection-envelope.js",
+      "dist/cli/database-inspection-envelope.js.map",
       "dist/cli/dev-stripe-origin.d.ts",
       "dist/cli/dev-stripe-origin.d.ts.map",
       "dist/cli/dev-stripe-origin.js",
@@ -680,6 +685,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "9161a6b22ca18ff101a8cc1474c2b13c2d4a3c4007f256a9e52c68acbd666f15"
+    "digest": "b0bf31e7be3d91875fcabe2321b0f5fb39b2ace08dc940f4239ad0871f0fe6cc"
   }
 }

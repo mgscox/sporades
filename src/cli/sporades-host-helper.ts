@@ -58,6 +58,7 @@ import {
 import { CLI_VERSION } from "./cli-version.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, sanitizeAccessKeyOperatorEnvelope, validateAccessKeyOperatorActionInput } from "./access-key-operator-envelope.js";
+import { DATABASE_INSPECTION_MAX_BUFFER, encodeDatabaseInspectionInput, isDatabaseInspectionAction, sanitizeDatabaseInspectionEnvelope } from "./database-inspection-envelope.js";
 import { ACCESS_KEY_CLIENT_ADDRESS_HEADER } from "../access-key-contract.js";
 import { CLIENT_ADDRESS_TOKEN_HEADER, clientAddressBoundaryToken } from "../client-address.js";
 import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
@@ -1157,6 +1158,10 @@ async function dispatchMain(request: HostHelperRequest) {
     runCapsuleAccessKeyAction(request);
     return;
   }
+  if (isDatabaseInspectionAction(request.action)) {
+    inspectCapsuleDatabase(request);
+    return;
+  }
   if (request.action === "host.stats") {
     await statsHost(request);
     return;
@@ -1213,6 +1218,26 @@ function runCapsuleAccessKeyAction(request: HostHelperRequest) {
   ]);
 }
 
+function inspectCapsuleDatabase(request: HostHelperRequest) {
+  const action = request.action;
+  if (!isDatabaseInspectionAction(action)) throw helperError("Unsupported Host helper action.", "Update the Host helper or use a supported Sporades host command.");
+  const exactKeys = (value: LooseRecord, keys: string[]) => Object.keys(value).length === keys.length
+    && Object.keys(value).every((key) => keys.includes(key));
+  const query = action === "db.query";
+  const sql = (request as LooseRecord).db?.sql;
+  if (!exactKeys(request, query ? ["action", "host", "capsule", "db"] : ["action", "host", "capsule"])
+    || !request.host || typeof request.host !== "object" || Array.isArray(request.host)
+    || !exactKeys(request.host, ["alias", "domain", "scheme", "remoteRoot"])
+    || !request.capsule || typeof request.capsule !== "object" || Array.isArray(request.capsule)
+    || !exactKeys(request.capsule, ["subname"])
+    || (query && (!exactKeys((request as LooseRecord).db ?? {}, ["sql"]) || typeof sql !== "string" || !encodeDatabaseInspectionInput(sql)))) {
+    throw helperError("Invalid Hosted database inspection request.", "Upgrade the local Sporades CLI and Host helper together.");
+  }
+  inspectCapsuleRuntime(request, action, "database", (envelope) => sanitizeDatabaseInspectionEnvelope(action, envelope, () => {
+    throw helperError("Hosted database inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+  }), query ? ["--sporades-action-input", encodeDatabaseInspectionInput(sql)!] : []);
+}
+
 function inspectCapsuleRuntime(request: HostHelperRequest, action: string, label: string, sanitize: (envelope: LooseRecord) => LooseRecord = (envelope) => envelope, extraArgs: string[] = [], preserveBoundedDiagnostics = false) {
   const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
   if (!checkContainerRunning(containerName)) {
@@ -1221,7 +1246,7 @@ function inspectCapsuleRuntime(request: HostHelperRequest, action: string, label
     throw error;
   }
   const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs], {
-    maxBuffer: label === "Access-key" ? ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER : undefined,
+    maxBuffer: label === "Access-key" ? ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER : label === "database" ? DATABASE_INSPECTION_MAX_BUFFER : undefined,
   });
   let envelope: LooseRecord;
   try { envelope = JSON.parse(result.stdout.trim()); }

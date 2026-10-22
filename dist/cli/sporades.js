@@ -39,6 +39,7 @@ import { changeTelemetryProfile, readTelemetryProfiles, resolveLocalTelemetryCon
 import { createHttpRequestTelemetry } from "../runtime-telemetry.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import { ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER, confirmAccessKeyOperatorAction, sanitizeAccessKeyOperatorEnvelope } from "./access-key-operator-envelope.js";
+import { DATABASE_INSPECTION_MAX_BUFFER, encodeDatabaseInspectionInput, isDatabaseInspectionAction } from "./database-inspection-envelope.js";
 import { DOCTOR_SESSIONS, createDoctorEnvelope, doctorShouldExitNonZero, renderDoctorHumanOutput, runDoctorChecks, } from "./doctor.js";
 import { createGithubAutodeployWorkflow } from "./github-autodeploy-workflow.js";
 import { SECURITY_SESSIONS, authorizedKeyFingerprint, readBaseImageUpdatePolicy, readOptionalProjectSecurity, readProjectConfig, resolveAuthorizedKeyLines, resolveEffectiveSecurityPolicy, resolveLocalContainerSshAccess, withRuntimeSecuritySession, } from "./project-config.js";
@@ -1469,6 +1470,21 @@ function parseHostArgs(args) {
             validateHostAlias(hostAlias);
             validateCapsuleSubname(subname);
             return { subcommand, ...parsePolicyOperation(positional), hostAlias, subname, json, projectDir: process.cwd() };
+        }
+        case "db": {
+            const [operation, ...sqlParts] = positional;
+            const usage = "Use `sporades host db list`, `sporades host db dump`, or `sporades host db query <sql>`, with optional `--subname <name> --host <alias>`.";
+            if (!["list", "dump", "query"].includes(operation))
+                throw commandError(`Unknown host db command: ${operation ?? ""}`.trim(), usage);
+            if (operation !== "query" && sqlParts.length > 0)
+                throw commandError("Too many positional arguments.", `Use \`sporades host db ${operation} --json\`.`);
+            if (operation === "query" && sqlParts.length === 0)
+                throw commandError("Missing SQL query.", "Use `sporades host db query <sql>`.");
+            if (hostAlias)
+                validateHostAlias(hostAlias);
+            if (subname)
+                validateCapsuleSubname(subname);
+            return { subcommand, operation, ...(operation === "query" ? { sql: sqlParts.join(" ") } : {}), subname, hostAlias, json, projectDir: process.cwd() };
         }
         case "jobs":
             if (positional.length > 0)
@@ -3964,6 +3980,32 @@ async function manageHost(options) {
             writeResult(result, !result.ok);
             return;
         }
+        case "db": {
+            if (options.operation === "query") {
+                assertReadOnlyInspectionSql(options.sql);
+                if (!encodeDatabaseInspectionInput(options.sql)) {
+                    throw commandError("SQL query is too large for Hosted inspection.", "Keep `sporades host db query` SQL under about 16 KiB.");
+                }
+            }
+            const config = await readHostConfig();
+            const target = await resolveHostPushTarget(config, options);
+            let result = invokeRemoteHostHelper({
+                alias: target.alias,
+                profile: target.profile,
+                action: `db.${options.operation}`,
+                subname: target.subname,
+                projectDir: options.projectDir,
+                ...(options.operation === "query" ? { db: { sql: options.sql } } : {}),
+            });
+            if (!result.ok && /Unsupported Host helper action/i.test(result.error.message)) {
+                result = { ok: false, data: null, error: { code: "HOST_HELPER_UPGRADE_REQUIRED", message: "The Host server CLI does not support database inspection.", hint: `Run \`sporades host upgrade --host ${target.alias}\`, then retry the command.` } };
+            }
+            else if (!result.ok && /Unsupported Sporades runtime action/i.test(result.error.message)) {
+                result = { ok: false, data: null, error: { code: "HOSTED_BUNDLE_UPGRADE_REQUIRED", message: "The Hosted Capsule's Bundle does not support database inspection.", hint: `Redeploy it with this CLI (\`sporades host push --restart --host ${target.alias}\`), then retry the command.` } };
+            }
+            printDatabaseInspection(options.operation, result, options.json);
+            return;
+        }
         case "jobs": {
             const config = await readHostConfig();
             const resolved = resolveHostProfile(config, options.hostAlias);
@@ -5292,21 +5334,26 @@ function inspectedSshPort(inspected) {
     return Number.isInteger(port) ? { host: entry.HostIp ?? null, port } : null;
 }
 async function inspectDatabase(options) {
-    if (options.subcommand === "query") {
-        const validation = validateReadOnlyInspectionSql(options.sql);
-        if (!validation.ok) {
-            throw commandError(validation.error.message, validation.error.hint);
-        }
+    if (options.subcommand === "query")
+        assertReadOnlyInspectionSql(options.sql);
+    printDatabaseInspection(options.subcommand, await fetchInspectionDatabase(options), options.json);
+}
+// Shared by `sporades db` and `sporades host db`, which answer with the same envelope (#285).
+function assertReadOnlyInspectionSql(sql) {
+    const validation = validateReadOnlyInspectionSql(sql);
+    if (!validation.ok) {
+        throw commandError(validation.error.message, validation.error.hint);
     }
-    const result = await fetchInspectionDatabase(options);
-    if (options.json) {
+}
+function printDatabaseInspection(subcommand, result, json) {
+    if (json) {
         writeResult(result, !result.ok);
         return;
     }
     if (!result.ok) {
         throw commandError(result.error.message, result.error.hint);
     }
-    switch (options.subcommand) {
+    switch (subcommand) {
         case "list":
             for (const table of result.data.tables) {
                 process.stdout.write(`${table}\n`);
@@ -5952,6 +5999,8 @@ function invokeRemoteHostHelper(options) {
     if (options.accessKeys) {
         request.accessKeys = options.accessKeys;
     }
+    if (options.db)
+        request.db = options.db;
     if (options.verification) {
         request.verification = options.verification;
     }
@@ -5969,6 +6018,7 @@ function invokeRemoteHostHelper(options) {
         encoding: "utf8",
         ...(String(options.action).startsWith("access-keys.") ? { maxBuffer: ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER } : {}),
         ...(String(options.action).includes(".backup.") ? { maxBuffer: 16 * 1024 * 1024 } : {}),
+        ...(isDatabaseInspectionAction(options.action) ? { maxBuffer: DATABASE_INSPECTION_MAX_BUFFER } : {}),
         input: `${JSON.stringify(request)}\n`,
     });
     return parseRemoteHostHelperResult(result);

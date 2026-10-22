@@ -88,6 +88,20 @@ reservation. Repair the reported lock cleanup problem, then retry registration
 to complete recovery. Unregister and delete reject Capsules with pending
 registration recovery; complete that recovery first, then tear down normally.
 
+## Read a Hosted Capsule's database
+
+`sporades host db list|dump|query` runs the same read-only inspection as
+`sporades db` against a running Hosted Capsule, over your existing SSH access:
+
+```sh
+sporades host db query "select count(*) as total from todos" --subname fourteen --json
+```
+
+The JSON matches `sporades db query --json`, so a pull script can target a Dev
+session or a Hosted Capsule by changing only the command. Upgrade the Host
+helper and redeploy the Capsule with this CLI first. See
+[Hosted Capsule database](../reference/operations-and-hosting.md#hosted-capsule-database).
+
 ## Capsule data backups
 
 Configure opt-in encrypted local or S3 backups with `sporades host backup configure`.

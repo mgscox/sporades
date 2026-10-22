@@ -88,6 +88,12 @@ The routes return the same envelopes as `sporades logs --json` and
 `sporades db list|dump|query --json`, and can also be called directly with the
 key. Local identity simulation (`sporades auth as`) stays Dev-only.
 
+An operator who only needs to pull data from a Hosted Capsule can use
+`sporades host db list|dump|query` instead. It runs over the operator's SSH
+access through the Host helper, returns the same envelopes, and exposes no
+public route or bearer key. See
+[Hosted Capsule database](./operations-and-hosting.md#hosted-capsule-database).
+
 ### Capsule tools
 
 A Custom endpoint becomes a tool only when it opts in with `mcp`:
