@@ -4,6 +4,8 @@ import { bindAppContext, isLocalPublicOrigin, resolvePublicOrigin } from "./publ
 import { dirname as pathDirname } from "node:path";
 import { missingServerEnvKeys, missingServerEnvError, validateServerEnvConfig } from "./server-env-requirements.js";
 import { validatePaymentsConfig } from "./stripe-payment-config.js";
+import { validateEndpointMcpDeclarations, validateMcpConfig } from "./mcp-config.js";
+import { resolveMcpRuntime } from "./mcp-runtime.js";
 import { resolveFileAllowedMimeTypes } from "./file-policy.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
 import { createCapsuleRateLimiter, resolveRegistrationThrottle } from "./capsule-rate-limit.js";
@@ -587,6 +589,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         validateCapsuleAuthRequirements(capsuleDefinition);
         validateStripeEventSubscription(capsuleDefinition.stripeEvents);
         validateEndpointResponseDeclarations(capsuleDefinition);
+        validateEndpointMcpDeclarations(capsuleDefinition.endpoints);
     }
     validateLogConfig(config);
     validateServerEnvConfig(config.env);
@@ -608,6 +611,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
     const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
     const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
+    const mcp = resolveMcpRuntime(validateMcpConfig(config.mcp), serverEnv);
     if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
         throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
     }
@@ -795,6 +799,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         serverEnv,
         observability,
         paymentsConfig,
+        mcp,
         createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
         stripeApiBaseUrl: options?.stripeApiBaseUrl,
         enqueueTeamBillingCheckoutJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, delayMs: 1_000 }, true),

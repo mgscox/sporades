@@ -94,6 +94,8 @@
       "src/mail-config.ts",
       "src/mail-runtime.ts",
       "src/maybe-promise.ts",
+      "src/mcp-config.ts",
+      "src/mcp-runtime.ts",
       "src/notification-intent-runtime.ts",
       "src/observability-runtime.ts",
       "src/package-root.ts",
@@ -150,7 +152,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "a6f52b90012f9f932d482126651f2fe6c91b566e58a1a9574b9c86b1d55dce6c"
+    "digest": "cce9e823422bed68cd1e36860617e19bda07ad0c5157d5d8a1e8073124f3849f"
   },
   "outputs": {
     "files": [
@@ -496,6 +498,14 @@
       "dist/maybe-promise.d.ts.map",
       "dist/maybe-promise.js",
       "dist/maybe-promise.js.map",
+      "dist/mcp-config.d.ts",
+      "dist/mcp-config.d.ts.map",
+      "dist/mcp-config.js",
+      "dist/mcp-config.js.map",
+      "dist/mcp-runtime.d.ts",
+      "dist/mcp-runtime.d.ts.map",
+      "dist/mcp-runtime.js",
+      "dist/mcp-runtime.js.map",
       "dist/notification-intent-runtime.d.ts",
       "dist/notification-intent-runtime.d.ts.map",
       "dist/notification-intent-runtime.js",
@@ -670,6 +680,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "1739bc4befefb969033b054ea0b523ca589d3d3b527687fe0bdb62e006cab1a7"
+    "digest": "96ef636c19d3775b9bb3f79007149c85b75c7cd983064ef79daf01d22383bf68"
   }
 }

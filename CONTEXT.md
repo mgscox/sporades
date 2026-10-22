@@ -208,6 +208,10 @@ _Avoid_: app definition (that's the argument, not the function), config function
 A Capsule-defined HTTP handler declared with `endpoint({ method, path }, handler)`. Used for integration paths such as webhooks that cannot use the WebSocket client transport. Endpoints receive normal Sporades context plus `ctx.request`.
 _Avoid_: REST API (too broad), route handler (confuses it with client routing)
 
+**Capsule MCP bridge**:
+The opt-in, runtime-owned `/__sporades/mcp` route (ADR-0059) that serves MCP over stateless Streamable HTTP. Every request, and every operator route under `/__sporades/ops/`, needs the bearer key named by `mcp.keyEnv` in Sealed Server env. Each tool call becomes one HTTP request against the Capsule and returns that response unchanged: operator tools reach log and read-only database routes, and Capsule tools reach Custom endpoints declared with `mcp`. Bridged endpoint requests carry no key or caller credential.
+_Avoid_: MCP server (it holds no tool logic), agent API, admin API
+
 **Email provider route**:
 A runtime-owned HTTP callback route enabled under `mail.webhooks` for one outbound email provider. It verifies and normalizes provider payloads before the Capsule can observe them, and remains distinct from a Capsule-defined Custom endpoint.
 _Avoid_: app webhook, Mailjet handler, email endpoint

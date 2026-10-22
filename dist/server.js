@@ -1,4 +1,5 @@
 export { escapeHtml, html } from "./html.js";
+import { validateEndpointMcpDeclarations } from "./mcp-config.js";
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 export function requireUserAuth(context, options = {}) {
     const linked = normalizeRequireUserAuthOptions(options).linked;
@@ -36,6 +37,7 @@ export function capsule(definition) {
     const normalized = normalizeCapsuleAuthDefinition(definition);
     validateCapsuleAuthRequirements(normalized);
     validateEndpointResponseDeclarations(normalized);
+    validateEndpointMcpDeclarations(normalized.endpoints);
     return {
         kind: "capsule",
         ...normalized,

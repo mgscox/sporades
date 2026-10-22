@@ -28884,25 +28884,43 @@ function redactDiagnosticText(value, serverEnv = {}) {
   return safe;
 }
 
-// src/file-policy.ts
-var signatures = [
-  ["image/png", [137, 80, 78, 71, 13, 10, 26, 10], 0],
-  ["image/jpeg", [255, 216, 255], 0],
-  ["image/gif", [71, 73, 70, 56, 55, 97], 0],
-  ["image/gif", [71, 73, 70, 56, 57, 97], 0],
-  ["image/bmp", [66, 77], 0],
-  ["application/pdf", [37, 80, 68, 70, 45], 0],
-  ["application/gzip", [31, 139], 0],
-  ["application/zip", [80, 75, 3, 4], 0],
-  ["application/zip", [80, 75, 5, 6], 0],
-  ["application/zip", [80, 75, 7, 8], 0]
-];
-var signedTypes = /* @__PURE__ */ new Set([...signatures.map(([type]) => type), "image/webp", "image/avif"]);
+// src/resource-runtime.ts
+var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
+  sqlite: "supported",
+  postgres: "supported",
+  libsql: "unsupported"
+});
+var resourceAbort = Symbol("resourceAbort");
+function resourceError(code) {
+  return Object.assign(new Error(code === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
+    code,
+    ...code === "RESOURCE_BUSY" ? { retryable: true } : {}
+  });
+}
+var unsupportedResources = Object.freeze({
+  async run() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  },
+  async status() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  }
+});
+
+// src/live-query-invalidation.ts
+var { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
+var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
+var liveQueryReads = new AsyncLocalStorage();
+var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
+var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
+var writeTablePattern = new RegExp(
+  String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
+  "i"
+);
 
 // src/runtime-request-context.ts
-import { AsyncLocalStorage } from "node:async_hooks";
-var runtimeRequestScope = new AsyncLocalStorage();
-var runtimeJobScope = new AsyncLocalStorage();
+import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage2();
+var runtimeJobScope = new AsyncLocalStorage2();
 
 // src/html.ts
 function escapeHtml(value) {
@@ -28938,33 +28956,19 @@ function html(strings2, ...values) {
   html2.raw = raw;
 })(html || (html = {}));
 
-// src/resource-runtime.ts
-var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
-  sqlite: "supported",
-  postgres: "supported",
-  libsql: "unsupported"
-});
-var resourceAbort = Symbol("resourceAbort");
-function resourceError(code) {
-  return Object.assign(new Error(code === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
-    code,
-    ...code === "RESOURCE_BUSY" ? { retryable: true } : {}
-  });
-}
-var unsupportedResources = Object.freeze({
-  async run() {
-    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-  },
-  async status() {
-    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-  }
-});
+// src/auth-admission.ts
+var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
+var ACCESS_KEY_SCOPE_LIMIT = 1024;
+var ACCESS_KEY_SCOPE_BYTE_LIMIT = 256;
 
-// src/log-envelope.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
+// src/access-keys-runtime.ts
+var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
 
-// src/runtime-telemetry.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+// src/teams-runtime.ts
+var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
+var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
+var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
+var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 
 // node_modules/parse5/dist/common/unicode.js
 var CODE_POINTS;
@@ -29994,30 +29998,20 @@ var VOID_ELEMENTS = /* @__PURE__ */ new Set([
   TAG_NAMES.WBR
 ]);
 
-// src/auth-admission.ts
-var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
-var ACCESS_KEY_SCOPE_LIMIT = 1024;
-var ACCESS_KEY_SCOPE_BYTE_LIMIT = 256;
-
-// src/access-keys-runtime.ts
-var UNKNOWN_ACCESS_KEY_DIGEST = Buffer.from("4f7c77f7b9231094754542ed50fdfd62a2cf24a5e961b61f899b85b6fe33c72b", "hex");
-
-// src/teams-runtime.ts
-var TEAM_JOIN_LINK_DEFAULT_TTL_SECONDS = 60 * 60 * 24;
-var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
-var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
-var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
-
-// src/auth-runtime.ts
-var nodeCryptoModule = process.getBuiltinModule("node:crypto");
-var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
-var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
-var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
-var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
-var registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
-var invalidRegistrationAdmission = Symbol("sporades.invalidRegistrationAdmission");
-var OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1e3;
-var oauthRegistrationUnsealFailed = Symbol("sporades.oauthRegistrationUnsealFailed");
+// src/file-policy.ts
+var signatures = [
+  ["image/png", [137, 80, 78, 71, 13, 10, 26, 10], 0],
+  ["image/jpeg", [255, 216, 255], 0],
+  ["image/gif", [71, 73, 70, 56, 55, 97], 0],
+  ["image/gif", [71, 73, 70, 56, 57, 97], 0],
+  ["image/bmp", [66, 77], 0],
+  ["application/pdf", [37, 80, 68, 70, 45], 0],
+  ["application/gzip", [31, 139], 0],
+  ["application/zip", [80, 75, 3, 4], 0],
+  ["application/zip", [80, 75, 5, 6], 0],
+  ["application/zip", [80, 75, 7, 8], 0]
+];
+var signedTypes = /* @__PURE__ */ new Set([...signatures.map(([type]) => type), "image/webp", "image/avif"]);
 
 // src/team-billing-management.ts
 var CLAIM_TTL_MS = 5 * 60 * 1e3;
@@ -30033,7 +30027,7 @@ var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 var CLAIM_TTL_MS2 = 5 * 6e4;
 
 // src/jobs-runtime.ts
-var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
 var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
 var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
@@ -30118,7 +30112,7 @@ function auditString(value, fallback) {
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
 // src/file-storage-runtime.ts
-var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 
 // src/file-ingress-runtime.ts
 var import_pdf_lib = __toESM(require_cjs(), 1);
@@ -45816,6 +45810,54 @@ var clamavRefreshIntervalMs = 60 * 60 * 1e3;
 var clamavRefreshRetryMs = 15 * 60 * 1e3;
 var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 
+// src/auth-runtime.ts
+var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
+var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
+var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
+var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
+var registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollback");
+var invalidRegistrationAdmission = Symbol("sporades.invalidRegistrationAdmission");
+var OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1e3;
+var oauthRegistrationUnsealFailed = Symbol("sporades.oauthRegistrationUnsealFailed");
+
+// src/database-telemetry.ts
+import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
+var databaseTelemetry = Symbol("sporades.database.telemetry");
+var operationScope = new AsyncLocalStorage3();
+
+// src/database-runtime.ts
+var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
+var nodeFsModule = process.getBuiltinModule("node:fs");
+var transactionOperations = Symbol.for("sporades.database.transactionOperations");
+var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
+var resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
+var resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
+var resourceSchemaPublished = Symbol.for("sporades.database.resourceSchemaPublished");
+var resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
+
+// src/mcp-runtime.ts
+var MCP_OPERATOR_ROUTES = Object.freeze([
+  { tool: "sporades_logs", method: "GET", path: "/__sporades/ops/logs", description: "Recent indexed runtime log events." },
+  { tool: "sporades_logs_tail", method: "GET", path: "/__sporades/ops/logs/tail", description: "Latest events from the durable JSONL log stream." },
+  { tool: "sporades_db_list", method: "GET", path: "/__sporades/ops/db/list", description: "List inspectable database tables." },
+  { tool: "sporades_db_dump", method: "GET", path: "/__sporades/ops/db/dump", description: "Dump every inspectable database table." },
+  {
+    tool: "sporades_db_query",
+    method: "POST",
+    path: "/__sporades/ops/db/query",
+    description: "Run one read-only SQL query against the Capsule database.",
+    input: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"], additionalProperties: false }
+  }
+]);
+
+// src/log-envelope.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
+
+// src/runtime-telemetry.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+
 // src/runtime-fetch-telemetry.ts
 var fetchStateKey = Symbol.for("sporades.runtime.fetch-telemetry.v1");
 var nativeAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get;
@@ -45873,17 +45915,6 @@ var AI_API_KINDS = Object.freeze(["chat-completions", "responses"]);
 var AI_MAX_PROMPT_BYTES = 256 * 1024;
 var AI_MAX_SCHEMA_BYTES = 64 * 1024;
 var AI_MAX_RESPONSE_BYTES = 1024 * 1024;
-
-// src/live-query-invalidation.ts
-var { AsyncLocalStorage: AsyncLocalStorage2 } = process.getBuiltinModule("node:async_hooks");
-var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
-var liveQueryReads = new AsyncLocalStorage2();
-var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
-var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
-var writeTablePattern = new RegExp(
-  String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
-  "i"
-);
 
 // src/cli/access-key-operator-envelope.ts
 import { createInterface } from "node:readline/promises";
@@ -46046,22 +46077,6 @@ function sanitizeAccessKeyOperatorEnvelope(value, action, input, invalid4) {
   if (!exactKeys(value, ["ok", "data", "error"]) || value.data !== null) return invalid4();
   return { ok: false, data: null, error: canonicalError(value.error, invalid4) };
 }
-
-// src/database-telemetry.ts
-import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
-var databaseTelemetry = Symbol("sporades.database.telemetry");
-var operationScope = new AsyncLocalStorage3();
-
-// src/database-runtime.ts
-var nodeCryptoModule4 = process.getBuiltinModule("node:crypto");
-var nodeFsModule = process.getBuiltinModule("node:fs");
-var transactionOperations = Symbol.for("sporades.database.transactionOperations");
-var transactionBeforeCommitChecks2 = Symbol.for("sporades.database.transactionBeforeCommitChecks");
-var resourceTransactionMechanics = Symbol.for("sporades.database.resourceTransactionMechanics");
-var resourceBootstrapMechanics = Symbol.for("sporades.database.resourceBootstrapMechanics");
-var resourceConsumptionMechanics = Symbol.for("sporades.database.resourceConsumptionMechanics");
-var resourceSchemaPublished = Symbol.for("sporades.database.resourceSchemaPublished");
-var resourceCancelActiveQuery = Symbol.for("sporades.database.resourceCancelActiveQuery");
 
 // src/server-runtime-source.ts
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
