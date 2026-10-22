@@ -254,7 +254,7 @@ test("the Host helper accepts only the exact database inspection request", async
     { action: "db.query", ...base },
     { action: "db.query", ...base, db: { sql: 1 } },
     { action: "db.query", ...base, db: { sql: "SELECT 1", extra: 1 } },
-    { action: "db.query", ...base, db: { sql: `SELECT '${"x".repeat(16 * 1024)}'` } },
+    { action: "db.query", ...base, db: { sql: `SELECT '${"x".repeat(20 * 1024)}'` } },
     { action: "db.query", ...base, db: { sql: `SELECT '${"\\".repeat(9 * 1024)}'` } },
     { action: "db.list", ...base, db: { sql: "SELECT 1" } },
     { action: "db.dump", ...base, capsule: { subname: "notes", extra: true } },
@@ -272,14 +272,14 @@ test("sporades host db validates its arguments before contacting the Host", asyn
       [["host", "db", "drop"], /Unknown host db command/],
       [["host", "db", "query"], /Missing SQL query/],
       [["host", "db", "list", "extra"], /Too many positional arguments/],
-      [["host", "db", "query", `SELECT '${"x".repeat(16 * 1024)}'`, "--subname", "notes"], /too large/],
+      [["host", "db", "query", `SELECT '${"x".repeat(20 * 1024)}'`, "--subname", "notes"], /too large/],
       [["host", "db", "query", "DELETE FROM notes", "--subname", "notes"], /read-only|Only read-only/i],
       [["host", "db", "list"], /No Hosted Capsule binding found/],
     ];
     for (const [args, message] of cases) {
       const result = run([...args, "--json"], dir, host.env);
-      assert.equal(result.status, 1, args.join(" "));
-      assert.match(JSON.parse(result.stdout).error.message, message, args.join(" "));
+      assert.equal(result.status, 1, args.join(" ").slice(0, 80));
+      assert.match(JSON.parse(result.stdout).error.message, message, args.join(" ").slice(0, 80));
     }
     assert.deepEqual(await host.requests(), []);
   });
