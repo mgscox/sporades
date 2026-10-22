@@ -1140,3 +1140,10 @@ contains the parsed value. The byte view is iterable and supports `at()`;
 Exact bytes are server-only and never automatically logged or added to HTTP
 errors, CLI output, or client transport results. Do not log the copy merely
 because an integration library accepts it.
+
+### Expose an endpoint to MCP clients
+
+Add `mcp: true` or `mcp: { description }` to an endpoint's options to list it
+as a tool on the Capsule's key-guarded MCP bridge. Endpoints without `mcp` are
+never exposed. The bridged request carries no caller credential, so the
+handler must authorize it. See the [MCP bridge reference](./mcp-bridge.md).

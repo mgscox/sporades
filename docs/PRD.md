@@ -220,6 +220,15 @@ The repository currently includes:
   Cloudflare origin certificates.
 - Server API support for schema tables, queries, mutations, Custom endpoints,
   context middleware, pre/post mutation hooks, and App messages.
+- An opt-in Capsule MCP bridge (ADR-0059). `mcp` in `sporades.json` names a
+  Sealed Server env key; with it set, `POST /__sporades/mcp` serves MCP's
+  stateless Streamable HTTP transport in Dev, Container and Hosted sessions.
+  Each tool call is translated into one HTTP request against the Capsule and
+  returns that response's status and body, with no model in the bridge.
+  Operator tools map to key-guarded `/__sporades/ops/*` log and read-only
+  database routes; Capsule tools are Custom endpoints declared with `mcp`, and
+  undeclared endpoints are never listed. Bridged endpoint requests carry no
+  key or caller credential. A missing or short key closes every bridge route.
 - Field builders for `String()`, `Boolean()`, `Number()`, `Date()`, `Json()`,
   and `Reference()`.
 - Additive migrations for new tables, fields, and unique constraints, plus
@@ -1500,7 +1509,9 @@ See [the Teams contract](reference/teams.md#atomic-destructive-policy).
 - Supporting external databases as the primary app store.
 - Making endpoints the main data API.
 - Adding multi-node orchestration, full Host disaster recovery, DNS automation, or a public
-  hosted management API in the current scope.
+  hosted management API in the current scope. The opt-in, key-guarded MCP bridge
+  (ADR-0059) is the one exception: it exposes read-only log and database
+  inspection plus endpoints the Capsule declares, and no lifecycle control.
 
 ## Log payload cap validation
 

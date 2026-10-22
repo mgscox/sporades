@@ -520,6 +520,10 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     // HTML escaping and immutable mail fragments; no SQL walker, dialect,
     // emitted statement, adapter primitive, or database normalization behavior.
     "html.js",
+    // The MCP bridge (ADR-0059): declaration validation and an HTTP translation table. Its
+    // inspection routes call the existing database-runtime helpers and emit no statement of their own.
+    "mcp-config.js",
+    "mcp-runtime.js",
   ]);
 
   const carried = runtimeGraphModules();

@@ -3,6 +3,7 @@ export type { RateLimitOptions, RateLimitResult, RegistrationThrottleConfig } fr
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { SecurityConfig, ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 export { escapeHtml, html, type Html } from "./html.js";
+import { validateEndpointMcpDeclarations } from "./mcp-config.js";
 import type {
   AppContext as CanonicalAppContext,
   EndpointBodyBytes as CanonicalEndpointBodyBytes,
@@ -96,6 +97,8 @@ export type EndpointOptions<Schema extends SchemaDefinition = SchemaDefinition> 
   response?: { fileAttachment: true };
   /** Runtime-owned bounded multipart ingress for a trusted Custom endpoint. */
   body?: { multipart: EndpointMultipartIngressOptions<Schema> };
+  /** Expose this JSON endpoint as a tool on the key-guarded `/__sporades/mcp` bridge. Omitted means not exposed. */
+  mcp?: true | { description?: string };
 };
 
 /** Endpoint declaration that permits an opaque File attachment response. */
@@ -294,6 +297,7 @@ export function capsule<const Definition extends CapsuleDefinition>(definition: 
   const normalized = normalizeCapsuleAuthDefinition(definition);
   validateCapsuleAuthRequirements(normalized);
   validateEndpointResponseDeclarations(normalized);
+  validateEndpointMcpDeclarations(normalized.endpoints);
   return {
     kind: "capsule",
     ...normalized,

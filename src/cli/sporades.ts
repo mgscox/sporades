@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { routeCollection } from "../observability-runtime.js";
+import { routeMcp } from "../mcp-runtime.js";
 import { assertStripeTestOriginCommand, resolveDevStripeApiOrigin, validateDevStripeRuntime, markDevStripeRuntime } from "./dev-stripe-origin.js";
 import { resolvePublicOrigin } from "../public-origin.js";
 import { missingServerEnvKeys, missingServerEnvError } from "../server-env-requirements.js";
@@ -2585,6 +2586,9 @@ async function startDevSession(options: LooseRecord) {
         return;
       }
       if (routeHttpAdmission(runtime.database, request, response, target)) {
+        return;
+      }
+      if (await routeMcp(runtime.database, request, response)) {
         return;
       }
 

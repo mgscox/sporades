@@ -1247,6 +1247,12 @@ export type EndpointOptions<Schema extends SchemaDefinition = SchemaDefinition> 
   path: string;
   response?: { fileAttachment: true };
   body?: { multipart: EndpointMultipartIngressOptions<Schema> };
+  /**
+   * Expose this JSON endpoint as a tool on the key-guarded `/__sporades/mcp` bridge (ADR-0059).
+   * Omitted means not exposed. The bridged request carries no caller credential, so the
+   * handler applies its own authorization. Multipart and File attachment endpoints cannot opt in.
+   */
+  mcp?: true | { description?: string };
 };
 /** Endpoint declaration that permits an opaque File attachment response. */
 export type EndpointFileAttachmentOptionsDeclaration<Schema extends SchemaDefinition = SchemaDefinition> = EndpointOptions<Schema> & { response: { fileAttachment: true } };

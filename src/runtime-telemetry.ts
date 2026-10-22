@@ -51,6 +51,12 @@ const builtinRoutes: readonly [string, string][] = [
   ["POST", "/__sporades/debug/privileged-audit"],
   ["POST", "/__sporades/debug/auth/as"],
   ["GET", "/__sporades/debug/auth/clients"],
+  ["POST", "/__sporades/mcp"],
+  ["GET", "/__sporades/ops/logs"],
+  ["GET", "/__sporades/ops/logs/tail"],
+  ["GET", "/__sporades/ops/db/list"],
+  ["GET", "/__sporades/ops/db/dump"],
+  ["POST", "/__sporades/ops/db/query"],
 ];
 
 /** Only declared routes and explicit platform templates may become trace labels. */

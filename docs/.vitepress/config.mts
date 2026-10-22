@@ -57,6 +57,7 @@ export default defineConfig({
           { text: "Projects and configuration", link: "/reference/projects-and-configuration" },
           { text: "Prerender modules", link: "/reference/prerender-modules" },
           { text: "Server runtime", link: "/reference/server-runtime" },
+          { text: "MCP bridge", link: "/reference/mcp-bridge" },
           { text: "Built-in Teams", link: "/reference/teams" },
           { text: "Team Billing tests", link: "/reference/team-billing-testing" },
           { text: "Jobs and schedules", link: "/reference/jobs-and-schedules" },

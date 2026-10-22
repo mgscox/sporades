@@ -126,6 +126,10 @@ export type EndpointOptions<Schema extends SchemaDefinition = SchemaDefinition> 
     body?: {
         multipart: EndpointMultipartIngressOptions<Schema>;
     };
+    /** Expose this JSON endpoint as a tool on the key-guarded `/__sporades/mcp` bridge. Omitted means not exposed. */
+    mcp?: true | {
+        description?: string;
+    };
 };
 /** Endpoint declaration that permits an opaque File attachment response. */
 export type EndpointFileAttachmentOptionsDeclaration<Schema extends SchemaDefinition = SchemaDefinition> = EndpointOptions<Schema> & {

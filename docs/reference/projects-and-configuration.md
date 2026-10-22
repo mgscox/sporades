@@ -622,6 +622,13 @@ redeploy to apply a configuration change. If a deployed runtime cannot
 observe a valid effective origin, startup logs an error and continues so older
 Capsules keep running; `sporades doctor` reports the effective origin when it
 can observe one.
+### MCP bridge
+
+`"mcp": { "enabled": true, "keyEnv": "MCP_API_KEY" }` turns on the key-guarded
+`/__sporades/mcp` route. `keyEnv` names a Sealed Server env key of at least 32
+characters; the value never appears in `sporades.json`. See the
+[MCP bridge reference](./mcp-bridge.md).
+
 ### Required Server env
 
 Opt into required Server env checks by adding `env` to `sporades.json`:
