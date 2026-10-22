@@ -19,7 +19,7 @@ description: Generate or update a root CHANGES.md from recent Git history and wo
 
 4. Include uncommitted tracked and untracked changes so release notes cover the current working tree.
 
-5. Keep the newest generated section at the top of `CHANGES.md`. If the file already exists, replace the top generated section for the same heading instead of duplicating it.
+5. Keep the newest generated section at the top of `CHANGES.md`. Replace only the top Unreleased section; preserve versioned release sections as history. The package flow sets `releaseVersion` to the target version before committing so later generation cannot overwrite published notes.
 
 ## Formatting
 

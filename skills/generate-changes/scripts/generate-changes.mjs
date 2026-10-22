@@ -234,14 +234,15 @@ export function buildChangeEntries(commits, workingTreeChanges) {
   return entries;
 }
 
-function renderGeneratedSection({ date, baseline, commits, workingTreeChanges }) {
+function renderGeneratedSection({ date, baseline, commits, workingTreeChanges, releaseVersion }) {
   const entries = buildChangeEntries(commits, workingTreeChanges);
   const intro = baseline?.kind === "tag"
     ? `Changes since ${baseline.label}.`
     : baseline?.kind === "commit"
       ? `No release tag was found, so this section uses ${baseline.label} as the last release-like commit.`
       : "No release baseline was found, so this section summarizes all reachable commits plus current working tree changes.";
-  const lines = [`## Unreleased - ${date}`, "", intro, ""];
+  const heading = releaseVersion ? `v${releaseVersion}` : "Unreleased";
+  const lines = [`## ${heading} - ${date}`, "", intro, ""];
 
   let hasEntries = false;
   for (const category of categoryOrder) {
@@ -296,8 +297,8 @@ export async function generateChanges(options = {}) {
   const commits = options.commits ?? await collectCommitsSince(baseline);
   const workingTreeChanges = options.workingTreeChanges ?? await collectWorkingTreeChanges();
   const date = options.date ?? new Date().toISOString().slice(0, 10);
-  const section = renderGeneratedSection({ date, baseline, commits, workingTreeChanges });
-  const existing = existsSync(changesPath) ? await readFile(changesPath, "utf8") : "";
+  const section = renderGeneratedSection({ date, baseline, commits, workingTreeChanges, releaseVersion: options.releaseVersion });
+  const existing = options.existing ?? (existsSync(changesPath) ? await readFile(changesPath, "utf8") : "");
   const next = upsertTopSection(existing, section);
 
   if (options.write !== false) {

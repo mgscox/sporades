@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/deploy-docs.yml"
+      - "CHANGES.md"
       - "docs/**"
       - "package.json"
       - "package-lock.json"
@@ -12,10 +13,12 @@ on:
       - "scripts/generate-llms-docs.mjs"
       - "src/types/**"
       - "typedoc.json"
+      - "test/docs*.test.js"
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - ".github/workflows/deploy-docs.yml"
+      - "CHANGES.md"
       - "docs/**"
       - "package.json"
       - "package-lock.json"
@@ -23,6 +26,7 @@ on:
       - "scripts/generate-llms-docs.mjs"
       - "src/types/**"
       - "typedoc.json"
+      - "test/docs*.test.js"
   workflow_dispatch:
 
 permissions:

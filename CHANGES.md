@@ -1,10 +1,57 @@
 # Changes
 
-## Unreleased - 2026-10-22
+## v0.9.37 - 2026-10-22
 
 Changes since v0.9.36.
 
 No changes detected.
+
+## v0.9.36 - 2026-10-22
+
+Changes since v0.9.35.
+
+### 🚀 Features
+
+- Add opt-in Capsule MCP bridge (ADR 0059) (#279) (e277f5c1).
+- Add a runtime-owned, server-only `ctx.ai` client for OpenAI-compatible endpoints (#276, #277).
+  The opt-in `sporades.json` `ai` block selects Chat Completions or the Responses API
+  (`store: false`), a base URL and model; the key lives in Sealed Server env under
+  `keyEnv` (default `AI_API_KEY`) and an unset key leaves the client dormant without
+  joining the required Server env set. `ctx.ai.chat(...)` never throws or retries and
+  resolves closed `AI_*` result codes; prompt and response content is never logged.
+
+### 🐛 Bug Fixes
+
+- Fix ctx.ai key scoping, per-call override activation, and Node 24 endpoint signal (#281) (d73bb8af).
+
+### 📦 Packaging
+
+- Fail fast when npm registry calls error or hang in package script (#282) (57ed5f7d).
+
+## v0.9.35 - 2026-10-20
+
+Changes since v0.9.34.
+
+### 🚀 Features
+
+- Add atomic human identity termination (ADR 0057) (#273) (769df876).
+- Add day-based Host backup retention (retentionDays / keep-within) (#275) (3724e2ad).
+- Allow loopback Stripe API origins in Dev sessions (#270) (57a9aec3).
+
+### 🐛 Bug Fixes
+
+- Fix runtime injection on secondary HTML documents (#274) (91e06995).
+
+### 🔧 Improvements
+
+- Bump ignore (b2e1be97).
+
+### 📝 Documentation
+
+- Ship a stateful Stripe Team Billing fake (#269) (bceed0bc).
+- Propose a supported Team Billing test-provider boundary (ADR 0058) (#268) (e62eaf87).
+- Propose atomic human identity termination in ADR 0057 (#267) (29995233).
+- Forbid Compose merge keys and value-bind Host elevation in ADR 0056 (#261) (edf701a6).
 
 ## v0.9.11 - 2026-09-02
 
