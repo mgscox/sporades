@@ -1,41 +1,21 @@
 # Changes
 
-## Unreleased - 2026-10-20
+## Unreleased - 2026-10-22
 
-Changes since v0.9.34.
+Changes since v0.9.35.
 
 ### 🚀 Features
 
-- Add a runtime-owned, server-only `ctx.ai` client for OpenAI-compatible endpoints (#276).
-  The opt-in `sporades.json` `ai` block selects Chat Completions or the Responses API
-  (`store: false`), a base URL and model; the key lives in Sealed Server env under
-  `keyEnv` (default `AI_API_KEY`) and an unset key leaves the client dormant without
-  joining the required Server env set. `ctx.ai.chat(...)` never throws or retries and
-  resolves closed `AI_*` result codes; prompt and response content is never logged.
-- Add atomic human identity termination (ADR 0057) (#273) (769df876).
-- Add day-based Host backup retention (retentionDays / keep-within) (#275) (3724e2ad).
-- Allow loopback Stripe API origins in Dev sessions (#270) (57a9aec3).
+- Add opt-in Capsule MCP bridge (ADR 0059) (#279) (e277f5c1).
+- Add runtime-owned ctx.ai client for OpenAI-compatible endpoints (#277) (466fe71a).
 
 ### 🐛 Bug Fixes
 
-- Send the `ctx.ai` project key only to the project base URL; a per-call
-  `provider.baseUrl` elsewhere now needs its own `provider.apiKey` (#280).
-- Let per-call `ctx.ai` provider values activate an undeclared or disabled `ai`
-  section, falling back to any declared values (#280).
-- Stop Custom endpoint `ctx.signal` starting aborted on Node 24, which made every
-  endpoint `ctx.ai` call resolve `AI_ABORTED`; a client disconnect now aborts it (#280).
-- Fix runtime injection on secondary HTML documents (#274) (91e06995).
+- Fix ctx.ai key scoping, per-call override activation, and Node 24 endpoint signal (#281) (d73bb8af).
 
-### 🔧 Improvements
+### 📦 Packaging
 
-- Bump ignore (b2e1be97).
-
-### 📝 Documentation
-
-- Ship a stateful Stripe Team Billing fake (#269) (bceed0bc).
-- Propose a supported Team Billing test-provider boundary (ADR 0058) (#268) (e62eaf87).
-- Propose atomic human identity termination in ADR 0057 (#267) (29995233).
-- Forbid Compose merge keys and value-bind Host elevation in ADR 0056 (#261) (edf701a6).
+- Fail fast when npm registry calls error or hang in package script (#282) (57ed5f7d).
 
 ## v0.9.11 - 2026-09-02
 
@@ -124,6 +104,7 @@ generated artifacts, and documentation.
   explicit Team decisions in table and File ACLs. Teams are built in but do
   not select a current Team or automatically partition Capsule data; Sporades
   never sends Join-link email. See the [Built-in Teams reference](https://mgscox.github.io/sporades/reference/teams).
+
 
 
 
