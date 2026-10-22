@@ -133948,8 +133948,8 @@ function errorCode2(error) {
 // src/base-image.ts
 var SPORADES_BASE_IMAGE = {
   name: "sporades-base",
-  image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
-  version: "0.2.0-node22-alpine",
+  image: "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
+  version: "0.3.0-node24-alpine",
   runtimeUser: "sporades",
   runtimeUid: 10001,
   runtimeGid: 10001,

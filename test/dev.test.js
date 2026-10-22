@@ -9,6 +9,7 @@ import { connect as connectTls } from "node:tls";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { parseNpmPackJson } from "../scripts/npm-pack-json.mjs";
 import { fileURLToPath } from "node:url";
 import Stripe from "stripe";
 
@@ -234,7 +235,7 @@ async function packCandidateInto(dir) {
     { cwd: repoRoot },
   );
   assert.equal(packed.code, 0, packed.stderr);
-  const candidate = JSON.parse(packed.stdout)[0];
+  const [candidate] = parseNpmPackJson(packed.stdout);
   assert.equal(typeof candidate?.filename, "string", packed.stdout);
   assert.match(candidate.shasum, /^[a-f0-9]{40}$/);
   assert.match(candidate.integrity, /^sha512-/);

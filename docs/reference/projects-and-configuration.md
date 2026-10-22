@@ -387,7 +387,7 @@ copied. Caller-authored headers remain the caller's responsibility. Each new
 manual redirect fetch is checked independently against the approval list.
 
 Focused packaged ESM tests run without runtime package resolution on Node 22.13,
-Node 24, and the exact `ghcr.io/sporades/sporades-base:0.2.0-node22-alpine`
+Node 24, and the exact `ghcr.io/sporades/sporades-base:0.3.0-node24-alpine`
 image. Run `SPORADES_FETCH_DOCKER=1 node --test
 test/telemetry-fetch-bundle.test.js` to include the Docker matrix; it uses only
 disposable containers and prints the tested image digests. Runtime behavior and

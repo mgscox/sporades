@@ -178,7 +178,7 @@ if (call.args[0] === "inspect") {
       User: "501:20",
       Labels: {
         "com.sporades.base-image.name": "sporades-base",
-        "com.sporades.base-image.version": "0.2.0-node22-alpine",
+        "com.sporades.base-image.version": "0.3.0-node24-alpine",
         "com.sporades.base-image.update-policy": "host-managed"
       }
     },
@@ -1035,7 +1035,7 @@ test("sporades doctor reports healthy local Container runtime hardening with fak
     assert.deepEqual(policy.commands, ["sporades deploy status", "sporades deploy ssh"]);
     assert.deepEqual(policy.details.baseImageLabels, {
       name: "sporades-base",
-      version: "0.2.0-node22-alpine",
+      version: "0.3.0-node24-alpine",
       updatePolicy: "host-managed",
     });
     assert.equal(policy.details.runtimeUser, "501:20");
@@ -1078,7 +1078,7 @@ test("Container doctor reports a bounded public-tree summary without requiring c
           User: "501:20",
           Labels: {
             "com.sporades.base-image.name": "sporades-base",
-            "com.sporades.base-image.version": "0.2.0-node22-alpine",
+            "com.sporades.base-image.version": "0.3.0-node24-alpine",
             "com.sporades.base-image.update-policy": "host-managed",
           },
         },
@@ -1153,7 +1153,7 @@ test("sporades doctor warns when a required release mount is missing", async () 
           User: "501:20",
           Labels: {
             "com.sporades.base-image.name": "sporades-base",
-            "com.sporades.base-image.version": "0.2.0-node22-alpine",
+            "com.sporades.base-image.version": "0.3.0-node24-alpine",
             "com.sporades.base-image.update-policy": "host-managed",
           },
         },

@@ -133,6 +133,7 @@ for (const link of ['.sporades', '.sporades/monitoring-release-verification']) {
     await mkdir(path.join(candidate, 'config'));
     await mkdir(outside);
     await copyFile(verifier, path.join(candidate, 'scripts', 'verify-monitoring-release.mjs'));
+    await copyFile(path.join(repository, 'scripts', 'npm-pack-json.mjs'), path.join(candidate, 'scripts', 'npm-pack-json.mjs'));
     if (link !== '.sporades') await mkdir(path.join(candidate, '.sporades'));
     await symlink(outside, path.join(candidate, link), 'dir');
     const result = await run(process.execPath, [path.join(candidate, 'scripts', 'verify-monitoring-release.mjs'), 'missing-package.tgz', 'missing-monitoring.tar.gz'], {

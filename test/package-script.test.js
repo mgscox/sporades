@@ -31,6 +31,7 @@ import {
   releaseTagForVersion,
   usage,
 } from "../scripts/package.mjs";
+import { parseNpmPackJson } from "../scripts/npm-pack-json.mjs";
 
 test("package script defaults to a minor version bump", () => {
   assert.deepEqual(parsePackageArgs([]), {
@@ -108,6 +109,45 @@ test("package script reads exact npm pack artifact provenance", () => {
     ),
     { filename: "sporades-1.2.3.tgz", shasum: "abc123", integrity: "sha512-example" },
   );
+});
+
+test("npm pack JSON parser normalizes npm 11 keyed wrappers and preserves provenance", () => {
+  const metadata = {
+    filename: "sporades-0.9.39.tgz",
+    version: "0.9.39",
+    shasum: "abc123",
+    integrity: "sha512-example",
+    files: [{ path: "bin/sporades.js", size: 42 }],
+  };
+  const output = JSON.stringify([{ sporades: metadata }]);
+  assert.deepEqual(parseNpmPackJson(output), [metadata]);
+  assert.deepEqual(parsePackedArtifact(output), {
+    filename: metadata.filename,
+    integrity: metadata.integrity,
+    shasum: metadata.shasum,
+  });
+  assert.deepEqual(
+    parseNpmPackJson(JSON.stringify({ sporades: metadata })),
+    [metadata],
+  );
+  assert.deepEqual(parseNpmPackJson(JSON.stringify([metadata])), [metadata]);
+  assert.deepEqual(parseNpmPackJson(JSON.stringify(metadata)), [metadata]);
+});
+
+test("npm pack JSON parser rejects empty, malformed, and filename-free results", () => {
+  assert.throws(() => parseNpmPackJson(""), /did not report a tarball filename/);
+  assert.throws(() => parseNpmPackJson("not json"), /invalid JSON/);
+  assert.throws(() => parseNpmPackJson(JSON.stringify([{ sporades: { version: "1.0.0" } }])), /did not include/);
+  for (const value of [null, [], [null], ["invalid"], { sporades: { filename: "" } }, { sporades: { filename: " " } }]) {
+    assert.throws(() => parseNpmPackJson(JSON.stringify(value)), /did not include/);
+  }
+});
+
+test("npm pack JSON parser refuses ambiguous output instead of skipping malformed entries", () => {
+  const artifact = { filename: "sporades-1.0.0.tgz" };
+  for (const value of [[artifact, artifact], [artifact, null], { sporades: artifact, other: {} }, [{ sporades: artifact, other: artifact }]]) {
+    assert.throws(() => parseNpmPackJson(JSON.stringify(value)), /exactly one package/);
+  }
 });
 
 test("package script rejects npm pack JSON without a tarball filename", () => {

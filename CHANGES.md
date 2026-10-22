@@ -10,6 +10,16 @@ Changes since v0.9.38.
 
 ## Unreleased
 
+### 📦 Packaging
+
+- Upgrade the default Capsule Base image to `0.3.0-node24-alpine`, using Node
+  24.22.1 LTS on Alpine 3.23 with a pinned upstream image digest. Upgrade the CLI
+  and Host helper and redeploy to replace existing containers; restarting a
+  release preserves its pinned image. Keep explicit image overrides unchanged.
+- Normalize npm pack JSON metadata across flat and package-keyed formats in
+  release verification and packaged compatibility checks, preserving artifact
+  hashes and rejecting ambiguous output.
+
 ### 🚀 Features
 
 - Add read-only `sporades host db list|dump|query` for running Hosted Capsules (#285).

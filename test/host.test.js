@@ -4471,8 +4471,8 @@ process.exit(0);
         },
         baseImage: {
           name: "sporades-base",
-          image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
-          version: "0.2.0-node22-alpine",
+          image: "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
+          version: "0.3.0-node24-alpine",
           updatePolicy: {
             mode: "host-managed",
             autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
@@ -5767,12 +5767,12 @@ process.exit(0);
     assert.equal(startOutput.data.container.labels["com.sporades.capsule-subname"], "team-notes");
     assert.equal(startOutput.data.container.labels["com.sporades.capsule-id"], "capsules.example.dev/team-notes");
     assert.equal(startOutput.data.container.labels["com.sporades.base-image.name"], "sporades-base");
-    assert.equal(startOutput.data.container.labels["com.sporades.base-image.version"], "0.2.0-node22-alpine");
+    assert.equal(startOutput.data.container.labels["com.sporades.base-image.version"], "0.3.0-node24-alpine");
     assert.equal(startOutput.data.container.labels["com.sporades.base-image.update-policy"], "host-managed");
     assert.deepEqual(startOutput.data.container.baseImage, {
       name: "sporades-base",
-      image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
-      version: "0.2.0-node22-alpine",
+      image: "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
+      version: "0.3.0-node24-alpine",
       updatePolicy: {
         mode: "host-managed",
         autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
@@ -5837,12 +5837,12 @@ process.exit(0);
       container: "/app/data",
       mode: "rw",
     });
-    assert.equal(startRequest.lifecycle.container.image, "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine");
+    assert.equal(startRequest.lifecycle.container.image, "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine");
     assert.equal(startRequest.lifecycle.container.user, "10001:10001");
     assert.deepEqual(startRequest.lifecycle.container.baseImage, {
       name: "sporades-base",
-      image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
-      version: "0.2.0-node22-alpine",
+      image: "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
+      version: "0.3.0-node24-alpine",
       updatePolicy: {
         mode: "host-managed",
         autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
@@ -6659,8 +6659,8 @@ test("sporades host helper starts public-key-only sealed releases with the relea
           files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
           baseImage: {
             name: "sporades-base",
-            image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
-            version: "0.2.0-node22-alpine",
+            image: "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
+            version: "0.3.0-node24-alpine",
             updatePolicy: { mode: "manual" },
           },
           directories: {
@@ -7022,7 +7022,7 @@ test("sporades host helper starts the current release in Docker and routes throu
 
     const calls = await docker.calls();
     assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec"]);
-    assert.deepEqual(calls[2].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"]);
+    assert.deepEqual(calls[2].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine"]);
     const runCall = calls.find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--name") + 1], "sporades-capsules-example-dev-team-notes");
     assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-hosted-capsules");
@@ -7039,7 +7039,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert(runCall.args.includes("--label"));
     assert(runCall.args.includes("com.sporades.release-id=20260630T221500Z-feedface"));
     assert(runCall.args.includes("com.sporades.base-image.name=sporades-base"));
-    assert(runCall.args.includes("com.sporades.base-image.version=0.2.0-node22-alpine"));
+    assert(runCall.args.includes("com.sporades.base-image.version=0.3.0-node24-alpine"));
     assert(runCall.args.includes("com.sporades.base-image.update-policy=manual"));
     assert(runCall.args.includes(`${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`));
     assert(runCall.args.includes(`${path.join(capsuleDir, "current", ".env.sporades.server")}:/app/.env.sporades.server:ro`));
@@ -7052,8 +7052,8 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert(runCall.args.indexOf(hostedTelemetry) > runCall.args.indexOf("--env-file"), "Host-owned descriptor must override Capsule Server env");
     assert(runCall.args.includes("SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev"));
     assert(runCall.args.includes("SPORADES_RELEASE_ID=20260630T221500Z-feedface"));
-    assert.deepEqual(runCall.args.slice(runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.2.0-node22-alpine")), [
-      "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+    assert.deepEqual(runCall.args.slice(runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.3.0-node24-alpine")), [
+      "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
       "node",
       "/app/server.mjs",
     ]);
@@ -9321,11 +9321,11 @@ test("sporades host helper lists registry records enriched with Docker container
           JSON.stringify({
             ID: "abc123def456",
             Names: "sporades-capsules-example-dev-notes",
-            Image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+            Image: "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
             State: "running",
             Status: "Up 2 hours",
             Labels:
-              "com.sporades.managed=true,com.sporades.hosted-domain=capsules.example.dev,com.sporades.capsule-subname=notes,com.sporades.base-image.name=sporades-base,com.sporades.base-image.version=0.2.0-node22-alpine,com.sporades.base-image.update-policy=manual",
+              "com.sporades.managed=true,com.sporades.hosted-domain=capsules.example.dev,com.sporades.capsule-subname=notes,com.sporades.base-image.name=sporades-base,com.sporades.base-image.version=0.3.0-node24-alpine,com.sporades.base-image.update-policy=manual",
           }),
           JSON.stringify({
             ID: "fedcba654321",
@@ -9460,20 +9460,20 @@ test("sporades host helper lists registry records enriched with Docker container
             docker: {
               containerId: "abc123def456",
               containerName: "sporades-capsules-example-dev-notes",
-              image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+              image: "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
               state: "running",
               status: "Up 2 hours",
               running: true,
               baseImage: {
                 name: "sporades-base",
-                version: "0.2.0-node22-alpine",
+                version: "0.3.0-node24-alpine",
                 updatePolicy: { mode: "manual" },
               },
             },
             baseImage: {
               name: "sporades-base",
-              image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
-              version: "0.2.0-node22-alpine",
+              image: "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
+              version: "0.3.0-node24-alpine",
               updatePolicy: {
                 mode: "manual",
                 autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
@@ -10777,9 +10777,9 @@ test("sporades host helper builds the base image when registry pull is unavailab
     assert.deepEqual(
       calls.filter((call) => ["image", "pull", "build"].includes(call.args[0])).map((call) => call.args),
       [
-        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
-        ["pull", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
-        ["build", "-f", path.join(remoteRoot, "Dockerfile.base"), "-t", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine", remoteRoot],
+        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine"],
+        ["pull", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine"],
+        ["build", "-f", path.join(remoteRoot, "Dockerfile.base"), "-t", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine", remoteRoot],
       ],
     );
     assert.ok(calls.some((call) => call.args[0] === "run"));
@@ -10828,7 +10828,7 @@ test("sporades host helper fails start with guidance when the base image cannot 
       data: null,
       error: {
         message: "Unable to prepare the Sporades Base image.",
-        hint: `Docker could not pull ghcr.io/sporades/sporades-base:0.2.0-node22-alpine, and ${path.join(remoteRoot, "Dockerfile.base")} is missing. Reinstall the Sporades Host helper files, then retry \`sporades host start team-notes --host <alias>\`.`,
+        hint: `Docker could not pull ghcr.io/sporades/sporades-base:0.3.0-node24-alpine, and ${path.join(remoteRoot, "Dockerfile.base")} is missing. Reinstall the Sporades Host helper files, then retry \`sporades host start team-notes --host <alias>\`.`,
       },
     });
     const calls = await docker.calls();
@@ -10837,8 +10837,8 @@ test("sporades host helper fails start with guidance when the base image cannot 
       [
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
-        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
-        ["pull", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
+        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine"],
+        ["pull", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine"],
       ],
     );
   });
@@ -10896,10 +10896,10 @@ test("sporades host helper fails start when Docker does not report a usable loop
       [
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
-        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.2.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted",
+        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.3.0-node24-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted",
         "--env",
-        "SPORADES_ADMISSION_POLICY_PATH=", "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${record.runtimeProbe.token}`, "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_PUBLIC_ALIASES=[]", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--env", "SPORADES_HOSTED_TELEMETRY_CONFIG=null", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine", "node", "/app/server.mjs"],
+        "SPORADES_ADMISSION_POLICY_PATH=", "--env", "SPORADES_CLAMAV_MANAGED=1", "--env", `SPORADES_RUNTIME_PROBE_TOKEN=${record.runtimeProbe.token}`, "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_PUBLIC_ALIASES=[]", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--env", "SPORADES_HOSTED_TELEMETRY_CONFIG=null", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],
@@ -11965,9 +11965,9 @@ test("sporades host helper starts SSH-enabled Hosted Capsules through the Base s
     assert(runCall.args.includes("SPORADES_SSH_AUTHORIZED_KEYS_TARGET=/app/data/ssh/authorized_keys"));
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
     assert.equal(runCall.args[runCall.args.lastIndexOf("--publish") + 1], "127.0.0.1::22");
-    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.2.0-node22-alpine");
+    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.3.0-node24-alpine");
     assert.deepEqual(runCall.args.slice(imageIndex), [
-      "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+      "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
       "/usr/local/bin/sporades-start",
     ]);
 
@@ -13736,12 +13736,12 @@ process.exit(0);
         },
         container: {
           name: "sporades-capsules-example-dev-team-notes",
-          image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+          image: "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
           user: "10001:10001",
           baseImage: {
             name: "sporades-base",
-            image: "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
-            version: "0.2.0-node22-alpine",
+            image: "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
+            version: "0.3.0-node24-alpine",
             updatePolicy: {
               mode: "host-managed",
               autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
@@ -13753,7 +13753,7 @@ process.exit(0);
             "com.sporades.capsule-subname": "team-notes",
             "com.sporades.capsule-id": "capsules.example.dev/team-notes",
             "com.sporades.base-image.name": "sporades-base",
-            "com.sporades.base-image.version": "0.2.0-node22-alpine",
+            "com.sporades.base-image.version": "0.3.0-node24-alpine",
             "com.sporades.base-image.update-policy": "host-managed",
           },
         },

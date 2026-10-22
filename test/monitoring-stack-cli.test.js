@@ -4,6 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promis
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
+import { parseNpmPackJson } from '../scripts/npm-pack-json.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
 
@@ -22,7 +23,7 @@ test('packed CLI generates a stack outside checkout and preserves operator state
   const command = (bin, args, cwd, env = supportedEnv) => runCommand(bin, args, cwd, env);
   const packed = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp], { cwd: root, encoding: 'utf8' });
   assert.equal(packed.status, 0, packed.stderr);
-  const filename = JSON.parse(packed.stdout)[0].filename;
+  const [{ filename }] = parseNpmPackJson(packed.stdout);
   const install = join(temp, 'installed package');
   await mkdir(install);
   const extractionUmask = process.umask(0o077);
