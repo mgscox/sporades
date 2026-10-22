@@ -440,6 +440,36 @@ sporades host stop team-notes --host personal --json
 sporades host reconcile team-notes --host personal --json
 ```
 
+### Hosted Capsule database
+
+`sporades host db list|dump|query` reads a running Hosted Capsule's database
+with the same read-only rules and the same `--json` envelope as
+`sporades db list|dump|query` against a Dev session, so a script switches
+between the two by changing only the command:
+
+```sh
+sporades host db list --subname team-notes --json
+sporades host db query "select count(*) as total from todos" --subname team-notes --json
+sporades host db dump --host personal --subname team-notes --json
+```
+
+`--subname` defaults to the project's Host binding (`sporades host bind`) and
+`--host` to the binding's Host, then the current Host profile. Each command
+runs the Host helper over your existing SSH access, the same authority as
+`host stats`, `host jobs` and `host backup`; it adds no public HTTP route and
+needs no MCP bridge key. On the Host, a one-shot process in the running
+container opens the Capsule SQLite file read-only and query-only, so the
+Capsule keeps serving traffic. Mutating SQL is refused locally before SSH and
+again by the runtime. The output is only what the SQL selects; `dump` returns
+every inspectable table, including runtime-owned auth tables, so prefer an
+explicit `query` for routine pulls.
+
+The Host helper and the Capsule's Bundle must both come from a CLI that has
+these commands: run `sporades host upgrade --host <alias>` once, then redeploy
+with `sporades host push --restart`. Older targets answer with
+`HOST_HELPER_UPGRADE_REQUIRED` or `HOSTED_BUNDLE_UPGRADE_REQUIRED`. A stopped
+Capsule is not inspected; start it first. SQL is limited to about 16 KiB.
+
 ### Runtime health bounds
 
 The existing token-gated `/__sporades/health/runtime` probe reports a `runtime`

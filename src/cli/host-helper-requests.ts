@@ -33,6 +33,9 @@ export type HostHelperAction =
   | "capsule.health"
   | "jobs.inspect"
   | "schedules.inspect"
+  | "db.list"
+  | "db.dump"
+  | "db.query"
   | "access-keys.list"
   | "access-keys.inspect"
   | "access-keys.revoke"
@@ -207,6 +210,10 @@ export type HostTelemetryRequest = HostHelperRequestBase & { action: "host.telem
   | "host.telemetry.exports-disable" | "host.telemetry.remove-agents" | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable" };
 export type HostJobsInspectRequest = HostHelperRequestBase & { action: "jobs.inspect"; capsule: HostHelperCapsuleTarget };
 export type HostSchedulesInspectRequest = HostHelperRequestBase & { action: "schedules.inspect"; capsule: HostHelperCapsuleTarget };
+export type HostDatabaseInspectRequest = HostHelperRequestBase & (
+  | { action: "db.list" | "db.dump"; capsule: HostHelperCapsuleTarget }
+  | { action: "db.query"; capsule: HostHelperCapsuleTarget; db: { sql: string } }
+);
 export type HostAccessKeyRequest = HostHelperRequestBase & {
   action: "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete";
   capsule: HostHelperCapsuleTarget;
@@ -240,6 +247,7 @@ export type HostHelperRequest =
   | HostVersionRequest
   | HostTelemetryRequest
   | HostJobsInspectRequest
+  | HostDatabaseInspectRequest
   | HostSchedulesInspectRequest
   | HostAccessKeyRequest;
 

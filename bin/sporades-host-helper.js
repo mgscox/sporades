@@ -46258,6 +46258,40 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid4) {
   return { ok: true, data: { capsule: { name: envelope.data.capsule.name }, schedules }, error: null };
 }
 
+// src/cli/database-inspection-envelope.ts
+var DATABASE_INSPECTION_ACTIONS = ["db.list", "db.dump", "db.query"];
+var DATABASE_INSPECTION_INPUT_BYTE_LIMIT = 24 * 1024;
+function encodeDatabaseInspectionInput(sql) {
+  const encoded = Buffer.from(JSON.stringify({ sql }), "utf8").toString("base64url");
+  return encoded.length <= DATABASE_INSPECTION_INPUT_BYTE_LIMIT ? encoded : null;
+}
+var DATABASE_INSPECTION_MAX_BUFFER = 128 * 1024 * 1024;
+function isDatabaseInspectionAction(action) {
+  return DATABASE_INSPECTION_ACTIONS.includes(action);
+}
+function sanitizeDatabaseInspectionEnvelope(action, envelope, invalid4) {
+  const data2 = envelope?.data;
+  if (envelope?.ok === true && data2 && typeof data2 === "object" && !Array.isArray(data2)) {
+    if (action === "db.query" && Array.isArray(data2.columns) && Array.isArray(data2.rows)) {
+      return { ok: true, data: { columns: data2.columns, rows: data2.rows }, error: null };
+    }
+    if (action !== "db.query" && Array.isArray(data2.tables)) {
+      return { ok: true, data: { tables: data2.tables }, error: null };
+    }
+  }
+  if (envelope?.ok === false && typeof envelope.error?.message === "string") {
+    return {
+      ok: false,
+      data: null,
+      error: {
+        message: envelope.error.message,
+        hint: typeof envelope.error.hint === "string" ? envelope.error.hint : "Check the SQL and retry the command."
+      }
+    };
+  }
+  return invalid4();
+}
+
 // src/cli/host-helper-archive.ts
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -48806,6 +48840,10 @@ async function dispatchMain(request2) {
     runCapsuleAccessKeyAction(request2);
     return;
   }
+  if (isDatabaseInspectionAction(request2.action)) {
+    inspectCapsuleDatabase(request2);
+    return;
+  }
   if (request2.action === "host.stats") {
     await statsHost(request2);
     return;
@@ -48852,6 +48890,19 @@ function runCapsuleAccessKeyAction(request2) {
     Buffer.from(JSON.stringify(accessKeys), "utf8").toString("base64url")
   ]);
 }
+function inspectCapsuleDatabase(request2) {
+  const action = request2.action;
+  if (!isDatabaseInspectionAction(action)) throw helperError("Unsupported Host helper action.", "Update the Host helper or use a supported Sporades host command.");
+  const exactKeys2 = (value, keys2) => Object.keys(value).length === keys2.length && Object.keys(value).every((key) => keys2.includes(key));
+  const query = action === "db.query";
+  const sql = request2.db?.sql;
+  if (!exactKeys2(request2, query ? ["action", "host", "capsule", "db"] : ["action", "host", "capsule"]) || !request2.host || typeof request2.host !== "object" || Array.isArray(request2.host) || !exactKeys2(request2.host, ["alias", "domain", "scheme", "remoteRoot"]) || !request2.capsule || typeof request2.capsule !== "object" || Array.isArray(request2.capsule) || !exactKeys2(request2.capsule, ["subname"]) || query && (!exactKeys2(request2.db ?? {}, ["sql"]) || typeof sql !== "string" || !encodeDatabaseInspectionInput(sql))) {
+    throw helperError("Invalid Hosted database inspection request.", "Upgrade the local Sporades CLI and Host helper together.");
+  }
+  inspectCapsuleRuntime(request2, action, "database", (envelope) => sanitizeDatabaseInspectionEnvelope(action, envelope, () => {
+    throw helperError("Hosted database inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+  }), query ? ["--sporades-action-input", encodeDatabaseInspectionInput(sql)] : []);
+}
 function inspectCapsuleRuntime(request2, action, label, sanitize = (envelope) => envelope, extraArgs = [], preserveBoundedDiagnostics = false) {
   const containerName = createHostedContainerName(request2.host.domain, request2.capsule.subname);
   if (!checkContainerRunning(containerName)) {
@@ -48860,7 +48911,7 @@ function inspectCapsuleRuntime(request2, action, label, sanitize = (envelope) =>
     throw error;
   }
   const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action, ...extraArgs], {
-    maxBuffer: label === "Access-key" ? ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER : void 0
+    maxBuffer: label === "Access-key" ? ACCESS_KEY_OPERATOR_PROCESS_MAX_BUFFER : label === "database" ? DATABASE_INSPECTION_MAX_BUFFER : void 0
   });
   let envelope;
   try {

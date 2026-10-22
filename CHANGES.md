@@ -1,5 +1,18 @@
 # Changes
 
+## Unreleased
+
+### 🚀 Features
+
+- Add read-only `sporades host db list|dump|query` for running Hosted Capsules (#285).
+  It runs the Host helper over the operator's existing SSH access and the
+  generated Bundle's one-shot action seam, opens the Capsule SQLite file
+  read-only and query-only without stopping the Capsule, and refuses mutating
+  SQL both locally and in the runtime. `--json` output matches
+  `sporades db list|dump|query --json` against a Dev session. `--subname`
+  defaults to the project's Host binding. Requires `sporades host upgrade` and
+  a redeploy with this CLI; no public route is added.
+
 ## v0.9.38 - 2026-10-22
 
 Changes since v0.9.37.

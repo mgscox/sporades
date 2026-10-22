@@ -1,7 +1,7 @@
 import type { DeployFile } from "../deploy-files.js";
 import type { JsonObject, JsonValue } from "./host-helper-json.js";
 import type { HostHelperCapsuleTarget, HostHelperHost, HostHelperSealedServerEnv, HostLifecycleOptions, HostedCapsuleBaseImage, HostTlsMode } from "./hosted-capsule-contract.js";
-export type HostHelperAction = "host.services.enable" | "host.services.disable" | "host.services.uninstall" | "host.services.status" | "host.services.connect" | "host.services.backup" | "host.services.backups" | "host.services.prune" | "host.services.restore" | "capsule.backup.create" | "capsule.backup.list" | "capsule.backup.restore" | "capsule.backup.prune" | "host.backup.configure" | "host.backup.status" | "capsule.canonical.set" | "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.release.reconcile" | "capsule.shutdown.checkpoint" | "capsule.resume" | "capsule.start" | "capsule.stop" | "capsule.admission.publish" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "jobs.inspect" | "schedules.inspect" | "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete" | "capsule.list" | "host.stats" | "host.logs" | "host.version" | "host.bootstrap" | "host.telemetry.migrate" | "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" | "host.telemetry.exports-disable" | "host.telemetry.remove-agents" | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable";
+export type HostHelperAction = "host.services.enable" | "host.services.disable" | "host.services.uninstall" | "host.services.status" | "host.services.connect" | "host.services.backup" | "host.services.backups" | "host.services.prune" | "host.services.restore" | "capsule.backup.create" | "capsule.backup.list" | "capsule.backup.restore" | "capsule.backup.prune" | "host.backup.configure" | "host.backup.status" | "capsule.canonical.set" | "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.release.reconcile" | "capsule.shutdown.checkpoint" | "capsule.resume" | "capsule.start" | "capsule.stop" | "capsule.admission.publish" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "jobs.inspect" | "schedules.inspect" | "db.list" | "db.dump" | "db.query" | "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete" | "capsule.list" | "host.stats" | "host.logs" | "host.version" | "host.bootstrap" | "host.telemetry.migrate" | "host.telemetry.connect" | "host.telemetry.reconcile" | "host.telemetry.status" | "host.telemetry.check" | "host.telemetry.exports-disable" | "host.telemetry.remove-agents" | "host.telemetry.inventory-export" | "host.telemetry.inventory-reconcile" | "host.telemetry.enable" | "host.telemetry.resources-enable" | "host.telemetry.resources-disable" | "host.telemetry.resources-remove" | "host.telemetry.disable";
 export type HostHelperVerification = JsonObject & {
     enabled?: boolean;
     fallbackToPreviousRelease?: boolean;
@@ -200,6 +200,16 @@ export type HostSchedulesInspectRequest = HostHelperRequestBase & {
     action: "schedules.inspect";
     capsule: HostHelperCapsuleTarget;
 };
+export type HostDatabaseInspectRequest = HostHelperRequestBase & ({
+    action: "db.list" | "db.dump";
+    capsule: HostHelperCapsuleTarget;
+} | {
+    action: "db.query";
+    capsule: HostHelperCapsuleTarget;
+    db: {
+        sql: string;
+    };
+});
 export type HostAccessKeyRequest = HostHelperRequestBase & {
     action: "access-keys.list" | "access-keys.inspect" | "access-keys.revoke" | "access-keys.revoke-all" | "access-keys.delete";
     capsule: HostHelperCapsuleTarget;
@@ -222,7 +232,7 @@ export type HostHelperRequest = (HostHelperRequestBase & {
     canonical: {
         domain: string | null;
     };
-}) | HostAdmissionPublishRequest | HostBootstrapRequest | HostRegistrationRequest | HostSealedEnvRotationRequest | HostUnregisterRequest | HostDeleteRequest | HostReleaseInstallRequest | HostReleaseListRequest | HostReleaseRollbackRequest | HostLifecycleRequest | HostStatsRequest | HostSshRequest | HostHealthRequest | HostLogsRequest | HostCapsuleListRequest | HostVersionRequest | HostTelemetryRequest | HostJobsInspectRequest | HostSchedulesInspectRequest | HostAccessKeyRequest;
+}) | HostAdmissionPublishRequest | HostBootstrapRequest | HostRegistrationRequest | HostSealedEnvRotationRequest | HostUnregisterRequest | HostDeleteRequest | HostReleaseInstallRequest | HostReleaseListRequest | HostReleaseRollbackRequest | HostLifecycleRequest | HostStatsRequest | HostSshRequest | HostHealthRequest | HostLogsRequest | HostCapsuleListRequest | HostVersionRequest | HostTelemetryRequest | HostJobsInspectRequest | HostDatabaseInspectRequest | HostSchedulesInspectRequest | HostAccessKeyRequest;
 export type HostHelperErrorBody = JsonObject & {
     message: string;
     hint: string;
