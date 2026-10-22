@@ -522,6 +522,74 @@ test("database inspection SQL rejects side-effect statements with a structured h
   );
 });
 
+// `StatementSync#columns()` arrived in Node 22.16 and 23.11. The engines range admits 22.13, and the
+// Base image runs 22.14, where `sporades host db query` failed with "columns is not a function".
+async function withoutStatementColumns(fn) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const prototype = Object.getPrototypeOf(new DatabaseSync(":memory:").prepare("SELECT 1"));
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, "columns");
+  if (descriptor) delete prototype.columns;
+  try {
+    return await fn();
+  } finally {
+    if (descriptor) Object.defineProperty(prototype, "columns", descriptor);
+  }
+}
+
+test("database inspection answers the same columns where node:sqlite has no StatementSync#columns()", async () => {
+  await withSqliteAdapter(
+    async (adapter) => {
+      const database = { adapter };
+      adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL, kept INTEGER)");
+      adapter.exec("INSERT INTO entries VALUES ('one', 'hello', 1), ('two', 'world', 0)");
+      const plain = (result) => (result.ok ? { ...result, data: { ...result.data, rows: result.data.rows.map((row) => ({ ...row })) } } : result);
+      const queries = [
+        // Multi-row, with columns in an order that is not the table's.
+        "SELECT value, kept, id FROM entries ORDER BY id",
+        // Zero rows still describe their columns.
+        "SELECT value, id FROM entries WHERE kept = 7",
+        "SELECT count(*) AS total, max(value) AS latest FROM entries WHERE 0",
+        "WITH kept AS (SELECT id, value FROM entries WHERE kept = 1) SELECT value AS kept_value, id FROM kept WHERE id = 'missing'",
+        "SELECT id FROM entries ORDER BY id LIMIT 1 -- trailing comment",
+        "SELECT 1 AS one;",
+        "PRAGMA table_info(entries)",
+        "PRAGMA foreign_key_list(entries)",
+        "SELECT * FROM missing_table",
+      ];
+      const expected = [];
+      for (const sql of queries) expected.push(plain(await runReadOnlyQuery(database, sql)));
+      assert.deepEqual(expected[1].data, { columns: ["value", "id"], rows: [] }, "the columns() path describes zero-row results");
+
+      await withoutStatementColumns(async () => {
+        for (const [index, sql] of queries.entries()) {
+          const result = plain(await runReadOnlyQuery(database, sql));
+          // A metadata PRAGMA cannot be nested in a SELECT, so without columns() it can name its
+          // columns only from a row; zero rows answer no columns rather than failing.
+          const want = sql === "PRAGMA foreign_key_list(entries)" ? { ...expected[index], data: { ...expected[index].data, columns: [] } } : expected[index];
+          assert.deepEqual(result, want, sql);
+        }
+        assert.deepEqual(plain(await runReadOnlyQuery(database, "SELECT value, kept, id FROM entries ORDER BY id")), {
+          ok: true,
+          data: {
+            columns: ["value", "kept", "id"],
+            rows: [
+              { value: "hello", kept: 1, id: "one" },
+              { value: "world", kept: 0, id: "two" },
+            ],
+          },
+          error: null,
+        });
+        assert.deepEqual(plain(await runReadOnlyQuery(database, "SELECT value, id FROM entries WHERE kept = 7")), {
+          ok: true,
+          data: { columns: ["value", "id"], rows: [] },
+          error: null,
+        });
+      });
+    },
+    { fileName: "inspection-without-columns.db" },
+  );
+});
+
 test("LocalFileStorageAdapter owns local file bytes, health, and close lifecycle", async () => {
   await withTempDir(async (dir) => {
     const storagePath = path.join(dir, "files");

@@ -209,6 +209,42 @@ test("the Bundle's db actions read a live WAL database read-only and refuse muta
   });
 });
 
+test("the Bundle's db.query action answers columns on a Node without StatementSync#columns()", async () => {
+  // The Base image runs Node 22.14; `StatementSync#columns()` arrived in 22.16. The preload removes
+  // it from this Node so the action runs as it does in the Hosted container.
+  await withTempDir(async (dir) => {
+    await writeFile(path.join(dir, "server.mjs"), await createServerBundleModuleSource({
+      config: { name: "notes" }, serverEnv: {}, serverSource: "", serverModuleSource: "export default {};",
+    }));
+    await writeFile(path.join(dir, "without-columns.mjs"), `import { DatabaseSync } from "node:sqlite";
+delete Object.getPrototypeOf(new DatabaseSync(":memory:").prepare("SELECT 1")).columns;
+`);
+    await mkdir(path.join(dir, "data"));
+    const writer = await createSqliteDatabaseAdapter(path.join(dir, "data", "data.db"));
+    try {
+      await writer.exec("CREATE TABLE reminderDecisions (id TEXT PRIMARY KEY, decision TEXT, score INTEGER)");
+      await writer.exec("INSERT INTO reminderDecisions VALUES ('a', 'send', 3), ('b', 'wait', 1)");
+      const query = (sql) => {
+        const input = Buffer.from(JSON.stringify({ sql }), "utf8").toString("base64url");
+        const result = spawnSync(process.execPath, ["--import", "./without-columns.mjs", "server.mjs", "--sporades-action", "db.query", "--sporades-action-input", input], { cwd: dir, encoding: "utf8" });
+        return { status: result.status, body: JSON.parse(result.stdout) };
+      };
+      assert.deepEqual(query("SELECT 1 AS one"), { status: 0, body: { ok: true, data: { columns: ["one"], rows: [{ one: 1 }] }, error: null } });
+      assert.deepEqual(query("SELECT score, decision, id FROM reminderDecisions ORDER BY id"), {
+        status: 0,
+        body: { ok: true, data: { columns: ["score", "decision", "id"], rows: [{ score: 3, decision: "send", id: "a" }, { score: 1, decision: "wait", id: "b" }] }, error: null },
+      });
+      assert.deepEqual(query("SELECT decision, id FROM reminderDecisions WHERE score > 99"), {
+        status: 0,
+        body: { ok: true, data: { columns: ["decision", "id"], rows: [] }, error: null },
+      });
+      const refused = query("DELETE FROM reminderDecisions");
+      assert.equal(refused.status, 1);
+      assert.deepEqual(Object.keys(refused.body), ["ok", "data", "error"]);
+    } finally { await writer.close(); }
+  });
+});
+
 test("sporades host db re-shapes Host responses and explains upgrades and stopped Capsules", async () => {
   await withTempDir(async (dir) => {
     const dockerLog = path.join(dir, "docker.log");
