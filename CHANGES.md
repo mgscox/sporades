@@ -13,6 +13,18 @@
   defaults to the project's Host binding. Requires `sporades host upgrade` and
   a redeploy with this CLI; no public route is added.
 
+## v0.9.38 - 2026-10-22
+
+Changes since v0.9.37.
+
+### 🐛 Bug Fixes
+
+- Fix documentation CI by preserving published release notes (#283) (9ea3c2e5).
+
+### 📦 Packaging
+
+- Replace deprecated OpenTelemetry trace SDK (#284) (109fee6f).
+
 ## v0.9.37 - 2026-10-22
 
 Changes since v0.9.36.
