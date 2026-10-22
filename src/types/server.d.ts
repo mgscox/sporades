@@ -619,9 +619,10 @@ export type AiChatResult =
  */
 export type AiApi = {
   /**
-   * Whether the project declares an enabled `ai` block and its `keyEnv` Server env value is set.
-   * `false` leaves the Capsule running; calls resolve `AI_UNCONFIGURED` unless a per-call
-   * `provider.apiKey` supplies the key for a declared, enabled project.
+   * Whether the project default is usable: an enabled `ai` block whose `keyEnv` Server env value is
+   * set. It describes only the default. When `false`, a call with no `provider` override resolves
+   * `AI_UNCONFIGURED`, but per-call `provider` values can still supply the missing base URL, model,
+   * or key, even when `ai` is undeclared or `enabled: false`.
    */
   readonly enabled: boolean;
   chat(input: AiChatInput): Promise<AiChatResult>;
