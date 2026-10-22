@@ -46,7 +46,9 @@ const aiEvents = db => db.log.tail().filter(event => event.event === 'ai.call');
 test('ai config validates shape, stays out of required Server env, and keeps the key in env', () => {
   assert.deepEqual(validateAiConfig({ baseUrl: 'https://api.example.test/v1/', model: 'small' }),
     { enabled: true, api: 'chat-completions', baseUrl: 'https://api.example.test/v1', model: 'small', keyEnv: 'AI_API_KEY' });
-  assert.deepEqual(validateAiConfig({ enabled: false }), { enabled: false });
+  assert.deepEqual(validateAiConfig({ enabled: false }), { enabled: false, api: 'chat-completions', keyEnv: 'AI_API_KEY' });
+  assert.deepEqual(validateAiConfig({ enabled: false, baseUrl: 'https://api.example.test/v1/', model: 'small' }),
+    { enabled: false, api: 'chat-completions', keyEnv: 'AI_API_KEY', baseUrl: 'https://api.example.test/v1', model: 'small' });
   assert.equal(validateAiConfig({ api: 'responses', baseUrl: 'http://localhost:11434/v1', model: 'llama3.1:8b', keyEnv: 'OLLAMA_KEY' }).api, 'responses');
   assert.equal(validateAiConfig({ baseUrl: 'http://host.docker.internal:11434/v1', model: 'm' }).baseUrl, 'http://host.docker.internal:11434/v1');
   for (const invalid of [
@@ -234,6 +236,17 @@ test('per-call provider values override project settings and env, including with
         assert.equal(other.requests().length, 1, 'only the earlier keyed override reached the other provider');
         const sameOrigin = await call('ask', { messages: [{ role: 'user', content: 'x' }], provider: { baseUrl: `${emulator.url}/`, model: 'emulator-large' } });
         assert.equal(sameOrigin.ok, true, 'the project key still applies to the project base URL');
+      });
+      await withRuntime({ ai: { enabled: false, baseUrl: emulator.url, model: 'emulator-small' } }, async ({ call }) => {
+        const before = emulator.usage(KEY).calls;
+        assert.equal(await call('enabled'), false, 'a disabled project default stays dormant');
+        assert.equal((await call('ask', { messages: [{ role: 'user', content: 'x' }] })).error.code, 'AI_UNCONFIGURED');
+        const keyOnly = await call('ask', { messages: [{ role: 'user', content: 'x' }], provider: { apiKey: 'sk-emulator-other' } });
+        assert.equal(keyOnly.ok, true, 'a partial override falls back to the declared base URL and model');
+        assert.equal(keyOnly.data.model, 'emulator-small');
+        const modelOnly = await call('ask', { messages: [{ role: 'user', content: 'x' }], provider: { model: 'emulator-large' } });
+        assert.equal(modelOnly.ok, true, 'the declared key still applies to the declared base URL');
+        assert.equal(emulator.usage(KEY).calls, before + 1);
       });
       await withRuntime({ env: {} }, async ({ db, call }) => {
         assert.equal(await call('enabled'), false);

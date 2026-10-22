@@ -130352,7 +130352,8 @@ function validateAiConfig(value) {
   if ((data2.has("model") || enabled) && !validModel(model)) {
     invalidAiConfig("Set `ai.model` to the provider's model name (printable ASCII, at most 256 characters).");
   }
-  return enabled ? Object.freeze({ enabled: true, api, baseUrl, model, keyEnv }) : Object.freeze({ enabled: false });
+  if (enabled) return Object.freeze({ enabled: true, api, baseUrl, model, keyEnv });
+  return Object.freeze({ enabled: false, api, keyEnv, ...baseUrl !== null ? { baseUrl } : {}, ...model !== void 0 ? { model } : {} });
 }
 function parseProviderOverride(value) {
   if (value === void 0) return {};
@@ -130433,19 +130434,18 @@ var MESSAGES = {
   AI_INVALID_RESPONSE: "The AI provider returned an unusable response."
 };
 function createAiRuntime(config, serverEnv = {}, options = {}) {
-  const normalized = validateAiConfig(config);
-  const configured = normalized?.enabled ? normalized : null;
-  const rawKey = configured ? serverEnv[configured.keyEnv] : void 0;
+  const declared = validateAiConfig(config) ?? null;
+  const rawKey = declared ? serverEnv[declared.keyEnv] : void 0;
   const projectKey = typeof rawKey === "string" && validKey(rawKey.trim()) ? rawKey.trim() : null;
-  const enabled = !!configured && projectKey !== null;
+  const enabled = !!declared?.enabled && projectKey !== null;
   const stopped2 = new AbortController();
   async function chat(input, callOptions = {}) {
     const startedAt = performance.now();
     let status = null;
     let usage = { prompt: null, completion: null, total: null };
     let responseModel = null;
-    let model = configured?.model ?? null;
-    let api = configured?.api ?? null;
+    let model = declared?.model ?? null;
+    let api = declared?.api ?? null;
     const settle = (outcome, data3) => {
       try {
         void Promise.resolve((callOptions.log ?? options.log)?.({
@@ -130472,10 +130472,11 @@ function createAiRuntime(config, serverEnv = {}, options = {}) {
     }
     if (!parsedInput) return settle("AI_INVALID_REQUEST");
     const { request, timeoutMs, provider } = parsedInput;
+    if (declared && !declared.enabled && !Object.values(provider).some((value) => value !== void 0)) return settle("AI_UNCONFIGURED");
     api = provider.api ?? api ?? "chat-completions";
     model = provider.model ?? model;
-    const baseUrl = provider.baseUrl ?? configured?.baseUrl;
-    const key = provider.apiKey ?? (baseUrl === configured?.baseUrl ? projectKey : null);
+    const baseUrl = provider.baseUrl ?? declared?.baseUrl;
+    const key = provider.apiKey ?? (baseUrl === declared?.baseUrl ? projectKey : null);
     if (!baseUrl || !model || !key) return settle("AI_UNCONFIGURED");
     const adapter = AI_PROTOCOL_ADAPTERS[api];
     if (callOptions.signal?.aborted || stopped2.signal.aborted) return settle("AI_ABORTED");

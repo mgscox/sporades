@@ -570,6 +570,7 @@ export type AiJsonSchema = Readonly<{ name: string; schema: { [key: string]: Jso
  * Per-call provider values. Each one present takes precedence over `sporades.json` `ai` and its
  * Server env key, even when `ai` is absent or disabled. `baseUrl` follows the `ai.baseUrl` rules.
  * The project key is used only with the project base URL; a different `baseUrl` needs `apiKey`.
+ * With `ai.enabled: false`, a call needs at least one override and falls back to the declared values.
  */
 export type AiProviderOverride = Readonly<{ api?: "chat-completions" | "responses"; baseUrl?: string; model?: string; apiKey?: string }>;
 

@@ -5,7 +5,10 @@ import { AI_PROTOCOL_ADAPTERS, type AiProtocol } from "./ai-openai-adapters.js";
 
 type RecordValue = Record<string, any>;
 
-export type AiConfig = Readonly<{ enabled: false }> | Readonly<{ enabled: true; api: AiProtocol; baseUrl: string; model: string; keyEnv: string }>;
+/** A disabled stanza keeps whatever it declares, so per-call overrides can still fall back to it. */
+export type AiConfig =
+  | Readonly<{ enabled: false; api: AiProtocol; keyEnv: string; baseUrl?: string; model?: string }>
+  | Readonly<{ enabled: true; api: AiProtocol; keyEnv: string; baseUrl: string; model: string }>;
 export type AiErrorCode = "AI_UNCONFIGURED" | "AI_INVALID_REQUEST" | "AI_TIMEOUT" | "AI_ABORTED" | "AI_UPSTREAM_ERROR" | "AI_INVALID_RESPONSE";
 
 export const AI_DEFAULT_TIMEOUT_MS = 2000;
@@ -71,7 +74,8 @@ export function validateAiConfig(value: unknown): AiConfig | undefined {
   if ((data.has("model") || enabled) && !validModel(model)) {
     invalidAiConfig("Set `ai.model` to the provider's model name (printable ASCII, at most 256 characters).");
   }
-  return enabled ? Object.freeze({ enabled: true, api, baseUrl: baseUrl!, model, keyEnv }) : Object.freeze({ enabled: false });
+  if (enabled) return Object.freeze({ enabled: true, api, baseUrl: baseUrl!, model, keyEnv });
+  return Object.freeze({ enabled: false, api, keyEnv, ...(baseUrl !== null ? { baseUrl } : {}), ...(model !== undefined ? { model } : {}) });
 }
 
 /** Validates Capsule input into the neutral request shape; null means AI_INVALID_REQUEST. */
@@ -156,12 +160,12 @@ const MESSAGES: Record<AiErrorCode, string> = {
  * never retry, and never log prompt or response content: each emits one metering event only.
  */
 export function createAiRuntime(config: unknown, serverEnv: RecordValue = {}, options: { log?: (event: RecordValue) => unknown } = {}) {
-  const normalized = validateAiConfig(config);
-  const configured = normalized?.enabled ? normalized : null;
-  const rawKey = configured ? serverEnv[configured.keyEnv] : undefined;
+  const declared = validateAiConfig(config) ?? null;
+  const rawKey = declared ? serverEnv[declared.keyEnv] : undefined;
   const projectKey = typeof rawKey === "string" && validKey(rawKey.trim()) ? rawKey.trim() : null;
-  // The project default is dormant while the named key is absent, so existing Dev sessions start unchanged.
-  const enabled = !!configured && projectKey !== null;
+  // The project default is dormant while disabled or while the named key is absent, so existing Dev
+  // sessions start unchanged. Per-call overrides may still fall back to whatever `ai` declares.
+  const enabled = !!declared?.enabled && projectKey !== null;
   const stopped = new AbortController();
 
   async function chat(input: unknown, callOptions: { signal?: AbortSignal; log?: (event: RecordValue) => unknown } = {}) {
@@ -169,8 +173,8 @@ export function createAiRuntime(config: unknown, serverEnv: RecordValue = {}, op
     let status: number | null = null;
     let usage = { prompt: null as number | null, completion: null as number | null, total: null as number | null };
     let responseModel: string | null = null;
-    let model: string | null = configured?.model ?? null;
-    let api: AiProtocol | null = configured?.api ?? null;
+    let model: string | null = declared?.model ?? null;
+    let api: AiProtocol | null = declared?.api ?? null;
     const settle = (outcome: "ok" | AiErrorCode, data?: RecordValue) => {
       try {
         void Promise.resolve((callOptions.log ?? options.log)?.({
@@ -188,11 +192,13 @@ export function createAiRuntime(config: unknown, serverEnv: RecordValue = {}, op
     try { parsedInput = parseChatInput(input); } catch { parsedInput = null; }
     if (!parsedInput) return settle("AI_INVALID_REQUEST");
     const { request, timeoutMs, provider } = parsedInput;
+    // `enabled: false` switches off the project default only: a call with no override stays dormant.
+    if (declared && !declared.enabled && !Object.values(provider).some(value => value !== undefined)) return settle("AI_UNCONFIGURED");
     api = provider.api ?? api ?? "chat-completions";
     model = provider.model ?? model;
-    const baseUrl = provider.baseUrl ?? configured?.baseUrl;
+    const baseUrl = provider.baseUrl ?? declared?.baseUrl;
     // The project key only ever goes to the project base URL; another origin needs its own key.
-    const key = provider.apiKey ?? (baseUrl === configured?.baseUrl ? projectKey : null);
+    const key = provider.apiKey ?? (baseUrl === declared?.baseUrl ? projectKey : null);
     if (!baseUrl || !model || !key) return settle("AI_UNCONFIGURED");
     const adapter: AiProviderAdapter = AI_PROTOCOL_ADAPTERS[api];
     if (callOptions.signal?.aborted || stopped.signal.aborted) return settle("AI_ABORTED");

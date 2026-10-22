@@ -123,7 +123,9 @@ env key, and works even when `ai` is absent or disabled. Values that are not
 given fall back to the project settings. If no base URL, model or key remains,
 the call returns `AI_UNCONFIGURED`. `baseUrl` follows the same rules as
 `ai.baseUrl`. The project key is only ever sent to the project base URL: a call
-that overrides `baseUrl` must also pass `apiKey`.
+that overrides `baseUrl` must also pass `apiKey`. A disabled `ai` section keeps
+its declared values for overrides to fall back on, but a call that passes no
+`provider` value at all stays dormant.
 
 ```ts
 // Staging points at a local model; production uses the project default.

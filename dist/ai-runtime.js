@@ -71,7 +71,9 @@ export function validateAiConfig(value) {
     if ((data.has("model") || enabled) && !validModel(model)) {
         invalidAiConfig("Set `ai.model` to the provider's model name (printable ASCII, at most 256 characters).");
     }
-    return enabled ? Object.freeze({ enabled: true, api, baseUrl: baseUrl, model, keyEnv }) : Object.freeze({ enabled: false });
+    if (enabled)
+        return Object.freeze({ enabled: true, api, baseUrl: baseUrl, model, keyEnv });
+    return Object.freeze({ enabled: false, api, keyEnv, ...(baseUrl !== null ? { baseUrl } : {}), ...(model !== undefined ? { model } : {}) });
 }
 /** Per-call provider values. They take precedence over sporades.json `ai` and its Server env key. */
 function parseProviderOverride(value) {
@@ -177,20 +179,20 @@ const MESSAGES = {
  * never retry, and never log prompt or response content: each emits one metering event only.
  */
 export function createAiRuntime(config, serverEnv = {}, options = {}) {
-    const normalized = validateAiConfig(config);
-    const configured = normalized?.enabled ? normalized : null;
-    const rawKey = configured ? serverEnv[configured.keyEnv] : undefined;
+    const declared = validateAiConfig(config) ?? null;
+    const rawKey = declared ? serverEnv[declared.keyEnv] : undefined;
     const projectKey = typeof rawKey === "string" && validKey(rawKey.trim()) ? rawKey.trim() : null;
-    // The project default is dormant while the named key is absent, so existing Dev sessions start unchanged.
-    const enabled = !!configured && projectKey !== null;
+    // The project default is dormant while disabled or while the named key is absent, so existing Dev
+    // sessions start unchanged. Per-call overrides may still fall back to whatever `ai` declares.
+    const enabled = !!declared?.enabled && projectKey !== null;
     const stopped = new AbortController();
     async function chat(input, callOptions = {}) {
         const startedAt = performance.now();
         let status = null;
         let usage = { prompt: null, completion: null, total: null };
         let responseModel = null;
-        let model = configured?.model ?? null;
-        let api = configured?.api ?? null;
+        let model = declared?.model ?? null;
+        let api = declared?.api ?? null;
         const settle = (outcome, data) => {
             try {
                 void Promise.resolve((callOptions.log ?? options.log)?.({
@@ -216,11 +218,14 @@ export function createAiRuntime(config, serverEnv = {}, options = {}) {
         if (!parsedInput)
             return settle("AI_INVALID_REQUEST");
         const { request, timeoutMs, provider } = parsedInput;
+        // `enabled: false` switches off the project default only: a call with no override stays dormant.
+        if (declared && !declared.enabled && !Object.values(provider).some(value => value !== undefined))
+            return settle("AI_UNCONFIGURED");
         api = provider.api ?? api ?? "chat-completions";
         model = provider.model ?? model;
-        const baseUrl = provider.baseUrl ?? configured?.baseUrl;
+        const baseUrl = provider.baseUrl ?? declared?.baseUrl;
         // The project key only ever goes to the project base URL; another origin needs its own key.
-        const key = provider.apiKey ?? (baseUrl === configured?.baseUrl ? projectKey : null);
+        const key = provider.apiKey ?? (baseUrl === declared?.baseUrl ? projectKey : null);
         if (!baseUrl || !model || !key)
             return settle("AI_UNCONFIGURED");
         const adapter = AI_PROTOCOL_ADAPTERS[api];

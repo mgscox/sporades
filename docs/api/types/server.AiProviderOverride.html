@@ -14,10 +14,11 @@
 <div class="tsd-signature"><span class="tsd-kind-type-alias">AiProviderOverride</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Readonly</span><span class="tsd-signature-symbol">&lt;</span><br/>    <span class="tsd-signature-symbol">{</span><br/>        <span class="tsd-kind-property">api</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">&quot;chat-completions&quot;</span><br/>        <span class="tsd-signature-symbol">|</span> <span class="tsd-signature-type">&quot;responses&quot;</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">apiKey</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">baseUrl</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">model</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>    <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">,</span><br/><span class="tsd-signature-symbol">&gt;</span></div>
 <div class="tsd-comment tsd-typography"><p>Per-call provider values. Each one present takes precedence over <code>sporades.json</code> <code>ai</code> and its
 Server env key, even when <code>ai</code> is absent or disabled. <code>baseUrl</code> follows the <code>ai.baseUrl</code> rules.
-The project key is used only with the project base URL; a different <code>baseUrl</code> needs <code>apiKey</code>.</p>
+The project key is used only with the project base URL; a different <code>baseUrl</code> needs <code>apiKey</code>.
+With <code>ai.enabled: false</code>, a call needs at least one override and falls back to the declared values.</p>
 </div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L574">server.d.ts:574</a></li></ul></aside></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L575">server.d.ts:575</a></li></ul></aside></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">

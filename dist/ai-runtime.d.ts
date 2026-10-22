@@ -1,13 +1,18 @@
 import { type AiProtocol } from "./ai-openai-adapters.js";
 type RecordValue = Record<string, any>;
+/** A disabled stanza keeps whatever it declares, so per-call overrides can still fall back to it. */
 export type AiConfig = Readonly<{
     enabled: false;
+    api: AiProtocol;
+    keyEnv: string;
+    baseUrl?: string;
+    model?: string;
 }> | Readonly<{
     enabled: true;
     api: AiProtocol;
+    keyEnv: string;
     baseUrl: string;
     model: string;
-    keyEnv: string;
 }>;
 export type AiErrorCode = "AI_UNCONFIGURED" | "AI_INVALID_REQUEST" | "AI_TIMEOUT" | "AI_ABORTED" | "AI_UPSTREAM_ERROR" | "AI_INVALID_RESPONSE";
 export declare const AI_DEFAULT_TIMEOUT_MS = 2000;
