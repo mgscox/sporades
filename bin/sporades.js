@@ -79681,7 +79681,7 @@ var require_TracerProvider = __commonJS({
       ForceFlushState2[ForceFlushState2["error"] = 2] = "error";
       ForceFlushState2[ForceFlushState2["unresolved"] = 3] = "unresolved";
     })(ForceFlushState || (ForceFlushState = {}));
-    var TracerProvider = class {
+    var TracerProvider2 = class {
       _resource;
       _activeSpanProcessor;
       _forceFlushTimeoutMillis;
@@ -79767,7 +79767,7 @@ var require_TracerProvider = __commonJS({
         return (0, inspect_1.formatInspect)("TracerProvider", payload, depth2, options, inspect);
       }
     };
-    exports.TracerProvider = TracerProvider;
+    exports.TracerProvider = TracerProvider2;
   }
 });
 
@@ -80121,227 +80121,6 @@ var require_src8 = __commonJS({
     var Sampler_1 = require_Sampler();
     Object.defineProperty(exports, "SamplingDecision", { enumerable: true, get: function() {
       return Sampler_1.SamplingDecision;
-    } });
-  }
-});
-
-// node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/config.js
-var require_config = __commonJS({
-  "node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/config.js"(exports) {
-    "use strict";
-    Object.defineProperty(exports, "__esModule", { value: true });
-    exports.buildSamplerFromEnv = exports.loadDefaultConfig = void 0;
-    var api_1 = (init_esm(), __toCommonJS(esm_exports));
-    var core_1 = require_src();
-    var sdk_trace_1 = require_src8();
-    var TracesSamplerValues;
-    (function(TracesSamplerValues2) {
-      TracesSamplerValues2["AlwaysOff"] = "always_off";
-      TracesSamplerValues2["AlwaysOn"] = "always_on";
-      TracesSamplerValues2["ParentBasedAlwaysOff"] = "parentbased_always_off";
-      TracesSamplerValues2["ParentBasedAlwaysOn"] = "parentbased_always_on";
-      TracesSamplerValues2["ParentBasedTraceIdRatio"] = "parentbased_traceidratio";
-      TracesSamplerValues2["TraceIdRatio"] = "traceidratio";
-    })(TracesSamplerValues || (TracesSamplerValues = {}));
-    var DEFAULT_RATIO = 1;
-    function loadDefaultConfig() {
-      return {
-        sampler: buildSamplerFromEnv(),
-        forceFlushTimeoutMillis: 3e4,
-        generalLimits: {
-          attributeValueLengthLimit: (0, core_1.getNumberFromEnv)("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT") ?? Infinity,
-          attributeCountLimit: (0, core_1.getNumberFromEnv)("OTEL_ATTRIBUTE_COUNT_LIMIT") ?? 128
-        },
-        spanLimits: {
-          attributeValueLengthLimit: (0, core_1.getNumberFromEnv)("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT") ?? Infinity,
-          attributeCountLimit: (0, core_1.getNumberFromEnv)("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT") ?? 128,
-          linkCountLimit: (0, core_1.getNumberFromEnv)("OTEL_SPAN_LINK_COUNT_LIMIT") ?? 128,
-          eventCountLimit: (0, core_1.getNumberFromEnv)("OTEL_SPAN_EVENT_COUNT_LIMIT") ?? 128,
-          attributePerEventCountLimit: (0, core_1.getNumberFromEnv)("OTEL_SPAN_ATTRIBUTE_PER_EVENT_COUNT_LIMIT") ?? 128,
-          attributePerLinkCountLimit: (0, core_1.getNumberFromEnv)("OTEL_SPAN_ATTRIBUTE_PER_LINK_COUNT_LIMIT") ?? 128
-        }
-      };
-    }
-    exports.loadDefaultConfig = loadDefaultConfig;
-    function buildSamplerFromEnv() {
-      const sampler = (0, core_1.getStringFromEnv)("OTEL_TRACES_SAMPLER") ?? TracesSamplerValues.ParentBasedAlwaysOn;
-      switch (sampler) {
-        case TracesSamplerValues.AlwaysOn:
-          return new sdk_trace_1.AlwaysOnSampler();
-        case TracesSamplerValues.AlwaysOff:
-          return new sdk_trace_1.AlwaysOffSampler();
-        case TracesSamplerValues.ParentBasedAlwaysOn:
-          return new sdk_trace_1.ParentBasedSampler({
-            root: new sdk_trace_1.AlwaysOnSampler()
-          });
-        case TracesSamplerValues.ParentBasedAlwaysOff:
-          return new sdk_trace_1.ParentBasedSampler({
-            root: new sdk_trace_1.AlwaysOffSampler()
-          });
-        case TracesSamplerValues.TraceIdRatio:
-          return new sdk_trace_1.TraceIdRatioBasedSampler(getSamplerProbabilityFromEnv());
-        case TracesSamplerValues.ParentBasedTraceIdRatio:
-          return new sdk_trace_1.ParentBasedSampler({
-            root: new sdk_trace_1.TraceIdRatioBasedSampler(getSamplerProbabilityFromEnv())
-          });
-        default:
-          api_1.diag.error(`OTEL_TRACES_SAMPLER value "${sampler}" invalid, defaulting to "${TracesSamplerValues.ParentBasedAlwaysOn}".`);
-          return new sdk_trace_1.ParentBasedSampler({
-            root: new sdk_trace_1.AlwaysOnSampler()
-          });
-      }
-    }
-    exports.buildSamplerFromEnv = buildSamplerFromEnv;
-    function getSamplerProbabilityFromEnv() {
-      const probability = (0, core_1.getNumberFromEnv)("OTEL_TRACES_SAMPLER_ARG");
-      if (probability == null) {
-        api_1.diag.error(`OTEL_TRACES_SAMPLER_ARG is blank, defaulting to ${DEFAULT_RATIO}.`);
-        return DEFAULT_RATIO;
-      }
-      if (probability < 0 || probability > 1) {
-        api_1.diag.error(`OTEL_TRACES_SAMPLER_ARG=${probability} was given, but it is out of range ([0..1]), defaulting to ${DEFAULT_RATIO}.`);
-        return DEFAULT_RATIO;
-      }
-      return probability;
-    }
-  }
-});
-
-// node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/utility.js
-var require_utility = __commonJS({
-  "node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/utility.js"(exports) {
-    "use strict";
-    Object.defineProperty(exports, "__esModule", { value: true });
-    exports.reconfigureLimits = exports.DEFAULT_ATTRIBUTE_VALUE_LENGTH_LIMIT = exports.DEFAULT_ATTRIBUTE_COUNT_LIMIT = void 0;
-    var core_1 = require_src();
-    exports.DEFAULT_ATTRIBUTE_COUNT_LIMIT = 128;
-    exports.DEFAULT_ATTRIBUTE_VALUE_LENGTH_LIMIT = Infinity;
-    function reconfigureLimits(userConfig) {
-      const spanLimits = Object.assign({}, userConfig.spanLimits);
-      spanLimits.attributeCountLimit = userConfig.spanLimits?.attributeCountLimit ?? userConfig.generalLimits?.attributeCountLimit ?? (0, core_1.getNumberFromEnv)("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT") ?? (0, core_1.getNumberFromEnv)("OTEL_ATTRIBUTE_COUNT_LIMIT") ?? exports.DEFAULT_ATTRIBUTE_COUNT_LIMIT;
-      spanLimits.attributeValueLengthLimit = userConfig.spanLimits?.attributeValueLengthLimit ?? userConfig.generalLimits?.attributeValueLengthLimit ?? (0, core_1.getNumberFromEnv)("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT") ?? (0, core_1.getNumberFromEnv)("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT") ?? exports.DEFAULT_ATTRIBUTE_VALUE_LENGTH_LIMIT;
-      return Object.assign({}, userConfig, { spanLimits });
-    }
-    exports.reconfigureLimits = reconfigureLimits;
-  }
-});
-
-// node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/BasicTracerProvider-shim.js
-var require_BasicTracerProvider_shim = __commonJS({
-  "node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/BasicTracerProvider-shim.js"(exports) {
-    "use strict";
-    Object.defineProperty(exports, "__esModule", { value: true });
-    exports.BasicTracerProvider = void 0;
-    var core_1 = require_src();
-    var config_1 = require_config();
-    var utility_1 = require_utility();
-    var sdk_trace_1 = require_src8();
-    var BasicTracerProvider2 = class extends sdk_trace_1.TracerProvider {
-      constructor(config = {}) {
-        const mergedConfig = (0, core_1.merge)({}, (0, config_1.loadDefaultConfig)(), (0, utility_1.reconfigureLimits)(config));
-        delete mergedConfig.generalLimits;
-        super(mergedConfig);
-      }
-    };
-    exports.BasicTracerProvider = BasicTracerProvider2;
-  }
-});
-
-// node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/BatchSpanProcessor-shim.js
-var require_BatchSpanProcessor_shim = __commonJS({
-  "node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/BatchSpanProcessor-shim.js"(exports) {
-    "use strict";
-    Object.defineProperty(exports, "__esModule", { value: true });
-    exports.BatchSpanProcessor = void 0;
-    var core_1 = require_src();
-    var sdk_trace_1 = require_src8();
-    var BatchSpanProcessor2 = class extends sdk_trace_1.BatchSpanProcessor {
-      constructor(exporter, config) {
-        if (!config) {
-          config = {};
-        }
-        const envFallbacks = [
-          ["maxExportBatchSize", "OTEL_BSP_MAX_EXPORT_BATCH_SIZE"],
-          ["maxQueueSize", "OTEL_BSP_MAX_QUEUE_SIZE"],
-          ["scheduledDelayMillis", "OTEL_BSP_SCHEDULE_DELAY"],
-          ["exportTimeoutMillis", "OTEL_BSP_EXPORT_TIMEOUT"]
-        ];
-        for (const [configName, envName] of envFallbacks) {
-          if (config[configName] === void 0) {
-            const envFallback = (0, core_1.getNumberFromEnv)(envName);
-            if (envFallback !== void 0) {
-              config[configName] = envFallback;
-            }
-          }
-        }
-        super({ exporter, ...config });
-      }
-    };
-    exports.BatchSpanProcessor = BatchSpanProcessor2;
-  }
-});
-
-// node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/SimpleSpanProcessor-shim.js
-var require_SimpleSpanProcessor_shim = __commonJS({
-  "node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/SimpleSpanProcessor-shim.js"(exports) {
-    "use strict";
-    Object.defineProperty(exports, "__esModule", { value: true });
-    exports.SimpleSpanProcessor = void 0;
-    var sdk_trace_1 = require_src8();
-    var SimpleSpanProcessor = class extends sdk_trace_1.SimpleSpanProcessor {
-      constructor(exporter) {
-        super({ exporter });
-      }
-    };
-    exports.SimpleSpanProcessor = SimpleSpanProcessor;
-  }
-});
-
-// node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/index-shim.js
-var require_index_shim = __commonJS({
-  "node_modules/.pnpm/@opentelemetry+sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/sdk-trace-base/build/src/index-shim.js"(exports) {
-    "use strict";
-    Object.defineProperty(exports, "__esModule", { value: true });
-    exports.SamplingDecision = exports.TraceIdRatioBasedSampler = exports.ParentBasedSampler = exports.AlwaysOnSampler = exports.AlwaysOffSampler = exports.NoopSpanProcessor = exports.InMemorySpanExporter = exports.RandomIdGenerator = exports.ConsoleSpanExporter = exports.SimpleSpanProcessor = exports.BatchSpanProcessor = exports.BasicTracerProvider = void 0;
-    var BasicTracerProvider_shim_1 = require_BasicTracerProvider_shim();
-    Object.defineProperty(exports, "BasicTracerProvider", { enumerable: true, get: function() {
-      return BasicTracerProvider_shim_1.BasicTracerProvider;
-    } });
-    var BatchSpanProcessor_shim_1 = require_BatchSpanProcessor_shim();
-    Object.defineProperty(exports, "BatchSpanProcessor", { enumerable: true, get: function() {
-      return BatchSpanProcessor_shim_1.BatchSpanProcessor;
-    } });
-    var SimpleSpanProcessor_shim_1 = require_SimpleSpanProcessor_shim();
-    Object.defineProperty(exports, "SimpleSpanProcessor", { enumerable: true, get: function() {
-      return SimpleSpanProcessor_shim_1.SimpleSpanProcessor;
-    } });
-    var sdk_trace_1 = require_src8();
-    Object.defineProperty(exports, "ConsoleSpanExporter", { enumerable: true, get: function() {
-      return sdk_trace_1.ConsoleSpanExporter;
-    } });
-    Object.defineProperty(exports, "RandomIdGenerator", { enumerable: true, get: function() {
-      return sdk_trace_1.RandomIdGenerator;
-    } });
-    Object.defineProperty(exports, "InMemorySpanExporter", { enumerable: true, get: function() {
-      return sdk_trace_1.InMemorySpanExporter;
-    } });
-    Object.defineProperty(exports, "NoopSpanProcessor", { enumerable: true, get: function() {
-      return sdk_trace_1.NoopSpanProcessor;
-    } });
-    Object.defineProperty(exports, "AlwaysOffSampler", { enumerable: true, get: function() {
-      return sdk_trace_1.AlwaysOffSampler;
-    } });
-    Object.defineProperty(exports, "AlwaysOnSampler", { enumerable: true, get: function() {
-      return sdk_trace_1.AlwaysOnSampler;
-    } });
-    Object.defineProperty(exports, "ParentBasedSampler", { enumerable: true, get: function() {
-      return sdk_trace_1.ParentBasedSampler;
-    } });
-    Object.defineProperty(exports, "TraceIdRatioBasedSampler", { enumerable: true, get: function() {
-      return sdk_trace_1.TraceIdRatioBasedSampler;
-    } });
-    Object.defineProperty(exports, "SamplingDecision", { enumerable: true, get: function() {
-      return sdk_trace_1.SamplingDecision;
     } });
   }
 });
@@ -134319,7 +134098,7 @@ var import_exporter_trace_otlp_http = __toESM(require_src6(), 1);
 var import_exporter_metrics_otlp_http = __toESM(require_src7(), 1);
 var import_resources = __toESM(require_src3(), 1);
 var import_sdk_metrics = __toESM(require_src4(), 1);
-var import_sdk_trace_base = __toESM(require_index_shim(), 1);
+var import_sdk_trace = __toESM(require_src8(), 1);
 import { randomUUID as randomUUID11 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
@@ -134809,10 +134588,10 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
     scheduledDelayMillis: 500,
     exportTimeoutMillis: 800
   };
-  const processor = new import_sdk_trace_base.BatchSpanProcessor(observedExporter, processorConfig);
-  const provider = new import_sdk_trace_base.BasicTracerProvider({
+  const processor = new import_sdk_trace.BatchSpanProcessor({ exporter: observedExporter, ...processorConfig });
+  const provider = new import_sdk_trace.TracerProvider({
     resource,
-    sampler: new import_sdk_trace_base.TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
+    sampler: new import_sdk_trace.TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
     spanProcessors: [processor]
   });
   const tracer = provider.getTracer("sporades-runtime-http", "1");

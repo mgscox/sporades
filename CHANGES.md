@@ -4,7 +4,8 @@
 
 Changes since v0.9.36.
 
-No changes detected.
+- Replace the deprecated OpenTelemetry trace SDK dependency with
+  `@opentelemetry/sdk-trace` to remove its npm installation warning.
 
 ## v0.9.11 - 2026-09-02
 

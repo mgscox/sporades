@@ -70,7 +70,7 @@
     "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
     "@opentelemetry/resources": "2.11.0",
     "@opentelemetry/sdk-metrics": "2.11.0",
-    "@opentelemetry/sdk-trace-base": "2.11.0",
+    "@opentelemetry/sdk-trace": "2.11.0",
     "acorn": "8.17.0",
     "acorn-jsx": "5.3.2",
     "esbuild": "0.25.12",

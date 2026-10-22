@@ -11,8 +11,8 @@ import { AggregationTemporalityPreference, OTLPMetricExporter } from "@opentelem
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { AggregationType, MeterProvider, PeriodicExportingMetricReader, createAllowListAttributesProcessor } from "@opentelemetry/sdk-metrics";
 import type { PushMetricExporter } from "@opentelemetry/sdk-metrics";
-import { BasicTracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base";
-import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
+import { TracerProvider, BatchSpanProcessor, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace";
+import type { SpanExporter } from "@opentelemetry/sdk-trace";
 import { interpretHttpRequestTarget } from "./http-runtime.js";
 import { runtimeJobScope, runtimeRequestScope, withoutRuntimeRequestIdentity } from "./runtime-request-context.js";
 import type { RuntimeOperationOutcome, RuntimeOperationRunner } from "./runtime-request-context.js";
@@ -383,8 +383,8 @@ export function createHttpRequestTelemetry(config?: RuntimeTelemetryConfig | nul
     scheduledDelayMillis: 500,
     exportTimeoutMillis: 800,
   };
-  const processor = new BatchSpanProcessor(observedExporter, processorConfig);
-  const provider = new BasicTracerProvider({
+  const processor = new BatchSpanProcessor({ exporter: observedExporter, ...processorConfig });
+  const provider = new TracerProvider({
     resource,
     sampler: new TraceIdRatioBasedSampler(config.samplingRatio ?? 1),
     spanProcessors: [processor],
