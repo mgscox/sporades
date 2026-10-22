@@ -8,6 +8,10 @@ import { generateChanges } from "../skills/generate-changes/scripts/generate-cha
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const releaseTypes = new Set(["major", "minor", "patch"]);
+// npm otherwise retries a failing or unresponsive registry silently for minutes.
+export const npmRegistryArgs = ["--fetch-retries=0", "--fetch-timeout=30000"];
+const npmRegistryTimeoutMs = 60_000;
+const npmStatusHint = "Check https://status.npmjs.org, then retry.";
 
 export function parsePackageArgs(args) {
   const selected = [];
@@ -120,6 +124,21 @@ function isNotFoundResult(result) {
   return result.code !== 0 && /\bE404\b|404 Not Found/i.test(`${result.stdout}\n${result.stderr}`);
 }
 
+export function describeRegistryFailure(result) {
+  const reason = result.timedOut
+    ? `timed out after ${npmRegistryTimeoutMs / 1000}s`
+    : `exited with code ${result.code ?? `signal ${result.signal}`}`;
+  const detail = result.stderr.trim();
+  return `npm ${reason}${detail ? `:\n${detail}` : "."}\n${npmStatusHint}`;
+}
+
+export function assertNpmAuthenticated(result) {
+  if (result.code !== 0 || !result.stdout.trim()) {
+    throw new Error(`Could not confirm the npm login (npm whoami): ${describeRegistryFailure(result)}`);
+  }
+  return result.stdout.trim();
+}
+
 export function nextReleaseVersion(packageVersion, releaseType, publishedResult) {
   let releaseBase = packageVersion;
 
@@ -132,7 +151,7 @@ export function nextReleaseVersion(packageVersion, releaseType, publishedResult)
       releaseBase = publishedVersion;
     }
   } else if (!isNotFoundResult(publishedResult)) {
-    throw new Error(`Could not determine the current published package version:\n${publishedResult.stderr.trim()}`);
+    throw new Error(`Could not determine the current published package version: ${describeRegistryFailure(publishedResult)}`);
   }
 
   return bumpVersion(releaseBase, releaseType);
@@ -164,12 +183,13 @@ function run(command, args, options = {}) {
   });
 }
 
-function runResult(command, args) {
+function runResult(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: repoRoot,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: options.timeoutMs,
     });
 
     let stdout = "";
@@ -182,8 +202,8 @@ function runResult(command, args) {
     });
 
     child.on("error", reject);
-    child.on("close", (code) => {
-      resolve({ code, stdout, stderr });
+    child.on("close", (code, signal) => {
+      resolve({ code, signal, stdout, stderr, timedOut: code === null && Boolean(options.timeoutMs) });
     });
   });
 }
@@ -260,7 +280,7 @@ export function assertVersionNotPublished(packageName, version, result) {
     throw new Error(`${packageName}@${version} already exists on npm.`);
   }
   if (!isNotFoundResult(result)) {
-    throw new Error(`Could not check whether ${packageName}@${version} is published:\n${result.stderr.trim()}`);
+    throw new Error(`Could not check whether ${packageName}@${version} is published: ${describeRegistryFailure(result)}`);
   }
 }
 
@@ -314,9 +334,7 @@ export function assertPublishedArtifactMatches(packageName, version, publishedRe
     return false;
   }
   if (publishedResult.code !== 0) {
-    throw new Error(
-      `Could not verify ${packageName}@${version} before resuming:\n${publishedResult.stderr.trim()}`,
-    );
+    throw new Error(`Could not verify ${packageName}@${version} before resuming: ${describeRegistryFailure(publishedResult)}`);
   }
 
   let published;
@@ -343,6 +361,15 @@ export function assertReleaseTagTargetsHead(tag, head, tagTarget) {
   if (head.trim() !== tagTarget.trim()) {
     throw new Error(`Git tag ${tag} does not target the current release commit.`);
   }
+}
+
+function runNpmRegistry(args) {
+  return runResult("npm", [...args, ...npmRegistryArgs], { timeoutMs: npmRegistryTimeoutMs });
+}
+
+async function confirmNpmLogin() {
+  const user = assertNpmAuthenticated(await runNpmRegistry(["whoami"]));
+  console.log(`npm user: ${user}`);
 }
 
 async function readReleaseUpstream(options = {}) {
@@ -479,7 +506,7 @@ async function resumeRelease(packageJson, options) {
       assertReleaseTagTargetsHead(releaseTag, head, remoteTarget);
     }
 
-    const published = await runResult("npm", [
+    const published = await runNpmRegistry([
       "view",
       `${packageJson.name}@${packageJson.version}`,
       "dist.shasum",
@@ -508,7 +535,7 @@ async function resumeRelease(packageJson, options) {
     }
 
     if (!alreadyPublished) {
-      await run("npm", ["whoami"]);
+      await confirmNpmLogin();
       await run("npm", ["publish", artifact.filename]);
     }
 
@@ -536,7 +563,7 @@ export async function packageForNpm(args = process.argv.slice(2)) {
     await resumeRelease(packageJson, options);
     return;
   }
-  await run("npm", ["whoami"]);
+  await confirmNpmLogin();
   const status = await run("git", ["status", "--porcelain=v1"], { captureStdout: true });
   assertCleanWorkingTree(status);
   const releaseUpstream = await readReleaseUpstream();
@@ -547,12 +574,12 @@ export async function packageForNpm(args = process.argv.slice(2)) {
     { captureStdout: true },
   );
   assertSynchronizedUpstream(releaseUpstream.branch, releaseUpstream.upstream, divergence);
-  const currentPublished = await runResult("npm", ["view", packageJson.name, "version"]);
+  const currentPublished = await runNpmRegistry(["view", packageJson.name, "version"]);
   const nextVersion = nextReleaseVersion(packageJson.version, options.releaseType, currentPublished);
   const releaseTag = releaseTagForVersion(nextVersion);
 
   console.log(`Packaging ${packageJson.name}@${nextVersion} with a ${options.releaseType} version bump...`);
-  const published = await runResult("npm", ["view", `${packageJson.name}@${nextVersion}`, "version"]);
+  const published = await runNpmRegistry(["view", `${packageJson.name}@${nextVersion}`, "version"]);
   assertVersionNotPublished(packageJson.name, nextVersion, published);
   const existingTag = await runResult("git", ["rev-parse", "--verify", "--quiet", `refs/tags/${releaseTag}`]);
   assertReleaseTagAvailable(releaseTag, existingTag);

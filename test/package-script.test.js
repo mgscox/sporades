@@ -10,6 +10,7 @@ import {
 import {
   applyPackageVersion,
   assertCleanWorkingTree,
+  assertNpmAuthenticated,
   assertPublishedArtifactMatches,
   assertRemoteReleaseTagAvailable,
   assertReleaseCommitOnUpstream,
@@ -18,8 +19,10 @@ import {
   assertSynchronizedUpstream,
   assertVersionNotPublished,
   bumpVersion,
+  describeRegistryFailure,
   detachedReleaseUpstream,
   nextReleaseVersion,
+  npmRegistryArgs,
   parsePackageArgs,
   parsePackedArtifact,
   parsePackedTarball,
@@ -250,6 +253,34 @@ test("package script recovery resolves annotated and lightweight remote tags", (
   assert.equal(remoteTagTarget("v1.2.3", { code: 0, stdout: "", stderr: "" }), null);
   assert.doesNotThrow(() => assertReleaseTagTargetsHead("v1.2.3", "commit-id\n", "commit-id\n"));
   assert.throws(() => assertReleaseTagTargetsHead("v1.2.3", "commit-a", "commit-b"), /does not target/);
+});
+
+test("package script bounds npm registry calls instead of retrying silently", () => {
+  assert.deepEqual(npmRegistryArgs, ["--fetch-retries=0", "--fetch-timeout=30000"]);
+});
+
+test("package script bails with a status hint when the npm login check fails", () => {
+  assert.equal(assertNpmAuthenticated({ code: 0, stdout: "mgscox\n", stderr: "" }), "mgscox");
+  assert.throws(
+    () => assertNpmAuthenticated({ code: 1, stdout: "", stderr: "npm error code E503\n" }),
+    /Could not confirm the npm login \(npm whoami\): npm exited with code 1:\nnpm error code E503\nCheck https:\/\/status\.npmjs\.org/,
+  );
+  assert.throws(
+    () => assertNpmAuthenticated({ code: null, signal: "SIGTERM", stdout: "", stderr: "", timedOut: true }),
+    /npm timed out after 60s\.\nCheck https:\/\/status\.npmjs\.org/,
+  );
+  assert.throws(() => assertNpmAuthenticated({ code: 0, stdout: "", stderr: "" }), /npm whoami/);
+});
+
+test("package script reports registry failures with exit details", () => {
+  assert.match(
+    describeRegistryFailure({ code: null, signal: "SIGKILL", stdout: "", stderr: "" }),
+    /^npm exited with code signal SIGKILL\./,
+  );
+  assert.throws(
+    () => nextReleaseVersion("0.5.0", "patch", { code: 1, stdout: "", stderr: "npm error code E503" }),
+    /published package version: npm exited with code 1:\nnpm error code E503\nCheck https:\/\/status\.npmjs\.org/,
+  );
 });
 
 test("package script rejects ambiguous or unknown options", () => {
