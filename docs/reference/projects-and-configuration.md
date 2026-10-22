@@ -653,6 +653,9 @@ The required set automatically includes configured
 enabled mail webhook's `secretEnv`, and `payments.stripe.secretKeyEnv` and
 `webhookSecretEnv` when Stripe is enabled. Disabled Stripe configuration adds
 no keys. OAuth keys are not inferred; declare them explicitly when needed.
+The [`ai.keyEnv`](../guide/ai.md#configure-a-provider) key is never inferred
+either: an unset AI key leaves `ctx.ai` dormant rather than failing doctor,
+push or boot.
 
 `sporades doctor` checks the local release candidate's decrypted Sealed Server
 env and fails with `doctor.server-env` when a required value is absent, empty,

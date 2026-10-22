@@ -257,6 +257,14 @@ The repository currently includes:
   Hosted Capsules; validated Postmark, Mailgun, Mailjet, SMTP2GO, and generic SMTP
   extensions; bounded transport timeouts; clean shutdown; and secret-safe
   structured delivery diagnostics.
+- A server-only, provider-neutral `ctx.ai.chat(...)` client for
+  OpenAI-compatible endpoints (hosted zero-data-retention providers, Ollama,
+  vLLM) configured by an opt-in `sporades.json` `ai` block with the key in
+  Sealed Server env. It is dormant while the key is unset and never joins the
+  required Server env set. Calls resolve closed result objects without throwing
+  or retrying, refuse redirects, send Responses requests with `store: false`,
+  support per-call provider overrides and strict JSON-schema output, and emit
+  one content-free `ai.call` metering event.
 - Runtime-owned email-provider callback routes configured under `mail.webhooks`,
   with provider-specific verification and normalization feeding one optional
   provider-neutral Capsule Email-event subscription. Verified events include
@@ -451,6 +459,7 @@ Every handler receives a runtime-owned context:
 | `ctx.log` | Runtime logger captured by Sporades inspection surfaces. |
 | `ctx.messages` | App-message fan-out API. |
 | `ctx.mail` | Server-only provider-independent SMTP delivery. |
+| `ctx.ai` | Server-only OpenAI-compatible model client; result objects, never throws. |
 | `ctx.request` | Custom endpoint request details, including parsed `body` and immutable exact `bodyBytes`, only for endpoint handlers. |
 
 Query, mutation, Custom endpoint, App message, context middleware, and mutation

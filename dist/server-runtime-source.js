@@ -23,6 +23,8 @@ import { uncappedLogEnvelope, logPayloadMaxBytes, validateLogConfig } from "./lo
 import { validateMailConfig } from "./mail-config.js";
 import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
+import { validateAiConfig } from "./ai-config.js";
+import { createAiRuntime, createContextAiApi } from "./ai-runtime.js";
 import { ensureNotificationIntentStorage, notificationIntentStorageExists, startNotificationIntentWorker, stopNotificationIntentWorker } from "./notification-intent-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, liveQueryWriteGeneration, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
@@ -592,6 +594,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     validateLogConfig(config);
     validateServerEnvConfig(config.env);
     const mailConfig = validateMailConfig(config.mail);
+    // ctx.ai is dormant without its key and is deliberately absent from the required Server env set.
+    const ai = createAiRuntime(validateAiConfig(config.ai), serverEnv);
     const declaredPayments = validatePaymentsConfig(config.payments);
     const missingEnv = options?.runtimeActionOnly ? [] : missingServerEnvKeys({ ...config, mail: mailConfig, payments: declaredPayments }, serverEnv);
     const missingEnvEvent = missingEnv.length ? createRuntimeLogSink({
@@ -853,6 +857,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         },
         scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
         mail,
+        ai,
         authConfig: authStatus(config, serverEnv),
         capsuleRateLimiter: createCapsuleRateLimiter(),
         registrationRateLimiter: createCapsuleRateLimiter(),
@@ -2692,6 +2697,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
     grantPrivilegedAccessKeyAccess(privilegedContext);
     privilegedContext.accessKeys = createPrivilegedAccessKeysApi(database, () => holder.current, (transactionAdapter) => createTransactionDatabase(database, transactionAdapter));
     privilegedContext.mail = database.mail;
+    privilegedContext.ai = createContextAiApi(database.ai, (event) => database.log?.emit(event), () => signal);
     return privilegedContext;
 }
 export async function runRuntimeAccessKeyOperatorAction(database, action, input = {}, executionSource = "runtime-action") {
@@ -4220,6 +4226,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
             return database.mail.send(input, (event) => database.log?.emit(event));
         },
     };
+    context.ai = createContextAiApi(database.ai, (event) => database.log?.emit(event), () => holder.current?.signal);
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
     context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => handlerContextByDatabase.get(database)?.() === candidate);
     context.accessKeys = createCurrentUserAccessKeysApi(database, () => holder.current);
@@ -7243,6 +7250,7 @@ function createMutationContext(database, auth, options = {}) {
             return database.mail.send(input, (event) => database.log?.emit(event));
         },
     };
+    context.ai = createContextAiApi(database.ai, (event) => database.log?.emit(event), () => holder.current?.signal);
     context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
     context.teamBilling = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, (candidate) => database.__transactionActive
         ? handlerContextByDatabase.get(database)?.() === candidate

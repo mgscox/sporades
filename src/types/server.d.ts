@@ -548,6 +548,84 @@ export type MailApi = {
   send(message: MailSendInput): Promise<MailSendResult>;
 };
 
+/** OpenAI-compatible wire API selected by `sporades.json` `ai.api` or a per-call override. */
+export type AiApiKind = "chat-completions" | "responses";
+
+/** One conversation turn. System instructions travel separately in {@link AiChatInput.system}. */
+export type AiMessage = { role: "user" | "assistant"; content: string };
+
+/**
+ * Per-call overrides of the project `ai` declaration. They refine a declared, enabled project; they
+ * cannot activate an undeclared or `enabled: false` one. `baseUrl` follows the same HTTPS rule as
+ * `ai.baseUrl`. `apiKey` is used for this call only and is never logged.
+ */
+export type AiProviderOverride = {
+  api?: AiApiKind;
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+};
+
+/**
+ * Provider-neutral input accepted by `ctx.ai.chat(...)`. Unknown fields are an `AI_INVALID_REQUEST`.
+ * At most 64 messages and 256 KiB of combined `system` and message content.
+ */
+export type AiChatInput = {
+  messages: AiMessage[];
+  system?: string;
+  /** Upper bound on generated tokens, 1-131072. */
+  maxTokens?: number;
+  /** Whole-call deadline in milliseconds, 100-30000. Defaults to 2000. */
+  timeoutMs?: number;
+  /** 0-2. */
+  temperature?: number;
+  /**
+   * JSON Schema object (at most 64 KiB) requested in strict structured-output mode. The response
+   * text is parsed as JSON into `json`; Sporades does not validate it against the schema.
+   */
+  jsonSchema?: JsonObject;
+  provider?: AiProviderOverride;
+  /** Cancels the call with `AI_ABORTED`. A Job or Privileged `ctx.signal` is also honoured. */
+  signal?: AbortSignal;
+};
+
+/** Token counts reported by the provider; `null` when it did not report one. */
+export type AiUsage = { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null };
+
+/** Closed failure codes. Messages are constant and never contain provider or prompt content. */
+export type AiErrorCode =
+  | "AI_UNCONFIGURED"
+  | "AI_INVALID_REQUEST"
+  | "AI_TIMEOUT"
+  | "AI_ABORTED"
+  | "AI_UPSTREAM_ERROR"
+  | "AI_INVALID_RESPONSE";
+
+/**
+ * Result of `ctx.ai.chat(...)`. The call never rejects and never retries. `status` is present on
+ * `AI_UPSTREAM_ERROR` when the provider answered with a non-2xx HTTP status.
+ */
+export type AiChatResult =
+  | { ok: true; text: string; json?: JsonValue; usage: AiUsage; model: string }
+  | { ok: false; code: AiErrorCode; message: string; status?: number };
+
+/**
+ * Server-only runtime-owned client for OpenAI-compatible endpoints (hosted providers, Ollama,
+ * vLLM). Available to trusted Capsule handlers, lifecycle hooks, middleware, mutation hooks, Jobs,
+ * and active Privileged callbacks; absent from browser, table ACL, and Schedule payload-factory
+ * contexts. Prompt and response content is never logged; each call emits one `ai.call` metering
+ * event with api, model, token usage, latency, and outcome.
+ */
+export type AiApi = {
+  /**
+   * Whether the project declares an enabled `ai` block and its `keyEnv` Server env value is set.
+   * `false` leaves the Capsule running; calls resolve `AI_UNCONFIGURED` unless a per-call
+   * `provider.apiKey` supplies the key for a declared, enabled project.
+   */
+  readonly enabled: boolean;
+  chat(input: AiChatInput): Promise<AiChatResult>;
+};
+
 /**
  * Closed result of {@link ServerAuthApi.terminateHumanIdentity}. `terminated` is returned by the
  * committing first call; every later authorized call for the same user ID returns
@@ -1032,6 +1110,8 @@ export type CapsuleContext<
   jobs: JobApi;
   /** Server-only SMTP delivery. Present even when mail is disabled. */
   mail: MailApi;
+  /** Server-only OpenAI-compatible AI client. Present even when AI is dormant. */
+  ai: AiApi;
   /** Server-only auth management (e.g. password reset). */
   serverAuth: ServerAuthApi;
   /** Runtime-owned current-user Teams with normal linked-user authorization. */

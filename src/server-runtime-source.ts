@@ -29,6 +29,8 @@ import { uncappedLogEnvelope, logPayloadMaxBytes, validateLogConfig } from "./lo
 import { validateMailConfig } from "./mail-config.js";
 import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";
 import { createMailRuntime } from "./mail-runtime.js";
+import { validateAiConfig } from "./ai-config.js";
+import { createAiRuntime, createContextAiApi } from "./ai-runtime.js";
 import { ensureNotificationIntentStorage, notificationIntentStorageExists, startNotificationIntentWorker, stopNotificationIntentWorker } from "./notification-intent-runtime.js";
 import { createEmailEventEndpoints } from "./email-events-runtime.js";
 import { LIVE_QUERY_ANY_TABLE, liveQueryNeedsRefresh, liveQueryTablesTracked, liveQueryWriteGeneration, recordLiveQueryTableRead, takeLiveQueryDirtyTables, trackLiveQueryReads } from "./live-query-invalidation.js";
@@ -723,6 +725,8 @@ export async function openDevDatabase(
   validateLogConfig(config);
   validateServerEnvConfig(config.env);
   const mailConfig = validateMailConfig(config.mail);
+  // ctx.ai is dormant without its key and is deliberately absent from the required Server env set.
+  const ai = createAiRuntime(validateAiConfig(config.ai), serverEnv);
   const declaredPayments = validatePaymentsConfig(config.payments);
   const missingEnv = options?.runtimeActionOnly ? [] : missingServerEnvKeys({ ...config, mail: mailConfig, payments: declaredPayments }, serverEnv);
   const missingEnvEvent = missingEnv.length ? createRuntimeLogSink({
@@ -1002,6 +1006,7 @@ export async function openDevDatabase(
     },
     scheduleTeamBillingJobDispatch: () => scheduleCurrentUserJobWorker(database),
     mail,
+    ai,
     authConfig: authStatus(config, serverEnv),
     capsuleRateLimiter: createCapsuleRateLimiter(),
     registrationRateLimiter: createCapsuleRateLimiter(),
@@ -2750,6 +2755,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
     (transactionAdapter: LooseRecord) => createTransactionDatabase(database, transactionAdapter),
   );
   privilegedContext.mail = database.mail;
+  privilegedContext.ai = createContextAiApi(database.ai, (event: LooseRecord) => database.log?.emit(event), () => signal);
   return privilegedContext;
 }
 
@@ -4390,6 +4396,7 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
       return database.mail.send(input, (event: LooseRecord) => database.log?.emit(event));
     },
   };
+  context.ai = createContextAiApi(database.ai, (event: LooseRecord) => database.log?.emit(event), () => holder.current?.signal);
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.teamBilling = createCurrentUserTeamBillingErasureApi(
     database,
@@ -7458,6 +7465,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
       return database.mail.send(input, (event: LooseRecord) => database.log?.emit(event));
     },
   };
+  context.ai = createContextAiApi(database.ai, (event: LooseRecord) => database.log?.emit(event), () => holder.current?.signal);
   context.teams = createCurrentUserTeamsApi(database, auth, () => holder.current);
   context.teamBilling = createCurrentUserTeamBillingErasureApi(
     database,

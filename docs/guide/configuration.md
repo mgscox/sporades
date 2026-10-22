@@ -57,6 +57,14 @@ for source precedence and override limits.
 See the dedicated [Mail guide](./mail.md) for SMTP delivery, provider
 configuration, durable delivery Jobs, and provider delivery-event webhooks.
 
+## AI client
+
+The optional `ai` block (`enabled`, `api`, `baseUrl`, `model`, `keyEnv`) points
+the server-only `ctx.ai` client at an OpenAI-compatible endpoint. The key lives
+in Sealed Server env under `keyEnv` (default `AI_API_KEY`); the client is
+dormant while it is unset and the key is never added to the required Server env
+set. See the [AI checks guide](./ai.md).
+
 ## Structured log payload cap
 
 `logs.payloadMaxBytes` caps the serialized JSON log envelope, including metadata

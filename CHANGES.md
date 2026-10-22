@@ -6,6 +6,12 @@ Changes since v0.9.34.
 
 ### 🚀 Features
 
+- Add a runtime-owned, server-only `ctx.ai` client for OpenAI-compatible endpoints (#276).
+  The opt-in `sporades.json` `ai` block selects Chat Completions or the Responses API
+  (`store: false`), a base URL and model; the key lives in Sealed Server env under
+  `keyEnv` (default `AI_API_KEY`) and an unset key leaves the client dormant without
+  joining the required Server env set. `ctx.ai.chat(...)` never throws or retries and
+  resolves closed `AI_*` result codes; prompt and response content is never logged.
 - Add atomic human identity termination (ADR 0057) (#273) (769df876).
 - Add day-based Host backup retention (retentionDays / keep-within) (#275) (3724e2ad).
 - Allow loopback Stripe API origins in Dev sessions (#270) (57a9aec3).

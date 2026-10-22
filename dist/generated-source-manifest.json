@@ -15,6 +15,8 @@
       "src/admission-evidence.ts",
       "src/admission-policy.ts",
       "src/admission-rate-limit.ts",
+      "src/ai-config.ts",
+      "src/ai-runtime.ts",
       "src/auth-admission.ts",
       "src/auth-runtime.ts",
       "src/base-image.ts",
@@ -150,7 +152,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "272cab37a521fecfdcc258894351dc96c7fc899306911e796b1acf801b4f4ac5"
+    "digest": "2b8a7856984afe9b86f72b9b607b832a74fb0b2e8ac333dff4ee3c9a18149e8c"
   },
   "outputs": {
     "files": [
@@ -180,6 +182,14 @@
       "dist/admission-rate-limit.d.ts.map",
       "dist/admission-rate-limit.js",
       "dist/admission-rate-limit.js.map",
+      "dist/ai-config.d.ts",
+      "dist/ai-config.d.ts.map",
+      "dist/ai-config.js",
+      "dist/ai-config.js.map",
+      "dist/ai-runtime.d.ts",
+      "dist/ai-runtime.d.ts.map",
+      "dist/ai-runtime.js",
+      "dist/ai-runtime.js.map",
       "dist/auth-admission.d.ts",
       "dist/auth-admission.d.ts.map",
       "dist/auth-admission.js",
@@ -670,6 +680,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "d3efedb1da62f51738cb9142b137c87b682edac49ad56b2cca16c119a99b2a13"
+    "digest": "3b8ee5cedaef5dac7afc093012faf7bd47842b182a55bd106ce2e56888a20fc5"
   }
 }

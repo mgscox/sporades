@@ -39,6 +39,7 @@ export default defineConfig({
           { text: "Realtime features", link: "/guide/realtime" },
           { text: "Jobs and schedules", link: "/guide/background-work" },
           { text: "Mail", link: "/guide/mail" },
+          { text: "AI checks", link: "/guide/ai" },
           { text: "Configuration", link: "/guide/configuration" },
         ],
       },
