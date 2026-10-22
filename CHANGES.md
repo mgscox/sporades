@@ -1,5 +1,13 @@
 # Changes
 
+## v0.9.39 - 2026-10-22
+
+Changes since v0.9.38.
+
+### 🚀 Features
+
+- Add read-only sporades host db list|dump|query (#286) (c9f0d358).
+
 ## Unreleased
 
 ### 🚀 Features
