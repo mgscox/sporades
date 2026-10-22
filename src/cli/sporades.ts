@@ -1437,7 +1437,8 @@ function parseHostArgs(args: string[]): LooseRecord {
         break;
 
       default:
-        if (arg.startsWith("--")) {
+        // `host db query` SQL may open with a `--` line comment, which `sporades db query` accepts.
+        if (arg.startsWith("--") && subcommand !== "db") {
           throw commandError(
             `Unknown flag: ${arg}`,
             "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host reconcile`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",

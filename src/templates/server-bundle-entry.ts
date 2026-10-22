@@ -463,6 +463,7 @@ async function runDatabaseInspectionAction(action: string, input: any) {
   } catch {
     return { ok: false, data: null, error: { message: "Capsule database inspection failed.", hint: "Retry the command. If it keeps failing, check the Capsule logs." } };
   } finally {
-    await adapter?.close();
+    // The answer is already decided; a failed close must not replace it with an empty frame.
+    try { await adapter?.close(); } catch { /* the reported result stands */ }
   }
 }

@@ -120,6 +120,7 @@ test("sporades host db answers exactly as sporades db does against the same runn
         ["query", "SELECT text, count(*) AS total FROM todos GROUP BY text"],
         ["query", "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name"],
         ["query", "SELECT * FROM missing_table"],
+        ["query", "-- learning data\nSELECT count(*) AS total FROM todos"],
         ["query", "DELETE FROM todos"],
         ["query", "UPDATE todos SET text = 'changed'"],
       ];
@@ -135,6 +136,9 @@ test("sporades host db answers exactly as sporades db does against the same runn
       assert.ok(list.data.tables.includes("todos"));
       const query = JSON.parse(run(["host", "db", "query", "SELECT text FROM todos", "--subname", "notes", "--json"], projectDir, host.env).stdout);
       assert.deepEqual(query, { ok: true, data: { columns: ["text"], rows: [{ text: "Chase the client" }] }, error: null });
+      // A leading `--` comment is SQL, not an unknown flag.
+      const commented = run(["host", "db", "query", "-- learning data\nSELECT count(*) AS total FROM todos", "--subname", "notes", "--json"], projectDir, host.env);
+      assert.deepEqual(JSON.parse(commented.stdout).data, { columns: ["total"], rows: [{ total: 1 }] });
 
       // Mutating SQL never reaches the Host, and the data is untouched.
       const requests = await host.requests();
