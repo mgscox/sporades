@@ -5,7 +5,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { dumpDatabase, listDatabaseTables, runReadOnlyQuery } from "./database-runtime.js";
 import { readJsonRequest, requestTarget } from "./http-runtime.js";
-import { MCP_MIN_KEY_LENGTH } from "./mcp-config.js";
+import { MCP_MIN_KEY_LENGTH, isUsableMcpKey } from "./mcp-config.js";
 export const MCP_ROUTE = "/__sporades/mcp";
 export const MCP_OPERATOR_ROUTE_PREFIX = "/__sporades/ops/";
 export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
@@ -28,8 +28,7 @@ export function resolveMcpRuntime(config, serverEnv) {
     if (!config?.enabled)
         return Object.freeze({ enabled: false, keyDigest: null, keyEnv: null });
     const key = Object.getOwnPropertyDescriptor(serverEnv, config.keyEnv)?.value;
-    const usable = typeof key === "string" && key.length >= MCP_MIN_KEY_LENGTH;
-    return Object.freeze({ enabled: true, keyDigest: usable ? digest(key) : null, keyEnv: config.keyEnv });
+    return Object.freeze({ enabled: true, keyDigest: isUsableMcpKey(key) ? digest(key) : null, keyEnv: config.keyEnv });
 }
 /** Route `/__sporades/mcp` and `/__sporades/ops/*`. Returns false for every other path. */
 export async function routeMcp(database, request, response) {
@@ -159,6 +158,12 @@ async function callTool(database, request, response, id, params) {
     const endpoint = operatorRoute ? null : exposedEndpoints(database).find((candidate) => candidate.name === name);
     if (!operatorRoute && !endpoint)
         return rpcError(id, -32602, `Unknown tool: ${name}`);
+    const allowedArguments = operatorRoute
+        ? Object.keys(operatorRoute.input?.properties ?? {})
+        : endpoint.method === "GET" || endpoint.method === "HEAD" ? ["query"] : ["query", "body"];
+    const unexpected = Object.keys(args).find((key) => !allowedArguments.includes(key));
+    if (unexpected !== undefined)
+        return rpcError(id, -32602, `Invalid arguments: unexpected ${JSON.stringify(unexpected)}`);
     let method;
     let path;
     let body;
@@ -234,7 +239,7 @@ function reportUnavailableKeyOnce(database, runtime) {
         category: "platform",
         event: "mcp.key.unavailable",
         level: "warn",
-        message: `MCP is enabled but Server env ${runtime.keyEnv} is missing or shorter than ${MCP_MIN_KEY_LENGTH} characters`,
+        message: `MCP is enabled but Server env ${runtime.keyEnv} is missing, shorter than ${MCP_MIN_KEY_LENGTH} characters, or not a single bearer token`,
         data: { keyEnv: runtime.keyEnv },
     });
 }

@@ -126241,6 +126241,16 @@ function validateMcpConfig(mcp) {
   }
   return Object.freeze({ enabled: true, keyEnv });
 }
+function validateMcpSealedServerEnv(mcp, hasSealedEnvelope) {
+  const normalized = validateMcpConfig(mcp);
+  if (normalized?.enabled && !hasSealedEnvelope) {
+    fail("INVALID_MCP_CONFIG", "An enabled MCP bridge requires Sealed Server env.", "Run `sporades env init`, then set the key with `sporades env set <keyEnv> --stdin` before building or starting the Capsule.");
+  }
+  return normalized;
+}
+function isUsableMcpKey(value) {
+  return typeof value === "string" && value.length >= MCP_MIN_KEY_LENGTH && /^[\x21-\x7E]+$/.test(value);
+}
 function validateEndpointMcpDeclarations(endpoints) {
   if (!isPlainRecord2(endpoints)) return;
   for (const [name2, definition] of Object.entries(endpoints)) {
@@ -126291,8 +126301,7 @@ var MCP_OPERATOR_ROUTES = Object.freeze([
 function resolveMcpRuntime(config, serverEnv) {
   if (!config?.enabled) return Object.freeze({ enabled: false, keyDigest: null, keyEnv: null });
   const key = Object.getOwnPropertyDescriptor(serverEnv, config.keyEnv)?.value;
-  const usable = typeof key === "string" && key.length >= MCP_MIN_KEY_LENGTH;
-  return Object.freeze({ enabled: true, keyDigest: usable ? digest(key) : null, keyEnv: config.keyEnv });
+  return Object.freeze({ enabled: true, keyDigest: isUsableMcpKey(key) ? digest(key) : null, keyEnv: config.keyEnv });
 }
 async function routeMcp(database, request, response) {
   const pathname = requestTarget(request).pathname;
@@ -126414,6 +126423,9 @@ async function callTool(database, request, response, id2, params) {
   const operatorRoute = MCP_OPERATOR_ROUTES.find((route) => route.tool === name2);
   const endpoint = operatorRoute ? null : exposedEndpoints(database).find((candidate) => candidate.name === name2);
   if (!operatorRoute && !endpoint) return rpcError(id2, -32602, `Unknown tool: ${name2}`);
+  const allowedArguments = operatorRoute ? Object.keys(operatorRoute.input?.properties ?? {}) : endpoint.method === "GET" || endpoint.method === "HEAD" ? ["query"] : ["query", "body"];
+  const unexpected = Object.keys(args).find((key) => !allowedArguments.includes(key));
+  if (unexpected !== void 0) return rpcError(id2, -32602, `Invalid arguments: unexpected ${JSON.stringify(unexpected)}`);
   let method;
   let path24;
   let body;
@@ -126480,7 +126492,7 @@ function reportUnavailableKeyOnce(database, runtime) {
     category: "platform",
     event: "mcp.key.unavailable",
     level: "warn",
-    message: `MCP is enabled but Server env ${runtime.keyEnv} is missing or shorter than ${MCP_MIN_KEY_LENGTH} characters`,
+    message: `MCP is enabled but Server env ${runtime.keyEnv} is missing, shorter than ${MCP_MIN_KEY_LENGTH} characters, or not a single bearer token`,
     data: { keyEnv: runtime.keyEnv }
   });
 }
@@ -133297,6 +133309,7 @@ async function createBundle(projectDir, config, options = {}) {
   const sealedPaths = sealedServerEnvPaths(projectDir);
   const sealedEnvelope = await readSealedServerEnv(sealedPaths);
   validateStripePaymentsSealedServerEnv(config.payments, sealedEnvelope !== null);
+  validateMcpSealedServerEnv(config.mcp, sealedEnvelope !== null);
   const serverEnvFile = sealedEnvelope ? { exists: false, raw: "" } : await readServerEnvFile(paths.serverEnv);
   const serverEnv = sealedEnvelope ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey) : parseServerEnv(serverEnvFile);
   validateAuthConfig(config, serverEnv);

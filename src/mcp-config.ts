@@ -29,6 +29,20 @@ export function validateMcpConfig(mcp: unknown): McpConfig | undefined {
   return Object.freeze({ enabled: true, keyEnv });
 }
 
+/** The operator key must come from Sealed Server env, never a plaintext file serialized into a Bundle. */
+export function validateMcpSealedServerEnv(mcp: unknown, hasSealedEnvelope: boolean): McpConfig | undefined {
+  const normalized = validateMcpConfig(mcp);
+  if (normalized?.enabled && !hasSealedEnvelope) {
+    fail("INVALID_MCP_CONFIG", "An enabled MCP bridge requires Sealed Server env.", "Run `sporades env init`, then set the key with `sporades env set <keyEnv> --stdin` before building or starting the Capsule.");
+  }
+  return normalized;
+}
+
+/** A usable key is long enough and sendable as one RFC 6750 bearer token (visible ASCII, no spaces). */
+export function isUsableMcpKey(value: unknown): value is string {
+  return typeof value === "string" && value.length >= MCP_MIN_KEY_LENGTH && /^[\x21-\x7E]+$/.test(value);
+}
+
 /** Validate every endpoint's `mcp` exposure flag. Endpoints without one are never bridged. */
 export function validateEndpointMcpDeclarations(endpoints: unknown) {
   if (!isPlainRecord(endpoints)) return;

@@ -23,7 +23,10 @@ openssl rand -base64 48 | sporades env set MCP_API_KEY --stdin
 ```
 
 `keyEnv` must be an uppercase Server env name outside the reserved `SPORADES_`
-prefix. The runtime reads the key at startup, so a new or rotated key takes
+prefix. Building with `mcp` enabled requires a Sealed Server env envelope
+(`sporades env init`); a plaintext `.env.sporades.server` is refused, because
+its values are written into the generated Bundle. The key must be one bearer
+token: visible ASCII with no spaces. The runtime reads the key at startup, so a new or rotated key takes
 effect on the next Dev rebuild, `sporades deploy`, Host push or restart.
 Rotate it by setting a new value and restarting; the old key stops working
 immediately.
@@ -39,8 +42,8 @@ Every bridge route needs `Authorization: Bearer <key>`:
 - every route under `/__sporades/ops/`
 
 A missing or wrong key gets `401` with no detail. If `mcp` is absent or
-disabled, or the configured key is missing or shorter than 32 characters, the
-routes answer `404` as if they did not exist. In the last case the runtime logs
+disabled, or the configured key is missing, shorter than 32 characters or not a
+single bearer token, the routes answer `404` as if they did not exist. In the last case the runtime logs
 one `mcp.key.unavailable` warning naming the env key, never its value.
 
 The key is operator authority. It can read every table and log entry, so keep
@@ -127,7 +130,8 @@ Every `tools/call` result has the same shape:
 
 `body` is the parsed JSON response, or the raw text if it is not JSON.
 `isError` is `true` for any status of 400 or above. An unknown or unexposed
-tool, or malformed arguments, returns JSON-RPC error `-32602`.
+tool, malformed arguments, or any argument the tool's input schema does not
+declare returns JSON-RPC error `-32602` without sending a request.
 
 ## Admission and limits
 

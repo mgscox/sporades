@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 import { capsule, endpoint, String as Text, table } from "../dist/server.js";
 import { prepareHttpSecurity } from "../dist/http-runtime.js";
-import { validateMcpConfig } from "../dist/mcp-config.js";
+import { isUsableMcpKey, validateMcpConfig, validateMcpSealedServerEnv } from "../dist/mcp-config.js";
 import { MCP_OPERATOR_ROUTES, routeMcp } from "../dist/mcp-runtime.js";
 import { resolveTelemetryRoute } from "../dist/runtime-telemetry.js";
 import { openDevDatabase, routeEndpoint } from "../dist/server-runtime-source.js";
@@ -74,6 +74,17 @@ test("mcp config is opt-in, closed, and names a non-reserved Server env key", ()
   }
 });
 
+test("an enabled bridge requires Sealed Server env and a sendable bearer key", () => {
+  assert.throws(() => validateMcpSealedServerEnv({ enabled: true, keyEnv: "MCP_API_KEY" }, false), { code: "INVALID_MCP_CONFIG", message: /Sealed Server env/ });
+  assert.deepEqual(validateMcpSealedServerEnv({ enabled: true, keyEnv: "MCP_API_KEY" }, true), { enabled: true, keyEnv: "MCP_API_KEY" });
+  assert.deepEqual(validateMcpSealedServerEnv({ enabled: false }, false), { enabled: false });
+  assert.equal(validateMcpSealedServerEnv(undefined, false), undefined);
+  assert.equal(isUsableMcpKey(KEY), true);
+  for (const key of [undefined, "short", `${"a".repeat(20)} ${"b".repeat(20)}`, `${"a".repeat(40)}\t`, `${"é".repeat(40)}`]) {
+    assert.equal(isUsableMcpKey(key), false, JSON.stringify(key));
+  }
+});
+
 test("sporades.json accepts and validates the mcp stanza", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "sporades-mcp-config-"));
   try {
@@ -103,7 +114,7 @@ test("endpoint mcp declarations are closed and limited to bridgeable JSON endpoi
 });
 
 test("bridge routes answer 404 when MCP is disabled or its key is unusable", async () => {
-  for (const options of [{ mcp: undefined }, { mcp: { enabled: false } }, { env: {} }, { env: { MCP_API_KEY: "short" } }]) {
+  for (const options of [{ mcp: undefined }, { mcp: { enabled: false } }, { env: {} }, { env: { MCP_API_KEY: "short" } }, { env: { MCP_API_KEY: `${"a".repeat(20)} ${"b".repeat(20)}` } }]) {
     const runtime = await start(options);
     try {
       assert.equal((await rpc(runtime.baseUrl, "ping")).status, 404, JSON.stringify(options));
@@ -207,6 +218,10 @@ test("endpoint tools forward query and body without the bridge key", async () =>
       assert.equal((await rpc(runtime.baseUrl, "tools/call", { name, arguments: {} })).body.error.code, -32602);
     }
     assert.equal((await rpc(runtime.baseUrl, "tools/call", { name: "echo", arguments: { query: { n: 1 } } })).body.error.code, -32602);
+    for (const [name, args] of [["echo", { boddy: {} }], ["ping", { body: {} }], ["sporades_db_list", { sql: "select 1" }], ["sporades_db_query", { sql: "select 1", extra: true }]]) {
+      const rejected = await rpc(runtime.baseUrl, "tools/call", { name, arguments: args });
+      assert.equal(rejected.body.error?.code, -32602, `${name} ${JSON.stringify(args)}`);
+    }
   } finally {
     await runtime.close();
   }

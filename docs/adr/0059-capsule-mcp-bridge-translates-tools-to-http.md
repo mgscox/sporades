@@ -27,7 +27,10 @@ ADR narrows that non-goal deliberately.
    to the operator routes under `/__sporades/ops/` must carry
    `Authorization: Bearer <key>`, compared in constant time. A wrong or absent
    key gets an opaque `401`. When MCP is disabled, or the configured key is
-   absent or shorter than 32 characters, those routes answer the ordinary `404`.
+   absent, shorter than 32 characters or not a single visible-ASCII bearer
+   token, those routes answer the ordinary `404`. As with Stripe credentials,
+   a build with `mcp` enabled refuses a plaintext Server env file, so the key
+   is never serialized into a Bundle.
    The key is set and rotated with `sporades env set <NAME> --stdin` and takes
    effect on the next runtime start, push or Dev rebuild.
 3. **A tool is one HTTP request.** The bridge is a static translation table:
