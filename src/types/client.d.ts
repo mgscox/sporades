@@ -116,6 +116,11 @@ export type AuthApi = {
   subscribe(listener: (state: AuthObserverState) => void): Subscription;
   signUp(provider: "email", credentials: EmailCredentials, options?: RegistrationOptions): Promise<SporadesResult>;
   signUp(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
+  /**
+   * Email sign-in preserves caller/trusted Hosted address failure gates and admits at most
+   * 120 verification attempts per runtime process per fixed 60-second window. Failures
+   * from another caller against this email alone cannot veto a valid password.
+   */
   signIn(provider: "email", credentials: EmailCredentials, options?: RegistrationOptions): Promise<SporadesResult>;
   signIn(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
   /** Verify the current linked identity for one declared purpose. OAuth returns the observable redirect URL; neither form returns a bearer or proof handle. */
@@ -139,7 +144,8 @@ export type AuthApi = {
   verifyPasswordResetCode(code: string): Promise<SporadesResult<{ email: string }>>;
   /**
    * Spend a Reset code and set the new password. This does not sign the browser
-   * in: sign in with the new password afterwards.
+   * in: sign in with the new password afterwards. Clears only this email's aggregate
+   * sign-in risk; caller, trusted-address and process verification budgets remain in force.
    */
   confirmPasswordReset(code: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
 };

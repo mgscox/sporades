@@ -116,6 +116,9 @@ export const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 export const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
 export const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 export const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+export const EMAIL_SIGN_IN_VERIFICATION_LIMIT = 120;
+export const EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS = 60 * 1000;
+export const EMAIL_SIGN_IN_VERIFICATION_FIELD = "__emailSignInVerificationBudget";
 export const PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
 export const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 export const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
@@ -2041,10 +2044,13 @@ export async function confirmPasswordReset(database, _session, code, newPassword
             revocationTime: () => database.clock.now().toISOString(),
             revocationCause: "password-reset",
         });
-        return { ok: true, ownerUserId: row.userId, revokedAccessKeys };
+        return { ok: true, email: row.email, ownerUserId: row.userId, revokedAccessKeys };
     });
     if (!outcome.ok)
         return outcome;
+    // Only committed recovery clears this account's aggregate sign-in risk. Caller,
+    // trusted-address, verification, and other auth-action budgets are independent.
+    createEmailSignInThrottleState(database).delete(`email\0${outcome.email}`);
     await emitAccessKeyOwnerTransitionAudits(database, {
         operation: "auth.confirmPasswordReset",
         ownerUserId: outcome.ownerUserId,
@@ -2202,11 +2208,30 @@ export function currentEmailSignInThrottleState(database, email, session, scope 
         };
     });
     return {
-        throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT),
+        // Aggregate email risk must not veto an otherwise unblocked owner's valid
+        // credential. Other actions retain their existing account-wide policy.
+        throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT &&
+            (scope !== EMAIL_SIGN_IN_THROTTLE_FIELD || !entry.key.startsWith("email\0"))),
         entries,
         count: Math.max(...entries.map((entry) => entry.count)),
         resetAt: Math.max(...entries.map((entry) => entry.resetAt)),
     };
+}
+// One fixed-size budget for the Capsule runtime process, separate from the
+// evictable failure table. Reserve synchronously before any adapter await so
+// concurrent callers and transaction wrappers cannot oversubscribe or refund it.
+function admitEmailSignInVerification(database) {
+    const owner = database.__rootDatabase ?? database;
+    const budget = owner[EMAIL_SIGN_IN_VERIFICATION_FIELD] ??= { count: 0, resetAt: 0 };
+    const now = Date.now();
+    if (now >= budget.resetAt) {
+        budget.count = 0;
+        budget.resetAt = now + EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS;
+    }
+    if (budget.count >= EMAIL_SIGN_IN_VERIFICATION_LIMIT)
+        return false;
+    budget.count++;
+    return true;
 }
 export function recordFailedEmailSignInAttempt(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
     const attempts = createEmailSignInThrottleState(database, scope);
@@ -2734,7 +2759,7 @@ export async function signInWithEmail(database, session, credentials) {
         return normalized;
     }
     const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
-    if (throttle.throttled) {
+    if (throttle.throttled || !admitEmailSignInVerification(database)) {
         return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
     }
     const row = await database.adapter.findEmailCredentialWithUser(normalized.email);
