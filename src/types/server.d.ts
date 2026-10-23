@@ -689,6 +689,8 @@ export type ServerAuthApi = {
   /**
    * Spend a Reset code and set the new password. Atomically revokes every
    * Session and current Access key for that user and does not create a new one.
+   * After success, clears only this email's aggregate sign-in risk; caller,
+   * trusted-address and process verification budgets remain in force.
    */
   confirmPasswordReset(code: string, newPassword: string): Promise<void>;
 };
