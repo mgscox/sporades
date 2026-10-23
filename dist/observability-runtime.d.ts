@@ -12,8 +12,7 @@ export declare function createRuntimeObservability(config?: RecordValue, env?: R
     close(): void;
     flush(): Promise<void>;
     collect(input: RecordValue, origin: string, request: IncomingMessage, database: RecordValue): Promise<void>;
-    enter: () => boolean;
-    leave(): void;
+    acquireIngress: () => (() => void) | null;
 };
 export declare function routeCollection(database: RecordValue, request: IncomingMessage, response: ServerResponse): Promise<boolean>;
 type CspViolation = {
