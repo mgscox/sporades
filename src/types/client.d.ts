@@ -128,6 +128,7 @@ export type AuthApi = {
    * browser's — plus its reauthentication proofs, outstanding Reset codes and
    * current human-owned Access keys, so fresh sign-in is required afterwards; the
    * reply keeps the `{ ok: true }` shape and the SDK publishes signed-out state.
+   * Retired sibling connections retain origin-aware sign-in provider metadata.
    */
   setPassword(email: string, currentPassword: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
   /**

@@ -6452,7 +6452,11 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 sendJson(client, {
                     id: null,
                     type: "auth.session.replace",
-                    data: { sessionToken: replacement.token, auth: replacement.auth },
+                    data: {
+                        sessionToken: replacement.token,
+                        auth: replacement.auth,
+                        providers: authProvidersForClient(database.authConfig, client.origin),
+                    },
                     error: null,
                 });
             }

@@ -82987,6 +82987,7 @@ async function runAccessKeyOwnerSecurityTransition(database, input, transition) 
     throw new TypeError("An owner security transition requires owner-unlinked, owner-deleted or password-change.");
   }
   const outcome = await database.adapter.withTransaction(async (adapter) => {
+    await adapter.lockAuthUserFileAuthority(input.ownerUserId);
     const revokedAccessKeys = await adapter.bulkRevokeAccessKeysForOwner({
       ownerUserId: input.ownerUserId,
       revocationTime: () => database.clock.now().toISOString(),
@@ -120988,6 +120989,10 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
   }
   const password = hashEmailPassword(newPassword);
   const outcome = await database.adapter.withTransaction(async (tx) => {
+    const owner = await tx.lockAuthUserFileAuthority(preflight.userId);
+    if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") {
+      return { ok: false, error: invalidPasswordResetCodeError() };
+    }
     const row = await readPasswordResetCode({ ...database, adapter: tx }, code);
     if (!row) {
       return { ok: false, error: invalidPasswordResetCodeError() };
@@ -121660,7 +121665,7 @@ async function signInWithEmail(database, session, credentials) {
     )).run(auth.userId);
     const current2 = await tx.findEmailCredentialWithUser(normalized.email);
     if (current2?.userId !== auth.userId) return { ok: false, error: invalidEmailCredentialsError() };
-    if (current2.passwordHash !== row.passwordHash || current2.passwordSalt !== row.passwordSalt) {
+    if (!await tx.claimEmailCredentialVersion(normalized.email, row.passwordHash, row.passwordSalt)) {
       return { ok: false, error: invalidEmailCredentialsError() };
     }
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
@@ -143209,7 +143214,11 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         sendJson(client, {
           id: null,
           type: "auth.session.replace",
-          data: { sessionToken: replacement.token, auth: replacement.auth },
+          data: {
+            sessionToken: replacement.token,
+            auth: replacement.auth,
+            providers: authProvidersForClient(database.authConfig, client.origin)
+          },
           error: null
         });
       } catch {

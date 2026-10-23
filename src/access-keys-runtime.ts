@@ -818,6 +818,9 @@ export async function runAccessKeyOwnerSecurityTransition(
     throw new TypeError("An owner security transition requires owner-unlinked, owner-deleted or password-change.");
   }
   const outcome = await database.adapter.withTransaction(async (adapter: LooseRecord) => {
+    // Identity first, as in sign-in, reset and termination. Taking the key-owner
+    // fence first can deadlock with a reset holding the credential/identity.
+    await adapter.lockAuthUserFileAuthority(input.ownerUserId);
     const revokedAccessKeys = await adapter.bulkRevokeAccessKeysForOwner({
       ownerUserId: input.ownerUserId,
       revocationTime: () => database.clock.now().toISOString(),

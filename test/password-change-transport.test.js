@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
+import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -151,6 +153,81 @@ test("a browser password change revokes the sibling connection's cached authorit
       assert.equal(await canSignIn(first, "old-password-signin", "owner@example.com", "owner-password-1"), false, "the old password must stop signing in");
       assert.equal(await canSignIn(first, "new-password-signin", "owner@example.com", "owner-password-2"), true, "the new password must sign in fresh");
     } finally {
+      first?.close();
+      await stopDevSession(child);
+    }
+  });
+});
+
+// Separate VM globals model independent tabs while the shipped SDK uses real
+// WebSockets and the generated CLI runtime. Neither sibling calls auth.get
+// after retirement: the pushed replacement must contain complete provider state.
+test("password change preserves provider metadata in sibling SDK subscriptions", async () => {
+  await withTempDir(async (dir) => {
+    const { child, url } = await startPasswordChangeCapsule(dir);
+    let first;
+    const siblings = [];
+    try {
+      first = await openSocket(url);
+      const signup = await sendAndWait(first, {
+        id: "sdk-signup", type: "auth.signUp", provider: "email",
+        credentials: { email: "sdk@example.com", password: "sdk-password-1" },
+      });
+      assert.equal(signup.error, null);
+      for (let index = 0; index < 2; index += 1) {
+        const storage = new Map([["sporades.sessionToken", signup.data.sessionToken]]);
+        const events = new Map();
+        const context = {
+          URL, WebSocket, TextEncoder, setTimeout, clearTimeout, console,
+          localStorage: {
+            getItem: key => storage.get(key) ?? null,
+            setItem: (key, value) => storage.set(key, value),
+            removeItem: key => storage.delete(key),
+          },
+          window: {
+            location: { href: url },
+            __SPORADES_CONNECTION_TOKEN: await readPageConnectionToken(url),
+            addEventListener: (name, listener) => events.set(name, listener),
+          },
+        };
+        runInNewContext(createClientRuntimeSource().replace(/^export /gm, "") + "\nglobalThis.sdk = { auth };", context);
+        const states = [];
+        const signedOut = Promise.withResolvers();
+        const subscription = context.sdk.auth.subscribe(state => {
+          states.push(JSON.parse(JSON.stringify(state)));
+          if (states.some(previous => previous.auth?.isAuthenticated) && state.auth?.isAuthenticated === false) signedOut.resolve();
+        });
+        siblings.push({ context, events, subscription, states, signedOut });
+        const initial = await context.sdk.auth.get();
+        assert.equal(initial.error, null);
+        assert.equal(initial.data.auth.isAuthenticated, true);
+        assert.equal(Object.keys(initial.data.providers).length, 6);
+        assert.equal(initial.data.providers.email.enabled, true);
+        // Apple availability is origin-dependent; HTTP must never advertise it.
+        assert.equal(initial.data.providers.apple.runtimeAvailable, false);
+        siblings.at(-1).providers = JSON.parse(JSON.stringify(initial.data.providers));
+      }
+      const changed = await sendAndWait(first, {
+        id: "sdk-change", type: "auth.setPassword", email: "sdk@example.com",
+        currentPassword: "sdk-password-1", newPassword: "sdk-password-2",
+      });
+      assert.equal(changed.error, null);
+      for (const sibling of siblings) {
+        let timer;
+        try {
+          await Promise.race([sibling.signedOut.promise, new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Sibling SDK did not publish signed-out state")), TEST_WEBSOCKET_TIMEOUT_MS);
+          })]);
+        } finally { clearTimeout(timer); }
+        const retired = sibling.states.at(-1);
+        assert.equal(retired.auth.isAuthenticated, false);
+        assert.deepEqual(retired.providers, sibling.providers, "retirement retains every origin-aware provider field");
+      }
+    } finally {
+      for (const sibling of siblings) {
+        sibling.subscription.unsubscribe();
+        sibling.events.get("pagehide")?.({ persisted: false });
+      }
       first?.close();
       await stopDevSession(child);
     }

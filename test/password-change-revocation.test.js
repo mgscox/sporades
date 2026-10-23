@@ -388,6 +388,13 @@ test("a sign-in cannot mint a Session from a superseded password snapshot", asyn
       // The concurrent change replaced the password before this re-read.
       return { email, userId, passwordHash: committed.hash, passwordSalt: committed.salt, displayName: "Racing", picture: null, isAuthenticated: 1, isGuest: 0 };
     },
+    async claimEmailCredentialVersion(claimedEmail, hash, salt) {
+      assert.equal(inTransaction, 1);
+      assert.equal(claimedEmail, email);
+      assert.equal(hash, preflight.hash);
+      assert.equal(salt, preflight.salt);
+      return false;
+    },
     async updateAuthUserProfile() { return { changes: 0 }; },
     prepare() {
       return {

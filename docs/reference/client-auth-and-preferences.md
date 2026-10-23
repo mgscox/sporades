@@ -704,11 +704,19 @@ afterwards. The SDK clears this browser's stored Session and standing
 reauthentication intent, publishes signed-out auth state, and stops sending the
 revoked token; live connections are replaced with fresh Anonymous sessions
 before the success reply is delivered, so the initiating and sibling sockets
-resume as Anonymous. A failed change (wrong current password, an email the
+resume as Anonymous. Every replacement includes the sign-in provider metadata
+for that connection’s origin, keeping sibling sign-in controls available without
+a reload. A failed change (wrong current password, an email the
 account does not own, a superseded Session, or a rejected transition) commits
 nothing and leaves the browser signed in. The current-password proof has its
 own bounded attempt bucket, separate from sign-in and reset throttling, so
 failed changes never lock the account out of ordinary sign-in.
+
+Sign-in retains a claim on the verified password fingerprint through Session
+issuance. Sign-in, reset and browser owner-security transitions acquire the
+identity lock before credential, recovery or Access-key writes. If sign-in wins,
+a following reset or change revokes its Session; if reset or change wins,
+sign-in cannot issue a Session from the superseded password.
 
 From the client (e.g. a settings page where the user is already signed in):
 

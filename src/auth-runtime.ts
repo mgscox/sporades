@@ -2282,6 +2282,13 @@ export async function confirmPasswordReset(database: LooseRecord, _session: Loos
   // the first transaction commits, so its deletion result decides whether it
   // may continue.
   const outcome = await database.adapter.withTransaction(async (tx: LooseRecord) => {
+    // Match sign-in, termination and browser owner-security transitions: lock
+    // the identity before any Reset-code, credential or Access-key write. This
+    // also keeps a reset from committing between verified sign-in and issuance.
+    const owner = await tx.lockAuthUserFileAuthority(preflight.userId);
+    if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") {
+      return { ok: false, error: invalidPasswordResetCodeError() };
+    }
     const row = await readPasswordResetCode({ ...database, adapter: tx }, code);
     if (!row) {
       return { ok: false, error: invalidPasswordResetCodeError() };
@@ -3146,11 +3153,11 @@ export async function signInWithEmail(database: LooseRecord, session: any, crede
     // credential afterwards so a sign-in that verified the old password cannot mint a Session.
     const current = await tx.findEmailCredentialWithUser(normalized.email);
     if (current?.userId !== auth.userId) return { ok: false, error: invalidEmailCredentialsError() };
-    // A concurrent password change or reset may have committed a different
-    // credential after this sign-in verified its throttled snapshot. Revalidating
-    // the verified fingerprint inside the same fence keeps such a sign-in from
-    // minting a Session that survives revocation.
-    if (current.passwordHash !== row.passwordHash || current.passwordSalt !== row.passwordSalt) {
+    // Claim the verified fingerprint, retaining the credential write lock until
+    // Session issuance commits. A plain read/compare leaves a PostgreSQL reset
+    // free to commit between validation and issuance. The identity is locked
+    // first, matching reset and browser owner-security transitions.
+    if (!await tx.claimEmailCredentialVersion(normalized.email, row.passwordHash, row.passwordSalt)) {
       return { ok: false, error: invalidEmailCredentialsError() };
     }
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };

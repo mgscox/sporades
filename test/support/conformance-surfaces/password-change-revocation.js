@@ -71,12 +71,13 @@ async function prepareStorage(adapter) {
 }
 
 // The composition `setOwnEmailPassword` performs inside
-// `runAccessKeyOwnerSecurityTransition`: the Access-key revocation first (cause `password-change`),
+// `runAccessKeyOwnerSecurityTransition`: the identity lock first, then Access-key revocation (cause `password-change`),
 // then the transition's revalidation fence and the password and recovery writes, all in one
 // transaction. `fingerprint` is the verification the caller presented; write the next password only
 // after the fence confirms the live credential is still that fingerprint.
 async function browserPasswordChange(adapter, owner, fingerprint = FINGERPRINT, options = {}) {
   return await adapter.withTransaction(async (tx) => {
+    await tx.lockAuthUserFileAuthority(owner.id);
     const revokedAccessKeys = await tx.bulkRevokeAccessKeysForOwner({
       ownerUserId: owner.id,
       revocationTime: () => LATER,

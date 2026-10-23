@@ -634,10 +634,13 @@ revocation of every Session (including the initiating one), its
 Reauthentication Proofs, outstanding Reset codes, and the account's current
 human-owned Access keys share one transaction fence that revalidates the live
 Session, the credential ownership and the verified password fingerprint, so a
-stale snapshot cannot authorize a change and a failure commits nothing. The
-runtime handles hashing and never exposes the credential table, password hash,
-or salt to app code. This enables password reset and change flows in Capsule
-apps without direct access to the internal auth database.
+stale snapshot cannot authorize a change and a failure commits nothing. Sign-in
+retains a verified credential claim through Session issuance; reset and browser
+owner-security transitions take the identity lock first to keep their lock order
+compatible. Live Anonymous replacements retain each connection’s origin-aware
+provider metadata. The runtime handles hashing and never exposes the credential
+table, password hash, or salt to app code. This enables password reset and change
+flows in Capsule apps without direct access to the internal auth database.
 
 Provider secrets live in Server env. `sporades.json` stores env var names and
 provider configuration, not secret values.
