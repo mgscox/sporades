@@ -98,11 +98,12 @@ never grants that authority by itself. Use `ctx.auth.userId` as the actor and
 Session from named API access.
 
 Credential checks snapshot successful admission. Rotation, revocation, expiry,
-password reset, owner unlink, or owner deletion blocks later checks but does not
-cancel work already admitted. A current-user Job safely retains the admitted
-user and named Credential provenance across restart and retry, without storing
-the bearer secret or its grants. Resource and Team authorization is still
-evaluated from current state when the Job runs.
+password reset, a browser password change (which retires the account's current
+Access keys with the `password-change` cause), owner unlink, or owner deletion
+blocks later checks but does not cancel work already admitted. A current-user
+Job safely retains the admitted user and named Credential provenance across
+restart and retry, without storing the bearer secret or its grants. Resource and
+Team authorization is still evaluated from current state when the Job runs.
 
 For private File reads, opt in separately with `files.accessKeys.read`; endpoint
 guards do not enable File Bearer access. For operational retirement, use the

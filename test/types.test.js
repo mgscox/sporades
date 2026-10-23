@@ -667,7 +667,7 @@ const app = capsule({
       const deleted = await ctx.accessKeys.delete(revoked.accessKey.id);
       deleted.deleted satisfies true;
       revoked.accessKey.lifecycleRevision.valueOf();
-      revoked.accessKey.revocationCause satisfies "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled" | null;
+      revoked.accessKey.revocationCause satisfies "owner" | "operator" | "password-reset" | "password-change" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled" | null;
       // @ts-expect-error Access-key grants are immutable after issuance.
       ctx.accessKeys.update(issued.accessKey.id, { grants: ["todos:write"] });
       // @ts-expect-error Access-key status filters are a closed vocabulary.

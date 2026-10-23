@@ -5514,7 +5514,14 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             return;
         }
         if (message.type === "auth.setPassword") {
+            const ownerUserId = client.session.auth.userId;
             const result = await setOwnEmailPassword(database, client.session, message.email ?? "", message.currentPassword ?? "", message.newPassword ?? "");
+            // The committed transition deleted the initiating and sibling Sessions.
+            // Replace every live connection of the account with a fresh Anonymous
+            // session before the result is sent, so no connection keeps using the
+            // revoked blob as cached authority.
+            if (result.ok)
+                await retireRevokedHumanSessions(database, [ownerUserId]);
             sendJson(client, {
                 id: message.id ?? null,
                 type: result.ok ? "auth.setPassword.result" : "error",
@@ -6222,7 +6229,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                     });
                     const terminatedUserIds = terminatedHumanIdentitiesByMutationResult.get(result);
                     if (terminatedUserIds)
-                        await retireTerminatedHumanClients(database, terminatedUserIds);
+                        await retireRevokedHumanSessions(database, terminatedUserIds);
                     sendJson(client, formatMutationResult(message, mutationName, result));
                     if (result.ok && mutationResultsWithWrites.has(result)) {
                         setTimeout(refreshQueries, 0);
@@ -6427,10 +6434,14 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 queryRefreshes.delete(subscription);
         }
     }
-    // ADR-0057: a committed termination replaces every live connection of the terminated human with a
-    // fresh Anonymous session before the Mutation's own result is sent and before subscriptions refresh.
-    // A connection whose replacement cannot be resolved is closed rather than left on the old actor.
-    async function retireTerminatedHumanClients(database, userIds) {
+    // A committed owner-security revocation (human identity termination per ADR-0057,
+    // or a browser password change) deleted every Session of the account. Live
+    // connections of the affected user still hold the revoked blob as cached
+    // authority, so the runtime replaces each one with a fresh Anonymous session
+    // before the triggering operation's own result is sent, and refreshes
+    // subscriptions without the old actor. A connection whose replacement cannot be
+    // resolved is closed rather than left on the old actor.
+    async function retireRevokedHumanSessions(database, userIds) {
         const terminated = new Set(userIds);
         const affected = [...clients].filter((client) => terminated.has(client.session?.auth?.userId));
         // Fence every affected reader before the first asynchronous replacement:
@@ -6452,7 +6463,11 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 sendJson(client, {
                     id: null,
                     type: "auth.session.replace",
-                    data: { sessionToken: replacement.token, auth: replacement.auth },
+                    data: {
+                        sessionToken: replacement.token,
+                        auth: replacement.auth,
+                        providers: authProvidersForClient(database.authConfig, client.origin),
+                    },
                     error: null,
                 });
             }
