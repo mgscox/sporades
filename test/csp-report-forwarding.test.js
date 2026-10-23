@@ -105,7 +105,7 @@ test('legacy csp-report violations reach the fake Sentry receiver as one bounded
   assert.doesNotMatch(JSON.stringify(event), leaks);
 });
 
-test('Reporting API batches forward csp-violation entries only, within a fixed per-request bound', async t => {
+test('Reporting API batches forward only csp-violation entries within public concurrency capacity', async t => {
   const { origin, received, observability } = await capsule(t);
   const entry = (effectiveDirective, blockedURL) => ({ type: 'csp-violation', url: 'https://app.example.test/?token=doc-query-secret', body: { documentURL: 'https://app.example.test/doc-path-secret', effectiveDirective, blockedURL, disposition: 'report', sample: 'sample-secret', sourceFile: 'https://app.example.test/source-secret.js' } });
   const batch = [
@@ -119,13 +119,12 @@ test('Reporting API batches forward csp-violation entries only, within a fixed p
   assert.equal((await post(origin, batch, 'application/reports+json')).status, 204);
   await observability.flush();
   const events = received.map(envelope);
-  assert.equal(events.length, 5);
+  assert.equal(events.length, 4, 'the fifth eligible report is dropped by the four-send public lane');
   assert.deepEqual(events.map(event => [event.tags.csp_directive, event.tags.csp_blocked, event.tags.csp_disposition]), [
     ['script-src-elem', 'inline', 'report'],
     ['img-src', 'data:', 'report'],
     ['connect-src', 'wss://socket.example.test', 'report'],
     ['style-src-attr', 'chrome-extension:', 'report'],
-    ['font-src', 'https://fonts.example.test', 'report'],
   ]);
   assert.doesNotMatch(JSON.stringify(events), leaks);
 });
@@ -158,14 +157,14 @@ test('malformed, oversized, cross-site and wrong-method reports fail closed with
   assert.equal(received.length, 1);
 });
 
-test('report forwarding shares the bounded collection budget', async t => {
+test('report forwarding shares bounded public ingress and delivery budgets', async t => {
   const { origin, received, observability } = await capsule(t);
   const statuses = [];
   for (let index = 0; index < 140; index++) statuses.push((await post(origin, report)).status);
   await observability.flush();
   assert.ok(statuses.includes(429));
   assert.ok(statuses.every(status => status === 204 || status === 429));
-  assert.ok(received.length > 0 && received.length <= 120);
+  assert.ok(received.length > 0 && received.length <= 60);
 });
 
 test('a dormant DSN accepts and drops reports; non-opted Capsules do not expose the route', async t => {
