@@ -83002,6 +83002,30 @@ async function emitAccessKeyOwnerTransitionAudits(database, input) {
     }
   }
 }
+async function runAccessKeyOwnerSecurityTransition(database, input, transition) {
+  if (input.revocationCause !== "owner-unlinked" && input.revocationCause !== "owner-deleted" && input.revocationCause !== "password-change") {
+    throw new TypeError("An owner security transition requires owner-unlinked, owner-deleted or password-change.");
+  }
+  const outcome = await database.adapter.withTransaction(async (adapter) => {
+    await adapter.lockAuthUserFileAuthority(input.ownerUserId);
+    const revokedAccessKeys = await adapter.bulkRevokeAccessKeysForOwner({
+      ownerUserId: input.ownerUserId,
+      revocationTime: () => database.clock.now().toISOString(),
+      revocationCause: input.revocationCause
+    });
+    const result = await transition(adapter);
+    return { result, revokedAccessKeys };
+  });
+  await emitAccessKeyOwnerTransitionAudits(database, {
+    operation: input.operation,
+    ownerUserId: input.ownerUserId,
+    actor: input.actor,
+    credential: input.credential,
+    revocationCause: input.revocationCause,
+    records: outcome.revokedAccessKeys.records
+  });
+  return outcome.result;
+}
 function protectAccessKeyValue(value) {
   const target = Object.freeze({ ...value });
   const tampered = () => {
@@ -120988,6 +121012,10 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
   }
   const password = hashEmailPassword(newPassword);
   const outcome = await database.adapter.withTransaction(async (tx) => {
+    const owner = await tx.lockAuthUserFileAuthority(preflight.userId);
+    if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") {
+      return { ok: false, error: invalidPasswordResetCodeError() };
+    }
     const row = await readPasswordResetCode({ ...database, adapter: tx }, code);
     if (!row) {
       return { ok: false, error: invalidPasswordResetCodeError() };
@@ -121061,21 +121089,50 @@ async function setOwnEmailPassword(database, session, email, currentPassword, ne
     return { ok: false, error: invalidCurrentPasswordError() };
   }
   resetEmailSignInAttempts(database, cleanEmail, session, PASSWORD_CHANGE_THROTTLE_FIELD);
-  return await setEmailPassword(database, session, cleanEmail, newPassword);
-}
-function emailNotOwnedError() {
-  return {
-    code: "AUTH_EMAIL_NOT_OWNED",
-    message: "That email address is not this account's email credential.",
-    hint: "Change the password for the signed-in account, or use a password reset link."
-  };
-}
-function invalidCurrentPasswordError() {
-  return {
-    code: "INVALID_CURRENT_PASSWORD",
-    message: "Current password is incorrect.",
-    hint: "Enter the current password for this email credential, or use a password reset link."
-  };
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
+  }
+  const password = hashEmailPassword(newPassword);
+  try {
+    await runAccessKeyOwnerSecurityTransition(database, {
+      operation: "auth.setPassword",
+      ownerUserId: auth.userId,
+      actor: { userId: auth.userId },
+      credential: { kind: "session" },
+      revocationCause: "password-change"
+    }, async (tx) => {
+      const now2 = database.clock.now();
+      const current2 = await tx.readAuthSessionWithUser(session.token);
+      if (!current2 || current2.token !== session.token || current2.userId !== auth.userId || !current2.isAuthenticated || current2.isGuest || Date.parse(current2.expiresAt) <= now2.getTime()) {
+        throw staleSessionChangeError();
+      }
+      const owner = await tx.lockAuthUserFileAuthority(auth.userId);
+      if (!owner || (owner.userKind ?? "human") !== "human" || owner.lifecycleStatus !== "active") {
+        throw staleSessionChangeError();
+      }
+      const live = await tx.findEmailCredentialWithUser(cleanEmail);
+      if (!live || live.userId !== auth.userId) {
+        const denied2 = emailNotOwnedError();
+        throw commandError(denied2.message, denied2.hint, denied2.code);
+      }
+      if (!await tx.claimEmailCredentialVersion(cleanEmail, credential.passwordHash, credential.passwordSalt)) {
+        throw supersededPasswordChangeError();
+      }
+      await tx.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
+      await tx.deletePasswordResetCodesForUser(auth.userId);
+      await tx.deleteAuthSessionsForUser(auth.userId);
+      return { ownerUserId: auth.userId };
+    });
+  } catch (error) {
+    if (["AUTH_SESSION_INVALID", "AUTH_EMAIL_NOT_OWNED", "INVALID_CURRENT_PASSWORD"].includes(error?.code)) {
+      return { ok: false, error: { code: error.code, message: error.message, hint: error.hint } };
+    }
+    throw error;
+  }
+  return { ok: true };
 }
 async function setEmailPassword(database, _session, email, newPassword) {
   if (!database.authConfig.providers.email.enabled) {
@@ -121095,6 +121152,34 @@ async function setEmailPassword(database, _session, email, newPassword) {
   const password = hashEmailPassword(newPassword);
   await database.adapter.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
   return { ok: true };
+}
+function emailNotOwnedError() {
+  return {
+    code: "AUTH_EMAIL_NOT_OWNED",
+    message: "That email address is not this account's email credential.",
+    hint: "Change the password for the signed-in account, or use a password reset link."
+  };
+}
+function invalidCurrentPasswordError() {
+  return {
+    code: "INVALID_CURRENT_PASSWORD",
+    message: "Current password is incorrect.",
+    hint: "Enter the current password for this email credential, or use a password reset link."
+  };
+}
+function staleSessionChangeError() {
+  return commandError(
+    "This sign-in Session is no longer valid.",
+    "Sign in again and retry the password change.",
+    "AUTH_SESSION_INVALID"
+  );
+}
+function supersededPasswordChangeError() {
+  return commandError(
+    "Current password is incorrect.",
+    "The credential changed while the change was being verified. Sign in again and retry.",
+    "INVALID_CURRENT_PASSWORD"
+  );
 }
 function createEmailSignInThrottleState(database, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
   const owner = database.__rootDatabase ?? database;
@@ -121618,6 +121703,9 @@ async function signInWithEmail(database, session, credentials) {
     )).run(auth.userId);
     const current2 = await tx.findEmailCredentialWithUser(normalized.email);
     if (current2?.userId !== auth.userId) return { ok: false, error: invalidEmailCredentialsError() };
+    if (!await tx.claimEmailCredentialVersion(normalized.email, row.passwordHash, row.passwordSalt)) {
+      return { ok: false, error: invalidEmailCredentialsError() };
+    }
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
 }
@@ -128099,7 +128187,23 @@ function createConnection() {
       });
     },
     setPassword(email, currentPassword, newPassword) {
-      return request("auth.setPassword", { email, currentPassword, newPassword });
+      return request("auth.setPassword", { email, currentPassword, newPassword }).then(async (result) => {
+        if (!result.error && result.data?.ok === true) {
+          // The transition revoked every Session for the account, including
+          // this browser's. Keep no stored authority or standing reauth intent;
+          // the runtime has already replaced live connections with fresh
+          // Anonymous sessions.
+          journeyConsentOptions = null;
+          journeyEnabledUserId = null;
+          stopJourneyCapture();
+          journeyCapture = null;
+          sessionToken = null;
+          localStorage.removeItem("sporades.sessionToken");
+          localStorage.removeItem("sporades.authReturnTo");
+          await request("auth.get");
+        }
+        return result;
+      });
     },
     sendPasswordResetLink(email) {
       return request("auth.sendPasswordResetLink", { email });
@@ -137404,6 +137508,7 @@ var REVOCATION_CAUSES = /* @__PURE__ */ new Set([
   "owner",
   "operator",
   "password-reset",
+  "password-change",
   "owner-unlinked",
   "owner-deleted",
   "service-user-administrator",
@@ -142298,6 +142403,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       return;
     }
     if (message.type === "auth.setPassword") {
+      const ownerUserId = client.session.auth.userId;
       const result = await setOwnEmailPassword(
         database,
         client.session,
@@ -142305,6 +142411,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         message.currentPassword ?? "",
         message.newPassword ?? ""
       );
+      if (result.ok) await retireRevokedHumanSessions(database, [ownerUserId]);
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.setPassword.result" : "error",
@@ -142942,7 +143049,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
             signal: client.teamOperationSignal
           });
           const terminatedUserIds = terminatedHumanIdentitiesByMutationResult.get(result);
-          if (terminatedUserIds) await retireTerminatedHumanClients(database, terminatedUserIds);
+          if (terminatedUserIds) await retireRevokedHumanSessions(database, terminatedUserIds);
           sendJson(client, formatMutationResult(message, mutationName, result));
           if (result.ok && mutationResultsWithWrites.has(result)) {
             setTimeout(refreshQueries, 0);
@@ -143126,7 +143233,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       if (queryRefreshes.get(subscription) === running) queryRefreshes.delete(subscription);
     }
   }
-  async function retireTerminatedHumanClients(database, userIds) {
+  async function retireRevokedHumanSessions(database, userIds) {
     const terminated = new Set(userIds);
     const affected = [...clients].filter((client) => terminated.has(client.session?.auth?.userId));
     for (const client of affected) {
@@ -143145,7 +143252,11 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         sendJson(client, {
           id: null,
           type: "auth.session.replace",
-          data: { sessionToken: replacement.token, auth: replacement.auth },
+          data: {
+            sessionToken: replacement.token,
+            auth: replacement.auth,
+            providers: authProvidersForClient(database.authConfig, client.origin)
+          },
           error: null
         });
       } catch {

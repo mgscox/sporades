@@ -180,19 +180,19 @@ export declare function mailNotConfiguredError(): {
 export declare function setOwnEmailPassword(database: LooseRecord, session: LooseRecord, email: string, currentPassword: string, newPassword: string): Promise<{
     ok: boolean;
     error: {
+        code: any;
+        message: any;
+        hint: any;
+    };
+} | {
+    ok: boolean;
+    error: {
         message: string;
         hint: string;
     };
 } | {
     ok: boolean;
     error?: undefined;
-} | {
-    ok: boolean;
-    error: {
-        code: any;
-        message: any;
-        hint: any;
-    };
 }>;
 export declare function setEmailPassword(database: LooseRecord, _session: LooseRecord, email: string, newPassword: string): Promise<{
     ok: boolean;

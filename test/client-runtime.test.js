@@ -2816,6 +2816,138 @@ test("useAuth receives refreshed anonymous auth state after sign-out", async () 
   }
 });
 
+test("client auth.setPassword success clears the revoked browser Session and publishes the signed-out state", async () => {
+  const linkedAuth = {
+    userId: "linked-user",
+    displayName: "Mira",
+    email: "mira@example.com",
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  let currentAuth = linkedAuth;
+  let currentToken = "linked-session-token";
+  const authRefreshes = [];
+  const browser = installBrowserFakes(linkedAuth, {
+    handlers: {
+      "auth.get": async () => {
+        authRefreshes.push(true);
+        return {
+          type: "auth.result",
+          data: {
+            sessionToken: currentToken,
+            auth: currentAuth,
+            providers: {},
+          },
+          error: null,
+        };
+      },
+      "auth.setPassword": async () => {
+        // The server revoked every Session of the account inside the password
+        // transaction, so before the result it replaces this connection with a
+        // fresh Anonymous session, exactly like retireRevokedHumanSessions does.
+        currentAuth = anonymousAuth;
+        currentToken = "fresh-anonymous-token";
+        browser.sockets[0].emit("message", {
+          data: JSON.stringify({
+            id: null,
+            type: "auth.session.replace",
+            data: { sessionToken: currentToken, auth: anonymousAuth },
+            error: null,
+          }),
+        });
+        return {
+          type: "auth.setPassword.result",
+          data: { ok: true },
+          error: null,
+        };
+      },
+    },
+  });
+  try {
+    browser.storage.set("sporades.authReturnTo", "http://localhost:4000/account");
+    const runtime = await importClientRuntime();
+    assert.equal(await runtime.isAuthenticated(), true);
+    const initialRefreshes = authRefreshes.length;
+
+    const authStates = [];
+    runtime.auth.subscribe((state) => authStates.push(state.auth?.provider ?? null));
+
+    const result = await runtime.auth.setPassword("mira@example.com", "old-password-1", "new-password-2");
+
+    assert.equal(result.error, null);
+    assert.deepEqual(result.data, { ok: true });
+    // The account's Stored Sessions were revoked, so the browser keeps no
+    // human authority: only the runtime-issued Anonymous replacement remains.
+    assert.equal(browser.storage.get("sporades.sessionToken"), "fresh-anonymous-token");
+    assert.equal(browser.storage.get("sporades.authReturnTo"), undefined);
+    assert.equal(runtime.auth.sessionToken(), null);
+    assert.equal(authRefreshes.length, initialRefreshes + 1, "the client refreshes auth state once after the change");
+    assert.equal(await runtime.isAuthenticated(), false);
+    assert.equal(authStates.at(-1), "anonymous");
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("client auth.setPassword failure retains the browser session and does not refresh auth state", async () => {
+  const linkedAuth = {
+    userId: "linked-user",
+    displayName: "Mira",
+    email: "mira@example.com",
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  const authRefreshes = [];
+  const browser = installBrowserFakes(linkedAuth, {
+    handlers: {
+      "auth.get": async () => {
+        authRefreshes.push(true);
+        return {
+          type: "auth.result",
+          data: {
+            sessionToken: "linked-session-token",
+            auth: linkedAuth,
+            providers: {},
+          },
+          error: null,
+        };
+      },
+      "auth.setPassword": async () => ({
+        type: "error",
+        data: null,
+        error: {
+          message: "The current password is incorrect.",
+          hint: "Try your current password again.",
+          code: "INVALID_CURRENT_PASSWORD",
+        },
+      }),
+    },
+  });
+  try {
+    browser.storage.set("sporades.authReturnTo", "http://localhost:4000/account");
+    const runtime = await importClientRuntime();
+    assert.equal(await runtime.isAuthenticated(), true);
+    assert.equal(browser.storage.get("sporades.sessionToken"), "linked-session-token");
+    const initialRefreshes = authRefreshes.length;
+
+    const result = await runtime.auth.setPassword("mira@example.com", "wrong-password", "new-password-2");
+
+    assert.equal(result.type, "error");
+    assert.equal(result.error.code, "INVALID_CURRENT_PASSWORD");
+    assert.equal(authRefreshes.length, initialRefreshes, "a failed change must not trigger an auth refresh");
+    assert.equal(browser.storage.get("sporades.sessionToken"), "linked-session-token");
+    assert.equal(browser.storage.get("sporades.authReturnTo"), "http://localhost:4000/account");
+    assert.equal(runtime.auth.sessionToken(), "linked-session-token");
+    assert.equal(await runtime.isAuthenticated(), true);
+  } finally {
+    browser.cleanup();
+  }
+});
+
 test("client applies internal auth session replacement messages to localStorage and auth state", async () => {
   const simulatedAuth = {
     userId: "simulated-user",

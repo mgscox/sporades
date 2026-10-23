@@ -45932,6 +45932,7 @@ var REVOCATION_CAUSES = /* @__PURE__ */ new Set([
   "owner",
   "operator",
   "password-reset",
+  "password-change",
   "owner-unlinked",
   "owner-deleted",
   "service-user-administrator",
