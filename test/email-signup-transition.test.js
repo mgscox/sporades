@@ -16,13 +16,14 @@ const definition = capsule({ name: config.name, schema: { claims: table({ userId
   admit: () => ({ allow: true }),
   finalize: async (ctx) => { await ctx.db.claims.insert({ userId: ctx.evidence.userId }); },
 } } });
+const openRegistration = capsule({ name: config.name, schema: { claims: table({ userId: Text() }) } });
 const tables = ["sporades_auth_users", "sporades_auth_sessions", "sporades_auth_email_credentials", "sporades_auth_identities", "sporades_teams", "sporades_team_memberships", "sporades_team_bootstrap", "claims"];
 async function snapshot(database) {
   return Object.fromEntries(await Promise.all(tables.map(async (name) => [name, await database.adapter.prepare(database.adapter.dialect.sql(`SELECT * FROM [${name}] ORDER BY 1`)).all()])));
 }
-async function withRuntime(run) {
+async function withRuntime(run, runtimeDefinition = definition) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-signup-transition-"));
-  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, config, definition);
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, config, runtimeDefinition);
   try { await run(database); }
   finally { await database.close(); await rm(dir, { recursive: true, force: true }); }
 }
@@ -112,7 +113,8 @@ async function proveConcurrentSignup(first, second = first, sibling = false) {
   assert.equal(results.filter((result) => result.ok).length, 1);
   assert.ok(["REGISTRATION_DENIED", "AUTH_SESSION_INVALID"].includes(results.find((result) => !result.ok)?.error?.code));
   const after = await snapshot(first);
-  for (const name of tables.filter((name) => name !== "sporades_auth_identities")) assert.equal(after[name].length, name === "sporades_auth_sessions" && sibling ? 2 : 1, name);
+  for (const name of tables.filter((name) => name !== "sporades_auth_identities" && name !== "claims")) assert.equal(after[name].length, name === "sporades_auth_sessions" && sibling ? 2 : 1, name);
+  assert.equal(after.claims.length, 0, "concurrency protection does not depend on a Registration Admission fence");
   assert.equal(after.sporades_auth_identities.length, 0);
   const winner = results.find((result) => result.ok);
   assert.equal(after.sporades_auth_email_credentials[0].email, winner.auth.email);
@@ -122,8 +124,8 @@ async function proveConcurrentSignup(first, second = first, sibling = false) {
   assert.deepEqual(await snapshot(first), beforeRetry);
 }
 
-test("one runtime serializes two signups from the same guest snapshot", async () => withRuntime(proveConcurrentSignup));
-test("one runtime fences signups using different Sessions of the same guest identity", async () => withRuntime((database) => proveConcurrentSignup(database, database, true)));
+test("one runtime serializes two signups from the same guest snapshot", async () => withRuntime(proveConcurrentSignup, openRegistration));
+test("one runtime fences signups using different Sessions of the same guest identity", async () => withRuntime((database) => proveConcurrentSignup(database, database, true), openRegistration));
 
 for (const engine of ["libsql", "postgres"]) for (const sibling of [false, true]) {
   test(`${engine} separate runtimes fence simultaneous signup on one guest (${sibling ? "different Sessions" : "same Session"})`, { skip: engine === "postgres" && POSTGRES_SKIP_REASON }, async () => {
@@ -131,8 +133,8 @@ for (const engine of ["libsql", "postgres"]) for (const sibling of [false, true]
     const run = async (url) => {
       const runtimeConfig = { ...config, services: { database: { kind: "database", engine } } };
       const serviceEnv = { SPORADES_SERVICE_DATABASE_ENGINE: engine, SPORADES_SERVICE_DATABASE_URL: url };
-      const first = await openDevDatabase(path.join(dir, "first.db"), "", {}, runtimeConfig, definition, { serviceEnv });
-      const second = await openDevDatabase(path.join(dir, "second.db"), "", {}, runtimeConfig, definition, { serviceEnv });
+      const first = await openDevDatabase(path.join(dir, "first.db"), "", {}, runtimeConfig, openRegistration, { serviceEnv });
+      const second = await openDevDatabase(path.join(dir, "second.db"), "", {}, runtimeConfig, openRegistration, { serviceEnv });
       try { await proveConcurrentSignup(first, second, sibling); }
       finally { await Promise.allSettled([first.close(), second.close()]); }
     };
