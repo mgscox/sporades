@@ -355,6 +355,25 @@ const app = capsule({
   accessKeys: { scopes: ["todos:read", "todos:write"] },
   teams: {
     appRoles: ["author", "reviewer"],
+    admitCreate: async (ctx, input) => {
+      const count: number = input.currentCreatedTeamCount;
+      const name: string = input.name;
+      const signal: AbortSignal = ctx.signal;
+      const origin: string = ctx.app.publicOrigin;
+      await ctx.db.todos.where("ownerId", input.actorUserId).all();
+      // @ts-expect-error creation policy has no write authority.
+      ctx.db.todos.insert({ title: name, ownerId: input.actorUserId });
+      // @ts-expect-error creation policy has no Server credentials.
+      ctx.env.SECRET;
+      // @ts-expect-error creation policy has no Privileged authority.
+      ctx.privileged.run({}, () => true);
+      // @ts-expect-error creation input is immutable.
+      input.currentCreatedTeamCount = 0;
+      // @ts-expect-error creation context identity is immutable.
+      ctx.app = { publicOrigin: origin };
+      void signal;
+      return { allow: count < 2 };
+    },
     authorizeDestructive: async (ctx, input) => {
       const origin: string = ctx.app.publicOrigin;
       // @ts-expect-error runtime-owned app identity is readonly

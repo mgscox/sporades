@@ -333,7 +333,7 @@ export type TeamApplicationRoleChanges = { add: string[]; remove: string[] };
 /** Built-in current-user Team operations over the standard client transport. */
 export type TeamsApi = {
   list(): Promise<SporadesResult<TeamsListResult>>;
-  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
+  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. Subject to the Capsule's atomic teams.admitCreate policy when declared. */
   create(name: string): Promise<SporadesResult<TeamMutationResult>>;
   /** Renames an explicitly identified Team administered by the current user. */
   rename(teamId: string, name: string): Promise<SporadesResult<TeamMutationResult>>;

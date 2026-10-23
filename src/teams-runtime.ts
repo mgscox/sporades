@@ -722,6 +722,30 @@ async function assertCurrentPolicyActor(database: LooseRecord, tx: LooseRecord, 
   if (!user || context?.signal?.aborted) throw teamPolicyDenied();
 }
 
+async function enforceCreateAdmission(database: LooseRecord, tx: LooseRecord, auth: LooseRecord, name: string, context?: LooseRecord) {
+  if (typeof database.runTeamCreateAdmission !== "function") return;
+  let allowed = false;
+  // Even a caught policy failure must roll back the enclosing Capsule writes.
+  beforeTeamCommit(tx, async () => {
+    if (!allowed) throw teamPolicyDenied();
+    await assertCurrentPolicyActor(database, tx, auth, context);
+  });
+  try {
+    await assertCurrentPolicyActor(database, tx, auth, context);
+    const row = await tx.prepare(tx.dialect.sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_teams] WHERE [createdByUserId] = ?",
+    )).get(auth.userId);
+    const decision = await database.runTeamCreateAdmission(tx, auth, Object.freeze({
+      actorUserId: auth.userId, name, currentCreatedTeamCount: Number(row.count),
+    }), context?.signal);
+    const descriptor = decision && typeof decision === "object" && !Array.isArray(decision)
+      ? Object.getOwnPropertyDescriptor(decision, "allow") : null;
+    if (!descriptor || !("value" in descriptor) || descriptor.value !== true || Reflect.ownKeys(decision).some(key => key !== "allow")) throw teamPolicyDenied();
+    await assertCurrentPolicyActor(database, tx, auth, context);
+    allowed = true;
+  } catch { throw teamPolicyDenied(); }
+}
+
 async function enforceDestructivePolicy(database: LooseRecord, tx: LooseRecord, auth: LooseRecord, operation: string, teamId: string, userId: string, role: string, context?: LooseRecord) {
   if (typeof database.runTeamDestructivePolicy !== "function") return;
   let allowed = false;
@@ -909,6 +933,9 @@ export async function createAdditionalTeam(database: LooseRecord, auth: LooseRec
         "TEAM_LIMIT_REACHED",
       );
     }
+    // The actor row lock and counter claim fence count, policy and insertion
+    // through the outer commit, including across independent adapter connections.
+    await enforceCreateAdmission(database, tx, auth, normalizedName, eventContext);
     const id = randomUUID();
     const now = new Date().toISOString();
     await tx.prepare(tx.dialect.sql(

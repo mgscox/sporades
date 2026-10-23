@@ -1501,6 +1501,17 @@ contact, unless `--allow-missing-env` is explicit. Boot emits one names-only err
 preserves existing doctor/push behavior for the 0.9.x patch contract. See
 [required Server env](reference/projects-and-configuration.md#required-server-env).
 
+### Atomic additional-Team creation
+
+Opt-in `teams.admitCreate` governs SDK and server additional-Team creation under
+the runtime's actor lock and transaction. Its frozen proposal includes normalized
+name and live creator-Team count, including personal and departed Teams but no
+candidate. Current actor checks precede policy; initial personal-Team bootstrap
+bypasses it. Expiring read-only cross-owner Capsule reads, a five-second budget,
+strict explicit allow, opaque denial and poisoned rollback preserve authority
+and concurrency invariants. Omission preserves behavior. See
+[the Teams contract](reference/teams.md#atomic-additional-team-creation-policy).
+
 ### Atomic Capsule-owned Team responsibility
 
 Opt-in `teams.authorizeDestructive` protects demote, removeMember, leave and Team

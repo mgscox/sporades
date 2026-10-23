@@ -60,6 +60,55 @@ The safe directory result contains user ID, display name, optional picture, mana
 
 Exact-Team admins use `updateApplicationRoles(teamId, userId, { add, remove })` to atomically reconcile declared roles. Promotion and demotion preserve at least one committed admin. Members leave with `leave(teamId)`; an admin cannot leave while still an admin, and `removeMember` cannot remove its caller. A sole admin member may delete an otherwise empty Team with `delete(teamId)`.
 
+## Atomic additional-Team creation policy
+
+Capsules may opt into `teams.admitCreate` to decide whether a linked user may
+create another Team. The same runtime operation governs browser `teams.create`
+and server `ctx.teams.create`; an app wrapper cannot replace this policy.
+Omitting `admitCreate` preserves existing behavior. A non-function declaration
+rejects startup with `INVALID_TEAM_CREATE_ADMISSION`.
+
+```ts
+teams: {
+  admitCreate(ctx, input) {
+    // Allow one additional Team beyond the initial personal Team.
+    return { allow: input.currentCreatedTeamCount < 2 };
+  },
+},
+```
+
+The frozen input contains `actorUserId`, `name`, and `currentCreatedTeamCount`.
+The name has already been normalized with NFKC, collapsed whitespace, trimmed,
+and bounded to 80 UTF-8 bytes. The count includes every currently live Team
+created by this actor, including the initial personal Team and still-live Teams
+they later left. Deleted Teams and the proposed candidate are excluded. It is
+not the actor's membership count. Initial personal-Team bootstrap bypasses the
+hook, including lazy bootstrap for previously linked users.
+
+The runtime checks linked identity, current Session authority, and the existing
+25-membership limit before invoking the policy. It holds the actor's durable
+serialization lock across counting, callback, insertion, and outer transaction
+settlement. Concurrent creations on separate database connections therefore
+cannot both consume the last policy-permitted capacity. A policy cannot grant
+actor authority or override the membership cap.
+
+The frozen context contains only immutable `app`, current frozen `auth`, an
+`AbortSignal` named `signal`, and transaction-bound read-only Capsule `db`.
+These trusted cross-owner reads bypass ordinary row ACLs; runtime tables, raw
+adapters, writes, nested Privileged operations, provider APIs, logs, and Server
+env or credentials are unavailable. Keep this callback provider-free. Read
+capabilities and retained table/query/function aliases expire when the callback
+settles, the transaction ends, cancellation occurs, or its five-second policy
+budget expires. Await every read before returning.
+
+Only an own data-property decision `{ allow: true }`, with no extra keys, admits
+creation. Denial, malformed output, exceptions, abort, budget expiry, failed
+reads (even if caught), and unfinished reads fail closed with opaque
+`TEAM_POLICY_DENIED`. Policy failure poisons the outer transaction: catching a
+rejection in Capsule code still rolls back app rows, Team rows, memberships,
+and counters. This hook governs additional creation only;
+`teams.authorizeDestructive` continues to govern destructive operations.
+
 ## Atomic destructive policy
 
 Capsules with app-owned responsibility (for example a compatibility billing holder)
