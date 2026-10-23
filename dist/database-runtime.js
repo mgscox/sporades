@@ -1388,10 +1388,12 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 // the only thing between `sporades db query` and Postgres's simple query protocol; this
                 // makes a walk defect cost a wrong verdict rather than an executed second statement.
                 const statement = this.prepare(sqlWithoutTrailingTerminator(sql));
+                // An engine that cannot describe a statement without running it answers null, and its
+                // columns are then the first row's keys.
                 const result = thenIfPromise(statement.columns(), (columnMetadata) => thenIfPromise(statement.all(), (allRows) => ({
                     ok: true,
                     data: {
-                        columns: columnMetadata.map((column) => column.name),
+                        columns: columnMetadata?.map((column) => column.name) ?? Object.keys(allRows[0] ?? {}),
                         rows: allRows.filter((row) => !isInternalLogIndexMetadataRow(row, sql)),
                     },
                     error: null,
@@ -1419,6 +1421,24 @@ export function createSharedDatabaseAdapterMethods(dialect) {
             }
         },
     };
+}
+// `StatementSync#columns()` arrived in Node 22.16 and 23.11, but the engines range admits 22.13 and
+// the Base image runs 22.14. Without it, a SELECT or WITH statement is described by the one row a
+// LEFT JOIN against a single-row table always yields, even when the statement itself has no rows;
+// the newline keeps a trailing `--` comment from swallowing the closing parenthesis. A statement
+// SQLite cannot nest, such as a metadata PRAGMA, answers null: its columns are unknown until it
+// has rows. The JOIN reads the statement's columns from a row object, so integer-like names lead.
+function describeSqliteColumns(connection, statement, sql) {
+    if (typeof statement.columns === "function")
+        return statement.columns();
+    let row;
+    try {
+        row = connection.prepare(`SELECT __sporades_columns.* FROM (SELECT 1) LEFT JOIN (${sqlWithoutTrailingTerminator(sql)}\n) AS __sporades_columns ON 1 LIMIT 1`).get();
+    }
+    catch {
+        return null;
+    }
+    return Object.keys(row ?? {}).map((name) => ({ name }));
 }
 export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     const { DatabaseSync } = await import("node:sqlite");
@@ -1478,7 +1498,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                         }));
                     },
                     columns() {
-                        return run(() => useConnection(() => connection.prepare(sql).columns()));
+                        return run(() => useConnection(() => describeSqliteColumns(connection, connection.prepare(sql), sql)));
                     },
                 };
             },
@@ -1531,7 +1551,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                                 recordLiveQueryStatementWrite(sql, result);
                                 return result;
                             },
-                            columns: () => statement.columns(),
+                            columns: () => describeSqliteColumns(dedicated, statement, sql),
                         });
                     },
                 };

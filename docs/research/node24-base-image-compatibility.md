@@ -120,6 +120,24 @@ delayed span, tampering, and private-evidence scenarios passed in that batch.
 These are separate reruns after the fix, not a rewritten result for the earlier
 full-suite attempt. The full-suite result is recorded independently above.
 
+## PR integration check (2026-10-23)
+
+Before finalizing PR #288, merged `main` at
+`9b29b3d53b10eda4b563511f38fb14a68fd8c090` (SQLite inspection compatibility,
+PR #287). The only file conflict was the generated source manifest; rebuilding
+regenerated it from both sets of source changes. The build and generated-bin
+parity passed. Focused database adapter, Host database inspection and npm package
+checks returned **113 passed, 0 failed, 14 skipped**:
+
+```sh
+npm run build
+node ./scripts/check-generated-bin.mjs
+node --test --test-concurrency=1 test/database-adapter.test.js test/host-db-inspection.test.js test/package-script.test.js
+```
+
+The earlier full-suite and Docker results above were captured before this merge;
+they were not rerun in full for the integration check.
+
 ## Docker recovery and limits
 
 Docker Desktop `4.96.1` initially remained in `stopping`. A forced stop/start

@@ -31,6 +31,16 @@ Changes since v0.9.38.
   defaults to the project's Host binding. Requires `sporades host upgrade` and
   a redeploy with this CLI; no public route is added.
 
+### 🐛 Bug Fixes
+
+- Fix `sporades host db query` failing with "columns is not a function" on
+  Hosted Capsules. The previous Base image ran Node 22.14, whose `node:sqlite` lacks
+  `StatementSync#columns()` (added in 22.16). SQLite inspection queries now
+  describe their columns without it, including zero-row results, so Hosted,
+  Dev and MCP ops queries on Node 22.13–22.15 return the same
+  `{ ok, data: { columns, rows }, error }` envelope. Requires a redeploy with
+  this CLI.
+
 ## v0.9.38 - 2026-10-22
 
 Changes since v0.9.37.
