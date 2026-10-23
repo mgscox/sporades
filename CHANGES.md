@@ -1,5 +1,17 @@
 # Changes
 
+## v0.9.40 - 2026-10-23
+
+Changes since v0.9.39.
+
+### 📝 Documentation
+
+- Upgrade Capsule base to Node 24 LTS and normalize npm pack JSON (#288) (8f5ecc5b).
+
+### 🧪 Tests
+
+- Describe SQLite inspection columns without StatementSync#columns() (#287) (9b29b3d5).
+
 ## v0.9.39 - 2026-10-22
 
 Changes since v0.9.38.
