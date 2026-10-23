@@ -559,6 +559,10 @@ _Avoid_: Privileged server role, bypassACL API, pending-member role
 The optional Capsule `teams.admitJoin` callback that decides whether one already validated, email-matched Join link may create a membership. Sporades invokes it under the Team lifecycle lock with the joining user as subject, the exact accepted-member count, and a Team-Join-purpose trusted read capability. Its decision, Join-link consumption, and membership insertion commit or roll back atomically; it grants no provisional membership or broader authority.
 _Avoid_: subscription hook, pending member, billing ACL exception
 
+**Team creation admission policy**:
+The opt-in Capsule `teams.admitCreate` callback for additional-Team creation through SDK and server routes. Under the actor's durable lock and transaction it receives the normalized requested name and live creator-Team count, including personal and departed Teams but excluding the candidate. Initial personal-Team bootstrap bypasses it. Its five-second, expiring read-only Capsule database view grants no writes, credentials or broader actor authority; only explicit valid allow permits creation, and failure poisons outer rollback even when caught.
+_Avoid_: membership admission, pricing rule, mutation wrapper
+
 **Destructive Team policy**:
 The opt-in `teams.authorizeDestructive` Capsule policy. Direct SDK and server Team demotion, removal, leave and deletion consult it after current authorization and final-admin checks under the exact Team lifecycle lock, in the operation transaction. A five-second, expiring read-only Capsule database view can inspect cross-owner responsibility without disclosing it to the caller. Only explicit valid allow commits; refusal poisons the enclosing transaction and stays opaque. All protected responsibility writers take server-only `ctx.teams.lockLifecycle` before app reads/writes, including explicit accepted transfers and atomic Stripe consequences. It retains the lock through outer settlement without granting userless code administrative authority. Provider work runs after commit.
 _Avoid_: mutation hook, billing-holder transfer API, provider callback transaction

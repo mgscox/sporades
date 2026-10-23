@@ -240,12 +240,13 @@ import { capsule, mutation, query } from "sporades/server";
 export default capsule({
   name: "bundle-teams",
   schema: {},
-  teams: { appRoles: ["author", "reviewer"], authorizeDestructive: () => ({ allow: false }) },
+  teams: { appRoles: ["author", "reviewer"], admitCreate: (ctx, input) => ({ allow: input.currentCreatedTeamCount < 2 }), authorizeDestructive: () => ({ allow: false }) },
   queries: {
     ownTeams: query((ctx) => ctx.teams.list()),
   },
   mutations: {
     updateMemberRoles: mutation((ctx, teamId, userId, changes) => ctx.teams.updateApplicationRoles(teamId, userId, changes)),
+    createTeam: mutation((ctx, name) => ctx.teams.create(name)),
     deleteTeam: mutation((ctx, teamId) => ctx.teams.delete(teamId)),
     lockTeam: mutation((ctx, teamId) => ctx.teams.lockLifecycle(teamId, ctx.auth.userId)),
   },
@@ -1439,6 +1440,10 @@ test("a generated server bundle lazily lists the current linked user's singleton
       const created = await socket.waitFor((message) => message.id === "teams-create");
       assert.equal(created.type, "teams.create.result");
       assert.equal(created.data.team.role, "admin");
+      socket.send({ id: "create-denied-sdk", type: "teams.create", name: "Over capacity" });
+      assert.equal((await socket.waitFor(message => message.id === "create-denied-sdk")).error.code, "TEAM_POLICY_DENIED");
+      socket.send({ id: "create-denied-app", type: "mutation.run", name: "createTeam", args: ["Over capacity"] });
+      assert.equal((await socket.waitFor(message => message.id === "create-denied-app")).error.code, "TEAM_POLICY_DENIED");
       socket.send({ id: "policy-sdk-delete", type: "teams.delete", teamId: created.data.team.id });
       assert.equal((await socket.waitFor(message => message.id === "policy-sdk-delete")).error.code, "TEAM_POLICY_DENIED");
       socket.send({ id: "policy-app-delete", type: "mutation.run", name: "deleteTeam", args: [created.data.team.id] });
