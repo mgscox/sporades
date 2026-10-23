@@ -141897,7 +141897,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
   function startOperation(client, type, name2, traceparent) {
     if (!options.telemetry || client.socket.destroyed || client.closing) return untracedWebSocketOperation;
     const database = getDatabase();
-    const declared = (type === "query" ? database.queries : database.mutations)?.some((handler) => handler.name === name2) || type === "query" && (name2 === "ctx.env" || database.schema?.tables?.some((table) => table.name === name2)) || type === "mutation" && typeof name2 === "string" && (resolveTableForAddMutation(database.schema, name2) || resolveTableForUpdateMutation(database.schema, name2));
+    const declared = (type === "query" ? database.queries : database.mutations)?.some((handler) => handler.name === name2) || type === "query" && database.schema?.tables?.some((table) => table.name === name2) || type === "mutation" && typeof name2 === "string" && (resolveTableForAddMutation(database.schema, name2) || resolveTableForUpdateMutation(database.schema, name2));
     let operation;
     try {
       operation = options.telemetry.startOperation(type, name2, Boolean(declared), traceparent);
@@ -143399,10 +143399,6 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
             hint: error.hint ?? "Check the Capsule context middleware and retry the query."
           }
         };
-      }
-      if (queryName === "ctx.env") {
-        if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
-        return { data: context2.env, error: null };
       }
       const customResult = await runCustomQuery(database, context2, queryName, args, queryHandler);
       if (customResult) {

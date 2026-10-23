@@ -1952,6 +1952,7 @@ test("sporades dev starts MinIO storage Capsule services and injects server-only
     };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     await installFakeReact(projectDir);
+    await installEnvProbeQuery(projectDir);
     const docker = await installFakeDocker(dir);
 
     await withFakeServiceEndpoint(async ({ port: servicePort }) => {
@@ -1983,12 +1984,12 @@ test("sporades dev starts MinIO storage Capsule services and injects server-only
 
         const socket = await openSocket(started.data.url);
         try {
-          socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "ctx.env" }));
+          socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "testEnvProbe" }));
           assert.deepEqual(await readSocketMessage(socket), {
             id: "env-1",
             type: "query.result",
-            query: "ctx.env",
-            data: {},
+            query: "testEnvProbe",
+            data: [],
             error: null,
           });
         } finally {
@@ -2124,6 +2125,7 @@ test("sporades dev injects database Capsule service connection details into serv
     };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     await installFakeReact(projectDir);
+    await installEnvProbeQuery(projectDir);
     const docker = await installFakeDocker(dir);
 
     await withFakeLibsqlService(path.join(dir, "dev-libsql.db"), async ({ url: serviceUrl }) => {
@@ -2140,12 +2142,12 @@ test("sporades dev injects database Capsule service connection details into serv
         assert.equal(started.ok, true);
 
         socket = await openSocket(started.data.url);
-        socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "ctx.env" }));
+        socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "testEnvProbe" }));
         assert.deepEqual(await readSocketMessage(socket), {
           id: "env-1",
           type: "query.result",
-          query: "ctx.env",
-          data: {},
+          query: "testEnvProbe",
+          data: [],
           error: null,
         });
 
@@ -9826,6 +9828,7 @@ test("sporades dev loads server env into ctx.env without exposing it to the clie
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     await writeFile(path.join(projectDir, ".env.sporades.server"), "API_SECRET=server-only\nFEATURE_FLAG=enabled\n");
     await installFakeReact(projectDir);
+    await installEnvProbeQuery(projectDir, '{ keys: Object.keys(ctx.env).sort(), apiSecretLoaded: ctx.env.API_SECRET === "server-only", featureFlag: ctx.env.FEATURE_FLAG }');
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     let socket;
@@ -9833,17 +9836,23 @@ test("sporades dev loads server env into ctx.env without exposing it to the clie
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started.error));
       socket = await openSocket(started.data.url);
-      socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "ctx.env" }));
+      socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "testEnvProbe" }));
       assert.deepEqual(await readSocketMessage(socket), {
         id: "env-1",
         type: "query.result",
-        query: "ctx.env",
+        query: "testEnvProbe",
         data: {
-          API_SECRET: "server-only",
-          FEATURE_FLAG: "enabled",
+          keys: ["API_SECRET", "FEATURE_FLAG"],
+          apiSecretLoaded: true,
+          featureFlag: "enabled",
         },
         error: null,
       });
+      // The removed runtime-owned env query name is now an ordinary unknown query (#289).
+      socket.send(JSON.stringify({ id: "env-2", type: "query.subscribe", query: "ctx.env" }));
+      const unknown = await readSocketMessage(socket);
+      assertUnknownEnvQuery(unknown, "env-2");
+      assert.doesNotMatch(JSON.stringify(unknown), /server-only|API_SECRET/);
 
       const clientResponse = await fetch(`${started.data.url}/client.js`);
       assert.equal(clientResponse.status, 200);
@@ -15195,6 +15204,25 @@ test("sporades dev preserves file lifecycle parity with MinIO-backed storage", a
     });
   });
 });
+
+// A test-only Capsule query exposing bounded, non-secret facts about ctx.env. Sporades ships no
+// browser-readable env query (#289); tests that inspect server env declare their own probe.
+async function installEnvProbeQuery(projectDir, probeBody = "Object.keys(ctx.env).sort()") {
+  const serverPath = path.join(projectDir, "server", "index.ts");
+  const source = await readFile(serverPath, "utf8");
+  assert.match(source, /^  queries: \{$/m);
+  await writeFile(serverPath, source.replace(/^  queries: \{$/m, `  queries: {\n    testEnvProbe: query((ctx) => (${probeBody})),`));
+}
+
+function assertUnknownEnvQuery(message, id) {
+  assert.deepEqual(message, {
+    id,
+    type: "query.result",
+    query: "ctx.env",
+    data: null,
+    error: { message: "Unknown query: ctx.env", hint: "Use a query defined by the capsule." },
+  });
+}
 
 async function openSocket(baseUrl, sessionToken = null) {
   const connectionToken = await readPageConnectionToken(baseUrl);

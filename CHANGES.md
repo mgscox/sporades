@@ -22,6 +22,15 @@ Changes since v0.9.38.
 
 ## Unreleased
 
+### 🔒 Security
+
+- Remove the runtime-owned `ctx.env` browser query (#289). Query clients,
+  including Anonymous Sessions, could subscribe to the undeclared `ctx.env`
+  name and receive the entire server environment. That name now follows the
+  ordinary unknown-query response and returns no environment data, while
+  `ctx.env` stays available to trusted server handlers. A Capsule that declares
+  its own query with that name keeps the normal declared-query contract.
+
 ### 📦 Packaging
 
 - Upgrade the default Capsule Base image to `0.3.0-node24-alpine`, using Node
