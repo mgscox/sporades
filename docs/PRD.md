@@ -199,7 +199,8 @@ The repository currently includes:
   duplicate-protected ordinary Privileged Jobs, and expose deterministic
   JSON-only inspection across Dev, Container, and Hosted Capsules.
 - Practical Docker hardening defaults for local and hosted Container sessions:
-  the thin Sporades-owned Base image runs Node 22, local Container sessions use
+  the thin Sporades-owned Base image runs Node 24.22.1 LTS on Alpine 3.23,
+  local Container sessions use
   the invoking host UID/GID when available, Hosted Capsules use the Base image
   non-root user `10001:10001`, release files and Server env mount read-only,
   mutable SQLite/file state lives under read-write data mounts, hosted traffic

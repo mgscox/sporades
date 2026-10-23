@@ -10,6 +10,16 @@ Changes since v0.9.38.
 
 ## Unreleased
 
+### 📦 Packaging
+
+- Upgrade the default Capsule Base image to `0.3.0-node24-alpine`, using Node
+  24.22.1 LTS on Alpine 3.23 with a pinned upstream image digest. Upgrade the CLI
+  and Host helper and redeploy to replace existing containers; restarting a
+  release preserves its pinned image. Keep explicit image overrides unchanged.
+- Normalize npm pack JSON metadata across flat and package-keyed formats in
+  release verification and packaged compatibility checks, preserving artifact
+  hashes and rejecting ambiguous output.
+
 ### 🚀 Features
 
 - Add read-only `sporades host db list|dump|query` for running Hosted Capsules (#285).
@@ -24,7 +34,7 @@ Changes since v0.9.38.
 ### 🐛 Bug Fixes
 
 - Fix `sporades host db query` failing with "columns is not a function" on
-  Hosted Capsules. The Base image runs Node 22.14, whose `node:sqlite` lacks
+  Hosted Capsules. The previous Base image ran Node 22.14, whose `node:sqlite` lacks
   `StatementSync#columns()` (added in 22.16). SQLite inspection queries now
   describe their columns without it, including zero-row results, so Hosted,
   Dev and MCP ops queries on Node 22.13–22.15 return the same

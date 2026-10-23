@@ -8,6 +8,7 @@ import { access, mkdir, mkdtemp, readFile, realpath, stat, writeFile } from 'nod
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { parseNpmPackJson } from './npm-pack-json.mjs';
 
 const repository = await realpath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const [npmArtifactArg, monitoringArtifactArg, ...extraArgs] = process.argv.slice(2);
@@ -174,7 +175,7 @@ try {
   report.versions.checkout = JSON.parse(await readFile(path.join(repository, 'package.json'), 'utf8')).version;
 
   const packJson = await capture('pack-dry-run', 'npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], { cwd: repository });
-  const packed = JSON.parse(packJson);
+  const packed = parseNpmPackJson(packJson);
   assert.equal(packed.length, 1, 'npm pack dry run must describe exactly one package');
   const shippedFiles = packed[0].files.map(file => file.path).sort();
   assert(shippedFiles.length > 0, 'npm pack dry run returned no files');

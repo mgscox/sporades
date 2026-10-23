@@ -1261,16 +1261,16 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assertVolume(runCall.args, `${path.join(projectDir, ".sporades", "data")}:/app/data:rw`);
     assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], expectedLocalContainerRuntimeUser());
     assert(runCall.args.includes("com.sporades.base-image.name=sporades-base"));
-    assert(runCall.args.includes("com.sporades.base-image.version=0.2.0-node22-alpine"));
+    assert(runCall.args.includes("com.sporades.base-image.version=0.3.0-node24-alpine"));
     assert(runCall.args.includes("com.sporades.base-image.update-policy=host-managed"));
     assert(runCall.args.includes("SPORADES_LOG_STDOUT=1"));
     const runtimeProbeEnv = runCall.args.find((arg) => arg.startsWith("SPORADES_RUNTIME_PROBE_TOKEN="));
     assert.match(runtimeProbeEnv ?? "", /^SPORADES_RUNTIME_PROBE_TOKEN=[a-f0-9]{64}$/);
     assert.doesNotMatch(deployResult.stdout + deployResult.stderr, /SPORADES_RUNTIME_PROBE_TOKEN=/);
-    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.2.0-node22-alpine");
+    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.3.0-node24-alpine");
     assert(imageIndex > -1);
     assert.deepEqual(runCall.args.slice(imageIndex), [
-      "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+      "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
       "node",
       "/app/server.mjs",
     ]);
@@ -1999,10 +1999,10 @@ test("sporades deploy enables configured SSH access for local Container sessions
     assert(runCall.args.includes("SPORADES_SSH_AUTHORIZED_KEYS_PATH=/run/sporades/ssh/authorized_keys"));
     assert(runCall.args.includes("SPORADES_SSH_AUTHORIZED_KEYS_TARGET=/app/data/ssh/authorized_keys"));
 
-    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.2.0-node22-alpine");
+    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.3.0-node24-alpine");
     assert(imageIndex > -1);
     assert.deepEqual(runCall.args.slice(imageIndex), [
-      "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+      "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
       "/usr/local/bin/sporades-start",
     ]);
   });
@@ -5263,14 +5263,14 @@ test("sporades deploy builds the bundled Base image when pull is unavailable", a
 
     const calls = await docker.calls();
     assert.deepEqual(calls.map((call) => call.args[0]), ["image", "pull", "build", "run", "inspect"]);
-    assert.deepEqual(calls[0].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"]);
-    assert.deepEqual(calls[1].args, ["pull", "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine"]);
+    assert.deepEqual(calls[0].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine"]);
+    assert.deepEqual(calls[1].args, ["pull", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine"]);
     assert.deepEqual(calls[2].args.slice(0, 5), [
       "build",
       "-f",
       path.join(repoRoot, "Dockerfile.base"),
       "-t",
-      "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+      "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
     ]);
     assert.equal(calls[2].args[5], repoRoot);
   });

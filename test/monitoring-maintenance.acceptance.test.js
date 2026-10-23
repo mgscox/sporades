@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { parseEnvironment } from '../monitoring/trace/setup.mjs';
 import { legacyPipelineGeneration } from './monitoring-legacy-fixture.js';
+import { parseNpmPackJson } from '../scripts/npm-pack-json.mjs';
 
 test('real validators accept pipeline-only schema-4 rollback and reject missing referenced rules', { skip: process.env.SPORADES_MAINTENANCE_DOCKER !== '1', timeout: 300_000 }, async t => {
   for (const missing of [null, 'availability', 'performance']) {
@@ -70,7 +71,8 @@ test('installed CLI cold backup restores queryable history and exact inventory i
   };
   const packed = command('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp]);
   assert.equal(packed.status, 0);
-  assert.equal(command('tar', ['-xzf', path.join(temp, JSON.parse(packed.stdout)[0].filename), '-C', temp]).status, 0);
+  const [{ filename }] = parseNpmPackJson(packed.stdout);
+  assert.equal(command('tar', ['-xzf', path.join(temp, filename), '-C', temp]).status, 0);
   const bin = path.join(temp, 'package/bin/sporades.js');
   const cli = (args, extra = {}) => command(process.execPath, [bin, 'monitoring', 'stack', ...args, '--json'], root, extra);
   const compose = (dir, args, project) => command('docker', ['compose', '--env-file', '.compose.env', ...args], dir, { COMPOSE_PROJECT_NAME: project });

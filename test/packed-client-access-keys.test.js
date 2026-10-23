@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { parseNpmPackJson } from "../scripts/npm-pack-json.mjs";
 
 const run = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,7 +18,7 @@ test("the packed package exposes the complete server and client Access-key contr
       cwd: repoRoot,
       env: { ...process.env, npm_config_cache: path.join(dir, "npm-cache") },
     });
-    const [{ filename }] = JSON.parse(packed.stdout);
+    const [{ filename }] = parseNpmPackJson(packed.stdout);
     const modules = path.join(dir, "consumer", "node_modules");
     await mkdir(modules, { recursive: true });
     await run("tar", ["-xzf", path.join(dir, filename), "-C", modules]);

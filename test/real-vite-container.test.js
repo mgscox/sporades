@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { once } from "node:events";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,6 +8,7 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { installPrerenderFixture } from "./support/prerender-capsule.js";
+import WebSocket from "ws";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,6 +45,74 @@ async function fetchEventually(url, timeoutMs = 10_000) {
     }
   } while (Date.now() < deadline);
   throw lastError;
+}
+
+async function guestbookRequest(baseUrl, message) {
+  const page = await fetch(baseUrl, { headers: { "sec-fetch-dest": "document" } });
+  const token = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(await page.text())?.[1];
+  assert.ok(token, "served page carries a WebSocket connection token");
+  const url = new URL("/__sporades/ws", baseUrl.replace("http:", "ws:"));
+  url.searchParams.set("connectionToken", token);
+  const socket = new WebSocket(url, { origin: baseUrl });
+  // Opening/request waits report failures; timeout cleanup may emit another error.
+  socket.on("error", () => {});
+  try {
+    await once(socket, "open", { signal: AbortSignal.timeout(10_000) });
+    const response = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Guestbook request timed out")), 10_000);
+      socket.addEventListener("message", (event) => {
+        const reply = JSON.parse(event.data);
+        if (reply.id === message.id) { clearTimeout(timeout); resolve(reply); }
+      });
+      socket.addEventListener("error", (event) => { clearTimeout(timeout); reject(event.error ?? new Error("Guestbook socket failed")); }, { once: true });
+    });
+    socket.send(JSON.stringify(message));
+    const reply = await response;
+    assert.equal(reply.error, null, JSON.stringify(reply));
+    return reply.data;
+  } finally {
+    if (socket.readyState !== WebSocket.CLOSED) {
+      const closed = new Promise((resolve) => socket.once("close", resolve));
+      const timeout = setTimeout(() => socket.terminate(), 1_000);
+      if (socket.readyState === WebSocket.CONNECTING) socket.terminate();
+      else socket.close();
+      try { await closed; } finally { clearTimeout(timeout); }
+    }
+  }
+}
+
+async function verifyGuestbookRestart(url, containerId, t) {
+  const inspect = JSON.parse((await execFileAsync("docker", ["inspect", containerId], { timeout: 30_000 })).stdout)[0];
+  assert.equal(inspect.HostConfig.ReadonlyRootfs, true);
+  assert.ok(inspect.HostConfig.CapDrop.includes("ALL"));
+  assert.ok(inspect.HostConfig.SecurityOpt.some((option) => option.startsWith("no-new-privileges")));
+  assert.ok(inspect.HostConfig.Tmpfs["/tmp"].includes("noexec"));
+  assert.equal(inspect.Mounts.find((mount) => mount.Destination === "/app/data").RW, true);
+  assert.equal(inspect.Mounts.find((mount) => mount.Destination === "/app/server.mjs").RW, false);
+  const runtime = await execFileAsync("docker", ["exec", containerId, "node", "--input-type=module", "-e", `
+    import assert from 'node:assert/strict';
+    import { writeFileSync, readFileSync } from 'node:fs';
+    import { DatabaseSync } from 'node:sqlite';
+    assert.equal(process.version, 'v24.22.1');
+    assert.equal(process.getuid(), ${process.getuid()});
+    assert.equal(process.getgid(), ${process.getgid()});
+    assert.throws(() => writeFileSync('/app/server.mjs', 'must-not-write'));
+    assert.throws(() => writeFileSync('/root-write-probe', 'must-not-write'));
+    writeFileSync('/app/data/node24-probe', 'persistent');
+    assert.equal(readFileSync('/app/data/node24-probe', 'utf8'), 'persistent');
+    console.log(JSON.stringify({ node: process.version, uid: process.getuid(), sqlite: typeof DatabaseSync }));
+  `], { timeout: 30_000 });
+  const body = "Node 24 LTS persistence probe";
+  await guestbookRequest(url, { id: "sign", type: "mutation.run", mutation: "sign", args: [body] });
+  const entries = await guestbookRequest(url, { id: "before", type: "query.subscribe", query: "entries" });
+  assert.equal(entries.filter((entry) => entry.body === body).length, 1);
+  await execFileAsync("docker", ["restart", containerId], { timeout: 30_000 });
+  assert.equal((await fetchEventually(url)).status, 200);
+  const persisted = await guestbookRequest(url, { id: "after", type: "query.subscribe", query: "entries" });
+  assert.deepEqual(persisted, entries, "SQLite entries survive container restart");
+  const marker = await execFileAsync("docker", ["exec", containerId, "cat", "/app/data/node24-probe"], { timeout: 30_000 });
+  assert.equal(marker.stdout, "persistent");
+  t.diagnostic(JSON.stringify({ runtime: JSON.parse(runtime.stdout), sqliteRestart: "passed", hardening: "passed" }));
 }
 
 for (const { framework, template, toolchain } of [
@@ -161,7 +231,7 @@ for (const { framework, template, toolchain } of [
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
     const inspectedImage = await execFileAsync("docker", ["inspect", "--format", "{{.Config.Image}}", binding.containerId], { timeout: 30_000 });
-    assert.equal(inspectedImage.stdout.trim(), "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine");
+    assert.equal(inspectedImage.stdout.trim(), "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine");
     const paths = binding.clientRelease.paths;
     const representatives = {
       html: "index.html",
@@ -212,6 +282,8 @@ for (const { framework, template, toolchain } of [
     if (["solid", "lit", "inferno"].includes(framework)) assert.doesNotMatch(output, /react-dom|react\/jsx-runtime|node_modules\/react/);
     const clientJsStatus = (await fetchEventually(`${url}/client.js`)).status;
     assert.equal(clientJsStatus, selectedToolchain === "esbuild" ? 200 : 404);
+    // One built-in template covers browser assets, real mutations, SQLite and restart.
+    if (framework === "lit" && template === "guestbook") await verifyGuestbookRestart(url, binding.containerId, t);
     t.diagnostic(JSON.stringify({ framework, template, baseImage: inspectedImage.stdout.trim(), url, fetched, clientJsStatus }));
   } finally {
     if (deployAttempted) {

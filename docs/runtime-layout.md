@@ -147,7 +147,7 @@ unavailable.
 
 ```text
 Container
-  Base image: ghcr.io/sporades/sporades-base:0.2.0-node22-alpine
+  Base image: ghcr.io/sporades/sporades-base:0.3.0-node24-alpine
   Runtime user: invoking host UID/GID when available, or 10001:10001 when SSH is enabled
   /app/server.mjs              read-only
   /app/public/                 read-only normalized public tree
@@ -201,11 +201,30 @@ published to a Docker-assigned loopback-only host port and inspected with
 `sporades deploy ssh`. Without configured keys, SSH is disabled and port 22 is
 not published.
 
-The Base image is a thin Sporades-owned Node 22 image. It does not bake in
-Capsule app dependencies. Release files are mounted into known read-only paths,
+The Base image is a thin Sporades-owned Node 24.22.1 LTS image on Alpine
+3.23. Upgrade the CLI and Host helper before redeploying existing Capsules to
+replace their containers with the new default. A restart alone preserves a
+release's pinned image; explicit image overrides remain authoritative. It does not bake in Capsule app
+dependencies. Release files are mounted into known read-only paths,
 and only `/app/data` plus `/tmp` are writable at runtime. Sporades labels
 containers with the Base image name, version, and update policy so Host
 inspection can report the runtime substrate.
+
+The smallest local Docker compatibility run uses one built-in template, Lit
+Guestbook, to check static assets, WebSocket mutations, SQLite persistence across
+restart, and runtime hardening. Build the image first, then run:
+
+```sh
+docker build --file Dockerfile.base --tag ghcr.io/sporades/sporades-base:0.3.0-node24-alpine .
+SPORADES_REAL_VITE_CONTAINER=1 node --test --test-name-pattern='real Container serves a complete lit vite guestbook public tree' test/real-vite-container.test.js
+SPORADES_REAL_BASE_IMAGE=1 node --test test/base-image.acceptance.test.js
+SPORADES_FETCH_DOCKER=1 node --test test/telemetry-fetch-bundle.test.js
+```
+
+The Base image smoke test checks non-root SSH configuration, Fail2ban, and local
+Unix-socket ClamAV scanning with a synthetic signature and networking disabled.
+The fetch matrix checks the packaged Bundle against supported runtimes and the
+exact Base image. These commands do not publish an image or modify a live Host.
 
 ## Base Image Updates
 

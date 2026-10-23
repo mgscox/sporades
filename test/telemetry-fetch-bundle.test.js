@@ -35,7 +35,7 @@ test('packaged generated fetch Bundle on supported runtimes and the exact Base i
     const { bundleServerCapsuleModule } = await import(pathToFileURL(path.join(root, 'package/dist/bundle-pipeline.js')));
     const { createServerBundleModuleSource } = await import(pathToFileURL(path.join(root, 'package/dist/templates/server-bundle-module-graph.js')));
     const targets = [{ name: `local ${process.version}` },
-      ...['node:22.13.0-alpine', 'node:24-alpine', 'ghcr.io/sporades/sporades-base:0.2.0-node22-alpine'].map(image => ({ name: image, image }))];
+      ...['node:22.13.0-alpine', 'node:24-alpine', 'ghcr.io/sporades/sporades-base:0.3.0-node24-alpine'].map(image => ({ name: image, image }))];
     for (const target of targets) await t.test(target.name, { skip: target.image && !dockerEnabled ? 'Set SPORADES_FETCH_DOCKER=1 for isolated Docker matrix.' : false }, async () => {
       const offset = payloads.length, callOffset = calls.length;
       const dir = path.join(root, target.image ? target.image.replace(/[^a-z0-9]/g, '-') : 'local');

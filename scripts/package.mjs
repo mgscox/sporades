@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { generateChanges } from "../skills/generate-changes/scripts/generate-changes.mjs";
+import { parseNpmPackJson } from "./npm-pack-json.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const releaseTypes = new Set(["major", "minor", "patch"]);
@@ -209,25 +210,11 @@ function runResult(command, args, options = {}) {
 }
 
 export function parsePackedArtifact(stdout) {
-  const trimmed = stdout.trim();
-  if (!trimmed) {
-    throw new Error("npm pack did not report a tarball filename.");
-  }
-
-  const packed = JSON.parse(trimmed);
-  const packageEntries = Array.isArray(packed)
-    ? packed
-    : packed && typeof packed === "object"
-      ? Object.values(packed)
-      : [];
-  const filename = packageEntries[0]?.filename;
-  if (typeof filename !== "string" || filename.length === 0) {
-    throw new Error("npm pack output did not include a tarball filename.");
-  }
+  const [artifact] = parseNpmPackJson(stdout);
   return {
-    filename,
-    integrity: packageEntries[0]?.integrity ?? "",
-    shasum: packageEntries[0]?.shasum ?? "",
+    filename: artifact.filename,
+    integrity: artifact.integrity ?? "",
+    shasum: artifact.shasum ?? "",
   };
 }
 

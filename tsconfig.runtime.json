@@ -5,7 +5,7 @@
 // are real where they run. But that lib is in scope for every other file too, so a *runtime* module
 // — one whose text reaches a deployed Capsule — can reference `document`, `window` or `navigator`,
 // compile without a diagnostic, and be a `ReferenceError` the first time a Hosted Capsule executes
-// that path. `node:22-alpine` has no DOM.
+// that path. `node:24-alpine3.23` has no DOM.
 //
 // That gap was covered until ticket 05 by the free-binding guard, which resolved every identifier in
 // the generated bundle against `lib.esnext.d.ts` and Node's globals and nothing else. The guard is

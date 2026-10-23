@@ -183,7 +183,7 @@ the dependency-free Node helper can parse it directly:
 ```json
 {
   "hostedCapsule": {
-    "dockerImage": "ghcr.io/sporades/sporades-base:0.2.0-node22-alpine",
+    "dockerImage": "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine",
     "dockerNetwork": "sporades-hosted-capsules",
     "graceCheckMs": 500
   },
@@ -196,9 +196,20 @@ the dependency-free Node helper can parse it directly:
 
 All fields are optional.
 
-The built-in `dockerImage` default is the thin Sporades Base image. It runs
-Node 22 as non-root user `10001:10001`; release files mount read-only and
-Capsule data mounts read-write at `/app/data`. Override `dockerImage` only for
+The built-in `dockerImage` default is the thin Sporades Base image, pinned to
+Node 24.22.1 LTS on Alpine 3.23. It runs as non-root user `10001:10001`.
+To build that image locally:
+
+```sh
+docker build --file Dockerfile.base --tag ghcr.io/sporades/sporades-base:0.3.0-node24-alpine .
+```
+
+This builds a local image only; it does not publish to a registry. Upgrade the
+CLI and Host helper, then redeploy existing Capsules to select the new default
+and replace their containers. Restarting a release preserves its pinned image;
+explicit image overrides remain authoritative. Release files
+mount read-only and Capsule data mounts read-write at `/app/data`.
+Override `dockerImage` only for
 Host-server experiments where you also own compatibility with that filesystem
 contract.
 
