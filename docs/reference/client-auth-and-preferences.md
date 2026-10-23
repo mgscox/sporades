@@ -687,11 +687,28 @@ network policy calls.
 
 The runtime exposes `auth.setPassword(email, currentPassword, newPassword)` on the client SDK
 and `ctx.serverAuth.setEmailPassword(email, newPassword)` on the server context.
-The client call requires the signed-in user to prove knowledge of their current
-password; the server API is trusted for reset and administrative flows. Both
-update an existing email credential's password with server-side scrypt hashing
-and a fresh random salt. The runtime never exposes the password hash, salt, or
-internal credential table to Capsule code.
+The server API is trusted for reset and administrative flows and only updates an
+existing email credential's password with server-side scrypt hashing and a fresh
+random salt. The client call is a credential-security transition: it requires
+the signed-in user to prove knowledge of their current password, and a
+successful change revokes the account's other authority in the same
+transaction. The runtime never exposes the password hash, salt, or internal
+credential table to Capsule code.
+
+A successful browser change revokes every Session of the account — including
+this browser's — plus its Reauthentication Proofs, outstanding Reset codes and
+current human-owned Access keys, attributing the Access-key retirement to the
+`password-change` revocation cause. The reply keeps the `{ ok: true }` shape;
+the runtime does not mint a replacement Session, so fresh sign-in is required
+afterwards. The SDK clears this browser's stored Session and standing
+reauthentication intent, publishes signed-out auth state, and stops sending the
+revoked token; live connections are replaced with fresh Anonymous sessions
+before the success reply is delivered, so the initiating and sibling sockets
+resume as Anonymous. A failed change (wrong current password, an email the
+account does not own, a superseded Session, or a rejected transition) commits
+nothing and leaves the browser signed in. The current-password proof has its
+own bounded attempt bucket, separate from sign-in and reset throttling, so
+failed changes never lock the account out of ordinary sign-in.
 
 From the client (e.g. a settings page where the user is already signed in):
 
@@ -704,7 +721,10 @@ const result = await auth.setPassword(
   "new-secure-password",
 );
 if (result.error) {
-  // show result.error.message
+  // show result.error.message (e.g. result.error.code === "INVALID_CURRENT_PASSWORD")
+  // the browser stays signed in; retry or route back to sign-in
+} else {
+  // the change committed: route the user to sign-in
 }
 ```
 
@@ -720,9 +740,12 @@ resetPassword: mutation(async (ctx, token: string, newPassword: string) => {
 }),
 ```
 
-`ctx.serverAuth.setEmailPassword` throws if the email is not registered or the
-password is shorter than 8 characters. Wrap it in a try/catch if you want to
-return a user-facing error instead of throwing.
+`ctx.serverAuth.setEmailPassword` rejects an unregistered email or a password
+shorter than 8 characters. It remains the trusted, low-level setter: it changes
+only the password hash and salt and does not itself retire Sessions or Access
+keys, so reset flows that must revoke account authority should do it in the
+same transaction (the runtime's own Reset flow demonstrates this). Wrap it in a
+try/catch if you want to return a user-facing error instead of throwing.
 
 ### Retire a Human's Runtime Credentials Atomically
 
