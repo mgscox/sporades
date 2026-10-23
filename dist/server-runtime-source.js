@@ -3528,11 +3528,15 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
         purpose: "files.ingress-admission",
         subject: { method: endpoint.options.method, path: endpoint.options.path },
         signal,
-    }, (db) => definition.admit(Object.freeze({
+    }, (db, assertActive) => definition.admit(Object.freeze({
         db,
         app: database.app,
         env: database.serverEnv,
         signal,
+        rateLimit: (key, options) => {
+            assertActive();
+            return database.capsuleRateLimiter.consume(key, options);
+        },
         request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
     }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
     let allowFiles;
@@ -3693,7 +3697,10 @@ export async function runEndpoint(database, endpoint, requestUrl, request, reque
             let ingressAuthority;
             let allowFiles = true;
             if (claimAuthority === "capsule-principal") {
-                const admission = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+                const endpointSignal = request.__sporadesEndpointSignal ?? request.signal;
+                const admission = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, endpointSignal);
+                if (endpointSignal?.aborted)
+                    throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
                 ingressAuthority = admission.authority;
                 allowFiles = admission.allowFiles;
             }
