@@ -2021,6 +2021,9 @@ const RUNTIME_SOURCE_CONSTANTS = [
   "EMAIL_SIGN_IN_THROTTLE_WINDOW_MS",
   "EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES",
   "EMAIL_SIGN_IN_THROTTLE_FIELD",
+  "EMAIL_SIGN_IN_VERIFICATION_LIMIT",
+  "EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS",
+  "EMAIL_SIGN_IN_VERIFICATION_FIELD",
   "PASSWORD_CHANGE_THROTTLE_FIELD",
   "PASSWORD_RESET_THROTTLE_FIELD",
   "PASSWORD_RESET_DEFAULT_PATH",
@@ -2128,6 +2131,9 @@ test("every runtime constant reaches a booted Capsule with the value and the typ
     // The report has to have observed real structure, or a probe that wrote `{}` for everything
     // would agree with a `dist/` read that did the same.
     assert.equal(bundled.EMAIL_SIGN_IN_FAILURE_LIMIT.type, "number");
+    assert.deepEqual(bundled.EMAIL_SIGN_IN_VERIFICATION_LIMIT, { type: "number", value: 120 });
+    assert.deepEqual(bundled.EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS, { type: "number", value: 60000 });
+    assert.equal(bundled.EMAIL_SIGN_IN_VERIFICATION_FIELD.type, "string");
     assert.equal(bundled.MIN_JOB_TIMESTAMP_MS.type, "number");
     assert.equal(bundled.MAX_JOB_TIMESTAMP_MS.type, "number");
     assert.equal(bundled.STRIPE_EVENT_JOB.type, "string");
