@@ -122,7 +122,13 @@ export type AuthApi = {
   reauthenticate(provider: "email", credentials: EmailCredentials, purpose: string): Promise<SporadesResult<{ ok: true; purpose: string; expiresAt: string } | { url: string }>>;
   reauthenticate(provider: string, credentials: unknown, purpose: string): Promise<SporadesResult<{ ok: true; purpose: string; expiresAt: string } | { url: string }>>;
   signOut(): Promise<SporadesResult<{ ok: boolean }>>;
-  /** Change the signed-in email credential after verifying its current password. */
+  /**
+   * Change the signed-in email credential after verifying its current password.
+   * A successful change revokes every Session of the account — including this
+   * browser's — plus its reauthentication proofs, outstanding Reset codes and
+   * current human-owned Access keys, so fresh sign-in is required afterwards; the
+   * reply keeps the `{ ok: true }` shape and the SDK publishes signed-out state.
+   */
   setPassword(email: string, currentPassword: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
   /**
    * Ask the runtime to mail a password reset link.
@@ -612,7 +618,7 @@ export type SporadesSvelteStores = {
 };
 
 export type AccessKeyStatus = "active" | "expired" | "revoked";
-export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled";
+export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "password-change" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled";
 export type AccessKeyErrorCode =
   | "UNAUTHENTICATED"
   | "FORBIDDEN"

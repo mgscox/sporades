@@ -814,8 +814,8 @@ export async function runAccessKeyOwnerSecurityTransition(
   input: LooseRecord,
   transition: (adapter: LooseRecord) => any,
 ) {
-  if (input.revocationCause !== "owner-unlinked" && input.revocationCause !== "owner-deleted") {
-    throw new TypeError("An owner security transition requires owner-unlinked or owner-deleted.");
+  if (input.revocationCause !== "owner-unlinked" && input.revocationCause !== "owner-deleted" && input.revocationCause !== "password-change") {
+    throw new TypeError("An owner security transition requires owner-unlinked, owner-deleted or password-change.");
   }
   const outcome = await database.adapter.withTransaction(async (adapter: LooseRecord) => {
     const revokedAccessKeys = await adapter.bulkRevokeAccessKeysForOwner({
