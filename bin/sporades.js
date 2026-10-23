@@ -119169,6 +119169,9 @@ var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 var EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+var EMAIL_SIGN_IN_VERIFICATION_LIMIT = 120;
+var EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS = 60 * 1e3;
+var EMAIL_SIGN_IN_VERIFICATION_FIELD = "__emailSignInVerificationBudget";
 var PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
 var PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 var PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
@@ -120985,9 +120988,10 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
       revocationTime: () => database.clock.now().toISOString(),
       revocationCause: "password-reset"
     });
-    return { ok: true, ownerUserId: row.userId, revokedAccessKeys };
+    return { ok: true, email: row.email, ownerUserId: row.userId, revokedAccessKeys };
   });
   if (!outcome.ok) return outcome;
+  createEmailSignInThrottleState(database).delete(`email\0${outcome.email}`);
   await emitAccessKeyOwnerTransitionAudits(database, {
     operation: "auth.confirmPasswordReset",
     ownerUserId: outcome.ownerUserId,
@@ -121100,11 +121104,25 @@ function currentEmailSignInThrottleState(database, email, session, scope = EMAIL
     };
   });
   return {
-    throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT),
+    // Aggregate email risk must not veto an otherwise unblocked owner's valid
+    // credential. Other actions retain their existing account-wide policy.
+    throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT && (scope !== EMAIL_SIGN_IN_THROTTLE_FIELD || !entry.key.startsWith("email\0"))),
     entries,
     count: Math.max(...entries.map((entry) => entry.count)),
     resetAt: Math.max(...entries.map((entry) => entry.resetAt))
   };
+}
+function admitEmailSignInVerification(database) {
+  const owner = database.__rootDatabase ?? database;
+  const budget = owner[EMAIL_SIGN_IN_VERIFICATION_FIELD] ??= { count: 0, resetAt: 0 };
+  const now2 = Date.now();
+  if (now2 >= budget.resetAt) {
+    budget.count = 0;
+    budget.resetAt = now2 + EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS;
+  }
+  if (budget.count >= EMAIL_SIGN_IN_VERIFICATION_LIMIT) return false;
+  budget.count++;
+  return true;
 }
 function recordFailedEmailSignInAttempt(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
   const attempts = createEmailSignInThrottleState(database, scope);
@@ -121556,7 +121574,7 @@ async function signInWithEmail(database, session, credentials) {
     return normalized;
   }
   const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
-  if (throttle.throttled) {
+  if (throttle.throttled || !admitEmailSignInVerification(database)) {
     return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
   }
   const row = await database.adapter.findEmailCredentialWithUser(normalized.email);

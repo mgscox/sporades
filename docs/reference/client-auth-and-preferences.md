@@ -587,6 +587,20 @@ const signIn = await auth.signIn("email", {
 
 Check `result.data` and `result.error`; do not assume sign-in succeeded.
 
+Email sign-in blocks a caller after five failures in a fixed 15-minute window.
+Hosted Capsules also apply that gate to the existing trusted client address;
+public forwarding headers cannot supply that identity. Failures against an email
+from other callers alone do not block the owner's valid password.
+
+Each Capsule runtime process separately admits at most 120 email sign-in
+verification attempts per fixed 60-second window, reserved before credential lookup
+or password hashing. Rotating Anonymous tokens or emails cannot bypass this budget.
+Attempts already blocked by a caller/address gate consume no verification slot.
+Successful sign-in does not refund process or shared address capacity. These
+in-memory limits reset on process restart, are independent across processes, and
+can allow bursts across window boundaries. Rejections retain opaque invalid-credential
+responses; there is no public tuning option.
+
 ### Registration Admission
 
 Declare `auth.registration` when creating a new linked identity must be gated by
@@ -684,6 +698,12 @@ for request authorization, post-registration roles, provider verification, or
 network policy calls.
 
 ### Reset or Change an Email Password
+
+Successful Reset-code confirmation clears only the recovered email's aggregate
+sign-in risk. It does not refund caller, trusted-address or process verification
+budgets, or change the separate password-change and reset-request throttles.
+The new password works from an otherwise unblocked caller when verification
+capacity is available. Invalid, expired or spent Reset codes change no throttle state.
 
 The runtime exposes `auth.setPassword(email, currentPassword, newPassword)` on the client SDK
 and `ctx.serverAuth.setEmailPassword(email, newPassword)` on the server context.

@@ -1255,6 +1255,62 @@ test("a generated Capsule keeps unusual request targets out of ordinary and WebS
   }
 });
 
+test("a generated server bundle permits owner recovery and bounds rotating-token sign-in work", async () => {
+  const root = await mkdtemp(path.join(process.cwd(), ".agent-tmp-bundle-sign-in-"));
+  let booted;
+  let socket;
+  try {
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource: CAPSULE_SOURCE }, {
+      epilogue: `
+        const signInTestNow = Date.now();
+        Date.now = () => signInTestNow;
+        const signInTestCrypto = process.getBuiltinModule("node:crypto");
+        const signInTestScrypt = signInTestCrypto.scryptSync;
+        signInTestCrypto.scryptSync = (...args) => {
+          process.getBuiltinModule("node:fs").appendFileSync("scrypt-calls", ".");
+          return signInTestScrypt(...args);
+        };
+      `,
+    });
+    await writePublicTree(root, "<!doctype html><html><body></body></html>");
+    booted = await bootBundle({ source, dir: root });
+    socket = await openBundleSocket(booted.baseUrl);
+    let sequence = 0;
+    const request = async message => {
+      const id = `sign-in-${++sequence}`;
+      socket.send({ id, sessionToken: `fresh-anonymous-${sequence}`, ...message });
+      return socket.waitFor(reply => reply.id === id);
+    };
+    const email = "bundle-owner@example.test";
+    const password = "original synthetic password";
+    assert.equal((await request({ type: "auth.signUp", provider: "email", credentials: { email, password } })).error, null);
+    const attempt = suppliedPassword => request({ type: "auth.signIn", provider: "email", credentials: { email, password: suppliedPassword } });
+    for (let i = 0; i < 5; i++) assert.ok((await attempt("incorrect password")).error);
+    assert.equal((await attempt(password)).error, null, "aggregate email failures cannot veto the owner in the shipped Bundle");
+    for (let i = 0; i < 5; i++) assert.ok((await attempt("incorrect password")).error);
+    const response = await fetch(`${booted.baseUrl}/probe/auth/reset`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }),
+    });
+    assert.equal(response.status, 200);
+    const code = new URL((await response.json()).link).searchParams.get("code");
+    assert.ok((await request({ type: "auth.confirmPasswordReset", code: `${code}-invalid`, newPassword: "replacement password" })).error);
+    assert.equal((await request({ type: "auth.confirmPasswordReset", code, newPassword: "replacement password" })).error, null);
+    assert.equal((await attempt("replacement password")).error, null);
+    // Twelve sign-in verifications so far; signup and reset hashed once each.
+    for (let i = 12; i < 120; i++) {
+      const failure = await attempt("incorrect password");
+      assert.ok(failure.error);
+      assert.equal(failure.error.code, undefined);
+    }
+    assert.equal((await attempt("replacement password")).error.code, "INVALID_EMAIL_CREDENTIALS");
+    assert.equal((await readFile(path.join(root, "scrypt-calls"), "utf8")).length, 122);
+  } finally {
+    socket?.close();
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a generated server bundle admits an explicitly scoped Access key to private File bytes", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-access-key-file-"));
   try {
@@ -1965,6 +2021,9 @@ const RUNTIME_SOURCE_CONSTANTS = [
   "EMAIL_SIGN_IN_THROTTLE_WINDOW_MS",
   "EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES",
   "EMAIL_SIGN_IN_THROTTLE_FIELD",
+  "EMAIL_SIGN_IN_VERIFICATION_LIMIT",
+  "EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS",
+  "EMAIL_SIGN_IN_VERIFICATION_FIELD",
   "PASSWORD_CHANGE_THROTTLE_FIELD",
   "PASSWORD_RESET_THROTTLE_FIELD",
   "PASSWORD_RESET_DEFAULT_PATH",
@@ -2072,6 +2131,9 @@ test("every runtime constant reaches a booted Capsule with the value and the typ
     // The report has to have observed real structure, or a probe that wrote `{}` for everything
     // would agree with a `dist/` read that did the same.
     assert.equal(bundled.EMAIL_SIGN_IN_FAILURE_LIMIT.type, "number");
+    assert.deepEqual(bundled.EMAIL_SIGN_IN_VERIFICATION_LIMIT, { type: "number", value: 120 });
+    assert.deepEqual(bundled.EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS, { type: "number", value: 60000 });
+    assert.equal(bundled.EMAIL_SIGN_IN_VERIFICATION_FIELD.type, "string");
     assert.equal(bundled.MIN_JOB_TIMESTAMP_MS.type, "number");
     assert.equal(bundled.MAX_JOB_TIMESTAMP_MS.type, "number");
     assert.equal(bundled.STRIPE_EVENT_JOB.type, "string");
