@@ -33,7 +33,8 @@ export default capsule({ name: 'capsule-rate-limit-bundle', schema: { anchors: t
   upload: endpoint({ method: 'POST', path: '/upload', body: { multipart: {
     maxFiles: 1, maxFileBytes: 1024, maxTotalFileBytes: 1024, maxFieldCount: 1, maxFieldBytes: 100, maxTotalFieldBytes: 100,
     allowedPathPrefixes: ['/attachments'], requestKeyHeader: 'idempotency-key', partKeyHeader: 'content-id', claimAuthorities: ['capsule-principal'],
-  } } }, ctx => ({ body: { remaining: ctx.rateLimit('ingress-shared', ingressOptions) } })),
+  } } }, () => ({ body: { uploaded: true } })),
+  ingressBudget: endpoint({ method: 'GET', path: '/ingress-budget' }, ctx => ({ body: ctx.rateLimit('ingress-shared', ingressOptions) })),
   retained: endpoint({ method: 'GET', path: '/retained' }, ctx => {
     let code;
     try { retainedAdmissionRateLimit('unused-after-settle', ingressOptions); } catch (error) { code = error.code; }
@@ -94,7 +95,9 @@ process.stdout.write(JSON.stringify({ listening: server.address().port }) + '\\n
         assert.equal(invalidUpload.status, 401); const opaqueDenial = await invalidUpload.text();
         const admittedUpload = await postUpload('synthetic-resource-token');
         assert.equal(admittedUpload.status, 200);
-        assert.equal((await admittedUpload.json()).remaining.ok, false, 'generated admission and handler share one real budget');
+        assert.equal((await admittedUpload.json()).uploaded, true);
+        const consumedBudget = await call('/ingress-budget', {});
+        assert.equal(consumedBudget.body.ok, false, 'generated admission and an ordinary HTTP attempt share one real budget');
         const replayUpload = await postUpload('synthetic-resource-token');
         assert.equal(replayUpload.status, 401); assert.equal(await replayUpload.text(), opaqueDenial);
         const retained = await call('/retained', {});
