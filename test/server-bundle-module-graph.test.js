@@ -2813,3 +2813,80 @@ test("a generated Bundle enforces upload ACL and MIME policy and lists Files onl
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// The implicit mutation opt-out must answer the same bounded refusal in the generated artifacts it
+// ships as the direct runtime does, including for a declared name whose source body matches the
+// legacy generated scaffold — those run as the declarations they are only while the surface is
+// retired; with the surface enabled they keep travelling through the implicit table path.
+test("a generated Bundle retires implicit mutations exactly when the Capsule opts out", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-implicit-"));
+  let booted;
+  let socket;
+  try {
+    const serverSource = `import { capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "implicit-opt-out",
+  implicitMutations: false,
+  schema: { notes: table({ text: String(), ownerId: String() }) },
+  queries: { mine: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).all()) },
+  mutations: {
+    publish: mutation((ctx, text) => {
+      if (text !== "approved") throw new Error("App quota denied.");
+      return ctx.db.notes.insert({ text, ownerId: ctx.auth.userId });
+    }),
+    addNote: mutation((ctx, text) => { ctx.db.notes.insert({ text, ownerId: ctx.auth.userId }); }),
+  },
+});`;
+    const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), "server", "index.ts") });
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource, serverModuleSource });
+    await writePublicTree(root, "<!doctype html><html><body></body></html>");
+    booted = await bootBundle({ source, dir: root });
+    socket = await openBundleSocket(booted.baseUrl);
+    socket.send({ id: "signup", type: "auth.signUp", provider: "email", credentials: { email: "implicit-opt-out@example.com", password: "correct horse battery staple" } });
+    const signed = await socket.waitFor((message) => message.id === "signup");
+    assert.equal(signed.error, null);
+    socket.send({ id: "sub-implicit", type: "query.subscribe", query: "notes" });
+    const implicitRows = await socket.waitFor((message) => message.id === "sub-implicit" && message.type === "query.result");
+    assert.equal(implicitRows.error, null);
+    assert.deepEqual(implicitRows.data, []);
+    socket.send({ id: "refused", type: "mutation.run", mutation: "frobnicate", args: ["written-if-wrong"] });
+    const refused = await socket.waitFor((message) => message.id === "refused");
+    assert.deepEqual(refused.error, { message: "Unknown mutation: frobnicate", hint: "Use a mutation defined by the capsule." });
+    assert.equal(refused.data, null);
+    socket.send({ id: "declared-scaffold", type: "mutation.run", mutation: "addNote", args: ["scaffold text"] });
+    const scaffold = await socket.waitFor((message) => message.id === "declared-scaffold");
+    assert.equal(scaffold.error, null, "the opted-out Capsule must honor its declared scaffold-shaped addNote");
+    assert.equal(scaffold.data, null);
+    const scaffoldRow = await socket.waitFor((message) => message.id === "sub-implicit" && message.type === "query.result" && message.data?.length === 1);
+    assert.deepEqual(scaffoldRow.data.map((row) => row.text), ["scaffold text"]);
+    socket.send({ id: "declared", type: "mutation.run", mutation: "publish", args: ["denied"] });
+    const blocked = await socket.waitFor((message) => message.id === "declared");
+    assert.equal(blocked.error.message, "App quota denied.");
+    socket.send({ id: "declared-ok", type: "mutation.run", mutation: "publish", args: ["approved"] });
+    const declared = await socket.waitFor((message) => message.id === "declared-ok");
+    assert.equal(declared.error, null);
+    const requery = await socket.waitFor((message) => message.id === "sub-implicit" && message.type === "query.result" && message.data?.length === 2);
+    // Implicit table queries read newest-first.
+    assert.deepEqual(requery.data.map((row) => row.text), ["approved", "scaffold text"]);
+  } finally {
+    socket?.close();
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated Bundle refuses a non-boolean implicitMutations value before listening", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-implicit-invalid-"));
+  try {
+    const serverSource = `import { capsule } from "sporades/server";
+
+export default capsule({ name: "implicit-invalid", implicitMutations: "false", schema: {} });`;
+    const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), "server", "index.ts") });
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource, serverModuleSource });
+    await writeFile(path.join(root, "server.mjs"), source);
+    const result = spawnSync(process.execPath, [path.join(root, "server.mjs")], { cwd: root, encoding: "utf8", timeout: 15000, env: { ...process.env, PORT: "0" } });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Invalid Capsule implicitMutations declaration\./);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

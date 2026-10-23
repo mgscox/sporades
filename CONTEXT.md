@@ -536,6 +536,10 @@ _Avoid_: wrapping every write, implicit transaction, best-effort write grouping
 The Transaction boundary owned by mutation execution for one Capsule mutation call. App-table writes from the mutation handler, generated mutation path, mutation hooks, ACL checks, and pending ACL writes share this boundary so the mutation commits or rolls back as one retryable unit.
 _Avoid_: nested app transaction, hook transaction, partial mutation commit
 
+**Implicit mutation surface**:
+The 0.9.x compatibility dispatch behind undeclared mutation names that describe a table: an `add<Noun>` name inserts into the matching table (`ownerId` becomes the caller, a `text` field takes the first argument, remaining fields take positional arguments or defaults) and an `update<Table><Field>` name updates one such field, each still passing the table's ACL rules before committing and answering `{ ok: true, error: null }` without row data. Declared mutation names always win; a Capsule's `implicitMutations: false` retires the surface so every undeclared name answers the ordinary unknown-mutation refusal before middleware, fallback writes, mutation hooks, or success effects. Omission or `true` keeps the surface; a present non-boolean value fails Capsule validation. It never touches queries, implicit table queries, or server `ctx.db`.
+_Avoid_: implicit write (over-broad), auto mutation, table shortcut
+
 **ACL rule**:
 An authorization policy declared in Capsule definition code and applied invisibly around the Sporades DB API to accept or reject app-table and file-storage operations. Capsule code continues to use normal `ctx.db` and file APIs rather than calling permission checks directly. ACLs answer whether the current actor may see or change a row or file metadata record; file-specific validation and client-facing upload choices are not ACL concerns. ACLs are allow-by-default when no matching rule is specified; a `write` ACL rule may apply to insert, update, and delete operations unless an operation-specific rule overrides it. Write ACL rules evaluate against previous and next row state where relevant.
 _Avoid_: permission helper, manual auth check, database filter

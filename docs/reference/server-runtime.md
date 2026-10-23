@@ -365,6 +365,54 @@ mutations: {
 Throw normal errors for user-facing failures. When an error has a `hint`
 property, Sporades includes it in structured error output.
 
+### Opt Out of Implicit Table Mutations
+
+Besides the names declared under `mutations`, the runtime answers undeclared
+mutation names that describe a table. `addNote` inserts a row into `notes`: the
+`ownerId` field becomes the caller's identity, a `text` field takes the first
+argument, the remaining fields take positional arguments in declaration order or
+their declared defaults, and the insert still runs the table's `insert` ACL
+rule. `updateNoteText` updates one row's `text` field (`update<Table><Field>`):
+on a table with an `ownerId` field only the caller's own row is touched, and the
+table's `update` ACL rule still applies. These implicit entries answer
+`{ ok: true, error: null }` without row data and are the 0.9.x compatibility
+surface. They stay enabled unless the Capsule opts out:
+
+```ts
+export default capsule({
+  implicitMutations: false,
+  // ...
+});
+```
+
+With `implicitMutations: false`, every mutation name without a declared handler
+answers the ordinary `Unknown mutation: <name>` result — the same bounded
+refusal the runtime gives a name it cannot resolve at all — before context
+middleware runs, before the transaction opens, before any fallback write, before
+before- and after-mutation hooks, and before anything that depends on a
+successful write, including the deferred query rebroadcast. Undeclared names
+therefore leave no write, no hook effect, and no success notification behind.
+
+Omitting the flag or passing `true` keeps that 0.9.x surface unchanged; `false`
+retires only the dispatch surface. Nothing else moves: declared mutations keep
+their context middleware, hooks, table ACLs, reauthentication and transaction
+behavior; a declared handler that returns a falsey value still produces a null
+data payload and never falls back to an implicit write; a declared name that
+resembles an `add…`/`update…` fallback name runs the declared handler; server
+code keeps `ctx.db`; and implicit table queries keep answering. One detail
+shifts: a bundled declared mutation whose source matches the generated scaffold
+`add…` body — the shape older `sporades create` emitted — normally travels
+through the implicit path while that surface is enabled, and travels as the
+declaration it is once the Capsule opts out.
+
+Present values must be booleans; anything else — including `"false"` and `null`
+— fails at authoring and at Capsule startup (`INVALID_IMPLICIT_MUTATIONS`)
+rather than half-applying at runtime. The flag bounds mutation dispatch only.
+It is not a substitute for declaring a check: place business rules inside
+declared mutations, in table ACL rules, or in a before-mutation hook, all of
+which still see every declared write. It changes nothing about queries —
+implicit table queries remain available — and there is no per-table switch.
+
 ### Idempotent Inserts Against Declared Uniqueness
 
 When a mutation may be retried or raced by another request, declare the exact

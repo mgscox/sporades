@@ -756,6 +756,9 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         endpoints,
         queries,
         mutations,
+        // The compatibility surface behind undeclared mutation names. Only an
+        // explicit `implicitMutations: false` drops it; omission stays 0.9.x.
+        implicitMutations: capsuleDefinition?.implicitMutations !== false,
         messages,
         jobs,
         schedules,
@@ -3172,7 +3175,11 @@ function materializeHandler(handler) {
 }
 function mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) {
     const sourceHandlers = new Map(extractMutationHandlers(serverSource, { includeGeneratedNames: true }).map((handler) => [handler.name, handler]));
-    return handlersFromCapsuleDefinition(capsuleDefinition.mutations, "mutation").filter((handler) => shouldUseBundledMutationHandler(handler.name, sourceHandlers.get(handler.name)));
+    // Bundled declarations whose source bodies match the generated scaffold shape travel through
+    // the implicit table path while that surface stays enabled. A Capsule's explicit
+    // `implicitMutations: false` retires that surface, so those declarations run as themselves.
+    const implicitMutationsDisabled = capsuleDefinition?.implicitMutations === false;
+    return handlersFromCapsuleDefinition(capsuleDefinition.mutations, "mutation").filter((handler) => implicitMutationsDisabled || shouldUseBundledMutationHandler(handler.name, sourceHandlers.get(handler.name)));
 }
 function shouldUseBundledMutationHandler(name, sourceHandler) {
     if (!name.startsWith("add") && !name.startsWith("update")) {
@@ -6926,6 +6933,11 @@ export async function runMutation(database, auth, mutationName, args, options = 
     try {
         const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
         const declaredMutationHandler = declaredHandler ? materializeHandler(declaredHandler) : null;
+        // A Capsule's explicit `implicitMutations: false` bounds the mutation surface to declared
+        // names: refuse before the transaction, middleware, mutation hooks or any fallback write.
+        if (!declaredHandler && database.implicitMutations === false) {
+            return unknownMutationResult(mutationName);
+        }
         if (readAuthRequirements(declaredMutationHandler)?.reauthentication) {
             const maintenanceNow = database.clock.now().toISOString();
             await database.adapter.withTransaction((maintenanceAdapter) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
@@ -8103,16 +8115,20 @@ function createHookErrorResult(error) {
         },
     };
 }
+/** The bounded unknown-mutation denial every refused or unresolvable mutation name returns. */
+function unknownMutationResult(mutationName) {
+    return {
+        ok: false,
+        error: {
+            message: `Unknown mutation: ${mutationName}`,
+            hint: "Use a mutation defined by the capsule.",
+        },
+    };
+}
 async function runInsertMutation(database, context, mutationName, args) {
     const table = resolveTableForAddMutation(database.schema, mutationName);
     if (!table) {
-        return {
-            ok: false,
-            error: {
-                message: `Unknown mutation: ${mutationName}`,
-                hint: "Use a mutation defined by the capsule.",
-            },
-        };
+        return unknownMutationResult(mutationName);
     }
     const now = new Date().toISOString();
     const values = {
@@ -8165,13 +8181,7 @@ async function runInsertMutation(database, context, mutationName, args) {
 async function runUpdateMutation(database, context, mutationName, args) {
     const resolved = resolveTableForUpdateMutation(database.schema, mutationName);
     if (!resolved) {
-        return {
-            ok: false,
-            error: {
-                message: `Unknown mutation: ${mutationName}`,
-                hint: "Use a mutation defined by the capsule.",
-            },
-        };
+        return unknownMutationResult(mutationName);
     }
     const [id, value] = args;
     if (!id) {

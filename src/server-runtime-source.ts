@@ -895,6 +895,9 @@ export async function openDevDatabase(
     endpoints,
     queries,
     mutations,
+    // The compatibility surface behind undeclared mutation names. Only an
+    // explicit `implicitMutations: false` drops it; omission stays 0.9.x.
+    implicitMutations: capsuleDefinition?.implicitMutations !== false,
     messages,
     jobs,
     schedules,
@@ -3318,8 +3321,12 @@ function mutationHandlersFromCapsuleDefinition(serverSource: any, capsuleDefinit
   const sourceHandlers = new Map(
     extractMutationHandlers(serverSource, { includeGeneratedNames: true }).map((handler) => [handler.name, handler]),
   );
+  // Bundled declarations whose source bodies match the generated scaffold shape travel through
+  // the implicit table path while that surface stays enabled. A Capsule's explicit
+  // `implicitMutations: false` retires that surface, so those declarations run as themselves.
+  const implicitMutationsDisabled = capsuleDefinition?.implicitMutations === false;
   return handlersFromCapsuleDefinition(capsuleDefinition.mutations, "mutation").filter((handler) =>
-    shouldUseBundledMutationHandler(handler.name, sourceHandlers.get(handler.name)),
+    implicitMutationsDisabled || shouldUseBundledMutationHandler(handler.name, sourceHandlers.get(handler.name)),
   );
 }
 
@@ -7137,6 +7144,11 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
   try {
     const declaredHandler = database.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
     const declaredMutationHandler = declaredHandler ? materializeHandler(declaredHandler) : null;
+    // A Capsule's explicit `implicitMutations: false` bounds the mutation surface to declared
+    // names: refuse before the transaction, middleware, mutation hooks or any fallback write.
+    if (!declaredHandler && database.implicitMutations === false) {
+      return unknownMutationResult(mutationName);
+    }
     if (readAuthRequirements(declaredMutationHandler)?.reauthentication) {
       const maintenanceNow = database.clock.now().toISOString();
       await database.adapter.withTransaction((maintenanceAdapter: LooseRecord) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
@@ -8248,16 +8260,21 @@ function createHookErrorResult(error: any) {
   };
 }
 
+/** The bounded unknown-mutation denial every refused or unresolvable mutation name returns. */
+function unknownMutationResult(mutationName: any) {
+  return {
+    ok: false,
+    error: {
+      message: `Unknown mutation: ${mutationName}`,
+      hint: "Use a mutation defined by the capsule.",
+    },
+  };
+}
+
 async function runInsertMutation(database: LooseRecord, context: LooseRecord, mutationName: any, args: any[]) {
   const table = resolveTableForAddMutation(database.schema, mutationName);
   if (!table) {
-    return {
-      ok: false,
-      error: {
-        message: `Unknown mutation: ${mutationName}`,
-        hint: "Use a mutation defined by the capsule.",
-      },
-    };
+    return unknownMutationResult(mutationName);
   }
 
   const now = new Date().toISOString();
@@ -8311,13 +8328,7 @@ async function runInsertMutation(database: LooseRecord, context: LooseRecord, mu
 async function runUpdateMutation(database: LooseRecord, context: LooseRecord, mutationName: any, args: any[]) {
   const resolved = resolveTableForUpdateMutation(database.schema, mutationName);
   if (!resolved) {
-    return {
-      ok: false,
-      error: {
-        message: `Unknown mutation: ${mutationName}`,
-        hint: "Use a mutation defined by the capsule.",
-      },
-    };
+    return unknownMutationResult(mutationName);
   }
 
   const [id, value] = args;

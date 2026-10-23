@@ -82070,6 +82070,13 @@ function normalizeAuthRequirements(options = {}) {
   });
 }
 function normalizeCapsuleAuthDefinition(definition) {
+  if (definition.implicitMutations !== void 0 && typeof definition.implicitMutations !== "boolean") {
+    throw commandError(
+      "Invalid Capsule implicitMutations declaration.",
+      "Declare implicitMutations as a boolean: omit it or pass true to keep the 0.9.x implicit add/update compatibility surface, or false to allow only declared mutations.",
+      "INVALID_IMPLICIT_MUTATIONS"
+    );
+  }
   let normalized = definition;
   if ("accessKeys" in definition && definition.accessKeys !== void 0) {
     const accessKeys = definition.accessKeys;
@@ -131652,6 +131659,12 @@ export function capsule(definition) {
       },
     };
   }
+  if (normalized.implicitMutations !== undefined && typeof normalized.implicitMutations !== "boolean") {
+    const error = new Error("Invalid Capsule implicitMutations declaration.");
+    error.code = "INVALID_IMPLICIT_MUTATIONS";
+    error.hint = "Declare implicitMutations as a boolean: omit it or pass true to keep the 0.9.x implicit add/update compatibility surface, or false to allow only declared mutations.";
+    throw error;
+  }
   const declaredScopes = new Set(normalized.accessKeys?.scopes ?? []);
   for (const collection of [normalized.queries, normalized.mutations, normalized.endpoints, normalized.messages]) {
     for (const item of Object.values(collection ?? {})) {
@@ -137905,6 +137918,9 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     endpoints,
     queries,
     mutations,
+    // The compatibility surface behind undeclared mutation names. Only an
+    // explicit `implicitMutations: false` drops it; omission stays 0.9.x.
+    implicitMutations: capsuleDefinition?.implicitMutations !== false,
     messages,
     jobs,
     schedules,
@@ -140042,8 +140058,9 @@ function mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) 
   const sourceHandlers = new Map(
     extractMutationHandlers(serverSource, { includeGeneratedNames: true }).map((handler) => [handler.name, handler])
   );
+  const implicitMutationsDisabled = capsuleDefinition?.implicitMutations === false;
   return handlersFromCapsuleDefinition(capsuleDefinition.mutations, "mutation").filter(
-    (handler) => shouldUseBundledMutationHandler(handler.name, sourceHandlers.get(handler.name))
+    (handler) => implicitMutationsDisabled || shouldUseBundledMutationHandler(handler.name, sourceHandlers.get(handler.name))
   );
 }
 function shouldUseBundledMutationHandler(name2, sourceHandler) {
@@ -143561,6 +143578,9 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
   try {
     const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
     const declaredMutationHandler = declaredHandler ? materializeHandler(declaredHandler) : null;
+    if (!declaredHandler && database.implicitMutations === false) {
+      return unknownMutationResult(mutationName);
+    }
     if (readAuthRequirements(declaredMutationHandler)?.reauthentication) {
       const maintenanceNow = database.clock.now().toISOString();
       await database.adapter.withTransaction((maintenanceAdapter) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
@@ -144638,16 +144658,19 @@ function createHookErrorResult(error) {
     }
   };
 }
+function unknownMutationResult(mutationName) {
+  return {
+    ok: false,
+    error: {
+      message: `Unknown mutation: ${mutationName}`,
+      hint: "Use a mutation defined by the capsule."
+    }
+  };
+}
 async function runInsertMutation(database, context2, mutationName, args) {
   const table = resolveTableForAddMutation(database.schema, mutationName);
   if (!table) {
-    return {
-      ok: false,
-      error: {
-        message: `Unknown mutation: ${mutationName}`,
-        hint: "Use a mutation defined by the capsule."
-      }
-    };
+    return unknownMutationResult(mutationName);
   }
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
@@ -144698,13 +144721,7 @@ async function runInsertMutation(database, context2, mutationName, args) {
 async function runUpdateMutation(database, context2, mutationName, args) {
   const resolved = resolveTableForUpdateMutation(database.schema, mutationName);
   if (!resolved) {
-    return {
-      ok: false,
-      error: {
-        message: `Unknown mutation: ${mutationName}`,
-        hint: "Use a mutation defined by the capsule."
-      }
-    };
+    return unknownMutationResult(mutationName);
   }
   const [id2, value] = args;
   if (!id2) {
