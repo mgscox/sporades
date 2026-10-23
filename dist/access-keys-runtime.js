@@ -779,8 +779,8 @@ export async function emitAccessKeyOwnerTransitionAudits(database, input) {
     }
 }
 export async function runAccessKeyOwnerSecurityTransition(database, input, transition) {
-    if (input.revocationCause !== "owner-unlinked" && input.revocationCause !== "owner-deleted") {
-        throw new TypeError("An owner security transition requires owner-unlinked or owner-deleted.");
+    if (input.revocationCause !== "owner-unlinked" && input.revocationCause !== "owner-deleted" && input.revocationCause !== "password-change") {
+        throw new TypeError("An owner security transition requires owner-unlinked, owner-deleted or password-change.");
     }
     const outcome = await database.adapter.withTransaction(async (adapter) => {
         const revokedAccessKeys = await adapter.bulkRevokeAccessKeysForOwner({
