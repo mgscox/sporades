@@ -484,6 +484,8 @@ test('runtime captures query, mutation, endpoint and Job failures without changi
   assert.equal((await runMutation(db, auth, 'fail', [])).ok, false);
   assert.equal((await runQuery(db, auth, 'notes')).rows.length, 0);
   await assert.rejects(() => runEndpoint(db, { handler: fail }, new URL('http://localhost/fail'), { method: 'GET', headers: {}, async *[Symbol.asyncIterator]() {} }), /test-failure/);
+  // Finish earlier reports before exercising both retries within the four-send server lane.
+  await db.observability.flush();
   const queued = await runMutation(db, auth, 'enqueue', []);
   assert.equal(queued.ok, true);
   let state;
@@ -575,8 +577,8 @@ async function generatedCollectionFixture(t, serverEnv = {}) {
   });
   const received = [];
   const receiver = await listen(t, async (request, response) => { let body = ''; for await (const part of request) body += part; received.push({ headers: request.headers, body }); response.writeHead(200).end(); });
-  const config = { name: 'bundle-collection', observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } }, analytics: { provider: 'umami', endpointEnv: 'ANALYTICS', websiteIdEnv: 'WEBSITE' }, security: { csp: { mode: 'enforce', directives: { 'script-src': ["'self'"], 'connect-src': ["'self'"] } } } };
-  const serverSource = 'import { capsule } from "sporades/server"; export default capsule({ name: "bundle-collection", schema: {} });';
+  const config = { name: 'bundle-collection', observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } }, analytics: { provider: 'umami', endpointEnv: 'ANALYTICS', websiteIdEnv: 'WEBSITE' }, security: { csp: { mode: 'enforce', reportTo: 'observability', directives: { 'script-src': ["'self'"], 'connect-src': ["'self'"] } } } };
+  const serverSource = 'import { capsule, endpoint } from "sporades/server"; export default capsule({ name: "bundle-collection", schema: {}, endpoints: { fail: endpoint({ method: "GET", path: "/failure" }, () => { throw new Error("generated server failure"); }) } });';
   const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(root, 'server', 'index.ts') });
   await mkdir(path.join(root, 'public'), { recursive: true });
   await writeFile(path.join(root, 'public', 'index.html'), '<!doctype html><html><head></head><body>Collection fixture</body></html>');
@@ -584,7 +586,7 @@ async function generatedCollectionFixture(t, serverEnv = {}) {
   child = spawn(process.execPath, [path.join(root, 'server.mjs')], { cwd: root, env: { ...process.env, PORT: '0', SPORADES_CONFIG_DIR: path.join(root, 'config') }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '', errors = '', origin;
   child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { errors += chunk; });
-  for (let i = 0; i < 200; i++) { assert.equal(child.exitCode, null, errors); const signal = output.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(event => Number.isInteger(event?.listening)); if (signal) { origin = `http://127.0.0.1:${signal.listening}`; break; } await new Promise(resolve => setTimeout(resolve, 10)); }
+  for (let i = 0; i < 2000; i++) { assert.equal(child.exitCode, null, errors); const signal = output.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(event => Number.isInteger(event?.listening)); if (signal) { origin = `http://127.0.0.1:${signal.listening}`; break; } await new Promise(resolve => setTimeout(resolve, 10)); }
   assert(origin, errors);
   const document = await fetch(origin + '/', { headers: { 'sec-fetch-dest': 'document' } });
   assert.match(await document.text(), /src="\/__sporades\/observe.js"/);
@@ -593,6 +595,27 @@ async function generatedCollectionFixture(t, serverEnv = {}) {
   assert.doesNotMatch(script, /server-only-secret|website-234|DSN|127\.0\.0\.1/);
   return { origin, received, script };
 }
+
+test('generated Capsule reserves server delivery after public outbound and ingress exhaustion', async t => {
+  const { origin, received } = await generatedCollectionFixture(t);
+  const post = (body, path = '/__sporades/collect') => fetch(origin + path, {
+    method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+  // Sequential requests keep this test about fixed-window accounting, not scheduling.
+  for (let i = 0; i < 60; i++) assert.equal((await post({ type: 'pageview', url: origin })).status, 204);
+  assert.equal(received.length, 60);
+  assert.equal((await post({ type: 'error', message: 'public capacity exhausted' })).status, 204);
+  for (let i = 0; i < 59; i++) assert.equal((await post('{invalid')).status, 400);
+  assert.equal((await post('{invalid')).status, 429);
+  const failure = await fetch(origin + '/failure');
+  assert.equal(failure.status, 500);
+  assert.doesNotMatch(await failure.text(), /generated server failure/);
+  for (let i = 0; i < 100 && received.length < 61; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(received.length, 61);
+  const serverEvent = JSON.parse(received[60].body.trim().split('\n')[2]);
+  assert.equal(serverEvent.tags.surface, 'endpoint');
+  assert.equal(serverEvent.exception.values[0].value, 'generated server failure');
+});
 
 test('generated Capsule serves the loader under self CSP and collects client errors with server-side redaction', async t => {
   const { Window } = await import('happy-dom');
@@ -731,7 +754,7 @@ test('provider redirect/failure is opaque and outbound capacity is bounded', asy
   const hanging = await listen(t, (request, response) => { releases.push(() => response.end()); });
   const errors = createRuntimeObservability({ observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN' } } }, { DSN: hanging.replace('http://', 'http://key@') + '/1' });
   for (let i = 0; i < 20; i++) errors.capture(new Error('bounded error'), 'query');
-  for (let i = 0; i < 100 && releases.length < 8; i++) await new Promise(resolve => setTimeout(resolve, 5));
-  assert.equal(releases.length, 8);
+  for (let i = 0; i < 100 && releases.length < 4; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(releases.length, 4);
   errors.close(); await errors.flush(); for (const release of releases) release();
 });
