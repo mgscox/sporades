@@ -328,6 +328,7 @@ Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather t
 
 **Linked account**:
 A real authentication method, such as email or a supported OAuth provider, linked to an existing Anonymous session. The user's data follows them because the auth method is linked to the existing account, not a new one.
+Email sign-up is a single guest-to-linked transition. Already-linked identities receive `REGISTRATION_DENIED`; signup cannot attach another email credential or rewrite their profile. The registration transaction locks the identity and rechecks its current Session before any admission or credential writes.
 _Avoid_: upgrade, migration (those are schema concerns, not auth)
 
 **Provider identity**:

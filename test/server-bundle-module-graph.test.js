@@ -717,6 +717,70 @@ async function openBundleSocket(baseUrl, origin = CAPSULE_PUBLIC_ORIGIN, request
   };
 }
 
+for (const session of ["dev", "container", "hosted"]) {
+  test(`generated ${session} bundle rejects linked signup and prevents the two-credential reset scenario`, async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-signup-transition-"));
+    let booted;
+    const sockets = [];
+    try {
+      const source = await buildBundle({ config: capsuleConfig({ __sporadesSession: session }), serverEnv: {}, serverSource: CAPSULE_SOURCE });
+      await writePublicTree(root, "<!doctype html><html><head></head><body></body></html>");
+      booted = await bootBundle({ source, dir: root, env: { SPORADES_SECURITY_SESSION: session, SPORADES_PUBLIC_ORIGIN: CAPSULE_PUBLIC_ORIGIN } });
+      const socket = await openBundleSocket(booted.baseUrl, CAPSULE_PUBLIC_ORIGIN, "capsule.example.com");
+      sockets.push(socket);
+      let sequence = 0;
+      const send = async (target, message) => {
+        const id = `signup-transition-${++sequence}`;
+        target.send({ ...message, id });
+        return target.waitFor((reply) => reply.id === id);
+      };
+      const signup = (target, email) => send(target, { type: "auth.signUp", provider: "email", credentials: { email, password: "dummy-password-123" } });
+      const signin = (target, email, password = "dummy-password-123") => send(target, { type: "auth.signIn", provider: "email", credentials: { email, password } });
+      // Dummy local reset links use the fixture's trusted server endpoint; no mail is sent.
+      const resetLink = async (email) => (await fetch(`${booted.baseUrl}/probe/auth/reset`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }),
+      })).json();
+      const guest = await send(socket, { type: "auth.get" });
+      await send(socket, { type: "mutation.run", mutation: "addNote", args: [{ text: "guest data", rank: 1 }] });
+      const original = await signup(socket, "original@example.test");
+      assert.equal(original.data?.ok, true, JSON.stringify(original));
+      assert.equal(original.data.auth.userId, guest.data.auth.userId);
+      const denied = await signup(socket, "added@example.test");
+      assert.equal(denied.error?.code, "REGISTRATION_DENIED");
+      assert.equal(denied.data, null);
+      const unchanged = await send(socket, { type: "auth.get" });
+      assert.deepEqual(unchanged.data.auth, original.data.auth);
+      assert.equal(unchanged.data.sessionToken, original.data.sessionToken);
+      const notes = await send(socket, { type: "query.subscribe", query: "notes" });
+      assert.equal(notes.data[0].mine, true, "guest data retains its owner after signup");
+      assert.equal((await resetLink("added@example.test")).failed, true, "denied signup creates no resettable credential");
+      const noReset = await send(socket, { type: "auth.confirmPasswordReset", code: "dummy-unissued-code", newPassword: "reset-password-123" });
+      assert.equal(noReset.type, "error");
+      assert.equal((await signin(socket, "added@example.test")).type, "error");
+      assert.equal((await signin(socket, "original@example.test")).data.auth.userId, original.data.auth.userId);
+
+      // The rejected address remains available to a different guest. Resetting
+      // that new identity cannot alter or join the original account.
+      const other = await openBundleSocket(booted.baseUrl, CAPSULE_PUBLIC_ORIGIN, "capsule.example.com");
+      sockets.push(other);
+      const independent = await signup(other, "added@example.test");
+      assert.equal(independent.data?.ok, true);
+      assert.notEqual(independent.data.auth.userId, original.data.auth.userId);
+      const issued = await resetLink("added@example.test");
+      assert.ok(issued.link, JSON.stringify(issued));
+      const reset = await send(other, { type: "auth.confirmPasswordReset", code: new URL(issued.link).searchParams.get("code"), newPassword: "reset-password-123" });
+      assert.equal(reset.data?.ok, true, JSON.stringify(reset));
+      assert.equal((await signin(socket, "original@example.test")).data.auth.userId, original.data.auth.userId);
+      assert.equal((await signin(other, "added@example.test")).type, "error");
+      assert.equal((await signin(other, "added@example.test", "reset-password-123")).data.auth.userId, independent.data.auth.userId);
+    } finally {
+      for (const socket of sockets) socket.close();
+      await booted?.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
 const WEBSOCKET_SCRIPT = [
   { id: "m1", type: "auth.get" },
   // Both subscriptions are opened before the first mutation, and neither is retired until the end.
