@@ -118330,6 +118330,9 @@ function createEndpointFileResponseApi(ingressApi, enabled) {
     }
   });
 }
+function isEndpointFileAttachmentResponse(value) {
+  return value !== null && typeof value === "object" && (attachmentResponseDetails.has(value) || sealedAttachmentResponseDetails.has(value));
+}
 function consumeSealedEndpointFileAttachment(value) {
   if (value === null || typeof value !== "object") return null;
   const details = sealedAttachmentResponseDetails.get(value) ?? null;
@@ -131681,6 +131684,18 @@ function processIsLive(pid) {
   }
 }
 
+// src/endpoint-session.ts
+function validateEndpointSessionDeclaration(definition) {
+  const options = definition?.options;
+  if (!options || typeof options !== "object" || !("session" in options)) return;
+  if (options.session !== "none" || options.body !== void 0 || options.response !== void 0 || options.mcp !== void 0 || definition.runtimeOwnedEmailEvent || definition.runtimeOwnedStripeCallback || definition.handler?.[Symbol.for("sporades.auth.requirements")]) {
+    const error = new Error("Invalid endpoint Session declaration.");
+    error.code = "INVALID_ENDPOINT_SESSION_DECLARATION";
+    error.hint = 'Use session: "none" only with an unguarded ordinary endpoint without multipart ingress, File attachment responses, MCP exposure or provider callbacks.';
+    throw error;
+  }
+}
+
 // src/server.ts
 var atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 var acl = Object.freeze({ privilegedOnly: privilegedOnlyTableAcl, denyAll: privilegedOnlyTableAcl });
@@ -131689,6 +131704,7 @@ function privilegedOnlyTableAcl() {
 }
 function serverRuntimeModuleSource() {
   return `export { escapeHtml, html } from "sporades:html";
+const validateEndpointSessionDeclaration = ${validateEndpointSessionDeclaration.toString()};
 const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
@@ -131820,6 +131836,7 @@ export function capsule(definition) {
       },
     };
   }
+  for (const item of Object.values(normalized.endpoints ?? {})) validateEndpointSessionDeclaration(item);
   const declaredScopes = new Set(normalized.accessKeys?.scopes ?? []);
   for (const collection of [normalized.queries, normalized.mutations, normalized.endpoints, normalized.messages]) {
     for (const item of Object.values(collection ?? {})) {
@@ -131835,6 +131852,7 @@ export function capsule(definition) {
 }
 
 export function endpoint(options, handler) {
+  validateEndpointSessionDeclaration({ options, handler });
   return {
     kind: "endpoint",
     options,
@@ -137917,6 +137935,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
     validateCapsuleAuthRequirements(capsuleDefinition);
     validateStripeEventSubscription(capsuleDefinition.stripeEvents);
+    for (const definition of Object.values(capsuleDefinition.endpoints ?? {})) validateEndpointSessionDeclaration(definition);
     validateEndpointResponseDeclarations(capsuleDefinition);
     validateEndpointMcpDeclarations(capsuleDefinition.endpoints);
   }
@@ -140053,13 +140072,18 @@ function extractEndpoints(serverSource) {
     }
     const argsSource = serverSource.slice(endpointPattern.lastIndex, argsEnd);
     const descriptor = argsSource.match(
-      /^\s*\{\s*method\s*:\s*["']([A-Za-z]+)["']\s*,\s*path\s*:\s*["']([^"']+)["']\s*\}\s*,/
+      /^\s*\{\s*method\s*:\s*["']([A-Za-z]+)["']\s*,\s*path\s*:\s*["']([^"']+)["']\s*(?:,\s*session\s*:\s*([^}]+?))?\s*\}\s*,/
     );
     if (!descriptor) {
       endpointPattern.lastIndex = argsEnd + 1;
       continue;
     }
+    const options = descriptor[3] === void 0 ? void 0 : {
+      session: /^["']none["']$/.test(descriptor[3].trim().replace(/,\s*$/, "")) ? "none" : descriptor[3]
+    };
+    validateEndpointSessionDeclaration({ options });
     endpoints.push({
+      ...options ? { options } : {},
       name: match[1],
       method: descriptor[1].toUpperCase(),
       path: descriptor[2],
@@ -140622,7 +140646,12 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
   }
 }
 async function runEndpoint(database, endpoint, requestUrl, request, requestPath = requestUrl.pathname) {
+  validateEndpointSessionDeclaration(endpoint);
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
+  validateEndpointSessionDeclaration({ ...endpoint, handler });
+  if (endpoint.options?.session === "none") {
+    return runSessionlessEndpoint(database, handler, requestUrl, request, requestPath);
+  }
   const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
   let endpointRequest = endpointRequestHead(database, requestUrl, request, requestPath);
   const requirements = readAuthRequirements(handler);
@@ -141116,6 +141145,41 @@ function endpointRequestHead(database, requestUrl, request, requestPath = reques
     headers,
     query
   };
+}
+async function runSessionlessEndpoint(database, handler, requestUrl, request, requestPath) {
+  try {
+    const endpointRequest = await readEndpointRequest(database, requestUrl, request, true, requestPath);
+    const signal = request.__sporadesEndpointSignal ?? request.signal;
+    signal?.throwIfAborted();
+    const context2 = Object.freeze({
+      app: database.app,
+      // Ordinary middleware may have retained objects on its mutable env view or limiter
+      // function. Copy only env values, and expose a fresh callable rather than that object.
+      env: Object.freeze(Object.fromEntries(Object.entries(database.serverEnv ?? {}).filter(([, value]) => typeof value === "string"))),
+      log: createEndpointLogger(database, { request: { method: endpointRequest.method, path: endpointRequest.path } }),
+      rateLimit(key, options) {
+        return database.capsuleRateLimiter.consume(key, options);
+      },
+      signal,
+      request: {
+        method: endpointRequest.method,
+        path: endpointRequest.path,
+        clientAddress: endpointRequest.clientAddress,
+        headers: endpointRequest.headers,
+        query: endpointRequest.query,
+        body: endpointRequest.body,
+        bodyBytes: endpointRequest.bodyBytes
+      }
+    });
+    const result = await handler(context2);
+    if (isEndpointFileAttachmentResponse(result)) {
+      throw commandError("Invalid endpoint response.", "Return an ordinary endpoint response.", "INVALID_ENDPOINT_RESPONSE");
+    }
+    return result;
+  } catch (error) {
+    database.observability?.capture(error, "endpoint");
+    throw error;
+  }
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
   const auth = protectContextIdentity({ ...contextAuthIdentity(session.auth), ...endpointRequest.clientAddress ? { clientAddress: endpointRequest.clientAddress } : {} });

@@ -472,6 +472,16 @@ Custom endpoints are HTTP escape hatches for integrations such as webhooks.
 They are not the primary app data API; queries and mutations over the client
 transport remain the default application path.
 
+Custom endpoints may explicitly opt into `session: "none"` for stateless public
+requests. Their separate `SessionlessEndpointContext` contains only `app`, `env`,
+`log`, `rateLimit`, `signal` and the bounded ordinary `request`. The runtime skips
+general Capsule context middleware, credential resolution and the identity-bound
+endpoint transaction, and creates or touches no auth or credential-usage state.
+HTTP security/admission, parsing limits and response/error handling remain in
+force. Auth guards, multipart ingress, File attachment responses, MCP exposure
+and runtime-owned provider callbacks cannot use this mode. Omission preserves
+ordinary endpoint Session behavior. See the [server reference](reference/server-runtime.md#explicitly-sessionless-public-endpoints).
+
 `ctx.request.body` and `ctx.request.bodyBytes` come from the same bounded
 request-body read. `body` retains the existing parsed JSON or text behavior;
 `bodyBytes` is an immutable iterable view of the exact received bytes for

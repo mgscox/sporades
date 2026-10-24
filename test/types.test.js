@@ -58,6 +58,9 @@ test("sporades api bindings compile representative strict TypeScript app code", 
             module: "NodeNext",
             moduleResolution: "NodeNext",
             lib: ["ES2022", "DOM"],
+            // Source parity imports need Node globals even when the fixture lives outside the repo.
+            types: ["node"],
+            typeRoots: [path.join(repoRoot, "node_modules", "@types")],
           },
           include: ["app.ts"],
         },
@@ -68,8 +71,86 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition, type ServerEnvConfig } from "sporades/server";
+const publicHealth = endpoint({ method: "GET", path: "/health", session: "none" }, ctx => {
+  const restricted: publicServerApi.SessionlessEndpointContext = ctx;
+  const keys: Record<keyof typeof restricted, true> = { app: true, env: true, log: true, rateLimit: true, signal: true, request: true };
+  ctx.log.info(ctx.app.publicOrigin);
+  ctx.rateLimit("health", { limit: 10, windowMs: 1000 });
+  const bytes: Uint8Array = ctx.request.bodyBytes.toUint8Array();
+  // @ts-expect-error Sessionless endpoints have no auth capability.
+  ctx.auth;
+  // @ts-expect-error Sessionless endpoints have no credential capability.
+  ctx.credential;
+  // @ts-expect-error Sessionless endpoints have no db capability.
+  ctx.db;
+  // @ts-expect-error Sessionless endpoints have no resources capability.
+  ctx.resources;
+  // @ts-expect-error Sessionless endpoints have no files capability.
+  ctx.files;
+  // @ts-expect-error Sessionless endpoints have no teams capability.
+  ctx.teams;
+  // @ts-expect-error Sessionless endpoints have no teamBilling capability.
+  ctx.teamBilling;
+  // @ts-expect-error Sessionless endpoints have no payments capability.
+  ctx.payments;
+  // @ts-expect-error Sessionless endpoints have no jobs capability.
+  ctx.jobs;
+  // @ts-expect-error Sessionless endpoints have no mail capability.
+  ctx.mail;
+  // @ts-expect-error Sessionless endpoints have no ai capability.
+  ctx.ai;
+  // @ts-expect-error Sessionless endpoints have no messages capability.
+  ctx.messages;
+  // @ts-expect-error Sessionless endpoints have no accessKeys capability.
+  ctx.accessKeys;
+  // @ts-expect-error Sessionless endpoints have no serviceUsers capability.
+  ctx.serviceUsers;
+  // @ts-expect-error Sessionless endpoints have no serverAuth capability.
+  ctx.serverAuth;
+  // @ts-expect-error Sessionless endpoints have no privileged capability.
+  ctx.privileged;
+  // @ts-expect-error Sessionless endpoints have no lifecycle capability.
+  ctx.lifecycle;
+  // @ts-expect-error Sessionless endpoints do not have multipart ingress.
+  ctx.request.multipart;
+  return { status: 200, body: { ok: true, size: bytes.length, keys } };
+});
+const schemaHealth = publicServerApi.endpointFor({ health: table({ ok: Boolean() }) });
+schemaHealth({ method: "GET", path: "/health", session: "none" }, ctx => {
+  // @ts-expect-error Schema binding does not add a Database capability to a sessionless endpoint.
+  ctx.db.health.all();
+  return ctx.request.path;
+});
+// @ts-expect-error Auth guards are incompatible, even without reading ctx.
+endpoint({ method: "GET", path: "/invalid", session: "none" }, requireAuth(() => null));
+// @ts-expect-error Schema-bound builders also reject Auth guards.
+schemaHealth({ method: "GET", path: "/invalid", session: "none" }, requireAuth(() => null));
+// @ts-expect-error Multipart is incompatible with sessionless endpoints.
+endpoint({ method: "GET", path: "/invalid", session: "none", body: { multipart: {} } }, () => null);
+// @ts-expect-error File attachments are incompatible with sessionless endpoints.
+endpoint({ method: "GET", path: "/invalid", session: "none", response: { fileAttachment: true } }, () => null);
+// @ts-expect-error MCP exposure is incompatible with sessionless endpoints.
+endpoint({ method: "GET", path: "/invalid", session: "none", mcp: true }, () => null);
+// @ts-expect-error No other explicit Session mode exists.
+endpoint({ method: "GET", path: "/invalid", session: "auto" }, () => null);
+capsule({ name: "stateless", schema: { checks: table({ ok: Boolean() }) }, endpoints: { publicHealth } });
 const serverEnvConfig: ServerEnvConfig = { required: ["INTAKE_URL"], failClosed: true };
 import * as publicServerApi from "sporades/server";
+import { endpoint as sourceEndpoint, endpointFor as sourceEndpointFor, requireAuth as sourceRequireAuth } from "${path.relative(dir, path.join(repoRoot, 'src/server.js')).split(path.sep).join('/')}";
+sourceEndpoint({ method: "GET", path: "/source-health", session: "none" }, ctx => {
+  // @ts-expect-error Source and shipped bindings both exclude Auth.
+  ctx.auth;
+  // @ts-expect-error Source and shipped bindings both exclude the Database.
+  ctx.db;
+  return { body: ctx.app.publicOrigin };
+});
+// @ts-expect-error The source helper also excludes guarded sessionless handlers.
+sourceEndpoint({ method: "GET", path: "/bad", session: "none" }, sourceRequireAuth(() => null));
+sourceEndpointFor({})({ method: "GET", path: "/source-health", session: "none" }, ctx => {
+  // @ts-expect-error The source builder cannot restore Database authority.
+  ctx.db;
+  return ctx.request.path;
+});
 const securityConfig: publicServerApi.SecurityConfig = { csp: { nonce: true, mode: 'enforce', reportTo: '/csp-reports', directives: { 'script-src': ["'self'"] } }, hsts: { maxAgeSeconds: 31536000, includeSubDomains: true, preload: false } };
 // @ts-expect-error nonce opt-in is a boolean.
 const invalidNonceConfig: publicServerApi.SecurityConfig = { csp: { nonce: 'true' } };
