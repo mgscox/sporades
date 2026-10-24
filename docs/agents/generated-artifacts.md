@@ -7,6 +7,11 @@ together. Run `npm ci`, `npm run typecheck`, and `npm test` locally; `pretest`
 builds fresh output and checks its manifest against the local files, without
 comparing them to Git. Older committed output on a PR branch is expected.
 
+This exception applies only to `dist/` and `bin/`. Other shipped build outputs,
+such as `monitoring/trace/inventory-contract.mjs`, still accompany their source
+changes in a PR. Release metadata such as `src/cli/cli-version.ts` remains owned
+by the direct-to-main release flow.
+
 Before committing, restore generated files:
 
 ```sh
