@@ -185,8 +185,8 @@ test("declared mutations in an opted-out Capsule keep their result shape, ACLs a
       assert.deepEqual(approved.data.text, "approved");
       assert.deepEqual(approved.data.ownerId, "u1");
 
-      // Falsey declared results stay success with a null payload; the implicit fallback must not
-      // attach a second write to them.
+      // An undefined declared result stays success with a null payload; the implicit fallback
+      // must not attach a second write to it.
       const silent = await runMutation(database, auth("u1"), "silent", []);
       assert.deepEqual(silent, { ok: true, data: null, error: null });
 
@@ -208,6 +208,29 @@ test("declared mutations in an opted-out Capsule keep their result shape, ACLs a
       assert.deepEqual((await runQuery(database, auth("u1"), "notes")).rows.map((row) => row.text), before);
     } finally {
       database.close();
+    }
+  });
+});
+
+test("declared fallback-shaped names preserve falsey results without implicit writes", async () => {
+  await withTempDir(async (dir) => {
+    for (const flag of [true, false]) {
+      const database = await openDevDatabase(path.join(dir, `falsey-${flag}.db`), "", {}, { name: "falsey-results" }, capsule({
+        name: "falsey-results",
+        implicitMutations: flag,
+        schema: notesSchema(),
+        mutations: { addNote: mutation((_ctx, value) => value) },
+      }));
+      try {
+        for (const value of [false, 0, "", null, undefined]) {
+          assert.deepEqual(await runMutation(database, auth("u1"), "addNote", [value]), {
+            ok: true, data: value ?? null, error: null,
+          });
+        }
+        assert.deepEqual((await runQuery(database, auth("u1"), "notes")).rows, []);
+      } finally {
+        database.close();
+      }
     }
   });
 });

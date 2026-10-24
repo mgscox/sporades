@@ -399,8 +399,9 @@ therefore leave no write, no hook effect, and no success notification behind.
 Omitting the flag or passing `true` keeps that 0.9.x surface unchanged; `false`
 retires only the dispatch surface. Nothing else moves: declared mutations keep
 their context middleware, hooks, table ACLs, reauthentication and transaction
-behavior; a declared handler that returns a falsey value still produces a null
-data payload and never falls back to an implicit write; a declared name that
+behavior; a declared handler preserves `false`, `0`, and `""` results, returns a
+null data payload for `null` or `undefined`, and never falls back to an implicit
+write; a declared name that
 resembles an `add…`/`update…` fallback name runs the declared handler; server
 code keeps `ctx.db`; and implicit table queries keep answering. One detail
 shifts: a bundled declared mutation whose source matches the generated scaffold
