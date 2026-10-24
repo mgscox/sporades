@@ -533,6 +533,8 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     // inspection routes call the existing database-runtime helpers and emit no statement of their own.
     "mcp-config.js",
     "mcp-runtime.js",
+    // Sessionless endpoint declaration validation owns no SQL, adapter or normalization behavior.
+    "endpoint-session.js",
   ]);
 
   const carried = runtimeGraphModules();
