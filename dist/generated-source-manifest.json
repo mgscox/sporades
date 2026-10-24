@@ -596,10 +596,6 @@
       "dist/service-users-runtime.d.ts.map",
       "dist/service-users-runtime.js",
       "dist/service-users-runtime.js.map",
-      "dist/stored-row-decoding.d.ts",
-      "dist/stored-row-decoding.d.ts.map",
-      "dist/stored-row-decoding.js",
-      "dist/stored-row-decoding.js.map",
       "dist/stored-value-coding.d.ts",
       "dist/stored-value-coding.d.ts.map",
       "dist/stored-value-coding.js",
@@ -690,6 +686,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "d78ae2574dfddef20fd0fa3bd3c33d03249f2b22e6e946f743e91380812c7b8b"
+    "digest": "e770e9929c139ea812fba1208a17bbf7d55846af16a16b10b09ae6a6cf1106d9"
   }
 }
