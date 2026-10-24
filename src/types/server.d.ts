@@ -1528,6 +1528,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   files?: CapsuleFilesDefinition<Schema>;
   /** Enable the client-only Journey tracker and define its TTL and automatic-capture ceiling. */
   journey?: { enabled: true; ttlSeconds?: number; capture?: { navigation?: boolean; focus?: boolean; interactions?: boolean } };
+  /** Opt out of the implicit add/update table mutation entries that answer undeclared mutation names. Omission or `true` keeps the 0.9.x compatibility surface; `false` answers the ordinary unknown-mutation refusal for every name without a declared mutation, before any fallback write, mutation hook, or success effect. Declared mutations, server `ctx.db`, implicit table queries, table ACLs, and before/after mutation hooks keep their behavior; place business checks in declared mutations, table ACL rules, or a before-mutation hook. Not a substitute for declaring the check itself. Present values must be booleans and are rejected at authoring and startup otherwise. */
+  implicitMutations?: boolean;
   middleware?: ContextMiddleware<Schema>[];
   hooks?: CapsuleHooks<Schema>;
 };

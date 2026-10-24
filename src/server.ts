@@ -634,6 +634,12 @@ export function capsule(definition) {
       },
     };
   }
+  if (normalized.implicitMutations !== undefined && typeof normalized.implicitMutations !== "boolean") {
+    const error = new Error("Invalid Capsule implicitMutations declaration.");
+    error.code = "INVALID_IMPLICIT_MUTATIONS";
+    error.hint = "Declare implicitMutations as a boolean: omit it or pass true to keep the 0.9.x implicit add/update compatibility surface, or false to allow only declared mutations.";
+    throw error;
+  }
   for (const item of Object.values(normalized.endpoints ?? {})) validateEndpointSessionDeclaration(item);
   const declaredScopes = new Set(normalized.accessKeys?.scopes ?? []);
   for (const collection of [normalized.queries, normalized.mutations, normalized.endpoints, normalized.messages]) {
