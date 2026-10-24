@@ -10182,8 +10182,9 @@ export default capsule({
         type: "error",
         data: null,
         error: {
-          message: "Email is already registered.",
-          hint: "Use auth.signIn(\"email\", ...) with this email address.",
+          code: "REGISTRATION_DENIED",
+          message: "Registration was not admitted.",
+          hint: "Use valid registration admission and retry.",
         },
       });
 

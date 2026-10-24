@@ -587,6 +587,15 @@ const signIn = await auth.signIn("email", {
 
 Check `result.data` and `result.error`; do not assume sign-in succeeded.
 
+Email sign-up requires a current guest Session and registers that identity once.
+Already-linked email, OAuth and locally simulated identities receive the bounded
+`REGISTRATION_DENIED` error without profile, credential, Team or Session changes.
+The runtime locks and rechecks the identity and Session inside the registration
+transaction, so concurrent signup attempts cannot attach two email credentials.
+Missing, expired, moved or terminated Sessions receive `AUTH_SESSION_INVALID`.
+Signup is not an email-change or credential-linking operation; supported OAuth
+provider linking uses its separate sign-in flow.
+
 Email sign-in blocks a caller after five failures in a fixed 15-minute window.
 Hosted Capsules also apply that gate to the existing trusted client address;
 public forwarding headers cannot supply that identity. Failures against an email

@@ -114,7 +114,9 @@ export type AuthApi = {
   sessionToken(): string | null;
   get(): Promise<SporadesResult<AuthResult>>;
   subscribe(listener: (state: AuthObserverState) => void): Subscription;
+  /** Register the current guest identity once. Linked identities receive REGISTRATION_DENIED; signup cannot add credentials or change their email. */
   signUp(provider: "email", credentials: EmailCredentials, options?: RegistrationOptions): Promise<SporadesResult>;
+  /** Email signup requires a current guest Session; supported provider linking uses signIn. */
   signUp(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
   /**
    * Email sign-in preserves caller/trusted Hosted address failure gates and admits at most

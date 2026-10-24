@@ -121602,15 +121602,6 @@ async function signUpWithEmail(database, session, provider, credentials, registr
   if (!normalized.ok) {
     return normalized;
   }
-  if (await database.adapter.emailCredentialExists(normalized.email)) {
-    return {
-      ok: false,
-      error: {
-        message: "Email is already registered.",
-        hint: 'Use auth.signIn("email", ...) with this email address.'
-      }
-    };
-  }
   const password = hashEmailPassword(normalized.password);
   const displayName = normalized.name || normalized.email;
   const auth = {
@@ -121623,7 +121614,20 @@ async function signUpWithEmail(database, session, provider, credentials, registr
     provider: "email"
   };
   return await withRegistrationTransaction(database, async (tx) => {
-    if (await sessionUserWasTerminated(tx, auth.userId)) return terminatedSessionUserError();
+    const owner = await tx.lockAuthUserFileAuthority(auth.userId);
+    if (!owner || owner.userKind !== "human" || owner.lifecycleStatus === "terminated") return terminatedSessionUserError();
+    const current2 = await tx.readAuthSessionWithUser(session.token);
+    if (!current2 || current2.userId !== auth.userId || !Number.isFinite(Date.parse(current2.expiresAt)) || isExpiredSession(current2)) return terminatedSessionUserError();
+    if (current2.isAuthenticated || !current2.isGuest) return registrationDenied();
+    if (await tx.emailCredentialExists(normalized.email)) {
+      return {
+        ok: false,
+        error: {
+          message: "Email is already registered.",
+          hint: 'Use auth.signIn("email", ...) with this email address.'
+        }
+      };
+    }
     const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
     if (!registration.ok) return registration;
     await tx.insertEmailCredential({
