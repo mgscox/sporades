@@ -20,8 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # Read engine settings from the trusted base; never execute PR scripts.
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Fetch PR history without checking out PR code
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: git fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
       - uses: actions/setup-node@v6
         with:
           node-version-file: package.json
@@ -29,7 +35,28 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: node scripts/check-pr-generated-artifacts.mjs "$BASE_SHA" "$HEAD_SHA"
+        # Keep this inline so a fork cannot replace a script run on our local runner.
+        # The parity test compares it with the standalone local checker.
+        run: |
+          node --input-type=module - "$BASE_SHA" "$HEAD_SHA" <<'NODE'
+          import { execFileSync } from 'node:child_process';
+
+          const [base, head] = process.argv.slice(2);
+          if (!base || !head) throw new Error('Usage: node scripts/check-pr-generated-artifacts.mjs <base-sha> <head-sha>');
+          const git = (...args) => execFileSync('git', args, { encoding: 'utf8' });
+          const ancestor = git('merge-base', base, head).trim();
+          const changed = git('diff', '--no-renames', '--name-only', '-z', ancestor, head, '--', 'dist/', 'bin/').split('\0').filter(Boolean);
+          // Main may have regenerated since the PR forked. Unchanged old output is fine;
+          // restoring files from current main (the fix below) is also fine.
+          const forbidden = changed.filter(file => git('diff', '--no-renames', '--name-only', '-z', base, head, '--', file).length > 0);
+          if (forbidden.length) {
+            console.error('PRs must not change generated dist/ or bin/ files. CI regenerates them on main.');
+            console.error('Run `git fetch origin main`, then `git checkout origin/main -- dist bin` and commit the result.');
+            console.error('Remove newly added generated files absent from origin/main with git rm.');
+            console.error(`Generated paths changed: ${forbidden.map(file => JSON.stringify(file)).join(', ')}`);
+            process.exitCode = 1;
+          }
+          NODE
 
   regenerate:
     if: github.event_name == 'push' && github.actor != 'github-actions[bot]'

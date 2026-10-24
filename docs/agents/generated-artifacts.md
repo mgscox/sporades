@@ -29,6 +29,10 @@ allow the automation. The job does not bypass protections. Token pushes do not
 start another workflow; the skip marker, generated-only path exclusion, and bot
 actor guard also prevent a loop.
 
+The PR job checks out the trusted base and fetches PR history without checking
+out or executing PR scripts on the local runner. Its inline checker is kept in
+parity with the standalone local checker by a focused test.
+
 If a concurrent merge rejects the push, the script fetches main, discards its
 own generated commit, rebases the source checkout, and installs/builds again.
 It retries the push once and fails visibly on another rejection. Rebuilding

@@ -15,6 +15,16 @@ function run(cwd, command, args, ok = true) {
 }
 const git = (cwd, ...args) => run(cwd, 'git', args).stdout.trim();
 
+test('local-runner PR check uses trusted base code and an inline checker identical to the tested script', async () => {
+  const workflow = await readFile('.github/workflows/generated-artifacts.yml', 'utf8');
+  const inline = workflow.match(/<<'NODE'\n([\s\S]*?)\n          NODE/);
+  assert(inline, 'inline checker is missing');
+  assert.equal(inline[1].split('\n').map(line => line.slice(10)).join('\n') + '\n', await readFile(check, 'utf8'));
+  assert.match(workflow, /ref: \$\{\{ github.event.pull_request.base.sha \}\}/);
+  assert.match(workflow, /git fetch --no-tags origin "refs\/pull\/\$PR_NUMBER\/head"/);
+  assert.doesNotMatch(workflow, /run: node scripts\/check-pr-generated-artifacts/);
+});
+
 test('release packing includes CLI, dist, and the generated source manifest', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'sporades-release-pack-'));
   t.after(() => rm(root, { recursive: true, force: true }));
