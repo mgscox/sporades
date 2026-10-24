@@ -11,6 +11,8 @@ This exception applies only to `dist/` and `bin/`. Other shipped build outputs,
 such as `monitoring/trace/inventory-contract.mjs`, still accompany their source
 changes in a PR. Release metadata such as `src/cli/cli-version.ts` remains owned
 by the direct-to-main release flow.
+CI refuses to commit if a build changes tracked files outside `dist/` and
+`bin/`, so the manifest cannot seal uncommitted changes to those files.
 
 Before committing, restore generated files:
 

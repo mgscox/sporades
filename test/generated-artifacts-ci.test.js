@@ -147,6 +147,23 @@ test('main regeneration removes obsolete tracked outputs that the compiler no lo
   assert.equal(git(root, 'rev-parse', 'HEAD'), git(root, 'rev-parse', 'origin/main'));
 });
 
+test('regeneration never seals uncommitted build changes outside dist and bin', async t => {
+  const root = await fixture(t);
+  await commit(root, 'owned-source.txt', 'committed source\n');
+  const build = await readFile(path.join(root, 'build.mjs'), 'utf8');
+  await commit(root, 'build.mjs', build + "writeFileSync('owned-source.txt', 'changed by build');\n");
+  const remote = path.join(root, 'remote.git');
+  git(root, 'init', '--bare', remote);
+  git(root, 'remote', 'add', 'origin', remote);
+  git(root, 'push', '-u', 'origin', 'main');
+  const head = git(root, 'rev-parse', 'HEAD');
+  const result = run(root, 'bash', [regenerate], false);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /outside dist\/bin/);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), head);
+  assert.equal(git(root, 'rev-parse', 'origin/main'), head);
+});
+
 for (const race of ['none', 'once', 'twice']) {
   test(`main regeneration dry run: push race ${race}`, async t => {
     const root = await fixture(t);
