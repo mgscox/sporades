@@ -324,7 +324,11 @@ A string stored in `localStorage` on the client and sent on the WebSocket connec
 Session records include lifecycle metadata and expire after 30 days by default. Missing, invalid, or expired tokens resolve to a fresh Anonymous session. Email sign-up and sign-in rotate the current token; provider sign-in refreshes the current token during the OAuth callback.
 _Avoid_: auth token, JWT
 
-Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
+Missing or invalid ordinary endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
+
+**Sessionless endpoint**:
+An explicitly opted-in Custom endpoint declared with `session: "none"`. It receives only `app`, `env`, `log`, `rateLimit`, `signal` and the bounded ordinary `request`. It skips general Capsule context middleware, credential resolution and the identity-bound endpoint transaction, creating or touching no auth state. Auth guards, multipart ingress, File attachment responses, MCP exposure and runtime-owned provider callbacks are incompatible. HTTP security, admission, body bounds and response/error handling still apply. Omitting `session` preserves ordinary Session behavior.
+_Avoid_: guest endpoint, anonymous Session mode
 
 **Linked account**:
 A real authentication method, such as email or a supported OAuth provider, linked to an existing Anonymous session. The user's data follows them because the auth method is linked to the existing account, not a new one.
@@ -562,6 +566,10 @@ _Avoid_: Privileged server role, bypassACL API, pending-member role
 **Team Join admission policy**:
 The optional Capsule `teams.admitJoin` callback that decides whether one already validated, email-matched Join link may create a membership. Sporades invokes it under the Team lifecycle lock with the joining user as subject, the exact accepted-member count, and a Team-Join-purpose trusted read capability. Its decision, Join-link consumption, and membership insertion commit or roll back atomically; it grants no provisional membership or broader authority.
 _Avoid_: subscription hook, pending member, billing ACL exception
+
+**Team creation admission policy**:
+The opt-in Capsule `teams.admitCreate` callback for additional-Team creation through SDK and server routes. Under the actor's durable lock and transaction it receives the normalized requested name and live creator-Team count, including personal and departed Teams but excluding the candidate. Initial personal-Team bootstrap bypasses it. Its five-second, expiring read-only Capsule database view grants no writes, credentials or broader actor authority; only explicit valid allow permits creation, and failure poisons outer rollback even when caught.
+_Avoid_: membership admission, pricing rule, mutation wrapper
 
 **Destructive Team policy**:
 The opt-in `teams.authorizeDestructive` Capsule policy. Direct SDK and server Team demotion, removal, leave and deletion consult it after current authorization and final-admin checks under the exact Team lifecycle lock, in the operation transaction. A five-second, expiring read-only Capsule database view can inspect cross-owner responsibility without disclosing it to the caller. Only explicit valid allow commits; refusal poisons the enclosing transaction and stays opaque. All protected responsibility writers take server-only `ctx.teams.lockLifecycle` before app reads/writes, including explicit accepted transfers and atomic Stripe consequences. It retains the lock through outer settlement without granting userless code administrative authority. Provider work runs after commit.

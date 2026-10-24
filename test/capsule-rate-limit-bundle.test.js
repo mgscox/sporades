@@ -16,10 +16,30 @@ test('generated self-contained Bundle rate limits share trusted client identity 
 
   try {
     const serverSource = `import { capsule, endpoint, table, String as Text } from 'sporades/server';
+let retainedAdmissionRateLimit;
+const ingressOptions = { limit: 1, windowMs: 60000 };
 const inspect = ctx => ({ result: ctx.rateLimit('shared', { limit: 1, windowMs: 60000 }), address: ctx.request.clientAddress,
   authAddress: ctx.auth.clientAddress, tokenLeaked: Object.keys(ctx.request.headers).some(name => name.toLowerCase() === 'x-sporades-client-address-token') });
 const resource = { resource: { table: 'anchors', id: 'anchor' }, operationId: 'stable' };
-export default capsule({ name: 'capsule-rate-limit-bundle', schema: { anchors: table({ value: Text() }) }, endpoints: {
+export default capsule({ name: 'capsule-rate-limit-bundle', schema: { anchors: table({ value: Text() }) }, files: {
+  acl: { read: () => false, delete: () => false },
+  ingress: { principalNamespaces: ['signed-resource'], admit: ctx => {
+    retainedAdmissionRateLimit = ctx.rateLimit;
+    if (ctx.request.headers['x-resource-token'] !== 'synthetic-resource-token') return { allow: false };
+    if (!ctx.rateLimit('ingress-shared', ingressOptions).ok) return { allow: false };
+    return { allow: true, principal: { namespace: 'signed-resource', key: 'synthetic-resource' } };
+  } },
+}, endpoints: {
+  upload: endpoint({ method: 'POST', path: '/upload', body: { multipart: {
+    maxFiles: 1, maxFileBytes: 1024, maxTotalFileBytes: 1024, maxFieldCount: 1, maxFieldBytes: 100, maxTotalFieldBytes: 100,
+    allowedPathPrefixes: ['/attachments'], requestKeyHeader: 'idempotency-key', partKeyHeader: 'content-id', claimAuthorities: ['capsule-principal'],
+  } } }, () => ({ body: { uploaded: true } })),
+  ingressBudget: endpoint({ method: 'GET', path: '/ingress-budget' }, ctx => ({ body: ctx.rateLimit('ingress-shared', ingressOptions) })),
+  retained: endpoint({ method: 'GET', path: '/retained' }, ctx => {
+    let code;
+    try { retainedAdmissionRateLimit('unused-after-settle', ingressOptions); } catch (error) { code = error.code; }
+    return { body: { code, untouched: ctx.rateLimit('unused-after-settle', ingressOptions) } };
+  }),
   limited: endpoint({ method: 'GET', path: '/limited' }, ctx => ({ status: 200, body: inspect(ctx) })),
   other: endpoint({ method: 'GET', path: '/other' }, ctx => ({ status: 200, body: inspect(ctx) })),
   record: endpoint({ method: 'GET', path: '/resource-record' }, async ctx => ({ body: await ctx.resources.run({ ...resource, input: null }, async scope => {
@@ -67,6 +87,21 @@ process.stdout.write(JSON.stringify({ listening: server.address().port }) + '\\n
           const response = await fetch(`${base}${endpoint}`, { headers });
           return { status: response.status, body: await response.json() };
         };
+
+        const postUpload = token => fetch(`${base}/upload`, { method: 'POST', headers: {
+          'content-type': 'multipart/form-data; boundary=bounded', 'idempotency-key': 'stable', 'x-resource-token': token,
+        }, body: '--bounded\r\nContent-Disposition: form-data; name="file"; filename="dummy.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable\r\n\r\ndummy\r\n--bounded--\r\n' });
+        const invalidUpload = await postUpload('invalid');
+        assert.equal(invalidUpload.status, 401); const opaqueDenial = await invalidUpload.text();
+        const admittedUpload = await postUpload('synthetic-resource-token');
+        assert.equal(admittedUpload.status, 200);
+        assert.equal((await admittedUpload.json()).uploaded, true);
+        const consumedBudget = await call('/ingress-budget', {});
+        assert.equal(consumedBudget.body.ok, false, 'generated admission and an ordinary HTTP attempt share one real budget');
+        const replayUpload = await postUpload('synthetic-resource-token');
+        assert.equal(replayUpload.status, 401); assert.equal(await replayUpload.text(), opaqueDenial);
+        const retained = await call('/retained', {});
+        assert.equal(retained.body.code, 'TRUSTED_READ_ACCESS_INACTIVE'); assert.equal(retained.body.untouched.ok, true);
 
         if (session === 'hosted') {
           for (const address of ['192.0.2.1', '2001:db8::2']) {

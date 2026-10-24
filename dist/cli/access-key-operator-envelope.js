@@ -7,7 +7,7 @@ export const ACCESS_KEY_OPERATOR_ACTIONS = [
 const ACTIONS = new Set(ACCESS_KEY_OPERATOR_ACTIONS);
 const STATUSES = new Set(["active", "expired", "revoked"]);
 const REVOCATION_CAUSES = new Set([
-    "owner", "operator", "password-reset", "owner-unlinked", "owner-deleted",
+    "owner", "operator", "password-reset", "password-change", "owner-unlinked", "owner-deleted",
     "service-user-administrator", "service-user-disabled",
 ]);
 const ACCESS_KEY_OPERATOR_LIST_PAGE_LIMIT = 100;

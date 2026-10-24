@@ -44,6 +44,12 @@ export function createEndpointFileResponseApi(ingressApi: LooseRecord, enabled: 
   });
 }
 
+/** Internal response-mode check, including retained descriptors from another invocation. */
+export function isEndpointFileAttachmentResponse(value: unknown) {
+  return value !== null && typeof value === "object"
+    && (attachmentResponseDetails.has(value) || sealedAttachmentResponseDetails.has(value));
+}
+
 export function consumeSealedEndpointFileAttachment(value: unknown): AttachmentResponseDetails | null {
   if (value === null || typeof value !== "object") return null;
   const details = sealedAttachmentResponseDetails.get(value as object) ?? null;
