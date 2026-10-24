@@ -1,4 +1,5 @@
 export { escapeHtml, html } from "./html.js";
+import { validateEndpointSessionDeclaration } from "./endpoint-session.js";
 import { validateEndpointMcpDeclarations } from "./mcp-config.js";
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 export function requireUserAuth(context, options = {}) {
@@ -36,6 +37,8 @@ export function requireAuth(first, second) {
 export function capsule(definition) {
     const normalized = normalizeCapsuleAuthDefinition(definition);
     validateCapsuleAuthRequirements(normalized);
+    for (const definition of Object.values(normalized.endpoints ?? {}))
+        validateEndpointSessionDeclaration(definition);
     validateEndpointResponseDeclarations(normalized);
     validateEndpointMcpDeclarations(normalized.endpoints);
     return {
@@ -56,6 +59,7 @@ function validateEndpointResponseDeclarations(definition) {
     }
 }
 export function endpoint(options, handler) {
+    validateEndpointSessionDeclaration({ options, handler });
     return {
         kind: "endpoint",
         options,
@@ -184,6 +188,7 @@ function field(kind) {
 }
 export function serverRuntimeModuleSource() {
     return `export { escapeHtml, html } from "sporades:html";
+const validateEndpointSessionDeclaration = ${validateEndpointSessionDeclaration.toString()};
 const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
@@ -315,6 +320,13 @@ export function capsule(definition) {
       },
     };
   }
+  if (normalized.implicitMutations !== undefined && typeof normalized.implicitMutations !== "boolean") {
+    const error = new Error("Invalid Capsule implicitMutations declaration.");
+    error.code = "INVALID_IMPLICIT_MUTATIONS";
+    error.hint = "Declare implicitMutations as a boolean: omit it or pass true to keep the 0.9.x implicit add/update compatibility surface, or false to allow only declared mutations.";
+    throw error;
+  }
+  for (const item of Object.values(normalized.endpoints ?? {})) validateEndpointSessionDeclaration(item);
   const declaredScopes = new Set(normalized.accessKeys?.scopes ?? []);
   for (const collection of [normalized.queries, normalized.mutations, normalized.endpoints, normalized.messages]) {
     for (const item of Object.values(collection ?? {})) {
@@ -330,6 +342,7 @@ export function capsule(definition) {
 }
 
 export function endpoint(options, handler) {
+  validateEndpointSessionDeclaration({ options, handler });
   return {
     kind: "endpoint",
     options,

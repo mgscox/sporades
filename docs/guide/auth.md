@@ -13,6 +13,12 @@ Email authentication requires a Capsule-owned credential form calling
 `auth.signIn("email", { email, password })`; these demonstration buttons do not
 provide that form. Campfire's explicit email fixture flow is separate.
 
+Email sign-up registers the current guest identity once. An identity already
+linked through email, OAuth, or local simulation receives `REGISTRATION_DENIED`
+without changing its profile, credentials, Teams or Session. Signup cannot add
+another email credential or change an account's email. Supported OAuth provider
+linking remains available through its separate sign-in flow.
+
 Follow the [auth workflows](../reference/client-auth-and-preferences.md#auth-workflows) to inspect
 configuration, configure Google, Microsoft, Apple, or Facebook sign-in, use email auth,
 [reset and change email passwords](../reference/client-auth-and-preferences.md#reset-or-change-an-email-password),
@@ -98,11 +104,12 @@ never grants that authority by itself. Use `ctx.auth.userId` as the actor and
 Session from named API access.
 
 Credential checks snapshot successful admission. Rotation, revocation, expiry,
-password reset, owner unlink, or owner deletion blocks later checks but does not
-cancel work already admitted. A current-user Job safely retains the admitted
-user and named Credential provenance across restart and retry, without storing
-the bearer secret or its grants. Resource and Team authorization is still
-evaluated from current state when the Job runs.
+password reset, a browser password change (which retires the account's current
+Access keys with the `password-change` cause), owner unlink, or owner deletion
+blocks later checks but does not cancel work already admitted. A current-user
+Job safely retains the admitted user and named Credential provenance across
+restart and retry, without storing the bearer secret or its grants. Resource and
+Team authorization is still evaluated from current state when the Job runs.
 
 For private File reads, opt in separately with `files.accessKeys.read`; endpoint
 guards do not enable File Bearer access. For operational retirement, use the

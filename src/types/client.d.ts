@@ -114,15 +114,29 @@ export type AuthApi = {
   sessionToken(): string | null;
   get(): Promise<SporadesResult<AuthResult>>;
   subscribe(listener: (state: AuthObserverState) => void): Subscription;
+  /** Register the current guest identity once. Linked identities receive REGISTRATION_DENIED; signup cannot add credentials or change their email. */
   signUp(provider: "email", credentials: EmailCredentials, options?: RegistrationOptions): Promise<SporadesResult>;
+  /** Email signup requires a current guest Session; supported provider linking uses signIn. */
   signUp(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
+  /**
+   * Email sign-in preserves caller/trusted Hosted address failure gates and admits at most
+   * 120 verification attempts per runtime process per fixed 60-second window. Failures
+   * from another caller against this email alone cannot veto a valid password.
+   */
   signIn(provider: "email", credentials: EmailCredentials, options?: RegistrationOptions): Promise<SporadesResult>;
   signIn(provider: string, credentials?: unknown, options?: RegistrationOptions): Promise<SporadesResult>;
   /** Verify the current linked identity for one declared purpose. OAuth returns the observable redirect URL; neither form returns a bearer or proof handle. */
   reauthenticate(provider: "email", credentials: EmailCredentials, purpose: string): Promise<SporadesResult<{ ok: true; purpose: string; expiresAt: string } | { url: string }>>;
   reauthenticate(provider: string, credentials: unknown, purpose: string): Promise<SporadesResult<{ ok: true; purpose: string; expiresAt: string } | { url: string }>>;
   signOut(): Promise<SporadesResult<{ ok: boolean }>>;
-  /** Change the signed-in email credential after verifying its current password. */
+  /**
+   * Change the signed-in email credential after verifying its current password.
+   * A successful change revokes every Session of the account — including this
+   * browser's — plus its reauthentication proofs, outstanding Reset codes and
+   * current human-owned Access keys, so fresh sign-in is required afterwards; the
+   * reply keeps the `{ ok: true }` shape and the SDK publishes signed-out state.
+   * Retired sibling connections retain origin-aware sign-in provider metadata.
+   */
   setPassword(email: string, currentPassword: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
   /**
    * Ask the runtime to mail a password reset link.
@@ -139,7 +153,8 @@ export type AuthApi = {
   verifyPasswordResetCode(code: string): Promise<SporadesResult<{ email: string }>>;
   /**
    * Spend a Reset code and set the new password. This does not sign the browser
-   * in: sign in with the new password afterwards.
+   * in: sign in with the new password afterwards. Clears only this email's aggregate
+   * sign-in risk; caller, trusted-address and process verification budgets remain in force.
    */
   confirmPasswordReset(code: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
 };
@@ -327,7 +342,7 @@ export type TeamApplicationRoleChanges = { add: string[]; remove: string[] };
 /** Built-in current-user Team operations over the standard client transport. */
 export type TeamsApi = {
   list(): Promise<SporadesResult<TeamsListResult>>;
-  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
+  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. Subject to the Capsule's atomic teams.admitCreate policy when declared. */
   create(name: string): Promise<SporadesResult<TeamMutationResult>>;
   /** Renames an explicitly identified Team administered by the current user. */
   rename(teamId: string, name: string): Promise<SporadesResult<TeamMutationResult>>;
@@ -612,7 +627,7 @@ export type SporadesSvelteStores = {
 };
 
 export type AccessKeyStatus = "active" | "expired" | "revoked";
-export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled";
+export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "password-change" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled";
 export type AccessKeyErrorCode =
   | "UNAUTHENTICATED"
   | "FORBIDDEN"

@@ -22,6 +22,15 @@ Changes since v0.9.38.
 
 ## Unreleased
 
+### 🔒 Security
+
+- Remove the runtime-owned `ctx.env` browser query (#289). Query clients,
+  including Anonymous Sessions, could subscribe to the undeclared `ctx.env`
+  name and receive the entire server environment. That name now follows the
+  ordinary unknown-query response and returns no environment data, while
+  `ctx.env` stays available to trusted server handlers. A Capsule that declares
+  its own query with that name keeps the normal declared-query contract.
+
 ### 📦 Packaging
 
 - Upgrade the default Capsule Base image to `0.3.0-node24-alpine`, using Node
@@ -34,6 +43,19 @@ Changes since v0.9.38.
 
 ### 🚀 Features
 
+- Let Capsules opt out of implicit table mutations (#292). Declaring
+  `implicitMutations: false` bounds the mutation surface to explicitly declared
+  names: every undeclared name answers the ordinary unknown-mutation refusal
+  before context middleware, any fallback write, mutation hooks, or success
+  effects such as the deferred query rebroadcast. Omitting the flag or passing
+  `true` keeps 0.9.x behavior, where undeclared names that describe a table
+  (`addNote`, `updateNoteText`) insert or update rows under their fallback
+  semantics. Declared mutations, server `ctx.db`, implicit table queries and
+  table ACLs keep their behavior, and a bundled declared mutation matching the
+  generated scaffold `add…` body stops riding the implicit path while the
+  surface is retired. Present non-boolean values are rejected at authoring and
+  at Capsule startup (`INVALID_IMPLICIT_MUTATIONS`). The flag is not business
+  quota enforcement; declare checks in mutations, ACL rules, or hooks.
 - Add read-only `sporades host db list|dump|query` for running Hosted Capsules (#285).
   It runs the Host helper over the operator's existing SSH access and the
   generated Bundle's one-shot action seam, opens the Capsule SQLite file

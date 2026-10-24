@@ -81,7 +81,8 @@ The route accepts `POST` bodies of up to 16 KiB as `application/csp-report`,
 metadata and mismatched `Origin` headers with 403, other methods with 405,
 other media types with 415, oversized bodies with 413 and malformed or
 non-CSP reports with 400, all with empty `no-store` responses. A Reporting API
-batch forwards at most five `csp-violation` entries. Each forwarded event is a
+batch considers at most five `csp-violation` entries for delivery, subject to the
+public outbound limits below. Each forwarded event is a
 `warning` envelope with the `csp` logger and the message
 `CSP violation: <directive> blocked <source>`, tagged with Capsule, `surface: csp`,
 directive, blocked source and disposition. The blocked source is reduced to an
@@ -89,8 +90,11 @@ directive, blocked source and disposition. The blocked source is reduced to an
 or `unknown`. Document and referrer URLs, source files, line numbers, script samples,
 the original policy, nonces and client addresses are discarded.
 
-Reports share the collection budget (120 reservations per minute, eight
-active), apply `sampleRate`, and are best effort. A missing DSN leaves the route
+Reports share public HTTP ingress admission (120 attempts per 60 seconds, eight
+active requests) and the public outbound lane with browser errors and analytics
+(60 sends per 60 seconds, four active sends). Each forwarded CSP violation
+consumes one outbound reservation, including each event in a batch. Reports
+apply `sampleRate` and are best effort. A missing DSN leaves the route
 accepting and dropping reports with 204. Report endpoints are unauthenticated
 by design, so anyone can submit synthetic violations; treat these events as
 signals rather than evidence.
@@ -169,10 +173,25 @@ is forwarded for analytics. Untrusted forwarding headers are ignored. Outside a
 verified Hosted boundary, no client IP is forwarded; provider visitor/location
 counts may consequently reflect the collector rather than individual visitors.
 
-Delivery is best effort, with no persistent queue or retries. Each runtime
-admits at most 120 collection/delivery reservations per minute and eight active
-reservations; browser error delivery uses a second reservation inside the
-request. The browser also caps errors at 20 per minute. Request bodies are
+Delivery is best effort, with no queue or retries. Each runtime process has
+three separate budgets:
+
+| Budget | Concurrent limit | Limit per 60-second fixed window |
+| --- | --- | --- |
+| Public HTTP ingress (collection and CSP routes) | 8 requests | 120 attempts, including invalid bodies |
+| Public outbound (browser errors, CSP violations and analytics) | 4 sends | 60 sends |
+| Trusted server-error outbound | 4 sends | 60 sends |
+
+Windows use monotonic time and a shared process-local epoch. Each event is charged
+once in its outbound lane; ingress is charged once per admitted HTTP request.
+Invalid or held public requests cannot consume trusted delivery capacity, and
+client/CSP events retain their public classification through capture and delivery.
+Together the outbound lanes admit at most eight active sends and 120 sends per
+fixed window. Completion, failure, timeout or shutdown releases concurrency
+without refunding the window count; process restart resets all budgets. Fixed
+windows can allow bursts across a boundary. Saturated outbound lanes drop events
+without queuing; ingress saturation returns 429. The browser also caps errors at
+20 per minute. Request bodies are
 limited to 16 KiB, messages to 2,048 characters and stacks to 20 frames. Reads and outbound
 requests have two-second timeouts. Saturation drops errors or returns 429 for
 collection. Provider failures and responses stay opaque and never alter Capsule

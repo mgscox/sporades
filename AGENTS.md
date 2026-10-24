@@ -7,7 +7,7 @@
 
 ### Public and generated contracts
 
-- Flag a public runtime, browser or trusted API, type, generated bundle or CLI, or documentation change that is not updated in the corresponding shipped surfaces. Safe path: update source, generated artifacts, canonical docs, and focused parity tests together.
+- Flag a public runtime, browser or trusted API, type, CLI, or documentation change that is not updated in the corresponding source, public types, canonical docs, and focused parity tests. Run `npm run build` locally to verify generated parity, but never commit `dist/` or `bin/` in a PR. CI regenerates and commits these tracked directories on main after merge. See [generated artifacts](docs/agents/generated-artifacts.md) for recovery and the direct-to-main release flow.
 
 ### Authorization and sensitive capability boundaries
 

@@ -1,8 +1,10 @@
+import { createHostFixture, hostFixtureConfig, removeHostFixture } from './support/host-fixture-root.js';
+import { withFixtureUmask } from './support/fixture-umask.js';
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {execFile,spawnSync} from 'node:child_process';
 import {promisify} from 'node:util';
-import {mkdir,mkdtemp,writeFile,readFile,rm,chmod,symlink} from 'node:fs/promises';
+import {mkdir,writeFile,readFile,rm,chmod,symlink} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {assertObservabilityResources,OBSERVABILITY_IMAGES,observabilityCompose,observabilityProject,observabilityDirectory,readObservabilityState,observabilityMonitorUnits,provisionObservability} from '../dist/cli/host-observability.js';
@@ -12,7 +14,15 @@ const run=promisify(execFile);
 const root=process.cwd();
 const cli=path.join(root,'bin/sporades.js');
 const h=dir=>({alias:'local',domain:'ops.example.test',scheme:'https',remoteRoot:dir});
-async function fixture(fn){await mkdir(path.join(root,'.sporades'),{recursive:true}); const dir=await mkdtemp(path.join(root,'.sporades/observe-test-'));try{await fn(dir);}finally{await rm(dir,{force:true,recursive:true});}}
+async function fixture(fn) {
+ const dir=await createHostFixture('sporades-observe-',{privateAncestors:true});
+ try {
+  await withFixtureUmask(async()=>{
+   await writeFile(path.join(dir,'package.json'),'{"type":"module"}');
+   await fn(dir);
+  });
+ } finally { await removeHostFixture(dir); }
+}
 function state(){return {version:1,enabled:true,ready:false,disclosed:false,secrets:Object.fromEntries(['database','umamiDatabase','django','app','errorsPassword','analyticsPassword','token'].map((n,i)=>[n,String(i).repeat(64)]))};}
 test('observability resource refusal is bounded and fails closed for missing probes',()=>{
   assert.doesNotThrow(()=>assertObservabilityResources(2,2*1024**3,20*1024**3));
@@ -54,7 +64,7 @@ test('unconfigured provisioning is inert',()=>fixture(async dir=>{
  assert.equal((await provisionObservability(h(dir),{})).connected,false);
 }));
 test('CLI registration and dedicated ops connect seal custom env names without disclosing provider values',()=>fixture(async dir=>{
- const env={...process.env,SPORADES_CONFIG_DIR:path.join(dir,'config')};
+ const env={...process.env,SPORADES_CONFIG_DIR:hostFixtureConfig(dir)};
  const fake=path.join(dir,'tools');await mkdir(fake);
  const ledger=path.join(dir,'requests.jsonl');
  const values={ERROR_DSN:'https://abcdef@errors.ops.example.test/42',ANALYTICS_ENDPOINT:'https://analytics.ops.example.test/api/send',ANALYTICS_WEBSITE_ID:'11111111-1111-4111-a111-111111111111'};
@@ -88,7 +98,7 @@ test('CLI registration preserves external provider env without contacting unavai
   ['external analytics endpoint',{CUSTOM_ENDPOINT:'https://analytics.external.example/api/send',OTHER_SECRET:'preserved'},['--on','ops']],
   ['external analytics website',{CUSTOM_SITE:'22222222-2222-4222-a222-222222222222',OTHER_SECRET:'preserved'},['--on','ops']],
  ])await t.test(name,()=>fixture(async dir=>{
-  const env={...process.env,SPORADES_CONFIG_DIR:path.join(dir,'config')};
+  const env={...process.env,SPORADES_CONFIG_DIR:hostFixtureConfig(dir)};
   const fake=path.join(dir,'tools');await mkdir(fake);
   const ledger=path.join(dir,'requests.jsonl');
   await writeFile(path.join(fake,'ssh'),`#!/usr/bin/env node\nimport fs from 'node:fs';\nlet input='';for await(const c of process.stdin)input+=c;const r=JSON.parse(input);fs.appendFileSync(${JSON.stringify(ledger)},JSON.stringify(r)+'\\n');process.stdout.write(JSON.stringify(r.action==='host.services.connect'?{ok:false,data:null,error:{message:'Host observability operation failed',hint:'Disposable services are unavailable.'}}:{ok:true,data:{registered:true,capsule:{subname:r.capsule?.subname}},error:null}));\n`,{mode:0o755});
@@ -164,11 +174,10 @@ test('Caddy imports observability routes through the managed glob with automatic
  timeout:120_000,
 },()=>fixture(async dir=>{
  const {renderObservabilityRoutes,OBSERVABILITY_ROUTE_FILE}=await import('../dist/cli/host-observability.js');
- const relative=path.relative(root,dir);
- await writeFile(path.join(dir,'Caddyfile'),`{\n admin off\n}\nimport /workspace/${relative}/*.caddy\n`);
+ await writeFile(path.join(dir,'Caddyfile'),`{\n admin off\n}\nimport /fixture/*.caddy\n`);
  for(const ports of [{errors:52281,analytics:52282},null]){
   await writeFile(path.join(dir,OBSERVABILITY_ROUTE_FILE),renderObservabilityRoutes(h(dir),ports));
-  const result=spawnSync('docker',['run','--rm','--name',`sporades-ken-observability-caddy-${process.pid}`,'--network','none','--mount',`type=bind,source=${root},target=/workspace,readonly`,'caddy:2.10.2-alpine','caddy','adapt','--config',`/workspace/${relative}/Caddyfile`,'--adapter','caddyfile'],{encoding:'utf8',timeout:55_000});
+  const result=spawnSync('docker',['run','--rm','--name',`sporades-ken-observability-caddy-${process.pid}`,'--network','none','--mount',`type=bind,source=${dir},target=/fixture,readonly`,'caddy:2.10.2-alpine','caddy','adapt','--config','/fixture/Caddyfile','--adapter','caddyfile'],{encoding:'utf8',timeout:55_000});
   assert.equal(result.status,0,result.stderr);
   const config=JSON.stringify(JSON.parse(result.stdout));
   assert.match(config,/errors\.ops\.example\.test/);assert.match(config,/analytics\.ops\.example\.test/);
@@ -180,7 +189,7 @@ test('Caddy imports observability routes through the managed glob with automatic
 test('shipped helper dispatch keeps dormant services inert and rejects an unretained Host lock',()=>fixture(async dir=>{
  const remoteRoot=path.join(dir,'host');
  const request={action:'host.services.status',host:h(remoteRoot)};
- const env={...process.env,SPORADES_CONFIG_DIR:path.join(dir,'config'),SPORADES_TEST_FLOCK_PATH:path.join(root,'test/support/exec-flock.py')};
+ const env={...process.env,SPORADES_CONFIG_DIR:hostFixtureConfig(dir),SPORADES_TEST_FLOCK_PATH:path.join(root,'test/support/exec-flock.py')};
  const helper=path.join(root,'bin/sporades-host-helper.js');
  const invoke=extra=>JSON.parse(spawnSync(process.execPath,[helper],{input:JSON.stringify(request),env:{...env,...extra},encoding:'utf8'}).stdout);
  const dormant=invoke({});assert.equal(dormant.ok,true);assert.deepEqual(dormant.data,{installed:false,enabled:false});

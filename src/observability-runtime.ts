@@ -80,51 +80,69 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
   }
   const stopped = new AbortController();
   const pending = new Set<Promise<void>>();
-  let active = 0, count = 0, windowStart = performance.now();
-  const enter = () => {
-    const now = performance.now();
-    if (now - windowStart >= 60000) { count = 0; windowStart = now; }
-    if (stopped.signal.aborted || active >= 8 || count >= 120) return false;
-    active++; count++; return true;
+  // All lanes use one process-local fixed-window epoch, but never share capacity.
+  const epoch = performance.now();
+  const budget = (maxActive: number, maxCount: number) => {
+    let active = 0, count = 0, window = 0;
+    return () => {
+      const currentWindow = Math.floor((performance.now() - epoch) / 60000);
+      if (currentWindow !== window) { count = 0; window = currentWindow; }
+      if (stopped.signal.aborted || active >= maxActive || count >= maxCount) return null;
+      active++; count++;
+      let released = false;
+      return () => { if (!released) { released = true; active--; } };
+    };
   };
+  const acquireIngress = budget(8, 120);
+  const acquirePublicDelivery = budget(4, 60);
+  const acquireServerDelivery = budget(4, 60);
   const safeText = (value: unknown, limit: number) => redactDiagnosticText(typeof value === "string" ? value : "Error", env).slice(0, limit);
   const send = async (url: URL, body: string, headers: Record<string, string>) => {
     const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped.signal, AbortSignal.timeout(2000)]) });
     // Provider bodies/headers never flow back to the browser or logs.
     await response.body?.cancel();
   };
+  const transmit = (acquire: typeof acquirePublicDelivery, url: URL, body: string, headers: Record<string, string>) => {
+    const release = acquire();
+    if (!release) return Promise.resolve();
+    const task = send(url, body, headers).finally(() => { release(); pending.delete(task); });
+    pending.add(task);
+    return task;
+  };
   const eventBase = (platform: string) => ({
     event_id: randomUUID().replaceAll("-", ""), timestamp: Date.now() / 1000, platform,
     environment: errors.environment, release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : undefined,
   });
-  const deliver = (event: RecordValue) => {
+  const deliver = (event: RecordValue, acquire: typeof acquirePublicDelivery) => {
     const payload = JSON.stringify(event);
     const body = `${JSON.stringify({ event_id: event.event_id, dsn })}\n${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}\n${payload}\n`;
-    if (!sentryUrl || !enter()) return;
-    const task = send(sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {}).finally(() => { active--; pending.delete(task); });
-    pending.add(task);
+    if (!sentryUrl) return;
+    void transmit(acquire, sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {});
+  };
+  const captureError = (error: any, surface: string, address: string | null | undefined, acquire: typeof acquirePublicDelivery) => {
+    try {
+      if (!sentryUrl || error?.sporadesAuthDenialLogData || error?.sporadesAclDenialLogData
+        || expectedDiagnosticErrorCodes.includes(error?.code)
+        || Math.random() >= (errors.sampleRate ?? 1)) return;
+      const frames = typeof error?.stack === "string" ? error.stack.slice(0, 8192).split("\n").slice(1, 21).flatMap((line: string) => {
+        const match = line.match(/^\s*at\s+(?:(.*?)\s+\()?(.+?):(\d+):(\d+)\)?$/);
+        return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
+      }).reverse() : [];
+      const event = {
+        ...eventBase(surface === "client" ? "javascript" : "node"), level: "error",
+        tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
+        exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
+        ...(address ? { user: { ip_address: address } } : {}),
+      };
+      deliver(event, acquire);
+    } catch { /* Error reporting must never replace the original failure. */ }
   };
   return {
     enabled: !!analyticsUrl || !!(sentryUrl && errors.client),
     clientErrors: !!(sentryUrl && errors.client),
     analytics: !!analyticsUrl,
     capture(error: any, surface: string, address?: string | null) {
-      try {
-        if (!sentryUrl || error?.sporadesAuthDenialLogData || error?.sporadesAclDenialLogData
-          || expectedDiagnosticErrorCodes.includes(error?.code)
-          || Math.random() >= (errors.sampleRate ?? 1)) return;
-        const frames = typeof error?.stack === "string" ? error.stack.slice(0, 8192).split("\n").slice(1, 21).flatMap((line: string) => {
-          const match = line.match(/^\s*at\s+(?:(.*?)\s+\()?(.+?):(\d+):(\d+)\)?$/);
-          return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
-        }).reverse() : [];
-        const event = {
-          ...eventBase(surface === "client" ? "javascript" : "node"), level: "error",
-          tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
-          exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
-          ...(address ? { user: { ip_address: address } } : {}),
-        };
-        deliver(event);
-      } catch { /* Error reporting must never replace the original failure. */ }
+      captureError(error, surface, address, acquireServerDelivery);
     },
     /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
     captureCspViolation(violation: CspViolation) {
@@ -134,7 +152,7 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
           ...eventBase("javascript"), level: "warning", logger: "csp",
           message: `CSP violation: ${violation.directive} blocked ${violation.blocked}`,
           tags: { capsule: safeText(config.name ?? "capsule", 128), surface: "csp", csp_directive: violation.directive, csp_blocked: violation.blocked, ...(violation.disposition ? { csp_disposition: violation.disposition } : {}) },
-        });
+        }, acquirePublicDelivery);
       } catch { /* Reports are best effort. */ }
     },
     close() { stopped.abort(); },
@@ -142,7 +160,7 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
     async collect(input: RecordValue, origin: string, request: IncomingMessage, database: RecordValue) {
       if (input.type === "error") {
         if (!sentryUrl || !errors.client || typeof input.message !== "string" || (input.stack !== undefined && typeof input.stack !== "string")) throw new Error();
-        this.capture({ message: input.message, stack: input.stack }, "client", trustedClientAddress(database, request));
+        captureError({ message: input.message, stack: input.stack }, "client", trustedClientAddress(database, request), acquirePublicDelivery);
         return;
       }
       if (!analyticsUrl || input.type !== "pageview") throw new Error();
@@ -155,10 +173,9 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
       const body = analytics.provider === "umami"
         ? { type: "event", payload: { website, hostname: url.hostname, url: url.pathname, referrer } }
         : { name: "pageview", domain: website, url: url.href, referrer };
-      await send(analyticsUrl, JSON.stringify(body), headers);
+      await transmit(acquirePublicDelivery, analyticsUrl, JSON.stringify(body), headers);
     },
-    enter,
-    leave() { active--; },
+    acquireIngress,
   };
 }
 
@@ -184,7 +201,8 @@ export async function routeCollection(database: RecordValue, request: IncomingMe
     const allowed = database.securityPolicy?.cors?.publicOrigin;
     if (allowed && ![allowed, ...(database.securityPolicy.cors.publicAliases ?? [])].includes(origin)) { reply(403); return true; }
   } catch { reply(403); return true; }
-  if (!database.observability.enter()) { reply(429); return true; }
+  const release = database.observability.acquireIngress();
+  if (!release) { reply(429); return true; }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await Promise.race([
@@ -197,7 +215,7 @@ export async function routeCollection(database: RecordValue, request: IncomingMe
     await database.observability.collect(input, origin, request, database);
     reply(204);
   } catch { if (!response.destroyed) reply(400); }
-  finally { clearTimeout(timer); database.observability.leave(); }
+  finally { clearTimeout(timer); release(); }
   return true;
 }
 
@@ -250,7 +268,8 @@ async function routeCspReport(database: RecordValue, request: IncomingMessage, r
   } catch { return reply(403); }
   const type = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
   if (!CSP_REPORT_TYPES.includes(type)) return reply(415);
-  if (!database.observability.enter()) return reply(429);
+  const release = database.observability.acquireIngress();
+  if (!release) return reply(429);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await Promise.race([
@@ -266,5 +285,5 @@ async function routeCspReport(database: RecordValue, request: IncomingMessage, r
     for (const violation of violations) database.observability.captureCspViolation(violation);
     reply(204);
   } catch (error: any) { if (!response.destroyed) reply(error?.status === 413 ? 413 : 400); }
-  finally { clearTimeout(timer); database.observability.leave(); }
+  finally { clearTimeout(timer); release(); }
 }

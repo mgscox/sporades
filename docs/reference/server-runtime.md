@@ -23,9 +23,11 @@ measured no-policy latency budget. No declaration preserves existing routing.
 ## Capsule rate limits
 
 Every Capsule handler context (`ctx` in queries, mutations, endpoints, and
-Jobs) exposes synchronous `ctx.rateLimit(key, { limit, windowMs })`. Calls with
-the same key and parameter tuple share a counter across those handler types in
-one runtime:
+Jobs) exposes synchronous `ctx.rateLimit(key, { limit, windowMs })`.
+Capsule-principal [File ingress admission](./files-and-realtime.md#charging-a-signed-resource-before-staging)
+exposes the same method during its active callback and signal lifetime. Calls
+with the same key and parameter tuple share a counter across admission and
+those handler types in one runtime:
 
 ```ts
 const admission = ctx.rateLimit("password-reset", {
@@ -48,7 +50,8 @@ at most 1024 UTF-8 bytes. `limit` and `windowMs` must be positive safe integers,
 `limit` must be below `Number.MAX_SAFE_INTEGER`, and `windowMs` cannot exceed
 24 hours.
 
-The in-memory table is shared by handler contexts in a runtime and holds at
+The in-memory table is shared by handlers and Capsule-principal File ingress
+admission in a runtime and holds at
 most 10,000 buckets with deterministic least-recently-used eviction. Its
 counters are separate from HTTP request admission and authentication's
 existing email and Session counters. Transaction rollback does not refund a
@@ -365,6 +368,55 @@ mutations: {
 Throw normal errors for user-facing failures. When an error has a `hint`
 property, Sporades includes it in structured error output.
 
+### Opt Out of Implicit Table Mutations
+
+Besides the names declared under `mutations`, the runtime answers undeclared
+mutation names that describe a table. `addNote` inserts a row into `notes`: the
+`ownerId` field becomes the caller's identity, a `text` field takes the first
+argument, the remaining fields take positional arguments in declaration order or
+their declared defaults, and the insert still runs the table's `insert` ACL
+rule. `updateNoteText` updates one row's `text` field (`update<Table><Field>`):
+on a table with an `ownerId` field only the caller's own row is touched, and the
+table's `update` ACL rule still applies. These implicit entries answer
+`{ ok: true, error: null }` without row data and are the 0.9.x compatibility
+surface. They stay enabled unless the Capsule opts out:
+
+```ts
+export default capsule({
+  implicitMutations: false,
+  // ...
+});
+```
+
+With `implicitMutations: false`, every mutation name without a declared handler
+answers the ordinary `Unknown mutation: <name>` result — the same bounded
+refusal the runtime gives a name it cannot resolve at all — before context
+middleware runs, before the transaction opens, before any fallback write, before
+before- and after-mutation hooks, and before anything that depends on a
+successful write, including the deferred query rebroadcast. Undeclared names
+therefore leave no write, no hook effect, and no success notification behind.
+
+Omitting the flag or passing `true` keeps that 0.9.x surface unchanged; `false`
+retires only the dispatch surface. Nothing else moves: declared mutations keep
+their context middleware, hooks, table ACLs, reauthentication and transaction
+behavior; a declared handler preserves `false`, `0`, and `""` results, returns a
+null data payload for `null` or `undefined`, and never falls back to an implicit
+write; a declared name that
+resembles an `add…`/`update…` fallback name runs the declared handler; server
+code keeps `ctx.db`; and implicit table queries keep answering. One detail
+shifts: a bundled declared mutation whose source matches the generated scaffold
+`add…` body — the shape older `sporades create` emitted — normally travels
+through the implicit path while that surface is enabled, and travels as the
+declaration it is once the Capsule opts out.
+
+Present values must be booleans; anything else — including `"false"` and `null`
+— fails at authoring and at Capsule startup (`INVALID_IMPLICIT_MUTATIONS`)
+rather than half-applying at runtime. The flag bounds mutation dispatch only.
+It is not a substitute for declaring a check: place business rules inside
+declared mutations, in table ACL rules, or in a before-mutation hook, all of
+which still see every declared write. It changes nothing about queries —
+implicit table queries remain available — and there is no per-table switch.
+
 ### Idempotent Inserts Against Declared Uniqueness
 
 When a mutation may be retried or raced by another request, declare the exact
@@ -433,9 +485,9 @@ requires no scope. Credential lists are OR requirements and scope lists are AND
 requirements. A permitted Session satisfies declared scope requirements. A
 guarded Custom endpoint also accepts a scoped Access key through
 `Authorization: Bearer spk_1_<selector>_<verifier>` when `"access-key"` is an
-allowed credential kind. Queries, mutations, App messages, and unwrapped
-Custom endpoints retain their existing Session behavior; an unwrapped endpoint
-owns its own `Authorization` schemes and Sporades does not interpret them.
+allowed credential kind. Queries, mutations, App messages, and ordinary Custom
+endpoints retain their existing Session behavior; an unwrapped endpoint owns
+its own `Authorization` schemes and Sporades does not interpret them.
 
 Declare the Capsule's concrete, case-sensitive scope vocabulary once in
 `capsule({ accessKeys: { scopes } })`. Declarations cannot contain `*`. A guard
@@ -734,6 +786,13 @@ endpoint({ method: "POST", path: "/billing/webhook" }, (ctx) => {
   }
 });
 ```
+
+`ctx.env` exists only in trusted server code. No runtime-owned query, App
+message or browser API returns it, and a client request for an undeclared
+query name such as `ctx.env` receives the ordinary unknown-query error with no
+environment data. A Capsule that needs a browser to know about configuration
+declares its own query and returns only a bounded, non-secret value through the
+normal declaration, authorization and result contract.
 
 Restart a running Dev session after importing or setting Sealed Server env.
 
@@ -1093,8 +1152,8 @@ mutations: {
 ```
 
 `ctx.privileged.run(...)` is available only in trusted server contexts: queries,
-mutations, Custom endpoints, App messages, context middleware, and supported
-mutation hooks. The derived `privilegedCtx` exposes `auth.userId` as
+mutations, ordinary Custom endpoints, App messages, context middleware, and
+supported mutation hooks. The derived `privilegedCtx` exposes `auth.userId` as
 `"__privileged__"`, carries `privilegedCtx.signal`, and may use approved
 Capsule DB and File operations through the normal runtime boundaries.
 
@@ -1157,7 +1216,7 @@ export default capsule({
 });
 ```
 
-Endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.log`,
+Ordinary endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.log`,
 `ctx.messages`, and `ctx.request`. `ctx.request` contains method, path, headers,
 query parameters, parsed `body` data, and immutable exact `bodyBytes`.
 
@@ -1169,6 +1228,57 @@ contains the parsed value. The byte view is iterable and supports `at()`;
 Exact bytes are server-only and never automatically logged or added to HTTP
 errors, CLI output, or client transport results. Do not log the copy merely
 because an integration library accepts it.
+
+### Explicitly sessionless public endpoints
+
+For a stateless public probe, opt in with `session: "none"`:
+
+```ts
+import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "status",
+  endpoints: {
+    health: endpoint({ method: "GET", path: "/health", session: "none" }, () => ({
+      status: 200,
+      body: { ok: true },
+    })),
+  },
+});
+```
+
+Omitting `session` preserves ordinary endpoint behavior, including creating an
+Anonymous User and Session for a tokenless request. The only accepted explicit
+value is `"none"`. This is an endpoint declaration; it does not change the
+runtime-owned health/probe routes or provider callbacks.
+
+The handler receives `SessionlessEndpointContext`: only `app`, `env`, `log`,
+`rateLimit`, `signal` and the ordinary bounded `request` (including exact
+`bodyBytes`). `endpointFor(schema)` supports the same declaration without
+adding schema or Database authority. There is no Auth or Credential identity,
+Database, resource, File, Team, billing, Job, mail, AI, message, Access-key,
+Service User, server-auth, lifecycle or Privileged capability. `env` is a readonly
+snapshot of string Server env values. Server env remains trusted server input;
+do not return secrets or incoming credential values.
+
+**General Capsule context middleware is skipped for sessionless endpoints.**
+It expects the ordinary authority-bearing context and could add capabilities.
+These handlers run without the ordinary identity-bound endpoint transaction.
+The runtime does not resolve supplied Session, cookie or Access-key credentials,
+create or touch auth records, record credential usage, or automatically upgrade
+the request to an identity. Credential headers remain ordinary request data and
+confer no authority.
+
+HTTP security and request-admission policy still run before the handler. Body
+limits, JSON parsing, response validation and opaque handler errors use the
+ordinary HTTP mechanisms. `signal` tracks client cancellation; `rateLimit`
+uses the existing bounded process-local Capsule limiter with no transaction
+refunds, and `log` uses the existing runtime logger and payload bounds.
+
+Sessionless endpoints cannot use `requireAuth` wrappers, multipart ingress,
+File-attachment responses, MCP exposure or runtime-owned provider callbacks.
+Declarations are checked in authoring helpers and again at runtime startup and
+dispatch. Use an ordinary endpoint for identity-bound or stateful integrations.
 
 ### Expose an endpoint to MCP clients
 

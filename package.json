@@ -104,7 +104,7 @@
   },
   "allowScripts": {
     "fsevents": true,
-    "infern": true,
+    "inferno": true,
     "esbuild": true
   },
   "overrides": {

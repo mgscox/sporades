@@ -78,6 +78,7 @@
       "src/email-events-config.ts",
       "src/email-events-runtime.ts",
       "src/endpoint-file-response.ts",
+      "src/endpoint-session.ts",
       "src/file-ingress-runtime.ts",
       "src/file-policy.ts",
       "src/file-storage-runtime.ts",
@@ -153,7 +154,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "cb894fee06d799bf4610a7bb1ac19bb972ed52e1ee50cc452b6e1d76a90138fe"
+    "digest": "8f06f674c47501a68a009aeea62c8aa04d05ec90c72b6c0997082d4fe83d0ee8"
   },
   "outputs": {
     "files": [
@@ -435,6 +436,10 @@
       "dist/endpoint-file-response.d.ts.map",
       "dist/endpoint-file-response.js",
       "dist/endpoint-file-response.js.map",
+      "dist/endpoint-session.d.ts",
+      "dist/endpoint-session.d.ts.map",
+      "dist/endpoint-session.js",
+      "dist/endpoint-session.js.map",
       "dist/file-ingress-runtime.d.ts",
       "dist/file-ingress-runtime.d.ts.map",
       "dist/file-ingress-runtime.js",
@@ -591,10 +596,6 @@
       "dist/service-users-runtime.d.ts.map",
       "dist/service-users-runtime.js",
       "dist/service-users-runtime.js.map",
-      "dist/stored-row-decoding.d.ts",
-      "dist/stored-row-decoding.d.ts.map",
-      "dist/stored-row-decoding.js",
-      "dist/stored-row-decoding.js.map",
       "dist/stored-value-coding.d.ts",
       "dist/stored-value-coding.d.ts.map",
       "dist/stored-value-coding.js",
@@ -685,6 +686,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "da25affe4ace5efdcc04049862e489ce2901caa41b6a9d583f2e36af67c5afcf"
+    "digest": "633385af0f77f6799a495235cfa33e2621b26fa0b8dbbf57543d2838464297b0"
   }
 }

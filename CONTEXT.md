@@ -324,10 +324,15 @@ A string stored in `localStorage` on the client and sent on the WebSocket connec
 Session records include lifecycle metadata and expire after 30 days by default. Missing, invalid, or expired tokens resolve to a fresh Anonymous session. Email sign-up and sign-in rotate the current token; provider sign-in refreshes the current token during the OAuth callback.
 _Avoid_: auth token, JWT
 
-Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
+Missing or invalid ordinary endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
+
+**Sessionless endpoint**:
+An explicitly opted-in Custom endpoint declared with `session: "none"`. It receives only `app`, `env`, `log`, `rateLimit`, `signal` and the bounded ordinary `request`. It skips general Capsule context middleware, credential resolution and the identity-bound endpoint transaction, creating or touching no auth state. Auth guards, multipart ingress, File attachment responses, MCP exposure and runtime-owned provider callbacks are incompatible. HTTP security, admission, body bounds and response/error handling still apply. Omitting `session` preserves ordinary Session behavior.
+_Avoid_: guest endpoint, anonymous Session mode
 
 **Linked account**:
 A real authentication method, such as email or a supported OAuth provider, linked to an existing Anonymous session. The user's data follows them because the auth method is linked to the existing account, not a new one.
+Email sign-up is a single guest-to-linked transition. Already-linked identities receive `REGISTRATION_DENIED`; signup cannot attach another email credential or rewrite their profile. The registration transaction locks the identity and rechecks its current Session before any admission or credential writes.
 _Avoid_: upgrade, migration (those are schema concerns, not auth)
 
 **Provider identity**:
@@ -536,6 +541,10 @@ _Avoid_: wrapping every write, implicit transaction, best-effort write grouping
 The Transaction boundary owned by mutation execution for one Capsule mutation call. App-table writes from the mutation handler, generated mutation path, mutation hooks, ACL checks, and pending ACL writes share this boundary so the mutation commits or rolls back as one retryable unit.
 _Avoid_: nested app transaction, hook transaction, partial mutation commit
 
+**Implicit mutation surface**:
+The 0.9.x compatibility dispatch behind undeclared mutation names that describe a table: an `add<Noun>` name inserts into the matching table (`ownerId` becomes the caller, a `text` field takes the first argument, remaining fields take positional arguments or defaults) and an `update<Table><Field>` name updates one such field, each still passing the table's ACL rules before committing and answering `{ ok: true, error: null }` without row data. Declared mutation names always win; a Capsule's `implicitMutations: false` retires the surface so every undeclared name answers the ordinary unknown-mutation refusal before middleware, fallback writes, mutation hooks, or success effects. Omission or `true` keeps the surface; a present non-boolean value fails Capsule validation. It never touches queries, implicit table queries, or server `ctx.db`.
+_Avoid_: implicit write (over-broad), auto mutation, table shortcut
+
 **ACL rule**:
 An authorization policy declared in Capsule definition code and applied invisibly around the Sporades DB API to accept or reject app-table and file-storage operations. Capsule code continues to use normal `ctx.db` and file APIs rather than calling permission checks directly. ACLs answer whether the current actor may see or change a row or file metadata record; file-specific validation and client-facing upload choices are not ACL concerns. ACLs are allow-by-default when no matching rule is specified; a `write` ACL rule may apply to insert, update, and delete operations unless an operation-specific rule overrides it. Write ACL rules evaluate against previous and next row state where relevant.
 _Avoid_: permission helper, manual auth check, database filter
@@ -558,6 +567,10 @@ _Avoid_: Privileged server role, bypassACL API, pending-member role
 **Team Join admission policy**:
 The optional Capsule `teams.admitJoin` callback that decides whether one already validated, email-matched Join link may create a membership. Sporades invokes it under the Team lifecycle lock with the joining user as subject, the exact accepted-member count, and a Team-Join-purpose trusted read capability. Its decision, Join-link consumption, and membership insertion commit or roll back atomically; it grants no provisional membership or broader authority.
 _Avoid_: subscription hook, pending member, billing ACL exception
+
+**Team creation admission policy**:
+The opt-in Capsule `teams.admitCreate` callback for additional-Team creation through SDK and server routes. Under the actor's durable lock and transaction it receives the normalized requested name and live creator-Team count, including personal and departed Teams but excluding the candidate. Initial personal-Team bootstrap bypasses it. Its five-second, expiring read-only Capsule database view grants no writes, credentials or broader actor authority; only explicit valid allow permits creation, and failure poisons outer rollback even when caught.
+_Avoid_: membership admission, pricing rule, mutation wrapper
 
 **Destructive Team policy**:
 The opt-in `teams.authorizeDestructive` Capsule policy. Direct SDK and server Team demotion, removal, leave and deletion consult it after current authorization and final-admin checks under the exact Team lifecycle lock, in the operation transaction. A five-second, expiring read-only Capsule database view can inspect cross-owner responsibility without disclosing it to the caller. Only explicit valid allow commits; refusal poisons the enclosing transaction and stays opaque. All protected responsibility writers take server-only `ctx.teams.lockLifecycle` before app reads/writes, including explicit accepted transfers and atomic Stripe consequences. It retains the lock through outer settlement without granting userless code administrative authority. Provider work runs after commit.

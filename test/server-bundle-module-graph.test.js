@@ -240,12 +240,13 @@ import { capsule, mutation, query } from "sporades/server";
 export default capsule({
   name: "bundle-teams",
   schema: {},
-  teams: { appRoles: ["author", "reviewer"], authorizeDestructive: () => ({ allow: false }) },
+  teams: { appRoles: ["author", "reviewer"], admitCreate: (ctx, input) => ({ allow: input.currentCreatedTeamCount < 2 }), authorizeDestructive: () => ({ allow: false }) },
   queries: {
     ownTeams: query((ctx) => ctx.teams.list()),
   },
   mutations: {
     updateMemberRoles: mutation((ctx, teamId, userId, changes) => ctx.teams.updateApplicationRoles(teamId, userId, changes)),
+    createTeam: mutation((ctx, name) => ctx.teams.create(name)),
     deleteTeam: mutation((ctx, teamId) => ctx.teams.delete(teamId)),
     lockTeam: mutation((ctx, teamId) => ctx.teams.lockLifecycle(teamId, ctx.auth.userId)),
   },
@@ -715,6 +716,70 @@ async function openBundleSocket(baseUrl, origin = CAPSULE_PUBLIC_ORIGIN, request
       socket.destroy();
     },
   };
+}
+
+for (const session of ["dev", "container", "hosted"]) {
+  test(`generated ${session} bundle rejects linked signup and prevents the two-credential reset scenario`, async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-signup-transition-"));
+    let booted;
+    const sockets = [];
+    try {
+      const source = await buildBundle({ config: capsuleConfig({ __sporadesSession: session }), serverEnv: {}, serverSource: CAPSULE_SOURCE });
+      await writePublicTree(root, "<!doctype html><html><head></head><body></body></html>");
+      booted = await bootBundle({ source, dir: root, env: { SPORADES_SECURITY_SESSION: session, SPORADES_PUBLIC_ORIGIN: CAPSULE_PUBLIC_ORIGIN } });
+      const socket = await openBundleSocket(booted.baseUrl, CAPSULE_PUBLIC_ORIGIN, "capsule.example.com");
+      sockets.push(socket);
+      let sequence = 0;
+      const send = async (target, message) => {
+        const id = `signup-transition-${++sequence}`;
+        target.send({ ...message, id });
+        return target.waitFor((reply) => reply.id === id);
+      };
+      const signup = (target, email) => send(target, { type: "auth.signUp", provider: "email", credentials: { email, password: "dummy-password-123" } });
+      const signin = (target, email, password = "dummy-password-123") => send(target, { type: "auth.signIn", provider: "email", credentials: { email, password } });
+      // Dummy local reset links use the fixture's trusted server endpoint; no mail is sent.
+      const resetLink = async (email) => (await fetch(`${booted.baseUrl}/probe/auth/reset`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }),
+      })).json();
+      const guest = await send(socket, { type: "auth.get" });
+      await send(socket, { type: "mutation.run", mutation: "addNote", args: [{ text: "guest data", rank: 1 }] });
+      const original = await signup(socket, "original@example.test");
+      assert.equal(original.data?.ok, true, JSON.stringify(original));
+      assert.equal(original.data.auth.userId, guest.data.auth.userId);
+      const denied = await signup(socket, "added@example.test");
+      assert.equal(denied.error?.code, "REGISTRATION_DENIED");
+      assert.equal(denied.data, null);
+      const unchanged = await send(socket, { type: "auth.get" });
+      assert.deepEqual(unchanged.data.auth, original.data.auth);
+      assert.equal(unchanged.data.sessionToken, original.data.sessionToken);
+      const notes = await send(socket, { type: "query.subscribe", query: "notes" });
+      assert.equal(notes.data[0].mine, true, "guest data retains its owner after signup");
+      assert.equal((await resetLink("added@example.test")).failed, true, "denied signup creates no resettable credential");
+      const noReset = await send(socket, { type: "auth.confirmPasswordReset", code: "dummy-unissued-code", newPassword: "reset-password-123" });
+      assert.equal(noReset.type, "error");
+      assert.equal((await signin(socket, "added@example.test")).type, "error");
+      assert.equal((await signin(socket, "original@example.test")).data.auth.userId, original.data.auth.userId);
+
+      // The rejected address remains available to a different guest. Resetting
+      // that new identity cannot alter or join the original account.
+      const other = await openBundleSocket(booted.baseUrl, CAPSULE_PUBLIC_ORIGIN, "capsule.example.com");
+      sockets.push(other);
+      const independent = await signup(other, "added@example.test");
+      assert.equal(independent.data?.ok, true);
+      assert.notEqual(independent.data.auth.userId, original.data.auth.userId);
+      const issued = await resetLink("added@example.test");
+      assert.ok(issued.link, JSON.stringify(issued));
+      const reset = await send(other, { type: "auth.confirmPasswordReset", code: new URL(issued.link).searchParams.get("code"), newPassword: "reset-password-123" });
+      assert.equal(reset.data?.ok, true, JSON.stringify(reset));
+      assert.equal((await signin(socket, "original@example.test")).data.auth.userId, original.data.auth.userId);
+      assert.equal((await signin(other, "added@example.test")).type, "error");
+      assert.equal((await signin(other, "added@example.test", "reset-password-123")).data.auth.userId, independent.data.auth.userId);
+    } finally {
+      for (const socket of sockets) socket.close();
+      await booted?.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 }
 
 const WEBSOCKET_SCRIPT = [
@@ -1255,6 +1320,62 @@ test("a generated Capsule keeps unusual request targets out of ordinary and WebS
   }
 });
 
+test("a generated server bundle permits owner recovery and bounds rotating-token sign-in work", async () => {
+  const root = await mkdtemp(path.join(process.cwd(), ".agent-tmp-bundle-sign-in-"));
+  let booted;
+  let socket;
+  try {
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource: CAPSULE_SOURCE }, {
+      epilogue: `
+        const signInTestNow = Date.now();
+        Date.now = () => signInTestNow;
+        const signInTestCrypto = process.getBuiltinModule("node:crypto");
+        const signInTestScrypt = signInTestCrypto.scryptSync;
+        signInTestCrypto.scryptSync = (...args) => {
+          process.getBuiltinModule("node:fs").appendFileSync("scrypt-calls", ".");
+          return signInTestScrypt(...args);
+        };
+      `,
+    });
+    await writePublicTree(root, "<!doctype html><html><body></body></html>");
+    booted = await bootBundle({ source, dir: root });
+    socket = await openBundleSocket(booted.baseUrl);
+    let sequence = 0;
+    const request = async message => {
+      const id = `sign-in-${++sequence}`;
+      socket.send({ id, sessionToken: `fresh-anonymous-${sequence}`, ...message });
+      return socket.waitFor(reply => reply.id === id);
+    };
+    const email = "bundle-owner@example.test";
+    const password = "original synthetic password";
+    assert.equal((await request({ type: "auth.signUp", provider: "email", credentials: { email, password } })).error, null);
+    const attempt = suppliedPassword => request({ type: "auth.signIn", provider: "email", credentials: { email, password: suppliedPassword } });
+    for (let i = 0; i < 5; i++) assert.ok((await attempt("incorrect password")).error);
+    assert.equal((await attempt(password)).error, null, "aggregate email failures cannot veto the owner in the shipped Bundle");
+    for (let i = 0; i < 5; i++) assert.ok((await attempt("incorrect password")).error);
+    const response = await fetch(`${booted.baseUrl}/probe/auth/reset`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }),
+    });
+    assert.equal(response.status, 200);
+    const code = new URL((await response.json()).link).searchParams.get("code");
+    assert.ok((await request({ type: "auth.confirmPasswordReset", code: `${code}-invalid`, newPassword: "replacement password" })).error);
+    assert.equal((await request({ type: "auth.confirmPasswordReset", code, newPassword: "replacement password" })).error, null);
+    assert.equal((await attempt("replacement password")).error, null);
+    // Twelve sign-in verifications so far; signup and reset hashed once each.
+    for (let i = 12; i < 120; i++) {
+      const failure = await attempt("incorrect password");
+      assert.ok(failure.error);
+      assert.equal(failure.error.code, undefined);
+    }
+    assert.equal((await attempt("replacement password")).error.code, "INVALID_EMAIL_CREDENTIALS");
+    assert.equal((await readFile(path.join(root, "scrypt-calls"), "utf8")).length, 122);
+  } finally {
+    socket?.close();
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a generated server bundle admits an explicitly scoped Access key to private File bytes", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-access-key-file-"));
   try {
@@ -1383,6 +1504,10 @@ test("a generated server bundle lazily lists the current linked user's singleton
       const created = await socket.waitFor((message) => message.id === "teams-create");
       assert.equal(created.type, "teams.create.result");
       assert.equal(created.data.team.role, "admin");
+      socket.send({ id: "create-denied-sdk", type: "teams.create", name: "Over capacity" });
+      assert.equal((await socket.waitFor(message => message.id === "create-denied-sdk")).error.code, "TEAM_POLICY_DENIED");
+      socket.send({ id: "create-denied-app", type: "mutation.run", name: "createTeam", args: ["Over capacity"] });
+      assert.equal((await socket.waitFor(message => message.id === "create-denied-app")).error.code, "TEAM_POLICY_DENIED");
       socket.send({ id: "policy-sdk-delete", type: "teams.delete", teamId: created.data.team.id });
       assert.equal((await socket.waitFor(message => message.id === "policy-sdk-delete")).error.code, "TEAM_POLICY_DENIED");
       socket.send({ id: "policy-app-delete", type: "mutation.run", name: "deleteTeam", args: [created.data.team.id] });
@@ -1965,6 +2090,9 @@ const RUNTIME_SOURCE_CONSTANTS = [
   "EMAIL_SIGN_IN_THROTTLE_WINDOW_MS",
   "EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES",
   "EMAIL_SIGN_IN_THROTTLE_FIELD",
+  "EMAIL_SIGN_IN_VERIFICATION_LIMIT",
+  "EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS",
+  "EMAIL_SIGN_IN_VERIFICATION_FIELD",
   "PASSWORD_CHANGE_THROTTLE_FIELD",
   "PASSWORD_RESET_THROTTLE_FIELD",
   "PASSWORD_RESET_DEFAULT_PATH",
@@ -2072,6 +2200,9 @@ test("every runtime constant reaches a booted Capsule with the value and the typ
     // The report has to have observed real structure, or a probe that wrote `{}` for everything
     // would agree with a `dist/` read that did the same.
     assert.equal(bundled.EMAIL_SIGN_IN_FAILURE_LIMIT.type, "number");
+    assert.deepEqual(bundled.EMAIL_SIGN_IN_VERIFICATION_LIMIT, { type: "number", value: 120 });
+    assert.deepEqual(bundled.EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS, { type: "number", value: 60000 });
+    assert.equal(bundled.EMAIL_SIGN_IN_VERIFICATION_FIELD.type, "string");
     assert.equal(bundled.MIN_JOB_TIMESTAMP_MS.type, "number");
     assert.equal(bundled.MAX_JOB_TIMESTAMP_MS.type, "number");
     assert.equal(bundled.STRIPE_EVENT_JOB.type, "string");
@@ -2812,4 +2943,81 @@ test("a generated Bundle enforces upload ACL and MIME policy and lists Files onl
     await booted?.stop();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+// The implicit mutation opt-out must answer the same bounded refusal in the generated artifacts it
+// ships as the direct runtime does, including for a declared name whose source body matches the
+// legacy generated scaffold — those run as the declarations they are only while the surface is
+// retired; with the surface enabled they keep travelling through the implicit table path.
+test("a generated Bundle retires implicit mutations exactly when the Capsule opts out", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-implicit-"));
+  let booted;
+  let socket;
+  try {
+    const serverSource = `import { capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "implicit-opt-out",
+  implicitMutations: false,
+  schema: { notes: table({ text: String(), ownerId: String() }) },
+  queries: { mine: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).all()) },
+  mutations: {
+    publish: mutation((ctx, text) => {
+      if (text !== "approved") throw new Error("App quota denied.");
+      return ctx.db.notes.insert({ text, ownerId: ctx.auth.userId });
+    }),
+    addNote: mutation((ctx, text) => { ctx.db.notes.insert({ text, ownerId: ctx.auth.userId }); }),
+  },
+});`;
+    const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), "server", "index.ts") });
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource, serverModuleSource });
+    await writePublicTree(root, "<!doctype html><html><body></body></html>");
+    booted = await bootBundle({ source, dir: root });
+    socket = await openBundleSocket(booted.baseUrl);
+    socket.send({ id: "signup", type: "auth.signUp", provider: "email", credentials: { email: "implicit-opt-out@example.com", password: "correct horse battery staple" } });
+    const signed = await socket.waitFor((message) => message.id === "signup");
+    assert.equal(signed.error, null);
+    socket.send({ id: "sub-implicit", type: "query.subscribe", query: "notes" });
+    const implicitRows = await socket.waitFor((message) => message.id === "sub-implicit" && message.type === "query.result");
+    assert.equal(implicitRows.error, null);
+    assert.deepEqual(implicitRows.data, []);
+    socket.send({ id: "refused", type: "mutation.run", mutation: "frobnicate", args: ["written-if-wrong"] });
+    const refused = await socket.waitFor((message) => message.id === "refused");
+    assert.deepEqual(refused.error, { message: "Unknown mutation: frobnicate", hint: "Use a mutation defined by the capsule." });
+    assert.equal(refused.data, null);
+    socket.send({ id: "declared-scaffold", type: "mutation.run", mutation: "addNote", args: ["scaffold text"] });
+    const scaffold = await socket.waitFor((message) => message.id === "declared-scaffold");
+    assert.equal(scaffold.error, null, "the opted-out Capsule must honor its declared scaffold-shaped addNote");
+    assert.equal(scaffold.data, null);
+    const scaffoldRow = await socket.waitFor((message) => message.id === "sub-implicit" && message.type === "query.result" && message.data?.length === 1);
+    assert.deepEqual(scaffoldRow.data.map((row) => row.text), ["scaffold text"]);
+    socket.send({ id: "declared", type: "mutation.run", mutation: "publish", args: ["denied"] });
+    const blocked = await socket.waitFor((message) => message.id === "declared");
+    assert.equal(blocked.error.message, "App quota denied.");
+    socket.send({ id: "declared-ok", type: "mutation.run", mutation: "publish", args: ["approved"] });
+    const declared = await socket.waitFor((message) => message.id === "declared-ok");
+    assert.equal(declared.error, null);
+    const requery = await socket.waitFor((message) => message.id === "sub-implicit" && message.type === "query.result" && message.data?.length === 2);
+    // Implicit table queries read newest-first.
+    assert.deepEqual(requery.data.map((row) => row.text), ["approved", "scaffold text"]);
+  } finally {
+    socket?.close();
+    await booted?.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a generated Bundle refuses a non-boolean implicitMutations value before listening", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-bundle-implicit-invalid-"));
+  try {
+    const serverSource = `import { capsule } from "sporades/server";
+
+export default capsule({ name: "implicit-invalid", implicitMutations: "false", schema: {} });`;
+    const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), "server", "index.ts") });
+    const source = await buildBundle({ config: capsuleConfig(), serverEnv: {}, serverSource, serverModuleSource });
+    await writeFile(path.join(root, "server.mjs"), source);
+    const result = spawnSync(process.execPath, [path.join(root, "server.mjs")], { cwd: root, encoding: "utf8", timeout: 15000, env: { ...process.env, PORT: "0" } });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Invalid Capsule implicitMutations declaration\./);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -1,6 +1,6 @@
+import { createPrerenderFixture } from "./support/prerender-fixture-root.js";
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { test } from "node:test";
@@ -13,7 +13,7 @@ import { validateClientToolchainInput } from "../dist/client-toolchain.js";
 import { discardPublicTree } from "../dist/public-tree.js";
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-prerender-"));
+  const dir = await createPrerenderFixture("sporades-prerender-");
   try {
     return await fn(dir);
   } finally {
