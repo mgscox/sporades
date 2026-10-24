@@ -1270,6 +1270,26 @@ export type EndpointFileAttachmentHandler<Schema extends SchemaDefinition = Sche
   ctx: EndpointFileAttachmentContext<Schema>,
 ) => MaybePromise<Result>;
 
+/** Public stateless handler context. General Capsule middleware is skipped. */
+export type SessionlessEndpointContext = Readonly<{
+  app: AppContext;
+  env: Readonly<Record<string, string>>;
+  log: Logger;
+  rateLimit(key: string, options: RateLimitOptions): RateLimitResult;
+  signal?: AbortSignal;
+  request: Omit<EndpointRequest, "multipart">;
+}>;
+/** An explicitly sessionless endpoint cannot carry a declarative Auth guard. */
+export type SessionlessEndpointHandler<Result = unknown> = ((ctx: SessionlessEndpointContext) => MaybePromise<Result>) & { readonly [authGuardedHandlerBrand]?: never };
+export type SessionlessEndpointOptions = {
+  method: string;
+  path: string;
+  session: "none";
+  body?: never;
+  response?: never;
+  mcp?: never;
+};
+
 /** Handler for a client-origin App message. */
 export type MessageHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: CapsuleContext<Schema>,
@@ -1329,6 +1349,7 @@ export type MutationDefinition<Handler = MutationHandler> = {
 export type EndpointOptions<Schema extends SchemaDefinition = SchemaDefinition> = {
   method: string;
   path: string;
+  session?: never;
   response?: { fileAttachment: true };
   body?: { multipart: EndpointMultipartIngressOptions<Schema> };
   /**
@@ -1343,7 +1364,7 @@ export type EndpointFileAttachmentOptionsDeclaration<Schema extends SchemaDefini
 
 export type EndpointDefinition<Handler = EndpointHandler, Schema extends SchemaDefinition = SchemaDefinition> = {
   kind: "endpoint";
-  options: EndpointOptions<Schema>;
+  options: EndpointOptions<Schema> | SessionlessEndpointOptions;
   handler: Handler;
 };
 
@@ -1468,7 +1489,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
   mutations?: Record<string, MutationDefinition<MutationHandler<Schema, any[]> | AuthGuardedHandler<(...args: any[]) => any>>>;
-  endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | EndpointFileAttachmentHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>, Schema>>;
+  endpoints?: Record<string, EndpointDefinition<SessionlessEndpointHandler | EndpointHandler<Schema> | EndpointFileAttachmentHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>, Schema>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
   stripeEvents?: StripeEventDefinition<StripeEventHandler<Schema>> | AtomicStripeEventDefinition<AtomicStripeEventHandler<Schema>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
@@ -1558,11 +1579,13 @@ export function requireAuth<Handler extends (...args: any[]) => any>(
   handler: Handler,
 ): AuthGuardedHandler<Handler>;
 /** Define a Custom endpoint for HTTP integrations such as webhooks. */
+export function endpoint(options: SessionlessEndpointOptions, handler: SessionlessEndpointHandler): EndpointDefinition<SessionlessEndpointHandler>;
 export function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(options: EndpointFileAttachmentOptionsDeclaration<Schema>, handler: EndpointFileAttachmentHandler<Schema>): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
 export function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(options: EndpointOptions<Schema>, handler: EndpointHandler<Schema>): EndpointDefinition<EndpointHandler<Schema>, Schema>;
 export function endpoint<Schema extends SchemaDefinition = SchemaDefinition, Handler extends (...args: any[]) => any = (...args: any[]) => any>(options: EndpointOptions<Schema>, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>, Schema>;
 /** Schema-bound endpoint declaration helper for callbacks that read the Capsule database before request-body handling. */
 export type EndpointBuilder<Schema extends SchemaDefinition> = {
+  (options: SessionlessEndpointOptions, handler: SessionlessEndpointHandler): EndpointDefinition<SessionlessEndpointHandler, Schema>;
   (options: EndpointFileAttachmentOptionsDeclaration<Schema>, handler: EndpointFileAttachmentHandler<Schema>): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
   (options: EndpointOptions<Schema>, handler: EndpointHandler<Schema>): EndpointDefinition<EndpointHandler<Schema>, Schema>;
   <Handler extends (...args: any[]) => any>(options: EndpointOptions<Schema>, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>, Schema>;

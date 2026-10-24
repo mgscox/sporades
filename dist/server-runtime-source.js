@@ -1,3 +1,4 @@
+import { validateEndpointSessionDeclaration } from "./endpoint-session.js";
 import { createRuntimeObservability } from "./observability-runtime.js";
 import { redactDiagnosticText } from "./runtime-log-policy.js";
 import { bindAppContext, isLocalPublicOrigin, resolvePublicOrigin } from "./public-origin.js";
@@ -72,7 +73,7 @@ import { deserializeFieldValue, deserializeRow, normalizeDateValue, serializeFie
 import { applyReadAcl, assertActivePrivilegedJobAccess, bindPendingAclWrites, bindPostgresAclDependencyLocking, createPrivilegedAuditEmitter, createPrivilegedAuditEmissionPublicError, createPrivilegedFileApi, createPrivilegedRunAbortError, createPrivilegedRunAuditDetails, createPrivilegedRunPublicError, createPrivilegedScheduleApi, drainPendingAclWrites, emitAclDeniedLog, emitPrivilegedRunAudit, filterRowsByReadAcl, grantPrivilegedDbAccess, isPrivilegedAuditEmissionPublicError, normalizeFileAcl, normalizePrivilegedRunSignal, normalizeTableAcl, reindexPrivilegedAuditEventsAfterRollback, revokePrivilegedDbAccess, runTableWriteWithAcl, safePrivilegedAuditErrorCode, trackPendingAclWrite, } from "./acl-runtime.js";
 import { bindCurrentUserFileDeleteState, commitPendingCurrentUserFileByteDeletes, createPendingFileUpload, createPublicFileUrl, createRuntimeFileStorageAdapter, createCurrentUserFileApi, deletePrivateFile, drainCurrentUserFileOperations, dropPendingCurrentUserFileByteDeletes, revokeCurrentUserFileApi, getPrivateFileUrl, revokePublicFileUrl, } from "./file-storage-runtime.js";
 import { createEndpointIngressApi, drainIngressClaimAuditOutbox, finalizeEndpointIngressClaims, initializeClamavRuntime, recoverIngressClaimAuditOutbox, shutdownClamavRuntime, stageMultipartIngress, sweepExpiredFileIngress, validateMultipartIngressPolicy } from "./file-ingress-runtime.js";
-import { createEndpointFileResponseApi } from "./endpoint-file-response.js";
+import { createEndpointFileResponseApi, isEndpointFileAttachmentResponse } from "./endpoint-file-response.js";
 import { abortSchedulePayloadFactories, assertJobScheduleProvenance, boundedJobJson, cancelJob, canonicalJobCredentialProvenance, captureJobAuthSnapshot, commitPendingJobCancellationAborts, createRuntimeClock, decodeJobCursor, dropPendingJobCancellationAborts, encodeJobCursor, ensureJobStorage, ensureScheduleStorage, finishFailedScheduledOccurrence, invalidJobRetryPolicyFailure, isCanonicalJobTimestamp, jobActorProvider, jobError, jobHandlersFromCapsuleDefinition, jobState, jobSummary, jobTimestampAfter, MAX_JOB_TIMESTAMP_MS, nextScheduleCursor, nextScheduleOccurrence, normalizeJobAvailableAt, normalizeJobRetry, parsePersistedJobRetry, readJobAuthSnapshot, readJobCredentialProvenance, resolveSchedulePayload, RESERVED_JOB_NAME_PREFIX, resolveSchedulePayloadFactoryTimeoutMs, runtimeOwnedJobHandlers, safeJobFailure, scheduleStripeEventPayloadCleanup, startStripeEventPayloadCleanup, stopStripeEventPayloadCleanup, STRIPE_EVENT_JOB, stripeEventPayloadRetentionStorageValue, scheduleCursorStateIsConsistent, scheduleDefinitionsFromCapsule, scheduledOccurrenceIdentity, } from "./jobs-runtime.js";
 import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet();
@@ -588,6 +589,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
         validateCapsuleAuthRequirements(capsuleDefinition);
         validateStripeEventSubscription(capsuleDefinition.stripeEvents);
+        for (const definition of Object.values(capsuleDefinition.endpoints ?? {}))
+            validateEndpointSessionDeclaration(definition);
         validateEndpointResponseDeclarations(capsuleDefinition);
         validateEndpointMcpDeclarations(capsuleDefinition.endpoints);
     }
@@ -3041,12 +3044,17 @@ export function extractEndpoints(serverSource) {
             continue;
         }
         const argsSource = serverSource.slice(endpointPattern.lastIndex, argsEnd);
-        const descriptor = argsSource.match(/^\s*\{\s*method\s*:\s*["']([A-Za-z]+)["']\s*,\s*path\s*:\s*["']([^"']+)["']\s*\}\s*,/);
+        const descriptor = argsSource.match(/^\s*\{\s*method\s*:\s*["']([A-Za-z]+)["']\s*,\s*path\s*:\s*["']([^"']+)["']\s*(?:,\s*session\s*:\s*([^}]+?))?\s*\}\s*,/);
         if (!descriptor) {
             endpointPattern.lastIndex = argsEnd + 1;
             continue;
         }
+        const options = descriptor[3] === undefined ? undefined : {
+            session: /^["']none["']$/.test(descriptor[3].trim().replace(/,\s*$/, "")) ? "none" : descriptor[3],
+        };
+        validateEndpointSessionDeclaration({ options });
         endpoints.push({
+            ...(options ? { options } : {}),
             name: match[1],
             method: descriptor[1].toUpperCase(),
             path: descriptor[2],
@@ -3637,9 +3645,14 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
     }
 }
 export async function runEndpoint(database, endpoint, requestUrl, request, requestPath = requestUrl.pathname) {
+    validateEndpointSessionDeclaration(endpoint);
     const handler = typeof endpoint.handler === "function"
         ? endpoint.handler
         : new Function(`return (${endpoint.handlerSource});`)();
+    validateEndpointSessionDeclaration({ ...endpoint, handler });
+    if (endpoint.options?.session === "none") {
+        return runSessionlessEndpoint(database, handler, requestUrl, request, requestPath);
+    }
     const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
     // Admission intentionally precedes multipart body consumption. Ordinary endpoint bodies retain
     // their historic bounded read path below.
@@ -4173,6 +4186,39 @@ function endpointRequestHead(database, requestUrl, request, requestPath = reques
         headers,
         query,
     };
+}
+// Construct this context independently: no identity, holder, transaction or middleware ever exists.
+async function runSessionlessEndpoint(database, handler, requestUrl, request, requestPath) {
+    try {
+        const endpointRequest = await readEndpointRequest(database, requestUrl, request, true, requestPath);
+        const signal = request.__sporadesEndpointSignal ?? request.signal;
+        signal?.throwIfAborted();
+        const context = Object.freeze({
+            app: database.app,
+            env: Object.freeze({ ...database.serverEnv }),
+            log: createEndpointLogger(database, { request: { method: endpointRequest.method, path: endpointRequest.path } }),
+            rateLimit: database.capsuleRateLimiter.consume,
+            signal,
+            request: {
+                method: endpointRequest.method,
+                path: endpointRequest.path,
+                clientAddress: endpointRequest.clientAddress,
+                headers: endpointRequest.headers,
+                query: endpointRequest.query,
+                body: endpointRequest.body,
+                bodyBytes: endpointRequest.bodyBytes,
+            },
+        });
+        const result = await handler(context);
+        if (isEndpointFileAttachmentResponse(result)) {
+            throw commandError("Invalid endpoint response.", "Return an ordinary endpoint response.", "INVALID_ENDPOINT_RESPONSE");
+        }
+        return result;
+    }
+    catch (error) {
+        database.observability?.capture(error, "endpoint");
+        throw error;
+    }
 }
 function createEndpointContext(database, endpointRequest, session, options = {}) {
     const auth = protectContextIdentity({ ...contextAuthIdentity(session.auth), ...(endpointRequest.clientAddress ? { clientAddress: endpointRequest.clientAddress } : {}) });
