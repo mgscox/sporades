@@ -27,7 +27,8 @@ while allowing restoration from current main even if it has advanced.
 `.github/workflows/generated-artifacts.yml` uses the repository's local runners
 (`self-hosted, linux, x64, sporades`) and Node selected from `package.json`'s
 engine range. After a main push, serialized jobs check out the latest main,
-run `npm ci` and `npm run build`, then commit only `dist/` and `bin/` as
+run `npm ci`, clear the generated directories, and run `npm run build`, then
+commit only `dist/` and `bin/` as
 `chore: regenerate dist and bin [skip ci]` using `GITHUB_TOKEN` with
 `contents: write`. Main must permit this token to push; branch protection must
 allow the automation. The job does not bypass protections. Token pushes do not
@@ -43,6 +44,9 @@ own generated commit, rebases the source checkout, and installs/builds again.
 It retries the push once and fails visibly on another rejection. Rebuilding
 after the rebase ensures the manifest seals the latest sources. A no-op build
 creates no commit.
+
+Clearing the generated directories before each CI build also removes obsolete
+tracked files for sources that TypeScript no longer emits.
 
 Release operators run `scripts/package.mjs` through `npm run package` from a
 synchronized **main** checkout, pushing the release commit and tag directly to

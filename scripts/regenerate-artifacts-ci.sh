@@ -14,6 +14,9 @@ fi
 
 for attempt in 1 2; do
   npm ci
+  # tsc does not delete outputs for removed sources. Recreate the generated
+  # trees so obsolete tracked files are removed from main as well.
+  rm -rf -- dist bin
   npm run build
   git add -A -- dist bin
   if git diff --cached --quiet; then

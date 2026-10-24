@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -131,7 +131,20 @@ test('a failed build leaves main without an artifact commit or push', async t =>
   const result = run(root, 'bash', [regenerate], false);
   assert.notEqual(result.status, 0);
   assert.equal(git(root, 'rev-parse', 'HEAD'), head);
-  assert.equal(git(root, 'status', '--porcelain', '--untracked-files=no'), '');
+});
+
+test('main regeneration removes obsolete tracked outputs that the compiler no longer emits', async t => {
+  const root = await fixture(t);
+  for (const dir of ['dist', 'bin']) await commit(root, `${dir}/obsolete.js`, 'obsolete\n');
+  const remote = path.join(root, 'remote.git');
+  git(root, 'init', '--bare', remote);
+  git(root, 'remote', 'add', 'origin', remote);
+  git(root, 'push', '-u', 'origin', 'main');
+  run(root, 'bash', [regenerate]);
+  for (const dir of ['dist', 'bin']) {
+    await assert.rejects(access(path.join(root, dir, 'obsolete.js')), { code: 'ENOENT' });
+  }
+  assert.equal(git(root, 'rev-parse', 'HEAD'), git(root, 'rev-parse', 'origin/main'));
 });
 
 for (const race of ['none', 'once', 'twice']) {
