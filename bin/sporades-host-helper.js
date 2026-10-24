@@ -45813,6 +45813,7 @@ var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 // src/auth-runtime.ts
 var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
+var EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS = 60 * 1e3;
 var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
 var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
 var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
@@ -45931,6 +45932,7 @@ var REVOCATION_CAUSES = /* @__PURE__ */ new Set([
   "owner",
   "operator",
   "password-reset",
+  "password-change",
   "owner-unlinked",
   "owner-deleted",
   "service-user-administrator",

@@ -3,6 +3,7 @@ export type { RateLimitOptions, RateLimitResult, RegistrationThrottleConfig } fr
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { SecurityConfig, ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 export { escapeHtml, html, type Html } from "./html.js";
+import { validateEndpointSessionDeclaration } from "./endpoint-session.js";
 import { validateEndpointMcpDeclarations } from "./mcp-config.js";
 import type {
   AppContext as CanonicalAppContext,
@@ -90,9 +91,14 @@ export type EndpointActorMultipartIngressOptions<Schema extends SchemaDefinition
 export type EndpointCapsulePrincipalMultipartIngressOptions = EndpointMultipartIngressLimits & Readonly<{ claimAuthorities: readonly ["capsule-principal"]; admit?: never }>;
 /** One of the supported endpoint multipart ingress authority modes. */
 export type EndpointMultipartIngressOptions<Schema extends SchemaDefinition = SchemaDefinition> = EndpointActorMultipartIngressOptions<Schema> | EndpointCapsulePrincipalMultipartIngressOptions;
+export type SessionlessEndpointContext = import("../src/types/server.js").SessionlessEndpointContext;
+export type SessionlessEndpointOptions = import("../src/types/server.js").SessionlessEndpointOptions;
+export type SessionlessEndpointHandler<Result = unknown> = ((ctx: SessionlessEndpointContext) => Result | Promise<Result>) & { readonly [authGuardedHandlerBrand]?: never };
+
 export type EndpointOptions<Schema extends SchemaDefinition = SchemaDefinition> = {
   method: string;
   path: string;
+  session?: never;
   /** Explicitly delegates exact-version attachment authorization to this trusted endpoint handler. */
   response?: { fileAttachment: true };
   /** Runtime-owned bounded multipart ingress for a trusted Custom endpoint. */
@@ -122,7 +128,7 @@ declare const authGuardedHandlerBrand: unique symbol;
 export type AuthGuardedHandler<HandlerType extends Handler> = HandlerType & { readonly [authGuardedHandlerBrand]: true };
 export type EndpointDefinition<HandlerType extends Handler = Handler, Schema extends SchemaDefinition = SchemaDefinition> = {
   kind: "endpoint";
-  options: EndpointOptions<Schema>;
+  options: EndpointOptions<Schema> | SessionlessEndpointOptions;
   handler: HandlerType;
 };
 
@@ -281,8 +287,8 @@ export function requireUserAuth(context: RequireAuthContext, options: RequireAut
 
 /** @deprecated Use requireUserAuth for the synchronous inline Session check. */
 export function requireAuth(context: RequireAuthContext, options?: RequireAuthOptions): AuthContext;
-export function requireAuth<HandlerType extends Handler>(handler: HandlerType): HandlerType;
-export function requireAuth<HandlerType extends Handler>(options: DeclarativeRequireAuthOptions, handler: HandlerType): HandlerType;
+export function requireAuth<HandlerType extends Handler>(handler: HandlerType): AuthGuardedHandler<HandlerType>;
+export function requireAuth<HandlerType extends Handler>(options: DeclarativeRequireAuthOptions, handler: HandlerType): AuthGuardedHandler<HandlerType>;
 export function requireAuth(first: RequireAuthContext | Handler | UnknownRecord, second?: RequireAuthOptions | Handler): AuthContext | Handler {
   if (typeof first === "function") {
     return decorateRequireAuth({}, first) as Handler;
@@ -296,6 +302,7 @@ export function requireAuth(first: RequireAuthContext | Handler | UnknownRecord,
 export function capsule<const Definition extends CapsuleDefinition>(definition: Definition): Capsule<Definition> {
   const normalized = normalizeCapsuleAuthDefinition(definition);
   validateCapsuleAuthRequirements(normalized);
+  for (const definition of Object.values((normalized.endpoints as UnknownRecord | undefined) ?? {})) validateEndpointSessionDeclaration(definition);
   validateEndpointResponseDeclarations(normalized);
   validateEndpointMcpDeclarations(normalized.endpoints);
   return {
@@ -317,6 +324,7 @@ function validateEndpointResponseDeclarations(definition: UnknownRecord) {
 }
 
 /** Define a Custom endpoint for HTTP integrations such as webhooks. */
+export function endpoint(options: SessionlessEndpointOptions, handler: SessionlessEndpointHandler): EndpointDefinition<SessionlessEndpointHandler>;
 export function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(
   options: EndpointFileAttachmentOptionsDeclaration<Schema>,
   handler: EndpointFileAttachmentHandler<Schema>,
@@ -329,7 +337,8 @@ export function endpoint<Schema extends SchemaDefinition = SchemaDefinition, Han
   options: EndpointOptions<Schema>,
   handler: AuthGuardedHandler<HandlerType>,
 ): EndpointDefinition<AuthGuardedHandler<HandlerType>, Schema>;
-export function endpoint(options: EndpointOptions, handler: Handler): EndpointDefinition {
+export function endpoint(options: EndpointOptions | SessionlessEndpointOptions, handler: Handler): EndpointDefinition {
+  validateEndpointSessionDeclaration({ options, handler });
   return {
     kind: "endpoint",
     options,
@@ -339,6 +348,7 @@ export function endpoint(options: EndpointOptions, handler: Handler): EndpointDe
 
 /** Schema-bound endpoint declaration helper for callbacks that read the Capsule database before request-body handling. */
 export type EndpointBuilder<Schema extends SchemaDefinition> = {
+  (options: SessionlessEndpointOptions, handler: SessionlessEndpointHandler): EndpointDefinition<SessionlessEndpointHandler, Schema>;
   (options: EndpointFileAttachmentOptionsDeclaration<Schema>, handler: EndpointFileAttachmentHandler<Schema>): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
   (options: EndpointOptions<Schema>, handler: EndpointHandler<Schema>): EndpointDefinition<EndpointHandler<Schema>, Schema>;
   <HandlerType extends Handler>(options: EndpointOptions<Schema>, handler: AuthGuardedHandler<HandlerType>): EndpointDefinition<AuthGuardedHandler<HandlerType>, Schema>;
@@ -492,6 +502,7 @@ function field<Value = unknown>(kind: FieldKind): FieldBuilder<Value> {
 
 export function serverRuntimeModuleSource() {
   return `export { escapeHtml, html } from "sporades:html";
+const validateEndpointSessionDeclaration = ${validateEndpointSessionDeclaration.toString()};
 const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
@@ -629,6 +640,7 @@ export function capsule(definition) {
     error.hint = "Declare implicitMutations as a boolean: omit it or pass true to keep the 0.9.x implicit add/update compatibility surface, or false to allow only declared mutations.";
     throw error;
   }
+  for (const item of Object.values(normalized.endpoints ?? {})) validateEndpointSessionDeclaration(item);
   const declaredScopes = new Set(normalized.accessKeys?.scopes ?? []);
   for (const collection of [normalized.queries, normalized.mutations, normalized.endpoints, normalized.messages]) {
     for (const item of Object.values(collection ?? {})) {
@@ -644,6 +656,7 @@ export function capsule(definition) {
 }
 
 export function endpoint(options, handler) {
+  validateEndpointSessionDeclaration({ options, handler });
   return {
     kind: "endpoint",
     options,

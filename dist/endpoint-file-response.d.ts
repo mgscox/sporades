@@ -12,6 +12,8 @@ export declare function createEndpointFileResponseApi(ingressApi: LooseRecord, e
     }>;
     sealCommittedResult(value: unknown): unknown;
 }>;
+/** Internal response-mode check, including retained descriptors from another invocation. */
+export declare function isEndpointFileAttachmentResponse(value: unknown): boolean;
 export declare function consumeSealedEndpointFileAttachment(value: unknown): AttachmentResponseDetails | null;
 export declare function markGuardedAttachmentHttpResponse(response: object): void;
 export declare function isGuardedAttachmentHttpResponse(response: unknown): boolean;

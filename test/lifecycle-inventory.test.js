@@ -1,3 +1,5 @@
+import { createHostFixture } from './support/host-fixture-root.js';
+import { useFixtureUmask } from './support/fixture-umask.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -5,8 +7,7 @@ import { request as httpsRequest } from 'node:https';
 import { createServer as createTlsServer } from 'node:https';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, rm, rename, stat, copyFile, chmod, realpath } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, writeFile, readFile, rm, rename, stat, copyFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { once } from 'node:events';
 import { createGateway } from '../monitoring/trace/gateway.mjs';
@@ -22,9 +23,8 @@ const config = { ingestToken: 'ingestion-only-token', uiUser: 'operator', uiPass
 const capsule = (state = 'running') => ({ id: `${scope}/notes`, state, changedAt: '2026-10-02T00:00:00.000Z', release: 'release-1', targets: ['https://notes.apps.example/'] });
 const inventory = (revision, state = 'running') => ({ schemaVersion: 1, host: scope, revision, capsules: [{ ...capsule(state), ...(state === 'stopped' ? { targets: [] } : {}) }] });
 async function fixture(t) {
-  // Shipped mutation helpers require non-writable, non-symlink ancestors. A
-  // checkout may live on a group-writable volume, so use the canonical temp root.
-  const dir = await mkdtemp(path.join(await realpath(tmpdir()), 'sporades-inventory-'));
+  useFixtureUmask(t);
+  const dir = await createHostFixture('sporades-inventory-');
   t.after(() => rm(dir, { recursive: true, force: true }));
   return dir;
 }

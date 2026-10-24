@@ -1,3 +1,4 @@
+import { useFixtureUmask } from './support/fixture-umask.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderHostRelayCollectorConfig, validateHostRelayConnection } from '../dist/cli/host-telemetry-relay.js';
@@ -107,6 +108,8 @@ process.stdin.on('end',()=>{
 
 
 test('UMask=0077 unconfigured Host metrics setup and reconciliation keep exporter and Caddy readable and state private', async t => {
+  useFixtureUmask(t);
+  await mkdir('.sporades', { recursive: true });
   const root = await mkdtemp(path.resolve('.sporades/host-metrics-modes-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, 'bin');

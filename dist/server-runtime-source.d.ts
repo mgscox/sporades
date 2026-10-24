@@ -81,6 +81,9 @@ export declare function extractEndpoints(serverSource: string): {
     method: string;
     path: string;
     handlerSource: string;
+    options?: {
+        session: string;
+    } | undefined;
 }[];
 export declare function routeEndpoint(database: {
     endpoints: any[];
@@ -90,7 +93,7 @@ export declare function routeEndpoint(database: {
 export declare function runEndpoint(database: any, endpoint: {
     handler?: Function;
     handlerSource?: string;
-}, requestUrl: URL, request: any, requestPath?: string): Promise<unknown>;
+}, requestUrl: URL, request: any, requestPath?: string): Promise<any>;
 export declare function runAtomicStripeConsequence(database: LooseRecord, parentContext: LooseRecord, event: LooseRecord, subscription?: LooseRecord, platformConsequence?: (database: LooseRecord, event: LooseRecord) => Promise<any>): Promise<any>;
 export declare function createEndpointDatabaseApi(database: LooseRecord, contextGetter?: any): {
     [k: string]: any;

@@ -1,3 +1,4 @@
+import { useFixtureUmask } from './support/fixture-umask.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, lstat, chmod } from 'node:fs/promises';
@@ -15,6 +16,8 @@ async function publicationJournal(stack, name, before, after) {
 }
 
 async function fixture(t) {
+  useFixtureUmask(t);
+  await mkdir(path.join(root, '.sporades'), { recursive: true });
   const dir = await mkdtemp(path.join(root, '.sporades/maintenance-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const bin = path.join(dir, 'bin'); await mkdir(bin);
