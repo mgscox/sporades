@@ -57,9 +57,6 @@ export function normalizeAuthRequirements(options = {}) {
     });
 }
 export function normalizeCapsuleAuthDefinition(definition) {
-    if (definition.implicitMutations !== undefined && typeof definition.implicitMutations !== "boolean") {
-        throw commandError("Invalid Capsule implicitMutations declaration.", "Declare implicitMutations as a boolean: omit it or pass true to keep the 0.9.x implicit add/update compatibility surface, or false to allow only declared mutations.", "INVALID_IMPLICIT_MUTATIONS");
-    }
     let normalized = definition;
     if (("accessKeys" in definition) && definition.accessKeys !== undefined) {
         const accessKeys = definition.accessKeys;

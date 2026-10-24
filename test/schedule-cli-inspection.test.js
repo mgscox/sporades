@@ -142,7 +142,9 @@ test("sporades host schedules guides a Host-helper upgrade when the action is un
   try {
     const bin = path.join(dir, "bin"), config = path.join(dir, "config"); await mkdir(bin); await mkdir(config);
     await writeFile(path.join(config, "hosts.json"), JSON.stringify({ profiles: { live: { server: "host", domain: "example.test", remoteRoot: "/srv/sporades" } } }));
-    const ssh = path.join(bin, "ssh"); await writeFile(ssh, "#!/bin/sh\necho '{\"ok\":false,\"data\":null,\"error\":{\"message\":\"Unsupported Host helper action.\",\"hint\":\"old\"}}'\n"); await chmod(ssh, 0o755);
+    // Consume the request before replying, as the real helper does. Exiting
+    // immediately can race spawnSync's stdin writer and produce EPIPE.
+    const ssh = path.join(bin, "ssh"); await writeFile(ssh, "#!/bin/sh\ncat >/dev/null\necho '{\"ok\":false,\"data\":null,\"error\":{\"message\":\"Unsupported Host helper action.\",\"hint\":\"old\"}}'\n"); await chmod(ssh, 0o755);
     const result = runCommand(["host", "schedules", "--host", "live", "--subname", "team-notes"], dir, { PATH: `${bin}${path.delimiter}${process.env.PATH}`, SPORADES_CONFIG_DIR: config });
     assert.equal(result.status, 1); const body = JSON.parse(result.stdout); assert.equal(body.error.code, "HOST_HELPER_UPGRADE_REQUIRED"); assert.match(body.error.hint, /sporades host upgrade --host live/);
   } finally { await rm(dir, { recursive: true, force: true }); }

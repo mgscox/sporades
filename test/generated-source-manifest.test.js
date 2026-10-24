@@ -10,6 +10,37 @@ import {
   writeGeneratedSourceManifest,
 } from "../scripts/generated-source-manifest.mjs";
 
+test("fresh local manifest accepts a source-only PR while committed dist stays older", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sporades-pr-local-build-"));
+  const git = (...args) => {
+    const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    for (const dir of ['src', 'dist']) await mkdir(path.join(root, dir));
+    await writeFile(path.join(root, 'src/runtime.ts'), 'export const value = 1;\n');
+    await writeFile(path.join(root, 'dist/runtime.js'), 'export const value = 1;\n');
+    for (const name of ['tsconfig.json', 'tsconfig.runtime.json']) await writeFile(path.join(root, name), '{}\n');
+    await writeGeneratedSourceManifest(root);
+    git('init');
+    git('add', '.');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-m', 'Old build');
+    await writeFile(path.join(root, 'src/runtime.ts'), 'export const value = 2;\n');
+    git('add', 'src');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-m', 'Source-only PR');
+    await assert.rejects(assertGeneratedSourceManifest(root));
+    // Simulate the complete local build without updating the committed tree.
+    await writeFile(path.join(root, 'dist/runtime.js'), 'export const value = 2;\n');
+    await writeGeneratedSourceManifest(root);
+    await assertGeneratedSourceManifest(root);
+    assert.equal(git('show', 'HEAD:dist/runtime.js'), 'export const value = 1;');
+    assert.match(git('diff', '--name-only'), /dist\/generated-source-manifest.json/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("standalone generated entrypoints start quietly without PDF rendering support", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-standalone-entrypoints-"));
   try {

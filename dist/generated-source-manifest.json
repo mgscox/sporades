@@ -154,7 +154,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "bbd131a56f269220f9402fd7e4676b321cddc894f6b8647a10bb508728110ddf"
+    "digest": "79a1752a6fcdcc4d57035cb785d12a9ff0e575ef45013c57417936dc035bfcea"
   },
   "outputs": {
     "files": [
@@ -596,10 +596,6 @@
       "dist/service-users-runtime.d.ts.map",
       "dist/service-users-runtime.js",
       "dist/service-users-runtime.js.map",
-      "dist/stored-row-decoding.d.ts",
-      "dist/stored-row-decoding.d.ts.map",
-      "dist/stored-row-decoding.js",
-      "dist/stored-row-decoding.js.map",
       "dist/stored-value-coding.d.ts",
       "dist/stored-value-coding.d.ts.map",
       "dist/stored-value-coding.js",
@@ -690,6 +686,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "772ec05bf6ef4eec92e585456a90ca9b2bedbc0e3509a7ce629003f50d997b49"
+    "digest": "e770e9929c139ea812fba1208a17bbf7d55846af16a16b10b09ae6a6cf1106d9"
   }
 }
