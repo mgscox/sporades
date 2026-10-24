@@ -1,0 +1,59 @@
+name: Generated artifacts
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'dist/**'
+      - 'bin/**'
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  check-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, linux, x64, sporades]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+      - name: Keep generated files out of PRs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/check-pr-generated-artifacts.mjs "$BASE_SHA" "$HEAD_SHA"
+
+  regenerate:
+    if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+    runs-on: [self-hosted, linux, x64, sporades]
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    concurrency:
+      group: generated-artifacts-main
+      cancel-in-progress: false
+    env:
+      SPORADES_CONFIG_DIR: ${{ github.workspace }}/.sporades/generated-artifacts-config
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Queued runs build the latest main, rather than an older event SHA.
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+      - name: Set commit identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Build and commit generated files (retry once if main moves)
+        run: bash scripts/regenerate-artifacts-ci.sh
