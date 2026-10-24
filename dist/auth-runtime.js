@@ -2713,15 +2713,6 @@ export async function signUpWithEmail(database, session, provider, credentials, 
     if (!normalized.ok) {
         return normalized;
     }
-    if (await database.adapter.emailCredentialExists(normalized.email)) {
-        return {
-            ok: false,
-            error: {
-                message: "Email is already registered.",
-                hint: "Use auth.signIn(\"email\", ...) with this email address.",
-            },
-        };
-    }
     const password = hashEmailPassword(normalized.password);
     const displayName = normalized.name || normalized.email;
     const auth = {
@@ -2734,8 +2725,25 @@ export async function signUpWithEmail(database, session, provider, credentials, 
         provider: "email",
     };
     return await withRegistrationTransaction(database, async (tx) => {
-        if (await sessionUserWasTerminated(tx, auth.userId))
+        // Serialize the guest-to-linked transition with other registrations and
+        // identity termination. The caller's guest snapshot may already be stale.
+        const owner = await tx.lockAuthUserFileAuthority(auth.userId);
+        if (!owner || owner.userKind !== "human" || owner.lifecycleStatus === "terminated")
             return terminatedSessionUserError();
+        const current = await tx.readAuthSessionWithUser(session.token);
+        if (!current || current.userId !== auth.userId || !Number.isFinite(Date.parse(current.expiresAt)) || isExpiredSession(current))
+            return terminatedSessionUserError();
+        if (current.isAuthenticated || !current.isGuest)
+            return registrationDenied();
+        if (await tx.emailCredentialExists(normalized.email)) {
+            return {
+                ok: false,
+                error: {
+                    message: "Email is already registered.",
+                    hint: "Use auth.signIn(\"email\", ...) with this email address.",
+                },
+            };
+        }
         const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
         if (!registration.ok)
             return registration;

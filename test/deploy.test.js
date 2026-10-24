@@ -2591,6 +2591,7 @@ test("container server bundle reads injected service env and selects the libSQL 
 
     const projectDir = await realpath(path.join(dir, "todo-island"));
     await installFakeReact(projectDir);
+    await installEnvProbeQuery(projectDir);
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.services = { database: { kind: "database", engine: "libsql" } };
@@ -2637,14 +2638,19 @@ test("container server bundle reads injected service env and selects the libSQL 
         );
         const socket = await openSocket(`http://127.0.0.1:${port}`);
         try {
-          socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "ctx.env" }));
+          socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "testEnvProbe" }));
           assert.deepEqual(await readSocketMessage(socket), {
             id: "env-1",
             type: "query.result",
-            query: "ctx.env",
-            data: {},
+            query: "testEnvProbe",
+            data: [],
             error: null,
           });
+          // The generated Container Bundle ships no runtime-owned env query (#289).
+          socket.send(JSON.stringify({ id: "env-2", type: "query.subscribe", query: "ctx.env" }));
+          const unknown = await readSocketMessage(socket);
+          assertUnknownEnvQuery(unknown, "env-2");
+          assert.doesNotMatch(JSON.stringify(unknown), /server-only-token|SPORADES_SERVICE_/);
         } finally {
           socket.close();
         }
@@ -5350,6 +5356,25 @@ test("sporades deploy recognizes Docker no-such-object output as a stale contain
     );
   });
 });
+
+// A test-only Capsule query exposing bounded, non-secret facts about ctx.env. Sporades ships no
+// browser-readable env query (#289); tests that inspect server env declare their own probe.
+async function installEnvProbeQuery(projectDir, probeBody = "Object.keys(ctx.env).sort()") {
+  const serverPath = path.join(projectDir, "server", "index.ts");
+  const source = await readFile(serverPath, "utf8");
+  assert.match(source, /^  queries: \{$/m);
+  await writeFile(serverPath, source.replace(/^  queries: \{$/m, `  queries: {\n    testEnvProbe: query((ctx) => (${probeBody})),`));
+}
+
+function assertUnknownEnvQuery(message, id) {
+  assert.deepEqual(message, {
+    id,
+    type: "query.result",
+    query: "ctx.env",
+    data: null,
+    error: { message: "Unknown query: ctx.env", hint: "Use a query defined by the capsule." },
+  });
+}
 
 async function openSocket(baseUrl, sessionToken = null, origin = null) {
   const connectionToken = await readPageConnectionToken(baseUrl);

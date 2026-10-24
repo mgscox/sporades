@@ -786,6 +786,13 @@ endpoint({ method: "POST", path: "/billing/webhook" }, (ctx) => {
 });
 ```
 
+`ctx.env` exists only in trusted server code. No runtime-owned query, App
+message or browser API returns it, and a client request for an undeclared
+query name such as `ctx.env` receives the ordinary unknown-query error with no
+environment data. A Capsule that needs a browser to know about configuration
+declares its own query and returns only a bounded, non-secret value through the
+normal declaration, authorization and result contract.
+
 Restart a running Dev session after importing or setting Sealed Server env.
 
 #### Export or Import an Envelope

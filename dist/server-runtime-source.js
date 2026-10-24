@@ -5186,7 +5186,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             return untracedWebSocketOperation;
         const database = getDatabase();
         const declared = (type === "query" ? database.queries : database.mutations)?.some((handler) => handler.name === name)
-            || (type === "query" && (name === "ctx.env" || database.schema?.tables?.some((table) => table.name === name)))
+            || (type === "query" && database.schema?.tables?.some((table) => table.name === name))
             || (type === "mutation" && typeof name === "string" && (resolveTableForAddMutation(database.schema, name) || resolveTableForUpdateMutation(database.schema, name)));
         let operation;
         try {
@@ -6835,11 +6835,6 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
                         hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
                     },
                 };
-            }
-            if (queryName === "ctx.env") {
-                if (args.length > 0)
-                    return { rows: null, data: null, error: invalidQueryArgumentsError() };
-                return { data: context.env, error: null };
             }
             const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
             if (customResult) {

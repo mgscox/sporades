@@ -121609,15 +121609,6 @@ async function signUpWithEmail(database, session, provider, credentials, registr
   if (!normalized.ok) {
     return normalized;
   }
-  if (await database.adapter.emailCredentialExists(normalized.email)) {
-    return {
-      ok: false,
-      error: {
-        message: "Email is already registered.",
-        hint: 'Use auth.signIn("email", ...) with this email address.'
-      }
-    };
-  }
   const password = hashEmailPassword(normalized.password);
   const displayName = normalized.name || normalized.email;
   const auth = {
@@ -121630,7 +121621,20 @@ async function signUpWithEmail(database, session, provider, credentials, registr
     provider: "email"
   };
   return await withRegistrationTransaction(database, async (tx) => {
-    if (await sessionUserWasTerminated(tx, auth.userId)) return terminatedSessionUserError();
+    const owner = await tx.lockAuthUserFileAuthority(auth.userId);
+    if (!owner || owner.userKind !== "human" || owner.lifecycleStatus === "terminated") return terminatedSessionUserError();
+    const current2 = await tx.readAuthSessionWithUser(session.token);
+    if (!current2 || current2.userId !== auth.userId || !Number.isFinite(Date.parse(current2.expiresAt)) || isExpiredSession(current2)) return terminatedSessionUserError();
+    if (current2.isAuthenticated || !current2.isGuest) return registrationDenied();
+    if (await tx.emailCredentialExists(normalized.email)) {
+      return {
+        ok: false,
+        error: {
+          message: "Email is already registered.",
+          hint: 'Use auth.signIn("email", ...) with this email address.'
+        }
+      };
+    }
     const registration = await admitRegistration(database, tx, { provider: "email", email: normalized.email, displayName, picture: null, userId: auth.userId, kind: "email" }, registrationInput);
     if (!registration.ok) return registration;
     await tx.insertEmailCredential({
@@ -142162,7 +142166,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
   function startOperation(client, type, name2, traceparent) {
     if (!options.telemetry || client.socket.destroyed || client.closing) return untracedWebSocketOperation;
     const database = getDatabase();
-    const declared = (type === "query" ? database.queries : database.mutations)?.some((handler) => handler.name === name2) || type === "query" && (name2 === "ctx.env" || database.schema?.tables?.some((table) => table.name === name2)) || type === "mutation" && typeof name2 === "string" && (resolveTableForAddMutation(database.schema, name2) || resolveTableForUpdateMutation(database.schema, name2));
+    const declared = (type === "query" ? database.queries : database.mutations)?.some((handler) => handler.name === name2) || type === "query" && database.schema?.tables?.some((table) => table.name === name2) || type === "mutation" && typeof name2 === "string" && (resolveTableForAddMutation(database.schema, name2) || resolveTableForUpdateMutation(database.schema, name2));
     let operation;
     try {
       operation = options.telemetry.startOperation(type, name2, Boolean(declared), traceparent);
@@ -143672,10 +143676,6 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
             hint: error.hint ?? "Check the Capsule context middleware and retry the query."
           }
         };
-      }
-      if (queryName === "ctx.env") {
-        if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
-        return { data: context2.env, error: null };
       }
       const customResult = await runCustomQuery(database, context2, queryName, args, queryHandler);
       if (customResult) {
