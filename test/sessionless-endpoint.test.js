@@ -97,6 +97,9 @@ test('sessionless requests never read or touch auth storage, enter transactions 
         assert.deepEqual(result.body, { healthy: true, limited: index > 0 });
         assert.deepEqual(snapshot(), before);
       }
+      const concurrent = await Promise.all(heads.map(headers => runEndpoint(db, db.endpoints[0], new URL('http://localhost/health'), request(headers))));
+      assert.ok(concurrent.every(result => result.body.healthy && result.body.limited));
+      assert.deepEqual(snapshot(), before, 'concurrent callers cannot introduce identity or credential usage state');
       assert.equal(globalThis.__sessionlessMiddlewareRuns, 0);
       assert.equal(retained.auth, undefined);
       assert.deepEqual(Object.keys(retained).sort(), allowed);

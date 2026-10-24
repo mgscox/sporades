@@ -133,6 +133,21 @@ endpoint({ method: "GET", path: "/invalid", session: "auto" }, () => null);
 capsule({ name: "stateless", schema: { checks: table({ ok: Boolean() }) }, endpoints: { publicHealth } });
 const serverEnvConfig: ServerEnvConfig = { required: ["INTAKE_URL"], failClosed: true };
 import * as publicServerApi from "sporades/server";
+import { endpoint as sourceEndpoint, endpointFor as sourceEndpointFor, requireAuth as sourceRequireAuth } from "${path.relative(dir, path.join(repoRoot, 'src/server.js')).split(path.sep).join('/')}";
+sourceEndpoint({ method: "GET", path: "/source-health", session: "none" }, ctx => {
+  // @ts-expect-error Source and shipped bindings both exclude Auth.
+  ctx.auth;
+  // @ts-expect-error Source and shipped bindings both exclude the Database.
+  ctx.db;
+  return { body: ctx.app.publicOrigin };
+});
+// @ts-expect-error The source helper also excludes guarded sessionless handlers.
+sourceEndpoint({ method: "GET", path: "/bad", session: "none" }, sourceRequireAuth(() => null));
+sourceEndpointFor({})({ method: "GET", path: "/source-health", session: "none" }, ctx => {
+  // @ts-expect-error The source builder cannot restore Database authority.
+  ctx.db;
+  return ctx.request.path;
+});
 const securityConfig: publicServerApi.SecurityConfig = { csp: { nonce: true, mode: 'enforce', reportTo: '/csp-reports', directives: { 'script-src': ["'self'"] } }, hsts: { maxAgeSeconds: 31536000, includeSubDomains: true, preload: false } };
 // @ts-expect-error nonce opt-in is a boolean.
 const invalidNonceConfig: publicServerApi.SecurityConfig = { csp: { nonce: 'true' } };
