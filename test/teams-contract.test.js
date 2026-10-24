@@ -44,6 +44,11 @@ test("the published Teams contract defines the public boundaries and is reachabl
     /Concurrent joins for a final seat[\s\S]*serialize/i,
   ]) assert.match(teams, statement);
   assert.match(readme, /teams\.admitJoin[\s\S]*joining user's ordinary row ACLs/);
+  assert.match(teams, /## Atomic additional-Team creation policy/);
+  assert.match(teams, /Omitting `admitCreate` preserves existing behavior/);
+  assert.match(serverTypes, /admitCreate\?\(ctx: TeamCreateAdmissionContext<Schema>, input: TeamCreateAdmissionInput\)/);
+  assert.match(serverTypes, /export type TeamCreateAdmissionDecision/);
+  assert.match(clientTypes, /atomic teams\.admitCreate policy/);
   assert.match(teams, /## Atomic destructive policy/);
   assert.match(teams, /lockLifecycle/);
   assert.match(teams, /before[\s\S]*reading responsibility/);
@@ -66,6 +71,8 @@ test("the published Teams contract defines the public boundaries and is reachabl
   assert.match(serverApi, /CurrentUserTeamsApi/);
   assert.match(aclTeamHelpersApi, /Read-only Team decisions available while evaluating table and File ACL rules\./);
   for (const runtime of [sourceRuntime, generatedRuntime, generatedBin]) {
+    assert.match(runtime, /runTeamCreateAdmission/);
+    assert.match(runtime, /teams\.create-admission/);
     assert.match(runtime, /runTeamJoinAdmission/);
     assert.match(runtime, /runTeamDestructivePolicy/);
     assert.match(runtime, /teams\.destructive-policy/);

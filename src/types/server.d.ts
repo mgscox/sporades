@@ -731,6 +731,23 @@ export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDef
   /** Provider-free verified billing state for the exact Team whose Join is being admitted. */
   teamBilling: Pick<CurrentUserTeamBillingApi, "get">;
 };
+/** Additional-Team proposal after current actor checks, serialized with creation for that actor. The initial personal Team bypasses this policy. */
+export type TeamCreateAdmissionInput = Readonly<{
+  actorUserId: string;
+  /** NFKC-normalized, whitespace-collapsed requested name, bounded to 80 UTF-8 bytes. */
+  name: string;
+  /** Live Teams created by the actor, including the initial personal Team and Teams they left. Excludes the candidate. */
+  currentCreatedTeamCount: number;
+}>;
+/** Only an own data property `allow: true`, with no additional properties, permits creation. */
+export type TeamCreateAdmissionDecision = { allow: boolean };
+export type TeamCreateAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+  app: AppContext;
+  auth: Readonly<AuthContext>;
+  /** Transaction-bound cross-owner Capsule reads bypass row ACLs. No writes, runtime tables, provider operations, credentials or nested Privileged capability. Revoked on settle/abort/5-second budget expiry; failed or unfinished reads deny even if caught. */
+  db: ReadOnlyDatabaseFromSchema<Schema>;
+  signal: AbortSignal;
+}>;
 /** A destructive transition is proposed only after current Session, Team and final-admin checks under its lifecycle lock. */
 export type TeamDestructivePolicyInput = Readonly<{
   teamId: string;
@@ -818,7 +835,7 @@ export type CurrentUserTeamsApi = {
   /** Server-only: lock an administered Team through the existing mutation/endpoint transaction's commit or rollback. Call before any responsibility read/write; validate explicit recipient acceptance and the optional member's current admin role. Normal ctx.db ACLs remain in force. No network calls while locked. Refusal poisons the enclosing transaction. */
   lockLifecycle(teamId: string, memberUserId?: string): Promise<TeamLifecycleSnapshot>;
   list(): Promise<{ teams: TeamSummary[] }>;
-  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
+  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. Subject to the Capsule's atomic teams.admitCreate policy when declared. */
   create(name: string): Promise<{ team: TeamSummary }>;
   /** Renames an explicitly identified Team administered by the current user. */
   rename(teamId: string, name: string): Promise<{ team: TeamSummary }>;
@@ -1477,6 +1494,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   /** Up to 32 Capsule-specific membership roles. Each must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and `sporades-*` remain runtime-reserved. */
   teams?: {
     appRoles?: readonly string[];
+    /** Opt-in atomic admission for additional-Team creation through SDK and ctx.teams. Omission preserves behavior; invalid declaration rejects startup. Explicit valid allow required; failures return opaque TEAM_POLICY_DENIED and poison the outer transaction even when caught. Initial personal-Team bootstrap bypasses this hook. */
+    admitCreate?(ctx: TeamCreateAdmissionContext<Schema>, input: TeamCreateAdmissionInput): MaybePromise<TeamCreateAdmissionDecision>;
     /** Trusted admission policy invoked after Join-link validation and before a new membership is inserted in the same transaction. */
     admitJoin?(ctx: TeamJoinAdmissionContext<Schema>, input: TeamJoinAdmissionInput): MaybePromise<TeamJoinAdmissionDecision>;
     /** Opt-in atomic policy for every SDK and ctx.teams destructive path. Omission preserves 0.9.x behavior; invalid declaration rejects startup. Explicit valid allow required; failures are opaque TEAM_POLICY_DENIED and roll back app/runtime writes even when caught. All Capsule responsibility writers must take teams.lockLifecycle in the same transaction before reads/writes. */
