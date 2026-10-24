@@ -1,4 +1,4 @@
-export type { FileUploadMetadata, FileUploadAclRule, PrivilegedListedFileMetadata, PrivilegedFileListOptions, PrivilegedFileListPage } from "../src/types/server.js";
+export type { CapsuleServices, FileUploadMetadata, FileUploadAclRule, PrivilegedListedFileMetadata, PrivilegedFileListOptions, PrivilegedFileListPage } from "../src/types/server.js";
 export type { RateLimitOptions, RateLimitResult, RegistrationThrottleConfig } from "../src/types/server.js";
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { SecurityConfig, ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";

@@ -7,7 +7,7 @@ import { capsule, endpoint, endpointFor, requireAuth, mutation } from '../dist/s
 import { extractEndpoints, openDevDatabase, resolveAnonymousSession, runEndpoint, runMutation } from '../dist/server-runtime-source.js';
 import { createEndpointFileResponseApi } from '../dist/endpoint-file-response.js';
 
-const allowed = ['app', 'env', 'log', 'rateLimit', 'request', 'signal'];
+const allowed = ['app', 'env', 'log', 'rateLimit', 'request', 'services', 'signal'];
 const options = { method: 'POST', path: '/health', session: 'none' };
 const request = (headers = {}, body = '', signal) => Object.assign(Readable.from([body]), { method: 'POST', headers, signal });
 async function withDatabase(definition, run) {
@@ -52,6 +52,7 @@ test('sessionless requests never read or touch auth storage, enter transactions 
     endpoints: { health: endpoint(options, ctx => {
       retained = ctx;
       assert.deepEqual(Object.keys(ctx).sort(), allowed);
+      assert.equal(Object.isFrozen(ctx.services), true);
       assert.deepEqual(Object.getOwnPropertySymbols(ctx), []);
       assert.equal(ctx.env.HEALTH, 'ok');
       ctx.log.info('Public health requested');

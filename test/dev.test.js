@@ -1922,7 +1922,7 @@ test("sporades dev generates owned Compose for declared database Capsule service
         assert.equal(calls.length, 3);
         assert.deepEqual(calls[0].args.slice(0, 2), ["compose", "-f"]);
         assert.match(calls[0].args[2], /todo-island\/\.sporades\/compose\/capsule-services\.compose\.yml$/);
-        assert.deepEqual(calls[0].args.slice(3), ["up", "--detach"]);
+        assert.deepEqual(calls[0].args.slice(3), ["up", "--detach", "--remove-orphans"]);
         assert.deepEqual(calls[1].args.slice(3), ["ps", "--format", "json", "sporades-todo-island-database"]);
         assert.deepEqual(calls[2].args.slice(3), ["port", "sporades-todo-island-database", "8080"]);
       } finally {

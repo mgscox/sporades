@@ -1,6 +1,6 @@
 # ADR-0056: Capsule container services are declared images with referenced env
 
-Status: Proposed
+Status: Accepted for local Dev and Container sessions; Hosted orchestration is deferred.
 
 ## Context
 

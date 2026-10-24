@@ -457,6 +457,7 @@ Every handler receives a runtime-owned context:
 | `ctx.db` | Typed table API for app tables. |
 | `ctx.auth` | Current Sporades auth state. |
 | `ctx.env` | Server-only values from Server env. |
+| `ctx.services` | Frozen runtime-resolved container service URLs and generated secrets, only in trusted server handlers. |
 | `ctx.log` | Runtime logger captured by Sporades inspection surfaces. |
 | `ctx.messages` | App-message fan-out API. |
 | `ctx.mail` | Server-only provider-independent SMTP delivery. |
@@ -473,7 +474,7 @@ They are not the primary app data API; queries and mutations over the client
 transport remain the default application path.
 
 Custom endpoints may explicitly opt into `session: "none"` for stateless public
-requests. Their separate `SessionlessEndpointContext` contains only `app`, `env`,
+requests. Their separate `SessionlessEndpointContext` contains only `app`, `env`, `services`,
 `log`, `rateLimit`, `signal` and the bounded ordinary `request`. The runtime skips
 general Capsule context middleware, credential resolution and the identity-bound
 endpoint transaction, and creates or touches no auth or credential-usage state.
@@ -1475,6 +1476,27 @@ supported service declarations and generates Docker Compose runtime state under
 Compose YAML. The current Capsule service implementation is local-only for Dev
 sessions and local Container sessions. Hosted Capsule service orchestration
 remains future Host-server work.
+
+Additional local companion processes use `services.<name>.kind: "container"`
+with a pinned image, literal command, one port, required bounded HTTP/TCP health,
+optional persistent state, and hardened non-root defaults. At most eight services
+receive only their declared env: literals, explicit Sealed Server references and
+stable 256-bit generated secrets. Missing/blank references fail before startup;
+Compose holds interpolation placeholders and child environments carry values.
+Generated credentials use the shared locked, atomic `0600` local store. Trusted
+server contexts gain immutable `ctx.services.<name>` (`url`, generated `secrets`)
+through queries, mutations, endpoints, messages, Jobs, middleware and hooks.
+ACL/browser/inspection exclude them, and logs redact their values. Compose keys
+are schema-validated and classified as ordinary, owned, elevated or forbidden;
+resolved-model preflight rejects unexpected authority, resources or changed
+owned values. Imports, merges, Docker sockets and protected mounts are always
+rejected. Named volumes are labelled and reset-owned; inherited mounts are
+checked against declared state or an inspected, pinned external container. Dev/Container lifecycle retains
+unchanged services, reconciles declarations, and removes credentials on reset
+without deleting third-party images. Doctor reports image identity, architecture,
+elevation and missing env. Hosted pushes refuse container service declarations.
+See the [configuration reference](reference/projects-and-configuration.md#declare-a-container-service)
+and [ADR 0056](adr/0056-capsule-container-services-are-declared-images-with-referenced-env.md).
 
 When a local Dev session or local Container session starts a declared
 `services.database` service with `engine: "libsql"`, Sporades injects a

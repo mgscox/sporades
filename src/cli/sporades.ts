@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { capsuleServiceNetwork, finalizeContainerSecrets, pinContainerInheritedMounts, updateServiceCredentials, containerDeclarations, resolveContainerSecrets, serviceInterpolationName, validateResolvedContainerServices, type ContainerSecretResolution } from "../container-services.js";
 import { routeCollection } from "../observability-runtime.js";
 import { routeMcp } from "../mcp-runtime.js";
 import { assertStripeTestOriginCommand, resolveDevStripeApiOrigin, validateDevStripeRuntime, markDevStripeRuntime } from "./dev-stripe-origin.js";
@@ -149,10 +150,11 @@ import type {
 import { commandError, errorDetails, readStdin, writeResult, type CommandError, type LooseRecord } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
 
+const containerSecretResolutions = new WeakMap<object, ContainerSecretResolution>();
 type HostProfile = LooseRecord;
 type CapsuleService = LooseRecord;
 type CapsuleServicesModel = LooseRecord & {
-  networks: { services: string };
+  networks: { services: string; internal: string };
   path: string;
   projectSlug: string;
   relativePath: string;
@@ -4432,9 +4434,10 @@ async function manageHost(options: LooseRecord) {
     }
 
     case "push": {
+      const projectConfig = await readProjectConfig(options.projectDir);
+      if (containerDeclarations(projectConfig).length) throw commandError("Hosted Capsule container services are not supported yet.", "Use sporades dev or sporades deploy for local services until Host-owned service orchestration is available.");
       const config = await readHostConfig();
       const target = await resolveHostPushTarget(config, options);
-      const projectConfig = await readProjectConfig(options.projectDir);
       const preserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
       const sshAccess = await resolveHostedCapsuleSshAccessForAudit(projectConfig, options.projectDir);
       const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
@@ -5156,11 +5159,16 @@ async function startContainerSession(options: LooseRecord) {
   const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
   const containerTransactionToken = randomBytes(16).toString("hex");
   const runtimeProbeToken = randomBytes(32).toString("hex");
-  const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
+  const serviceNetworks = capsuleServices
+    ? (capsuleServices.composeDocument ? Object.keys((capsuleServices.composeDocument as LooseRecord).networks ?? {}) : [capsuleServices.networks.services]) : [];
+  // Isolating every companion must not also remove the Capsule's own egress.
+  if (capsuleServices && serviceNetworks.length && !serviceNetworks.includes(capsuleServices.networks.services)) serviceNetworks.unshift("bridge");
+  const capsuleServicesNetworkArgs = serviceNetworks.flatMap(network => ["--network", network]);
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
     "--env",
-    `${key}=${value}`,
+    key === "SPORADES_CONTAINER_SERVICES" ? key : `${key}=${value}`,
   ]);
+  const serviceHostGatewayArgs = Object.values(capsuleServices?.services ?? {}).some(service => service.kind === "container" && service.declaration.compose?.network_mode === "host") ? ["--add-host", "host.docker.internal:host-gateway"] : [];
   const telemetryArgs = telemetryConfig ? [
     ...(telemetryConfig.tls.mode === "loopback" ? ["--add-host", "host.docker.internal:host-gateway"] : []),
     ...(telemetryConfig.credentialEnv ? ["--env", telemetryConfig.credentialEnv] : []),
@@ -5183,6 +5191,7 @@ async function startContainerSession(options: LooseRecord) {
       "--user",
       runtimeUser,
       ...capsuleServicesNetworkArgs,
+      ...serviceHostGatewayArgs,
       ...telemetryArgs,
       ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
       "--label",
@@ -5263,6 +5272,7 @@ async function startContainerSession(options: LooseRecord) {
       options.projectDir,
       "Failed to start the container session.",
       "Check Docker is running, then retry `sporades deploy`.",
+      { ...process.env, ...(containerCapsuleServices.env?.SPORADES_CONTAINER_SERVICES ? { SPORADES_CONTAINER_SERVICES: containerCapsuleServices.env.SPORADES_CONTAINER_SERVICES } : {}) },
     );
     const candidateContainer = inspectDockerContainer(options.projectDir, containerId);
     candidateOwnershipProven = Boolean(
@@ -7260,8 +7270,8 @@ function run(command: string, args: readonly string[], cwd: any, message: string
   }
 }
 
-function runDocker(args: any[] | readonly string[], cwd: any, message: string, hint: string) {
-  const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
+function runDocker(args: any[] | readonly string[], cwd: any, message: string, hint: string, childEnvironment = process.env) {
+  const result = spawnSync("docker", args, { cwd, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: childEnvironment });
   if (result.status !== 0) {
     throw commandError(message, hint);
   }
@@ -7296,10 +7306,10 @@ async function printLocalCapsuleServiceStatus(options: LooseRecord, surface: str
 
 function localCapsuleServicesFromConfig(config: LooseRecord, projectDir: string) {
   if (!hasDeclaredLocalCapsuleServices(config)) {
-    validateCapsuleServicesConfig(config.services);
+    validateCapsuleServicesConfig(config.services, projectDir);
     return null;
   }
-  validateCapsuleServicesConfig(config.services);
+  validateCapsuleServicesConfig(config.services, projectDir);
   return {
     path: path.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
@@ -7308,7 +7318,7 @@ function localCapsuleServicesFromConfig(config: LooseRecord, projectDir: string)
 }
 
 function hasDeclaredLocalCapsuleServices(config: LooseRecord) {
-  return Boolean(config.services?.database || config.services?.storage);
+  return Boolean(config.services && Object.keys(config.services).length);
 }
 
 async function requireLocalContainerBinding(options: LooseRecord, action: string) {
@@ -7553,7 +7563,7 @@ async function stopLocalCapsuleServices(options: LooseRecord) {
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const services = {};
   if (capsuleServices) {
-    runDocker(
+    runCapsuleServiceDocker(capsuleServices,
       ["compose", "-f", capsuleServices.path, "down", "--remove-orphans"],
       options.projectDir,
       "Failed to stop Capsule services.",
@@ -7575,11 +7585,11 @@ async function stopLocalCapsuleServices(options: LooseRecord) {
 
 async function resetLocalCapsuleServices(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
-  validateCapsuleServicesConfig(config.services);
-  const capsuleServices = hasDeclaredLocalCapsuleServices(config) ? await writeCapsuleServicesCompose(options.projectDir, config) : null;
+  validateCapsuleServicesConfig(config.services, options.projectDir);
+  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const services: Record<string, LooseRecord> = {};
   if (capsuleServices) {
-    runDocker(
+    runCapsuleServiceDocker(capsuleServices,
       ["compose", "-f", capsuleServices.path, "down", "--remove-orphans", "--volumes"],
       options.projectDir,
       "Failed to reset Capsule services.",
@@ -7597,6 +7607,22 @@ async function resetLocalCapsuleServices(options: LooseRecord) {
     }
   }
 
+  // Reset also owns state for declarations removed since the last session.
+  const serviceStateRoot = path.join(options.projectDir, CAPSULE_SERVICES_STATE_DIR);
+  const staleEntries = await readdir(serviceStateRoot, { withFileTypes: true }).catch(error => {
+    if (errorDetails(error).code === "ENOENT") return [];
+    throw error;
+  });
+  if (capsuleServices || staleEntries.length) {
+    const projectSlug = capsuleServices?.projectSlug ?? capsuleServicesComposeModel({ ...config, services: {} }, options.projectDir).projectSlug;
+    const volumes = runDocker(["volume", "ls", "--quiet", "--filter", "label=com.sporades.managed=true", "--filter", `label=com.sporades.project=${projectSlug}`], options.projectDir, "Failed to inspect Capsule service volumes.", "Restore Docker access and retry reset.");
+    const names = volumes.split(/\s+/).filter(name => /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name));
+    if (names.length) runDocker(["volume", "rm", ...names], options.projectDir, "Failed to reset Capsule service volumes.", "Stop containers using the labelled Capsule volumes and retry reset.");
+  }
+  for (const entry of staleEntries) if (/^[a-z][a-z0-9-]{0,30}$/.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) {
+    await rm(path.join(serviceStateRoot, entry.name), { recursive: true, force: true });
+  }
+  if (await pathExists(path.join(serviceStateRoot, "credentials.json"))) await updateServiceCredentials(options.projectDir, saved => { const { container, ...retained } = saved; return { value: retained, result: null }; });
   if (options.silent) {
     return services;
   }
@@ -7613,7 +7639,6 @@ async function localCapsuleServicesStatus(capsuleServices: CapsuleServicesModel 
     return {};
   }
   const services: Record<string, LooseRecord> = {};
-  const networkExists = dockerResourceExists(["network", "inspect", capsuleServices.networks.services], projectDir);
   for (const [name, service] of Object.entries(capsuleServices.services) as Array<[string, CapsuleService]>) {
     const diagnostics: LooseRecord[] = [];
     let runtime: LooseRecord = { state: "unknown", health: null };
@@ -7631,8 +7656,8 @@ async function localCapsuleServicesStatus(capsuleServices: CapsuleServicesModel 
       status: runtime.state || "unknown",
       health: runtime.health,
       network: {
-        name: capsuleServices.networks.services,
-        exists: networkExists,
+        name: capsuleServiceNetwork(capsuleServices, service),
+        exists: dockerResourceExists(["network", "inspect", capsuleServiceNetwork(capsuleServices, service)], projectDir),
       },
       volume: {
         type: "bind",
@@ -7709,9 +7734,37 @@ async function startCapsuleServices(
   capsuleServices: CapsuleServicesModel | null,
   projectDir: any,
   options: StartCapsuleServicesOptions = {},
-) {
+): Promise<LooseRecord> {
   if (!capsuleServices) {
     return options.connection === "container" ? { env: {}, services: null } : {};
+  }
+  if (capsuleServices.retired) {
+    runCapsuleServiceDocker(capsuleServices, ["compose", "-f", capsuleServices.path, "down", "--remove-orphans"], projectDir,
+      "Failed to remove undeclared Capsule services.", "Restore Docker Compose access and retry the lifecycle command.");
+    await rm(capsuleServices.path, { force: true });
+    await updateServiceCredentials(projectDir, saved => { const { container, ...retained } = saved; return { value: retained, result: null }; });
+    return options.connection === "container" ? { env: {}, services: null } : {};
+  }
+  if (Object.values(capsuleServices.services).some(service => service.kind === "container")) {
+    const resolution = await resolveContainerSecrets(projectDir, { services: capsuleServices.declarations });
+    containerSecretResolutions.set(capsuleServices, resolution);
+    if (pinContainerInheritedMounts(capsuleServices, projectDir, name => {
+      const raw = runDocker(["container", "inspect", "--format", "{{json .}}", name], projectDir, "Inherited container mount inspection failed.", "Check the named container; no service was started.");
+      try { return JSON.parse(raw); } catch { return null; }
+    }, name => {
+      const raw = runDocker(["volume", "inspect", "--format", "{{json .}}", name], projectDir, "Inherited volume inspection failed.", "Check the named volume; no service was started.");
+      try { return JSON.parse(raw); } catch { return null; }
+    })) await writeFile(capsuleServices.path, JSON.stringify(capsuleServices.composeDocument, null, 2) + "\n");
+    const raw = runCapsuleServiceDocker(capsuleServices, ["compose", "-f", capsuleServices.path, "config", "--format", "json"], projectDir,
+      "Capsule service Compose validation failed.", "Check the declared Compose keys and Docker Compose version; secret values are omitted.");
+    let resolved;
+    try { resolved = JSON.parse(raw); } catch { throw commandError("Invalid resolved Capsule services Compose model.", "Upgrade Docker Compose and retry; no services were started."); }
+    validateResolvedContainerServices(capsuleServices.composeDocument, resolved, capsuleServices.declarations, capsuleServices.nameMapping, resolution.environment);
+    for (const [name, service] of Object.entries(capsuleServices.services)) {
+      if (service.kind === "container" && service.declaration.elevated?.length) await emitCliSshAuditEvent({ name: capsuleServices.projectSlug }, projectDir, {
+        event: "capsule-service.elevated.start", operation: "capsule-service.start", surface: "sporades/services", targetResourceKind: "container-service", outcome: "started", metadata: { service: name, elevated: service.declaration.elevated },
+      });
+    }
   }
   for (const [name, service] of Object.entries(capsuleServices.services) as Array<[string, CapsuleService]>) {
     options.emit?.({
@@ -7723,8 +7776,8 @@ async function startCapsuleServices(
     });
   }
   try {
-    runDocker(
-      ["compose", "-f", capsuleServices.path, "up", "--detach"],
+    runCapsuleServiceDocker(capsuleServices,
+      ["compose", "-f", capsuleServices.path, "up", "--detach", "--remove-orphans"],
       projectDir,
       "Failed to start Capsule services.",
       "Check Docker is running and supports `docker compose`, then retry the command.",
@@ -7740,6 +7793,7 @@ async function startCapsuleServices(
     throw error;
   }
   if (!options.wait) {
+    await finalizeContainerSecrets(projectDir, { services: capsuleServices.declarations }, containerSecretResolutions.get(capsuleServices));
     return {};
   }
   const connections: Record<string, CapsuleServiceConnection> = {};
@@ -7757,6 +7811,7 @@ async function startCapsuleServices(
     }
     throw error;
   }
+  await finalizeContainerSecrets(projectDir, { services: capsuleServices.declarations }, containerSecretResolutions.get(capsuleServices));
   if (options.connection === "container") {
     return {
       env: capsuleServicesContainerEnv(capsuleServices),
@@ -7771,8 +7826,7 @@ async function startCapsuleServices(
       status: "ready",
       engine: service.engine,
       statePath: path.join(CAPSULE_SERVICES_STATE_DIR, name),
-      host: connection.host,
-      port: connection.port,
+      ...(service.kind === "container" ? {} : { host: connection.host, port: connection.port }),
     });
   }
   return capsuleServicesLocalEnv(capsuleServices, connections);
@@ -7780,6 +7834,7 @@ async function startCapsuleServices(
 
 function capsuleServicesContainerEnv(capsuleServices: CapsuleServicesModel) {
   const env: ServiceEnv = {};
+  if (containerSecretResolutions.has(capsuleServices)) env.SPORADES_CONTAINER_SERVICES = containerConnections(capsuleServices);
   if (capsuleServices.services.database) {
     const service = capsuleServices.services.database;
     env.SPORADES_SERVICE_DATABASE_ENGINE = service.engine;
@@ -7803,6 +7858,7 @@ function capsuleServicesContainerEnv(capsuleServices: CapsuleServicesModel) {
 
 function capsuleServicesLocalEnv(capsuleServices: CapsuleServicesModel, connections: Record<string, CapsuleServiceConnection>) {
   const env: ServiceEnv = {};
+  if (containerSecretResolutions.has(capsuleServices)) env.SPORADES_CONTAINER_SERVICES = containerConnections(capsuleServices, connections);
   if (capsuleServices.services.database) {
     const service = capsuleServices.services.database;
     const connection = connections.database;
@@ -7836,7 +7892,7 @@ function capsuleServicesJsonSummary(capsuleServices: CapsuleServicesModel, statu
       {
         status,
         engine: service.engine,
-        network: capsuleServices.networks.services,
+        network: capsuleServiceNetwork(capsuleServices, service),
         containerName: service.name,
         statePath: path.join(CAPSULE_SERVICES_STATE_DIR, name),
       },
@@ -7845,13 +7901,19 @@ function capsuleServicesJsonSummary(capsuleServices: CapsuleServicesModel, statu
 }
 
 async function waitForCapsuleService(capsuleServices: CapsuleServicesModel, projectDir: any, name: string, service: LooseRecord, connection: string) {
+  if (service.kind === "container") {
+    if (service.declaration.health.await !== false) await waitForHealthyCapsuleService(capsuleServices, projectDir, name, service);
+    const host = connection === "container" ? service.name : "127.0.0.1";
+    const port = connection === "container" || service.declaration.compose?.network_mode === "host" ? service.targetPort : capsuleServicePort(capsuleServices, projectDir, service.name, service.targetPort, name);
+    return { host, port, url: `http://${host}:${port}` };
+  }
   if (connection === "container") {
     return await waitForHealthyCapsuleService(capsuleServices, projectDir, name, service);
   }
   if (service.kind === "database") {
     return await waitForCapsuleDatabaseService(capsuleServices, projectDir);
   }
-  const deadline = Date.now() + capsuleServiceReadinessTimeoutMs();
+  const deadline = Date.now() + (service.kind === "container" ? (service.declaration.health.startPeriodSeconds ?? 60) * 1000 + 30000 : capsuleServiceReadinessTimeoutMs());
   let lastStatus = null;
   let lastError = null;
   let lastProbe = null;
@@ -7893,7 +7955,7 @@ async function waitForCapsuleService(capsuleServices: CapsuleServicesModel, proj
 }
 
 async function waitForHealthyCapsuleService(capsuleServices: CapsuleServicesModel, projectDir: any, name: any, service: LooseRecord) {
-  const deadline = Date.now() + capsuleServiceReadinessTimeoutMs();
+  const deadline = Date.now() + (service.kind === "container" ? (service.declaration.health.startPeriodSeconds ?? 60) * 1000 + 30000 : capsuleServiceReadinessTimeoutMs());
   let lastStatus = null;
   let lastError = null;
 
@@ -8048,7 +8110,7 @@ function capsuleServiceReadinessTimeoutMs() {
 }
 
 function capsuleServiceStatus(capsuleServices: CapsuleServicesModel, projectDir: any, serviceName: any) {
-  const output = runDocker(
+  const output = runCapsuleServiceDocker(capsuleServices,
     ["compose", "-f", capsuleServices.path, "ps", "--format", "json", serviceName],
     projectDir,
     "Failed to inspect Capsule service readiness.",
@@ -8063,7 +8125,7 @@ function capsuleServiceStatus(capsuleServices: CapsuleServicesModel, projectDir:
 }
 
 function capsuleServicePort(capsuleServices: CapsuleServicesModel, projectDir: any, serviceName: any, targetPort: any, serviceKind = "database") {
-  const output = runDocker(
+  const output = runCapsuleServiceDocker(capsuleServices,
     ["compose", "-f", capsuleServices.path, "port", serviceName, String(targetPort)],
     projectDir,
     "Failed to inspect Capsule service port.",
@@ -8281,4 +8343,27 @@ function isMissingDockerContainerError(result: SpawnSyncReturns<string>) {
 function writeJsonResponse(response: ServerResponse<IncomingMessage>, status: number, result: LooseRecord) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(`${JSON.stringify(result)}\n`);
+}
+
+function runCapsuleServiceDocker(model: CapsuleServicesModel, args: string[], cwd: string, message: string, hint: string) {
+  const environment: Record<string, string> = {};
+  // A retired declaration still needs placeholders to parse its previous file
+  // for down/status. No secret resolution or Sealed key is needed to stop it.
+  if (model.retired) {
+    const source = readFileSync(model.path, "utf8");
+    for (const match of source.matchAll(/\$\{(SPORADES_SVC_[A-Za-z0-9_]+):\?\}/g)) environment[match[1]] = "SPORADES_UNUSED";
+  }
+  for (const [name, service] of Object.entries(model.services)) {
+    if (service.kind !== "container") continue;
+    for (const [key, value] of Object.entries(service.declaration.env ?? {})) if (typeof value !== "string") environment[serviceInterpolationName(name, key)] = "SPORADES_UNUSED";
+  }
+  Object.assign(environment, containerSecretResolutions.get(model)?.environment ?? {});
+  return runDocker(args, cwd, message, hint, { ...process.env, ...environment });
+}
+function containerConnections(model: CapsuleServicesModel, connections?: Record<string, CapsuleServiceConnection>) {
+  const resolution = containerSecretResolutions.get(model)!;
+  return JSON.stringify(Object.fromEntries(Object.entries(resolution.services).map(([name, service]) => [name, {
+    url: connections?.[name]?.url ?? `http://${model.services[name].declaration.compose?.network_mode === "host" ? "host.docker.internal" : model.services[name].name}:${model.services[name].targetPort}`,
+    secrets: service.secrets,
+  }])));
 }

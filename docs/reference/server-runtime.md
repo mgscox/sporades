@@ -1216,7 +1216,7 @@ export default capsule({
 });
 ```
 
-Ordinary endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.log`,
+Ordinary endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.services`, `ctx.log`,
 `ctx.messages`, and `ctx.request`. `ctx.request` contains method, path, headers,
 query parameters, parsed `body` data, and immutable exact `bodyBytes`.
 
@@ -1252,13 +1252,14 @@ Anonymous User and Session for a tokenless request. The only accepted explicit
 value is `"none"`. This is an endpoint declaration; it does not change the
 runtime-owned health/probe routes or provider callbacks.
 
-The handler receives `SessionlessEndpointContext`: only `app`, `env`, `log`,
+The handler receives `SessionlessEndpointContext`: only `app`, `env`, `services`, `log`,
 `rateLimit`, `signal` and the ordinary bounded `request` (including exact
 `bodyBytes`). `endpointFor(schema)` supports the same declaration without
 adding schema or Database authority. There is no Auth or Credential identity,
 Database, resource, File, Team, billing, Job, mail, AI, message, Access-key,
 Service User, server-auth, lifecycle or Privileged capability. `env` is a readonly
-snapshot of string Server env values. Server env remains trusted server input;
+snapshot of string Server env values. `services` is the frozen trusted companion
+connection view described in the [container service contract](projects-and-configuration.md#declare-a-container-service), including generated API keys. These remain trusted server input;
 do not return secrets or incoming credential values.
 
 **General Capsule context middleware is skipped for sessionless endpoints.**

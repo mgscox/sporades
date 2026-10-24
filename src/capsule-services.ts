@@ -1,17 +1,19 @@
+import { updateServiceCredentials, containerDeclarations, renderContainerService, validateContainerDeclaration, validateContainerDependencies, type ContainerServiceDeclaration } from "./container-services.js";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export type JsonRecord = Record<string, unknown>;
 type HelperError = Error & { hint?: string };
 export type DatabaseEngine = "libsql" | "postgres";
 export type StorageEngine = "minio";
-export type CapsuleServiceKind = "database" | "storage";
+export type CapsuleServiceKind = "database" | "storage" | "container";
 export type CapsuleServiceCredentials = {
   databaseUser: string;
   databasePassword: string;
   storageAccessKey: string;
   storageSecretKey: string;
+  container?: Record<string, Record<string, string>>;
 };
 export type CapsuleServiceOptions = {
   credentials?: Partial<CapsuleServiceCredentials>;
@@ -25,7 +27,7 @@ export type StorageServiceDeclaration = {
   kind: "storage";
   engine: StorageEngine;
 };
-export type CapsuleServicesDeclaration = JsonRecord & {
+export type CapsuleServicesDeclaration = Record<string, DatabaseServiceDeclaration | StorageServiceDeclaration | ContainerServiceDeclaration> & {
   database?: DatabaseServiceDeclaration;
   storage?: StorageServiceDeclaration;
 };
@@ -62,8 +64,9 @@ export type CapsuleStorageService = CapsuleServiceBase & {
   region: string;
   namespace: string;
 };
-export type CapsuleService = CapsuleDatabaseService | CapsuleStorageService;
-export type CapsuleServices = {
+export type CapsuleContainerService = Omit<CapsuleServiceBase, "command"> & { kind: "container"; command: string[]; declaration: ContainerServiceDeclaration; rendered: JsonRecord };
+export type CapsuleService = CapsuleDatabaseService | CapsuleStorageService | CapsuleContainerService;
+export type CapsuleServices = Record<string, CapsuleService> & {
   database?: CapsuleDatabaseService;
   storage?: CapsuleStorageService;
 };
@@ -73,7 +76,11 @@ export type CapsuleServicesComposeModel = {
   publishPorts: boolean;
   credentials: CapsuleServiceCredentials;
   services: CapsuleServices;
-  networks: { services: string };
+  composeDocument?: JsonRecord;
+  retired?: boolean;
+  declarations: Record<string, any>;
+  nameMapping: Record<string, string>;
+  networks: { services: string; internal: string };
   labels: Record<string, string>;
 };
 export type DatabaseEngineModel = {
@@ -105,7 +112,7 @@ export const CAPSULE_SERVICES_COMPOSE_FILE = path.join(".sporades", "compose", "
 export const CAPSULE_SERVICES_STATE_DIR = path.join(".sporades", "services");
 export const CAPSULE_SERVICES_CREDENTIALS_FILE = path.join(".sporades", "services", "credentials.json");
 
-export function validateCapsuleServicesConfig(services: unknown): CapsuleServicesDeclaration | null {
+export function validateCapsuleServicesConfig(services: unknown, projectDir = process.cwd()): CapsuleServicesDeclaration | null {
   if (services === undefined) {
     return null;
   }
@@ -114,13 +121,9 @@ export function validateCapsuleServicesConfig(services: unknown): CapsuleService
   }
 
   for (const key of Object.keys(services)) {
-    if (!SUPPORTED_SERVICE_KEYS.has(key)) {
-      throw commandError(
-        `Unsupported Capsule service: ${key}`,
-        "Use supported Capsule service declarations: `services.database` or `services.storage`.",
-      );
-    }
+    if (!SUPPORTED_SERVICE_KEYS.has(key)) validateContainerDeclaration(key, services[key], services, projectDir);
   }
+  validateContainerDependencies(services);
 
   if (services.database !== undefined) {
     validateDatabaseServiceConfig(services.database);
@@ -129,7 +132,7 @@ export function validateCapsuleServicesConfig(services: unknown): CapsuleService
     validateStorageServiceConfig(services.storage);
   }
 
-  return services;
+  return services as CapsuleServicesDeclaration;
 }
 
 export async function writeCapsuleServicesCompose(
@@ -139,18 +142,28 @@ export async function writeCapsuleServicesCompose(
 ): Promise<WrittenCapsuleServicesCompose | null> {
   const composePath = path.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
-    await rm(composePath, { force: true });
-    return null;
+    try { await readFile(composePath, "utf8"); }
+    catch (e: any) { if (e.code === "ENOENT") return null; throw e; }
+    // Retain the last rendered file until the lifecycle removes its orphans.
+    return { path: composePath, relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
+      ...capsuleServicesComposeModel({ ...config, services: {} }, projectDir), retired: true };
+
   }
 
-  validateCapsuleServicesConfig(config.services);
+  validateCapsuleServicesConfig(config.services, projectDir);
   await mkdir(path.dirname(composePath), { recursive: true });
   const credentials = await loadOrCreateCapsuleServiceCredentials(projectDir);
   const model = capsuleServicesComposeModel(config, projectDir, {
     credentials,
     publishPorts: options.publishPorts === true,
   });
-  await Promise.all(Object.values(model.services).map((service) => mkdir(service.stateDir, { recursive: true })));
+  await Promise.all(Object.values(model.services).map(async service => {
+    await mkdir(service.stateDir, { recursive: true });
+    if ((await lstat(service.stateDir)).isSymbolicLink()) throw commandError("Invalid service state directory.", "Remove the symbolic link from the service Runtime state path.");
+    // The private 0700 services parent protects host access. The mounted leaf
+    // must be writable by the image's independently configured non-root UID.
+    if (service.kind === "container" && service.declaration.state) await chmod(service.stateDir, 0o777);
+  }));
   const source = renderCapsuleServicesCompose(model);
   await writeFile(composePath, source);
   return {
@@ -161,17 +174,9 @@ export async function writeCapsuleServicesCompose(
 }
 
 async function loadOrCreateCapsuleServiceCredentials(projectDir: string): Promise<CapsuleServiceCredentials> {
-  const credentialsPath = path.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
-  let existing: JsonRecord = {};
-  try {
-    const parsed = JSON.parse(await readFile(credentialsPath, "utf8"));
-    if (isRecord(parsed)) {
-      existing = parsed;
-    }
-  } catch {
-    // Missing or unreadable credentials are regenerated below.
-  }
+  return updateServiceCredentials(projectDir, existing => {
   const credentials = {
+    ...existing,
     databaseUser: typeof existing.databaseUser === "string" && existing.databaseUser ? existing.databaseUser : POSTGRES_USER,
     databasePassword:
       typeof existing.databasePassword === "string" && existing.databasePassword
@@ -184,16 +189,8 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir: string): Promis
         ? existing.storageSecretKey
         : randomBytes(24).toString("base64url"),
   };
-  if (
-    credentials.databaseUser !== existing.databaseUser ||
-    credentials.databasePassword !== existing.databasePassword ||
-    credentials.storageAccessKey !== existing.storageAccessKey ||
-    credentials.storageSecretKey !== existing.storageSecretKey
-  ) {
-    await mkdir(path.dirname(credentialsPath), { recursive: true });
-    await writeFile(credentialsPath, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
-  }
-  return credentials;
+    return { value: credentials, result: credentials };
+  });
 }
 
 export function capsuleServicesComposeModel(
@@ -283,7 +280,7 @@ export function capsuleServicesComposeModel(
     };
   }
 
-  const model = {
+  const model: CapsuleServicesComposeModel = {
     projectSlug,
     composeProjectName: `sporades-${projectSlug}-services`,
     publishPorts: options.publishPorts === true,
@@ -296,9 +293,34 @@ export function capsuleServicesComposeModel(
     services,
     networks: {
       services: networkName,
+      internal: `${networkName}-internal`,
     },
     labels,
+    declarations: config.services ?? {},
+    nameMapping: Object.fromEntries(Object.keys(config.services ?? {}).map(name => [name, `sporades-${projectSlug}-${name}`])),
   };
+  const volumes: JsonRecord = {};
+  for (const [name, declaration] of containerDeclarations(config)) {
+    const rendered = renderContainerService(name, declaration, model.nameMapping[name], projectDir, model, volumes);
+    services[name] = {
+      kind: "container", name: model.nameMapping[name], engine: "container", image: declaration.image,
+      stateDir: path.join(projectDir, CAPSULE_SERVICES_STATE_DIR, name), targetPort: declaration.port,
+      volumeTarget: declaration.state?.path ?? "", environment: rendered.environment as Record<string, string>,
+      healthcheck: [], command: declaration.command, labels: rendered.labels as Record<string, string>, declaration, rendered,
+    };
+  }
+  if (containerDeclarations(config).length) {
+    // JSON is quoted, JSON-compatible YAML: no user string can become a YAML alias.
+    model.composeDocument = {
+      name: model.composeProjectName,
+      services: Object.fromEntries(Object.values(services).map(service => [service.name, service.kind === "container" ? service.rendered : builtinComposeObject(service, model)])),
+      networks: {
+        ...(Object.values(services).some(service => service.kind !== "container" || (service.declaration.network?.egress !== false && !service.declaration.compose?.network_mode)) ? { [networkName]: { name: networkName, labels } } : {}),
+        ...(containerDeclarations(config).some(([, d]) => d.network?.egress === false && !d.compose?.network_mode) ? { [model.networks.internal]: { name: model.networks.internal, internal: true, labels } } : {}),
+      },
+      ...(Object.keys(volumes).length ? { volumes } : {}),
+    };
+  }
   return model;
 }
 
@@ -344,9 +366,10 @@ function validateStorageServiceConfig(storage: unknown): asserts storage is Stor
   }
 }
 
-function renderCapsuleServicesCompose(model: CapsuleServicesComposeModel): string {
+export function renderCapsuleServicesCompose(model: CapsuleServicesComposeModel): string {
+  if (model.composeDocument) return JSON.stringify(model.composeDocument, null, 2) + "\n";
   const services = Object.values(model.services)
-    .map((service) => renderServiceCompose(service, model))
+    .map((service) => renderServiceCompose(service as CapsuleDatabaseService | CapsuleStorageService, model))
     .join("\n");
 
   return `# Sporades-owned runtime state. Do not edit by hand.
@@ -364,7 +387,7 @@ ${renderLabels(model.labels, 6)}
 `;
 }
 
-function renderServiceCompose(service: CapsuleService, model: CapsuleServicesComposeModel): string {
+function renderServiceCompose(service: CapsuleDatabaseService | CapsuleStorageService, model: CapsuleServicesComposeModel): string {
   // Ports are published (loopback-only) solely for local dev sessions, where the
   // Capsule runs as a host process. Container sessions reach services by name on
   // the project network; publishing a port would also open it to containers on
@@ -435,7 +458,7 @@ function slugify(value: unknown): string {
 }
 
 function hasDeclaredCapsuleServices(config: CapsuleProjectConfig): boolean {
-  return Boolean(config.services?.database || config.services?.storage);
+  return Boolean(config.services && Object.keys(config.services).length);
 }
 
 function serviceLabels(labels: Record<string, string>, kind: CapsuleServiceKind, engine: string): Record<string, string> {
@@ -454,4 +477,14 @@ function commandError(message: string, hint: string): HelperError {
   const error: HelperError = new Error(message);
   error.hint = hint;
   return error;
+}
+
+function builtinComposeObject(service: CapsuleDatabaseService | CapsuleStorageService, model: CapsuleServicesComposeModel) {
+  return { image: service.image, container_name: service.name, labels: service.labels,
+    ...(Object.keys(service.environment).length ? { environment: Object.fromEntries(Object.entries(service.environment).map(([k,v]) => [k,v.replaceAll("$", () => "$$")])) } : {}),
+    ...(service.command ? { command: service.command } : {}),
+    healthcheck: { test: service.healthcheck, interval: "5s", timeout: "3s", retries: 3, start_period: "60s", start_interval: "1s" },
+    networks: [model.networks.services], ...(model.publishPorts ? { ports: [`127.0.0.1::${service.targetPort}`] } : {}),
+    volumes: [{ type: "bind", source: service.stateDir, target: service.volumeTarget }],
+  };
 }

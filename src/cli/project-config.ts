@@ -98,7 +98,7 @@ export async function readProjectConfig(projectDir: string) {
   validatePasswordResetConfig(config.auth);
   resolveRegistrationThrottle(config.auth);
   validateTeamsConfig(config.teams);
-  validateCapsuleServicesConfig(config.services);
+  validateCapsuleServicesConfig(config.services, projectDir);
   validateTelemetryProjectConfig(config.telemetry);
   return config;
 }

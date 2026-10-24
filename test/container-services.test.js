@@ -1,0 +1,185 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, stat, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { validateCapsuleServicesConfig, writeCapsuleServicesCompose } from '../dist/capsule-services.js';
+import { classifyContainerCompose, validateResolvedContainerServices, resolveContainerSecrets } from '../dist/container-services.js';
+import { createTrustedServices } from '../dist/services-context.js';
+import { requiredServerEnvKeys } from '../dist/server-env-requirements.js';
+const declaration = (extra={}) => ({kind:'container', image:'example/embeddings:v1', command:['--embeddings'], port:8080, health:{http:'/health',startPeriodSeconds:900}, ...extra});
+const valid = (service) => validateCapsuleServicesConfig({embeddings:declaration(service)});
+
+test('container declarations validate names, pins, reserved names, health and env limits', () => {
+  valid({});
+  for (const image of ['example/image','example/image:latest','example/image:latest@sha256:'+'a'.repeat(64),'example/image:']) assert.throws(()=>valid({image}), /image/);
+  valid({image:'example/image@sha256:'+'a'.repeat(64)});
+  for (const name of ['Bad','a'.repeat(32),'a_b','constructor']) assert.throws(()=>validateCapsuleServicesConfig({[name]:declaration()}));
+  assert.throws(()=>validateCapsuleServicesConfig({database:declaration()}));
+  assert.throws(()=>validateCapsuleServicesConfig(Object.fromEntries(Array.from({length:9},(_,i)=>['s'+i,declaration()]))));
+  for (const health of [null,{}, {http:'/ok',tcp:true}, {tcp:false}, {tcp:true,await:'yes'}, {tcp:true,startPeriodSeconds:3601}]) assert.throws(()=>valid({health}));
+  for (const env of [{SPORADES_PRIVATE:'x'},{TOKEN:{sealed:'SPORADES_X'}},{TOKEN:{sealed:'KEY',generated:'x'}},{TOKEN:23},{TOKEN:{generated:'__proto__'}},Object.fromEntries(Array.from({length:65},(_,i)=>['K'+i,'v'])),{TOKEN:'x'.repeat(65537)}]) assert.throws(()=>valid({env}));
+  valid({env:{HF_TOKEN:{sealed:'HF_TOKEN'},API_KEY:{generated:'apiKey'},TUNING:'2048'}});
+});
+
+test('Compose classification fails closed on widening, imports, interpolation and protected mounts', () => {
+  for (const key of ['restart','cpus','mem_limit','entrypoint','x-note']) assert.equal(classifyContainerCompose(key), 'ordinary');
+  for (const key of ['image','environment','ports','security_opt']) assert.equal(classifyContainerCompose(key), 'owned');
+  for (const key of ['privileged','gpus','future_key']) assert.equal(classifyContainerCompose(key), 'elevated');
+  for (const key of ['extends','include','build','<<','&anchor','*alias']) assert.throws(()=>valid({compose:{[key]:{}},elevated:[key]}));
+  assert.throws(()=>valid({compose:{extends:{service:'database'}},elevated:['extends']}));
+  for (const key of ['privileged','future_key']) assert.throws(()=>valid({compose:{[key]:true}}), e=>/elevated/.test(e.hint));
+  valid({compose:{privileged:true}, elevated:['privileged']});
+  valid({compose:{future_key:true}, elevated:['future_key']});
+  assert.throws(()=>valid({compose:{environment:{TOKEN:'leak'}}}), /env/);
+  assert.throws(()=>valid({compose:{entrypoint:['${TOKEN}']}}));
+  assert.throws(()=>valid({command:['${TOKEN}']}));
+  assert.throws(()=>valid({user:'0:0'}));
+  valid({user:'0:0',elevated:['root']});
+  for (const volume of ['/var/run/docker.sock:/sock','/run/docker.sock:/sock','./.sporades:/data','/:/host']) assert.throws(()=>valid({compose:{volumes:[volume]},elevated:['volumes.bind']}));
+  assert.throws(()=>valid({compose:{depends_on:['unknown']}}));
+  assert.throws(()=>validateCapsuleServicesConfig({a:declaration({compose:{depends_on:['b']}}),b:declaration({compose:{depends_on:['a']}})}));
+});
+
+test('secret references join required env without including values', () => {
+  assert.deepEqual(requiredServerEnvKeys({services:{embeddings:declaration({env:{HF_TOKEN:{sealed:'HF_TOKEN'}}})}}), ['HF_TOKEN']);
+});
+
+test('rendering stores stable 256-bit credentials at 0600, interpolates secrets and escapes literals', async () => {
+  const dir=await mkdtemp(path.resolve('.sporades-container-'));
+  try {
+    const config={name:'service-test',services:{embeddings:declaration({env:{HF_TOKEN:{sealed:'HF_TOKEN'},API_KEY:{generated:'apiKey'},LITERAL:'$HOME ${NO_EXPAND}'}})}};
+    const first=await writeCapsuleServicesCompose(dir,config,{publishPorts:true});
+    const secrets=await resolveContainerSecrets(dir,config,{HF_TOKEN:'sealed-test-secret'});
+    const second=await resolveContainerSecrets(dir,config,{HF_TOKEN:'sealed-test-secret'});
+    assert.deepEqual(secrets,second);
+    assert.equal(Buffer.from(secrets.services.embeddings.secrets.apiKey,'hex').length,32);
+    const source=await readFile(first.path,'utf8');
+    assert(!source.includes('sealed-test-secret'));
+    assert(!source.includes(secrets.services.embeddings.secrets.apiKey));
+    assert.match(source,/SPORADES_SVC_EMBEDDINGS_API_KEY_10:\?/);
+    assert.match(source,/\$\$HOME \$\$\{NO_EXPAND\}/);
+    assert.equal((await stat(path.join(dir,'.sporades/services/credentials.json'))).mode & 0o777,0o600);
+    assert.deepEqual(Object.keys(secrets.environment).sort(),['SPORADES_SVC_EMBEDDINGS_API_KEY_10','SPORADES_SVC_EMBEDDINGS_HF_TOKEN_10']);
+    assert.throws(()=>createTrustedServices(config,{SPORADES_CONTAINER_SERVICES:'malformed'}));
+    await assert.rejects(resolveContainerSecrets(dir,config,{HF_TOKEN:'  '}), e=>/HF_TOKEN/.test(e.message)&&!e.message.includes('sealed-test-secret'));
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test('resolved model rejects changed owned values and unaccounted authority', () => {
+  const rendered={services:{svc:{image:'example:v1',environment:{API_KEY:'${SPORADES_SVC_EMBEDDINGS_API_KEY:?}'},user:'10001:10001',read_only:true}}};
+  const resolved=structuredClone(rendered);
+  resolved.services.svc.environment.API_KEY='secret';
+  const declarations={embeddings:declaration()};
+  const mapping={embeddings:'svc'};
+  validateResolvedContainerServices(rendered,resolved,declarations,mapping,{SPORADES_SVC_EMBEDDINGS_API_KEY:'secret'});
+  for (const changed of [{image:'evil:v1'},{user:'0'},{environment:{API_KEY:'secret',EXTRA:'leak'}},{privileged:true},{future_key:true}]) {
+    const bad=structuredClone(resolved);Object.assign(bad.services.svc,changed);
+    assert.throws(()=>validateResolvedContainerServices(rendered,bad,declarations,mapping,{SPORADES_SVC_EMBEDDINGS_API_KEY:'secret'}), /services.embeddings.compose/);
+  }
+});
+
+test('trusted service context is deeply frozen, nonserializable and contains generated secrets only', () => {
+  const config={services:{embeddings:declaration({env:{API_KEY:{generated:'apiKey'},HF_TOKEN:{sealed:'HF_TOKEN'}}})}};
+  const services=createTrustedServices(config,{SPORADES_CONTAINER_SERVICES:JSON.stringify({embeddings:{url:'http://127.0.0.1:5204',secrets:{apiKey:'a'.repeat(64)}}})});
+  assert.equal(services.embeddings.url,'http://127.0.0.1:5204');
+  assert.deepEqual(Object.keys(services.embeddings.secrets),['apiKey']);
+  assert(Object.isFrozen(services)&&Object.isFrozen(services.embeddings)&&Object.isFrozen(services.embeddings.secrets));
+  assert.equal(services.unknown,undefined);
+  assert(!String(JSON.stringify(services)).includes('a'.repeat(64)));
+});
+
+test('concurrent built-in and container credential writers preserve generated identity; corrupt storage fails closed', async () => {
+  const dir=await mkdtemp(path.resolve('.sporades-credentials-'));
+  try {
+    const config={name:'stable',services:{embeddings:declaration({env:{KEY:{generated:'key'}}})}};
+    const attempts=await Promise.all(Array.from({length:8}, async()=>{
+      await writeCapsuleServicesCompose(dir,config);
+      return resolveContainerSecrets(dir,config);
+    }));
+    assert.equal(new Set(attempts.map(v=>v.services.embeddings.secrets.key)).size,1);
+    const {writeFile}=await import('node:fs/promises');
+    await writeFile(path.join(dir,'.sporades/services/credentials.json'),'{broken');
+    await assert.rejects(resolveContainerSecrets(dir,config),/Invalid services/);
+    await assert.rejects(writeCapsuleServicesCompose(dir,config),/Invalid services/);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test('Compose validates known key types and nested elevation before rendering', () => {
+  for (const compose of [{cpus:{}},{privileged:[]},{restart:[]},{logging:{driver:32}}]) assert.throws(()=>valid({compose,elevated:['privileged']}));
+  valid({compose:{deploy:{resources:{limits:{memory:'4g',cpus:'2'}}}}});
+  assert.throws(()=>valid({compose:{deploy:{resources:{reservations:{devices:[{capabilities:['gpu']}]}}}}}));
+  valid({compose:{deploy:{resources:{reservations:{devices:[{capabilities:['gpu']}]}}}},elevated:['deploy.resources.reservations.devices']});
+  for (const compose of [{labels:{'com.sporades.managed':'false'}},{use_api_socket:true},{volumes_from:['database']},{volumes:[{type:'bind',source:'/',target:'/host'}]}]) assert.throws(()=>valid({compose,elevated:['use_api_socket','volumes_from','volumes.bind']}));
+});
+
+test('inherited volumes reject Runtime sources and pin inspected external containers before preflight', async()=>{
+ const {pinContainerInheritedMounts}=await import('../dist/container-services.js');
+ const declarations={worker:declaration({compose:{volumes_from:['container:reviewed:ro']},elevated:['volumes_from']})};
+ validateCapsuleServicesConfig(declarations);
+ const model=()=>({declarations,nameMapping:{worker:'generated-worker'},composeDocument:{services:{'generated-worker':{volumes_from:['container:reviewed:ro']}}}});
+ const safe=model();
+ assert.equal(pinContainerInheritedMounts(safe,process.cwd(),()=>({Id:'f'.repeat(64),Mounts:[{Type:'bind',Source:'/opt/reviewed-corpus',Destination:'/corpus'}]})),true);
+ assert.deepEqual(safe.composeDocument.services['generated-worker'].volumes_from,['container:'+'f'.repeat(64)+':ro']);
+ for(const source of ['/', '/var/run/docker.sock',path.resolve('.sporades/services/credentials.json')]) assert.throws(()=>pinContainerInheritedMounts(model(),process.cwd(),()=>({Id:'f'.repeat(64),Mounts:[{Type:'bind',Source:source,Destination:'/corpus'}]})));
+ assert.throws(()=>pinContainerInheritedMounts(model(),process.cwd(),()=>({Id:'missing',Mounts:[]})));
+ assert.throws(()=>validateCapsuleServicesConfig({database:{kind:'database',engine:'postgres'},worker:declaration({compose:{volumes_from:['database']},elevated:['volumes_from']})}));
+ validateCapsuleServicesConfig({source:declaration({compose:{volumes:['corpus:/corpus']}}),worker:declaration({compose:{volumes_from:['source:ro']},elevated:['volumes_from']})});
+ assert.throws(()=>validateCapsuleServicesConfig({source:declaration({state:{path:'/models'}}),worker:declaration({compose:{volumes_from:['source:ro']},elevated:['volumes_from']})}));
+});
+
+test('failed candidates retain active generated secrets; successful removal discards them',async()=>{
+ const {finalizeContainerSecrets}=await import('../dist/container-services.js');
+ const dir=await mkdtemp(path.resolve('.sporades-service-generations-'));
+ try{
+  const active={services:{worker:declaration({env:{KEY:{generated:'toString'}}})}};
+  const candidate={services:{worker:declaration({env:{KEY:{generated:'replacement'}}})}};
+  const first=await resolveContainerSecrets(dir,active);
+  await finalizeContainerSecrets(dir,active);
+  await resolveContainerSecrets(dir,candidate);
+  const restored=await resolveContainerSecrets(dir,active);
+  assert.equal(restored.services.worker.secrets.toString,first.services.worker.secrets.toString);
+  await finalizeContainerSecrets(dir,active);
+  const retained=JSON.parse(await readFile(path.join(dir,'.sporades/services/credentials.json'),'utf8'));
+  assert.deepEqual(Object.keys(retained.container.worker),['toString']);
+  await finalizeContainerSecrets(dir,{services:{}});
+  const removed=JSON.parse(await readFile(path.join(dir,'.sporades/services/credentials.json'),'utf8'));
+  assert.equal(removed.container,undefined);
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('secret child variables cannot collide across service-name and env-name boundaries',async()=>{
+ const {serviceInterpolationName}=await import('../dist/container-services.js');
+ assert.notEqual(serviceInterpolationName('a-b','C'),serviceInterpolationName('a','B_C'));
+});
+
+test('concurrent declaration finalization cannot erase a newly admitted credential generation',async()=>{
+ const {finalizeContainerSecrets}=await import('../dist/container-services.js');
+ const dir=await mkdtemp(path.resolve('.sporades-service-concurrent-generation-'));
+ try{
+  const oldConfig={services:{worker:declaration({env:{KEY:{generated:'oldKey'}}})}};
+  const newConfig={services:{worker:declaration({env:{KEY:{generated:'newKey'}}})}};
+  const old=await resolveContainerSecrets(dir,oldConfig);
+  const next=await resolveContainerSecrets(dir,newConfig);
+  await finalizeContainerSecrets(dir,newConfig,next);
+  await assert.rejects(finalizeContainerSecrets(dir,oldConfig,old),/Invalid services.worker.env/);
+  const saved=JSON.parse(await readFile(path.join(dir,'.sporades/services/credentials.json'),'utf8'));
+  assert.deepEqual(saved.container.worker,{...next.services.worker.secrets});
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('named volume references preserve Compose sharing within the Capsule namespace',async()=>{
+ const {capsuleServicesComposeModel}=await import('../dist/capsule-services.js');
+ const config={name:'shared-cache',services:{one:declaration({compose:{volumes:['cache:/cache']}}),two:declaration({compose:{volumes:['cache:/models']}})}};
+ const model=capsuleServicesComposeModel(config);
+ assert.deepEqual(Object.keys(model.composeDocument.volumes),['cache']);
+ assert.equal(model.composeDocument.volumes.cache.name,'sporades-shared-cache-services-cache');
+ for(const service of Object.values(model.composeDocument.services))assert.equal(service.volumes[0].source,'cache');
+ assert.equal(model.composeDocument.volumes.cache.labels['com.sporades.managed'],'true');
+});
+
+test('trusted origins accept HTTP port 80, which URL canonicalization removes',()=>{
+ const config={services:{worker:declaration({port:80,compose:{network_mode:'host'},elevated:['network_mode']})},__sporadesSession:'dev'};
+ const services=createTrustedServices(config,{SPORADES_CONTAINER_SERVICES:JSON.stringify({worker:{url:'http://127.0.0.1:80',secrets:{}}})});
+ assert.equal(services.worker.url,'http://127.0.0.1');
+});

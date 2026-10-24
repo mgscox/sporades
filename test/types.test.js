@@ -73,7 +73,19 @@ test("sporades api bindings compile representative strict TypeScript app code", 
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition, type ServerEnvConfig } from "sporades/server";
 const publicHealth = endpoint({ method: "GET", path: "/health", session: "none" }, ctx => {
   const restricted: publicServerApi.SessionlessEndpointContext = ctx;
-  const keys: Record<keyof typeof restricted, true> = { app: true, env: true, log: true, rateLimit: true, signal: true, request: true };
+  const service = ctx.services.embeddings;
+  if (service) {
+    const url: string = service.url;
+    const apiKey: string = service.secrets.apiKey;
+    // @ts-expect-error Service URLs are immutable.
+    service.url = url;
+    // @ts-expect-error Service secrets are immutable.
+    service.secrets.apiKey = apiKey;
+  }
+  // @ts-expect-error The runtime owns the services binding.
+  ctx.services = {};
+
+  const keys: Record<keyof typeof restricted, true> = { app: true, env: true, services: true, log: true, rateLimit: true, signal: true, request: true };
   ctx.log.info(ctx.app.publicOrigin);
   ctx.rateLimit("health", { limit: 10, windowMs: 1000 });
   const bytes: Uint8Array = ctx.request.bodyBytes.toUint8Array();
@@ -134,9 +146,11 @@ endpoint({ method: "GET", path: "/invalid", session: "none", mcp: true }, () => 
 // @ts-expect-error No other explicit Session mode exists.
 endpoint({ method: "GET", path: "/invalid", session: "auto" }, () => null);
 capsule({ name: "stateless", schema: { checks: table({ ok: Boolean() }) }, endpoints: { publicHealth } });
+const sourceServices: SourceCapsuleServices = {};
+const publicServices: publicServerApi.CapsuleServices = sourceServices;
 const serverEnvConfig: ServerEnvConfig = { required: ["INTAKE_URL"], failClosed: true };
 import * as publicServerApi from "sporades/server";
-import { endpoint as sourceEndpoint, endpointFor as sourceEndpointFor, requireAuth as sourceRequireAuth } from "${path.relative(dir, path.join(repoRoot, 'src/server.js')).split(path.sep).join('/')}";
+import { endpoint as sourceEndpoint, endpointFor as sourceEndpointFor, requireAuth as sourceRequireAuth, type CapsuleServices as SourceCapsuleServices } from "${path.relative(dir, path.join(repoRoot, 'src/server.js')).split(path.sep).join('/')}";
 sourceEndpoint({ method: "GET", path: "/source-health", session: "none" }, ctx => {
   // @ts-expect-error Source and shipped bindings both exclude Auth.
   ctx.auth;
@@ -659,6 +673,8 @@ const app = capsule({
         ctx.acl.teams.create("not available in ACL");
         // @ts-expect-error Team ACL role sets must be arrays.
         ctx.acl.teams.hasAnyRole("00000000-0000-4000-8000-000000000000", "author");
+        // @ts-expect-error ACL contexts never expose service credentials or URLs.
+        ctx.services;
         // @ts-expect-error ACL contexts do not expose the mutable current-user Teams API.
         ctx.teams.list();
         // @ts-expect-error ACL policy contexts cannot start privileged server-role work.

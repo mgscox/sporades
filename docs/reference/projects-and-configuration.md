@@ -921,6 +921,161 @@ Container sessions use the generated Compose service DNS name on the services
 network. Capsule code still uses the normal `ctx.db` API; app code does not
 need to read the service URL or choose a database client.
 
+#### Declare a container service
+
+Additional local companion processes use `kind: "container"`. They share the
+Capsule services lifecycle and require Docker Compose v2 with `start_interval`
+support. For example, select a reviewed, pinned llama.cpp server image:
+
+```json
+{
+  "services": {
+    "embeddings": {
+      "kind": "container",
+      "image": "ghcr.io/ggml-org/llama.cpp:server-b6500",
+      "command": [
+        "--embeddings",
+        "--pooling",
+        "mean",
+        "-hf",
+        "ggml-org/embeddinggemma-300M-GGUF",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080"
+      ],
+      "port": 8080,
+      "health": {
+        "http": "/health",
+        "startPeriodSeconds": 900,
+        "await": true
+      },
+      "state": {
+        "path": "/models"
+      },
+      "env": {
+        "LLAMA_CACHE": "/models",
+        "HF_TOKEN": {
+          "sealed": "HF_TOKEN"
+        },
+        "LLAMA_API_KEY": {
+          "generated": "apiKey"
+        }
+      },
+      "compose": {
+        "restart": "unless-stopped",
+        "mem_limit": "4g",
+        "cpus": 2
+      }
+    }
+  }
+}
+```
+
+Service names match `^[a-z][a-z0-9-]{0,30}$`; `database` and `storage` remain
+reserved. Declare at most eight container services. Images need an explicit
+non-`latest` tag or a `sha256` digest; use a digest for immutable identity.
+`command` is a literal argument array, and `port` is one internal TCP port.
+`health` requires exactly one of `http: "/path"` or `tcp: true`, accepts a
+`startPeriodSeconds` from 0 to 3600 (default 60), and defaults `await` to true.
+HTTP checks require `curl` in the image; TCP checks require `/bin/bash` with
+`/dev/tcp`. Choose an image providing the declared probe. `await: false` skips
+readiness waiting; calling code must tolerate an unavailable service.
+
+`state.path` mounts persistent `.sporades/services/<name>/` state. Its private
+parent protects local access; the mounted leaf permits the image's independent
+UID to write. State is excluded from Capsule data backups. Generated credentials
+persist in the locked, atomically replaced `0600`
+`.sporades/services/credentials.json`. Reset discards them; rotation is not
+implemented. After a crashed credential writer, stop concurrent lifecycle commands
+and remove `.sporades/services/.credentials-lock` before retrying. Stale locks
+are never reclaimed automatically.
+
+Each `env` entry is a non-secret literal string, `{ "sealed": "KEY" }`, or
+`{ "generated": "secretName" }`. Sealed references resolve only from Sealed
+Server env; missing or whitespace-only values stop startup before Docker starts
+services and report key names only. Use `sporades env set HF_TOKEN --stdin` to
+seal the operator value. Shell variables and the whole Capsule env are never
+forwarded into a service. At most 64 keys and 64 KB of resolved values are
+allowed. Variable names use normal env syntax, up to 128 characters; `SPORADES_`
+is reserved. Generated secret names start with a letter and contain at most 64
+letters, digits or underscores; JavaScript prototype names and `toJSON` are reserved.
+Generated values contain 256 random bits and stay stable across restarts and
+redeploys. The Compose file contains required interpolation placeholders such as
+`${SPORADES_SVC_EMBEDDINGS_HF_TOKEN_10:?}`. The trailing service-name length prevents cross-service variable collisions.
+Only Docker child-process environments
+receive secret values; they are absent from argv, generated Compose, Bundles,
+CLI JSON and logs. Docker administrators can still read container configuration.
+
+Queries, mutations, Custom endpoints (including sessionless endpoints), App
+messages, Jobs, context middleware, lifecycle and mutation hooks receive the
+same deeply frozen server-only `ctx.services` view:
+
+```ts
+const embeddings = ctx.services.embeddings;
+if (!embeddings) throw new Error("Embeddings service is not declared");
+const response = await fetch(`${embeddings.url}/v1/embeddings`, {
+  method: "POST",
+  headers: {
+    authorization: `Bearer ${embeddings.secrets.apiKey}`,
+    "content-type": "application/json",
+  },
+  body: JSON.stringify({ input: ["A Capsule service"] }),
+});
+```
+
+`url` uses a loopback-published port in Dev and the Compose DNS name in Container
+sessions. An acknowledged `network_mode: "host"` uses the declared host port and
+the Container host gateway instead. `secrets` contains exactly that service's generated names. Sealed
+values remain in `ctx.env`. Unknown names return `undefined`; ACL contexts and
+the browser have no services field. Runtime inspection omits connections and
+credentials, and the runtime redacts generated values from its logs. Middleware
+cannot replace the runtime-owned services binding.
+
+`compose` copies additional service keys as literal JSON-compatible YAML. The
+pinned schema is `compose-spec/compose-spec@3a4a6995e4a971f6173dff9130cb3e38e6738651`.
+Known keys are schema-checked; unknown keys require elevation and must also be
+accepted by the installed Compose version. `${…}` passthrough interpolation is
+rejected. Literal dollar signs are escaped before rendering. Before `up`,
+Sporades checks the resolved `docker compose config --format json` model;
+changes to owned values, imported resources or unaccounted paths fail closed.
+
+| Class | Examples | Rule |
+| --- | --- | --- |
+| Ordinary | `restart`, `depends_on`, `mem_limit`, `cpus`, `deploy.resources.limits`, `entrypoint`, `logging`, `tmpfs`, `platform`, `x-*` | Copied; hardened `/tmp` remains owned. |
+| Owned | `image`, `command`, `environment`, `env_file`, `healthcheck`, `container_name`, `networks`, `ports`, `expose`, `secrets`, `configs`, `user`, `read_only`, `cap_drop`, `security_opt`, `com.sporades.*` labels | Use the corresponding first-class field; rejected in passthrough. Other labels merge. |
+| Elevated | `privileged`, `cap_add`, devices, GPUs, namespace controls, `extra_hosts`, bind mounts (`volumes.bind`), unknown keys | List the exact key in `elevated`; nested device reservations use `deploy.resources.reservations.devices`. Starts emit a names-only Privileged audit event. |
+| Forbidden | `extends`, `include`, `build`, YAML merge keys, anchors, aliases, Docker API socket access | Rejected even when elevated. |
+
+`depends_on` names declared services, including `database` and `storage`; unknown
+names and cycles fail validation. Named volumes are namespaced and Sporades
+labelled, and reset removes them. Binds require `volumes.bind` acknowledgement.
+Docker sockets, Runtime directories, Sealed stores and their ancestor paths
+are always refused, including through symlinks. `volumes_from` requires elevation: declared source services must not inherit
+Runtime state, and external `container:name` sources are inspected for protected
+mounts and pinned to their immutable container ID before preflight. Missing or
+unsafe sources fail before startup. External inherited volumes require the local
+driver without driver options; other backing stores need an explicit reviewed
+bind instead.
+
+Defaults are UID/GID `10001:10001`, `cap_drop: ["ALL"]`,
+`no-new-privileges`, Docker's default seccomp, read-only root, and a
+`noexec,nosuid,nodev` `/tmp`. A numeric `user` can override the UID/GID; root
+requires `elevated: ["root"]`. Disabling
+`hardening.readOnlyRootFilesystem` requires acknowledgement of
+`hardening.readOnlyRootFilesystem`. `network.egress: false` uses an internal
+network and is supported in Container sessions; the Capsule retains its own
+egress. Dev requires a loopback port.
+
+`dev` and `deploy` start services before the Capsule. Rebuilds retain unchanged
+services; Compose recreates changed declarations and removes undeclared services.
+`dev status|stop|reset` and `deploy status|stop|reset` own local state. Stop and
+reset do not require Sealed keys. Reset never removes third-party images.
+Doctor reports pinning, architecture availability, elevated key names and missing
+Sealed references. `host push` refuses container service declarations until
+Host-owned orchestration is available. This is an opt-in 0.9.x addition; existing
+Capsules retain their existing behavior.
+
 #### Use Postgres locally
 
 To run a Capsule against Postgres instead of the default embedded SQLite

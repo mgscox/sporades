@@ -617,6 +617,13 @@ if (call.args[0] === "pull") {
 if (call.args[0] === "build") {
   process.exit(Number(process.env.FAKE_DOCKER_BUILD_STATUS ?? "0"));
 }
+if (call.args[0] === "compose" && call.args.includes("config")) {
+  const model = JSON.parse(readFileSync(call.args[call.args.indexOf("-f") + 1], "utf8"));
+  const resolved = JSON.parse(JSON.stringify(model).replace(/\\$\\{(SPORADES_SVC_[A-Za-z0-9_]+):\\?\\}/g, (_match, key) => process.env[key] || ""));
+  if (process.env.FAKE_DOCKER_COMPOSE_TAMPER) Object.values(resolved.services).find(s => s.labels?.["com.sporades.capsule-service.kind"] === "container").user = "0";
+  process.stdout.write(JSON.stringify(resolved));
+  process.exit(0);
+}
 if (call.args[0] === "compose" && call.args.includes("up")) {
   process.exit(Number(process.env.FAKE_DOCKER_COMPOSE_UP_STATUS ?? "0"));
 }
@@ -4315,6 +4322,7 @@ test("sporades deploy generates owned Compose for a declared database Capsule se
         path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"),
         "up",
         "--detach",
+        "--remove-orphans",
       ]);
       assert(runCall.args.includes("--network"), runCall.args.join(" "));
       assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-todo-island-services");
@@ -4759,8 +4767,8 @@ test("sporades deploy reports structured errors for unsupported Capsule service 
       ok: false,
       data: null,
       error: {
-        message: "Unsupported Capsule service: cache",
-        hint: "Use supported Capsule service declarations: `services.database` or `services.storage`.",
+        message: "Invalid services.cache.kind.",
+        hint: "Set kind to container.",
       },
     });
   });
@@ -5920,5 +5928,64 @@ test("Container deployment seeds and pins read-only admission authority across p
     const afterRemoval = await deploy(); assert.equal(afterRemoval.code,0,afterRemoval.stdout+afterRemoval.stderr); assert.equal(JSON.parse(await readFile(stored,"utf8")).removed,true);
     delete config.admissionPolicy; await writeFile(configPath,JSON.stringify(config)); const unconfigured = await deploy(); assert.equal(unconfigured.code,0,unconfigured.stdout+unconfigured.stderr);
     const last = (await docker.calls()).filter(call=>call.args[0]==="run").at(-1); assert(!last.args.some(arg=>arg.includes(":/run/sporades-admission:"))); assert.equal(JSON.parse(await readFile(stored,"utf8")).removed,true);
+  });
+});
+
+
+test("declared container services deliver secret references by child environment and keep Compose, Bundles, output and argv clean", async () => {
+  await withTempDir(async dir => {
+    const created = await runCli(["create", "container-secret-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "container-secret-island"));
+    await installFakeReact(projectDir);
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    config.services = { embeddings: { kind: "container", image: "example/embeddings:v1", command: ["--embeddings"], port: 8080, health: { http: "/health" }, env: { HF_TOKEN: { sealed: "HF_TOKEN" }, API_KEY: { generated: "apiKey" }, TUNING: "2048" }, compose: { privileged: false }, elevated: ["privileged"] } };
+    await writeFile(path.join(projectDir, "sporades.json"), JSON.stringify(config));
+    const sealedValue = "synthetic-service-provider-token";
+    const { ensureSealedServerEnvKeyPair, sealedServerEnvPaths, sealServerEnv, writeSealedServerEnv } = await import("../dist/sealed-server-env.js");
+    const envPaths = sealedServerEnvPaths(projectDir);
+    const pair = await ensureSealedServerEnvKeyPair(envPaths);
+    await writeSealedServerEnv(envPaths, sealServerEnv({ HF_TOKEN: sealedValue, UNDECLARED_SECRET: "synthetic-unrelated-secret" }, pair.publicKey));
+    const docker = await installFakeDocker(dir, "container-service-new");
+    const deployed = await runCli(["deploy", "--port", "5203", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
+    const credentials = JSON.parse(await readFile(capsuleServiceCredentialsPath(projectDir), "utf8"));
+    const generated = credentials.container.embeddings.apiKey;
+    const composeSource = await readFile(path.join(projectDir, ".sporades/compose/capsule-services.compose.yml"), "utf8");
+    const bundle = await readFile(path.join(projectDir, ".sporades/build/server.mjs"), "utf8");
+    const calls = await docker.calls();
+    const clientBundle = await readFile(path.join(projectDir, ".sporades/build/client.js"), "utf8");
+    const output = deployed.stdout + deployed.stderr + composeSource + bundle + clientBundle + JSON.stringify(calls);
+    for (const secret of [sealedValue, generated, "synthetic-unrelated-secret"]) assert(!output.includes(secret));
+    const service = Object.values(JSON.parse(composeSource).services)[0];
+    assert.deepEqual(Object.keys(service.environment).sort(), ["API_KEY", "HF_TOKEN", "TUNING"]);
+    const capsuleRun = firstDockerRunCall(calls);
+    assert(capsuleRun.args.includes("SPORADES_CONTAINER_SERVICES"));
+    assert(!capsuleRun.args.some(v => v.startsWith("SPORADES_CONTAINER_SERVICES=")));
+    assert(calls.findIndex(c => c.args.includes("config")) < calls.findIndex(c => c.args.includes("up")));
+    const log = await readFile(path.join(projectDir, ".sporades/data/logs/events.jsonl"), "utf8");
+    assert.match(log, /capsule-service.elevated.start/);
+    assert(!log.includes(generated));assert(!log.includes(sealedValue));
+    const rejected = await runCli(["deploy", "--port", "5203", "--json"], { cwd: projectDir, env: { ...docker.env, FAKE_DOCKER_COMPOSE_TAMPER: "1" } });
+    assert.equal(rejected.code, 1);assert.match(rejected.stdout, /services.embeddings.compose.user/);
+    assert.equal((await docker.calls()).filter(c => c.args.includes("up")).length, 1);
+    config.services.embeddings.network = { egress: false };
+    await writeFile(path.join(projectDir, "sporades.json"), JSON.stringify(config));
+    const isolated = await runCli(["deploy", "--port", "5203", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(isolated.code, 0, isolated.stdout + isolated.stderr);
+    const isolatedRun = (await docker.calls()).filter(c => c.args[0] === "run").at(-1);
+    const networkNames = isolatedRun.args.flatMap((arg, index) => arg === "--network" ? [isolatedRun.args[index + 1]] : []);
+    assert.deepEqual(networkNames, ["bridge", "sporades-container-secret-island-services-internal"]);
+    await rm(path.join(projectDir, ".sporades/sealed-server-env"), { recursive: true, force: true });
+    const stopped = await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(stopped.code, 0, stopped.stdout + stopped.stderr);
+    const retiredState = path.join(projectDir, ".sporades/services/retired-service");
+    await mkdir(retiredState, { recursive: true });
+    await writeFile(path.join(retiredState, "model-cache"), "old declaration state");
+    const reset = await runCli(["deploy", "reset", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(reset.code, 0, reset.stdout + reset.stderr);
+    await assert.rejects(readFile(path.join(retiredState, "model-cache")), { code: "ENOENT" });
+    assert.equal(JSON.parse(await readFile(capsuleServiceCredentialsPath(projectDir), "utf8")).container, undefined);
+    assert(!(await docker.calls()).some(c => c.args[0] === "rmi" && c.args.includes("example/embeddings:v1")));
   });
 });
