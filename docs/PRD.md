@@ -1201,7 +1201,10 @@ that produce them, excluding only the manifest itself. The freshness check fails
 when a sealed output is changed or deleted or a generator input changes without
 a complete rebuild. A deployed Capsule's server Bundle is built from the
 runtime module graph, so a name that fails to reach it is a build error rather
-than a runtime one.
+than a runtime one. PRs carry source, public types, docs, and parity tests without
+committing `dist/` or `bin/`; local `pretest` rebuilds before checking freshness.
+CI regenerates and commits these tracked outputs on main after merge. Release
+commits continue directly to main. See [the contributor workflow](agents/generated-artifacts.md).
 
 ## Job Queue
 

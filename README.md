@@ -360,6 +360,12 @@ Capsules through authorized public keys in `sporades.json`. Normal management
 remains the CLI and Host helper surfaces; SSH is a compatibility and emergency
 access path.
 
+## Contributing
+
+Run a local build and tests, but never commit `dist/` or `bin/` in a PR. CI
+regenerates their tracked copies on main after merge. See the
+[generated artifacts workflow](https://github.com/mgscox/sporades/blob/main/docs/agents/generated-artifacts.md).
+
 ## License
 
 MIT
