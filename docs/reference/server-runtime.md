@@ -23,9 +23,11 @@ measured no-policy latency budget. No declaration preserves existing routing.
 ## Capsule rate limits
 
 Every Capsule handler context (`ctx` in queries, mutations, endpoints, and
-Jobs) exposes synchronous `ctx.rateLimit(key, { limit, windowMs })`. Calls with
-the same key and parameter tuple share a counter across those handler types in
-one runtime:
+Jobs) exposes synchronous `ctx.rateLimit(key, { limit, windowMs })`.
+Capsule-principal [File ingress admission](./files-and-realtime.md#charging-a-signed-resource-before-staging)
+exposes the same method during its active callback and signal lifetime. Calls
+with the same key and parameter tuple share a counter across admission and
+those handler types in one runtime:
 
 ```ts
 const admission = ctx.rateLimit("password-reset", {
@@ -48,7 +50,8 @@ at most 1024 UTF-8 bytes. `limit` and `windowMs` must be positive safe integers,
 `limit` must be below `Number.MAX_SAFE_INTEGER`, and `windowMs` cannot exceed
 24 hours.
 
-The in-memory table is shared by handler contexts in a runtime and holds at
+The in-memory table is shared by handlers and Capsule-principal File ingress
+admission in a runtime and holds at
 most 10,000 buckets with deterministic least-recently-used eviction. Its
 counters are separate from HTTP request admission and authentication's
 existing email and Session counters. Transaction rollback does not refund a

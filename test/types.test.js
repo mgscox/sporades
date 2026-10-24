@@ -249,6 +249,19 @@ async function resourceContract(ctx: publicServerApi.CapsuleContext) {
   return checked;
 }
 
+function principalAdmission(ctx: publicServerApi.FileIngressAdmissionContext<typeof privateSchema>) {
+  const result: publicServerApi.RateLimitResult = ctx.rateLimit("upload:resource", { limit: 2, windowMs: 60000 });
+  const alias: (key: string, options: publicServerApi.RateLimitOptions) => publicServerApi.RateLimitResult = ctx.rateLimit;
+  // @ts-expect-error admission has no database write authority.
+  ctx.db.secrets.insert({ value: "forbidden" });
+  // @ts-expect-error admission has no raw adapter authority.
+  ctx.db.adapter;
+  // @ts-expect-error admission does not acquire actor identity authority.
+  ctx.auth;
+  // @ts-expect-error limiter parameters remain numeric.
+  ctx.rateLimit("upload:resource", { limit: "2", windowMs: 60000 });
+  return result.ok && alias("other", { limit: 1, windowMs: 1000 }).ok;
+}
 const principalFieldsOnly: publicServerApi.FileIngressAdmissionDecision = { allow: true, principal: { namespace: "application", key: "integration" }, allowFiles: false };
 const principalUndefinedFiles: publicServerApi.FileIngressAdmissionDecision = { allow: true, principal: { namespace: "application", key: "integration" }, allowFiles: undefined };
 // @ts-expect-error principal admission file permission must be a boolean.

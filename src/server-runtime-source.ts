@@ -9,7 +9,7 @@ import { validateEndpointMcpDeclarations, validateMcpConfig } from "./mcp-config
 import { resolveMcpRuntime } from "./mcp-runtime.js";
 import { resolveFileAllowedMimeTypes } from "./file-policy.js";
 import { captureJobTraceContext, traceRuntimeOperation } from "./runtime-request-context.js";
-import { createCapsuleRateLimiter, resolveRegistrationThrottle } from "./capsule-rate-limit.js";
+import { createCapsuleRateLimiter, resolveRegistrationThrottle, type RateLimitOptions } from "./capsule-rate-limit.js";
 import { CLIENT_ADDRESS_TOKEN_HEADER, trustedClientAddress } from "./client-address.js";
 import { htmlString } from "./html.js";
 import { bindJobResources, bindOuterResources, isResourceAbortError, resourceError, unsupportedResources } from "./resource-runtime.js";
@@ -3703,11 +3703,15 @@ async function admitCapsuleIngressPrincipal(database: LooseRecord, endpoint: Loo
     purpose: "files.ingress-admission",
     subject: { method: endpoint.options.method, path: endpoint.options.path },
     signal,
-  }, (db) => definition.admit(Object.freeze({
+  }, (db, assertActive) => definition.admit(Object.freeze({
     db,
     app: database.app,
     env: database.serverEnv,
     signal,
+    rateLimit: (key: string, options: RateLimitOptions) => {
+      assertActive();
+      return database.capsuleRateLimiter.consume(key, options);
+    },
     request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
   }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
   let allowFiles: boolean;
@@ -3858,7 +3862,9 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       let ingressAuthority: LooseRecord;
       let allowFiles = true;
       if (claimAuthority === "capsule-principal") {
-        const admission = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, request.signal);
+        const endpointSignal = (request as LooseRecord).__sporadesEndpointSignal ?? request.signal;
+        const admission = await admitCapsuleIngressPrincipal(database, endpoint as LooseRecord, endpointRequest, endpointSignal);
+        if (endpointSignal?.aborted) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
         ingressAuthority = admission.authority;
         allowFiles = admission.allowFiles;
       } else {
