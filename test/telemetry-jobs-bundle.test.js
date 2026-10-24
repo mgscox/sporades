@@ -57,15 +57,24 @@ async function boot(dir, env) {
 
 const metrics = batches => batches.flatMap(batch => batch.resourceMetrics ?? []).flatMap(resource => resource.scopeMetrics ?? []).flatMap(scope => scope.metrics ?? []);
 const points = (batches, name) => metrics(batches).filter(metric => metric.name === name).flatMap(metric => (metric.gauge ?? metric.sum ?? metric.histogram)?.dataPoints ?? []);
-async function waitForState(app, id, status) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+const telemetryWaitMs = 10_000;
+async function waitForTelemetry(predicate, message) {
+  const deadline = performance.now() + telemetryWaitMs;
+  while (!predicate()) {
+    assert(performance.now() < deadline, message);
+    // Observe only the collector: polling the Capsule would mask idle queue bugs.
+    await pause();
+  }
+}
+async function waitForState(app, id, status, attempts = 100) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const state = await (await fetch(app.origin + '/state?id=' + id)).json();
     if (state.status === status) return state;
     await pause();
   }
   assert.fail(`Job did not reach ${status}`);
 }
-async function fixture(t, samplingRatio = 1, serverSource = source) {
+async function fixture(t, samplingRatio = 1, serverSource = source, metricsIntervalMs = 1000) {
   await mkdir(path.join(process.cwd(), '.scratch'), { recursive: true });
   const root = await mkdtemp(path.join(process.cwd(), '.scratch', 'job-trace-bundle-'));
   const received = [];
@@ -93,7 +102,7 @@ async function fixture(t, samplingRatio = 1, serverSource = source) {
     await rm(root, { recursive: true, force: true });
   });
   await once(collector, 'listening');
-  const config = { name: 'job-trace-bundle', __sporadesTelemetry: samplingRatio === null ? null : { endpoint: `http://127.0.0.1:${collector.address().port}`, tls: { mode: 'loopback' }, serviceName: 'job-trace-bundle', samplingRatio, metricsIntervalMs: 1000 } };
+  const config = { name: 'job-trace-bundle', __sporadesTelemetry: samplingRatio === null ? null : { endpoint: `http://127.0.0.1:${collector.address().port}`, tls: { mode: 'loopback' }, serviceName: 'job-trace-bundle', samplingRatio, metricsIntervalMs } };
   const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(process.cwd(), 'server', 'index.ts') });
   await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv: {}, serverSource, serverModuleSource,
         epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");',
@@ -152,22 +161,28 @@ test('generated Capsule exports a distinct linked span for a durable Job executi
 
 for (const ratio of [1, 0]) {
   test(`durable Job retry, failure and pending queue metrics ignore trace sampling (${ratio})`, { timeout: 60_000 }, async t => {
-    const f = await fixture(t, ratio);
+    // Export slower than the former 1300 ms sleep to exercise cadence independence.
+    const f = await fixture(t, ratio, source, 3000);
     const retry = await f.enqueue('?kind=retry');
     const retried = await waitForState(f.app, retry.id, 'succeeded');
     assert.equal(retried.attempts, 2);
     const failed = await f.enqueue('?kind=fail');
     await waitForState(f.app, failed.id, 'failed');
-    const delayed = await f.enqueue('?delay=2400');
-    await new Promise(resolve => setTimeout(resolve, 1300));
-    assert(points(f.received, 'sporades.job.queue.depth').some(point => Number(point.asInt ?? point.asDouble) === 1), 'delayed work contributes to durable pending depth');
-    assert(points(f.received, 'sporades.job.queue.oldest_pending_age').some(point => Number(point.asDouble ?? point.asInt) >= 0.5), 'pending age increases even without HTTP traffic');
-    await waitForState(f.app, delayed.id, 'succeeded');
-    await new Promise(resolve => setTimeout(resolve, 1100));
-    assert(points(f.received, 'sporades.job.queue.depth').some(point => Number(point.asInt ?? point.asDouble) === 0), 'empty queue reports zero');
-    assert(points(f.received, 'sporades.job.retry.count').some(point => Number(point.asInt ?? point.asDouble) === 1));
-    assert(points(f.received, 'sporades.job.failure.count').some(point => Number(point.asInt ?? point.asDouble) === 2), 'failed attempts include retried failures');
-    assert(points(f.received, 'sporades.job.execution.duration').reduce((sum, point) => sum + Number(point.count), 0) >= 4);
+    const pendingStart = f.received.length;
+    // Keep the Job pending beyond the entire observation budget, so a late export
+    // cannot miss the pending state by racing Job availability.
+    const delayed = await f.enqueue('?delay=' + (telemetryWaitMs + 2000));
+    await waitForTelemetry(() => {
+      const pending = f.received.slice(pendingStart);
+      return points(pending, 'sporades.job.queue.depth').some(point => Number(point.asInt ?? point.asDouble) === 1)
+        && points(pending, 'sporades.job.queue.oldest_pending_age').some(point => Number(point.asDouble ?? point.asInt) >= 0.5);
+    }, 'delayed work contributes to durable pending depth and pending age increases even without HTTP traffic');
+    await waitForState(f.app, delayed.id, 'succeeded', 300);
+    const emptyStart = f.received.length;
+    await waitForTelemetry(() => points(f.received.slice(emptyStart), 'sporades.job.queue.depth').some(point => Number(point.asInt ?? point.asDouble) === 0), 'empty queue reports zero after delayed work completes');
+    await waitForTelemetry(() => points(f.received, 'sporades.job.retry.count').some(point => Number(point.asInt ?? point.asDouble) === 1), 'retry count is exported');
+    await waitForTelemetry(() => points(f.received, 'sporades.job.failure.count').some(point => Number(point.asInt ?? point.asDouble) === 2), 'failed attempts include retried failures');
+    await waitForTelemetry(() => points(f.received, 'sporades.job.execution.duration').reduce((sum, point) => sum + Number(point.count), 0) >= 4, 'attempt durations are exported');
     await f.stop();
     const executions = flatten(f.received).filter(span => span.name === 'job record');
 
@@ -234,9 +249,8 @@ test('expired claims recover through a fresh attempt span and count lease retrie
   assert.equal(recovered.attempts, 2);
   assert.equal(recovered.attemptHistory[0].outcome, 'interrupted');
   await waitForState(f.app, exhausted.id, 'failed');
-  await new Promise(resolve => setTimeout(resolve, 1200));
-  assert(points(f.received, 'sporades.job.retry.count').some(point => Number(point.asInt ?? point.asDouble) === 1));
-  assert(points(f.received, 'sporades.job.failure.count').some(point => Number(point.asInt ?? point.asDouble) === 2));
+  await waitForTelemetry(() => points(f.received, 'sporades.job.retry.count').some(point => Number(point.asInt ?? point.asDouble) === 1), 'lease retry count is exported');
+  await waitForTelemetry(() => points(f.received, 'sporades.job.failure.count').some(point => Number(point.asInt ?? point.asDouble) === 2), 'lease failures are exported');
   await f.stop();
   const executions = flatten(f.received).filter(span => span.name === 'job record');
   assert.equal(executions.length, 1, 'recovery does not manufacture a span for the interrupted process');
