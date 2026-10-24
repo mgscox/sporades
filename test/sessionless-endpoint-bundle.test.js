@@ -35,12 +35,19 @@ const health = ctx => {
   return { status: 201, headers: { 'x-health': 'public' }, body: {
     keys: Object.keys(ctx).sort(), symbols: Object.getOwnPropertySymbols(ctx).length,
     middleware: ctx.middleware ?? null, identity: ctx.auth ?? null,
+    retainedEnvIdentity: ctx.env.retainedContext?.auth?.userId ?? null,
+    retainedLimiterIdentity: ctx.rateLimit.retainedContext?.auth?.userId ?? null,
     body: ctx.request.body, size: ctx.request.bodyBytes.byteLength,
     aborted: ctx.signal.aborted, limited: !ctx.rateLimit('health', { limit: 1, windowMs: 60000 }).ok,
   } };
 };
 export default capsule({ name: 'sessionless-bundle', schema: {},
-  middleware: [ctx => { ctx.middleware = 'ordinary'; return ctx; }],
+  middleware: [ctx => {
+    ctx.middleware = 'ordinary';
+    ctx.env.retainedContext = ctx;
+    ctx.rateLimit.retainedContext = ctx;
+    return ctx;
+  }],
   endpoints: {
     health: endpoint({ method: 'POST', path: '/health', session: 'none' }, health),
     blocked: endpoint({ method: 'POST', path: '/blocked', session: 'none' }, health),
@@ -82,7 +89,8 @@ export default capsule({ name: 'sessionless-bundle', schema: {},
       assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
       const data = await response.json();
       assert.deepEqual(data, { keys: ['app', 'env', 'log', 'rateLimit', 'request', 'signal'], symbols: 0,
-        middleware: null, identity: null, body: { ok: true }, size: 14, aborted: false, limited: index > 0 });
+        middleware: null, identity: null, retainedEnvIdentity: null, retainedLimiterIdentity: null,
+        body: { ok: true }, size: 14, aborted: false, limited: index > 0 });
       assert.deepEqual(snapshot(db), before);
     }
     for (const [pathname, init, status, code] of [
@@ -115,6 +123,11 @@ export default capsule({ name: 'sessionless-bundle', schema: {},
     assert.deepEqual(ordinary, { middleware: 'ordinary', identity: true });
     assert.equal(snapshot(db).sporades_auth_users.length, before.sporades_auth_users.length + 1);
     assert.equal(snapshot(db).sporades_auth_sessions.length, before.sporades_auth_sessions.length + 1);
+    const afterOrdinary = snapshot(db);
+    const afterRetained = await (await fetch(base + '/health', { method: 'POST' })).json();
+    assert.equal(afterRetained.retainedEnvIdentity, null);
+    assert.equal(afterRetained.retainedLimiterIdentity, null);
+    assert.deepEqual(snapshot(db), afterOrdinary);
   } finally {
     db?.close();
     if (child && child.exitCode === null) { child.kill('SIGTERM'); await once(child, 'close'); }

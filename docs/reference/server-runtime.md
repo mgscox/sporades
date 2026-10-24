@@ -1198,8 +1198,9 @@ The handler receives `SessionlessEndpointContext`: only `app`, `env`, `log`,
 `bodyBytes`). `endpointFor(schema)` supports the same declaration without
 adding schema or Database authority. There is no Auth or Credential identity,
 Database, resource, File, Team, billing, Job, mail, AI, message, Access-key,
-Service User, server-auth, lifecycle or Privileged capability. Server env remains
-trusted server input; do not return secrets or incoming credential values.
+Service User, server-auth, lifecycle or Privileged capability. `env` is a readonly
+snapshot of string Server env values. Server env remains trusted server input;
+do not return secrets or incoming credential values.
 
 **General Capsule context middleware is skipped for sessionless endpoints.**
 It expects the ordinary authority-bearing context and could add capabilities.

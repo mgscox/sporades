@@ -4362,9 +4362,11 @@ async function runSessionlessEndpoint(database: LooseRecord, handler: Function, 
     signal?.throwIfAborted();
     const context = Object.freeze({
       app: database.app,
-      env: Object.freeze({ ...database.serverEnv }),
+      // Ordinary middleware may have retained objects on its mutable env view or limiter
+      // function. Copy only env values, and expose a fresh callable rather than that object.
+      env: Object.freeze(Object.fromEntries(Object.entries(database.serverEnv ?? {}).filter(([, value]) => typeof value === "string"))),
       log: createEndpointLogger(database, { request: { method: endpointRequest.method, path: endpointRequest.path } }),
-      rateLimit: database.capsuleRateLimiter.consume,
+      rateLimit(key: string, options: LooseRecord) { return database.capsuleRateLimiter.consume(key, options); },
       signal,
       request: {
         method: endpointRequest.method,

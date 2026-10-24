@@ -137,3 +137,29 @@ test('legacy source routes preserve the explicit session discriminant', () => {
   const [route] = extractEndpoints(`{ endpoints: { health: endpoint({ method: 'GET', path: '/health', session: 'none' }, ctx => ctx.request.path) } }`);
   assert.equal(route.options.session, 'none');
 });
+
+test('sessionless allowed capabilities cannot inherit middleware-retained identity objects', async () => {
+  const definition = capsule({ name: 'sessionless-retention', middleware: [ctx => {
+    ctx.env.retainedContext = ctx;
+    ctx.rateLimit.retainedContext = ctx;
+    return ctx;
+  }], endpoints: {
+    ordinary: endpoint({ method: 'POST', path: '/ordinary' }, () => null),
+    health: endpoint(options, ctx => ({
+      envIdentity: ctx.env.retainedContext?.auth?.userId ?? null,
+      limiterIdentity: ctx.rateLimit.retainedContext?.auth?.userId ?? null,
+    })),
+  } });
+  await withDatabase(definition, async db => {
+    try {
+      await runEndpoint(db, db.endpoints[0], new URL('http://localhost/ordinary'), request());
+      assert.ok(db.serverEnv.retainedContext.auth.userId);
+      const before = authSnapshot(db);
+      assert.deepEqual(await runEndpoint(db, db.endpoints[1], new URL('http://localhost/health'), request()), { envIdentity: null, limiterIdentity: null });
+      assert.deepEqual(authSnapshot(db), before);
+    } finally {
+      delete db.serverEnv.retainedContext;
+      delete db.capsuleRateLimiter.consume.retainedContext;
+    }
+  });
+});
