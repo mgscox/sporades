@@ -1,6 +1,8 @@
+import { createHostFixture, hostFixtureConfig, removeHostFixture } from "./support/host-fixture-root.js";
+import { withFixtureUmask } from "./support/fixture-umask.js";
 import { preservedDeployFilePath } from "../dist/deploy-files.js";
 import assert from "node:assert/strict";
-import { chmod, chown, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, chown, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -53,7 +55,7 @@ test("Hosted prerender warnings reach human and structured successful CLI output
   await withTempDir(async (dir) => {
     const fakeSsh = await installContractFakeSsh(path.join(dir, "fake-ssh"), `const request = JSON.parse(stdin); process.stdout.write(JSON.stringify({ ok:true, data:{ installed:true, release:{ id:request.release.id, files:request.release.files }, capsule:{ subname:request.capsule.subname, hostedUrl:request.release.hostedUrl } }, error:null }) + "\\n");`);
     const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
-    const env = { ...hostEnv(path.join(dir, "machine-config")), ...fakeSsh.env, ...fakeScp.env, PATH:`${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}` };
+    const env = { ...hostEnv(hostFixtureConfig(dir, "machine-config")), ...fakeSsh.env, ...fakeScp.env, PATH:`${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}` };
     const created = await runCli(["create", "warning-capsule", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"], {cwd:dir});
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "warning-capsule");
@@ -98,11 +100,11 @@ test("Hosted release requests carry only bounded required inspector metadata", (
 });
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(path.join(await realpath(tmpdir()), "sporades-host-"));
+  const dir = await createHostFixture("sporades-host-");
   try {
-    return await fn(dir);
+    return await withFixtureUmask(() => fn(dir));
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await removeHostFixture(dir);
   }
 }
 
@@ -1770,7 +1772,7 @@ test("sporades host stores Host profiles outside projects and resolves the curre
   // This target is stored locally; the profile test does not connect over SSH.
   const server = process.env.SPORADES_TEST_HOST_SERVER || "root@203.0.113.10";
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
@@ -1835,7 +1837,7 @@ test("sporades host stores Host profiles outside projects and resolves the curre
 
 test("sporades host bind is a local-only project remote binding helper", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installFakeSsh(dir);
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
@@ -1905,7 +1907,7 @@ test("sporades host bind is a local-only project remote binding helper", async (
 
 test("sporades --version --host reports the Host server CLI version", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     await writeHostProfileConfig(configDir, {
       profiles: {
         personal: {
@@ -1974,7 +1976,7 @@ process.stdout.write(JSON.stringify({
 
 test("sporades host upgrade copies the running CLI sibling Host helper to the selected Host server", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     await writeHostProfileConfig(configDir, {
       profiles: {
         personal: {
@@ -2265,7 +2267,7 @@ test("Host helper legacy drain rejects an oversized process table within its wor
 
 test("sporades host invoke sends a JSON remote helper request over SSH", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `process.stdout.write(JSON.stringify({
@@ -2319,7 +2321,7 @@ process.exit(0);
 
 test("sporades host invoke reports remote helper envelopes separately from SSH transport failures", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
@@ -2407,7 +2409,7 @@ process.exit(127);
 
 test("sporades host health checks the selected Host profile and reports safe JSON", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
 
     await withHttpServer((request, response) => {
       assert.equal(request.url, "/__sporades/health");
@@ -2456,7 +2458,7 @@ test("sporades host health checks the selected Host profile and reports safe JSO
 
 test("sporades host health checks a Hosted Capsule runtime through the remote helper", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -2577,7 +2579,7 @@ process.exit(0);
 
 test("sporades host health distinguishes unreachable, HTTP failure, and unexpected response shape", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const unreachablePort = await reserveUnusedPort();
 
     await writeHostProfileConfig(configDir, {
@@ -2686,7 +2688,7 @@ test("sporades host health distinguishes unreachable, HTTP failure, and unexpect
 
 test("sporades host bootstrap enables one Hosted domain through the remote helper contract", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -2810,7 +2812,7 @@ process.exit(0);
 
 test("sporades host bootstrap reports missing Cloudflare origin certificate material with an actionable hint", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -2875,7 +2877,7 @@ test("sporades host bootstrap can run against an opt-in real SSH Host server", a
   }
 
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const addArgs = [
       "host",
       "add",
@@ -2916,7 +2918,7 @@ test("sporades host register can run against an opt-in real SSH Host server and 
   }
 
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const projectName = `${smoke.template}-host-smoke`;
     const createResult = await runCli(["create", projectName, "--template", smoke.template, "--no-install", "--no-git", "--json"], {
       cwd: dir,
@@ -2972,7 +2974,7 @@ test("sporades host logs can read a real Host server after requesting an opt-in 
   }
 
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const addHost = await runCli(
       [
         "host",
@@ -3026,7 +3028,7 @@ test("sporades host list can run against an opt-in real SSH Host server after di
   }
 
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const projectName = `${smoke.template}-host-list-smoke`;
     const createResult = await runCli(["create", projectName, "--template", smoke.template, "--no-install", "--no-git", "--json"], {
       cwd: dir,
@@ -3096,7 +3098,7 @@ test("sporades host push can restart a real Hosted Capsule and serve it through 
   }
 
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const projectName = `${smoke.template}-host-push-routing-smoke`;
     const createResult = await runCli(["create", projectName, "--template", smoke.template, "--no-git", "--json"], {
       cwd: dir,
@@ -4340,7 +4342,7 @@ test("sporades host helper does not commit registration when the unavailable rou
 
 test("sporades host register creates authoritative remote state and then writes local binding", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -4494,7 +4496,7 @@ process.exit(0);
 
 test("sporades host rotate-key invokes the Hosted Capsule sealed-env rotation helper contract", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -4574,7 +4576,7 @@ process.exit(0);
 
 test("sporades host push uploads a release archive with declared deploy.files and installs it without restart by default", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       path.join(dir, "fake-ssh"),
       `const request = JSON.parse(stdin);
@@ -4717,7 +4719,7 @@ process.exit(0);
 
 test("sporades host push packages generated SSH authorized keys without leaking source file paths", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const sourceKeyPath = path.join(dir, "operator.keys");
     await writeFile(sourceKeyPath, `# operator keys\n${TEST_PUBLIC_KEY}\n`);
     const fakeSsh = await installContractFakeSsh(
@@ -4859,7 +4861,7 @@ process.exit(0);
 
 test("sporades host push strips disabled SSH config file paths from the release archive", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const sourceKeyPath = path.join(dir, "comments-only.keys");
     await writeFile(sourceKeyPath, "# no effective keys today\n\n");
     const fakeSsh = await installContractFakeSsh(
@@ -4959,7 +4961,7 @@ process.exit(0);
 
 test("sporades host push rejects invalid SSH config before uploading a release", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       path.join(dir, "fake-ssh"),
       `process.stdout.write(JSON.stringify({
@@ -5021,7 +5023,7 @@ process.exit(0);
 
 test("sporades host push re-encrypts Sealed Server env to the rotated current Hosted Capsule key", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const oldHostKeyPair = generateKeyPairSync("rsa", {
       modulusLength: 2048,
       publicKeyEncoding: { type: "spki", format: "pem" },
@@ -5152,7 +5154,7 @@ process.exit(0);
 
 test("sporades host push automatically re-encrypts Sealed Server env to the Hosted Capsule public key", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const hostKeyPair = generateKeyPairSync("rsa", {
       modulusLength: 2048,
       publicKeyEncoding: { type: "spki", format: "pem" },
@@ -5295,7 +5297,7 @@ process.exit(0);
 
 test("sporades host push refuses legacy Server env values instead of silently importing them", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       path.join(dir, "fake-ssh"),
       `process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Should not be called.", hint: "Preflight should fail locally." } }) + "\\n");`,
@@ -5344,7 +5346,7 @@ test("sporades host push refuses legacy Server env values instead of silently im
 
 test("sporades host push reports a structured recovery hint when local sealed source values are unavailable", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       path.join(dir, "fake-ssh"),
       `process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Should not be called.", hint: "Preflight should fail locally." } }) + "\\n");`,
@@ -5439,7 +5441,7 @@ process.stdout.write(JSON.stringify({ ok: true, data: { installed: true, release
 
 test("sporades host push can publish a Vanilla TypeScript Capsule and request restart", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       path.join(dir, "fake-ssh"),
       `const request = JSON.parse(stdin);
@@ -5522,7 +5524,7 @@ for (const { framework, template, toolchain, build } of CLIENT_CAPABILITIES.flat
 )) test(`sporades host push archives the complete normalized ${framework} ${toolchain} ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const selectedToolchain = toolchain;
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       path.join(dir, "fake-ssh"),
       `const request = JSON.parse(stdin); process.stdout.write(JSON.stringify({ ok: true, data: { installed: true, release: { id: request.release.id, files: request.release.files }, capsule: { subname: request.capsule.subname, hostedUrl: request.release.hostedUrl } }, error: null }) + "\\n");`,
@@ -5621,7 +5623,7 @@ for (const { framework, template, toolchain, build } of CLIENT_CAPABILITIES.flat
 
 test("sporades host push --verify requests Hosted Capsule restart and release verification", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       path.join(dir, "fake-ssh"),
       `const request = JSON.parse(stdin);
@@ -5722,7 +5724,7 @@ process.exit(0);
 
 test("sporades host start stop and restart invoke the Hosted Capsule lifecycle helper contract", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -10537,12 +10539,9 @@ test("sporades host helper rejects caller-controlled Docker lifecycle authority 
 });
 
 test("unconfigured Hosted Capsules start and restart beneath a root-owned sticky ancestor", async () => {
-  const scratch = path.join(repoRoot, ".sporades");
-  await mkdir(scratch, { recursive: true });
-  const dir = await mkdtemp(path.join(scratch, "host-sticky-start-"));
-  try {
+  await withTempDir(async (dir) => {
     const fixture = await writeHostedCapsuleRollbackFixture(dir, { releaseIds: ["20260630T221500Z-feedface"] });
-    // Model /tmp metadata without requiring root or writing outside the worktree.
+    // Model root-owned sticky metadata without requiring root.
     const preload = path.join(dir, "sticky-ancestor.mjs");
     await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
 const lstat = fs.promises.lstat;
@@ -10573,7 +10572,7 @@ fs.promises.lstat = async function(file, ...args) {
       await assert.rejects(lstat(journal), { code: "ENOENT" });
     }
     assert.equal((await docker.calls()).filter(call => call.args[0] === "run").length, 2);
-  } finally { await rm(dir, { recursive: true, force: true }); }
+  });
 });
 
 test("sporades host helper starts a retained old-image release from the current builder lifecycle DTO", async () => {
@@ -12993,7 +12992,7 @@ test("sporades host helper returns rollback route reload failures to the unavail
 
 test("sporades host register leaves local binding untouched when authoritative registration fails", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -13040,7 +13039,7 @@ process.exit(0);
 
 test("sporades host register requires complete alias confirmation before writing a binding", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(dir, `
 const capsule = JSON.parse(process.env.FAKE_REGISTER_CAPSULE);
 process.stdout.write(JSON.stringify({ ok: true, data: { registered: true, capsule }, error: null }) + "\\n");
@@ -13072,7 +13071,7 @@ process.stdout.write(JSON.stringify({ ok: true, data: { registered: true, capsul
 
 test("sporades host register relies on the Host server for domain-scoped uniqueness", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const { existsSync, readFileSync, writeFileSync } = require("node:fs");
@@ -13153,7 +13152,7 @@ process.exit(0);
 
 test("sporades host register reports bootstrap-required failures with TLS file hints", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -13211,7 +13210,7 @@ process.exit(0);
 
 test("sporades host register validates lowercase DNS-safe non-reserved Capsule subnames before SSH", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installFakeSsh(dir);
 
     const invalid = await runCli(["host", "register", "Team_Notes", "--json"], {
@@ -13248,7 +13247,7 @@ test("sporades host register validates lowercase DNS-safe non-reserved Capsule s
 
 test("sporades host unregister invokes the Hosted Capsule unregister helper contract", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -13351,7 +13350,7 @@ process.exit(0);
 
 test("sporades host delete invokes the Hosted Capsule delete helper contract", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -13462,7 +13461,7 @@ process.exit(0);
 
 test("sporades host list works from outside a project and reports an empty registry", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -13535,7 +13534,7 @@ process.exit(0);
 
 test("sporades host releases lists release history for one Hosted Capsule", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -13628,7 +13627,7 @@ process.exit(0);
 
 test("sporades host rollback invokes the Hosted Capsule rollback helper contract", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -13782,7 +13781,7 @@ process.exit(0);
 
 test("sporades host list combines registry release metadata and fake Docker state", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -13894,7 +13893,7 @@ process.exit(0);
 
 test("sporades host list trusts the Host server registry over a local project binding", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -13974,7 +13973,7 @@ process.exit(0);
 
 test("sporades host ssh uses the local remote binding and reports helper SSH inspection JSON", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -14193,7 +14192,7 @@ test("sporades host helper reports disabled SSH without inspecting Docker when n
 
 test("sporades host stats resolves a Hosted Capsule and returns normalized Docker stats as JSON", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -14343,7 +14342,7 @@ process.exit(0);
 
 test("sporades host stats without a subname resolves the selected Host profile and returns Host server stats as JSON", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -14425,7 +14424,7 @@ process.exit(0);
 
 test("sporades host current reports effective Hosted security policy without contacting the Host server", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     await writeHostProfileConfig(configDir, {
       currentHostAlias: "personal",
       profiles: {
@@ -14470,7 +14469,7 @@ test("sporades host current reports effective Hosted security policy without con
 
 test("sporades host stats without a Host profile reports a structured JSON failure", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
 
     const stats = await runCli(["host", "stats", "--json"], {
       cwd: dir,
@@ -14507,7 +14506,7 @@ test("sporades host stats help text shows the optional Capsule subname form", as
 
 test("sporades host stats handles SSH failure and remote helper failure as structured JSON", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
 
     const addHost = async (env) => {
       const result = await runCli(
@@ -14569,7 +14568,7 @@ process.exit(0);
 
 test("sporades host logs retrieves default HTTP log lines as JSON", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -14642,7 +14641,7 @@ process.exit(0);
 
 test("sporades host logs prints only recent HTTP log lines in plain output", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -14691,7 +14690,7 @@ process.exit(0);
 
 test("sporades host logs can request HTTP logs for one Hosted Capsule", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -14739,7 +14738,7 @@ process.exit(0);
 
 test("sporades host logs requests capsule stdout and stderr using a Hosted Capsule binding", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
@@ -14808,7 +14807,7 @@ process.exit(0);
 
 test("sporades host logs validates invalid line counts without calling SSH", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const fakeSsh = await installFakeSsh(dir);
 
     const invalid = await runCli(["host", "logs", "--lines", "0", "--json"], {
@@ -14830,7 +14829,7 @@ test("sporades host logs validates invalid line counts without calling SSH", asy
 
 test("sporades host logs handles empty logs, SSH failure, and remote helper failure", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
@@ -15093,7 +15092,7 @@ test("sporades host github workflow write writes a workflow and refuses accident
 
 test("sporades host validation returns standard JSON errors", async () => {
   await withTempDir(async (dir) => {
-    const configDir = path.join(dir, "machine-config");
+    const configDir = hostFixtureConfig(dir, "machine-config");
     await mkdir(configDir, { recursive: true });
 
     const missingAlias = await runCli(["host", "add", "--server", "root@example.com", "--domain", "example.com", "--json"], {

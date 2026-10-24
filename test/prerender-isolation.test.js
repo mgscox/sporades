@@ -1,14 +1,14 @@
+import { createPrerenderFixture } from './support/prerender-fixture-root.js';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { renderClientPrerenderFragment } from '../dist/client-prerender.js';
 
 test('writable CommonJS locations start module-local and remain isolated from siblings', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-writable-renderer-')));
+  const root = await createPrerenderFixture('sporades-writable-renderer-');
   try {
     await mkdir(path.join(root, 'nested'));
     await writeFile(path.join(root, 'entry.mjs'), `import first from './nested/first.cjs'; import second from './nested/second.cjs'; export default () => first() + second();`);
@@ -25,7 +25,7 @@ module.exports = () => {
 });
 
 test('prerender executions isolate preloaded dynamic CommonJS dependencies and preserve host cache', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-cache-isolation-')));
+  const root = await createPrerenderFixture('sporades-cache-isolation-');
   const require = createRequire(import.meta.url);
   const dependency = path.join(root, 'state.cjs');
   try {
@@ -44,7 +44,7 @@ test('prerender executions isolate preloaded dynamic CommonJS dependencies and p
 });
 
 test('writable require starts module-local, keeps static TypeScript imports, and then honors replacement', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-writable-require-')));
+  const root = await createPrerenderFixture('sporades-writable-require-');
   try {
     await mkdir(path.join(root, 'nested'));
     await writeFile(path.join(root, 'entry.mjs'), `import render from './nested/helper.cjs'; export default render;`);
@@ -63,7 +63,7 @@ module.exports = () => {
 });
 
 test('computed dynamic imports fail clearly rather than resolving against the CLI directory', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-dynamic-import-')));
+  const root = await createPrerenderFixture('sporades-dynamic-import-');
   try {
     await writeFile(path.join(root, 'entry.mjs'), `export default async () => { const target = './adjacent.mjs'; return (await import(target)).default; };`);
     await writeFile(path.join(root, 'adjacent.mjs'), 'export default "adjacent";');
@@ -74,7 +74,7 @@ test('computed dynamic imports fail clearly rather than resolving against the CL
 });
 
 test('root var declarations redeclare initialized CommonJS wrapper parameters', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-wrapper-vars-')));
+  const root = await createPrerenderFixture('sporades-wrapper-vars-');
   try {
     await mkdir(path.join(root, 'nested'));
     await writeFile(path.join(root, 'entry.mjs'), `import render from './nested/helper.cjs'; export default render;`);
@@ -92,7 +92,7 @@ module.exports = () => initial + '|' + __dirname;
 });
 
 test('computed require cannot hide an ESM import graph from Dev dependency tracking', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-computed-esm-')));
+  const root = await createPrerenderFixture('sporades-computed-esm-');
   try {
     await writeFile(path.join(root, 'copy.mjs'), 'export default "static copy";');
     await writeFile(path.join(root, 'view.mjs'), 'import copy from "./copy.mjs"; export default copy;');
@@ -107,7 +107,7 @@ test('computed require cannot hide an ESM import graph from Dev dependency track
 });
 
 test('failed static absolute and file URL imports report their local recovery targets', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-local-targets-')));
+  const root = await createPrerenderFixture('sporades-local-targets-');
   try {
     const missing = path.join(root, 'missing.mjs');
     for (const specifier of [missing, pathToFileURL(missing).href]) {
@@ -120,8 +120,8 @@ test('failed static absolute and file URL imports report their local recovery ta
 });
 
 test('computed external require failures redact runtime paths and file URLs', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-runtime-redaction-')));
-  const external = await realpath(await mkdtemp(path.join(tmpdir(), 'private-renderer-location-')));
+  const root = await createPrerenderFixture('sporades-runtime-redaction-');
+  const external = await createPrerenderFixture('private-renderer-location-');
   try {
     const missing = path.join(external, 'missing helper.cjs');
     for (const target of [missing, pathToFileURL(missing).href]) {
@@ -158,7 +158,7 @@ test('computed external require failures redact runtime paths and file URLs', as
 });
 
 test('renderer parentPort progress cannot impersonate bootstrap completion', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-renderer-channel-')));
+  const root = await createPrerenderFixture('sporades-renderer-channel-');
   try {
     await writeFile(path.join(root, 'entry.cjs'), `
 const { parentPort } = require('node:worker_threads');
@@ -177,7 +177,7 @@ exports.default = async () => {
 });
 
 test('CommonJS module.require stays module-relative and writable in helpers', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-module-require-')));
+  const root = await createPrerenderFixture('sporades-module-require-');
   try {
     await mkdir(path.join(root, 'nested'));
     await writeFile(path.join(root, 'nested/value.cjs'), 'module.exports = "adjacent";');
@@ -189,7 +189,7 @@ test('CommonJS module.require stays module-relative and writable in helpers', as
 });
 
 test('TypeScript CommonJS helper syntax selects module-local wrappers', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-typescript-cjs-')));
+  const root = await createPrerenderFixture('sporades-typescript-cjs-');
   try {
     await mkdir(path.join(root, 'nested'));
     await writeFile(path.join(root, 'package.json'), '{"type":"module"}');
@@ -203,7 +203,7 @@ test('TypeScript CommonJS helper syntax selects module-local wrappers', async ()
 });
 
 test('CommonJS module location fields identify each source helper and stay writable', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-module-location-')));
+  const root = await createPrerenderFixture('sporades-module-location-');
   try {
     await mkdir(path.join(root, 'nested'));
     await writeFile(path.join(root, 'package.json'), '{"type":"module"}');
@@ -217,7 +217,7 @@ test('CommonJS module location fields identify each source helper and stay writa
 });
 
 test('direct CommonJS eval fails explicitly instead of using entry-rooted wrappers', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-direct-eval-')));
+  const root = await createPrerenderFixture('sporades-direct-eval-');
   try {
     await mkdir(path.join(root, 'nested'));
     await writeFile(path.join(root, 'entry.mjs'), 'import render from "./nested/helper.cjs"; export default render;');
@@ -231,7 +231,7 @@ test('direct CommonJS eval fails explicitly instead of using entry-rooted wrappe
 });
 
 test('CommonJS dynamic with scope fails explicitly before wrapper specialization', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-with-scope-')));
+  const root = await createPrerenderFixture('sporades-with-scope-');
   try {
     await writeFile(path.join(root, 'entry.cjs'), 'exports.default = () => { with ({ require: () => "local" }) { const target = "./absent.cjs"; return require(target); } };');
     await assert.rejects(renderClientPrerenderFragment(root, {name:'landing', module:'entry.cjs'}), /With statements are unsupported/i);
@@ -241,7 +241,7 @@ test('CommonJS dynamic with scope fails explicitly before wrapper specialization
 });
 
 test('successful local edges retain higher-priority static and computed resolution candidates', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-resolution-candidates-')));
+  const root = await createPrerenderFixture('sporades-resolution-candidates-');
   try {
     await writeFile(path.join(root, 'entry.mjs'), 'import copy from "./copy"; export default () => copy;');
     await writeFile(path.join(root, 'copy.js'), 'module.exports = "JavaScript copy";');
@@ -274,7 +274,7 @@ test('successful local edges retain higher-priority static and computed resoluti
 });
 
 test('computed require.resolve observes custom package and relative search roots', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-resolve-options-')));
+  const root = await createPrerenderFixture('sporades-resolve-options-');
   try {
     const project = path.join(root, 'project');
     const custom = path.join(root, 'custom');
@@ -300,7 +300,7 @@ test('computed require.resolve observes custom package and relative search roots
 });
 
 test('custom search path accessors retain native reads and missing dependency observation', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-accessor-paths-')));
+  const root = await createPrerenderFixture('sporades-accessor-paths-');
   try {
     const project = path.join(root, 'project');
     const custom = path.join(root, 'custom');
@@ -324,7 +324,7 @@ test('custom search path accessors retain native reads and missing dependency ob
 });
 
 test('package self-references observe missing conditional and wildcard export targets', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-self-reference-')));
+  const root = await createPrerenderFixture('sporades-self-reference-');
   try {
     await mkdir(path.join(root, 'render'));
     for (const computed of [false, true]) {
@@ -361,7 +361,7 @@ test('package self-references observe missing conditional and wildcard export ta
 });
 
 test('package-import aliases observe missing TypeScript substitutions for explicit JavaScript targets', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-alias-substitutions-')));
+  const root = await createPrerenderFixture('sporades-alias-substitutions-');
   try {
     await writeFile(path.join(root, 'entry.mjs'), 'import copy from "#copy"; export default () => copy;');
     for (const [requested, actual] of [['copy.js','copy.ts'], ['copy.mjs','copy.mts'], ['copy.cjs','copy.cts'], ['copy.jsx','copy.tsx']]) {
@@ -378,7 +378,7 @@ test('package-import aliases observe missing TypeScript substitutions for explic
 });
 
 test('tsconfig observer retains extended config and missing mapped module inputs', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-tsconfig-inputs-')));
+  const root = await createPrerenderFixture('sporades-tsconfig-inputs-');
   try {
     await mkdir(path.join(root, 'configs'));
     await mkdir(path.join(root, 'render'));
@@ -408,7 +408,7 @@ test('tsconfig observer retains extended config and missing mapped module inputs
 });
 
 test('CommonJS wrapper arguments fail explicitly while ordinary function arguments work', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-wrapper-arguments-')));
+  const root = await createPrerenderFixture('sporades-wrapper-arguments-');
   try {
     for (const source of [
       'const filename = arguments[3]; exports.default = () => filename;',
@@ -424,7 +424,7 @@ test('CommonJS wrapper arguments fail explicitly while ordinary function argumen
 });
 
 test('CommonJS parameter initializers do not inherit body var shadows of module wrappers', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-parameter-scope-')));
+  const root = await createPrerenderFixture('sporades-parameter-scope-');
   try {
     await mkdir(path.join(root, 'nested'));
     await writeFile(path.join(root, 'nested/value.cjs'), 'module.exports = "adjacent";');
@@ -440,7 +440,7 @@ module.exports = render;`);
 });
 
 test('configured CommonJS entry modules accept conventional and transpiled default exports', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-commonjs-entry-')));
+  const root = await createPrerenderFixture('sporades-commonjs-entry-');
   try {
     await writeFile(path.join(root, 'package.json'), '{"type":"commonjs"}');
     for (const extension of ['cjs', 'cts', 'js', 'ts']) {
@@ -454,7 +454,7 @@ test('configured CommonJS entry modules accept conventional and transpiled defau
 });
 
 test('CommonJS Annex B nested bindings match native behavior and unsafe module-scope shadows reject', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-annex-b-')));
+  const root = await createPrerenderFixture('sporades-annex-b-');
   const nativeRequire = createRequire(path.join(root, 'entry.cjs'));
   try {
     await writeFile(path.join(root, 'value.cjs'), 'module.exports = "adjacent";');
@@ -486,7 +486,7 @@ test('CommonJS Annex B nested bindings match native behavior and unsafe module-s
 });
 
 test('ESM import.meta aliases and computed accesses preserve each source URL', async () => {
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'sporades-import-meta-alias-')));
+  const root = await createPrerenderFixture('sporades-import-meta-alias-');
   try {
     await mkdir(path.join(root, 'nested'));
     const helper = path.join(root, 'nested/helper.mjs');
