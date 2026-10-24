@@ -194,7 +194,7 @@ const mutationResultsWithWrites = new WeakSet<object>();
 // ADR-0057: user IDs whose human identity a committed Mutation terminated, so the WebSocket hub can
 // move their live connections off the old actor before any subscription refreshes.
 const terminatedHumanIdentitiesByMutationResult = new WeakMap<object, string[]>();
-const trustedReadPurposes = new Set(["teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
+const trustedReadPurposes = new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -745,10 +745,13 @@ export async function openDevDatabase(
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   const mcp = resolveMcpRuntime(validateMcpConfig(config.mcp), serverEnv);
   if (capsuleDefinition?.teams !== undefined && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
-    throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
+    throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function, admitCreate?: function, authorizeDestructive?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
   }
   if (capsuleDefinition?.teams?.admitJoin !== undefined && typeof capsuleDefinition.teams.admitJoin !== "function") {
     throw commandError("Invalid Capsule Team admission policy.", "Declare teams.admitJoin as a server function.", "INVALID_TEAM_JOIN_ADMISSION");
+  }
+  if (capsuleDefinition?.teams?.admitCreate !== undefined && typeof capsuleDefinition.teams.admitCreate !== "function") {
+    throw commandError("Invalid Capsule Team creation policy.", "Declare teams.admitCreate as a server function.", "INVALID_TEAM_CREATE_ADMISSION");
   }
   if (capsuleDefinition?.teams?.authorizeDestructive !== undefined && typeof capsuleDefinition.teams.authorizeDestructive !== "function") {
     throw commandError("Invalid Capsule Team policy.", "Declare teams.authorizeDestructive as a server function.", "INVALID_TEAM_DESTRUCTIVE_POLICY");
@@ -1067,41 +1070,14 @@ export async function openDevDatabase(
         }
       }
       : undefined,
+    runTeamCreateAdmission: typeof capsuleDefinition?.teams?.admitCreate === "function"
+      ? function (this: LooseRecord, transaction: LooseRecord, auth: LooseRecord, input: LooseRecord, signal?: AbortSignal) {
+        return runBoundedTeamPolicy(this, transaction, auth, input, signal, capsuleDefinition.teams.admitCreate.bind(capsuleDefinition.teams), "teams.create-admission");
+      } : undefined,
     runTeamDestructivePolicy: typeof capsuleDefinition?.teams?.authorizeDestructive === "function"
-      ? async function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord, signal?: AbortSignal) {
-        const root = this.__rootDatabase ?? this;
-        const transaction = (this as any)[trustedReadTransactionAdapter] ?? transactionAdapter;
-        const controller = new AbortController();
-        const abort = () => controller.abort();
-        if (signal?.aborted) abort();
-        else signal?.addEventListener("abort", abort, { once: true });
-        const deadline = performance.now() + 5_000;
-        const timer = root.clock.setTimer(abort, 5_000);
-        let removeAbort = () => {};
-        try {
-          return await withTrustedRead(root, {
-            transaction, purpose: "teams.destructive-policy", subject: input, signal: controller.signal,
-            failOnReadError: true,
-          }, async (db, assertActive) => {
-            const evaluation = Promise.resolve().then(() => capsuleDefinition.teams.authorizeDestructive(Object.freeze({
-              app: root.app, auth: Object.freeze({ ...auth }), db, signal: controller.signal,
-            }), input));
-            const aborted = new Promise<never>((_, reject) => {
-              const fail = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));
-              removeAbort = () => controller.signal.removeEventListener("abort", fail);
-              controller.signal.addEventListener("abort", fail, { once: true });
-              if (controller.signal.aborted) fail();
-            });
-            const decision = await Promise.race([evaluation, aborted]);
-            if (performance.now() >= deadline) controller.abort();
-            assertActive();
-            return decision;
-          });
-        } finally {
-          removeAbort(); root.clock.clearTimer(timer); signal?.removeEventListener("abort", abort);
-        }
-      }
-      : undefined,
+      ? function (this: LooseRecord, transaction: LooseRecord, auth: LooseRecord, input: LooseRecord, signal?: AbortSignal) {
+        return runBoundedTeamPolicy(this, transaction, auth, input, signal, capsuleDefinition.teams.authorizeDestructive.bind(capsuleDefinition.teams), "teams.destructive-policy");
+      } : undefined,
     runTeamBillingAuthority: teamBillingDefinition
       ? async function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord) {
         const rootDatabase = this.__rootDatabase ?? this;
@@ -4866,6 +4842,40 @@ function trackTrustedPolicyReads(value: LooseRecord, fail: () => void, pending: 
   });
 }
 
+async function runBoundedTeamPolicy(database: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord, signal: AbortSignal | undefined, policy: (context: LooseRecord, input: LooseRecord) => any, purpose: string) {
+  const root = database.__rootDatabase ?? database;
+  const transaction = (database as any)[trustedReadTransactionAdapter] ?? transactionAdapter;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  const deadline = performance.now() + 5_000;
+  const timer = root.clock.setTimer(abort, 5_000);
+  let removeAbort = () => {};
+  try {
+    return await withTrustedRead(root, {
+      transaction, purpose, subject: input, signal: controller.signal,
+      failOnReadError: true,
+    }, async (db, assertActive) => {
+      const evaluation = Promise.resolve().then(() => policy(Object.freeze({
+        app: root.app, auth: Object.freeze({ ...auth }), db, signal: controller.signal,
+      }), input));
+      const aborted = new Promise<never>((_, reject) => {
+        const fail = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));
+        removeAbort = () => controller.signal.removeEventListener("abort", fail);
+        controller.signal.addEventListener("abort", fail, { once: true });
+        if (controller.signal.aborted) fail();
+      });
+      const decision = await Promise.race([evaluation, aborted]);
+      if (performance.now() >= deadline) controller.abort();
+      assertActive();
+      return decision;
+    });
+  } finally {
+    removeAbort(); root.clock.clearTimer(timer); signal?.removeEventListener("abort", abort);
+  }
+}
+
 export async function withTrustedRead(database: LooseRecord, options: LooseRecord, callback: (db: LooseRecord, assertActive: () => void) => any) {
   if (!isActiveTransactionScopedAdapter(options?.transaction, database?.adapter)) {
     throw commandError(
@@ -6193,7 +6203,9 @@ export function createWebSocketHub(
 
     if (message.type === "teams.create") {
       try {
-        const data = await createAdditionalTeam(database, client.session.auth, message.name);
+        const teamContext = { credential: { kind: "session" }, signal: client.teamOperationSignal };
+        bindAccessKeyOwnerSession(teamContext, client.session.token);
+        const data = await createAdditionalTeam(database, client.session.auth, message.name, teamContext);
         sendJson(client, { id: message.id ?? null, type: "teams.create.result", data, error: null });
       } catch (error: any) {
         if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
