@@ -30,6 +30,12 @@ permissions or exercise `0077` continue to do so; production permission checks
 remain active. Extensionless fake Node executables must also declare their
 CommonJS or ES-module package boundary instead of inheriting the checkout's.
 
+Prerender fixtures use `test/support/prerender-fixture-root.js` to declare their
+own default CommonJS package and neutral TypeScript configuration. This prevents
+a worktree-local temporary project from inheriting Sporades's ES-module package
+or strict compiler settings. Tests for other settings replace these boundaries
+explicitly.
+
 `test/support/host-fixture-root.js` selects a canonical temporary base whose
 real ancestor ownership and permissions meet the Host contract. It first tries
 `TMPDIR`, then the system temporary directory, then the user home directory.
