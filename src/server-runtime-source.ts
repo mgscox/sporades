@@ -5416,7 +5416,7 @@ export function createWebSocketHub(
     if (!options.telemetry || client.socket.destroyed || client.closing) return untracedWebSocketOperation;
     const database = getDatabase();
     const declared = (type === "query" ? database.queries : database.mutations)?.some((handler: LooseRecord) => handler.name === name)
-      || (type === "query" && (name === "ctx.env" || database.schema?.tables?.some((table: LooseRecord) => table.name === name)))
+      || (type === "query" && database.schema?.tables?.some((table: LooseRecord) => table.name === name))
       || (type === "mutation" && typeof name === "string" && (resolveTableForAddMutation(database.schema, name) || resolveTableForUpdateMutation(database.schema, name)));
     let operation: RuntimeWebSocketOperation;
     try { operation = options.telemetry.startOperation(type, name, Boolean(declared), traceparent); }
@@ -7041,11 +7041,6 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
         hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
       },
     };
-  }
-
-  if (queryName === "ctx.env") {
-    if (args.length > 0) return { rows: null, data: null, error: invalidQueryArgumentsError() };
-    return { data: context.env, error: null };
   }
 
   const customResult = await runCustomQuery(database, context, queryName, args, queryHandler);
