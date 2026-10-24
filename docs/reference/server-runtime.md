@@ -23,9 +23,11 @@ measured no-policy latency budget. No declaration preserves existing routing.
 ## Capsule rate limits
 
 Every Capsule handler context (`ctx` in queries, mutations, endpoints, and
-Jobs) exposes synchronous `ctx.rateLimit(key, { limit, windowMs })`. Calls with
-the same key and parameter tuple share a counter across those handler types in
-one runtime:
+Jobs) exposes synchronous `ctx.rateLimit(key, { limit, windowMs })`.
+Capsule-principal [File ingress admission](./files-and-realtime.md#charging-a-signed-resource-before-staging)
+exposes the same method during its active callback and signal lifetime. Calls
+with the same key and parameter tuple share a counter across admission and
+those handler types in one runtime:
 
 ```ts
 const admission = ctx.rateLimit("password-reset", {
@@ -48,7 +50,8 @@ at most 1024 UTF-8 bytes. `limit` and `windowMs` must be positive safe integers,
 `limit` must be below `Number.MAX_SAFE_INTEGER`, and `windowMs` cannot exceed
 24 hours.
 
-The in-memory table is shared by handler contexts in a runtime and holds at
+The in-memory table is shared by handlers and Capsule-principal File ingress
+admission in a runtime and holds at
 most 10,000 buckets with deterministic least-recently-used eviction. Its
 counters are separate from HTTP request admission and authentication's
 existing email and Session counters. Transaction rollback does not refund a
@@ -433,9 +436,9 @@ requires no scope. Credential lists are OR requirements and scope lists are AND
 requirements. A permitted Session satisfies declared scope requirements. A
 guarded Custom endpoint also accepts a scoped Access key through
 `Authorization: Bearer spk_1_<selector>_<verifier>` when `"access-key"` is an
-allowed credential kind. Queries, mutations, App messages, and unwrapped
-Custom endpoints retain their existing Session behavior; an unwrapped endpoint
-owns its own `Authorization` schemes and Sporades does not interpret them.
+allowed credential kind. Queries, mutations, App messages, and ordinary Custom
+endpoints retain their existing Session behavior; an unwrapped endpoint owns
+its own `Authorization` schemes and Sporades does not interpret them.
 
 Declare the Capsule's concrete, case-sensitive scope vocabulary once in
 `capsule({ accessKeys: { scopes } })`. Declarations cannot contain `*`. A guard
@@ -1093,8 +1096,8 @@ mutations: {
 ```
 
 `ctx.privileged.run(...)` is available only in trusted server contexts: queries,
-mutations, Custom endpoints, App messages, context middleware, and supported
-mutation hooks. The derived `privilegedCtx` exposes `auth.userId` as
+mutations, ordinary Custom endpoints, App messages, context middleware, and
+supported mutation hooks. The derived `privilegedCtx` exposes `auth.userId` as
 `"__privileged__"`, carries `privilegedCtx.signal`, and may use approved
 Capsule DB and File operations through the normal runtime boundaries.
 
@@ -1157,7 +1160,7 @@ export default capsule({
 });
 ```
 
-Endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.log`,
+Ordinary endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.log`,
 `ctx.messages`, and `ctx.request`. `ctx.request` contains method, path, headers,
 query parameters, parsed `body` data, and immutable exact `bodyBytes`.
 
@@ -1169,6 +1172,57 @@ contains the parsed value. The byte view is iterable and supports `at()`;
 Exact bytes are server-only and never automatically logged or added to HTTP
 errors, CLI output, or client transport results. Do not log the copy merely
 because an integration library accepts it.
+
+### Explicitly sessionless public endpoints
+
+For a stateless public probe, opt in with `session: "none"`:
+
+```ts
+import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "status",
+  endpoints: {
+    health: endpoint({ method: "GET", path: "/health", session: "none" }, () => ({
+      status: 200,
+      body: { ok: true },
+    })),
+  },
+});
+```
+
+Omitting `session` preserves ordinary endpoint behavior, including creating an
+Anonymous User and Session for a tokenless request. The only accepted explicit
+value is `"none"`. This is an endpoint declaration; it does not change the
+runtime-owned health/probe routes or provider callbacks.
+
+The handler receives `SessionlessEndpointContext`: only `app`, `env`, `log`,
+`rateLimit`, `signal` and the ordinary bounded `request` (including exact
+`bodyBytes`). `endpointFor(schema)` supports the same declaration without
+adding schema or Database authority. There is no Auth or Credential identity,
+Database, resource, File, Team, billing, Job, mail, AI, message, Access-key,
+Service User, server-auth, lifecycle or Privileged capability. `env` is a readonly
+snapshot of string Server env values. Server env remains trusted server input;
+do not return secrets or incoming credential values.
+
+**General Capsule context middleware is skipped for sessionless endpoints.**
+It expects the ordinary authority-bearing context and could add capabilities.
+These handlers run without the ordinary identity-bound endpoint transaction.
+The runtime does not resolve supplied Session, cookie or Access-key credentials,
+create or touch auth records, record credential usage, or automatically upgrade
+the request to an identity. Credential headers remain ordinary request data and
+confer no authority.
+
+HTTP security and request-admission policy still run before the handler. Body
+limits, JSON parsing, response validation and opaque handler errors use the
+ordinary HTTP mechanisms. `signal` tracks client cancellation; `rateLimit`
+uses the existing bounded process-local Capsule limiter with no transaction
+refunds, and `log` uses the existing runtime logger and payload bounds.
+
+Sessionless endpoints cannot use `requireAuth` wrappers, multipart ingress,
+File-attachment responses, MCP exposure or runtime-owned provider callbacks.
+Declarations are checked in authoring helpers and again at runtime startup and
+dispatch. Use an ordinary endpoint for identity-bound or stateful integrations.
 
 ### Expose an endpoint to MCP clients
 

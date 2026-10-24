@@ -205,7 +205,7 @@ export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: 
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
 /** Shared immutable request head supplied to endpoint multipart admission. */
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
-export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest; rateLimit(key: string, options: RateLimitOptions): RateLimitResult }>;
 /** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
 export type EndpointMultipartAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; auth: AuthContext; credential: CredentialProvenance; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
 /** The endpoint policy may prohibit file parts before staging; it cannot widen limits or provide file claim authority. */
@@ -365,7 +365,7 @@ export type CredentialProvenance = SessionCredentialProvenance | AccessKeyCreden
 export type CredentialKind = CredentialProvenance["kind"];
 
 export type AccessKeyStatus = "active" | "expired" | "revoked";
-export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled";
+export type AccessKeyRevocationCause = "owner" | "operator" | "password-reset" | "password-change" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled";
 
 export type AccessKeySummary = {
   id: string;
@@ -689,6 +689,8 @@ export type ServerAuthApi = {
   /**
    * Spend a Reset code and set the new password. Atomically revokes every
    * Session and current Access key for that user and does not create a new one.
+   * After success, clears only this email's aggregate sign-in risk; caller,
+   * trusted-address and process verification budgets remain in force.
    */
   confirmPasswordReset(code: string, newPassword: string): Promise<void>;
 };
@@ -729,6 +731,23 @@ export type TeamJoinAdmissionContext<Schema extends SchemaDefinition = SchemaDef
   /** Provider-free verified billing state for the exact Team whose Join is being admitted. */
   teamBilling: Pick<CurrentUserTeamBillingApi, "get">;
 };
+/** Additional-Team proposal after current actor checks, serialized with creation for that actor. The initial personal Team bypasses this policy. */
+export type TeamCreateAdmissionInput = Readonly<{
+  actorUserId: string;
+  /** NFKC-normalized, whitespace-collapsed requested name, bounded to 80 UTF-8 bytes. */
+  name: string;
+  /** Live Teams created by the actor, including the initial personal Team and Teams they left. Excludes the candidate. */
+  currentCreatedTeamCount: number;
+}>;
+/** Only an own data property `allow: true`, with no additional properties, permits creation. */
+export type TeamCreateAdmissionDecision = { allow: boolean };
+export type TeamCreateAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{
+  app: AppContext;
+  auth: Readonly<AuthContext>;
+  /** Transaction-bound cross-owner Capsule reads bypass row ACLs. No writes, runtime tables, provider operations, credentials or nested Privileged capability. Revoked on settle/abort/5-second budget expiry; failed or unfinished reads deny even if caught. */
+  db: ReadOnlyDatabaseFromSchema<Schema>;
+  signal: AbortSignal;
+}>;
 /** A destructive transition is proposed only after current Session, Team and final-admin checks under its lifecycle lock. */
 export type TeamDestructivePolicyInput = Readonly<{
   teamId: string;
@@ -816,7 +835,7 @@ export type CurrentUserTeamsApi = {
   /** Server-only: lock an administered Team through the existing mutation/endpoint transaction's commit or rollback. Call before any responsibility read/write; validate explicit recipient acceptance and the optional member's current admin role. Normal ctx.db ACLs remain in force. No network calls while locked. Refusal poisons the enclosing transaction. */
   lockLifecycle(teamId: string, memberUserId?: string): Promise<TeamLifecycleSnapshot>;
   list(): Promise<{ teams: TeamSummary[] }>;
-  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. */
+  /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. Subject to the Capsule's atomic teams.admitCreate policy when declared. */
   create(name: string): Promise<{ team: TeamSummary }>;
   /** Renames an explicitly identified Team administered by the current user. */
   rename(teamId: string, name: string): Promise<{ team: TeamSummary }>;
@@ -1268,6 +1287,26 @@ export type EndpointFileAttachmentHandler<Schema extends SchemaDefinition = Sche
   ctx: EndpointFileAttachmentContext<Schema>,
 ) => MaybePromise<Result>;
 
+/** Public stateless handler context. General Capsule middleware is skipped. */
+export type SessionlessEndpointContext = Readonly<{
+  app: AppContext;
+  env: Readonly<Record<string, string>>;
+  log: Logger;
+  rateLimit(key: string, options: RateLimitOptions): RateLimitResult;
+  signal?: AbortSignal;
+  request: Omit<EndpointRequest, "multipart">;
+}>;
+/** An explicitly sessionless endpoint cannot carry a declarative Auth guard. */
+export type SessionlessEndpointHandler<Result = unknown> = ((ctx: SessionlessEndpointContext) => MaybePromise<Result>) & { readonly [authGuardedHandlerBrand]?: never };
+export type SessionlessEndpointOptions = {
+  method: string;
+  path: string;
+  session: "none";
+  body?: never;
+  response?: never;
+  mcp?: never;
+};
+
 /** Handler for a client-origin App message. */
 export type MessageHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: CapsuleContext<Schema>,
@@ -1327,6 +1366,7 @@ export type MutationDefinition<Handler = MutationHandler> = {
 export type EndpointOptions<Schema extends SchemaDefinition = SchemaDefinition> = {
   method: string;
   path: string;
+  session?: never;
   response?: { fileAttachment: true };
   body?: { multipart: EndpointMultipartIngressOptions<Schema> };
   /**
@@ -1341,7 +1381,7 @@ export type EndpointFileAttachmentOptionsDeclaration<Schema extends SchemaDefini
 
 export type EndpointDefinition<Handler = EndpointHandler, Schema extends SchemaDefinition = SchemaDefinition> = {
   kind: "endpoint";
-  options: EndpointOptions<Schema>;
+  options: EndpointOptions<Schema> | SessionlessEndpointOptions;
   handler: Handler;
 };
 
@@ -1466,7 +1506,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema, any> | AuthGuardedHandler<(...args: any[]) => any>>>;
   mutations?: Record<string, MutationDefinition<MutationHandler<Schema, any[]> | AuthGuardedHandler<(...args: any[]) => any>>>;
-  endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema> | EndpointFileAttachmentHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>, Schema>>;
+  endpoints?: Record<string, EndpointDefinition<SessionlessEndpointHandler | EndpointHandler<Schema> | EndpointFileAttachmentHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>, Schema>>;
   emailEvents?: EmailEventDefinition<EmailEventHandler<Schema>>;
   stripeEvents?: StripeEventDefinition<StripeEventHandler<Schema>> | AtomicStripeEventDefinition<AtomicStripeEventHandler<Schema>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema> | AuthGuardedHandler<(...args: any[]) => any>>>;
@@ -1475,6 +1515,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   /** Up to 32 Capsule-specific membership roles. Each must match `^[a-z][a-z0-9-]{0,31}$` (maximum 32 characters); `admin`, `member`, and `sporades-*` remain runtime-reserved. */
   teams?: {
     appRoles?: readonly string[];
+    /** Opt-in atomic admission for additional-Team creation through SDK and ctx.teams. Omission preserves behavior; invalid declaration rejects startup. Explicit valid allow required; failures return opaque TEAM_POLICY_DENIED and poison the outer transaction even when caught. Initial personal-Team bootstrap bypasses this hook. */
+    admitCreate?(ctx: TeamCreateAdmissionContext<Schema>, input: TeamCreateAdmissionInput): MaybePromise<TeamCreateAdmissionDecision>;
     /** Trusted admission policy invoked after Join-link validation and before a new membership is inserted in the same transaction. */
     admitJoin?(ctx: TeamJoinAdmissionContext<Schema>, input: TeamJoinAdmissionInput): MaybePromise<TeamJoinAdmissionDecision>;
     /** Opt-in atomic policy for every SDK and ctx.teams destructive path. Omission preserves 0.9.x behavior; invalid declaration rejects startup. Explicit valid allow required; failures are opaque TEAM_POLICY_DENIED and roll back app/runtime writes even when caught. All Capsule responsibility writers must take teams.lockLifecycle in the same transaction before reads/writes. */
@@ -1556,11 +1598,13 @@ export function requireAuth<Handler extends (...args: any[]) => any>(
   handler: Handler,
 ): AuthGuardedHandler<Handler>;
 /** Define a Custom endpoint for HTTP integrations such as webhooks. */
+export function endpoint(options: SessionlessEndpointOptions, handler: SessionlessEndpointHandler): EndpointDefinition<SessionlessEndpointHandler>;
 export function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(options: EndpointFileAttachmentOptionsDeclaration<Schema>, handler: EndpointFileAttachmentHandler<Schema>): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
 export function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(options: EndpointOptions<Schema>, handler: EndpointHandler<Schema>): EndpointDefinition<EndpointHandler<Schema>, Schema>;
 export function endpoint<Schema extends SchemaDefinition = SchemaDefinition, Handler extends (...args: any[]) => any = (...args: any[]) => any>(options: EndpointOptions<Schema>, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>, Schema>;
 /** Schema-bound endpoint declaration helper for callbacks that read the Capsule database before request-body handling. */
 export type EndpointBuilder<Schema extends SchemaDefinition> = {
+  (options: SessionlessEndpointOptions, handler: SessionlessEndpointHandler): EndpointDefinition<SessionlessEndpointHandler, Schema>;
   (options: EndpointFileAttachmentOptionsDeclaration<Schema>, handler: EndpointFileAttachmentHandler<Schema>): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
   (options: EndpointOptions<Schema>, handler: EndpointHandler<Schema>): EndpointDefinition<EndpointHandler<Schema>, Schema>;
   <Handler extends (...args: any[]) => any>(options: EndpointOptions<Schema>, handler: AuthGuardedHandler<Handler>): EndpointDefinition<AuthGuardedHandler<Handler>, Schema>;

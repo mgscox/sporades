@@ -1,3 +1,4 @@
+import { unixSocketPath } from "./support/unix-socket-path.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -2173,7 +2174,7 @@ test("inspection verdict age starts when each asynchronous inspector completes",
     const inspection = { policyRevision: "completion-clock-v1", maxVerdictAgeMs: 1_000, requiredInspectors: ["content-policy-v1", "clamav"] };
     const endpoint = { options: { method: "POST", path: "/completion-clock", body: { multipart: { ...ingressPolicy(), inspection } } } };
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "inspection-completion-clock", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "inspection-completion-clock" }), { clock });
-    const socketPath = path.join(dir, "clamd.sock");
+    const socketPath = unixSocketPath(path.join(dir, "clamd.sock"));
     const fakeOptions = { response: "stream: OK\0", onRequest: () => clock.advanceBy(750) };
     fake = await fakeClamSocket(socketPath, fakeOptions);
     database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
@@ -2229,7 +2230,7 @@ test("ClamAV inspection uses only bounded Unix INSTREAM framing and fails closed
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-clamav-socket-")); let database;
   try { database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-socket", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-socket" })); const inspection = { policyRevision: "clam-v1", requiredInspectors: ["clamav"] }; const endpoint = { options: { method: "POST", path: "/clam", body: { multipart: { ...ingressPolicy(), inspection } } } }; const body = Buffer.from("claim-bytes");
     const cases = [["clean", "stream: OK\0", "clean"], ["infected", "stream: Eicar-Test-Signature FOUND\0", "rejected"], ["malformed", "nonsense\0", "inconclusive"], ["limit", "INSTREAM size limit exceeded. ERROR\0", "inconclusive"], ["timeout", undefined, "inconclusive"], ["unavailable", null, "inconclusive"], ["stale", null, "inconclusive"]];
-    for (const [key, response, expected] of cases) { const socketPath = path.join(dir, `${key}.sock`); let fake; if (response !== null) fake = await fakeClamSocket(socketPath, { response, delayMs: key === "timeout" ? 100 : 0 }); database.__clamavTest = { socketPath, timeoutMs: 10, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: key === "stale" ? "2000-01-01T00:00:00.000Z" : new Date().toISOString() } }; const headers = { "content-type": `multipart/form-data; boundary=${key}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(key, "claim.txt", "text/plain", body); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); const verdict = receipt.inspection.verdicts[0]; assert.equal(verdict.outcome, expected, key); assert.equal(JSON.stringify(verdict).includes("Eicar"), false); if (key === "clean") { const wire = fake.received; assert.equal(wire.subarray(0, 10).toString(), "zINSTREAM\0"); assert.equal(wire.readUInt32BE(10), body.length); assert.deepEqual(wire.subarray(14, 14 + body.length), body); assert.deepEqual(wire.subarray(-4), Buffer.alloc(4)); } if (fake) await new Promise((resolve) => fake.server.close(resolve)); }
+    for (const [key, response, expected] of cases) { const socketPath = unixSocketPath(path.join(dir, `${key}.sock`)); let fake; if (response !== null) fake = await fakeClamSocket(socketPath, { response, delayMs: key === "timeout" ? 100 : 0 }); database.__clamavTest = { socketPath, timeoutMs: 10, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: key === "stale" ? "2000-01-01T00:00:00.000Z" : new Date().toISOString() } }; const headers = { "content-type": `multipart/form-data; boundary=${key}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield multipartBinary(key, "claim.txt", "text/plain", body); } }, { headers }, { userId: "claim-user" }); const receipt = JSON.parse((await database.adapter.selectIngressByLease(staged.multipart.files[0].leaseId)).payload); const verdict = receipt.inspection.verdicts[0]; assert.equal(verdict.outcome, expected, key); assert.equal(JSON.stringify(verdict).includes("Eicar"), false); if (key === "clean") { const wire = fake.received; assert.equal(wire.subarray(0, 10).toString(), "zINSTREAM\0"); assert.equal(wire.readUInt32BE(10), body.length); assert.deepEqual(wire.subarray(14, 14 + body.length), body); assert.deepEqual(wire.subarray(-4), Buffer.alloc(4)); } if (fake) await new Promise((resolve) => fake.server.close(resolve)); }
   } finally { await database?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -2239,7 +2240,7 @@ test("one multipart request keeps its authenticated ClamAV identity through a si
     const inspection = { policyRevision: "clamav-request-identity-v1", requiredInspectors: ["content-policy-v1", "clamav"] };
     const endpoint = { options: { method: "POST", path: "/clamav-multifile", body: { multipart: { ...ingressPolicy(), maxFiles: 5, maxTotalFileBytes: 5 * 1024 * 1024, inspection } } } };
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-multifile-race", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-multifile-race" }));
-    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0" });
+    const socketPath = unixSocketPath(path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`)); scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0" });
     let signatureReads = 0;
     database.__clamavTest = {
       socketPath,
@@ -2267,7 +2268,7 @@ test("concurrent five-file multipart requests retain independent clean ClamAV ev
     const inspection = { policyRevision: "clamav-concurrent-multipart-v1", requiredInspectors: ["clamav"] };
     const endpoint = { options: { method: "POST", path: "/clamav-concurrent-multifile", body: { multipart: { ...ingressPolicy(), maxFiles: 5, maxTotalFileBytes: 5 * 1024 * 1024, inspection } } } };
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-concurrent-multifile", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-concurrent-multifile" }));
-    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0" });
+    const socketPath = unixSocketPath(path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`)); scanner = await fakeClamSocket(socketPath, { response: "stream: OK\0" });
     database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
     const stage = async (requestIndex) => {
       const boundary = `clamav-concurrent-${requestIndex}`; const body = multipartMany(boundary, Array.from({ length: 5 }, (_, partIndex) => ({ headers: `Content-Disposition: form-data; name="file"; filename="stable-${requestIndex}-${partIndex}.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-${requestIndex}-${partIndex}`, body: "hello" })));
@@ -2288,7 +2289,7 @@ test("a ClamAV reload or later malware verdict fails the affected multipart clai
     const inspection = { policyRevision: "clamav-transition-v1", requiredInspectors: ["clamav"] };
     const endpoint = { options: { method: "POST", path: "/clamav-transition", body: { multipart: { ...ingressPolicy(), maxFiles: 2, inspection } } } };
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-transition", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-transition" }));
-    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let loadedSignature = "daily:42";
+    const socketPath = unixSocketPath(path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`)); let loadedSignature = "daily:42";
     scanner = await fakeClamSocket(socketPath, { response: (_request, index) => { if (index === 0) loadedSignature = "daily:43"; return index === 3 ? "stream: Eicar-Test-Signature FOUND\0" : "stream: OK\0"; } });
     database.__clamavTest = { socketPath, get loadedSignature() { return loadedSignature; }, signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
     const stage = async (key) => { const boundary = `clamav-transition-${key}`; const body = multipartMany(boundary, Array.from({ length: 2 }, (_, index) => ({ headers: `Content-Disposition: form-data; name="file"; filename="stable-${index}.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable-${index}`, body: "hello" }))); return await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { yield body; } }, { headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": key } }, { userId: "claim-user" }); };
@@ -2311,7 +2312,7 @@ test("a FOUND verdict remains rejected when post-scan ClamAV identity changes or
       const inspection = { policyRevision: `clamav-found-${name}-v1`, requiredInspectors: ["clamav"] };
       const endpoint = { options: { method: "POST", path: "/clamav-found", body: { multipart: { ...ingressPolicy(), inspection } } } };
       database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: `clamav-found-${name}`, files: { storagePath: path.join(dir, "files") } }, capsule({ name: `clamav-found-${name}` }));
-      const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let scans = 0; let reads = 0;
+      const socketPath = unixSocketPath(path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`)); let scans = 0; let reads = 0;
       scanner = await fakeClamSocket(socketPath, { response: () => { scans += 1; return "stream: Eicar-Test-Signature FOUND\0"; } });
       database.__clamavTest = {
         socketPath,
@@ -2336,7 +2337,7 @@ test("a request-scoped ClamAV signature stays claimable exactly at its age bound
     const inspection = { policyRevision: "clamav-freshness-v1", requiredInspectors: ["clamav"] };
     const endpoint = { options: { method: "POST", path: "/clamav-freshness", body: { multipart: { ...ingressPolicy(), inspection } } } };
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-freshness", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "clamav-freshness" }));
-    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let now = Date.parse("2030-01-02T00:00:00.000Z"); let updatedAt = new Date(now - 26 * 60 * 60 * 1000).toISOString(); let scans = 0;
+    const socketPath = unixSocketPath(path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`)); let now = Date.parse("2030-01-02T00:00:00.000Z"); let updatedAt = new Date(now - 26 * 60 * 60 * 1000).toISOString(); let scans = 0;
     scanner = await fakeClamSocket(socketPath, { response: () => { scans += 1; return "stream: OK\0"; } });
     database.__clamavTest = { socketPath, now: () => now, loadedSignature: "daily:42", get signature() { return { version: "daily:42", updatedAt }; } };
     const stage = async (key, delayBeforeBody = 0) => { const boundary = `clamav-freshness-${key}`; const headers = { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": key }; const staged = await stageMultipartIngress(database, endpoint, { async *[Symbol.asyncIterator]() { now += delayBeforeBody; yield multipartBinary(boundary, "fresh.txt", "text/plain", Buffer.from("hello")); } }, { headers }, { userId: "claim-user" }); const lease = staged.multipart.files[0]; const receipt = JSON.parse((await database.adapter.selectIngressByLease(lease.leaseId)).payload); const api = createEndpointIngressApi(database, endpoint, { __ingressRequestKey: key, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } }); return { lease, receipt, api }; };
@@ -2364,7 +2365,7 @@ test("bounded scanner tool collection drains stdout after process exit", async (
 });
 
 test("a signal-terminated clamd permanently degrades health before scanner probes while one-shot freshclam exits do not", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-signals-")); const socketPath = path.join(dir, "clamd.sock"); let commands = 0;
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-signals-")); const socketPath = unixSocketPath(path.join(dir, "clamd.sock")); let commands = 0;
   const server = createNetServer((socket) => socket.once("data", () => { commands += 1; socket.end(Buffer.from("PONG\0")); })); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
   const alive = () => { const listeners = new Map(); return { exitCode: null, signalCode: null, once(name, listener) { listeners.set(name, listener); }, emit(name, ...args) { listeners.get(name)?.(...args); }, kill() {} }; };
   const testState = { socketPath, loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } };
@@ -2647,7 +2648,7 @@ test("ClamAV shutdown retains stubborn children for a later successful cleanup r
 });
 
 test("ClamAV health requires a bounded PING and shutdown awaits both managed children", async (t) => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-health-")); const socketPath = path.join(dir, "clamd.sock"); let commands = 0;
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-health-")); const socketPath = unixSocketPath(path.join(dir, "clamd.sock")); let commands = 0;
   const server = createNetServer((socket) => socket.once("data", (bytes) => { commands += 1; assert.equal(bytes.toString(), "zPING\0"); socket.end(Buffer.from(commands === 1 ? "BUSY\0" : "PONG\0")); })); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
   const child = (stuck = false) => { const listeners = new Map(); const signals = []; return { exitCode: null, signals, once(name, handler) { listeners.set(name, handler); }, kill(signal) { signals.push(signal); if (stuck && signal === "SIGTERM") return; this.exitCode = signal === "SIGKILL" ? null : 0; queueMicrotask(() => { this.exitCode = 0; listeners.get("exit")?.(0); }); } }; };
   try {
@@ -2705,7 +2706,7 @@ test("runtime init failure shuts down a started ClamAV before a collision-free r
 });
 
 test("ClamAV refuses bytes above its exact 10 MB stream cap before opening a socket", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-cap-")); const socketPath = path.join(dir, "clamd.sock"); let connections = 0; let database;
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-clamav-cap-")); const socketPath = unixSocketPath(path.join(dir, "clamd.sock")); let connections = 0; let database;
   const server = createNetServer(() => { connections += 1; }); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
   try {
     database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "clamav-cap", files: { storagePath: path.join(dir, "files"), maxSizeBytes: 11 * 1024 * 1024 } }, capsule({ name: "clamav-cap" })); database.__clamavTest = { socketPath, loadedSignature: "daily:1", signature: { version: "daily:1", updatedAt: new Date().toISOString() } };
@@ -2948,7 +2949,7 @@ test("a completed pre-inspection receipt requires fresh current ClamAV evidence 
   const inspectedEndpoint = { options: { ...legacyEndpoint.options, body: { multipart: { ...ingressPolicy(), inspection } } } };
   const endpointRequest = (boundary) => ({ headers: request(boundary).headers });
   const api = (endpoint) => createEndpointIngressApi(database, endpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
-  const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let scanner;
+  const socketPath = unixSocketPath(path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`)); let scanner;
   try {
     database = await openDevDatabase(databasePath, "", {}, { name: "completed-reinspection", files: { storagePath: filesPath } }, capsule({ name: "completed-reinspection" }));
     const firstRequest = request("completed-old");
@@ -2984,7 +2985,7 @@ test("concurrent completed retries follow the inspection evidence that wins the 
     { name: "clean-wins", responses: ["stream: Malware FOUND\0", "stream: OK\0"], delays: [30, 0], outcome: "clean" },
   ]) {
     const dir = await mkdtemp(path.join(tmpdir(), `sporades-ingress-refresh-${race.name}-`)); let database; let scanner;
-    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+    const socketPath = unixSocketPath(path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`));
     const requestKey = `refresh-${race.name}`; const bytes = Buffer.from("stable completed race bytes");
     const legacyEndpoint = { options: { method: "POST", path: "/completed-refresh-race", body: { multipart: ingressPolicy() } } };
     const inspection = { policyRevision: `race-${race.name}-v2`, maxVerdictAgeMs: 60_000, requiredInspectors: ["clamav"] };
@@ -3021,7 +3022,7 @@ test("concurrent leased retries expose claim readiness only from the durable ins
     { name: "clean-wins", responses: ["stream: Malware FOUND\0", "stream: OK\0"], delays: [30, 0], outcome: "clean" },
   ]) {
     const dir = await mkdtemp(path.join(tmpdir(), `sporades-ingress-leased-race-${race.name}-`)); let database; let scanner;
-    const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+    const socketPath = unixSocketPath(path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`));
     const requestKey = `leased-race-${race.name}`; const bytes = Buffer.from("stable leased race bytes");
     const legacyEndpoint = { options: { method: "POST", path: "/leased-refresh-race", body: { multipart: ingressPolicy() } } };
     const inspection = { policyRevision: `leased-race-${race.name}-v2`, maxVerdictAgeMs: 60_000, requiredInspectors: ["clamav"] };
@@ -3058,7 +3059,7 @@ test("stable retries atomically refresh a matching leased receipt's inspection w
   const request = (boundary, bytes = "stable leased bytes") => ({ headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": requestKey }, async *[Symbol.asyncIterator]() { yield multipartBinary(boundary, "claim.txt", "text/plain", Buffer.from(bytes)); } });
   const stage = async (activeEndpoint, boundary, bytes) => { const incoming = request(boundary, bytes); return await stageMultipartIngress(database, activeEndpoint, incoming, { headers: incoming.headers }, { userId: "claim-user" }); };
   const api = (activeEndpoint) => createEndpointIngressApi(database, activeEndpoint, { __ingressRequestKey: requestKey, __ingressAuthority: { kind: "actor", actorId: "claim-user", ownerId: "claim-user" } }, { auth: { userId: "claim-user", isAuthenticated: true, isGuest: false } });
-  const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`); let scanner; let scannerCalls = 0;
+  const socketPath = unixSocketPath(path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`)); let scanner; let scannerCalls = 0;
   try {
     database = await openDevDatabase(databasePath, "", {}, { name: "leased-reinspection", files: { storagePath: filesPath } }, capsule({ name: "leased-reinspection" }));
     database.__clamavTest = { socketPath, timeoutMs: 5, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
@@ -3138,7 +3139,7 @@ for (const authority of ["actor", "capsule-principal"]) for (const storage of ["
       const config = service ? { name: "fields-only", services: { storage: { kind: "storage", engine: "minio" } } } : { name: "fields-only", files: { storagePath: path.join(dir, "files") } };
       database = await openDevDatabase(path.join(dir, "data.db"), "", serviceEnv, config, definition, { serviceEnv });
       if (!principalMode) await seedIngressUser(database);
-      const socketPath = path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+      const socketPath = unixSocketPath(path.join(tmpdir(), `clam-${process.pid}-${randomUUID().slice(0, 8)}.sock`));
       scanner = await fakeClamSocket(socketPath, { response: () => { scans += 1; return "stream: OK\0"; } });
       database.__clamavTest = { socketPath, loadedSignature: "daily:42", signature: { version: "daily:42", updatedAt: new Date().toISOString() } };
       const write = database.fileStorage.writeFileVersion.bind(database.fileStorage);

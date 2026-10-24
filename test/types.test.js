@@ -58,6 +58,9 @@ test("sporades api bindings compile representative strict TypeScript app code", 
             module: "NodeNext",
             moduleResolution: "NodeNext",
             lib: ["ES2022", "DOM"],
+            // Source parity imports need Node globals even when the fixture lives outside the repo.
+            types: ["node"],
+            typeRoots: [path.join(repoRoot, "node_modules", "@types")],
           },
           include: ["app.ts"],
         },
@@ -68,8 +71,86 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition, type ServerEnvConfig } from "sporades/server";
+const publicHealth = endpoint({ method: "GET", path: "/health", session: "none" }, ctx => {
+  const restricted: publicServerApi.SessionlessEndpointContext = ctx;
+  const keys: Record<keyof typeof restricted, true> = { app: true, env: true, log: true, rateLimit: true, signal: true, request: true };
+  ctx.log.info(ctx.app.publicOrigin);
+  ctx.rateLimit("health", { limit: 10, windowMs: 1000 });
+  const bytes: Uint8Array = ctx.request.bodyBytes.toUint8Array();
+  // @ts-expect-error Sessionless endpoints have no auth capability.
+  ctx.auth;
+  // @ts-expect-error Sessionless endpoints have no credential capability.
+  ctx.credential;
+  // @ts-expect-error Sessionless endpoints have no db capability.
+  ctx.db;
+  // @ts-expect-error Sessionless endpoints have no resources capability.
+  ctx.resources;
+  // @ts-expect-error Sessionless endpoints have no files capability.
+  ctx.files;
+  // @ts-expect-error Sessionless endpoints have no teams capability.
+  ctx.teams;
+  // @ts-expect-error Sessionless endpoints have no teamBilling capability.
+  ctx.teamBilling;
+  // @ts-expect-error Sessionless endpoints have no payments capability.
+  ctx.payments;
+  // @ts-expect-error Sessionless endpoints have no jobs capability.
+  ctx.jobs;
+  // @ts-expect-error Sessionless endpoints have no mail capability.
+  ctx.mail;
+  // @ts-expect-error Sessionless endpoints have no ai capability.
+  ctx.ai;
+  // @ts-expect-error Sessionless endpoints have no messages capability.
+  ctx.messages;
+  // @ts-expect-error Sessionless endpoints have no accessKeys capability.
+  ctx.accessKeys;
+  // @ts-expect-error Sessionless endpoints have no serviceUsers capability.
+  ctx.serviceUsers;
+  // @ts-expect-error Sessionless endpoints have no serverAuth capability.
+  ctx.serverAuth;
+  // @ts-expect-error Sessionless endpoints have no privileged capability.
+  ctx.privileged;
+  // @ts-expect-error Sessionless endpoints have no lifecycle capability.
+  ctx.lifecycle;
+  // @ts-expect-error Sessionless endpoints do not have multipart ingress.
+  ctx.request.multipart;
+  return { status: 200, body: { ok: true, size: bytes.length, keys } };
+});
+const schemaHealth = publicServerApi.endpointFor({ health: table({ ok: Boolean() }) });
+schemaHealth({ method: "GET", path: "/health", session: "none" }, ctx => {
+  // @ts-expect-error Schema binding does not add a Database capability to a sessionless endpoint.
+  ctx.db.health.all();
+  return ctx.request.path;
+});
+// @ts-expect-error Auth guards are incompatible, even without reading ctx.
+endpoint({ method: "GET", path: "/invalid", session: "none" }, requireAuth(() => null));
+// @ts-expect-error Schema-bound builders also reject Auth guards.
+schemaHealth({ method: "GET", path: "/invalid", session: "none" }, requireAuth(() => null));
+// @ts-expect-error Multipart is incompatible with sessionless endpoints.
+endpoint({ method: "GET", path: "/invalid", session: "none", body: { multipart: {} } }, () => null);
+// @ts-expect-error File attachments are incompatible with sessionless endpoints.
+endpoint({ method: "GET", path: "/invalid", session: "none", response: { fileAttachment: true } }, () => null);
+// @ts-expect-error MCP exposure is incompatible with sessionless endpoints.
+endpoint({ method: "GET", path: "/invalid", session: "none", mcp: true }, () => null);
+// @ts-expect-error No other explicit Session mode exists.
+endpoint({ method: "GET", path: "/invalid", session: "auto" }, () => null);
+capsule({ name: "stateless", schema: { checks: table({ ok: Boolean() }) }, endpoints: { publicHealth } });
 const serverEnvConfig: ServerEnvConfig = { required: ["INTAKE_URL"], failClosed: true };
 import * as publicServerApi from "sporades/server";
+import { endpoint as sourceEndpoint, endpointFor as sourceEndpointFor, requireAuth as sourceRequireAuth } from "${path.relative(dir, path.join(repoRoot, 'src/server.js')).split(path.sep).join('/')}";
+sourceEndpoint({ method: "GET", path: "/source-health", session: "none" }, ctx => {
+  // @ts-expect-error Source and shipped bindings both exclude Auth.
+  ctx.auth;
+  // @ts-expect-error Source and shipped bindings both exclude the Database.
+  ctx.db;
+  return { body: ctx.app.publicOrigin };
+});
+// @ts-expect-error The source helper also excludes guarded sessionless handlers.
+sourceEndpoint({ method: "GET", path: "/bad", session: "none" }, sourceRequireAuth(() => null));
+sourceEndpointFor({})({ method: "GET", path: "/source-health", session: "none" }, ctx => {
+  // @ts-expect-error The source builder cannot restore Database authority.
+  ctx.db;
+  return ctx.request.path;
+});
 const securityConfig: publicServerApi.SecurityConfig = { csp: { nonce: true, mode: 'enforce', reportTo: '/csp-reports', directives: { 'script-src': ["'self'"] } }, hsts: { maxAgeSeconds: 31536000, includeSubDomains: true, preload: false } };
 // @ts-expect-error nonce opt-in is a boolean.
 const invalidNonceConfig: publicServerApi.SecurityConfig = { csp: { nonce: 'true' } };
@@ -168,6 +249,19 @@ async function resourceContract(ctx: publicServerApi.CapsuleContext) {
   return checked;
 }
 
+function principalAdmission(ctx: publicServerApi.FileIngressAdmissionContext<typeof privateSchema>) {
+  const result: publicServerApi.RateLimitResult = ctx.rateLimit("upload:resource", { limit: 2, windowMs: 60000 });
+  const alias: (key: string, options: publicServerApi.RateLimitOptions) => publicServerApi.RateLimitResult = ctx.rateLimit;
+  // @ts-expect-error admission has no database write authority.
+  ctx.db.secrets.insert({ value: "forbidden" });
+  // @ts-expect-error admission has no raw adapter authority.
+  ctx.db.adapter;
+  // @ts-expect-error admission does not acquire actor identity authority.
+  ctx.auth;
+  // @ts-expect-error limiter parameters remain numeric.
+  ctx.rateLimit("upload:resource", { limit: "2", windowMs: 60000 });
+  return result.ok && alias("other", { limit: 1, windowMs: 1000 }).ok;
+}
 const principalFieldsOnly: publicServerApi.FileIngressAdmissionDecision = { allow: true, principal: { namespace: "application", key: "integration" }, allowFiles: false };
 const principalUndefinedFiles: publicServerApi.FileIngressAdmissionDecision = { allow: true, principal: { namespace: "application", key: "integration" }, allowFiles: undefined };
 // @ts-expect-error principal admission file permission must be a boolean.
@@ -355,6 +449,25 @@ const app = capsule({
   accessKeys: { scopes: ["todos:read", "todos:write"] },
   teams: {
     appRoles: ["author", "reviewer"],
+    admitCreate: async (ctx, input) => {
+      const count: number = input.currentCreatedTeamCount;
+      const name: string = input.name;
+      const signal: AbortSignal = ctx.signal;
+      const origin: string = ctx.app.publicOrigin;
+      await ctx.db.todos.where("ownerId", input.actorUserId).all();
+      // @ts-expect-error creation policy has no write authority.
+      ctx.db.todos.insert({ title: name, ownerId: input.actorUserId });
+      // @ts-expect-error creation policy has no Server credentials.
+      ctx.env.SECRET;
+      // @ts-expect-error creation policy has no Privileged authority.
+      ctx.privileged.run({}, () => true);
+      // @ts-expect-error creation input is immutable.
+      input.currentCreatedTeamCount = 0;
+      // @ts-expect-error creation context identity is immutable.
+      ctx.app = { publicOrigin: origin };
+      void signal;
+      return { allow: count < 2 };
+    },
     authorizeDestructive: async (ctx, input) => {
       const origin: string = ctx.app.publicOrigin;
       // @ts-expect-error runtime-owned app identity is readonly
@@ -648,7 +761,7 @@ const app = capsule({
       const deleted = await ctx.accessKeys.delete(revoked.accessKey.id);
       deleted.deleted satisfies true;
       revoked.accessKey.lifecycleRevision.valueOf();
-      revoked.accessKey.revocationCause satisfies "owner" | "operator" | "password-reset" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled" | null;
+      revoked.accessKey.revocationCause satisfies "owner" | "operator" | "password-reset" | "password-change" | "owner-unlinked" | "owner-deleted" | "service-user-administrator" | "service-user-disabled" | null;
       // @ts-expect-error Access-key grants are immutable after issuance.
       ctx.accessKeys.update(issued.accessKey.id, { grants: ["todos:write"] });
       // @ts-expect-error Access-key status filters are a closed vocabulary.

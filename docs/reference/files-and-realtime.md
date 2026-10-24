@@ -948,6 +948,54 @@ inside their transaction before claiming files or writing domain records.
 A rejected Capsule-principal admission returns an opaque `401` before consuming
 request bytes, with `Cache-Control: no-store` and `Pragma: no-cache`.
 
+#### Charging a signed resource before staging
+
+`FileIngressAdmissionContext` also exposes synchronous
+`ctx.rateLimit(key, { limit, windowMs })`, backed by the **same Capsule root
+limiter** as ordinary handlers. Validate signed-resource authority before
+charging its budget. For example, replace the admission callback above with:
+
+```ts
+admit: async (ctx, request) => {
+  const resource = await verifySignedUploadResource(ctx.db, ctx.env, request);
+  if (!resource) return { allow: false };
+  const budget = ctx.rateLimit(`upload:${resource.id}`, {
+    limit: 5,
+    windowMs: 60_000,
+  });
+  if (!budget.ok) return { allow: false };
+  return {
+    allow: true,
+    principal: { namespace: "application", key: resource.id },
+  };
+},
+```
+
+`verifySignedUploadResource` is Capsule-owned: verify the signature, expiry,
+upload purpose, exact resource binding and current upload authorization before
+returning the authorized resource. Derive the budget key from that verified
+resource, never from an unchecked resource ID or forwarding header. An invalid
+link must not spend another resource's budget. Budget exhaustion returns the
+same bounded opaque `401` denial above before any body read, staging bytes or
+receipt creation; no limiter details are sent to the caller.
+
+The endpoint handler rechecks mutable resource authorization in its transaction
+before claiming, using `ctx.ingress.principal.key` to identify the resource.
+It **must not charge this upload again**: admission has already charged the
+attempt. In particular, moving an application's existing handler charge into
+admission is application work; declaring ingress does not move it automatically.
+
+The limiter method and retained aliases work only while the admission callback
+is active and its signal has not aborted. It grants no database writes, raw
+adapter or additional identity authority. Each call uses the existing
+[key and options validation, process-local fixed windows and bounded bucket
+table](./server-runtime.md#capsule-rate-limits). Each valid-authority HTTP retry
+spends another attempt, including completed receipt replays. SQL rollback,
+callback failure and cancellation never refund a spent attempt; receipts do not
+deduplicate limiter calls. Windows expire normally and process restart resets
+capacity. Ordinary lease retention, claim rollback and expiry cleanup continue
+to apply if an admitted attempt later fails.
+
 Trusted server code claims a lease inside the endpoint transaction with an
 application-chosen absolute path:
 

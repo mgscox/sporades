@@ -137,6 +137,12 @@ export const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 
 export const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
 
+export const EMAIL_SIGN_IN_VERIFICATION_LIMIT = 120;
+
+export const EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS = 60 * 1000;
+
+export const EMAIL_SIGN_IN_VERIFICATION_FIELD = "__emailSignInVerificationBudget";
+
 export const PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
 
 export const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
@@ -2282,6 +2288,13 @@ export async function confirmPasswordReset(database: LooseRecord, _session: Loos
   // the first transaction commits, so its deletion result decides whether it
   // may continue.
   const outcome = await database.adapter.withTransaction(async (tx: LooseRecord) => {
+    // Match sign-in, termination and browser owner-security transitions: lock
+    // the identity before any Reset-code, credential or Access-key write. This
+    // also keeps a reset from committing between verified sign-in and issuance.
+    const owner = await tx.lockAuthUserFileAuthority(preflight.userId);
+    if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") {
+      return { ok: false, error: invalidPasswordResetCodeError() };
+    }
     const row = await readPasswordResetCode({ ...database, adapter: tx }, code);
     if (!row) {
       return { ok: false, error: invalidPasswordResetCodeError() };
@@ -2308,9 +2321,12 @@ export async function confirmPasswordReset(database: LooseRecord, _session: Loos
       revocationTime: () => database.clock.now().toISOString(),
       revocationCause: "password-reset",
     });
-    return { ok: true, ownerUserId: row.userId, revokedAccessKeys };
+    return { ok: true, email: row.email, ownerUserId: row.userId, revokedAccessKeys };
   });
   if (!outcome.ok) return outcome;
+  // Only committed recovery clears this account's aggregate sign-in risk. Caller,
+  // trusted-address, verification, and other auth-action budgets are independent.
+  createEmailSignInThrottleState(database).delete(`email\0${outcome.email}`);
   await emitAccessKeyOwnerTransitionAudits(database, {
     operation: "auth.confirmPasswordReset",
     ownerUserId: outcome.ownerUserId,
@@ -2395,6 +2411,14 @@ export function mailNotConfiguredError() {
 // change the credential its own Session owns after proving knowledge of its
 // current password. Non-existent and someone-else's emails share one opaque
 // denial, so this cannot be used to discover which addresses have accounts.
+//
+// The successful response shape stays `{ ok: true }`: the runtime does not mint
+// a replacement Session. The change is a credential-security transition that
+// revokes the account's other authority — the initiating and sibling Sessions,
+// their reauthentication proofs, outstanding Reset codes and current
+// human-owned Access keys — inside the same shared identity/credential
+// transaction fence that authorizes the password write, so every caller must
+// sign in again afterwards.
 export async function setOwnEmailPassword(database: LooseRecord, session: LooseRecord, email: string, currentPassword: string, newPassword: string) {
   let auth: LooseRecord;
   try {
@@ -2416,23 +2440,67 @@ export async function setOwnEmailPassword(database: LooseRecord, session: LooseR
     return { ok: false, error: invalidCurrentPasswordError() };
   }
   resetEmailSignInAttempts(database, cleanEmail, session, PASSWORD_CHANGE_THROTTLE_FIELD);
-  return await setEmailPassword(database, session, cleanEmail, newPassword);
-}
-
-function emailNotOwnedError() {
-  return {
-    code: "AUTH_EMAIL_NOT_OWNED",
-    message: "That email address is not this account's email credential.",
-    hint: "Change the password for the signed-in account, or use a password reset link.",
-  };
-}
-
-function invalidCurrentPasswordError() {
-  return {
-    code: "INVALID_CURRENT_PASSWORD",
-    message: "Current password is incorrect.",
-    hint: "Enter the current password for this email credential, or use a password reset link.",
-  };
+  // Error precedence above mirrors the previous delegation into the trusted
+  // setter, which checked provider enablement and password length after the
+  // caller's current-password proof.
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
+  }
+  const password = hashEmailPassword(newPassword);
+  // The preflight above cannot authorize the change: another request may have
+  // changed the credential or revoked the initiating Session before this
+  // transaction runs. The owner-security transaction is the fence — it
+  // revalidates the live Session, the exact credential ownership and the
+  // verified password fingerprint under a user-row lock, then applies the
+  // password write and every revocation in that one transaction. Any failure
+  // inside it commits nothing; revocation audits are emitted only after commit.
+  try {
+    await runAccessKeyOwnerSecurityTransition(database, {
+      operation: "auth.setPassword",
+      ownerUserId: auth.userId,
+      actor: { userId: auth.userId },
+      credential: { kind: "session" },
+      revocationCause: "password-change",
+    }, async (tx: LooseRecord) => {
+      const now = database.clock.now();
+      const current = await tx.readAuthSessionWithUser(session.token);
+      if (!current || current.token !== session.token || current.userId !== auth.userId
+        || !current.isAuthenticated || current.isGuest || Date.parse(current.expiresAt) <= now.getTime()) {
+        throw staleSessionChangeError();
+      }
+      const owner = await tx.lockAuthUserFileAuthority(auth.userId);
+      if (!owner || (owner.userKind ?? "human") !== "human" || owner.lifecycleStatus !== "active") {
+        throw staleSessionChangeError();
+      }
+      const live = await tx.findEmailCredentialWithUser(cleanEmail);
+      if (!live || live.userId !== auth.userId) {
+        const denied = emailNotOwnedError();
+        throw commandError(denied.message, denied.hint, denied.code);
+      }
+      // The verified fingerprint must still be the live credential before the
+      // password write lands: a concurrent sign-in, change or reset that
+      // committed a different password revokes this contender's authority.
+      if (!await tx.claimEmailCredentialVersion(cleanEmail, credential.passwordHash, credential.passwordSalt)) {
+        throw supersededPasswordChangeError();
+      }
+      await tx.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
+      await tx.deletePasswordResetCodesForUser(auth.userId);
+      // Evicting every Session for the account is the point of the change: an
+      // attacker holding a live Session — including the initiating one — must
+      // not outlive it. This also deletes the Sessions' reauthentication proofs.
+      await tx.deleteAuthSessionsForUser(auth.userId);
+      return { ownerUserId: auth.userId };
+    });
+  } catch (error: any) {
+    if (["AUTH_SESSION_INVALID", "AUTH_EMAIL_NOT_OWNED", "INVALID_CURRENT_PASSWORD"].includes(error?.code)) {
+      return { ok: false, error: { code: error.code, message: error.message, hint: error.hint } };
+    }
+    throw error;
+  }
+  return { ok: true };
 }
 
 export async function setEmailPassword(database: LooseRecord, _session: LooseRecord, email: string, newPassword: string) {
@@ -2453,6 +2521,38 @@ export async function setEmailPassword(database: LooseRecord, _session: LooseRec
   const password = hashEmailPassword(newPassword);
   await database.adapter.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
   return { ok: true };
+}
+
+function emailNotOwnedError() {
+  return {
+    code: "AUTH_EMAIL_NOT_OWNED",
+    message: "That email address is not this account's email credential.",
+    hint: "Change the password for the signed-in account, or use a password reset link.",
+  };
+}
+
+function invalidCurrentPasswordError() {
+  return {
+    code: "INVALID_CURRENT_PASSWORD",
+    message: "Current password is incorrect.",
+    hint: "Enter the current password for this email credential, or use a password reset link.",
+  };
+}
+
+function staleSessionChangeError() {
+  return commandError(
+    "This sign-in Session is no longer valid.",
+    "Sign in again and retry the password change.",
+    "AUTH_SESSION_INVALID",
+  );
+}
+
+function supersededPasswordChangeError() {
+  return commandError(
+    "Current password is incorrect.",
+    "The credential changed while the change was being verified. Sign in again and retry.",
+    "INVALID_CURRENT_PASSWORD",
+  );
 }
 
 // Sign-in, password-change, and reset requests share this throttle shape but
@@ -2487,11 +2587,30 @@ export function currentEmailSignInThrottleState(database: LooseRecord, email: st
     };
   });
   return {
-    throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT),
+    // Aggregate email risk must not veto an otherwise unblocked owner's valid
+    // credential. Other actions retain their existing account-wide policy.
+    throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT &&
+      (scope !== EMAIL_SIGN_IN_THROTTLE_FIELD || !entry.key.startsWith("email\0"))),
     entries,
     count: Math.max(...entries.map((entry) => entry.count)),
     resetAt: Math.max(...entries.map((entry) => entry.resetAt)),
   };
+}
+
+// One fixed-size budget for the Capsule runtime process, separate from the
+// evictable failure table. Reserve synchronously before any adapter await so
+// concurrent callers and transaction wrappers cannot oversubscribe or refund it.
+function admitEmailSignInVerification(database: LooseRecord) {
+  const owner = database.__rootDatabase ?? database;
+  const budget = owner[EMAIL_SIGN_IN_VERIFICATION_FIELD] ??= { count: 0, resetAt: 0 };
+  const now = Date.now();
+  if (now >= budget.resetAt) {
+    budget.count = 0;
+    budget.resetAt = now + EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS;
+  }
+  if (budget.count >= EMAIL_SIGN_IN_VERIFICATION_LIMIT) return false;
+  budget.count++;
+  return true;
 }
 
 export function recordFailedEmailSignInAttempt(database: LooseRecord, email: string, session: LooseRecord, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
@@ -3037,7 +3156,7 @@ export async function signInWithEmail(database: LooseRecord, session: any, crede
   }
 
   const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
-  if (throttle.throttled) {
+  if (throttle.throttled || !admitEmailSignInVerification(database)) {
     return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
   }
 
@@ -3067,6 +3186,13 @@ export async function signInWithEmail(database: LooseRecord, session: any, crede
     // credential afterwards so a sign-in that verified the old password cannot mint a Session.
     const current = await tx.findEmailCredentialWithUser(normalized.email);
     if (current?.userId !== auth.userId) return { ok: false, error: invalidEmailCredentialsError() };
+    // Claim the verified fingerprint, retaining the credential write lock until
+    // Session issuance commits. A plain read/compare leaves a PostgreSQL reset
+    // free to commit between validation and issuance. The identity is locked
+    // first, matching reset and browser owner-security transitions.
+    if (!await tx.claimEmailCredentialVersion(normalized.email, row.passwordHash, row.passwordSalt)) {
+      return { ok: false, error: invalidEmailCredentialsError() };
+    }
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
 }

@@ -472,6 +472,16 @@ Custom endpoints are HTTP escape hatches for integrations such as webhooks.
 They are not the primary app data API; queries and mutations over the client
 transport remain the default application path.
 
+Custom endpoints may explicitly opt into `session: "none"` for stateless public
+requests. Their separate `SessionlessEndpointContext` contains only `app`, `env`,
+`log`, `rateLimit`, `signal` and the bounded ordinary `request`. The runtime skips
+general Capsule context middleware, credential resolution and the identity-bound
+endpoint transaction, and creates or touches no auth or credential-usage state.
+HTTP security/admission, parsing limits and response/error handling remain in
+force. Auth guards, multipart ingress, File attachment responses, MCP exposure
+and runtime-owned provider callbacks cannot use this mode. Omission preserves
+ordinary endpoint Session behavior. See the [server reference](reference/server-runtime.md#explicitly-sessionless-public-endpoints).
+
 `ctx.request.body` and `ctx.request.bodyBytes` come from the same bounded
 request-body read. `body` retains the existing parsed JSON or text behavior;
 `bodyBytes` is an immutable iterable view of the exact received bytes for
@@ -779,7 +789,7 @@ Supported provider behavior:
 | Provider | Config | Behavior |
 | --- | --- | --- |
 | Anonymous | `auth.providers.anonymous`, legacy `auth.mode`, or unset | Creates a persistent anonymous Sporades session. |
-| Email | `auth.providers.email` | `auth.signUp("email", ...)` registers the current guest identity once; already-linked identities receive `REGISTRATION_DENIED` without profile, credential, Team or Session changes. The transaction locks the identity and rechecks the current Session so concurrent signups cannot attach two credentials. `auth.signIn("email", ...)` resolves the account later. Browser password changes call `auth.setPassword(email, currentPassword, newPassword)` and require the signed-in owner to verify the current password. Trusted server code can use `ctx.serverAuth.setEmailPassword(email, newPassword)` for reset and administrative flows. Both update an existing email credential with server-side scrypt hashing. |
+| Email | `auth.providers.email` | `auth.signUp("email", ...)` registers the current guest identity once; already-linked identities receive `REGISTRATION_DENIED` without profile, credential, Team or Session changes. The transaction locks the identity and rechecks the current Session so concurrent signups cannot attach two credentials. `auth.signIn("email", ...)` resolves the account later. Browser password changes call `auth.setPassword(email, currentPassword, newPassword)`: a successful change is an atomic credential-security transition that verifies the current password and revokes every Session (including the initiating one), Reauthentication Proofs, outstanding Reset codes and current human-owned Access keys in the same transaction before the `{ ok: true }` reply, so the browser must sign in again; a failed change commits nothing. Trusted server code can use `ctx.serverAuth.setEmailPassword(email, newPassword)` for reset and administrative flows. Both update an existing email credential with server-side scrypt hashing. |
 | Google | `auth.providers.google` with env var names, or legacy Google mode | `auth.signIn("google")` starts a server-owned OAuth redirect and links the verified provider identity. |
 | Apple | `auth.providers.apple` with Services ID, Team ID, Key ID, and private-key env name | HTTPS-domain-only server-owned `form_post` flow; runtime ES256 client credential and strictly verified Apple subject link the current Anonymous account. |
 | Facebook | `auth.providers.facebook` with app env names and Graph `v23.0` | `auth.signIn("facebook")` starts a server-owned authorization-code redirect, requires the stable Graph profile ID, and accepts profiles without email. |
@@ -1500,6 +1510,17 @@ contact, unless `--allow-missing-env` is explicit. Boot emits one names-only err
 `failClosed: true` refuses startup before database initialization. Omission
 preserves existing doctor/push behavior for the 0.9.x patch contract. See
 [required Server env](reference/projects-and-configuration.md#required-server-env).
+
+### Atomic additional-Team creation
+
+Opt-in `teams.admitCreate` governs SDK and server additional-Team creation under
+the runtime's actor lock and transaction. Its frozen proposal includes normalized
+name and live creator-Team count, including personal and departed Teams but no
+candidate. Current actor checks precede policy; initial personal-Team bootstrap
+bypasses it. Expiring read-only cross-owner Capsule reads, a five-second budget,
+strict explicit allow, opaque denial and poisoned rollback preserve authority
+and concurrency invariants. Omission preserves behavior. See
+[the Teams contract](reference/teams.md#atomic-additional-team-creation-policy).
 
 ### Atomic Capsule-owned Team responsibility
 

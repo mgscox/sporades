@@ -1539,7 +1539,23 @@ function createConnection() {
       });
     },
     setPassword(email, currentPassword, newPassword) {
-      return request("auth.setPassword", { email, currentPassword, newPassword });
+      return request("auth.setPassword", { email, currentPassword, newPassword }).then(async (result) => {
+        if (!result.error && result.data?.ok === true) {
+          // The transition revoked every Session for the account, including
+          // this browser's. Keep no stored authority or standing reauth intent;
+          // the runtime has already replaced live connections with fresh
+          // Anonymous sessions.
+          journeyConsentOptions = null;
+          journeyEnabledUserId = null;
+          stopJourneyCapture();
+          journeyCapture = null;
+          sessionToken = null;
+          localStorage.removeItem("sporades.sessionToken");
+          localStorage.removeItem("sporades.authReturnTo");
+          await request("auth.get");
+        }
+        return result;
+      });
     },
     sendPasswordResetLink(email) {
       return request("auth.sendPasswordResetLink", { email });
