@@ -324,7 +324,11 @@ A string stored in `localStorage` on the client and sent on the WebSocket connec
 Session records include lifecycle metadata and expire after 30 days by default. Missing, invalid, or expired tokens resolve to a fresh Anonymous session. Email sign-up and sign-in rotate the current token; provider sign-in refreshes the current token during the OAuth callback.
 _Avoid_: auth token, JWT
 
-Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
+Missing or invalid ordinary endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
+
+**Sessionless endpoint**:
+An explicitly opted-in Custom endpoint declared with `session: "none"`. It receives only `app`, `env`, `log`, `rateLimit`, `signal` and the bounded ordinary `request`. It skips general Capsule context middleware, credential resolution and the identity-bound endpoint transaction, creating or touching no auth state. Auth guards, multipart ingress, File attachment responses, MCP exposure and runtime-owned provider callbacks are incompatible. HTTP security, admission, body bounds and response/error handling still apply. Omitting `session` preserves ordinary Session behavior.
+_Avoid_: guest endpoint, anonymous Session mode
 
 **Linked account**:
 A real authentication method, such as email or a supported OAuth provider, linked to an existing Anonymous session. The user's data follows them because the auth method is linked to the existing account, not a new one.
