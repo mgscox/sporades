@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 
 const [base, head] = process.argv.slice(2);
 if (!base || !head) throw new Error('Usage: node scripts/check-pr-generated-artifacts.mjs <base-sha> <head-sha>');
-const git = (...args) => execFileSync('git', args, { encoding: 'utf8' });
+const git = (...args) => execFileSync('git', ['--literal-pathspecs', ...args], { encoding: 'utf8' });
 const ancestor = git('merge-base', base, head).trim();
 const changed = git('diff', '--no-renames', '--name-only', '-z', ancestor, head, '--', 'dist/', 'bin/').split('\0').filter(Boolean);
 // Main may have regenerated since the PR forked. Unchanged old output is fine;

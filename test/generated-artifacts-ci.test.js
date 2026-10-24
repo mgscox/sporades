@@ -74,12 +74,29 @@ test('PR check accepts source-only changes with older committed generated files'
   run(root, 'node', [check, 'base', 'HEAD']);
 });
 
+test('restoring a generated filename with wildcard characters compares only that literal path', async t => {
+  const root = await fixture(t);
+  await commit(root, 'dist/a.js', 'old\n');
+  await commit(root, 'dist/[ab].js', 'old\n');
+  const ancestor = git(root, 'rev-parse', 'HEAD');
+  git(root, 'switch', '-c', 'pr');
+  await commit(root, 'src/input.ts', 'new source\n');
+  git(root, 'switch', '-c', 'base', ancestor);
+  await commit(root, 'dist/a.js', 'main build\n');
+  await commit(root, 'dist/[ab].js', 'main build\n');
+  git(root, 'switch', 'pr');
+  git(root, '--literal-pathspecs', 'checkout', 'base', '--', 'dist/[ab].js');
+  git(root, 'commit', '-m', 'Restore literal generated path');
+  run(root, 'node', [check, 'base', 'HEAD']);
+});
+
 test('PR check rejects generated additions, edits, deletions and renames with recovery instructions', async t => {
   const root = await fixture(t);
   const base = git(root, 'rev-parse', 'HEAD');
-  for (const kind of ['addition', 'edit', 'deletion', 'rename']) {
+  for (const kind of ['addition', 'wildcard addition', 'edit', 'deletion', 'rename']) {
     git(root, 'reset', '--hard', base);
     if (kind === 'addition') await writeFile(path.join(root, 'dist/new.js'), 'new');
+    if (kind === 'wildcard addition') await writeFile(path.join(root, 'dist/[ab].js'), 'new');
     if (kind === 'edit') await writeFile(path.join(root, 'bin/output.js'), 'edited');
     if (kind === 'deletion') await rm(path.join(root, 'dist/output.js'));
     if (kind === 'rename') git(root, 'mv', 'bin/output.js', 'src/moved.ts');
