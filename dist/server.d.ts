@@ -115,9 +115,15 @@ export type EndpointCapsulePrincipalMultipartIngressOptions = EndpointMultipartI
 }>;
 /** One of the supported endpoint multipart ingress authority modes. */
 export type EndpointMultipartIngressOptions<Schema extends SchemaDefinition = SchemaDefinition> = EndpointActorMultipartIngressOptions<Schema> | EndpointCapsulePrincipalMultipartIngressOptions;
+export type SessionlessEndpointContext = import("../src/types/server.js").SessionlessEndpointContext;
+export type SessionlessEndpointOptions = import("../src/types/server.js").SessionlessEndpointOptions;
+export type SessionlessEndpointHandler<Result = unknown> = ((ctx: SessionlessEndpointContext) => Result | Promise<Result>) & {
+    readonly [authGuardedHandlerBrand]?: never;
+};
 export type EndpointOptions<Schema extends SchemaDefinition = SchemaDefinition> = {
     method: string;
     path: string;
+    session?: never;
     /** Explicitly delegates exact-version attachment authorization to this trusted endpoint handler. */
     response?: {
         fileAttachment: true;
@@ -158,7 +164,7 @@ export type AuthGuardedHandler<HandlerType extends Handler> = HandlerType & {
 };
 export type EndpointDefinition<HandlerType extends Handler = Handler, Schema extends SchemaDefinition = SchemaDefinition> = {
     kind: "endpoint";
-    options: EndpointOptions<Schema>;
+    options: EndpointOptions<Schema> | SessionlessEndpointOptions;
     handler: HandlerType;
 };
 export type HandlerDefinition<Kind extends "query" | "mutation" | "message", HandlerType extends Handler = Handler> = {
@@ -292,15 +298,17 @@ export type RequireAuthContext = {
 export declare function requireUserAuth(context: RequireAuthContext, options?: RequireAuthOptions): AuthContext;
 /** @deprecated Use requireUserAuth for the synchronous inline Session check. */
 export declare function requireAuth(context: RequireAuthContext, options?: RequireAuthOptions): AuthContext;
-export declare function requireAuth<HandlerType extends Handler>(handler: HandlerType): HandlerType;
-export declare function requireAuth<HandlerType extends Handler>(options: DeclarativeRequireAuthOptions, handler: HandlerType): HandlerType;
+export declare function requireAuth<HandlerType extends Handler>(handler: HandlerType): AuthGuardedHandler<HandlerType>;
+export declare function requireAuth<HandlerType extends Handler>(options: DeclarativeRequireAuthOptions, handler: HandlerType): AuthGuardedHandler<HandlerType>;
 export declare function capsule<const Definition extends CapsuleDefinition>(definition: Definition): Capsule<Definition>;
 /** Define a Custom endpoint for HTTP integrations such as webhooks. */
+export declare function endpoint(options: SessionlessEndpointOptions, handler: SessionlessEndpointHandler): EndpointDefinition<SessionlessEndpointHandler>;
 export declare function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(options: EndpointFileAttachmentOptionsDeclaration<Schema>, handler: EndpointFileAttachmentHandler<Schema>): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
 export declare function endpoint<Schema extends SchemaDefinition = SchemaDefinition>(options: EndpointOptions<Schema>, handler: EndpointHandler<Schema>): EndpointDefinition<EndpointHandler<Schema>, Schema>;
 export declare function endpoint<Schema extends SchemaDefinition = SchemaDefinition, HandlerType extends Handler = Handler>(options: EndpointOptions<Schema>, handler: AuthGuardedHandler<HandlerType>): EndpointDefinition<AuthGuardedHandler<HandlerType>, Schema>;
 /** Schema-bound endpoint declaration helper for callbacks that read the Capsule database before request-body handling. */
 export type EndpointBuilder<Schema extends SchemaDefinition> = {
+    (options: SessionlessEndpointOptions, handler: SessionlessEndpointHandler): EndpointDefinition<SessionlessEndpointHandler, Schema>;
     (options: EndpointFileAttachmentOptionsDeclaration<Schema>, handler: EndpointFileAttachmentHandler<Schema>): EndpointDefinition<EndpointFileAttachmentHandler<Schema>, Schema>;
     (options: EndpointOptions<Schema>, handler: EndpointHandler<Schema>): EndpointDefinition<EndpointHandler<Schema>, Schema>;
     <HandlerType extends Handler>(options: EndpointOptions<Schema>, handler: AuthGuardedHandler<HandlerType>): EndpointDefinition<AuthGuardedHandler<HandlerType>, Schema>;

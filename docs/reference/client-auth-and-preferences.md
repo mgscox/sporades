@@ -587,6 +587,20 @@ const signIn = await auth.signIn("email", {
 
 Check `result.data` and `result.error`; do not assume sign-in succeeded.
 
+Email sign-in blocks a caller after five failures in a fixed 15-minute window.
+Hosted Capsules also apply that gate to the existing trusted client address;
+public forwarding headers cannot supply that identity. Failures against an email
+from other callers alone do not block the owner's valid password.
+
+Each Capsule runtime process separately admits at most 120 email sign-in
+verification attempts per fixed 60-second window, reserved before credential lookup
+or password hashing. Rotating Anonymous tokens or emails cannot bypass this budget.
+Attempts already blocked by a caller/address gate consume no verification slot.
+Successful sign-in does not refund process or shared address capacity. These
+in-memory limits reset on process restart, are independent across processes, and
+can allow bursts across window boundaries. Rejections retain opaque invalid-credential
+responses; there is no public tuning option.
+
 ### Registration Admission
 
 Declare `auth.registration` when creating a new linked identity must be gated by
@@ -685,13 +699,44 @@ network policy calls.
 
 ### Reset or Change an Email Password
 
+Successful Reset-code confirmation clears only the recovered email's aggregate
+sign-in risk. It does not refund caller, trusted-address or process verification
+budgets, or change the separate password-change and reset-request throttles.
+The new password works from an otherwise unblocked caller when verification
+capacity is available. Invalid, expired or spent Reset codes change no throttle state.
+
 The runtime exposes `auth.setPassword(email, currentPassword, newPassword)` on the client SDK
 and `ctx.serverAuth.setEmailPassword(email, newPassword)` on the server context.
-The client call requires the signed-in user to prove knowledge of their current
-password; the server API is trusted for reset and administrative flows. Both
-update an existing email credential's password with server-side scrypt hashing
-and a fresh random salt. The runtime never exposes the password hash, salt, or
-internal credential table to Capsule code.
+The server API is trusted for reset and administrative flows and only updates an
+existing email credential's password with server-side scrypt hashing and a fresh
+random salt. The client call is a credential-security transition: it requires
+the signed-in user to prove knowledge of their current password, and a
+successful change revokes the account's other authority in the same
+transaction. The runtime never exposes the password hash, salt, or internal
+credential table to Capsule code.
+
+A successful browser change revokes every Session of the account — including
+this browser's — plus its Reauthentication Proofs, outstanding Reset codes and
+current human-owned Access keys, attributing the Access-key retirement to the
+`password-change` revocation cause. The reply keeps the `{ ok: true }` shape;
+the runtime does not mint a replacement Session, so fresh sign-in is required
+afterwards. The SDK clears this browser's stored Session and standing
+reauthentication intent, publishes signed-out auth state, and stops sending the
+revoked token; live connections are replaced with fresh Anonymous sessions
+before the success reply is delivered, so the initiating and sibling sockets
+resume as Anonymous. Every replacement includes the sign-in provider metadata
+for that connection’s origin, keeping sibling sign-in controls available without
+a reload. A failed change (wrong current password, an email the
+account does not own, a superseded Session, or a rejected transition) commits
+nothing and leaves the browser signed in. The current-password proof has its
+own bounded attempt bucket, separate from sign-in and reset throttling, so
+failed changes never lock the account out of ordinary sign-in.
+
+Sign-in retains a claim on the verified password fingerprint through Session
+issuance. Sign-in, reset and browser owner-security transitions acquire the
+identity lock before credential, recovery or Access-key writes. If sign-in wins,
+a following reset or change revokes its Session; if reset or change wins,
+sign-in cannot issue a Session from the superseded password.
 
 From the client (e.g. a settings page where the user is already signed in):
 
@@ -704,7 +749,10 @@ const result = await auth.setPassword(
   "new-secure-password",
 );
 if (result.error) {
-  // show result.error.message
+  // show result.error.message (e.g. result.error.code === "INVALID_CURRENT_PASSWORD")
+  // the browser stays signed in; retry or route back to sign-in
+} else {
+  // the change committed: route the user to sign-in
 }
 ```
 
@@ -720,9 +768,12 @@ resetPassword: mutation(async (ctx, token: string, newPassword: string) => {
 }),
 ```
 
-`ctx.serverAuth.setEmailPassword` throws if the email is not registered or the
-password is shorter than 8 characters. Wrap it in a try/catch if you want to
-return a user-facing error instead of throwing.
+`ctx.serverAuth.setEmailPassword` rejects an unregistered email or a password
+shorter than 8 characters. It remains the trusted, low-level setter: it changes
+only the password hash and salt and does not itself retire Sessions or Access
+keys, so reset flows that must revoke account authority should do it in the
+same transaction (the runtime's own Reset flow demonstrates this). Wrap it in a
+try/catch if you want to return a user-facing error instead of throwing.
 
 ### Retire a Human's Runtime Credentials Atomically
 

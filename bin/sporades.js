@@ -80525,22 +80525,44 @@ function createRuntimeObservability(config = {}, env = {}) {
   }
   const stopped2 = new AbortController();
   const pending = /* @__PURE__ */ new Set();
-  let active = 0, count = 0, windowStart = performance.now();
-  const enter = () => {
-    const now2 = performance.now();
-    if (now2 - windowStart >= 6e4) {
-      count = 0;
-      windowStart = now2;
-    }
-    if (stopped2.signal.aborted || active >= 8 || count >= 120) return false;
-    active++;
-    count++;
-    return true;
+  const epoch = performance.now();
+  const budget = (maxActive, maxCount) => {
+    let active = 0, count = 0, window2 = 0;
+    return () => {
+      const currentWindow = Math.floor((performance.now() - epoch) / 6e4);
+      if (currentWindow !== window2) {
+        count = 0;
+        window2 = currentWindow;
+      }
+      if (stopped2.signal.aborted || active >= maxActive || count >= maxCount) return null;
+      active++;
+      count++;
+      let released = false;
+      return () => {
+        if (!released) {
+          released = true;
+          active--;
+        }
+      };
+    };
   };
+  const acquireIngress = budget(8, 120);
+  const acquirePublicDelivery = budget(4, 60);
+  const acquireServerDelivery = budget(4, 60);
   const safeText = (value, limit) => redactDiagnosticText(typeof value === "string" ? value : "Error", env).slice(0, limit);
   const send2 = async (url, body, headers) => {
     const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped2.signal, AbortSignal.timeout(2e3)]) });
     await response.body?.cancel();
+  };
+  const transmit = (acquire, url, body, headers) => {
+    const release = acquire();
+    if (!release) return Promise.resolve();
+    const task = send2(url, body, headers).finally(() => {
+      release();
+      pending.delete(task);
+    });
+    pending.add(task);
+    return task;
   };
   const eventBase = (platform) => ({
     event_id: randomUUID().replaceAll("-", ""),
@@ -80549,41 +80571,40 @@ function createRuntimeObservability(config = {}, env = {}) {
     environment: errors.environment,
     release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : void 0
   });
-  const deliver = (event) => {
+  const deliver = (event, acquire) => {
     const payload = JSON.stringify(event);
     const body = `${JSON.stringify({ event_id: event.event_id, dsn })}
 ${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}
 ${payload}
 `;
-    if (!sentryUrl || !enter()) return;
-    const task = send2(sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {
-    }).finally(() => {
-      active--;
-      pending.delete(task);
+    if (!sentryUrl) return;
+    void transmit(acquire, sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {
     });
-    pending.add(task);
+  };
+  const captureError = (error, surface, address, acquire) => {
+    try {
+      if (!sentryUrl || error?.sporadesAuthDenialLogData || error?.sporadesAclDenialLogData || expectedDiagnosticErrorCodes.includes(error?.code) || Math.random() >= (errors.sampleRate ?? 1)) return;
+      const frames = typeof error?.stack === "string" ? error.stack.slice(0, 8192).split("\n").slice(1, 21).flatMap((line) => {
+        const match = line.match(/^\s*at\s+(?:(.*?)\s+\()?(.+?):(\d+):(\d+)\)?$/);
+        return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
+      }).reverse() : [];
+      const event = {
+        ...eventBase(surface === "client" ? "javascript" : "node"),
+        level: "error",
+        tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
+        exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
+        ...address ? { user: { ip_address: address } } : {}
+      };
+      deliver(event, acquire);
+    } catch {
+    }
   };
   return {
     enabled: !!analyticsUrl || !!(sentryUrl && errors.client),
     clientErrors: !!(sentryUrl && errors.client),
     analytics: !!analyticsUrl,
     capture(error, surface, address) {
-      try {
-        if (!sentryUrl || error?.sporadesAuthDenialLogData || error?.sporadesAclDenialLogData || expectedDiagnosticErrorCodes.includes(error?.code) || Math.random() >= (errors.sampleRate ?? 1)) return;
-        const frames = typeof error?.stack === "string" ? error.stack.slice(0, 8192).split("\n").slice(1, 21).flatMap((line) => {
-          const match = line.match(/^\s*at\s+(?:(.*?)\s+\()?(.+?):(\d+):(\d+)\)?$/);
-          return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
-        }).reverse() : [];
-        const event = {
-          ...eventBase(surface === "client" ? "javascript" : "node"),
-          level: "error",
-          tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
-          exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
-          ...address ? { user: { ip_address: address } } : {}
-        };
-        deliver(event);
-      } catch {
-      }
+      captureError(error, surface, address, acquireServerDelivery);
     },
     /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
     captureCspViolation(violation) {
@@ -80595,7 +80616,7 @@ ${payload}
           logger: "csp",
           message: `CSP violation: ${violation.directive} blocked ${violation.blocked}`,
           tags: { capsule: safeText(config.name ?? "capsule", 128), surface: "csp", csp_directive: violation.directive, csp_blocked: violation.blocked, ...violation.disposition ? { csp_disposition: violation.disposition } : {} }
-        });
+        }, acquirePublicDelivery);
       } catch {
       }
     },
@@ -80608,7 +80629,7 @@ ${payload}
     async collect(input, origin, request, database) {
       if (input.type === "error") {
         if (!sentryUrl || !errors.client || typeof input.message !== "string" || input.stack !== void 0 && typeof input.stack !== "string") throw new Error();
-        this.capture({ message: input.message, stack: input.stack }, "client", trustedClientAddress(database, request));
+        captureError({ message: input.message, stack: input.stack }, "client", trustedClientAddress(database, request), acquirePublicDelivery);
         return;
       }
       if (!analyticsUrl || input.type !== "pageview") throw new Error();
@@ -80619,12 +80640,9 @@ ${payload}
       const headers = { "content-type": "application/json", "user-agent": safeText(request.headers["user-agent"] ?? "Sporades", 512) };
       if (address) headers["x-forwarded-for"] = address;
       const body = analytics.provider === "umami" ? { type: "event", payload: { website, hostname: url.hostname, url: url.pathname, referrer } } : { name: "pageview", domain: website, url: url.href, referrer };
-      await send2(analyticsUrl, JSON.stringify(body), headers);
+      await transmit(acquirePublicDelivery, analyticsUrl, JSON.stringify(body), headers);
     },
-    enter,
-    leave() {
-      active--;
-    }
+    acquireIngress
   };
 }
 async function routeCollection(database, request, response) {
@@ -80659,7 +80677,8 @@ async function routeCollection(database, request, response) {
     reply(403);
     return true;
   }
-  if (!database.observability.enter()) {
+  const release = database.observability.acquireIngress();
+  if (!release) {
     reply(429);
     return true;
   }
@@ -80692,7 +80711,7 @@ async function routeCollection(database, request, response) {
     if (!response.destroyed) reply(400);
   } finally {
     clearTimeout(timer);
-    database.observability.leave();
+    release();
   }
   return true;
 }
@@ -80741,7 +80760,8 @@ async function routeCspReport(database, request, response) {
   }
   const type = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
   if (!CSP_REPORT_TYPES.includes(type)) return reply(415);
-  if (!database.observability.enter()) return reply(429);
+  const release = database.observability.acquireIngress();
+  if (!release) return reply(429);
   let timer;
   try {
     const body = await Promise.race([
@@ -80770,7 +80790,7 @@ async function routeCspReport(database, request, response) {
     if (!response.destroyed) reply(error?.status === 413 ? 413 : 400);
   } finally {
     clearTimeout(timer);
-    database.observability.leave();
+    release();
   }
 }
 
@@ -82982,6 +83002,30 @@ async function emitAccessKeyOwnerTransitionAudits(database, input) {
     }
   }
 }
+async function runAccessKeyOwnerSecurityTransition(database, input, transition) {
+  if (input.revocationCause !== "owner-unlinked" && input.revocationCause !== "owner-deleted" && input.revocationCause !== "password-change") {
+    throw new TypeError("An owner security transition requires owner-unlinked, owner-deleted or password-change.");
+  }
+  const outcome = await database.adapter.withTransaction(async (adapter) => {
+    await adapter.lockAuthUserFileAuthority(input.ownerUserId);
+    const revokedAccessKeys = await adapter.bulkRevokeAccessKeysForOwner({
+      ownerUserId: input.ownerUserId,
+      revocationTime: () => database.clock.now().toISOString(),
+      revocationCause: input.revocationCause
+    });
+    const result = await transition(adapter);
+    return { result, revokedAccessKeys };
+  });
+  await emitAccessKeyOwnerTransitionAudits(database, {
+    operation: input.operation,
+    ownerUserId: input.ownerUserId,
+    actor: input.actor,
+    credential: input.credential,
+    revocationCause: input.revocationCause,
+    records: outcome.revokedAccessKeys.records
+  });
+  return outcome.result;
+}
 function protectAccessKeyValue(value) {
   const target = Object.freeze({ ...value });
   const tampered = () => {
@@ -83644,6 +83688,31 @@ async function assertCurrentPolicyActor(database, tx, auth, context2) {
   const user = token ? await tx.prepare(tx.dialect.sql("SELECT [u].[id] FROM [sporades_auth_users] [u] JOIN [sporades_auth_sessions] [s] ON [s].[userId] = [u].[id] WHERE [u].[id] = ? AND [u].[isAuthenticated] = 1 AND [u].[isGuest] = 0 AND [s].[token] = ? AND [s].[expiresAt] > ?" + authLock)).get(auth.userId, token, now2) : await tx.prepare(tx.dialect.sql("SELECT [id] FROM [sporades_auth_users] WHERE [id] = ? AND [isAuthenticated] = 1 AND [isGuest] = 0" + authLock)).get(auth.userId);
   if (!user || context2?.signal?.aborted) throw teamPolicyDenied();
 }
+async function enforceCreateAdmission(database, tx, auth, name2, context2) {
+  if (typeof database.runTeamCreateAdmission !== "function") return;
+  let allowed = false;
+  beforeTeamCommit(tx, async () => {
+    if (!allowed) throw teamPolicyDenied();
+    await assertCurrentPolicyActor(database, tx, auth, context2);
+  });
+  try {
+    await assertCurrentPolicyActor(database, tx, auth, context2);
+    const row = await tx.prepare(tx.dialect.sql(
+      "SELECT COUNT(*) AS [count] FROM [sporades_teams] WHERE [createdByUserId] = ?"
+    )).get(auth.userId);
+    const decision = await database.runTeamCreateAdmission(tx, auth, Object.freeze({
+      actorUserId: auth.userId,
+      name: name2,
+      currentCreatedTeamCount: Number(row.count)
+    }), context2?.signal);
+    const descriptor = decision && typeof decision === "object" && !Array.isArray(decision) ? Object.getOwnPropertyDescriptor(decision, "allow") : null;
+    if (!descriptor || !("value" in descriptor) || descriptor.value !== true || Reflect.ownKeys(decision).some((key) => key !== "allow")) throw teamPolicyDenied();
+    await assertCurrentPolicyActor(database, tx, auth, context2);
+    allowed = true;
+  } catch {
+    throw teamPolicyDenied();
+  }
+}
 async function enforceDestructivePolicy(database, tx, auth, operation, teamId, userId, role, context2) {
   if (typeof database.runTeamDestructivePolicy !== "function") return;
   let allowed = false;
@@ -83812,6 +83881,7 @@ async function createAdditionalTeam(database, auth, name2, eventContext) {
         "TEAM_LIMIT_REACHED"
       );
     }
+    await enforceCreateAdmission(database, tx, auth, normalizedName, eventContext);
     const id2 = randomUUID3();
     const now2 = (/* @__PURE__ */ new Date()).toISOString();
     await tx.prepare(tx.dialect.sql(
@@ -118260,6 +118330,9 @@ function createEndpointFileResponseApi(ingressApi, enabled) {
     }
   });
 }
+function isEndpointFileAttachmentResponse(value) {
+  return value !== null && typeof value === "object" && (attachmentResponseDetails.has(value) || sealedAttachmentResponseDetails.has(value));
+}
 function consumeSealedEndpointFileAttachment(value) {
   if (value === null || typeof value !== "object") return null;
   const details = sealedAttachmentResponseDetails.get(value) ?? null;
@@ -119169,6 +119242,9 @@ var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 var EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+var EMAIL_SIGN_IN_VERIFICATION_LIMIT = 120;
+var EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS = 60 * 1e3;
+var EMAIL_SIGN_IN_VERIFICATION_FIELD = "__emailSignInVerificationBudget";
 var PASSWORD_CHANGE_THROTTLE_FIELD = "__emailPasswordChangeThrottle";
 var PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
 var PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
@@ -120965,6 +121041,10 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
   }
   const password = hashEmailPassword(newPassword);
   const outcome = await database.adapter.withTransaction(async (tx) => {
+    const owner = await tx.lockAuthUserFileAuthority(preflight.userId);
+    if (owner?.userKind !== "human" || owner.lifecycleStatus !== "active") {
+      return { ok: false, error: invalidPasswordResetCodeError() };
+    }
     const row = await readPasswordResetCode({ ...database, adapter: tx }, code);
     if (!row) {
       return { ok: false, error: invalidPasswordResetCodeError() };
@@ -120985,9 +121065,10 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
       revocationTime: () => database.clock.now().toISOString(),
       revocationCause: "password-reset"
     });
-    return { ok: true, ownerUserId: row.userId, revokedAccessKeys };
+    return { ok: true, email: row.email, ownerUserId: row.userId, revokedAccessKeys };
   });
   if (!outcome.ok) return outcome;
+  createEmailSignInThrottleState(database).delete(`email\0${outcome.email}`);
   await emitAccessKeyOwnerTransitionAudits(database, {
     operation: "auth.confirmPasswordReset",
     ownerUserId: outcome.ownerUserId,
@@ -121037,21 +121118,50 @@ async function setOwnEmailPassword(database, session, email, currentPassword, ne
     return { ok: false, error: invalidCurrentPasswordError() };
   }
   resetEmailSignInAttempts(database, cleanEmail, session, PASSWORD_CHANGE_THROTTLE_FIELD);
-  return await setEmailPassword(database, session, cleanEmail, newPassword);
-}
-function emailNotOwnedError() {
-  return {
-    code: "AUTH_EMAIL_NOT_OWNED",
-    message: "That email address is not this account's email credential.",
-    hint: "Change the password for the signed-in account, or use a password reset link."
-  };
-}
-function invalidCurrentPasswordError() {
-  return {
-    code: "INVALID_CURRENT_PASSWORD",
-    message: "Current password is incorrect.",
-    hint: "Enter the current password for this email credential, or use a password reset link."
-  };
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
+  }
+  const password = hashEmailPassword(newPassword);
+  try {
+    await runAccessKeyOwnerSecurityTransition(database, {
+      operation: "auth.setPassword",
+      ownerUserId: auth.userId,
+      actor: { userId: auth.userId },
+      credential: { kind: "session" },
+      revocationCause: "password-change"
+    }, async (tx) => {
+      const now2 = database.clock.now();
+      const current2 = await tx.readAuthSessionWithUser(session.token);
+      if (!current2 || current2.token !== session.token || current2.userId !== auth.userId || !current2.isAuthenticated || current2.isGuest || Date.parse(current2.expiresAt) <= now2.getTime()) {
+        throw staleSessionChangeError();
+      }
+      const owner = await tx.lockAuthUserFileAuthority(auth.userId);
+      if (!owner || (owner.userKind ?? "human") !== "human" || owner.lifecycleStatus !== "active") {
+        throw staleSessionChangeError();
+      }
+      const live = await tx.findEmailCredentialWithUser(cleanEmail);
+      if (!live || live.userId !== auth.userId) {
+        const denied2 = emailNotOwnedError();
+        throw commandError(denied2.message, denied2.hint, denied2.code);
+      }
+      if (!await tx.claimEmailCredentialVersion(cleanEmail, credential.passwordHash, credential.passwordSalt)) {
+        throw supersededPasswordChangeError();
+      }
+      await tx.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
+      await tx.deletePasswordResetCodesForUser(auth.userId);
+      await tx.deleteAuthSessionsForUser(auth.userId);
+      return { ownerUserId: auth.userId };
+    });
+  } catch (error) {
+    if (["AUTH_SESSION_INVALID", "AUTH_EMAIL_NOT_OWNED", "INVALID_CURRENT_PASSWORD"].includes(error?.code)) {
+      return { ok: false, error: { code: error.code, message: error.message, hint: error.hint } };
+    }
+    throw error;
+  }
+  return { ok: true };
 }
 async function setEmailPassword(database, _session, email, newPassword) {
   if (!database.authConfig.providers.email.enabled) {
@@ -121071,6 +121181,34 @@ async function setEmailPassword(database, _session, email, newPassword) {
   const password = hashEmailPassword(newPassword);
   await database.adapter.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
   return { ok: true };
+}
+function emailNotOwnedError() {
+  return {
+    code: "AUTH_EMAIL_NOT_OWNED",
+    message: "That email address is not this account's email credential.",
+    hint: "Change the password for the signed-in account, or use a password reset link."
+  };
+}
+function invalidCurrentPasswordError() {
+  return {
+    code: "INVALID_CURRENT_PASSWORD",
+    message: "Current password is incorrect.",
+    hint: "Enter the current password for this email credential, or use a password reset link."
+  };
+}
+function staleSessionChangeError() {
+  return commandError(
+    "This sign-in Session is no longer valid.",
+    "Sign in again and retry the password change.",
+    "AUTH_SESSION_INVALID"
+  );
+}
+function supersededPasswordChangeError() {
+  return commandError(
+    "Current password is incorrect.",
+    "The credential changed while the change was being verified. Sign in again and retry.",
+    "INVALID_CURRENT_PASSWORD"
+  );
 }
 function createEmailSignInThrottleState(database, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
   const owner = database.__rootDatabase ?? database;
@@ -121100,11 +121238,25 @@ function currentEmailSignInThrottleState(database, email, session, scope = EMAIL
     };
   });
   return {
-    throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT),
+    // Aggregate email risk must not veto an otherwise unblocked owner's valid
+    // credential. Other actions retain their existing account-wide policy.
+    throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT && (scope !== EMAIL_SIGN_IN_THROTTLE_FIELD || !entry.key.startsWith("email\0"))),
     entries,
     count: Math.max(...entries.map((entry) => entry.count)),
     resetAt: Math.max(...entries.map((entry) => entry.resetAt))
   };
+}
+function admitEmailSignInVerification(database) {
+  const owner = database.__rootDatabase ?? database;
+  const budget = owner[EMAIL_SIGN_IN_VERIFICATION_FIELD] ??= { count: 0, resetAt: 0 };
+  const now2 = Date.now();
+  if (now2 >= budget.resetAt) {
+    budget.count = 0;
+    budget.resetAt = now2 + EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS;
+  }
+  if (budget.count >= EMAIL_SIGN_IN_VERIFICATION_LIMIT) return false;
+  budget.count++;
+  return true;
 }
 function recordFailedEmailSignInAttempt(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
   const attempts = createEmailSignInThrottleState(database, scope);
@@ -121556,7 +121708,7 @@ async function signInWithEmail(database, session, credentials) {
     return normalized;
   }
   const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
-  if (throttle.throttled) {
+  if (throttle.throttled || !admitEmailSignInVerification(database)) {
     return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
   }
   const row = await database.adapter.findEmailCredentialWithUser(normalized.email);
@@ -121580,6 +121732,9 @@ async function signInWithEmail(database, session, credentials) {
     )).run(auth.userId);
     const current2 = await tx.findEmailCredentialWithUser(normalized.email);
     if (current2?.userId !== auth.userId) return { ok: false, error: invalidEmailCredentialsError() };
+    if (!await tx.claimEmailCredentialVersion(normalized.email, row.passwordHash, row.passwordSalt)) {
+      return { ok: false, error: invalidEmailCredentialsError() };
+    }
     return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
 }
@@ -128061,7 +128216,23 @@ function createConnection() {
       });
     },
     setPassword(email, currentPassword, newPassword) {
-      return request("auth.setPassword", { email, currentPassword, newPassword });
+      return request("auth.setPassword", { email, currentPassword, newPassword }).then(async (result) => {
+        if (!result.error && result.data?.ok === true) {
+          // The transition revoked every Session for the account, including
+          // this browser's. Keep no stored authority or standing reauth intent;
+          // the runtime has already replaced live connections with fresh
+          // Anonymous sessions.
+          journeyConsentOptions = null;
+          journeyEnabledUserId = null;
+          stopJourneyCapture();
+          journeyCapture = null;
+          sessionToken = null;
+          localStorage.removeItem("sporades.sessionToken");
+          localStorage.removeItem("sporades.authReturnTo");
+          await request("auth.get");
+        }
+        return result;
+      });
     },
     sendPasswordResetLink(email) {
       return request("auth.sendPasswordResetLink", { email });
@@ -131513,6 +131684,18 @@ function processIsLive(pid) {
   }
 }
 
+// src/endpoint-session.ts
+function validateEndpointSessionDeclaration(definition) {
+  const options = definition?.options;
+  if (!options || typeof options !== "object" || !("session" in options)) return;
+  if (options.session !== "none" || options.body !== void 0 || options.response !== void 0 || options.mcp !== void 0 || definition.runtimeOwnedEmailEvent || definition.runtimeOwnedStripeCallback || definition.handler?.[Symbol.for("sporades.auth.requirements")]) {
+    const error = new Error("Invalid endpoint Session declaration.");
+    error.code = "INVALID_ENDPOINT_SESSION_DECLARATION";
+    error.hint = 'Use session: "none" only with an unguarded ordinary endpoint without multipart ingress, File attachment responses, MCP exposure or provider callbacks.';
+    throw error;
+  }
+}
+
 // src/server.ts
 var atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
 var acl = Object.freeze({ privilegedOnly: privilegedOnlyTableAcl, denyAll: privilegedOnlyTableAcl });
@@ -131521,6 +131704,7 @@ function privilegedOnlyTableAcl() {
 }
 function serverRuntimeModuleSource() {
   return `export { escapeHtml, html } from "sporades:html";
+const validateEndpointSessionDeclaration = ${validateEndpointSessionDeclaration.toString()};
 const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
 
@@ -131652,6 +131836,7 @@ export function capsule(definition) {
       },
     };
   }
+  for (const item of Object.values(normalized.endpoints ?? {})) validateEndpointSessionDeclaration(item);
   const declaredScopes = new Set(normalized.accessKeys?.scopes ?? []);
   for (const collection of [normalized.queries, normalized.mutations, normalized.endpoints, normalized.messages]) {
     for (const item of Object.values(collection ?? {})) {
@@ -131667,6 +131852,7 @@ export function capsule(definition) {
 }
 
 export function endpoint(options, handler) {
+  validateEndpointSessionDeclaration({ options, handler });
   return {
     kind: "endpoint",
     options,
@@ -137366,6 +137552,7 @@ var REVOCATION_CAUSES = /* @__PURE__ */ new Set([
   "owner",
   "operator",
   "password-reset",
+  "password-change",
   "owner-unlinked",
   "owner-deleted",
   "service-user-administrator",
@@ -137553,7 +137740,7 @@ async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
 var terminatedHumanIdentitiesByMutationResult = /* @__PURE__ */ new WeakMap();
-var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
+var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 var atomicStripeEventDefinitionBrand2 = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -137748,6 +137935,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     capsuleDefinition = normalizeCapsuleAuthDefinition(capsuleDefinition);
     validateCapsuleAuthRequirements(capsuleDefinition);
     validateStripeEventSubscription(capsuleDefinition.stripeEvents);
+    for (const definition of Object.values(capsuleDefinition.endpoints ?? {})) validateEndpointSessionDeclaration(definition);
     validateEndpointResponseDeclarations(capsuleDefinition);
     validateEndpointMcpDeclarations(capsuleDefinition.endpoints);
   }
@@ -137777,10 +137965,13 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const paymentsConfig = validateStripePaymentsRuntimeConfig(config.payments, serverEnv);
   const mcp = resolveMcpRuntime(validateMcpConfig(config.mcp), serverEnv);
   if (capsuleDefinition?.teams !== void 0 && (!capsuleDefinition.teams || typeof capsuleDefinition.teams !== "object" || Array.isArray(capsuleDefinition.teams))) {
-    throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
+    throw commandError("Invalid Capsule Teams declaration.", "Declare teams as { appRoles?: string[], admitJoin?: function, admitCreate?: function, authorizeDestructive?: function }.", "INVALID_TEAM_APPLICATION_ROLES");
   }
   if (capsuleDefinition?.teams?.admitJoin !== void 0 && typeof capsuleDefinition.teams.admitJoin !== "function") {
     throw commandError("Invalid Capsule Team admission policy.", "Declare teams.admitJoin as a server function.", "INVALID_TEAM_JOIN_ADMISSION");
+  }
+  if (capsuleDefinition?.teams?.admitCreate !== void 0 && typeof capsuleDefinition.teams.admitCreate !== "function") {
+    throw commandError("Invalid Capsule Team creation policy.", "Declare teams.admitCreate as a server function.", "INVALID_TEAM_CREATE_ADMISSION");
   }
   if (capsuleDefinition?.teams?.authorizeDestructive !== void 0 && typeof capsuleDefinition.teams.authorizeDestructive !== "function") {
     throw commandError("Invalid Capsule Team policy.", "Declare teams.authorizeDestructive as a server function.", "INVALID_TEAM_DESTRUCTIVE_POLICY");
@@ -138099,47 +138290,11 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         await drainPendingLogWrites(admissionDatabase);
       }
     } : void 0,
-    runTeamDestructivePolicy: typeof capsuleDefinition?.teams?.authorizeDestructive === "function" ? async function(transactionAdapter, auth, input, signal) {
-      const root = this.__rootDatabase ?? this;
-      const transaction = this[trustedReadTransactionAdapter] ?? transactionAdapter;
-      const controller = new AbortController();
-      const abort = () => controller.abort();
-      if (signal?.aborted) abort();
-      else signal?.addEventListener("abort", abort, { once: true });
-      const deadline = performance.now() + 5e3;
-      const timer = root.clock.setTimer(abort, 5e3);
-      let removeAbort = () => {
-      };
-      try {
-        return await withTrustedRead(root, {
-          transaction,
-          purpose: "teams.destructive-policy",
-          subject: input,
-          signal: controller.signal,
-          failOnReadError: true
-        }, async (db, assertActive) => {
-          const evaluation = Promise.resolve().then(() => capsuleDefinition.teams.authorizeDestructive(Object.freeze({
-            app: root.app,
-            auth: Object.freeze({ ...auth }),
-            db,
-            signal: controller.signal
-          }), input));
-          const aborted = new Promise((_2, reject) => {
-            const fail6 = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));
-            removeAbort = () => controller.signal.removeEventListener("abort", fail6);
-            controller.signal.addEventListener("abort", fail6, { once: true });
-            if (controller.signal.aborted) fail6();
-          });
-          const decision = await Promise.race([evaluation, aborted]);
-          if (performance.now() >= deadline) controller.abort();
-          assertActive();
-          return decision;
-        });
-      } finally {
-        removeAbort();
-        root.clock.clearTimer(timer);
-        signal?.removeEventListener("abort", abort);
-      }
+    runTeamCreateAdmission: typeof capsuleDefinition?.teams?.admitCreate === "function" ? function(transaction, auth, input, signal) {
+      return runBoundedTeamPolicy(this, transaction, auth, input, signal, capsuleDefinition.teams.admitCreate.bind(capsuleDefinition.teams), "teams.create-admission");
+    } : void 0,
+    runTeamDestructivePolicy: typeof capsuleDefinition?.teams?.authorizeDestructive === "function" ? function(transaction, auth, input, signal) {
+      return runBoundedTeamPolicy(this, transaction, auth, input, signal, capsuleDefinition.teams.authorizeDestructive.bind(capsuleDefinition.teams), "teams.destructive-policy");
     } : void 0,
     runTeamBillingAuthority: teamBillingDefinition ? async function(transactionAdapter, auth, input) {
       const rootDatabase = this.__rootDatabase ?? this;
@@ -139917,13 +140072,18 @@ function extractEndpoints(serverSource) {
     }
     const argsSource = serverSource.slice(endpointPattern.lastIndex, argsEnd);
     const descriptor = argsSource.match(
-      /^\s*\{\s*method\s*:\s*["']([A-Za-z]+)["']\s*,\s*path\s*:\s*["']([^"']+)["']\s*\}\s*,/
+      /^\s*\{\s*method\s*:\s*["']([A-Za-z]+)["']\s*,\s*path\s*:\s*["']([^"']+)["']\s*(?:,\s*session\s*:\s*([^}]+?))?\s*\}\s*,/
     );
     if (!descriptor) {
       endpointPattern.lastIndex = argsEnd + 1;
       continue;
     }
+    const options = descriptor[3] === void 0 ? void 0 : {
+      session: /^["']none["']$/.test(descriptor[3].trim().replace(/,\s*$/, "")) ? "none" : descriptor[3]
+    };
+    validateEndpointSessionDeclaration({ options });
     endpoints.push({
+      ...options ? { options } : {},
       name: match[1],
       method: descriptor[1].toUpperCase(),
       path: descriptor[2],
@@ -140385,11 +140545,15 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
     purpose: "files.ingress-admission",
     subject: { method: endpoint.options.method, path: endpoint.options.path },
     signal
-  }, (db) => definition.admit(Object.freeze({
+  }, (db, assertActive) => definition.admit(Object.freeze({
     db,
     app: database.app,
     env: database.serverEnv,
     signal,
+    rateLimit: (key2, options) => {
+      assertActive();
+      return database.capsuleRateLimiter.consume(key2, options);
+    },
     request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) })
   }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
   let allowFiles;
@@ -140482,7 +140646,12 @@ async function admitEndpointMultipart(database, endpoint, endpointRequest, admis
   }
 }
 async function runEndpoint(database, endpoint, requestUrl, request, requestPath = requestUrl.pathname) {
+  validateEndpointSessionDeclaration(endpoint);
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
+  validateEndpointSessionDeclaration({ ...endpoint, handler });
+  if (endpoint.options?.session === "none") {
+    return runSessionlessEndpoint(database, handler, requestUrl, request, requestPath);
+  }
   const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
   let endpointRequest = endpointRequestHead(database, requestUrl, request, requestPath);
   const requirements = readAuthRequirements(handler);
@@ -140528,7 +140697,9 @@ async function runEndpoint(database, endpoint, requestUrl, request, requestPath 
       let ingressAuthority;
       let allowFiles = true;
       if (claimAuthority === "capsule-principal") {
-        const admission = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, request.signal);
+        const endpointSignal = request.__sporadesEndpointSignal ?? request.signal;
+        const admission = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, endpointSignal);
+        if (endpointSignal?.aborted) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
         ingressAuthority = admission.authority;
         allowFiles = admission.allowFiles;
       } else {
@@ -140975,6 +141146,41 @@ function endpointRequestHead(database, requestUrl, request, requestPath = reques
     query
   };
 }
+async function runSessionlessEndpoint(database, handler, requestUrl, request, requestPath) {
+  try {
+    const endpointRequest = await readEndpointRequest(database, requestUrl, request, true, requestPath);
+    const signal = request.__sporadesEndpointSignal ?? request.signal;
+    signal?.throwIfAborted();
+    const context2 = Object.freeze({
+      app: database.app,
+      // Ordinary middleware may have retained objects on its mutable env view or limiter
+      // function. Copy only env values, and expose a fresh callable rather than that object.
+      env: Object.freeze(Object.fromEntries(Object.entries(database.serverEnv ?? {}).filter(([, value]) => typeof value === "string"))),
+      log: createEndpointLogger(database, { request: { method: endpointRequest.method, path: endpointRequest.path } }),
+      rateLimit(key, options) {
+        return database.capsuleRateLimiter.consume(key, options);
+      },
+      signal,
+      request: {
+        method: endpointRequest.method,
+        path: endpointRequest.path,
+        clientAddress: endpointRequest.clientAddress,
+        headers: endpointRequest.headers,
+        query: endpointRequest.query,
+        body: endpointRequest.body,
+        bodyBytes: endpointRequest.bodyBytes
+      }
+    });
+    const result = await handler(context2);
+    if (isEndpointFileAttachmentResponse(result)) {
+      throw commandError("Invalid endpoint response.", "Return an ordinary endpoint response.", "INVALID_ENDPOINT_RESPONSE");
+    }
+    return result;
+  } catch (error) {
+    database.observability?.capture(error, "endpoint");
+    throw error;
+  }
+}
 function createEndpointContext(database, endpointRequest, session, options = {}) {
   const auth = protectContextIdentity({ ...contextAuthIdentity(session.auth), ...endpointRequest.clientAddress ? { clientAddress: endpointRequest.clientAddress } : {} });
   const credential = options.ordinaryCredential === false ? null : protectContextIdentity(options.credential ?? { kind: "session" });
@@ -141418,6 +141624,48 @@ function trackTrustedPolicyReads(value, fail6, pending) {
       return member && typeof member === "object" ? trackTrustedPolicyReads(member, fail6, pending) : member;
     }
   });
+}
+async function runBoundedTeamPolicy(database, transactionAdapter, auth, input, signal, policy, purpose) {
+  const root = database.__rootDatabase ?? database;
+  const transaction = database[trustedReadTransactionAdapter] ?? transactionAdapter;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  const deadline = performance.now() + 5e3;
+  const timer = root.clock.setTimer(abort, 5e3);
+  let removeAbort = () => {
+  };
+  try {
+    return await withTrustedRead(root, {
+      transaction,
+      purpose,
+      subject: input,
+      signal: controller.signal,
+      failOnReadError: true
+    }, async (db, assertActive) => {
+      const evaluation = Promise.resolve().then(() => policy(Object.freeze({
+        app: root.app,
+        auth: Object.freeze({ ...auth }),
+        db,
+        signal: controller.signal
+      }), input));
+      const aborted = new Promise((_2, reject) => {
+        const fail6 = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));
+        removeAbort = () => controller.signal.removeEventListener("abort", fail6);
+        controller.signal.addEventListener("abort", fail6, { once: true });
+        if (controller.signal.aborted) fail6();
+      });
+      const decision = await Promise.race([evaluation, aborted]);
+      if (performance.now() >= deadline) controller.abort();
+      assertActive();
+      return decision;
+    });
+  } finally {
+    removeAbort();
+    root.clock.clearTimer(timer);
+    signal?.removeEventListener("abort", abort);
+  }
 }
 async function withTrustedRead(database, options, callback) {
   if (!isActiveTransactionScopedAdapter(options?.transaction, database?.adapter)) {
@@ -142260,6 +142508,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       return;
     }
     if (message.type === "auth.setPassword") {
+      const ownerUserId = client.session.auth.userId;
       const result = await setOwnEmailPassword(
         database,
         client.session,
@@ -142267,6 +142516,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         message.currentPassword ?? "",
         message.newPassword ?? ""
       );
+      if (result.ok) await retireRevokedHumanSessions(database, [ownerUserId]);
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.setPassword.result" : "error",
@@ -142644,7 +142894,9 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     }
     if (message.type === "teams.create") {
       try {
-        const data2 = await createAdditionalTeam(database, client.session.auth, message.name);
+        const teamContext = { credential: { kind: "session" }, signal: client.teamOperationSignal };
+        bindAccessKeyOwnerSession(teamContext, client.session.token);
+        const data2 = await createAdditionalTeam(database, client.session.auth, message.name, teamContext);
         sendJson(client, { id: message.id ?? null, type: "teams.create.result", data: data2, error: null });
       } catch (error) {
         if (error?.sporadesAuthDenialLogData) emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
@@ -142904,7 +143156,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
             signal: client.teamOperationSignal
           });
           const terminatedUserIds = terminatedHumanIdentitiesByMutationResult.get(result);
-          if (terminatedUserIds) await retireTerminatedHumanClients(database, terminatedUserIds);
+          if (terminatedUserIds) await retireRevokedHumanSessions(database, terminatedUserIds);
           sendJson(client, formatMutationResult(message, mutationName, result));
           if (result.ok && mutationResultsWithWrites.has(result)) {
             setTimeout(refreshQueries, 0);
@@ -143088,7 +143340,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       if (queryRefreshes.get(subscription) === running) queryRefreshes.delete(subscription);
     }
   }
-  async function retireTerminatedHumanClients(database, userIds) {
+  async function retireRevokedHumanSessions(database, userIds) {
     const terminated = new Set(userIds);
     const affected = [...clients].filter((client) => terminated.has(client.session?.auth?.userId));
     for (const client of affected) {
@@ -143107,7 +143359,11 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         sendJson(client, {
           id: null,
           type: "auth.session.replace",
-          data: { sessionToken: replacement.token, auth: replacement.auth },
+          data: {
+            sessionToken: replacement.token,
+            auth: replacement.auth,
+            providers: authProvidersForClient(database.authConfig, client.origin)
+          },
           error: null
         });
       } catch {

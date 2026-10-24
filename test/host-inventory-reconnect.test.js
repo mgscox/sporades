@@ -1,3 +1,4 @@
+import { useFixtureUmask } from './support/fixture-umask.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, lstat } from 'node:fs/promises';
@@ -20,6 +21,7 @@ async function waitFor(check) {
   }
 }
 async function fixture(t) {
+  useFixtureUmask(t);
   await mkdir('.sporades/reconnect-tests', { recursive: true });
   const root = await mkdtemp(path.resolve('.sporades/reconnect-tests/case-'));
   t.after(() => rm(root, { recursive: true, force: true }));

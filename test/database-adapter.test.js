@@ -4761,7 +4761,7 @@ test("email sign-in throttles repeated failed attempts for the same email and ca
   });
 });
 
-test("email sign-in throttling cannot be bypassed by rotating Anonymous sessions for the same email", async () => {
+test("another caller's email failures do not veto a valid password from a fresh Anonymous session", async () => {
   await withTempDir(async (dir) => {
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
       auth: { providers: { anonymous: true, email: { enabled: true } } },
@@ -4787,13 +4787,11 @@ test("email sign-in throttling cannot be bypassed by rotating Anonymous sessions
       }
 
       const freshSession = await resolveAnonymousSession(database, null);
-      const throttled = await signInWithEmail(database, freshSession, {
+      const recovered = await signInWithEmail(database, freshSession, {
         email: "ada@example.com",
         password: "correct horse battery staple",
       });
-      assert.equal(throttled.ok, false);
-      assert.equal(throttled.error.message, "Email or password is incorrect.");
-      assert.equal(throttled.error.code, "INVALID_EMAIL_CREDENTIALS");
+      assert.equal(recovered.ok, true, recovered.error?.message);
     } finally {
       database.close();
     }
@@ -4919,7 +4917,7 @@ test("email sign-in throttling prunes expired attempts and bounds stale state", 
   });
 });
 
-test("email sign-in throttling preserves a throttled account bucket under filler pressure", async () => {
+test("email sign-in preserves aggregate risk under filler pressure without vetoing valid credentials", async () => {
   await withTempDir(async (dir) => {
     const originalNow = Date.now;
     let now = Date.parse("2026-07-09T12:00:00.000Z");
@@ -4959,13 +4957,13 @@ test("email sign-in throttling preserves a throttled account bucket under filler
       assert(database.__emailSignInThrottle.size <= 256);
       assert.equal(database.__emailSignInThrottle.get("email\0target@example.com").count, 5);
 
+      now += 60 * 1000; // Separate verification capacity recovers before email risk expires.
       const freshSession = await resolveAnonymousSession(database, null);
-      const throttled = await signInWithEmail(database, freshSession, {
+      const recovered = await signInWithEmail(database, freshSession, {
         email: "target@example.com",
         password: "correct horse battery staple",
       });
-      assert.equal(throttled.ok, false);
-      assert.equal(throttled.error.code, "INVALID_EMAIL_CREDENTIALS");
+      assert.equal(recovered.ok, true, recovered.error?.message);
     } finally {
       Date.now = originalNow;
       database.close();

@@ -1,7 +1,9 @@
+import { createHostFixture, hostFixtureConfig, removeHostFixture } from './support/host-fixture-root.js';
+import { withFixtureUmask } from './support/fixture-umask.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { attemptJournalPath } from '../dist/deploy-files.js';
@@ -10,9 +12,8 @@ import { atomicBackupJson, backupTimerUnits, configureHostBackups, createHostBac
 const root = process.cwd();
 const hasRestic = spawnSync('restic', ['version']).status === 0;
 async function fixture(fn) {
-  await mkdir(path.join(root, '.sporades'), { recursive: true });
-  const dir = await mkdtemp(path.join(root, '.sporades', 'backup-test-'));
-  try { await fn(dir); } finally { await rm(dir, { force: true, recursive: true }); }
+  const dir = await createHostFixture('sporades-backup-', { privateAncestors: true });
+  try { await withFixtureUmask(() => fn(dir)); } finally { await removeHostFixture(dir); }
 }
 function policy(dir) { return { repository: path.join(dir, 'repository'), passwordFile: path.join(dir, 'password'), schedule: null, retention: 1, maxAgeHours: 26 }; }
 function host(dir) { return { alias: 'local', domain: 'backup.example.test', scheme: 'https', remoteRoot: path.join(dir, 'host') }; }
@@ -211,7 +212,7 @@ test('existing restore journals retain strict path and permission validation', (
 }));
 
 test('backup CLI refuses restore without exact destination confirmation before SSH', () => fixture(async dir => {
-  const result = spawnSync(process.execPath, ['bin/sporades.js', 'host', 'backup', 'restore', '--subname', 'source', '--to-subname', 'staging', '--id', 'a'.repeat(64), '--confirm', 'source', '--json'], { cwd: root, env: { ...process.env, SPORADES_CONFIG_DIR: path.join(dir, 'config') }, encoding: 'utf8' });
+  const result = spawnSync(process.execPath, ['bin/sporades.js', 'host', 'backup', 'restore', '--subname', 'source', '--to-subname', 'staging', '--id', 'a'.repeat(64), '--confirm', 'source', '--json'], { cwd: root, env: { ...process.env, SPORADES_CONFIG_DIR: hostFixtureConfig(dir) }, encoding: 'utf8' });
   assert.notEqual(result.status, 0);
   assert.match(JSON.parse(result.stdout).error.message, /confirmation/);
 }));
@@ -341,8 +342,8 @@ test('shipped CLI and helper quiesce exact containers, restore staging, and repo
     await writeFile(path.join(capsule, 'releases', 'release-one', 'sporades.json'), '{}');
     await writeFile(path.join(registry, `${subname}.json`), JSON.stringify({ subname, domain: h.domain, remoteCapsuleId: `${h.domain}/${subname}`, status: subname === 'source' ? 'running' : 'stopped', currentRelease: { id: 'release-one' } }));
   }
-  const bin = path.join(dir, 'bin'), config = path.join(dir, 'config'), state = path.join(dir, 'containers'), calls = path.join(dir, 'docker-calls');
-  await mkdir(bin); await mkdir(config);
+  const bin = path.join(dir, 'bin'), config = hostFixtureConfig(dir), state = path.join(dir, 'containers'), calls = path.join(dir, 'docker-calls');
+  await mkdir(bin); await mkdir(config, { recursive: true });
   await writeFile(path.join(bin, 'package.json'), '{"type":"commonjs"}');
   await writeFile(path.join(config, 'hosts.json'), JSON.stringify({ currentHostAlias: h.alias, profiles: { [h.alias]: { ...h, server: 'fake-only' } } }));
   await writeFile(state, JSON.stringify({ source: true, staging: false }));

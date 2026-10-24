@@ -249,6 +249,7 @@ async function installFakeDocker(dir) {
   const dockerPath = path.join(fakeBinDir, "docker");
   const logPath = path.join(dir, "docker-calls.jsonl");
   await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(path.join(fakeBinDir, "package.json"), '{"type":"commonjs"}\n');
   await writeFile(
     dockerPath,
     `#!/usr/bin/env node
@@ -293,6 +294,7 @@ async function installContractFakeSsh(dir, scriptBody) {
   const logPath = path.join(dir, "ssh-calls.jsonl");
   const sshPath = path.join(fakeBinDir, "ssh");
   await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(path.join(fakeBinDir, "package.json"), '{"type":"commonjs"}\n');
   await writeFile(
     sshPath,
     `#!/usr/bin/env node
