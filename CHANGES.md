@@ -1,5 +1,39 @@
 # Changes
 
+## v0.9.41 - 2026-10-24
+
+Changes since v0.9.40.
+
+### 🚀 Features
+
+- Allow any script version (4a43c515).
+- Add Capsule implicitMutations opt-out for the implicit table mutation surface (#304) (9692d63e).
+- Add explicitly sessionless public endpoints (#308) (1b367744).
+- Add atomic Capsule admission for additional Team creation (#305) (d74d7999).
+
+### 🐛 Bug Fixes
+
+- Prevent account-wide sign-in lockout with bounded verification (#299) (b73dc192).
+
+### 🔧 Improvements
+
+- Regenerate dist and bin [skip ci] (271b05d2).
+- Regenerate dist and bin [skip ci] (9c3e3204).
+
+### 📝 Documentation
+
+- Build dist and bin on main with local CI (#314) (3f555768).
+- Remove the runtime-owned ctx.env browser query (#289) (#301) (cde2b5cf).
+- Reject email signup from linked identities (#300) (e6348a83).
+- Make the full test suite pass in office worktrees (#309) (23d1663d).
+- Expose shared rate limits during Capsule File ingress admission (#307) (2f57e950).
+- Revoke all account authority atomically on a browser password change (#302) (32962832).
+- Isolate public collection budgets from server error delivery (#303) (c1956ad0).
+
+### 🧪 Tests
+
+- Wait for exported durable Job metrics (#311) (48951c93).
+
 ## v0.9.40 - 2026-10-23
 
 Changes since v0.9.39.
