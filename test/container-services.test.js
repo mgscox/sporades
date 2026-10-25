@@ -4,12 +4,42 @@ import { mkdtemp, readFile, stat, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { validateCapsuleServicesConfig, writeCapsuleServicesCompose } from '../dist/capsule-services.js';
-import { classifyContainerCompose, validateResolvedContainerServices, resolveContainerSecrets } from '../dist/container-services.js';
+import { capsuleServiceNetwork, classifyContainerCompose, validateContainerServiceAddress, validateResolvedContainerServices, resolveContainerSecrets } from '../dist/container-services.js';
+import { capsuleServicesComposeModel } from '../dist/capsule-services.js';
 import { createTrustedServices } from '../dist/services-context.js';
 import { requiredServerEnvKeys } from '../dist/server-env-requirements.js';
 import { composeEquivalenceCases } from './support/compose-equivalence-cases.js';
 const declaration = (extra={}) => ({kind:'container', image:'example/embeddings:v1', command:['--embeddings'], port:8080, health:{http:'/health',startPeriodSeconds:900}, ...extra});
 const valid = (service) => validateCapsuleServicesConfig({embeddings:declaration(service)});
+
+test('network modes preserve reachable origins and reject unsupported addressing before startup',()=>{
+  for(const mode of [undefined,'bridge','host'])for(const publishPorts of [true,false]){
+    const config={services:{embeddings:declaration({...(mode?{compose:{network_mode:mode},elevated:['network_mode']}: {})})}};
+    const model=capsuleServicesComposeModel(config,process.cwd(),{publishPorts});
+    const service=model.services.embeddings,rendered=service.rendered;
+    if(mode==='bridge'&&!publishPorts)assert.throws(()=>validateContainerServiceAddress('embeddings',service.declaration,'container'),e=>/network_mode/.test(e.message)&&/Container.*remove.*network_mode/.test(e.hint));
+    else validateContainerServiceAddress('embeddings',service.declaration,publishPorts?'local':'container');
+    assert.deepEqual(rendered.ports,publishPorts&&mode!=='host'?['127.0.0.1::8080']:undefined);
+    assert.deepEqual(rendered.networks,mode?undefined:[model.networks.services]);
+    assert.equal(capsuleServiceNetwork(model,service),mode??model.networks.services);
+    const check=actual=>validateResolvedContainerServices(model.composeDocument,actual,model.declarations,model.nameMapping,{});
+    check(structuredClone(model.composeDocument));
+    for(const changes of [{network_mode:mode==='host'?'bridge':'host'},{ports:['0.0.0.0::8080']}]){
+      const bad=structuredClone(model.composeDocument);Object.assign(bad.services[service.name],changes);
+      assert.throws(()=>check(bad),/compose/);
+    }
+  }
+  for(const network_mode of ['none','service:other','container:unrelated','default','custom','']){
+    const service=declaration({compose:{network_mode},elevated:['network_mode']});
+    // Reading and rendering existing declarations must remain possible for teardown.
+    valid(service);
+    for(const connection of ['local','container'])assert.throws(()=>validateContainerServiceAddress('embeddings',service,connection),e=>/network_mode/.test(e.message)&&/bridge.*host/.test(e.hint));
+  }
+  for(const network_mode of ['bridge','host']){
+    assert.throws(()=>valid({compose:{network_mode}}),e=>/elevated/.test(e.hint));
+    assert.throws(()=>valid({compose:{network_mode},elevated:['network_mode'],network:{egress:false}}),e=>/egress/.test(e.hint));
+  }
+});
 
 test('container declarations validate names, pins, reserved names, health and env limits', () => {
   valid({});

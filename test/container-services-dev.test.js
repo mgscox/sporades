@@ -11,7 +11,7 @@ const cli=path.join(root,'bin/sporades.js');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(read) { const deadline=Date.now()+20000;while(Date.now()<deadline){const value=await read();if(value)return value;await pause(50);}throw new Error('Timed out waiting for Dev service probe'); }
 
-test('Dev Jobs call declared service with stable generated auth; rebuilds preserve credentials and removing the last declaration stops services',{timeout:60000},async()=>{
+for(const networkMode of [undefined,'bridge'])test(`Dev Jobs call declared service with ${networkMode??'managed'} networking and stable auth; rebuilds preserve credentials and removing the last declaration stops services`,{timeout:60000},async()=>{
  const dir=await mkdtemp(path.join(root,'.sporades-container-dev-'));
  let child,companion,output='',errors='';
  try {
@@ -22,6 +22,7 @@ test('Dev Jobs call declared service with stable generated auth; rebuilds preser
   const project=path.join(dir,'capsule');
   const config=JSON.parse(await readFile(path.join(project,'sporades.json'),'utf8'));
   config.services={embeddings:{kind:'container',image:'example/embedding:v1',command:['--embeddings'],port:8080,health:{http:'/health'},env:{HF_TOKEN:{sealed:'HF_TOKEN'},API_KEY:{generated:'apiKey'}},compose:{tty:false,stdin_open:false,'x-note':{purpose:'reviewed'},logging:{driver:'json-file',options:{}},dns:'1.1.1.1',dns_search:'example.test',extra_hosts:['reviewed:127.0.0.1','ipv6:[::1]'],deploy:{resources:{limits:{pids:64}}},volumes:[{type:'volume',source:'cache',target:'/cache',volume:{nocopy:false}}]},elevated:['extra_hosts']}};
+  if(networkMode){config.services.embeddings.compose.network_mode=networkMode;config.services.embeddings.elevated.push('network_mode');}
   await writeFile(path.join(project,'sporades.json'),JSON.stringify(config));
   const {ensureSealedServerEnvKeyPair,sealedServerEnvPaths,sealServerEnv,writeSealedServerEnv}=await import('../dist/sealed-server-env.js');
   const paths=sealedServerEnvPaths(project),pair=await ensureSealedServerEnvKeyPair(paths);
@@ -42,7 +43,7 @@ import {appendFileSync,readFileSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 const args=process.argv.slice(2);appendFileSync(process.env.FAKE_CALLS,JSON.stringify(args)+'\\n');
 if(args.includes('config')){
- if(process.env.SPORADES_COMPOSE_TEST_BINARY){const result=spawnSync(process.env.SPORADES_COMPOSE_TEST_BINARY,args.slice(1),{encoding:'utf8',env:process.env});process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');process.exit(result.status??1);}
+ if(process.env.SPORADES_COMPOSE_TEST_BINARY){const result=spawnSync(process.env.SPORADES_COMPOSE_TEST_BINARY,args.slice(1),{encoding:'utf8',env:process.env});if(result.status===0){const resolved=JSON.parse(result.stdout);const service=Object.values(resolved.services).find(s=>s.labels?.['com.sporades.capsule-service.name']==='embeddings');if(service){if(service.network_mode!==process.env.FAKE_NETWORK_MODE||!service.ports?.some(p=>p.host_ip==='127.0.0.1'&&p.target===8080)){process.stderr.write('Missing expected network mode or loopback publication');process.exit(1);}}}process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');process.exit(result.status??1);}
  const raw=readFileSync(args[args.indexOf('-f')+1],'utf8');
  const model=JSON.parse(raw.replace(/\\$\\{(SPORADES_SVC_[A-Za-z0-9_]+):\\?\\}/g,(_m,k)=>process.env[k]??''));
  process.stdout.write(JSON.stringify(model));
@@ -51,9 +52,9 @@ else if(args.includes('port'))process.stdout.write('127.0.0.1:'+process.env.FAKE
 `,{mode:0o755});
   await writeFile(path.join(fakeBin,'package.json'),'{"type":"module"}');
   const source=version=>`import {capsule,endpoint,job} from 'sporades/server';
-export default capsule({name:'capsule',jobs:{embed:job(async ctx=>{const svc=ctx.services.embeddings;const response=await fetch(svc.url+'/v1/embeddings',{method:'POST',headers:{authorization:'Bearer '+svc.secrets.apiKey,'content-type':'application/json'},body:JSON.stringify({input:['probe']})});return response.json();})},endpoints:{ready:endpoint({method:'GET',path:'/ready'},ctx=>({body:{version:${version},declared:!!ctx.services.embeddings}})),start:endpoint({method:'POST',path:'/start'},async ctx=>({body:await ctx.jobs.enqueue('embed',{})}))}});`;
+export default capsule({name:'capsule',jobs:{embed:job(async ctx=>{const svc=ctx.services.embeddings;if(svc.url!==${JSON.stringify(`http://127.0.0.1:${servicePort}`)})throw new Error('Unexpected service origin');const response=await fetch(svc.url+'/v1/embeddings',{method:'POST',headers:{authorization:'Bearer '+svc.secrets.apiKey,'content-type':'application/json'},body:JSON.stringify({input:['probe']})});return response.json();})},endpoints:{ready:endpoint({method:'GET',path:'/ready'},ctx=>({body:{version:${version},declared:!!ctx.services.embeddings}})),start:endpoint({method:'POST',path:'/start'},async ctx=>({body:await ctx.jobs.enqueue('embed',{})}))}});`;
   await writeFile(path.join(project,'server/index.ts'),source(1));
-  child=spawn(process.execPath,[cli,'dev','--port',String(devPort),'--json'],{cwd:project,env:{...env,PATH:fakeBin+path.delimiter+env.PATH,FAKE_PORT:String(servicePort),FAKE_CALLS:log},stdio:['ignore','pipe','pipe']});
+  child=spawn(process.execPath,[cli,'dev','--port',String(devPort),'--json'],{cwd:project,env:{...env,PATH:fakeBin+path.delimiter+env.PATH,FAKE_PORT:String(servicePort),FAKE_CALLS:log,...(networkMode?{FAKE_NETWORK_MODE:networkMode}:{})},stdio:['ignore','pipe','pipe']});
   child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>errors+=b);
   const ready=async expected=>until(async()=>{assert.equal(child.exitCode,null,output+errors);try{const res=await fetch(`http://127.0.0.1:${devPort}/ready`);const body=await res.json();return body.version===expected&&body;}catch{return null;}});
   assert.equal((await ready(1)).declared,true);
@@ -66,6 +67,9 @@ export default capsule({name:'capsule',jobs:{embed:job(async ctx=>{const svc=ctx
   assert.equal(first,second);
   assert(!output.includes(first));assert(!errors.includes(first));
   assert(!output.includes('synthetic-hf-token'));assert(!output.includes('synthetic-other-key'));
+  if(networkMode==='bridge')for(const args of [['dev','status'],['dev','stop'],['dev','reset'],['deploy','reset']]){
+   const result=run(args,project);assert.equal(result.status,0,result.stdout+result.stderr);
+  }
   config.services={};await writeFile(path.join(project,'sporades.json'),JSON.stringify(config));
   await until(async()=>{try{return !(await (await fetch(`http://127.0.0.1:${devPort}/ready`)).json()).declared;}catch{return false;}});
   const calls=(await readFile(log,'utf8')).trim().split('\n').map(JSON.parse);

@@ -244,6 +244,12 @@ const response = await fetch(`${url}/v1/embeddings`, {
   published port in a Dev session, the Compose DNS name on the services network
   in a local Container session, and the per-Capsule Host network name for a
   Hosted Capsule.
+  Acknowledged `network_mode: "bridge"` retains loopback publication in Dev,
+  but is rejected in Container sessions because the default bridge has no
+  service DNS. Acknowledged `host` uses the declared host port (the host gateway
+  from a Container). Other explicit modes are rejected before startup until
+  their addressing is supported; removing `network_mode` selects the managed
+  services network.
 - `secrets` contains exactly the `generated` values of that service. `sealed`
   values are already available through `ctx.env`, so they are not duplicated.
 - The object is deeply frozen and absent from ACL contexts, browser code, client

@@ -49,9 +49,19 @@ appendFileSync(process.env.FAKE_CALLS,JSON.stringify({args})+'\\n');
    const result=spawnSync(process.execPath,[cli,mode,'--port','5203','--json'],{cwd:project,env:{...env,PATH:bin+path.delimiter+env.PATH,FAKE_CALLS:calls,FAKE_TAMPER_PROJECT:tamper?'1':''},encoding:'utf8',timeout:15000});
    assert.equal(result.status,1,result.stdout+result.stderr);
    const output=result.stdout.trim().split('\n').map(line=>JSON.parse(line));
-   const events=(await readFile(calls,'utf8')).trim().split('\n').map(JSON.parse);
-   return {events,message:output.find(value=>value.ok===false)?.error?.message};
+   const events=(await readFile(calls,'utf8').catch(e=>{if(e.code==='ENOENT')return '';throw e;})).trim().split('\n').filter(Boolean).map(JSON.parse);
+   const error=output.find(value=>value.ok===false)?.error;
+   return {events,message:error?.message,hint:error?.hint};
   }finally{await rm(dir,{recursive:true,force:true});}
+}
+
+for(const mode of ['dev','deploy'])for(const network_mode of ['none','service:other','container:unrelated',...(mode==='deploy'?['bridge']:[])]){
+ test(`built ${mode} refuses unaddressable network mode ${network_mode} before Compose up`,async()=>{
+  const {events,message,hint}=await probe(mode,{network_mode},['network_mode']);
+  assert.match(message,/compose.network_mode/);
+  assert.match(hint,network_mode==='bridge'?/Container.*remove.*network_mode/:/bridge.*host/);
+  assert(!events.some(({args})=>args.includes('up')));
+ });
 }
 
 for(const {name,compose,elevated=[]} of composeEquivalenceCases)for(const mode of ['dev','deploy']){

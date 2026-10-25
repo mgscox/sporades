@@ -42,10 +42,16 @@ export function containerDeclarations(config: RecordValue): Array<[string, Conta
 export function capsuleServiceNetwork(model: RecordValue, service: RecordValue): string {
   if (service.kind === "container") {
     const mode = service.declaration.compose?.network_mode;
-    if (mode === "host" || mode === "none") return mode;
+    if (mode) return mode;
     if (service.declaration.network?.egress === false) return model.networks.internal;
   }
   return model.networks.services;
+}
+/** Startup addressing policy; inspection and teardown must still accept Dev declarations. */
+export function validateContainerServiceAddress(name: string, service: ContainerServiceDeclaration, connection: "local" | "container") {
+  const mode = service.compose?.network_mode;
+  if (mode !== undefined && !["bridge", "host"].includes(mode)) fail(name, "compose.network_mode", "Remove network_mode to use the managed services network, or acknowledge bridge (Dev only) or host. Other modes have no supported ctx.services address.");
+  if (connection === "container" && mode === "bridge") fail(name, "compose.network_mode", "Container sessions require service DNS; remove network_mode to use the managed services network, or explicitly acknowledge host networking. Docker's default bridge has no service DNS.");
 }
 export function classifyContainerCompose(key: string): "ordinary" | "owned" | "elevated" | "forbidden" {
   if (forbidden.has(key) || /^[&*]/.test(key)) return "forbidden";
@@ -416,10 +422,10 @@ export function renderContainerService(name: string, service: ContainerServiceDe
     tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777", ...tmpfs],
     environment: env,
     healthcheck: { test: healthTest, interval: "5s", timeout: "3s", retries: 3, start_period: `${service.health.startPeriodSeconds ?? 60}s`, start_interval: "1s" },
-    // Host networking explicitly acknowledged via network_mode cannot also join
-    // Compose networks or publish Dev ports.
+    // Explicit modes cannot also join Compose networks. Bridge still needs a
+    // loopback publication for Dev; host mode uses the declared host port.
     ...(compose.network_mode ? {} : { networks: [service.network?.egress === false ? model.networks.internal : model.networks.services] }),
-    ...(model.publishPorts && !compose.network_mode ? { ports: [`127.0.0.1::${service.port}`] } : {}),
+    ...(model.publishPorts && compose.network_mode !== "host" ? { ports: [`127.0.0.1::${service.port}`] } : {}),
     ...(mounts.length ? { volumes: mounts } : {}),
   };
 }

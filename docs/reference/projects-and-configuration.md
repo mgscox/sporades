@@ -1026,7 +1026,12 @@ const response = await fetch(`${embeddings.url}/v1/embeddings`, {
 
 `url` uses a loopback-published port in Dev and the Compose DNS name in Container
 sessions. An acknowledged `network_mode: "host"` uses the declared host port and
-the Container host gateway instead. `secrets` contains exactly that service's generated names. Sealed
+the Container host gateway instead. Acknowledged `network_mode: "bridge"` is
+supported in Dev and retains its loopback-published port. Container sessions
+reject bridge mode because Docker's default bridge has no service DNS; remove
+`network_mode` to use the managed services network. Other modes, including
+`none`, `service:…` and `container:…`, are rejected before startup because
+Sporades cannot resolve their service address. `secrets` contains exactly that service's generated names. Sealed
 values remain in `ctx.env`. Unknown names return `undefined`; ACL contexts and
 the browser have no services field. Runtime inspection omits connections and
 credentials, and the runtime redacts generated values from its logs. Middleware

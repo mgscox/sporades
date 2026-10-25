@@ -44,7 +44,9 @@ of ambient process or `.env` project names. A shared project lifecycle fence
 serializes service rendering, secret resolution, startup and finalization with
 both modes' stop/reset commands, including Dev rebuilds. Trusted server handlers receive deeply frozen
 `ctx.services.<name>` connections and generated secrets; ACL, browser and
-inspection surfaces receive none. Hosted orchestration is deferred and
+inspection surfaces receive none. Acknowledged bridge mode retains Dev loopback
+publication; Container requires managed service DNS or acknowledged host mode.
+Unaddressable network modes fail before startup. Hosted orchestration is deferred and
 `host push` refuses these declarations. See
 [container service configuration](docs/reference/projects-and-configuration.md#declare-a-container-service).
 _Avoid_: arbitrary Compose override, forwarded Capsule env

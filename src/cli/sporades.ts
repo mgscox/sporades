@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { capsuleServiceNetwork, finalizeContainerSecrets, pinContainerInheritedMounts, updateServiceCredentials, containerDeclarations, resolveContainerSecrets, serviceInterpolationName, validateResolvedContainerServices, type ContainerSecretResolution } from "../container-services.js";
+import { capsuleServiceNetwork, finalizeContainerSecrets, pinContainerInheritedMounts, updateServiceCredentials, containerDeclarations, resolveContainerSecrets, serviceInterpolationName, validateContainerServiceAddress, validateResolvedContainerServices, type ContainerSecretResolution } from "../container-services.js";
 import { routeCollection } from "../observability-runtime.js";
 import { routeMcp } from "../mcp-runtime.js";
 import { assertStripeTestOriginCommand, resolveDevStripeApiOrigin, validateDevStripeRuntime, markDevStripeRuntime } from "./dev-stripe-origin.js";
@@ -7751,6 +7751,9 @@ async function startCapsuleServices(
 ): Promise<LooseRecord> {
   if (!capsuleServices) {
     return options.connection === "container" ? { env: {}, services: null } : {};
+  }
+  for (const [name, service] of Object.entries(capsuleServices.services)) {
+    if (service.kind === "container") validateContainerServiceAddress(name, service.declaration, options.connection === "container" ? "container" : "local");
   }
   // Fence pruning for every declaration, including removal of the last service.
   const resolution = await resolveContainerSecrets(projectDir, { services: capsuleServices.declarations });
