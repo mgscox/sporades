@@ -2206,7 +2206,9 @@ function defaultSporadesDependency() {
 }
 
 async function manageLocalLifecycle(surface: string, options: LooseRecord) {
-  const mutating = surface === "deploy" && !["status", "ssh", "jobs", "schedules"].includes(options.subcommand);
+  const mutating = surface === "deploy"
+    ? !["status", "ssh", "jobs", "schedules"].includes(options.subcommand)
+    : ["stop", "reset"].includes(options.subcommand);
   const release = mutating ? await acquireContainerLifecycleLock(options.projectDir) : null;
   try {
     return await manageLocalLifecycleUnlocked(surface, options);
@@ -2504,8 +2506,7 @@ async function startDevSession(options: LooseRecord) {
   };
   let bundle = await createBundle(options.projectDir, config, { preserveServerBundle, devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: recordClientDependency, validateRuntimeEnv: env => { validateDevStripeRuntime(config.payments, env); } });
   let telemetryConfig = await resolveLocalTelemetryConfig(config, options.telemetryProfile);
-  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
-  const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
+  const capsuleServiceEnv = await startDevCapsuleServices(options.projectDir, config, {
     wait: true,
     emit: (data, error) => emitDevEvent(options, data, error),
   });
@@ -2933,11 +2934,10 @@ async function startDevSession(options: LooseRecord) {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextPreserveServerBundle = await mustPreserveLegacyContainerBundle(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
-      const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
       const nextClientDependencies = new Set<string>();
       rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true, deployFiles: false, containerTelemetry: true, onClientDependency: (file) => { nextClientDependencies.add(file); recordClientDependency(file); }, validateRuntimeEnv: env => { validateDevStripeRuntime(nextConfig.payments, env); } });
       const nextTelemetryConfig = await resolveLocalTelemetryConfig(nextConfig, options.telemetryProfile);
-      const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
+      const nextCapsuleServiceEnv = await startDevCapsuleServices(options.projectDir, nextConfig, {
         wait: true,
         emit: (data, error) => emitDevEvent(options, data, error),
       }).catch((error) => { throw tagDevRebuildError(error, "services", nextConfig); });
@@ -7727,6 +7727,20 @@ async function pathExists(targetPath: PathLike) {
       return false;
     }
     throw error;
+  }
+}
+
+async function startDevCapsuleServices(projectDir: string, config: LooseRecord, options: StartCapsuleServicesOptions) {
+  // Container mutations already hold this lock in manageLocalLifecycle. Dev
+  // holds it only for its shared service phase, never for the watching session.
+  // Rendering and secret resolution belong inside the fence: a generation
+  // check after up cannot undo a service resurrected after a completed reset.
+  const release = await acquireContainerLifecycleLock(projectDir);
+  try {
+    const model = await writeCapsuleServicesCompose(projectDir, config, { publishPorts: true });
+    return await startCapsuleServices(model, projectDir, options);
+  } finally {
+    await release();
   }
 }
 

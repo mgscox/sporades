@@ -273,6 +273,15 @@ declaration recreates only the affected service. Reset removes service state and
 generated secrets but never removes third-party images. Labels identify the
 Capsule, the service name and `kind: container`.
 
+Local service mutations use the same project lifecycle fence for Dev startup
+and rebuild, Container mutations, and both modes' stop/reset commands. It starts
+before Compose rendering and secret resolution and ends after readiness and
+credential finalization. A waiting stop/reset therefore runs after the active
+startup; a successful reset cannot be followed by that older startup issuing
+`up` with deleted credentials. Failure releases the fence; bounded contention
+fails busy without mutation. Dev holds it only for the service phase, never for
+the watching session. Credential generations still fence stale store writers.
+
 Service state is not part of the Capsule data backup (SQLite plus uploaded
 files) in this decision. Model caches are reproducible. A
 `state.backup: true` opt-in can follow when there is a durable-state use case.

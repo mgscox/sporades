@@ -1496,7 +1496,11 @@ redirect startup, orphan removal, inspection, stop or reset. Imports, merges, Do
 rejected. Named volumes are labelled and reset-owned; inherited mounts are
 checked against declared state or an inspected, pinned external container. Dev/Container lifecycle retains
 unchanged services, reconciles declarations, and removes credentials on reset
-without deleting third-party images. Doctor reports image identity, architecture,
+without deleting third-party images. Shared service lifecycle mutations are
+serialized from Compose rendering and secret resolution through startup,
+readiness and credential finalization, including Dev rebuilds and both modes'
+stop/reset commands. A successful reset cannot be followed by an older in-flight
+service startup using the deleted credentials. Doctor reports image identity, architecture,
 elevation and missing env. Hosted pushes refuse container service declarations.
 See the [configuration reference](reference/projects-and-configuration.md#declare-a-container-service)
 and [ADR 0056](adr/0056-capsule-container-services-are-declared-images-with-referenced-env.md).

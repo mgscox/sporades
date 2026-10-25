@@ -40,7 +40,9 @@ Sporades owns hardening, credential custody and Dev/Container lifecycle.
 Resolved-model preflight checks fields Sporades consumes or owns; Compose handles
 unread passthrough representations. Every lifecycle call pins the Capsule-owned
 `sporades-<capsule>-services` project, shared by Dev and Container, independently
-of ambient process or `.env` project names. Trusted server handlers receive deeply frozen
+of ambient process or `.env` project names. A shared project lifecycle fence
+serializes service rendering, secret resolution, startup and finalization with
+both modes' stop/reset commands, including Dev rebuilds. Trusted server handlers receive deeply frozen
 `ctx.services.<name>` connections and generated secrets; ACL, browser and
 inspection surfaces receive none. Hosted orchestration is deferred and
 `host push` refuses these declarations. See

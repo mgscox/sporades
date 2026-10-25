@@ -1088,8 +1088,15 @@ egress. Dev requires a loopback port.
 
 `dev` and `deploy` start services before the Capsule. Rebuilds retain unchanged
 services; Compose recreates changed declarations and removes undeclared services.
-Credential finalization is fenced by the startup generation: an older concurrent
-startup fails closed instead of pruning credentials admitted by a newer one.
+Dev startup and rebuild share one project lifecycle fence with Container
+mutations and both modes' stop/reset commands. The fence covers Compose
+rendering, secret resolution, preflight, startup/readiness, and credential
+finalization. A stop/reset waits for an active service startup, then stops it;
+a successful reset cannot be followed by that older startup running `up` with
+deleted credentials. Contending commands return a busy error without mutation
+if the bounded wait expires. The fence is released on failure and is held only
+for the service phase of a Dev session. The credential-generation guard remains
+as a separate check against stale credential writers.
 Removing the last service also removes the Capsule's old service network binding.
 `dev status|stop|reset` and `deploy status|stop|reset` own local state. Stop and
 reset do not require Sealed keys. Reset never removes third-party images.
