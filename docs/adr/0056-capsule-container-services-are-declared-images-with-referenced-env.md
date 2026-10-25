@@ -279,6 +279,17 @@ declaration recreates only the affected service. Reset removes service state and
 generated secrets but never removes third-party images. Labels identify the
 Capsule, the service name and `kind: container`.
 
+Reset revokes generated credentials before any Container or filesystem removal.
+It removes host-owned state directly; foreign-owned or unreadable service trees
+are emptied by a bounded, network-disabled cleanup container using the immutable
+Node image pinned by the Base Dockerfile. The helper runs as UID `0:0` with only
+DAC and file-owner override (including foreign sticky directories), a read-only
+root and one writable service-directory bind; it cannot
+mount the Runtime/credentials parent, follow state symlinks or inherit nested
+bind mounts. A failed removal does not retain credentials or skip independent
+cleanup. Reset reports an opaque error with the affected path, owner UID and
+recovery command, and a retry converges after the blocker is repaired.
+
 Local service mutations use the same project lifecycle fence for Dev startup
 and rebuild, Container mutations, and both modes' stop/reset commands. It starts
 before Compose rendering and secret resolution and ends after readiness and

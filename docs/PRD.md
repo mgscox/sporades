@@ -1499,7 +1499,10 @@ redirect startup, orphan removal, inspection, stop or reset. Imports, merges, Do
 rejected. Named volumes are labelled and reset-owned; inherited mounts are
 checked against declared state or an inspected, pinned external container. Dev/Container lifecycle retains
 unchanged services, reconciles declarations, and removes credentials on reset
-without deleting third-party images. Shared service lifecycle mutations are
+without deleting third-party images. Reset revokes generated credentials before
+cleanup and removes foreign-owned service state through a confined Docker helper.
+Partial failures continue independent cleanup, retain no generated secrets and
+name the remaining path and recovery command. Shared service lifecycle mutations are
 serialized from Compose rendering and secret resolution through startup,
 readiness and credential finalization, including Dev rebuilds and both modes'
 stop/reset commands. A successful reset cannot be followed by an older in-flight

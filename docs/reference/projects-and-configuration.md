@@ -986,7 +986,8 @@ readiness waiting; calling code must tolerate an unavailable service.
 parent protects local access; the mounted leaf permits the image's independent
 UID to write. State is excluded from Capsule data backups. Generated credentials
 persist in the locked, atomically replaced `0600`
-`.sporades/services/credentials.json`. Reset discards them; rotation is not
+`.sporades/services/credentials.json`. Reset revokes them before filesystem
+cleanup, including when cleanup fails; rotation is not
 implemented. After a crashed credential writer, stop concurrent lifecycle commands
 and remove `.sporades/services/.credentials-lock` before retrying. Stale locks
 are never reclaimed automatically.
@@ -1105,6 +1106,17 @@ as a separate check against stale credential writers.
 Removing the last service also removes the Capsule's old service network binding.
 `dev status|stop|reset` and `deploy status|stop|reset` own local state. Stop and
 reset do not require Sealed keys. Reset never removes third-party images.
+Reset revokes generated service secrets before removing the Container or service
+state. Host-owned trees can be removed directly. Foreign-owned or unreadable
+service state is emptied by a bounded cleanup container using the immutable
+Node image pinned by the Base Dockerfile, UID `0:0`, only DAC and file-owner
+override capabilities, no network, a read-only
+root and only the affected service directory mounted writable. Symlink targets
+and nested bind mounts are excluded. Docker may need to pull that cleanup image.
+If cleanup fails, reset continues independent state, image and labelled-volume
+cleanup, then reports the remaining path, owner UID and a recovery command.
+Generated secrets remain revoked, and retrying reset completes the cleanup once
+Docker access or permissions are restored.
 Doctor reports pinning, architecture availability, elevated key names and missing
 Sealed references. `host push` refuses container service declarations until
 Host-owned orchestration is available. This is an opt-in 0.9.x addition; existing

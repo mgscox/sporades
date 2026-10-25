@@ -42,7 +42,10 @@ unread passthrough representations. Every lifecycle call pins the Capsule-owned
 `sporades-<capsule>-services` project, shared by Dev and Container, independently
 of ambient process or `.env` project names. A shared project lifecycle fence
 serializes service rendering, secret resolution, startup and finalization with
-both modes' stop/reset commands, including Dev rebuilds. Trusted server handlers receive deeply frozen
+both modes' stop/reset commands, including Dev rebuilds. Reset revokes generated
+credentials first and uses a confined Docker helper for foreign-owned state;
+partial cleanup failures remain retryable with secrets revoked.
+Trusted server handlers receive deeply frozen
 `ctx.services.<name>` connections and generated secrets; ACL, browser and
 inspection surfaces receive none. Acknowledged bridge mode retains Dev loopback
 publication; Container requires managed service DNS or acknowledged host mode.

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { capsuleServiceNetwork, finalizeContainerSecrets, pinContainerInheritedMounts, updateServiceCredentials, containerDeclarations, resolveContainerSecrets, serviceInterpolationName, validateContainerServiceAddress, validateResolvedContainerServices, type ContainerSecretResolution } from "../container-services.js";
+import { removeCapsuleServiceState } from "../container-service-reset.js";
 import { routeCollection } from "../observability-runtime.js";
 import { routeMcp } from "../mcp-runtime.js";
 import { assertStripeTestOriginCommand, resolveDevStripeApiOrigin, validateDevStripeRuntime, markDevStripeRuntime } from "./dev-stripe-origin.js";
@@ -96,6 +97,7 @@ import { validateHostBackupPolicy } from "./host-backups.js";
 import { attachRequiredDevClamavSidecar, releaseDevClamavSidecar, retireDevClamavSidecarIfUnused, startDevClamavSidecar } from "../dev-clamav-sidecar.js";
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
+  CAPSULE_SERVICES_CREDENTIALS_FILE,
   CAPSULE_SERVICES_STATE_DIR,
   capsuleServicesComposeModel,
   validateCapsuleServicesConfig,
@@ -2297,6 +2299,13 @@ async function manageLocalLifecycleUnlocked(surface: string, options: LooseRecor
     }
 
     case "reset": {
+      // Revocation precedes Container removal, Compose rendering and every state
+      // cleanup attempt. A partial reset must never retain generated secrets.
+      const credentialsPath = path.join(options.projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
+      if (await pathExists(credentialsPath)) await updateServiceCredentials(options.projectDir, saved => {
+        const { container, containerGeneration, ...retained } = saved;
+        return { value: retained, result: null };
+      });
       let container = null;
       if (surface === "deploy") {
         container = await removeLocalContainerSession({ ...options, silent: true, missingOk: true, stopServices: false });
@@ -7586,8 +7595,13 @@ async function stopLocalCapsuleServices(options: LooseRecord) {
 async function resetLocalCapsuleServices(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
   validateCapsuleServicesConfig(config.services, options.projectDir);
-  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
+  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { prepareState: false });
   const services: Record<string, LooseRecord> = {};
+  const cleanupErrors: Error[] = [];
+  const attempt = async (cleanup: () => unknown) => {
+    try { await cleanup(); }
+    catch (error) { cleanupErrors.push(error as Error); }
+  };
   if (capsuleServices) {
     runCapsuleServiceDocker(capsuleServices,
       ["compose", "-f", capsuleServices.path, "down", "--remove-orphans", "--volumes"],
@@ -7595,34 +7609,31 @@ async function resetLocalCapsuleServices(options: LooseRecord) {
       "Failed to reset Capsule services.",
       "Check Docker is running and supports `docker compose down`, then retry the command.",
     );
-    await Promise.all(
-      Object.values(capsuleServices.services as Record<string, CapsuleService>).map((service) =>
-        rm(service.stateDir, { recursive: true, force: true }),
-      ),
-    );
-    const removedImages = removeSporadesOwnedCapsuleImages(capsuleServices, options.projectDir);
     Object.assign(services, capsuleServicesJsonSummary(capsuleServices, "reset"));
-    for (const service of Object.values(services)) {
-      service.removedImages = removedImages;
-    }
+    await attempt(() => {
+      const removedImages = removeSporadesOwnedCapsuleImages(capsuleServices, options.projectDir);
+      for (const service of Object.values(services)) service.removedImages = removedImages;
+    });
   }
 
   // Reset also owns state for declarations removed since the last session.
   const serviceStateRoot = path.join(options.projectDir, CAPSULE_SERVICES_STATE_DIR);
   const staleEntries = await readdir(serviceStateRoot, { withFileTypes: true }).catch(error => {
     if (errorDetails(error).code === "ENOENT") return [];
-    throw error;
+    throw commandError("Capsule service reset incomplete.", `Generated service secrets were revoked. Cannot inspect ${JSON.stringify(serviceStateRoot)}. Restore the protected directory's host-user ownership and access, then retry \`sporades dev reset\` or \`sporades deploy reset\`.`);
   });
   if (capsuleServices || staleEntries.length) {
     const projectSlug = capsuleServices?.projectSlug ?? capsuleServicesComposeModel({ ...config, services: {} }, options.projectDir).projectSlug;
-    const volumes = runDocker(["volume", "ls", "--quiet", "--filter", "label=com.sporades.managed=true", "--filter", `label=com.sporades.project=${projectSlug}`], options.projectDir, "Failed to inspect Capsule service volumes.", "Restore Docker access and retry reset.");
-    const names = volumes.split(/\s+/).filter(name => /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name));
-    if (names.length) runDocker(["volume", "rm", ...names], options.projectDir, "Failed to reset Capsule service volumes.", "Stop containers using the labelled Capsule volumes and retry reset.");
+    await attempt(() => {
+      const volumes = runDocker(["volume", "ls", "--quiet", "--filter", "label=com.sporades.managed=true", "--filter", `label=com.sporades.project=${projectSlug}`], options.projectDir, "Failed to inspect Capsule service volumes.", "Restore Docker access and retry reset.");
+      const names = volumes.split(/\s+/).filter(name => /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name));
+      if (names.length) runDocker(["volume", "rm", ...names], options.projectDir, "Failed to reset Capsule service volumes.", "Stop containers using the labelled Capsule volumes and retry reset.");
+    });
   }
-  for (const entry of staleEntries) if (/^[a-z][a-z0-9-]{0,30}$/.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) {
-    await rm(path.join(serviceStateRoot, entry.name), { recursive: true, force: true });
-  }
-  if (await pathExists(path.join(serviceStateRoot, "credentials.json"))) await updateServiceCredentials(options.projectDir, saved => { const { container, containerGeneration, ...retained } = saved; return { value: retained, result: null }; });
+  const stateNames = new Set(Object.keys(capsuleServices?.services ?? {}));
+  for (const entry of staleEntries) if (/^[a-z][a-z0-9-]{0,30}$/.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) stateNames.add(entry.name);
+  for (const name of stateNames) await attempt(() => removeCapsuleServiceState(options.projectDir, name));
+  if (cleanupErrors.length) throw commandError("Capsule service reset incomplete.", cleanupErrors.map(error => (error as Error & { hint?: string }).hint ?? "Restore Docker access and retry reset; generated service secrets were revoked.").join("\n"));
   if (options.silent) {
     return services;
   }

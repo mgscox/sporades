@@ -138,7 +138,7 @@ export function validateCapsuleServicesConfig(services: unknown, projectDir = pr
 export async function writeCapsuleServicesCompose(
   projectDir: string,
   config: CapsuleProjectConfig,
-  options: CapsuleServiceOptions = {},
+  options: CapsuleServiceOptions & { prepareState?: boolean } = {},
 ): Promise<WrittenCapsuleServicesCompose | null> {
   const composePath = path.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
@@ -157,7 +157,7 @@ export async function writeCapsuleServicesCompose(
     credentials,
     publishPorts: options.publishPorts === true,
   });
-  await Promise.all(Object.values(model.services).map(async service => {
+  if (options.prepareState !== false) await Promise.all(Object.values(model.services).map(async service => {
     await mkdir(service.stateDir, { recursive: true });
     if ((await lstat(service.stateDir)).isSymbolicLink()) throw commandError("Invalid service state directory.", "Remove the symbolic link from the service Runtime state path.");
     // The private 0700 services parent protects host access. The mounted leaf

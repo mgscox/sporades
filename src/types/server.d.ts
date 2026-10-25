@@ -1105,7 +1105,7 @@ export type ResourcesApi<Schema extends SchemaDefinition = SchemaDefinition> = R
   status(options: ResourceStatusOptions): Promise<ResourceStatus>;
 }>;
 
-/** Trusted companion connections from the Capsule-owned Compose project; Dev uses loopback publication (including acknowledged bridge mode), Container uses managed service DNS, and acknowledged host mode uses the host port. Unsupported network modes fail before startup. Runtime env/port boundaries and credential custody are resolved during serialized service startup. Absent from ACL and browser contexts. */
+/** Trusted companion connections from the Capsule-owned Compose project; Dev uses loopback publication (including acknowledged bridge mode), Container uses managed service DNS, and acknowledged host mode uses the host port. Unsupported network modes fail before startup. Runtime env/port boundaries and credential custody are resolved during serialized service startup. Reset revokes generated credentials before state cleanup, including partial cleanup failures. Absent from ACL and browser contexts. */
 export type CapsuleServices = Readonly<Record<string, Readonly<{ url: string; secrets: Readonly<Record<string, string>> }> | undefined>>;
 
 /** Runtime-owned context passed to handlers, middleware and hooks. */
