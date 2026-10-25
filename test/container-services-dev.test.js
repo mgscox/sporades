@@ -15,7 +15,7 @@ test('Dev Jobs call declared service with stable generated auth; rebuilds preser
  const dir=await mkdtemp(path.join(root,'.sporades-container-dev-'));
  let child,companion,output='',errors='';
  try {
-  const env={...process.env,SPORADES_CONFIG_DIR:path.join(dir,'config')};
+  const env={...process.env,COMPOSE_PROJECT_NAME:'qa-unrelated',SPORADES_CONFIG_DIR:path.join(dir,'config')};
   const run=(args,cwd=dir)=>spawnSync(process.execPath,[cli,...args,'--json'],{cwd,env,encoding:'utf8',timeout:20000});
   let r=run(['create','capsule','--framework','vanilla','--template','todo','--no-install','--no-git']);
   assert.equal(r.status,0,r.stdout+r.stderr);
@@ -69,6 +69,8 @@ export default capsule({name:'capsule',jobs:{embed:job(async ctx=>{const svc=ctx
   config.services={};await writeFile(path.join(project,'sporades.json'),JSON.stringify(config));
   await until(async()=>{try{return !(await (await fetch(`http://127.0.0.1:${devPort}/ready`)).json()).declared;}catch{return false;}});
   const calls=(await readFile(log,'utf8')).trim().split('\n').map(JSON.parse);
+  for(const args of calls.filter(args=>args[0]==='compose'))assert.equal(args[args.indexOf('-p')+1],'sporades-capsule-services');
+  for(const action of ['config','up','ps','port','down'])assert(calls.some(args=>args[0]==='compose'&&args.includes(action)),action);
   assert(calls.some(args=>args.includes('down')&&args.includes('--remove-orphans')));
   assert(!calls.some(args=>args.includes('--force-recreate')));
  } finally {

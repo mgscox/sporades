@@ -1037,21 +1037,27 @@ pinned schema is `compose-spec/compose-spec@3a4a6995e4a971f6173dff9130cb3e38e673
 Known keys are schema-checked; unknown keys require elevation and must also be
 accepted by the installed Compose version. `${…}` passthrough interpolation is
 rejected. Literal dollar signs are escaped before rendering. Before `up`,
-Sporades checks the resolved `docker compose config --format json` model;
-changes to owned values, imported resources or unaccounted paths fail closed.
-Preflight accepts equivalent Compose representations: scalar or list `dns` and
-`dns_search`, colon or equals `extra_hosts` separators (including optional brackets
-around IPv6 addresses), empty `deploy.placement`, and omitted `volume.nocopy: false`.
-Hostname ordering
-may change; addresses within a hostname retain their order. Changed addresses,
-resource limits, placement constraints, mount options or other values still fail.
-Compose may also omit the defaults `privileged: false`, `tty: false` and
-`stdin_open: false`, as well as an empty `logging.options` object. Nonempty logging
-options and the logging driver remain strictly compared. `privileged: true` still
-requires explicit declaration and elevation. Service-level `x-*` extensions are
-ignored during preflight because Compose treats them as metadata. This exception
-does not apply to runtime data such as labels or logging options named `x-*`,
-nor does extension metadata authorize changes to any other service field.
+Sporades checks the resolved `docker compose config --format json` model in
+memory. It validates the fields it consumes or owns: project and service names,
+image and command, referenced env, mapped ports, networks, mount identities and
+read-only access, protected labels, and hardening. Changed owned values,
+undeclared resources, imported configuration and unacknowledged elevated keys
+fail closed. The raw resolved model contains secrets and is never persisted or
+logged.
+
+Compose owns the representation and semantics of other passthrough settings.
+Sporades does not compare their spelling before and after resolution: scalar and
+list forms, omitted zero or false defaults, empty collections, IPv6 brackets,
+ignored `x-*` extensions and other harmless Compose transformations are accepted.
+Declaration schema checks, elevation acknowledgements and protected-mount checks
+still apply. Dependencies must still reference declared services.
+
+Every Compose lifecycle call explicitly selects `-p sporades-<capsule>-services`.
+Dev and Container sessions for that Capsule share this owned service stack.
+Ambient `COMPOSE_*` variables are removed from the child environment, and project
+names in process variables or project/parent `.env` files cannot override the
+explicit project. Resolved preflight also rejects a changed project name, so
+`up --remove-orphans`, stop and reset stay within the Capsule's owned project.
 
 | Class | Examples | Rule |
 | --- | --- | --- |

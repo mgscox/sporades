@@ -8359,7 +8359,12 @@ function runCapsuleServiceDocker(model: CapsuleServicesModel, args: string[], cw
     for (const [key, value] of Object.entries(service.declaration.env ?? {})) if (typeof value !== "string") environment[serviceInterpolationName(name, key)] = "SPORADES_UNUSED";
   }
   Object.assign(environment, containerSecretResolutions.get(model)?.environment ?? {});
-  return runDocker(args, cwd, message, hint, { ...process.env, ...environment });
+  // CLI -p outranks both process and dotenv project names. Keep every lifecycle
+  // operation in the same Capsule-owned stack, including orphan reconciliation.
+  const childEnvironment = { ...process.env, ...environment };
+  for (const key of Object.keys(childEnvironment)) if (key.startsWith("COMPOSE_")) delete childEnvironment[key];
+  const pinnedArgs = args[0] === "compose" ? ["compose", "-p", model.composeProjectName, ...args.slice(1)] : args;
+  return runDocker(pinnedArgs, cwd, message, hint, childEnvironment);
 }
 function containerConnections(model: CapsuleServicesModel, connections?: Record<string, CapsuleServiceConnection>) {
   const resolution = containerSecretResolutions.get(model)!;

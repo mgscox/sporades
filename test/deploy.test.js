@@ -4325,6 +4325,8 @@ test("sporades deploy generates owned Compose for a declared database Capsule se
       const runCall = firstDockerRunCall(calls);
       assert.deepEqual(composeUpCall.args, [
         "compose",
+        "-p",
+        "sporades-todo-island-services",
         "-f",
         path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"),
         "up",
@@ -4957,7 +4959,8 @@ test("sporades dev stop stops Capsule services without deleting persisted servic
     assert.deepEqual(JSON.parse(stop.stdout).data.services.database.status, "stopped");
     const calls = await docker.calls();
     const downCall = calls.find((call) => call.args[0] === "compose" && call.args.includes("down"));
-    assert.deepEqual(downCall.args.slice(3), ["down", "--remove-orphans"]);
+    assert.deepEqual(downCall.args.slice(0, 4), ["compose", "-p", "sporades-todo-island-services", "-f"]);
+    assert.deepEqual(downCall.args.slice(5), ["down", "--remove-orphans"]);
   });
 });
 
@@ -5011,7 +5014,8 @@ test("sporades deploy reset removes generated Capsule service state and orphans 
     });
     const calls = await docker.calls();
     const downCall = calls.find((call) => call.args[0] === "compose" && call.args.includes("down"));
-    assert.deepEqual(downCall.args.slice(3), ["down", "--remove-orphans", "--volumes"]);
+    assert.deepEqual(downCall.args.slice(0, 4), ["compose", "-p", "sporades-todo-island-services", "-f"]);
+    assert.deepEqual(downCall.args.slice(5), ["down", "--remove-orphans", "--volumes"]);
     assert(calls.some((call) => call.args[0] === "rmi" && call.args.includes("sporades-owned-image")));
     assert.equal(calls.some((call) => call.args[0] === "rmi" && call.args.includes("third-party-libsql")), false);
   });
@@ -5954,6 +5958,7 @@ test("declared container services deliver secret references by child environment
     const pair = await ensureSealedServerEnvKeyPair(envPaths);
     await writeSealedServerEnv(envPaths, sealServerEnv({ HF_TOKEN: sealedValue, UNDECLARED_SECRET: "synthetic-unrelated-secret" }, pair.publicKey));
     const docker = await installFakeDocker(dir, "container-service-new");
+    docker.env.COMPOSE_PROJECT_NAME = "qa-unrelated";
     const deployed = await runCli(["deploy", "--port", "5203", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(deployed.code, 0, deployed.stdout + deployed.stderr);
     const credentials = JSON.parse(await readFile(capsuleServiceCredentialsPath(projectDir), "utf8"));
@@ -5983,6 +5988,12 @@ test("declared container services deliver secret references by child environment
     const isolatedRun = (await docker.calls()).filter(c => c.args[0] === "run").at(-1);
     const networkNames = isolatedRun.args.flatMap((arg, index) => arg === "--network" ? [isolatedRun.args[index + 1]] : []);
     assert.deepEqual(networkNames, ["bridge", "sporades-container-secret-island-services-internal"]);
+    const status = await runCli(["deploy", "status", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(status.code, 0, status.stdout + status.stderr);
+    const activeStop = await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(activeStop.code, 0, activeStop.stdout + activeStop.stderr);
+    const activeReset = await runCli(["deploy", "reset", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(activeReset.code, 0, activeReset.stdout + activeReset.stderr);
     // A retired Dev model may have no Capsule keeping its old network alive.
     // Container startup must use the post-reconciliation service result.
     config.services = {};
@@ -6002,6 +6013,7 @@ test("declared container services deliver secret references by child environment
     assert.equal(reset.code, 0, reset.stdout + reset.stderr);
     await assert.rejects(readFile(path.join(retiredState, "model-cache")), { code: "ENOENT" });
     assert.equal(JSON.parse(await readFile(capsuleServiceCredentialsPath(projectDir), "utf8")).container, undefined);
+    for (const { args } of (await docker.calls()).filter(c => c.args[0] === "compose")) assert.equal(args[args.indexOf("-p") + 1], "sporades-container-secret-island-services");
     assert(!(await docker.calls()).some(c => c.args[0] === "rmi" && c.args.includes("example/embeddings:v1")));
   });
 });

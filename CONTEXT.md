@@ -36,8 +36,11 @@ _Avoid_: sidecar, dependency, add-on
 An opt-in local companion declared as `services.<name>.kind: "container"`: a
 pinned third-party image, literal command, internal port, required health,
 explicit literal/Sealed/generated env, and classified Compose passthrough.
-Sporades owns hardening, the resolved-model preflight, credential custody and
-Dev/Container lifecycle. Trusted server handlers receive deeply frozen
+Sporades owns hardening, credential custody and Dev/Container lifecycle.
+Resolved-model preflight checks fields Sporades consumes or owns; Compose handles
+unread passthrough representations. Every lifecycle call pins the Capsule-owned
+`sporades-<capsule>-services` project, shared by Dev and Container, independently
+of ambient process or `.env` project names. Trusted server handlers receive deeply frozen
 `ctx.services.<name>` connections and generated secrets; ACL, browser and
 inspection surfaces receive none. Hosted orchestration is deferred and
 `host push` refuses these declarations. See

@@ -1488,8 +1488,11 @@ server contexts gain immutable `ctx.services.<name>` (`url`, generated `secrets`
 through queries, mutations, endpoints, messages, Jobs, middleware and hooks.
 ACL/browser/inspection exclude them, and logs redact their values. Compose keys
 are schema-validated and classified as ordinary, owned, elevated or forbidden;
-resolved-model preflight rejects unexpected authority, resources or changed
-owned values. Imports, merges, Docker sockets and protected mounts are always
+resolved-model preflight checks the project, service names and fields Sporades
+consumes or owns, rejecting changed runtime boundaries and undeclared resources.
+Compose handles unread passthrough representations. Every lifecycle call pins
+`-p sporades-<capsule>-services`; ambient process or `.env` project names cannot
+redirect startup, orphan removal, inspection, stop or reset. Imports, merges, Docker sockets and protected mounts are always
 rejected. Named volumes are labelled and reset-owned; inherited mounts are
 checked against declared state or an inspected, pinned external container. Dev/Container lifecycle retains
 unchanged services, reconciles declarations, and removes credentials on reset

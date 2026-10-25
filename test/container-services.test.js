@@ -80,27 +80,22 @@ test('resolved model rejects changed owned values and unaccounted authority', ()
   }
 });
 
-test('resolved normalization accepts only exact Compose defaults and equivalent representations', () => {
-  const cases=[
-    [{privileged:false},{},{privileged:true}],
-    [{dns:'1.1.1.1'},{dns:['1.1.1.1']},{dns:['8.8.8.8']}],
-    [{dns_search:'example.test'},{dns_search:['example.test']},{dns_search:['other.test']}],
-    [{extra_hosts:['reviewed:127.0.0.1','ipv6:::1']},{extra_hosts:['reviewed=127.0.0.1','ipv6=::1']},{extra_hosts:['reviewed=127.0.0.2','ipv6=::1']}],
-    [{deploy:{resources:{limits:{pids:64}}}},{deploy:{placement:{},resources:{limits:{pids:64}}}},{deploy:{placement:{constraints:['node.role == manager']},resources:{limits:{pids:64}}}}],
-    [{volumes:[{type:'volume',source:'cache',target:'/cache',volume:{nocopy:false}}]},{volumes:[{type:'volume',source:'cache',target:'/cache'}]},{volumes:[{type:'volume',source:'cache',target:'/cache',volume:{nocopy:true}}]}],
-  ];
-  const check=(expected,actual)=>validateResolvedContainerServices({services:{svc:expected}},{services:{svc:actual}},{embeddings:declaration()},{embeddings:'svc'},{});
-  for(const [expected,actual,changed] of cases){
-    check(expected,actual);check(actual,expected);
-    assert.throws(()=>check(expected,changed),/services.embeddings.compose/);
+test('resolved Compose cannot change or omit its owned project name',()=>{
+  const rendered={name:'sporades-capsule-services',services:{svc:{image:'example:v1'}}};
+  const check=actual=>validateResolvedContainerServices(rendered,actual,{embeddings:declaration()},{embeddings:'svc'},{});
+  check(structuredClone(rendered));
+  for(const name of ['qa-unrelated',undefined]){
+    const changed=structuredClone(rendered);changed.name=name;
+    assert.throws(()=>check(changed),/compose.name/);
   }
-  // Empty-default handling must never discard other volume/placement fields.
-  assert.throws(()=>check(cases.at(-1)[0],{volumes:[{type:'volume',source:'cache',target:'/cache',volume:{nocopy:false,subpath:'private'}}]}));
-  assert.throws(()=>check({}, {dns:['1.1.1.1']}));
-  check({extra_hosts:{reviewed:'127.0.0.1',ipv6:['::1']}},{extra_hosts:['ipv6=::1','reviewed=127.0.0.1']});
-  assert.throws(()=>check({extra_hosts:['reviewed=1']},{extra_hosts:{reviewed:1}}));
-  assert.throws(()=>check({extra_hosts:['reviewed=127.0.0.1','reviewed=127.0.0.2']},{extra_hosts:['reviewed=127.0.0.2','reviewed=127.0.0.1']}));
-  assert.throws(()=>check({deploy:{resources:{limits:{pids:64}}}}, {deploy:{placement:{},resources:{limits:{pids:65}}}}));
+});
+
+test('resolved preflight delegates unread passthrough instead of comparing its values',()=>{
+  const expected={services:{svc:{image:'example:v1',cpus:0,logging:{driver:'json-file',options:{}},entrypoint:'literal words',labels:{'operator.note':'declared'}}}};
+  const actual={services:{svc:{image:'example:v1',cpus:'0.0',logging:{driver:'json-file'},entrypoint:['literal','words'],labels:{'operator.note':'normalized'},sysctls:{}}}};
+  const before=structuredClone(actual);
+  validateResolvedContainerServices(expected,actual,{embeddings:declaration({elevated:['sysctls']})},{embeddings:'svc'},{});
+  assert.deepEqual(actual,before);
 });
 
 test('trusted service context is deeply frozen, nonserializable and contains generated secrets only', () => {
@@ -113,35 +108,40 @@ test('trusted service context is deeply frozen, nonserializable and contains gen
   assert(!String(JSON.stringify(services)).includes('a'.repeat(64)));
 });
 
-for (const {name,compose,resolved,elevated=[],tamper} of composeEquivalenceCases) test(`resolved Compose accepts ${name} and rejects runtime changes`,()=>{
+for (const {name,compose,resolved,elevated=[]} of composeEquivalenceCases) test(`resolved Compose accepts ${name} and protects owned boundaries`,()=>{
   valid({compose,elevated});
   const check=(expected,actual)=>validateResolvedContainerServices({services:{svc:expected}},{services:{svc:actual}},{embeddings:declaration()},{embeddings:'svc'},{});
   check(compose,resolved);
   check(resolved,compose);
-  const changed=structuredClone(resolved);tamper(changed);
+  const changed={...structuredClone(resolved),user:"0"};
   assert.throws(()=>check(compose,changed),/services.embeddings.compose/);
 });
 
-test('representation defaults never discard runtime fields or malformed values',()=>{
-  const check=(expected,actual)=>validateResolvedContainerServices({services:{svc:expected}},{services:{svc:actual}},{embeddings:declaration()},{embeddings:'svc'},{});
-  check({'x-note':{privileged:true}},{});
-  check({}, {'x-note':{privileged:true}});
-  check({extra_hosts:{ipv6:['[::1]']}},{extra_hosts:['ipv6=::1']});
-  for(const key of ['tty','stdin_open']){
-    for(const value of [true,'false',0,null]) assert.throws(()=>check({[key]:false},{[key]:value}));
+test('resolved preflight preserves custody, networking, mounts and hardening',()=>{
+  const rendered={name:'sporades-capsule-services',services:{svc:{image:'example:v1',command:['run'],container_name:'sporades-capsule-worker',user:'10001:10001',read_only:true,cap_drop:['ALL'],security_opt:['no-new-privileges:true'],environment:{KEY:'private'},networks:['owned'],ports:['127.0.0.1::8080'],tmpfs:['/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777'],labels:{'com.sporades.managed':'true'},volumes:[{type:'bind',source:'/reviewed',target:'/data',read_only:true}],healthcheck:{test:['CMD','probe'],interval:'5s'}}},networks:{owned:{name:'owned',internal:true}}};
+  const check=actual=>validateResolvedContainerServices(rendered,actual,{embeddings:declaration()},{embeddings:'svc'},{});
+  check(structuredClone(rendered));
+  for(const changed of [
+    {image:'evil:v1'},{command:['other']},{container_name:'foreign'},{user:'0'},
+    {environment:{KEY:'changed'}},{environment:{KEY:'private',EXTRA:'leak'}},
+    {healthcheck:{test:['NONE']}},{read_only:false},{cap_drop:[]},{security_opt:[]},
+    {networks:['foreign']},{network_mode:'host'},{ports:['0.0.0.0::8080']},
+    {volumes:[{type:'bind',source:'/var/run/docker.sock',target:'/data',read_only:true}]},
+    {volumes:[{type:'bind',source:'/reviewed',target:'/other',read_only:true}]},
+    {volumes:[{type:'bind',source:'/reviewed',target:'/data',read_only:false}]},
+    {tmpfs:['/tmp:rw']},{tmpfs:[...rendered.services.svc.tmpfs,'/tmp/overlap:rw']},
+    {tmpfs:[...rendered.services.svc.tmpfs,'/:rw']},{tmpfs:[...rendered.services.svc.tmpfs,'/tmp/..:rw']},
+    {labels:{'com.sporades.managed':'false'}},{volumes_from:['container:foreign']},
+    {depends_on:['foreign']},{depends_on:['svc']},{privileged:true},{future_key:true},
+    {extends:{service:'foreign'}},{use_api_socket:true},
+  ]){
+    const actual=structuredClone(rendered);Object.assign(actual.services.svc,changed);
+    assert.throws(()=>check(actual),/services.embeddings.compose/);
   }
-  for(const [expected,actual] of [
-    [{'x-note':{},labels:{'x-note':'reviewed'}},{labels:{}}],
-    [{logging:{driver:'json-file',options:{'x-note':'reviewed'}}},{logging:{driver:'json-file'}}],
-    [{logging:{driver:'json-file',options:{}}},{logging:{driver:'syslog'}}],
-    [{logging:{driver:'json-file',options:{}}},{logging:{driver:'json-file',options:[]}}],
-    [{extra_hosts:['ipv6=[::1]']},{extra_hosts:['other=::1']}],
-    [{extra_hosts:['reviewed=[host-gateway]']},{extra_hosts:['reviewed=host-gateway']}],
-    [{extra_hosts:['ipv6=[::1]:80']},{extra_hosts:['ipv6=::1']}],
-    [{'x-note':{privileged:false}},{privileged:true}],
-    [{'x-note':{},read_only:true},{read_only:false}],
-    [{'x-note':{},environment:{KEY:'reviewed'}},{environment:{KEY:'changed'}}],
-  ])assert.throws(()=>check(expected,actual),/services.embeddings.compose/);
+  for(const kind of ['services','networks','volumes']){
+    const actual=structuredClone(rendered);actual[kind]={...actual[kind],foreign:{}};
+    assert.throws(()=>check(actual));
+  }
 });
 
 test('concurrent built-in and container credential writers preserve generated identity; corrupt storage fails closed', async () => {

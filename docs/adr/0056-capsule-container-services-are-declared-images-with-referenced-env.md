@@ -114,17 +114,23 @@ Rules that apply to every class:
   it classifies against. A key from a newer specification that Sporades has not
   classified is treated as elevated until it is, so a new Compose capability can
   never widen authority silently.
-- **Classification runs on the resolved model.** Sporades validates each
-  declared key against the pinned Compose schema, renders the file (as quoted
-  JSON-compatible YAML, so a declared key can never become a merge key or alias),
-  and then classifies the output of `docker compose config --format json`, not
-  only the declaration. The resolved service must match exactly:
-  - every Sporades-owned path equals the value Sporades rendered;
-  - every elevated path present is acknowledged; and
-  - no path exists that the declaration does not account for.
-
-  Any resolution-time merge or default that widens the service therefore fails
-  closed. Failures report the offending `services.<name>.compose` path.
+- **Resolved preflight checks runtime boundaries.** Sporades validates each
+  declared key against the pinned Compose schema, renders quoted JSON-compatible
+  YAML, and reads `docker compose config --format json` in memory. It compares
+  the project and service names and the fields Sporades consumes or owns:
+  referenced env, image and command, mapped ports, networks, mount identities and
+  read-only access, protected labels, and hardening. Imported configuration,
+  undeclared resources and newly introduced unacknowledged elevated keys fail
+  closed. Declaration schema, elevation and protected-mount checks remain in
+  force. Ordinary passthrough representations and values belong to Compose;
+  Sporades does not duplicate its normalization rules or compare unread fields.
+  Failures report the offending `services.<name>.compose` path without values.
+- **Every lifecycle call pins the owned project.** All Compose commands use
+  `-p sporades-<capsule>-services`, including config, startup, inspection, stop
+  and reset. Dev and Container intentionally share this Capsule service stack.
+  Child environments exclude ambient `COMPOSE_*` variables; process variables
+  and project/parent `.env` names cannot override the explicit project. Preflight
+  rejects a different resolved project name before orphan removal or startup.
 - **`depends_on` uses declared names.** It may name `database`, `storage` or
   other container services of the same Capsule. Sporades translates these to the
   generated container names and rejects unknown names and cycles. The Capsule
@@ -330,10 +336,10 @@ Capsule without the service it depends on.
 - Hosted elevation needs a new Host-owned allowance store, bound to normalized
   values and image digests, and `sporades host` commands. Its deny, value-change
   and revocation paths need tests.
-- Classifying the resolved Compose model, not just the declaration, makes the
-  passthrough safe against Compose features that merge or import
-  configuration. It also means Sporades depends on the JSON output of
-  `docker compose config` being stable within the pinned Compose version.
+- Checking the resolved runtime boundaries catches changed ownership, imports
+  and unacknowledged authority before startup. Restricting comparison to consumed
+  fields avoids depending on Compose's spelling of unread passthrough settings;
+  the official Compose matrix proves both admission and owned-field denials.
 - Docker Desktop on Apple Silicon exposes no Metal GPU to containers, so local
   `llama.cpp` runs on the CPU. Small embedding models are practical; large
   generative models are not a goal of the first slice.

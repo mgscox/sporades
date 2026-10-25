@@ -3,7 +3,6 @@ import { randomBytes } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { isIP } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import { composeSpecSchema } from "./compose-spec-schema.js";
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
@@ -436,117 +435,79 @@ function duration(v: any) {
   const parts = v.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/);
   return parts ? `${Number(parts[1] ?? 0) * 3600 + Number(parts[2] ?? 0) * 60 + Number(parts[3] ?? 0)}s` : v;
 }
-function entrypointWords(value: string): string[] {
-  const words: string[] = [];
-  let word = "", quote = "", escape = false, started = false;
-  for (const char of value) {
-    if (escape) { word += char; escape = false; started = true; }
-    else if (char === "\\" && quote !== "'") { escape = true; started = true; }
-    else if (quote) { if (char === quote) quote = ""; else word += char; }
-    else if (char === "'" || char === '"') { quote = char; started = true; }
-    else if (/\s/.test(char)) { if (started) { words.push(word); word = ""; started = false; } }
-    else { word += char; started = true; }
-  }
-  if (quote || escape) throw new Error("Invalid literal Compose entrypoint.");
-  if (started) words.push(word);
-  return words;
-}
-function byteSize(value: any) {
-  const match = String(value).toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([bkmg])?b?$/);
-  if (!match) return value;
-  return String(Number(match[1]) * 1024 ** ({ b: 0, k: 1, m: 2, g: 3 }[match[2] ?? "b"] ?? 0));
-}
-function normalizeService(v: RecordValue, volumes: RecordValue = {}): RecordValue {
-  const result = structuredClone(v);
-  // Compose v2 materializes an unset entrypoint as null, and normalizes byte
-  // sizes and durations. These exact representation defaults grant no authority.
-  if (result.entrypoint === null) delete result.entrypoint;
-  for (const key of ["privileged", "tty", "stdin_open"]) if (result[key] === false) delete result[key];
-  // Compose extensions are metadata, never executable service configuration.
-  // Only service-level extension keys are ignored: labels/env/options are data.
-  for (const key of Object.keys(result)) if (key.startsWith("x-")) delete result[key];
-  if (record(result.logging?.options) && !Object.keys(result.logging.options).length) delete result.logging.options;
-  if (typeof result.entrypoint === "string") result.entrypoint = entrypointWords(result.entrypoint);
-  for (const key of ["dns", "dns_search"]) {
-    if (typeof result[key] === "string") result[key] = [result[key]];
-  }
-  if (record(result.extra_hosts) && Object.values(result.extra_hosts).every(addresses =>
-    typeof addresses === "string" || (Array.isArray(addresses) && addresses.every(address => typeof address === "string")))) {
-    result.extra_hosts = Object.entries(result.extra_hosts).flatMap(([host, addresses]) =>
-    (Array.isArray(addresses) ? addresses : [addresses]).map(address => `${host}=${address}`));
-  }
-  // Split only the first separator: the address may itself contain IPv6 colons.
-  // Compose orders hostnames; retain address order within each hostname.
-  if (Array.isArray(result.extra_hosts)) result.extra_hosts = result.extra_hosts.map((host: any) => {
-    if (typeof host !== "string") return host;
-    const separator = host.includes("=") ? host.indexOf("=") : host.indexOf(":");
-    if (separator < 0) return host;
-    let address = host.slice(separator + 1);
-    if (address.startsWith("[") && address.endsWith("]") && isIP(address.slice(1, -1)) === 6) address = address.slice(1, -1);
-    return `${host.slice(0, separator)}=${address}`;
-  }).sort((a: any, b: any) => {
-    const name = (host: any) => typeof host === "string" ? host.split("=")[0] : JSON.stringify(host);
-    return name(a).localeCompare(name(b));
-  });
-  if (result.ulimits) for (const [name, limit] of Object.entries(result.ulimits)) {
-    if (typeof limit === "number" || typeof limit === "string") result.ulimits[name] = { soft: Number(limit), hard: Number(limit) };
-  }
-  if (result.stop_grace_period !== undefined) result.stop_grace_period = duration(result.stop_grace_period);
-  for (const key of ["mem_limit", "mem_reservation", "memswap_limit", "shm_size"]) {
-    if (result[key] !== undefined) result[key] = byteSize(result[key]);
-  }
-  if (result.cpus !== undefined) result.cpus = Number(result.cpus);
-  // Compose materializes empty placement even for resource-only declarations.
-  // Preserve every nonempty placement field, including unrecognized fields.
-  if (record(result.deploy?.placement) && !Object.keys(result.deploy.placement).length) delete result.deploy.placement;
-  if (result.deploy?.resources) for (const kind of ["limits", "reservations"]) {
-    const resources = result.deploy.resources[kind];
-    if (resources?.memory !== undefined) resources.memory = byteSize(resources.memory);
-    if (resources?.cpus !== undefined) resources.cpus = Number(resources.cpus);
-  }
+// Only fields consumed by Sporades' runtime, custody and hardening boundaries.
+// Compose owns every other field's representation and semantics.
+const resolvedOwnedKeys = new Set([
+  ...Object.keys(owned), "network_mode", "volumes_from", "volumes",
+]);
+function normalizeOwnedService(v: RecordValue, volumes: RecordValue = {}): RecordValue {
+  const result = structuredClone(Object.fromEntries(Object.entries(v).filter(([key]) => resolvedOwnedKeys.has(key))));
+  if (record(result.environment) && !Object.keys(result.environment).length) delete result.environment;
   if (Array.isArray(result.networks)) result.networks = Object.fromEntries(result.networks.map((n: string) => [n, null]));
-  if (record(result.networks)) for (const [key, x] of Object.entries(result.networks)) if (record(x) && Object.keys(x).length === 0) result.networks[key] = null;
-  if (result.environment && !Object.keys(result.environment).length) delete result.environment;
-  if (result.depends_on) for (const [key, x] of Object.entries(result.depends_on)) result.depends_on[key] = { required: true, ...(x as RecordValue) };
-  if (Array.isArray(result.ports)) result.ports = result.ports.map((p: any) => {
-    if (typeof p === "string") { const [host_ip, published, target] = p.split(":"); return { target: Number(target), host_ip, protocol: "tcp", mode: "ingress", ...(published ? { published } : {}) }; }
-    const copy = { ...p }; if (copy.published === "0" || copy.published === "") delete copy.published; return copy;
-  });
-  if (result.volumes) result.volumes = result.volumes.map((v: RecordValue) => {
-    const copy = structuredClone(v);
+  if (record(result.networks)) for (const [key, value] of Object.entries(result.networks)) {
+    if (record(value) && !Object.keys(value).length) result.networks[key] = null;
+  }
+  if (Array.isArray(result.ports)) result.ports = result.ports.map((port: any) => {
+    if (typeof port === "string") {
+      const [host_ip, published, target] = port.split(":");
+      return { target: Number(target), host_ip, protocol: "tcp", mode: "ingress", ...(published ? { published } : {}) };
+    }
+    const copy = { ...port };
+    if (copy.published === "0" || copy.published === "") delete copy.published;
+    return copy;
+  }).sort((a: any, b: any) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  if (Array.isArray(result.volumes)) result.volumes = result.volumes.map((mount: any) => {
+    if (!record(mount)) return mount;
+    const copy = Object.fromEntries(Object.entries(mount).filter(([key]) => ["type", "source", "target", "read_only"].includes(key)));
     if (copy.type === "volume" && volumes[copy.source]?.name) copy.source = volumes[copy.source].name;
     if (copy.read_only === false) delete copy.read_only;
-    if (copy.type === "bind") { copy.bind = { create_host_path: true, ...copy.bind }; }
-    if (copy.type === "volume" && record(copy.volume)) {
-      if (copy.volume.nocopy === false) delete copy.volume.nocopy;
-      if (!Object.keys(copy.volume).length) delete copy.volume;
-    }
     return copy;
   });
-  if (result.healthcheck) for (const key of ["interval", "timeout", "start_period", "start_interval"]) if (result.healthcheck[key] !== undefined) result.healthcheck[key] = duration(result.healthcheck[key]);
-  if (result.ports) result.ports = result.ports.sort((a: any,b: any) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  if (result.healthcheck) for (const key of ["interval", "timeout", "start_period", "start_interval"]) {
+    if (result.healthcheck[key] !== undefined) result.healthcheck[key] = duration(result.healthcheck[key]);
+  }
+  if (v.labels !== undefined) result.labels = record(v.labels)
+    ? Object.fromEntries(Object.entries(v.labels).filter(([key]) => key.startsWith("com.sporades."))) : v.labels;
+  // Additional tmpfs declarations are passthrough; mounts overlapping /tmp
+  // must retain the single Sporades-owned hardened mount.
+  if (v.tmpfs !== undefined) result.tmpfs = (typeof v.tmpfs === "string" ? [v.tmpfs] : Array.isArray(v.tmpfs) ? v.tmpfs : [v.tmpfs]).filter((mount: any) => {
+    if (typeof mount !== "string") return true;
+    const target = path.posix.normalize(mount.split(":")[0]);
+    return target === "/" || target === "/tmp" || target.startsWith("/tmp/");
+  });
   return result;
 }
 /** Examine the actual resolved service, never log either model (it has secrets). */
 export function validateResolvedContainerServices(rendered: RecordValue, resolved: RecordValue, declarations: RecordValue, mapping: Record<string, string>, environment: Record<string, string>) {
   if (!record(resolved)) fail("container", "compose", "Docker Compose must return an object.");
+  if (rendered.name !== undefined && resolved.name !== rendered.name) fail("container", "compose.name", "Resolved Compose must retain the Sporades-owned project name; no service was started.");
   for (const [name, generatedName] of Object.entries(mapping)) {
     const declaration = declarations[name];
     if (declaration?.kind !== "container") continue;
-    const expected = normalizeService(interpolate(rendered.services[generatedName], environment), rendered.volumes);
+    const expected = normalizeOwnedService(interpolate(rendered.services[generatedName], environment), rendered.volumes);
     const actualRaw = resolved.services?.[generatedName];
     if (!record(actualRaw)) fail(name, "compose", "Resolved Compose service is missing.");
-    const actual = normalizeService(actualRaw, rendered.volumes);
+    const actual = normalizeOwnedService(actualRaw, rendered.volumes);
+    for (const key of Object.keys(actualRaw)) {
+      const classification = classifyContainerCompose(key);
+      if (classification === "forbidden" || key === "use_api_socket") fail(name, `compose.${key}`, "Resolved Compose imports and Docker API access are forbidden.");
+      if (classification === "elevated" && key !== "deploy" && !Object.hasOwn(rendered.services[generatedName], key) && !declaration.elevated?.includes(key)) {
+        fail(name, `compose.${key}`, "Resolved Compose introduced an unacknowledged elevated key.");
+      }
+    }
+    const dependencies = actualRaw.depends_on;
+    if (dependencies !== undefined) {
+      if (!Array.isArray(dependencies) && !record(dependencies)) fail(name, "compose.depends_on", "Resolved dependencies must reference declared services.");
+      for (const dependency of Array.isArray(dependencies) ? dependencies : Object.keys(dependencies)) {
+        if (typeof dependency !== "string" || dependency === generatedName || !Object.hasOwn(rendered.services, dependency)) fail(name, "compose.depends_on", "Resolved dependencies must reference other declared services.");
+      }
+    }
     for (const key of new Set([...Object.keys(expected), ...Object.keys(actual)])) {
-      if (!Object.hasOwn(expected, key)) fail(name, `compose.${key}`, "Resolved Compose introduced an unaccounted path; upgrade Sporades' pinned classifier before starting.");
-      if (classifyContainerCompose(key) === "forbidden") fail(name, `compose.${key}`, "Resolved Compose imports are forbidden.");
-      // Even elevated acknowledgements never authorize resolution-time changes
-      // to owned paths, mounts, env, network membership or arbitrary nested keys.
-      if (!isDeepStrictEqual(actual[key], expected[key])) fail(name, `compose.${key}`, "Resolved Compose differs from the declared value; no service was started. Inspect the named path without exposing env values.");
+      if (!isDeepStrictEqual(actual[key], expected[key])) fail(name, `compose.${key}`, "Resolved Compose changed a Sporades-owned runtime boundary; no service was started.");
     }
   }
-  // Top-level resources must also be accounted for. Compose may add name, but
-  // cannot import extra services, networks or volumes via resolution.
+  // Top-level resources must also be accounted for. Compose cannot
+  // import extra services, networks or volumes via resolution.
   for (const key of ["services", "networks", "volumes"]) {
     for (const name of Object.keys(resolved[key] ?? {})) if (!Object.hasOwn(rendered[key] ?? {}, name)) fail("container", `compose.${key}`, "Resolved Compose introduced an undeclared resource.");
   }
