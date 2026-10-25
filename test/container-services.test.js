@@ -7,6 +7,7 @@ import { validateCapsuleServicesConfig, writeCapsuleServicesCompose } from '../d
 import { classifyContainerCompose, validateResolvedContainerServices, resolveContainerSecrets } from '../dist/container-services.js';
 import { createTrustedServices } from '../dist/services-context.js';
 import { requiredServerEnvKeys } from '../dist/server-env-requirements.js';
+import { composeEquivalenceCases } from './support/compose-equivalence-cases.js';
 const declaration = (extra={}) => ({kind:'container', image:'example/embeddings:v1', command:['--embeddings'], port:8080, health:{http:'/health',startPeriodSeconds:900}, ...extra});
 const valid = (service) => validateCapsuleServicesConfig({embeddings:declaration(service)});
 
@@ -110,6 +111,37 @@ test('trusted service context is deeply frozen, nonserializable and contains gen
   assert(Object.isFrozen(services)&&Object.isFrozen(services.embeddings)&&Object.isFrozen(services.embeddings.secrets));
   assert.equal(services.unknown,undefined);
   assert(!String(JSON.stringify(services)).includes('a'.repeat(64)));
+});
+
+for (const {name,compose,resolved,elevated=[],tamper} of composeEquivalenceCases) test(`resolved Compose accepts ${name} and rejects runtime changes`,()=>{
+  valid({compose,elevated});
+  const check=(expected,actual)=>validateResolvedContainerServices({services:{svc:expected}},{services:{svc:actual}},{embeddings:declaration()},{embeddings:'svc'},{});
+  check(compose,resolved);
+  check(resolved,compose);
+  const changed=structuredClone(resolved);tamper(changed);
+  assert.throws(()=>check(compose,changed),/services.embeddings.compose/);
+});
+
+test('representation defaults never discard runtime fields or malformed values',()=>{
+  const check=(expected,actual)=>validateResolvedContainerServices({services:{svc:expected}},{services:{svc:actual}},{embeddings:declaration()},{embeddings:'svc'},{});
+  check({'x-note':{privileged:true}},{});
+  check({}, {'x-note':{privileged:true}});
+  check({extra_hosts:{ipv6:['[::1]']}},{extra_hosts:['ipv6=::1']});
+  for(const key of ['tty','stdin_open']){
+    for(const value of [true,'false',0,null]) assert.throws(()=>check({[key]:false},{[key]:value}));
+  }
+  for(const [expected,actual] of [
+    [{'x-note':{},labels:{'x-note':'reviewed'}},{labels:{}}],
+    [{logging:{driver:'json-file',options:{'x-note':'reviewed'}}},{logging:{driver:'json-file'}}],
+    [{logging:{driver:'json-file',options:{}}},{logging:{driver:'syslog'}}],
+    [{logging:{driver:'json-file',options:{}}},{logging:{driver:'json-file',options:[]}}],
+    [{extra_hosts:['ipv6=[::1]']},{extra_hosts:['other=::1']}],
+    [{extra_hosts:['reviewed=[host-gateway]']},{extra_hosts:['reviewed=host-gateway']}],
+    [{extra_hosts:['ipv6=[::1]:80']},{extra_hosts:['ipv6=::1']}],
+    [{'x-note':{privileged:false}},{privileged:true}],
+    [{'x-note':{},read_only:true},{read_only:false}],
+    [{'x-note':{},environment:{KEY:'reviewed'}},{environment:{KEY:'changed'}}],
+  ])assert.throws(()=>check(expected,actual),/services.embeddings.compose/);
 });
 
 test('concurrent built-in and container credential writers preserve generated identity; corrupt storage fails closed', async () => {

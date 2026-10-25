@@ -21,7 +21,7 @@ test('Dev Jobs call declared service with stable generated auth; rebuilds preser
   assert.equal(r.status,0,r.stdout+r.stderr);
   const project=path.join(dir,'capsule');
   const config=JSON.parse(await readFile(path.join(project,'sporades.json'),'utf8'));
-  config.services={embeddings:{kind:'container',image:'example/embedding:v1',command:['--embeddings'],port:8080,health:{http:'/health'},env:{HF_TOKEN:{sealed:'HF_TOKEN'},API_KEY:{generated:'apiKey'}},compose:{dns:'1.1.1.1',dns_search:'example.test',extra_hosts:['reviewed:127.0.0.1'],deploy:{resources:{limits:{pids:64}}},volumes:[{type:'volume',source:'cache',target:'/cache',volume:{nocopy:false}}]},elevated:['extra_hosts']}};
+  config.services={embeddings:{kind:'container',image:'example/embedding:v1',command:['--embeddings'],port:8080,health:{http:'/health'},env:{HF_TOKEN:{sealed:'HF_TOKEN'},API_KEY:{generated:'apiKey'}},compose:{tty:false,stdin_open:false,'x-note':{purpose:'reviewed'},logging:{driver:'json-file',options:{}},dns:'1.1.1.1',dns_search:'example.test',extra_hosts:['reviewed:127.0.0.1','ipv6:[::1]'],deploy:{resources:{limits:{pids:64}}},volumes:[{type:'volume',source:'cache',target:'/cache',volume:{nocopy:false}}]},elevated:['extra_hosts']}};
   await writeFile(path.join(project,'sporades.json'),JSON.stringify(config));
   const {ensureSealedServerEnvKeyPair,sealedServerEnvPaths,sealServerEnv,writeSealedServerEnv}=await import('../dist/sealed-server-env.js');
   const paths=sealedServerEnvPaths(project),pair=await ensureSealedServerEnvKeyPair(paths);

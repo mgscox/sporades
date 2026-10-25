@@ -1040,12 +1040,18 @@ rejected. Literal dollar signs are escaped before rendering. Before `up`,
 Sporades checks the resolved `docker compose config --format json` model;
 changes to owned values, imported resources or unaccounted paths fail closed.
 Preflight accepts equivalent Compose representations: scalar or list `dns` and
-`dns_search`, colon or equals `extra_hosts` separators (including IPv6 addresses),
-empty `deploy.placement`, and omitted `volume.nocopy: false`. Hostname ordering
+`dns_search`, colon or equals `extra_hosts` separators (including optional brackets
+around IPv6 addresses), empty `deploy.placement`, and omitted `volume.nocopy: false`.
+Hostname ordering
 may change; addresses within a hostname retain their order. Changed addresses,
 resource limits, placement constraints, mount options or other values still fail.
-Compose may also omit the default `privileged: false`; `privileged: true` still
-requires explicit declaration and elevation.
+Compose may also omit the defaults `privileged: false`, `tty: false` and
+`stdin_open: false`, as well as an empty `logging.options` object. Nonempty logging
+options and the logging driver remain strictly compared. `privileged: true` still
+requires explicit declaration and elevation. Service-level `x-*` extensions are
+ignored during preflight because Compose treats them as metadata. This exception
+does not apply to runtime data such as labels or logging options named `x-*`,
+nor does extension metadata authorize changes to any other service field.
 
 | Class | Examples | Rule |
 | --- | --- | --- |

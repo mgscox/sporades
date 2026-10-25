@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
+import { isIP } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import { composeSpecSchema } from "./compose-spec-schema.js";
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
@@ -460,7 +461,11 @@ function normalizeService(v: RecordValue, volumes: RecordValue = {}): RecordValu
   // Compose v2 materializes an unset entrypoint as null, and normalizes byte
   // sizes and durations. These exact representation defaults grant no authority.
   if (result.entrypoint === null) delete result.entrypoint;
-  if (result.privileged === false) delete result.privileged;
+  for (const key of ["privileged", "tty", "stdin_open"]) if (result[key] === false) delete result[key];
+  // Compose extensions are metadata, never executable service configuration.
+  // Only service-level extension keys are ignored: labels/env/options are data.
+  for (const key of Object.keys(result)) if (key.startsWith("x-")) delete result[key];
+  if (record(result.logging?.options) && !Object.keys(result.logging.options).length) delete result.logging.options;
   if (typeof result.entrypoint === "string") result.entrypoint = entrypointWords(result.entrypoint);
   for (const key of ["dns", "dns_search"]) {
     if (typeof result[key] === "string") result[key] = [result[key]];
@@ -473,9 +478,12 @@ function normalizeService(v: RecordValue, volumes: RecordValue = {}): RecordValu
   // Split only the first separator: the address may itself contain IPv6 colons.
   // Compose orders hostnames; retain address order within each hostname.
   if (Array.isArray(result.extra_hosts)) result.extra_hosts = result.extra_hosts.map((host: any) => {
-    if (typeof host !== "string" || host.includes("=")) return host;
-    const separator = host.indexOf(":");
-    return separator < 0 ? host : `${host.slice(0, separator)}=${host.slice(separator + 1)}`;
+    if (typeof host !== "string") return host;
+    const separator = host.includes("=") ? host.indexOf("=") : host.indexOf(":");
+    if (separator < 0) return host;
+    let address = host.slice(separator + 1);
+    if (address.startsWith("[") && address.endsWith("]") && isIP(address.slice(1, -1)) === 6) address = address.slice(1, -1);
+    return `${host.slice(0, separator)}=${address}`;
   }).sort((a: any, b: any) => {
     const name = (host: any) => typeof host === "string" ? host.split("=")[0] : JSON.stringify(host);
     return name(a).localeCompare(name(b));

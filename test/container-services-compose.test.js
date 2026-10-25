@@ -6,6 +6,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {writeCapsuleServicesCompose} from '../dist/capsule-services.js';
 import {resolveContainerSecrets,validateResolvedContainerServices} from '../dist/container-services.js';
+import {composeEquivalenceCases} from './support/compose-equivalence-cases.js';
 const binary=process.env.SPORADES_COMPOSE_TEST_BINARY;
 const root=fileURLToPath(new URL('../',import.meta.url));
 test('official Compose canonical models preserve owned boundaries for Dev and Container service combinations',{skip:!binary&&'Set SPORADES_COMPOSE_TEST_BINARY to a Compose v2 executable (no daemon needed).'},async t=>{
@@ -13,6 +14,7 @@ test('official Compose canonical models preserve owned boundaries for Dev and Co
  try{
   const base={kind:'container',image:'example:v1',command:['--embed'],port:8080,health:{http:'/health',startPeriodSeconds:3600},env:{KEY:{generated:'apiKey'},LITERAL:'$HOME ${NOT_EXPANDED}'},compose:{privileged:false,restart:'unless-stopped',mem_limit:'4g',cpus:2,shm_size:'1g',stop_grace_period:'90s',entrypoint:'/bin/sh -c \"literal words\"',ulimits:{nofile:65536},volumes:['cache:/cache']}};
   const cases=[
+   ...composeEquivalenceCases.map(({name,compose,elevated=[],tamper})=>[name,compose,elevated,tamper]),
    ['baseline',{},[],s=>{s.user='0';}],
    ['scalar dns',{dns:'1.1.1.1'},[],s=>{s.dns=['8.8.8.8'];}],
    ['scalar dns_search',{dns_search:'example.test'},[],s=>{s.dns_search=['other.test'];}],
