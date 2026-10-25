@@ -18860,7 +18860,7 @@ var require_PDFField = __commonJS({
           var y = options.y;
           var width = options.width + borderWidth;
           var height = options.height + borderWidth;
-          var hidden = Boolean(options.hidden);
+          var hidden2 = Boolean(options.hidden);
           var pageRef = options.page;
           utils_1.assertMultiple(degreesAngle, "degreesAngle", 90);
           var widget = core_1.PDFWidgetAnnotation.create(this.doc.context, this.ref);
@@ -18881,7 +18881,7 @@ var require_PDFField = __commonJS({
           if (borderWidth !== void 0)
             bs.setWidth(borderWidth);
           widget.setFlagTo(core_1.AnnotationFlags.Print, true);
-          widget.setFlagTo(core_1.AnnotationFlags.Hidden, hidden);
+          widget.setFlagTo(core_1.AnnotationFlags.Hidden, hidden2);
           widget.setFlagTo(core_1.AnnotationFlags.Invisible, false);
           if (textColor) {
             var da = (_a = this.acroField.getDefaultAppearance()) !== null && _a !== void 0 ? _a : "";
@@ -26608,7 +26608,7 @@ function run(command2, args, timeout = 6e4) {
   const r = spawnSync2(command2, args, { encoding: "utf8", timeout, maxBuffer: 2 * 1024 * 1024 });
   return { ok: !r.error && r.status === 0, text: String(r.stdout ?? "").trim() };
 }
-function inspect(kind, name2) {
+function inspect2(kind, name2) {
   const r = run("docker", [kind, "inspect", name2]);
   if (!r.ok) return null;
   try {
@@ -26618,7 +26618,7 @@ function inspect(kind, name2) {
   }
 }
 function ownedContainer() {
-  const c = inspect("container", NAME);
+  const c = inspect2("container", NAME);
   if (c && c.Config?.Labels?.[OWNER] !== "true") fail("The Host exporter container name belongs to another installation.");
   return c;
 }
@@ -26808,10 +26808,10 @@ async function configureHostMetrics(root, host, operation = "reconcile") {
     await publish(path6.join(root, "telemetry", "resources.json"), JSON.stringify(state2));
     return state2;
   }
-  let network = inspect("network", HOST_METRICS_NETWORK);
+  let network = inspect2("network", HOST_METRICS_NETWORK);
   if (!network) {
     if (!run("docker", ["network", "create", "--internal", "--label", `${OWNER}=true`, HOST_METRICS_NETWORK]).ok) fail("Could not create the private Host metrics network.");
-    network = inspect("network", HOST_METRICS_NETWORK);
+    network = inspect2("network", HOST_METRICS_NETWORK);
   }
   if (network?.Labels?.[OWNER] !== "true" || network?.Internal !== true) fail("The Host metrics network is not privately owned by Sporades.");
   const address = network?.IPAM?.Config?.find((c) => isIP3(c.Gateway ?? "") === 4)?.Gateway;
@@ -28809,6 +28809,10 @@ function validatePublicTreeFileSet(files) {
   if (!hasIndex) return { ok: false, reason: "index" };
   return { ok: true, fileCount: files.length, totalBytes };
 }
+
+// src/services-context.ts
+import { inspect } from "node:util";
+var hidden = { toJSON: { value: () => void 0 }, [inspect.custom]: { value: () => "[Capsule services]" } };
 
 // src/runtime-log-policy.ts
 function isSensitiveLogKey(key) {
@@ -52537,14 +52541,14 @@ async function validateBootstrapTls(request2, bootstrap) {
   }
 }
 function ensureDockerNetwork(networkName) {
-  const inspect2 = spawnSync8("docker", ["network", "inspect", networkName], { encoding: "utf8" });
-  if (inspect2.error) {
+  const inspect3 = spawnSync8("docker", ["network", "inspect", networkName], { encoding: "utf8" });
+  if (inspect3.error) {
     throw helperError(
       "Docker is unavailable on the Host server.",
       "Install Docker, ensure the Docker daemon is running, then rerun `sporades host bootstrap`."
     );
   }
-  if (inspect2.status === 0) {
+  if (inspect3.status === 0) {
     return { name: networkName, created: false };
   }
   const create = spawnSync8("docker", ["network", "create", networkName], { encoding: "utf8" });
@@ -52881,8 +52885,8 @@ async function settleCapsuleRuntime(request2, settlement, actionError = null) {
 }
 function ensureHostedBaseImage(lifecycle) {
   const image = lifecycle.container.image;
-  const inspect2 = runDocker(["image", "inspect", image], { ignoreFailure: true });
-  if (inspect2.ok) {
+  const inspect3 = runDocker(["image", "inspect", image], { ignoreFailure: true });
+  if (inspect3.ok) {
     return;
   }
   const pull = runDocker(["pull", image], { ignoreFailure: true });

@@ -1,3 +1,4 @@
+import { createTrustedServices, bindServicesContext, serviceRedactionValues } from "./services-context.js";
 import { validateEndpointSessionDeclaration } from "./endpoint-session.js";
 import { createRuntimeObservability } from "./observability-runtime.js";
 import { redactDiagnosticText } from "./runtime-log-policy.js";
@@ -596,6 +597,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     }
     validateLogConfig(config);
     validateServerEnvConfig(config.env);
+    const services = options?.runtimeActionOnly ? createTrustedServices({}) : createTrustedServices(config, options?.serviceEnv ?? {});
     const mailConfig = validateMailConfig(config.mail);
     // ctx.ai is dormant without its key and is deliberately absent from the required Server env set.
     const ai = createAiRuntime(validateAiConfig(config.ai), serverEnv);
@@ -609,7 +611,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     }) : null;
     if (missingEnv.length && config.env?.failClosed === true)
         throw missingServerEnvError(missingEnv);
-    const observability = createRuntimeObservability({ ...config, release: process.env.SPORADES_RELEASE_ID ?? config.release }, serverEnv);
+    const observability = createRuntimeObservability({ ...config, release: process.env.SPORADES_RELEASE_ID ?? config.release }, { ...serverEnv, ...serviceRedactionValues(services) });
     const registrationThrottle = resolveRegistrationThrottle(config.auth);
     const fileMaxSizeBytes = resolveFileMaxSizeBytes(config);
     const fileAllowedMimeTypes = resolveFileAllowedMimeTypes(config.files);
@@ -805,6 +807,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         __runtimeJobAttempts: new WeakMap(),
         __handlerContextMappingCount: 0,
         rowCache,
+        services,
         serverEnv,
         observability,
         paymentsConfig,
@@ -1316,7 +1319,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     database.log = createRuntimeLogSink({
         database: sqlite,
         config,
-        serverEnv,
+        serverEnv: { ...serverEnv, ...serviceRedactionValues(services) },
+        services,
         dataDir: path.dirname(databasePath),
     });
     database.app = Object.freeze({ get publicOrigin() { return database.publicOrigin; } });
@@ -2453,8 +2457,9 @@ export function createRuntimeLogSink(options) {
         emit(input) {
             const event = createLogEnvelope({
                 ...input,
+                message: Object.keys(options.services ?? {}).length ? redactDiagnosticText(String(input.message ?? ""), serviceRedactionValues(options.services ?? {})) : input.message,
                 config: options.config,
-                serverEnv: options.serverEnv,
+                serverEnv: { ...options.serverEnv, ...serviceRedactionValues(options.database?.services ?? {}) },
             });
             appendFileSync(logPath, `${JSON.stringify(event)}\n`);
             let indexed;
@@ -2627,6 +2632,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
         app: database.app,
         rateLimit: database.capsuleRateLimiter.consume,
         env: context.env,
+        services: database.services,
         payments: context.payments,
         log: context.log,
         messages: context.messages,
@@ -4042,6 +4048,7 @@ function createAtomicStripeConsequenceContext(database, parent) {
         auth: parent.auth,
         app: database.app,
         env: database.serverEnv,
+        services: database.services,
         signal: parent.signal,
         log: createEndpointLogger(database),
         __privilegedRunActive: true,
@@ -4180,6 +4187,7 @@ async function runSessionlessEndpoint(database, handler, requestUrl, request, re
             app: database.app,
             // Ordinary middleware may have retained objects on its mutable env view or limiter
             // function. Copy only env values, and expose a fresh callable rather than that object.
+            services: database.services,
             env: Object.freeze(Object.fromEntries(Object.entries(database.serverEnv ?? {}).filter(([, value]) => typeof value === "string"))),
             log: createEndpointLogger(database, { request: { method: endpointRequest.method, path: endpointRequest.path } }),
             rateLimit(key, options) { return database.capsuleRateLimiter.consume(key, options); },
@@ -4217,6 +4225,7 @@ function createEndpointContext(database, endpointRequest, session, options = {})
         signal: options.signal,
         rateLimit: database.capsuleRateLimiter.consume,
         env: database.serverEnv,
+        services: database.services,
         payments: database.paymentsConfig,
         log: createEndpointLogger(database, {
             request: {
@@ -4328,6 +4337,8 @@ function protectContextIdentity(value) {
 function createContextHolder(context) {
     if (context.app)
         bindAppContext(context, context.app);
+    if (context.services)
+        bindServicesContext(context, context.services);
     context.resources = unsupportedResources;
     const holder = { current: context };
     Object.defineProperty(context, "__sporadesContextHolder", {
@@ -4491,6 +4502,7 @@ async function applyContextMiddleware(database, baseContext, kind) {
         kind,
     };
     bindAppContext(context, database.app);
+    bindServicesContext(context, database.services);
     bindPendingAclWrites(context, baseContext);
     bindCurrentUserFileDeleteState(context, baseContext);
     bindMutationSecretState(context, baseContext);
@@ -4508,11 +4520,12 @@ async function applyContextMiddleware(database, baseContext, kind) {
         const previousContext = context;
         const result = await runContextMiddleware(middlewareSource, context);
         const middlewareContext = result ?? context;
-        if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential || (middlewareContext.app !== undefined && middlewareContext.app !== database.app)) {
-            throw commandError("Invalid Capsule context middleware result.", "Context middleware must preserve the runtime-owned Auth, Credential and app values.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
+        if (!middlewareContext || typeof middlewareContext !== "object" || middlewareContext.auth !== canonicalAuth || middlewareContext.credential !== canonicalCredential || (middlewareContext.app !== undefined && middlewareContext.app !== database.app) || (middlewareContext.services !== undefined && middlewareContext.services !== database.services)) {
+            throw commandError("Invalid Capsule context middleware result.", "Context middleware must preserve the runtime-owned Auth, Credential, app and services values.", "INVALID_CONTEXT_MIDDLEWARE_RESULT");
         }
         context = { ...middlewareContext, auth: canonicalAuth };
         bindAppContext(context, database.app);
+        bindServicesContext(context, database.services);
         if (Object.prototype.hasOwnProperty.call(baseContext, "credential")) {
             context.credential = canonicalCredential;
         }
@@ -7313,6 +7326,7 @@ function createMutationContext(database, auth, options = {}) {
         app: database.app,
         signal: options.signal,
         env: database.serverEnv,
+        services: database.services,
         payments: database.paymentsConfig,
         rateLimit: database.capsuleRateLimiter.consume,
         log: createEndpointLogger(database, credential ? {

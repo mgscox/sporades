@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { readSealedServerEnv, sealedServerEnvPaths } from "../sealed-server-env.js";
+import { capsuleServiceNetwork, containerDeclarations } from "../container-services.js";
 import { resolvePublicOrigin, normalizePublicOrigin, isLocalPublicOrigin } from "../public-origin.js";
 import { missingServerEnvKeys } from "../server-env-requirements.js";
 import { readProjectServerEnv } from "./server-env-check.js";
@@ -33,7 +36,7 @@ export async function runDoctorChecks(options) {
     if (!project.config) {
         return checks;
     }
-    if (project.config.env !== undefined)
+    if (project.config.env !== undefined || containerDeclarations(project.config).length)
         checks.push(await serverEnvCheck(project.config, options.projectDir));
     checks.push(await securityPolicyCheck(project.config, options));
     if (options.session !== "hosted")
@@ -93,7 +96,14 @@ async function localPublicOriginCheck(config, options) {
 async function serverEnvCheck(config, projectDir) {
     const base = { id: "doctor.server-env", title: "Required Server env", scope: "project" };
     try {
-        const missingKeys = missingServerEnvKeys(config, await readProjectServerEnv(projectDir));
+        const missing = new Set(missingServerEnvKeys(config, await readProjectServerEnv(projectDir)));
+        if (!(await readSealedServerEnv(sealedServerEnvPaths(projectDir)))) {
+            for (const [, service] of containerDeclarations(config))
+                for (const value of Object.values(service.env ?? {}))
+                    if (typeof value !== "string" && "sealed" in value)
+                        missing.add(value.sealed);
+        }
+        const missingKeys = [...missing].sort();
         return {
             ...base, status: missingKeys.length ? "fail" : "pass", severity: missingKeys.length ? "error" : "info",
             message: missingKeys.length ? `Missing required Server env keys: ${missingKeys.join(", ")}` : "Required Server env keys are present.",
@@ -1232,6 +1242,11 @@ async function localCapsuleServiceChecks(config, options) {
             },
         },
     ];
+    for (const [name, service] of containerDeclarations(config)) {
+        checks.push({ id: `doctor.services.${name}.image`, title: `Container service ${name} image pin`, scope: doctorScope(options.session), status: service.image.includes("@sha256:") ? "pass" : "warn", severity: service.image.includes("@sha256:") ? "info" : "warning", message: service.image.includes("@sha256:") ? "Image is digest-pinned." : "Image is tag-pinned; use an immutable sha256 digest.", details: { service: name, image: service.image, targetArchitecture: process.arch, elevated: service.elevated ?? [] } });
+        if (service.elevated?.length)
+            checks.push({ id: `doctor.services.${name}.elevated`, title: `Container service ${name} elevation`, scope: doctorScope(options.session), status: "warn", severity: "warning", message: `Acknowledged elevated keys: ${service.elevated.join(", ")}`, details: { service: name, elevated: service.elevated } });
+    }
     const docker = dockerAvailabilityCheck(doctorScope(options.session), options.session === "container", "services");
     checks.push(docker);
     const compose = docker.status === "pass"
@@ -1244,11 +1259,17 @@ async function localCapsuleServiceChecks(config, options) {
     if (docker.status !== "pass" || compose.status !== "pass") {
         return checks;
     }
+    for (const [name, service] of containerDeclarations(config)) {
+        const image = inspectDockerJson(["image", "inspect", service.image], options.projectDir);
+        const architecture = image.value?.[0]?.Architecture;
+        const target = process.arch === "x64" ? "amd64" : process.arch;
+        checks.push({ id: `doctor.services.${name}.architecture`, title: `Container service ${name} architecture`, scope: doctorScope(options.session), status: architecture === target ? "pass" : "warn", severity: architecture === target ? "info" : "warning", message: architecture ? (architecture === target ? "Local image matches target architecture." : "Local image architecture differs from the target.") : "Image architecture is unavailable locally; pull and inspect the pinned image before starting.", details: { service: name, targetArchitecture: target, imageArchitecture: architecture ?? null } });
+    }
     checks.push(await capsuleServicesRuntimeStateCheck(capsuleServices, options.projectDir, doctorScope(options.session)));
     return checks;
 }
 function localCapsuleServicesFromConfig(config, projectDir) {
-    if (!config.services?.database && !config.services?.storage) {
+    if (!config.services || !Object.keys(config.services).length) {
         return null;
     }
     return {
@@ -1296,7 +1317,6 @@ async function generatedComposeCheck(capsuleServices, projectDir, scope) {
 async function capsuleServicesRuntimeStateCheck(capsuleServices, projectDir, scope) {
     const services = {};
     const diagnostics = [];
-    const networkExists = dockerStatus(["network", "inspect", capsuleServices.networks.services], projectDir) === 0;
     for (const [name, service] of Object.entries(capsuleServices.services)) {
         const runtime = inspectComposeService(capsuleServices.path, service.name, projectDir);
         const port = inspectComposeServicePort(capsuleServices.path, service.name, service.targetPort, projectDir);
@@ -1314,8 +1334,8 @@ async function capsuleServicesRuntimeStateCheck(capsuleServices, projectDir, sco
             health: runtime.health,
             port,
             network: {
-                name: capsuleServices.networks.services,
-                exists: networkExists,
+                name: capsuleServiceNetwork(capsuleServices, service),
+                exists: dockerStatus(["network", "inspect", capsuleServiceNetwork(capsuleServices, service)], projectDir) === 0,
             },
             volume: {
                 type: "bind",
@@ -1388,9 +1408,9 @@ function dockerComposeAvailabilityCheck(scope, required) {
     };
 }
 function inspectDockerJson(args, cwd) {
-    const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
+    const result = spawnSync("docker", args, { cwd, encoding: "utf8", env: composeInspectionEnvironment(args) });
     if (result.status !== 0) {
-        return { ok: false, error: result.stderr?.trim() || result.stdout?.trim() || `docker ${args.join(" ")} failed` };
+        return { ok: false, error: "Docker inspection failed; check Docker and the named resource." };
     }
     try {
         return { ok: true, value: JSON.parse(result.stdout.trim()) };
@@ -1411,7 +1431,8 @@ function inspectComposeService(composePath, serviceName, cwd) {
     };
 }
 function inspectComposeServicePort(composePath, serviceName, targetPort, cwd) {
-    const result = spawnSync("docker", ["compose", "-f", composePath, "port", serviceName, String(targetPort)], { cwd, encoding: "utf8" });
+    const args = ["compose", "-f", composePath, "port", serviceName, String(targetPort)];
+    const result = spawnSync("docker", args, { cwd, encoding: "utf8", env: composeInspectionEnvironment(args) });
     if (result.status !== 0) {
         return null;
     }
@@ -1561,5 +1582,17 @@ export function renderDoctorHumanOutput(data) {
     }
     lines.push("");
     return lines.join("\n");
+}
+function composeInspectionEnvironment(args) {
+    const env = { ...process.env };
+    if (args[0] !== "compose" || !args.includes("-f"))
+        return env;
+    try {
+        const source = readFileSync(args[args.indexOf("-f") + 1], "utf8");
+        for (const match of source.matchAll(/\$\{(SPORADES_SVC_[A-Za-z0-9_]+):\?\}/g))
+            env[match[1]] = "SPORADES_UNUSED";
+    }
+    catch { /* The inspection reports missing/unreadable generated state opaquely. */ }
+    return env;
 }
 //# sourceMappingURL=doctor.js.map

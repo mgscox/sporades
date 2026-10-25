@@ -34,6 +34,7 @@ export declare function createRuntimeLogSink(options: {
     config: any;
     serverEnv: any;
     dataDir: any;
+    services?: any;
 }): {
     path: any;
     withDatabase(database: LooseRecord): /*elided*/ any;

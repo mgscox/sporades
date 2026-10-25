@@ -381,6 +381,7 @@ async function readRuntimeServerEnv(fallbackEnv, sealed) {
 }
 function readRuntimeServiceEnv() {
     const keys = [
+        "SPORADES_CONTAINER_SERVICES",
         "SPORADES_SERVICE_DATABASE_ENGINE",
         "SPORADES_SERVICE_DATABASE_URL",
         "SPORADES_SERVICE_DATABASE_AUTH_TOKEN",

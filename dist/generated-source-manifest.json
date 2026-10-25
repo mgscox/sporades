@@ -71,6 +71,9 @@
       "src/client-prerender.ts",
       "src/client-toolchain.ts",
       "src/client.ts",
+      "src/compose-spec-schema.ts",
+      "src/container-service-reset.ts",
+      "src/container-services.ts",
       "src/database-runtime.ts",
       "src/database-telemetry.ts",
       "src/deploy-files.ts",
@@ -118,6 +121,7 @@
       "src/server-runtime-source.ts",
       "src/server.ts",
       "src/service-users-runtime.ts",
+      "src/services-context.ts",
       "src/stored-value-coding.ts",
       "src/stripe-events-runtime.ts",
       "src/stripe-payment-config.ts",
@@ -154,7 +158,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "29f8f02dfa621a47455d725e4cfd5164c18b7785aa84f8116133ae711ea9cffa"
+    "digest": "d9968d42cdb92e799ce232877447d966fe944cc8332a2dce55fe170cfd58c909"
   },
   "outputs": {
     "files": [
@@ -408,6 +412,18 @@
       "dist/client.d.ts.map",
       "dist/client.js",
       "dist/client.js.map",
+      "dist/compose-spec-schema.d.ts",
+      "dist/compose-spec-schema.d.ts.map",
+      "dist/compose-spec-schema.js",
+      "dist/compose-spec-schema.js.map",
+      "dist/container-service-reset.d.ts",
+      "dist/container-service-reset.d.ts.map",
+      "dist/container-service-reset.js",
+      "dist/container-service-reset.js.map",
+      "dist/container-services.d.ts",
+      "dist/container-services.d.ts.map",
+      "dist/container-services.js",
+      "dist/container-services.js.map",
       "dist/database-runtime.d.ts",
       "dist/database-runtime.d.ts.map",
       "dist/database-runtime.js",
@@ -596,6 +612,10 @@
       "dist/service-users-runtime.d.ts.map",
       "dist/service-users-runtime.js",
       "dist/service-users-runtime.js.map",
+      "dist/services-context.d.ts",
+      "dist/services-context.d.ts.map",
+      "dist/services-context.js",
+      "dist/services-context.js.map",
       "dist/stored-value-coding.d.ts",
       "dist/stored-value-coding.d.ts.map",
       "dist/stored-value-coding.js",
@@ -686,6 +706,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "8e236ff2e537caf97e52f0f9f141c93e9d83cf469b58acabff8469735e93e08e"
+    "digest": "69af9b6a9a571bb0140ed04347d3cbad8a3fe23c008fa619bbba22984fa0a6ef"
   }
 }

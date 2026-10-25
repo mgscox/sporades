@@ -58,6 +58,14 @@ export function requiredServerEnvKeys(config) {
         keys.add(stripe.secretKeyEnv);
         keys.add(stripe.webhookSecretEnv);
     }
+    for (const service of Object.values(config.services ?? {})) {
+        if (service?.kind !== "container")
+            continue;
+        for (const value of Object.values(service.env ?? {})) {
+            if (value && typeof value === "object" && typeof value.sealed === "string")
+                keys.add(value.sealed);
+        }
+    }
     return [...keys].sort();
 }
 export function missingServerEnvKeys(config, values) {
