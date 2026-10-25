@@ -21,6 +21,8 @@ export type ContainerSecretResolution = {
   environment: Record<string, string>;
   services: Record<string, { secrets: Record<string, string> }>;
 };
+// Keep the admission fence out of env, trusted contexts and serialized results.
+const containerCredentialGenerations = new WeakMap<ContainerSecretResolution, string>();
 const ordinary = new Set(["restart", "depends_on", "mem_limit", "mem_reservation", "mem_swappiness", "memswap_limit", "cpus", "cpu_count", "cpu_percent", "cpu_period", "cpu_quota", "cpu_rt_period", "cpu_rt_runtime", "cpu_shares", "cpuset", "ulimits", "shm_size", "stop_signal", "stop_grace_period", "init", "entrypoint", "working_dir", "tmpfs", "logging", "platform", "pull_policy", "hostname", "domainname", "dns", "dns_opt", "dns_search", "stdin_open", "tty", "oom_score_adj", "scale", "pids_limit", "attach", "labels"]);
 const owned: Record<string, string> = { image: "image", command: "command", environment: "env", env_file: "env", healthcheck: "health", container_name: "name", networks: "network", ports: "port", expose: "port", secrets: "env", configs: "env", user: "user", read_only: "hardening", cap_drop: "hardening", security_opt: "hardening" };
 const forbidden = new Set(["extends", "include", "build", "<<"]);
@@ -270,15 +272,15 @@ export function serviceInterpolationName(name: string, key: string) { return `SP
 export async function resolveContainerSecrets(projectDir: string, config: RecordValue, sealed?: Record<string, string>): Promise<ContainerSecretResolution> {
   const declarations = containerDeclarations(config);
   const result: ContainerSecretResolution = { environment: {}, services: {} };
-  if (!declarations.length) return result;
   for (const [name, service] of declarations) validateContainerDeclaration(name, service, config.services, projectDir);
-  if (!sealed) {
+  if (!sealed && declarations.length) {
     const paths = sealedServerEnvPaths(projectDir);
     const envelope = await readSealedServerEnv(paths);
     const pair = envelope ? await readKeyPair(paths) : null;
     if (envelope && !pair) fail("container", "env", "Restore the Sealed Server env key store before starting services.");
     sealed = envelope && pair ? unsealServerEnv(envelope, pair.privateKey) : {};
   }
+  sealed ??= {};
   const missing = new Set<string>();
   for (const [, service] of declarations) for (const v of Object.values(service.env ?? {})) if (typeof v !== "string" && "sealed" in v && (!Object.hasOwn(sealed, v.sealed) || !sealed[v.sealed].trim())) missing.add(v.sealed);
   if (missing.size) {
@@ -312,13 +314,18 @@ export async function resolveContainerSecrets(projectDir: string, config: Record
       retained[name] = { ...(record(generated[name]) ? generated[name] : {}), ...secrets };
       result.services[name] = { secrets };
     }
-    return { value: { ...saved, container: retained }, result };
+    const generation = randomBytes(16).toString("hex");
+    containerCredentialGenerations.set(result, generation);
+    return { value: { ...saved, container: retained, containerGeneration: generation }, result };
   });
 }
 
 /** Discard removed services/secret names only after successful lifecycle admission. */
 export async function finalizeContainerSecrets(projectDir: string, config: RecordValue, expected?: ContainerSecretResolution) {
   await updateServiceCredentials(projectDir, saved => {
+    if (expected && (!containerCredentialGenerations.has(expected) || saved.containerGeneration !== containerCredentialGenerations.get(expected))) {
+      fail(containerDeclarations(config)[0]?.[0] ?? "container", "env", "Service credentials changed during startup; retry the lifecycle command.");
+    }
     const retained: RecordValue = {};
     for (const [name, service] of containerDeclarations(config)) {
       const names = Object.values(service.env ?? {}).flatMap(value => typeof value !== "string" && "generated" in value ? [value.generated] : []);
@@ -328,8 +335,8 @@ export async function finalizeContainerSecrets(projectDir: string, config: Recor
         return [key, value];
       }));
     }
-    const { container, ...existing } = saved;
-    return { value: Object.keys(retained).length ? { ...existing, container: retained } : existing, result: null };
+    const { container, containerGeneration, ...existing } = saved;
+    return { value: Object.keys(retained).length ? { ...existing, container: retained, ...(containerGeneration ? { containerGeneration } : {}) } : existing, result: null };
   });
 }
 
@@ -453,7 +460,26 @@ function normalizeService(v: RecordValue, volumes: RecordValue = {}): RecordValu
   // Compose v2 materializes an unset entrypoint as null, and normalizes byte
   // sizes and durations. These exact representation defaults grant no authority.
   if (result.entrypoint === null) delete result.entrypoint;
+  if (result.privileged === false) delete result.privileged;
   if (typeof result.entrypoint === "string") result.entrypoint = entrypointWords(result.entrypoint);
+  for (const key of ["dns", "dns_search"]) {
+    if (typeof result[key] === "string") result[key] = [result[key]];
+  }
+  if (record(result.extra_hosts) && Object.values(result.extra_hosts).every(addresses =>
+    typeof addresses === "string" || (Array.isArray(addresses) && addresses.every(address => typeof address === "string")))) {
+    result.extra_hosts = Object.entries(result.extra_hosts).flatMap(([host, addresses]) =>
+    (Array.isArray(addresses) ? addresses : [addresses]).map(address => `${host}=${address}`));
+  }
+  // Split only the first separator: the address may itself contain IPv6 colons.
+  // Compose orders hostnames; retain address order within each hostname.
+  if (Array.isArray(result.extra_hosts)) result.extra_hosts = result.extra_hosts.map((host: any) => {
+    if (typeof host !== "string" || host.includes("=")) return host;
+    const separator = host.indexOf(":");
+    return separator < 0 ? host : `${host.slice(0, separator)}=${host.slice(separator + 1)}`;
+  }).sort((a: any, b: any) => {
+    const name = (host: any) => typeof host === "string" ? host.split("=")[0] : JSON.stringify(host);
+    return name(a).localeCompare(name(b));
+  });
   if (result.ulimits) for (const [name, limit] of Object.entries(result.ulimits)) {
     if (typeof limit === "number" || typeof limit === "string") result.ulimits[name] = { soft: Number(limit), hard: Number(limit) };
   }
@@ -462,6 +488,9 @@ function normalizeService(v: RecordValue, volumes: RecordValue = {}): RecordValu
     if (result[key] !== undefined) result[key] = byteSize(result[key]);
   }
   if (result.cpus !== undefined) result.cpus = Number(result.cpus);
+  // Compose materializes empty placement even for resource-only declarations.
+  // Preserve every nonempty placement field, including unrecognized fields.
+  if (record(result.deploy?.placement) && !Object.keys(result.deploy.placement).length) delete result.deploy.placement;
   if (result.deploy?.resources) for (const kind of ["limits", "reservations"]) {
     const resources = result.deploy.resources[kind];
     if (resources?.memory !== undefined) resources.memory = byteSize(resources.memory);
@@ -476,11 +505,14 @@ function normalizeService(v: RecordValue, volumes: RecordValue = {}): RecordValu
     const copy = { ...p }; if (copy.published === "0" || copy.published === "") delete copy.published; return copy;
   });
   if (result.volumes) result.volumes = result.volumes.map((v: RecordValue) => {
-    const copy = { ...v };
+    const copy = structuredClone(v);
     if (copy.type === "volume" && volumes[copy.source]?.name) copy.source = volumes[copy.source].name;
     if (copy.read_only === false) delete copy.read_only;
     if (copy.type === "bind") { copy.bind = { create_host_path: true, ...copy.bind }; }
-    if (copy.type === "volume" && record(copy.volume) && !Object.keys(copy.volume).length) delete copy.volume;
+    if (copy.type === "volume" && record(copy.volume)) {
+      if (copy.volume.nocopy === false) delete copy.volume.nocopy;
+      if (!Object.keys(copy.volume).length) delete copy.volume;
+    }
     return copy;
   });
   if (result.healthcheck) for (const key of ["interval", "timeout", "start_period", "start_interval"]) if (result.healthcheck[key] !== undefined) result.healthcheck[key] = duration(result.healthcheck[key]);

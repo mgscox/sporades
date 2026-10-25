@@ -21,7 +21,7 @@ test('Dev Jobs call declared service with stable generated auth; rebuilds preser
   assert.equal(r.status,0,r.stdout+r.stderr);
   const project=path.join(dir,'capsule');
   const config=JSON.parse(await readFile(path.join(project,'sporades.json'),'utf8'));
-  config.services={embeddings:{kind:'container',image:'example/embedding:v1',command:['--embeddings'],port:8080,health:{http:'/health'},env:{HF_TOKEN:{sealed:'HF_TOKEN'},API_KEY:{generated:'apiKey'}}}};
+  config.services={embeddings:{kind:'container',image:'example/embedding:v1',command:['--embeddings'],port:8080,health:{http:'/health'},env:{HF_TOKEN:{sealed:'HF_TOKEN'},API_KEY:{generated:'apiKey'}},compose:{dns:'1.1.1.1',dns_search:'example.test',extra_hosts:['reviewed:127.0.0.1'],deploy:{resources:{limits:{pids:64}}},volumes:[{type:'volume',source:'cache',target:'/cache',volume:{nocopy:false}}]},elevated:['extra_hosts']}};
   await writeFile(path.join(project,'sporades.json'),JSON.stringify(config));
   const {ensureSealedServerEnvKeyPair,sealedServerEnvPaths,sealServerEnv,writeSealedServerEnv}=await import('../dist/sealed-server-env.js');
   const paths=sealedServerEnvPaths(project),pair=await ensureSealedServerEnvKeyPair(paths);
@@ -39,8 +39,10 @@ test('Dev Jobs call declared service with stable generated auth; rebuilds preser
   const fakeBin=path.join(dir,'fake-bin'),log=path.join(dir,'docker.jsonl');await mkdir(fakeBin);
   await writeFile(path.join(fakeBin,'docker'),`#!/usr/bin/env node
 import {appendFileSync,readFileSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
 const args=process.argv.slice(2);appendFileSync(process.env.FAKE_CALLS,JSON.stringify(args)+'\\n');
 if(args.includes('config')){
+ if(process.env.SPORADES_COMPOSE_TEST_BINARY){const result=spawnSync(process.env.SPORADES_COMPOSE_TEST_BINARY,args.slice(1),{encoding:'utf8',env:process.env});process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');process.exit(result.status??1);}
  const raw=readFileSync(args[args.indexOf('-f')+1],'utf8');
  const model=JSON.parse(raw.replace(/\\$\\{(SPORADES_SVC_[A-Za-z0-9_]+):\\?\\}/g,(_m,k)=>process.env[k]??''));
  process.stdout.write(JSON.stringify(model));

@@ -1039,6 +1039,13 @@ accepted by the installed Compose version. `${…}` passthrough interpolation is
 rejected. Literal dollar signs are escaped before rendering. Before `up`,
 Sporades checks the resolved `docker compose config --format json` model;
 changes to owned values, imported resources or unaccounted paths fail closed.
+Preflight accepts equivalent Compose representations: scalar or list `dns` and
+`dns_search`, colon or equals `extra_hosts` separators (including IPv6 addresses),
+empty `deploy.placement`, and omitted `volume.nocopy: false`. Hostname ordering
+may change; addresses within a hostname retain their order. Changed addresses,
+resource limits, placement constraints, mount options or other values still fail.
+Compose may also omit the default `privileged: false`; `privileged: true` still
+requires explicit declaration and elevation.
 
 | Class | Examples | Rule |
 | --- | --- | --- |
@@ -1069,6 +1076,9 @@ egress. Dev requires a loopback port.
 
 `dev` and `deploy` start services before the Capsule. Rebuilds retain unchanged
 services; Compose recreates changed declarations and removes undeclared services.
+Credential finalization is fenced by the startup generation: an older concurrent
+startup fails closed instead of pruning credentials admitted by a newer one.
+Removing the last service also removes the Capsule's old service network binding.
 `dev status|stop|reset` and `deploy status|stop|reset` own local state. Stop and
 reset do not require Sealed keys. Reset never removes third-party images.
 Doctor reports pinning, architecture availability, elevated key names and missing

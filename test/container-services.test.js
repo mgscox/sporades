@@ -79,6 +79,29 @@ test('resolved model rejects changed owned values and unaccounted authority', ()
   }
 });
 
+test('resolved normalization accepts only exact Compose defaults and equivalent representations', () => {
+  const cases=[
+    [{privileged:false},{},{privileged:true}],
+    [{dns:'1.1.1.1'},{dns:['1.1.1.1']},{dns:['8.8.8.8']}],
+    [{dns_search:'example.test'},{dns_search:['example.test']},{dns_search:['other.test']}],
+    [{extra_hosts:['reviewed:127.0.0.1','ipv6:::1']},{extra_hosts:['reviewed=127.0.0.1','ipv6=::1']},{extra_hosts:['reviewed=127.0.0.2','ipv6=::1']}],
+    [{deploy:{resources:{limits:{pids:64}}}},{deploy:{placement:{},resources:{limits:{pids:64}}}},{deploy:{placement:{constraints:['node.role == manager']},resources:{limits:{pids:64}}}}],
+    [{volumes:[{type:'volume',source:'cache',target:'/cache',volume:{nocopy:false}}]},{volumes:[{type:'volume',source:'cache',target:'/cache'}]},{volumes:[{type:'volume',source:'cache',target:'/cache',volume:{nocopy:true}}]}],
+  ];
+  const check=(expected,actual)=>validateResolvedContainerServices({services:{svc:expected}},{services:{svc:actual}},{embeddings:declaration()},{embeddings:'svc'},{});
+  for(const [expected,actual,changed] of cases){
+    check(expected,actual);check(actual,expected);
+    assert.throws(()=>check(expected,changed),/services.embeddings.compose/);
+  }
+  // Empty-default handling must never discard other volume/placement fields.
+  assert.throws(()=>check(cases.at(-1)[0],{volumes:[{type:'volume',source:'cache',target:'/cache',volume:{nocopy:false,subpath:'private'}}]}));
+  assert.throws(()=>check({}, {dns:['1.1.1.1']}));
+  check({extra_hosts:{reviewed:'127.0.0.1',ipv6:['::1']}},{extra_hosts:['ipv6=::1','reviewed=127.0.0.1']});
+  assert.throws(()=>check({extra_hosts:['reviewed=1']},{extra_hosts:{reviewed:1}}));
+  assert.throws(()=>check({extra_hosts:['reviewed=127.0.0.1','reviewed=127.0.0.2']},{extra_hosts:['reviewed=127.0.0.2','reviewed=127.0.0.1']}));
+  assert.throws(()=>check({deploy:{resources:{limits:{pids:64}}}}, {deploy:{placement:{},resources:{limits:{pids:65}}}}));
+});
+
 test('trusted service context is deeply frozen, nonserializable and contains generated secrets only', () => {
   const config={services:{embeddings:declaration({env:{API_KEY:{generated:'apiKey'},HF_TOKEN:{sealed:'HF_TOKEN'}}})}};
   const services=createTrustedServices(config,{SPORADES_CONTAINER_SERVICES:JSON.stringify({embeddings:{url:'http://127.0.0.1:5204',secrets:{apiKey:'a'.repeat(64)}}})});
@@ -165,6 +188,45 @@ test('concurrent declaration finalization cannot erase a newly admitted credenti
   await assert.rejects(finalizeContainerSecrets(dir,oldConfig,old),/Invalid services.worker.env/);
   const saved=JSON.parse(await readFile(path.join(dir,'.sporades/services/credentials.json'),'utf8'));
   assert.deepEqual(saved.container.worker,{...next.services.worker.secrets});
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('older finalization cannot prune a newer service when their retained keys are unchanged',async()=>{
+ const {finalizeContainerSecrets}=await import('../dist/container-services.js');
+ const dir=await mkdtemp(path.resolve('.sporades-service-added-generation-'));
+ try{
+  const one=declaration({env:{KEY:{generated:'key'}}});
+  const oldConfig={services:{one}};
+  const newConfig={services:{one,two:declaration({env:{KEY:{generated:'key'}}})}};
+  const old=await resolveContainerSecrets(dir,oldConfig);
+  const next=await resolveContainerSecrets(dir,newConfig);
+  assert.equal(old.services.one.secrets.key,next.services.one.secrets.key);
+  await finalizeContainerSecrets(dir,newConfig,next);
+  await assert.rejects(finalizeContainerSecrets(dir,oldConfig,old),e=>/credentials changed during startup/.test(e.hint));
+  const saved=JSON.parse(await readFile(path.join(dir,'.sporades/services/credentials.json'),'utf8'));
+  assert.equal(saved.container.two.key,next.services.two.secrets.key);
+  assert.equal((await resolveContainerSecrets(dir,newConfig)).services.two.secrets.key,next.services.two.secrets.key);
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('empty declarations cannot prune a newer startup or finalize after credentials reset',async()=>{
+ const {finalizeContainerSecrets,updateServiceCredentials}=await import('../dist/container-services.js');
+ const dir=await mkdtemp(path.resolve('.sporades-service-empty-generation-'));
+ try{
+  const removed={services:{}};
+  const old=await resolveContainerSecrets(dir,removed);
+  const config={services:{worker:declaration({env:{KEY:{generated:'key'}}})}};
+  const next=await resolveContainerSecrets(dir,config);
+  await finalizeContainerSecrets(dir,config,next);
+  await assert.rejects(finalizeContainerSecrets(dir,removed,old),e=>/credentials changed during startup/.test(e.hint));
+  const saved=JSON.parse(await readFile(path.join(dir,'.sporades/services/credentials.json'),'utf8'));
+  assert.equal(saved.container.worker.key,next.services.worker.secrets.key);
+  const removal=await resolveContainerSecrets(dir,removed);
+  await finalizeContainerSecrets(dir,removed,removal);
+  assert.equal(JSON.parse(await readFile(path.join(dir,'.sporades/services/credentials.json'),'utf8')).container,undefined);
+  const restarted=await resolveContainerSecrets(dir,config);
+  await updateServiceCredentials(dir,()=>({value:{},result:null}));
+  await assert.rejects(finalizeContainerSecrets(dir,config,restarted),e=>/credentials changed during startup/.test(e.hint));
  }finally{await rm(dir,{recursive:true,force:true});}
 });
 

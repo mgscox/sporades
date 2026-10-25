@@ -5159,7 +5159,7 @@ async function startContainerSession(options: LooseRecord) {
   const bundleMountArgs = [...bundle.containerMounts.files, ...additionalMounts].flatMap((mount) => ["--volume", formatMount(mount)]);
   const containerTransactionToken = randomBytes(16).toString("hex");
   const runtimeProbeToken = randomBytes(32).toString("hex");
-  const serviceNetworks = capsuleServices
+  const serviceNetworks = capsuleServices && !capsuleServices.retired
     ? (capsuleServices.composeDocument ? Object.keys((capsuleServices.composeDocument as LooseRecord).networks ?? {}) : [capsuleServices.networks.services]) : [];
   // Isolating every companion must not also remove the Capsule's own egress.
   if (capsuleServices && serviceNetworks.length && !serviceNetworks.includes(capsuleServices.networks.services)) serviceNetworks.unshift("bridge");
@@ -7622,7 +7622,7 @@ async function resetLocalCapsuleServices(options: LooseRecord) {
   for (const entry of staleEntries) if (/^[a-z][a-z0-9-]{0,30}$/.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) {
     await rm(path.join(serviceStateRoot, entry.name), { recursive: true, force: true });
   }
-  if (await pathExists(path.join(serviceStateRoot, "credentials.json"))) await updateServiceCredentials(options.projectDir, saved => { const { container, ...retained } = saved; return { value: retained, result: null }; });
+  if (await pathExists(path.join(serviceStateRoot, "credentials.json"))) await updateServiceCredentials(options.projectDir, saved => { const { container, containerGeneration, ...retained } = saved; return { value: retained, result: null }; });
   if (options.silent) {
     return services;
   }
@@ -7738,15 +7738,16 @@ async function startCapsuleServices(
   if (!capsuleServices) {
     return options.connection === "container" ? { env: {}, services: null } : {};
   }
+  // Fence pruning for every declaration, including removal of the last service.
+  const resolution = await resolveContainerSecrets(projectDir, { services: capsuleServices.declarations });
   if (capsuleServices.retired) {
     runCapsuleServiceDocker(capsuleServices, ["compose", "-f", capsuleServices.path, "down", "--remove-orphans"], projectDir,
       "Failed to remove undeclared Capsule services.", "Restore Docker Compose access and retry the lifecycle command.");
     await rm(capsuleServices.path, { force: true });
-    await updateServiceCredentials(projectDir, saved => { const { container, ...retained } = saved; return { value: retained, result: null }; });
+    await finalizeContainerSecrets(projectDir, { services: {} }, resolution);
     return options.connection === "container" ? { env: {}, services: null } : {};
   }
   if (Object.values(capsuleServices.services).some(service => service.kind === "container")) {
-    const resolution = await resolveContainerSecrets(projectDir, { services: capsuleServices.declarations });
     containerSecretResolutions.set(capsuleServices, resolution);
     if (pinContainerInheritedMounts(capsuleServices, projectDir, name => {
       const raw = runDocker(["container", "inspect", "--format", "{{json .}}", name], projectDir, "Inherited container mount inspection failed.", "Check the named container; no service was started.");
@@ -7793,7 +7794,7 @@ async function startCapsuleServices(
     throw error;
   }
   if (!options.wait) {
-    await finalizeContainerSecrets(projectDir, { services: capsuleServices.declarations }, containerSecretResolutions.get(capsuleServices));
+    await finalizeContainerSecrets(projectDir, { services: capsuleServices.declarations }, resolution);
     return {};
   }
   const connections: Record<string, CapsuleServiceConnection> = {};
@@ -7811,7 +7812,7 @@ async function startCapsuleServices(
     }
     throw error;
   }
-  await finalizeContainerSecrets(projectDir, { services: capsuleServices.declarations }, containerSecretResolutions.get(capsuleServices));
+  await finalizeContainerSecrets(projectDir, { services: capsuleServices.declarations }, resolution);
   if (options.connection === "container") {
     return {
       env: capsuleServicesContainerEnv(capsuleServices),
