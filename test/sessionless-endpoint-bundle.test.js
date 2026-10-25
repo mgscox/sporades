@@ -88,7 +88,7 @@ export default capsule({ name: 'sessionless-bundle', schema: {},
       assert.equal(response.headers.get('x-health'), 'public');
       assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
       const data = await response.json();
-      assert.deepEqual(data, { keys: ['app', 'env', 'log', 'rateLimit', 'request', 'signal'], symbols: 0,
+      assert.deepEqual(data, { keys: ['app', 'env', 'log', 'rateLimit', 'request', 'services', 'signal'], symbols: 0,
         middleware: null, identity: null, retainedEnvIdentity: null, retainedLimiterIdentity: null,
         body: { ok: true }, size: 14, aborted: false, limited: index > 0 });
       assert.deepEqual(snapshot(db), before);

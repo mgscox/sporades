@@ -1105,6 +1105,9 @@ export type ResourcesApi<Schema extends SchemaDefinition = SchemaDefinition> = R
   status(options: ResourceStatusOptions): Promise<ResourceStatus>;
 }>;
 
+/** Trusted companion connections from the Capsule-owned Compose project; Dev uses loopback publication (including acknowledged bridge mode), Container uses managed service DNS, and acknowledged host mode uses the host port. Unsupported network modes fail before startup. Runtime env/port boundaries and credential custody are resolved during serialized service startup. Reset revokes generated credentials before state cleanup, including partial cleanup failures. Absent from ACL and browser contexts. */
+export type CapsuleServices = Readonly<Record<string, Readonly<{ url: string; secrets: Readonly<Record<string, string>> }> | undefined>>;
+
 /** Runtime-owned context passed to handlers, middleware and hooks. */
 export type CapsuleContext<
   Schema extends SchemaDefinition = SchemaDefinition,
@@ -1117,6 +1120,7 @@ export type CapsuleContext<
   rateLimit(key: string, options: RateLimitOptions): RateLimitResult;
   auth: AuthContext;
   credential: Credential;
+  readonly services: CapsuleServices;
   env: Record<string, string>;
   /** Normalized non-secret payment configuration. Secret values remain in `env` and are resolved only by the server integration. */
   payments: Readonly<{ stripe: Readonly<{ enabled: false }> | StripeEnabledPaymentsConfig }> | undefined;
@@ -1240,7 +1244,7 @@ export type StripeEventHandler<Schema extends SchemaDefinition = SchemaDefinitio
 /** Narrow transaction-owned context for one atomic Stripe consequence. */
 export type AtomicStripeConsequenceContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<
   PrivilegedContext<Schema>,
-  "app" | "auth" | "signal" | "db" | "env" | "log" | "rateLimit"
+  "app" | "auth" | "signal" | "db" | "env" | "services" | "log" | "rateLimit"
 > & {
   /** Jobs persist with the consequence and are dispatched only after commit. */
   jobs: Pick<JobApi, "enqueue">;
@@ -1290,6 +1294,7 @@ export type EndpointFileAttachmentHandler<Schema extends SchemaDefinition = Sche
 /** Public stateless handler context. General Capsule middleware is skipped. */
 export type SessionlessEndpointContext = Readonly<{
   app: AppContext;
+  readonly services: CapsuleServices;
   env: Readonly<Record<string, string>>;
   log: Logger;
   rateLimit(key: string, options: RateLimitOptions): RateLimitResult;

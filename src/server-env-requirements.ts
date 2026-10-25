@@ -57,6 +57,12 @@ export function requiredServerEnvKeys(config: Config): string[] {
     keys.add(stripe.secretKeyEnv);
     keys.add(stripe.webhookSecretEnv);
   }
+  for (const service of Object.values(config.services ?? {}) as Config[]) {
+    if (service?.kind !== "container") continue;
+    for (const value of Object.values(service.env ?? {}) as any[]) {
+      if (value && typeof value === "object" && typeof value.sealed === "string") keys.add(value.sealed);
+    }
+  }
   return [...keys].sort();
 }
 

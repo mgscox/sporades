@@ -505,6 +505,8 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     "http-security-config.js",
     // Public link origin resolution has no SQL or adapter behavior.
     "public-origin.js",
+    // Immutable launch-owned service connections and redaction inputs; no SQL or adapters.
+    "services-context.js",
     // Runtime-owned validation for the five bounded operator action envelopes. It is carried by
     // the boot program but owns no database statement, SQL walker, dialect, or normalization.
     "cli/access-key-operator-envelope.js",

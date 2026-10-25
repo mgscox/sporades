@@ -1920,11 +1920,11 @@ test("sporades dev generates owned Compose for declared database Capsule service
         assert.match(compose, /todo-island\/\.sporades\/services\/database\:\/var\/lib\/sqld:rw"/);
         const calls = await docker.calls();
         assert.equal(calls.length, 3);
-        assert.deepEqual(calls[0].args.slice(0, 2), ["compose", "-f"]);
-        assert.match(calls[0].args[2], /todo-island\/\.sporades\/compose\/capsule-services\.compose\.yml$/);
-        assert.deepEqual(calls[0].args.slice(3), ["up", "--detach"]);
-        assert.deepEqual(calls[1].args.slice(3), ["ps", "--format", "json", "sporades-todo-island-database"]);
-        assert.deepEqual(calls[2].args.slice(3), ["port", "sporades-todo-island-database", "8080"]);
+        assert.deepEqual(calls[0].args.slice(0, 4), ["compose", "-p", "sporades-todo-island-services", "-f"]);
+        assert.match(calls[0].args[4], /todo-island\/\.sporades\/compose\/capsule-services\.compose\.yml$/);
+        assert.deepEqual(calls[0].args.slice(5), ["up", "--detach", "--remove-orphans"]);
+        assert.deepEqual(calls[1].args.slice(5), ["ps", "--format", "json", "sporades-todo-island-database"]);
+        assert.deepEqual(calls[2].args.slice(5), ["port", "sporades-todo-island-database", "8080"]);
       } finally {
         child.kill("SIGTERM");
         await new Promise((resolve) => child.once("exit", resolve));
@@ -2009,8 +2009,8 @@ test("sporades dev starts MinIO storage Capsule services and injects server-only
         assert.match(compose, /com\.sporades\.capsule-service\.kind: "storage"/);
 
         const calls = await docker.calls();
-        assert.deepEqual(calls[1].args.slice(3), ["ps", "--format", "json", "sporades-todo-island-storage"]);
-        assert.deepEqual(calls[2].args.slice(3), ["port", "sporades-todo-island-storage", "9000"]);
+        assert.deepEqual(calls[1].args.slice(5), ["ps", "--format", "json", "sporades-todo-island-storage"]);
+        assert.deepEqual(calls[2].args.slice(5), ["port", "sporades-todo-island-storage", "9000"]);
       } finally {
         child.kill("SIGTERM");
         await new Promise((resolve) => child.once("exit", resolve));

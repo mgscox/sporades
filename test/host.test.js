@@ -37,13 +37,15 @@ const rootPackageJson = JSON.parse(await readFile(path.join(repoRoot, "package.j
 const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DDZjMa6q7iH+jF5bughycSLBOa/ test@example";
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
 
-// Host helper unit fixtures must never fall through to the workstation's engine.
+// Host helper unit fixtures must never fall through to the workstation's engine
+// or systemd. Docker-capable workers may have a loaded real Docker service.
 // Tests requiring Docker state prepend their explicit installFakeDocker fixture.
 const workstationPath = process.env.PATH;
 let unavailableDockerDirectory;
 before(async () => {
   unavailableDockerDirectory = await mkdtemp(path.join(tmpdir(), "sporades-host-no-docker-"));
   await writeFile(path.join(unavailableDockerDirectory, "docker"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  await writeFile(path.join(unavailableDockerDirectory, "systemctl"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
   process.env.PATH = `${unavailableDockerDirectory}${path.delimiter}${workstationPath}`;
 });
 after(async () => {

@@ -1,6 +1,6 @@
 # ADR-0056: Capsule container services are declared images with referenced env
 
-Status: Proposed
+Status: Accepted for local Dev and Container sessions; Hosted orchestration is deferred.
 
 ## Context
 
@@ -114,17 +114,23 @@ Rules that apply to every class:
   it classifies against. A key from a newer specification that Sporades has not
   classified is treated as elevated until it is, so a new Compose capability can
   never widen authority silently.
-- **Classification runs on the resolved model.** Sporades validates each
-  declared key against the pinned Compose schema, renders the file (as quoted
-  JSON-compatible YAML, so a declared key can never become a merge key or alias),
-  and then classifies the output of `docker compose config --format json`, not
-  only the declaration. The resolved service must match exactly:
-  - every Sporades-owned path equals the value Sporades rendered;
-  - every elevated path present is acknowledged; and
-  - no path exists that the declaration does not account for.
-
-  Any resolution-time merge or default that widens the service therefore fails
-  closed. Failures report the offending `services.<name>.compose` path.
+- **Resolved preflight checks runtime boundaries.** Sporades validates each
+  declared key against the pinned Compose schema, renders quoted JSON-compatible
+  YAML, and reads `docker compose config --format json` in memory. It compares
+  the project and service names and the fields Sporades consumes or owns:
+  referenced env, image and command, mapped ports, networks, mount identities and
+  read-only access, protected labels, and hardening. Imported configuration,
+  undeclared resources and newly introduced unacknowledged elevated keys fail
+  closed. Declaration schema, elevation and protected-mount checks remain in
+  force. Ordinary passthrough representations and values belong to Compose;
+  Sporades does not duplicate its normalization rules or compare unread fields.
+  Failures report the offending `services.<name>.compose` path without values.
+- **Every lifecycle call pins the owned project.** All Compose commands use
+  `-p sporades-<capsule>-services`, including config, startup, inspection, stop
+  and reset. Dev and Container intentionally share this Capsule service stack.
+  Child environments exclude ambient `COMPOSE_*` variables; process variables
+  and project/parent `.env` names cannot override the explicit project. Preflight
+  rejects a different resolved project name before orphan removal or startup.
 - **`depends_on` uses declared names.** It may name `database`, `storage` or
   other container services of the same Capsule. Sporades translates these to the
   generated container names and rejects unknown names and cycles. The Capsule
@@ -238,6 +244,12 @@ const response = await fetch(`${url}/v1/embeddings`, {
   published port in a Dev session, the Compose DNS name on the services network
   in a local Container session, and the per-Capsule Host network name for a
   Hosted Capsule.
+  Acknowledged `network_mode: "bridge"` retains loopback publication in Dev,
+  but is rejected in Container sessions because the default bridge has no
+  service DNS. Acknowledged `host` uses the declared host port (the host gateway
+  from a Container). Other explicit modes are rejected before startup until
+  their addressing is supported; removing `network_mode` selects the managed
+  services network.
 - `secrets` contains exactly the `generated` values of that service. `sealed`
   values are already available through `ctx.env`, so they are not duplicated.
 - The object is deeply frozen and absent from ACL contexts, browser code, client
@@ -266,6 +278,26 @@ before the Capsule, wait according to `health`, and own `status`, `stop` and
 declaration recreates only the affected service. Reset removes service state and
 generated secrets but never removes third-party images. Labels identify the
 Capsule, the service name and `kind: container`.
+
+Reset revokes generated credentials before any Container or filesystem removal.
+It removes host-owned state directly; foreign-owned or unreadable service trees
+are emptied by a bounded, network-disabled cleanup container using the immutable
+Node image pinned by the Base Dockerfile. The helper runs as UID `0:0` with only
+DAC and file-owner override (including foreign sticky directories), a read-only
+root and one writable service-directory bind; it cannot
+mount the Runtime/credentials parent, follow state symlinks or inherit nested
+bind mounts. A failed removal does not retain credentials or skip independent
+cleanup. Reset reports an opaque error with the affected path, owner UID and
+recovery command, and a retry converges after the blocker is repaired.
+
+Local service mutations use the same project lifecycle fence for Dev startup
+and rebuild, Container mutations, and both modes' stop/reset commands. It starts
+before Compose rendering and secret resolution and ends after readiness and
+credential finalization. A waiting stop/reset therefore runs after the active
+startup; a successful reset cannot be followed by that older startup issuing
+`up` with deleted credentials. Failure releases the fence; bounded contention
+fails busy without mutation. Dev holds it only for the service phase, never for
+the watching session. Credential generations still fence stale store writers.
 
 Service state is not part of the Capsule data backup (SQLite plus uploaded
 files) in this decision. Model caches are reproducible. A
@@ -330,10 +362,10 @@ Capsule without the service it depends on.
 - Hosted elevation needs a new Host-owned allowance store, bound to normalized
   values and image digests, and `sporades host` commands. Its deny, value-change
   and revocation paths need tests.
-- Classifying the resolved Compose model, not just the declaration, makes the
-  passthrough safe against Compose features that merge or import
-  configuration. It also means Sporades depends on the JSON output of
-  `docker compose config` being stable within the pinned Compose version.
+- Checking the resolved runtime boundaries catches changed ownership, imports
+  and unacknowledged authority before startup. Restricting comparison to consumed
+  fields avoids depending on Compose's spelling of unread passthrough settings;
+  the official Compose matrix proves both admission and owned-field denials.
 - Docker Desktop on Apple Silicon exposes no Metal GPU to containers, so local
   `llama.cpp` runs on the CPU. Small embedding models are practical; large
   generative models are not a goal of the first slice.

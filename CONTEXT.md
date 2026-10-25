@@ -32,6 +32,28 @@ _Avoid_: SSH to Docker, interactive management, default shell access
 A runtime companion service provisioned for a Capsule, such as Postgres, Redis, or object storage. Capsule services are owned by the Capsule's execution environment rather than by app code.
 _Avoid_: sidecar, dependency, add-on
 
+**Container Capsule service**:
+An opt-in local companion declared as `services.<name>.kind: "container"`: a
+pinned third-party image, literal command, internal port, required health,
+explicit literal/Sealed/generated env, and classified Compose passthrough.
+Sporades owns hardening, credential custody and Dev/Container lifecycle.
+Resolved-model preflight checks fields Sporades consumes or owns; Compose handles
+unread passthrough representations. Every lifecycle call pins the Capsule-owned
+`sporades-<capsule>-services` project, shared by Dev and Container, independently
+of ambient process or `.env` project names. A shared project lifecycle fence
+serializes service rendering, secret resolution, startup and finalization with
+both modes' stop/reset commands, including Dev rebuilds. Reset revokes generated
+credentials first and uses a confined Docker helper for foreign-owned state;
+partial cleanup failures remain retryable with secrets revoked.
+Trusted server handlers receive deeply frozen
+`ctx.services.<name>` connections and generated secrets; ACL, browser and
+inspection surfaces receive none. Acknowledged bridge mode retains Dev loopback
+publication; Container requires managed service DNS or acknowledged host mode.
+Unaddressable network modes fail before startup. Hosted orchestration is deferred and
+`host push` refuses these declarations. See
+[container service configuration](docs/reference/projects-and-configuration.md#declare-a-container-service).
+_Avoid_: arbitrary Compose override, forwarded Capsule env
+
 **Bundle**:
 The esbuild output — a self-contained JavaScript file with all dependencies inlined. Server bundle (`server.mjs`) and client bundle (`client.js`).
 _Avoid_: build (that's the act), artifact (too abstract)
@@ -327,7 +349,7 @@ _Avoid_: auth token, JWT
 Missing or invalid ordinary endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
 
 **Sessionless endpoint**:
-An explicitly opted-in Custom endpoint declared with `session: "none"`. It receives only `app`, `env`, `log`, `rateLimit`, `signal` and the bounded ordinary `request`. It skips general Capsule context middleware, credential resolution and the identity-bound endpoint transaction, creating or touching no auth state. Auth guards, multipart ingress, File attachment responses, MCP exposure and runtime-owned provider callbacks are incompatible. HTTP security, admission, body bounds and response/error handling still apply. Omitting `session` preserves ordinary Session behavior.
+An explicitly opted-in Custom endpoint declared with `session: "none"`. It receives only `app`, `env`, `services`, `log`, `rateLimit`, `signal` and the bounded ordinary `request`. It skips general Capsule context middleware, credential resolution and the identity-bound endpoint transaction, creating or touching no auth state. Auth guards, multipart ingress, File attachment responses, MCP exposure and runtime-owned provider callbacks are incompatible. HTTP security, admission, body bounds and response/error handling still apply. Omitting `session` preserves ordinary Session behavior.
 _Avoid_: guest endpoint, anonymous Session mode
 
 **Linked account**:
