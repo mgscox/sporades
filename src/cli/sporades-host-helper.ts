@@ -2321,7 +2321,9 @@ async function waitForHostedRuntimeReadiness(lifecycle: HostedCapsuleLifecycle, 
     const running = inspectContainerRunning(lifecycle.container.name);
     if (!running.ok || !running.running) return { ok: false, failure: "exited" };
     const remaining = deadline - performance.now();
-    const probeTimeoutMs = Math.max(1, Math.min(1_000, remaining));
+    // performance.now() leaves fractional milliseconds; AbortSignal.timeout
+    // rejects them before the emitted readiness probe can make its request.
+    const probeTimeoutMs = Math.max(1, Math.floor(Math.min(1_000, remaining)));
     const probe = runDocker(["exec", lifecycle.container.name, "node", "--input-type=module", "--eval", HOSTED_RUNTIME_PROBE_SCRIPT, String(probeTimeoutMs), String(lifecycle.routes.running.port ?? 4000)], { maxBuffer: 128 * 1024, timeoutMs: Math.ceil(probeTimeoutMs + 250) });
     if (!probe.ok) {
       const after = inspectContainerRunning(lifecycle.container.name);
