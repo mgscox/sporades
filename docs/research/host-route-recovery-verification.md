@@ -73,9 +73,8 @@ npm test
 
 Final `npm run typecheck` and `npm run build` passed. Final `npm test` completed
 6,837 tests: 6,535 passed, 302 skipped, zero failures or cancellations. Optional
-Postgres, Compose, real Docker, root ownership, restic, VM/Host, promtool and live
-SMTP checks were not configured/available; unsupported libSQL resource tests are
-skipped by design. The focused 45 recovery tests had no skips.
+Postgres, Compose, real Docker, root ownership, restic, VM/Host, promtool, opt-in Chromium and live
+SMTP checks were not configured/available. The focused 45 recovery tests had no skips.
 The exploratory Host-suite run exposed call-sequence expectations and a legacy
 registry-without-release fixture; those were corrected. Exploratory full runs
 were deliberately interrupted to add missed-active-reload, upload-window and interrupted-publication
