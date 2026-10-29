@@ -24,6 +24,7 @@ export type HostHelperAction =
   | "capsule.release.reconcile"
   | "capsule.shutdown.checkpoint"
   | "capsule.resume"
+  | "capsule.route.reconcile"
   | "capsule.start"
   | "capsule.stop"
   | "capsule.admission.publish"
@@ -185,7 +186,7 @@ export type HostReleaseRollbackRequest = HostHelperRequestBase & {
   rollback: { releaseId: string };
 };
 export type HostLifecycleRequest = HostHelperRequestBase & {
-  action: "capsule.shutdown.checkpoint" | "capsule.resume" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.release.reconcile";
+  action: "capsule.shutdown.checkpoint" | "capsule.resume" | "capsule.route.reconcile" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.release.reconcile";
   capsule: HostHelperCapsuleTarget;
 };
 export type HostStatsRequest =

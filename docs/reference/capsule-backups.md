@@ -128,14 +128,31 @@ integrity, and builds a versioned manifest containing the source domain/subname,
 release ID, creation time, schema hash (SHA-256 of ordered SQLite schema
 statements), every regular-file SHA-256 and the directory inventory. Symlinks,
 hard links and special files are rejected. The original container resumes before
-the encrypted repository upload. Expect a write outage during the snapshot and
+the encrypted repository upload. Resume means authenticated runtime readiness,
+inspection of Docker's actual loopback port, validated Caddy publication, and an
+authenticated runtime probe through the routed Hosted URL. Dynamic Docker ports
+remain dynamic; the public HTTPS/WebSocket listener stays on 443. No separate
+`host health` command is needed to repair the route. Expect a write outage during the snapshot and
 file copy; Caddy may return an unavailable response during that interval.
 
 Stopped Capsules remain stopped. An interrupted create retains a protected
-resume journal; retrying create resumes only that exact container before retrying.
-If Docker cannot resume it, inspect Docker and run `host start` explicitly. Normal
+resume journal, bound to the exact container and release. Retrying create settles
+that instance and route before retrying capture. The journal is removed only after
+readiness and the routed probe succeed. Evidence remains through repository
+upload and a final route check, so a second external Docker restart during upload
+cannot leave a stale upstream hidden by successful backup completion. A running retained instance can also be
+settled by the [Host route recovery timer](../server-installation.md#automatic-route-recovery).
+The timer never starts a stopped backup runtime; retry create or use explicit
+`host start` after inspecting Docker/Caddy. Normal
 start/stop clears obsolete backup resume evidence. A successful backup has a full
-64-character restic snapshot ID; list returns IDs and times scoped to the source
+64-character restic snapshot ID. If its captured copy uploads successfully but
+application resume fails, create returns `ok: false` with
+`error.diagnostics: { snapshotCompleted: true, resumePending: true, resumeFailure }`.
+Snapshot freshness advances independently of application health. If capture/upload
+and cleanup both fail, the original backup error remains primary with
+`{ snapshotCompleted: false, resumePending: true }`; the protected resume journal
+still remains. Restic upload does not require keeping the writer stopped.
+List returns IDs and times scoped to the source
 Capsule. Create and restore return a compact manifest summary with file/directory
 counts; the encrypted snapshot retains the complete checksum inventory. Prune
 keeps the latest `retention` snapshots for that Capsule, plus every snapshot

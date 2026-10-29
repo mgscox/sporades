@@ -101,8 +101,8 @@ test("Hosted release requests carry only bounded required inspector metadata", (
   assert.equal(createHostReleaseRequest({ ...base, requiredInspectors: [] }).inspection, null);
 });
 
-async function withTempDir(fn) {
-  const dir = await createHostFixture("sporades-host-");
+async function withTempDir(fn, options = {}) {
+  const dir = await createHostFixture("sporades-host-", options);
   try {
     return await withFixtureUmask(() => fn(dir));
   } finally {
@@ -448,6 +448,7 @@ function startHostHelper(input, options = {}) {
       SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
       SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
       ...options.env,
+      ...(options.env?.FAKE_HOST_ROUTE_PROBE_PRELOAD ? { NODE_OPTIONS: `${options.env.NODE_OPTIONS ?? process.env.NODE_OPTIONS ?? ""} --import=${options.env.FAKE_HOST_ROUTE_PROBE_PRELOAD}` } : {}),
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -823,6 +824,30 @@ async function installFakeDocker(dir, options = {}) {
 const { appendFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+if (process.env.FAKE_DOCKER_RECOVERY_CONTAINERS && args[0] === 'inspect') {
+  const all = JSON.parse(require('node:fs').readFileSync(process.env.FAKE_DOCKER_RECOVERY_CONTAINERS, 'utf8'));
+  const container = all[args.at(-1)] || Object.values(all).find(c => c.Id === args.at(-1));
+  if (!container) process.exit(1);
+  if (args.includes('{{json .}}')) process.stdout.write(JSON.stringify(container));
+  else if (args.includes('{{.State.Running}}')) process.stdout.write(String(container.State.Running));
+  else process.stdout.write(container.port);
+  process.exit(0);
+}
+if (process.env.FAKE_DOCKER_BACKUP_STATE) {
+  const fs = require('node:fs'), file = process.env.FAKE_DOCKER_BACKUP_STATE;
+  const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (args[0] === 'stop' || args[0] === 'start') {
+    state.running = args[0] === 'start';
+    if (state.running) state.port = process.env.FAKE_DOCKER_PUBLISHED_PORT || '127.0.0.1:49154';
+    fs.writeFileSync(file, JSON.stringify(state)); process.exit(0);
+  }
+  if (args[0] === 'inspect') {
+    if (args.includes('{{json .}}')) { const container = JSON.parse(process.env.FAKE_DOCKER_INSPECT_JSON); container.State.Running = state.running; process.stdout.write(JSON.stringify(container)); }
+    else if (args.includes('{{.State.Running}}')) process.stdout.write(String(state.running));
+    else process.stdout.write(state.running ? state.port : '');
+    process.exit(0);
+  }
+}
 if (args[0] === "run") {
   process.stdout.write(process.env.FAKE_DOCKER_CONTAINER_ID || "hosted-container-1");
   if (process.env.FAKE_DOCKER_RUN_STATUSES) {
@@ -928,12 +953,29 @@ process.exit(Number(status || "0"));
   );
   await chmod(caddyPath, 0o755);
 
+  const routeProbePreload = path.join(fakeBinDir, "route-probe.mjs");
+  await writeFile(routeProbePreload, `import fs from 'node:fs';
+const original = globalThis.fetch;
+globalThis.fetch = async (url, options) => {
+  if (options?.headers?.['user-agent'] !== 'Sporades-Host-Route-Probe' || process.env.FAKE_HOST_ROUTE_PROBE_REAL === '1') return original(url, options);
+  if (process.env.FAKE_HOST_ROUTE_PROBE_LOG) fs.appendFileSync(process.env.FAKE_HOST_ROUTE_PROBE_LOG, JSON.stringify({ url: String(url) }) + '\\n');
+  let healthy = process.env.FAKE_HOST_ROUTE_PROBE_FAIL !== '1';
+  if (process.env.FAKE_HOST_ROUTE_PROBE_REQUIRE_RELOAD) healthy &&= fs.existsSync(process.env.FAKE_DOCKER_CADDY_LOG) && fs.readFileSync(process.env.FAKE_DOCKER_CADDY_LOG,'utf8').includes('reload');
+  const publication = process.env.FAKE_DOCKER_BACKUP_STATE ? JSON.parse(fs.readFileSync(process.env.FAKE_DOCKER_BACKUP_STATE,'utf8')).port : process.env.FAKE_DOCKER_PUBLISHED_PORT;
+  if (process.env.FAKE_HOST_ROUTE_PROBE_FAIL_FINAL === '1' && publication === '127.0.0.1:49155') healthy = false;
+  if (process.env.FAKE_HOST_ROUTE_PROBE_ROUTE) healthy &&= fs.readFileSync(process.env.FAKE_HOST_ROUTE_PROBE_ROUTE, 'utf8').includes('reverse_proxy ' + publication);
+  let sent = false; const bytes = Buffer.from(JSON.stringify({ ok: healthy, data: { runtime: { ready: healthy }, checks: { sqlite: {ok:true}, fileStorage: {ok:true} } } }));
+  return { status: healthy ? 200 : 502, body: { getReader: () => ({ read: async () => { if (sent) return {done:true}; sent = true; return {done:false,value:bytes}; }, cancel: async () => {} }) } };
+};`);
+
   return {
     fakeBinDir,
     logPath,
     caddyLogPath,
     env: {
       PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_HOST_ROUTE_PROBE_PRELOAD: routeProbePreload,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${routeProbePreload}`,
       FAKE_DOCKER_LOG: logPath,
       FAKE_DOCKER_CADDY_LOG: caddyLogPath,
       FAKE_DOCKER_CADDY_STATE: path.join(dir, "caddy-state.txt"),
@@ -4056,7 +4098,7 @@ test("sporades host helper restores the exact pre-rotation running state", async
       assert.equal(JSON.parse(result.stdout).ok, true, `${label}: ${result.stdout}\n${result.stderr}\n${JSON.stringify(await docker.calls())}`);
       const calls = (await docker.calls()).map((call) => call.args[0]);
       if (running) {
-        assert.deepEqual(calls, ["inspect", "stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec"], label);
+        assert.deepEqual(calls, ["inspect", "stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec", "inspect", "inspect"], label);
         assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "running");
       } else {
         assert.deepEqual(calls, ["inspect"], label);
@@ -7025,7 +7067,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.equal(output.data.route.upstream, "127.0.0.1:49153");
 
     const calls = await docker.calls();
-    assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec"]);
+    assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec", "inspect", "inspect"]);
     assert.deepEqual(calls[2].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.3.0-node24-alpine"]);
     const runCall = calls.find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--name") + 1], "sporades-capsules-example-dev-team-notes");
@@ -11875,7 +11917,7 @@ test("sporades host helper restarts the current release after install when reque
     assert.equal(output.data.lifecycle.release.id, "20260630T221500Z-feedface");
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args[0]),
-      ["inspect", "stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec"],
+      ["inspect", "stop", "rm", "image", "run", "inspect", "inspect", "inspect", "exec", "inspect", "inspect"],
     );
     const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
@@ -16269,3 +16311,372 @@ test('canonical restart failures remain retryable until started or explicitly st
     });
   });
 });
+
+// Route settlement must be part of resume, without a separate health command.
+test("backup resume settles a changed Docker publication before clearing its journal", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeLegacySealedInstallFixture(dir, { rootName: "backup-route", restart: false });
+    await alignSealedFixtureWithBuiltLifecycle(fixture);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.status = "running";
+    record.runtimeProbe = { header: "x-sporades-host-probe", token: "a".repeat(64) };
+    await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+    const journal = path.join(fixture.capsuleDir, ".backup-resume.json");
+    await writeFile(journal, JSON.stringify({ id: "b".repeat(64) }), { mode: 0o600 });
+    await mkdir(path.dirname(fixture.routeFile), { recursive: true });
+    await writeFile(fixture.routeFile, `team-notes.${fixture.domain} {\n reverse_proxy 127.0.0.1:49153 {\n }\n}\n`);
+    const docker = await installFakeDocker(path.join(dir, "docker"), { env: {
+      FAKE_DOCKER_INSPECT_JSON: JSON.stringify({ Id: "b".repeat(64), State: { Running: true }, Config: { Labels: {
+        "com.sporades.managed": "true", "com.sporades.hosted-domain": fixture.domain,
+        "com.sporades.capsule-subname": fixture.subname, "com.sporades.release-id": record.currentRelease.id,
+      } } }), FAKE_DOCKER_PUBLISHED_PORT: "127.0.0.1:49154",
+    } });
+    const result = await runHostHelper({ action: "capsule.route.reconcile", host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot }, capsule: { subname: fixture.subname } }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    assert.match(await readFile(fixture.routeFile, "utf8"), /reverse_proxy 127\.0\.0\.1:49154/);
+    await assert.rejects(lstat(journal), { code: "ENOENT" });
+    assert(!(await docker.calls()).some(c => ["start", "stop", "rm", "run"].includes(c.args[0])));
+  }, { privateAncestors: true });
+});
+
+async function withBackupRouteFixture(fn) {
+  const dir = await createHostFixture('sporades-backup-route-', { privateAncestors: true });
+  try {
+    await withFixtureUmask(async () => {
+      const fixture = await writeLegacySealedInstallFixture(dir, { rootName: 'route-recovery', restart: false });
+      await alignSealedFixtureWithBuiltLifecycle(fixture);
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, 'utf8'));
+      record.status = 'running';
+      record.runtimeProbe = { header: 'x-sporades-host-probe', token: 'a'.repeat(64) };
+      record.aliasDomains = ['alias.example.test'];
+      await writeFile(fixture.registryRecordPath, JSON.stringify(record));
+      await writeFile(fixture.routeFile, `team-notes.${fixture.domain} {\n reverse_proxy 127.0.0.1:49153 {\n }\n}\n`);
+      const data = path.join(fixture.capsuleDir, 'data');
+      const { DatabaseSync } = await import('node:sqlite');
+      const db = new DatabaseSync(path.join(data, 'data.db'));
+      db.exec('CREATE TABLE samples (value TEXT); INSERT INTO samples VALUES (\'synthetic\')'); db.close();
+      const h = { alias: 'personal', domain: fixture.domain, scheme: 'https', remoteRoot: fixture.remoteRoot };
+      const { hostBackupDirectory, atomicBackupJson } = await import('../dist/cli/host-backups.js');
+      const backups = hostBackupDirectory(h);
+      await mkdir(backups, { recursive: true, mode: 0o700 });
+      const password = path.join(dir, 'password');
+      await writeFile(password, 'test-only-password', { mode: 0o600 });
+      await atomicBackupJson(path.join(backups, 'policy.json'), { repository: path.join(dir, 'repository'), passwordFile: password, schedule: null, retention: 1, maxAgeHours: 26 });
+      const state = path.join(dir, 'docker-state.json');
+      await writeFile(state, JSON.stringify({ running: true, port: '127.0.0.1:49153' }));
+      const docker = await installFakeDocker(path.join(dir, 'docker'), { env: {
+        FAKE_DOCKER_BACKUP_STATE: state, FAKE_DOCKER_PUBLISHED_PORT: '127.0.0.1:49154',
+        FAKE_HOST_ROUTE_PROBE_ROUTE: fixture.routeFile,
+        FAKE_DOCKER_INSPECT_JSON: JSON.stringify({ Id: 'b'.repeat(64), State: { Running: true }, Config: { Labels: {
+          'com.sporades.managed': 'true', 'com.sporades.hosted-domain': fixture.domain,
+          'com.sporades.capsule-subname': fixture.subname, 'com.sporades.release-id': record.currentRelease.id,
+        } } }),
+      } });
+      const resticLog = path.join(dir, 'restic-observation.json');
+      const uploadRestart = path.join(dir, 'restart-during-upload');
+      await writeFile(path.join(docker.fakeBinDir, 'restic'), `#!${process.execPath}\nconst fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(resticLog)}, JSON.stringify({route:fs.readFileSync(${JSON.stringify(fixture.routeFile)},'utf8'),journal:fs.existsSync(${JSON.stringify(path.join(fixture.capsuleDir, '.backup-resume.json'))})})); if (fs.existsSync(${JSON.stringify(uploadRestart)})) fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify({running:true,port:'127.0.0.1:49155'})); console.log(JSON.stringify({message_type:'summary',snapshot_id:'c'.repeat(64)}));\n`, { mode: 0o755 });
+      await fn({ ...fixture, dir, data, record, docker, state, resticLog, uploadRestart, journal: path.join(fixture.capsuleDir, '.backup-resume.json'),
+        request: { action: 'capsule.backup.create', host: h, capsule: { subname: fixture.subname } } });
+    });
+  } finally { await removeHostFixture(dir); }
+}
+
+test('backup capture returns only after its actual changed route and protected runtime settle', () => withBackupRouteFixture(async f => {
+  const result = await runHostHelper(f.request, { cwd: f.dir, env: f.docker.env });
+  assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+  const observed = JSON.parse(await readFile(f.resticLog, 'utf8'));
+  assert.match(observed.route, /reverse_proxy 127\.0\.0\.1:49154/);
+  assert.equal(observed.journal, true, 'resume evidence survives the upload window');
+  await assert.rejects(lstat(f.journal), { code: 'ENOENT' });
+  assert.match(observed.route, /alias\.example\.test/);
+  assert.match(observed.route, /respond @sporadesRuntimeHealth 404/);
+  assert.match(observed.route, /request_header -x-sporades-client-address/);
+  assert.equal((await f.docker.calls()).filter(c => c.args[0] === 'start').length, 1);
+  assert(!result.stdout.includes('a'.repeat(64)));
+}));
+
+test('backup capture failure still settles resume and preserves its original error', () => withBackupRouteFixture(async f => {
+  await writeFile(path.join(f.data, 'data.db'), 'not a database');
+  const result = await runHostHelper(f.request, { cwd: f.dir, env: f.docker.env });
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.ok, false, result.stdout);
+  assert.match(output.error.message, /database/);
+  assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49154/);
+  await assert.rejects(lstat(f.journal), { code: 'ENOENT' });
+}));
+
+test('interrupted backup resumes and settles the exact retained instance before a new capture', () => withBackupRouteFixture(async f => {
+  await writeFile(f.state, JSON.stringify({ running: false, port: '' }));
+  await writeFile(f.journal, JSON.stringify({ id: 'b'.repeat(64), releaseId: f.record.currentRelease.id }), { mode: 0o600 });
+  const result = await runHostHelper(f.request, { cwd: f.dir, env: f.docker.env });
+  assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+  assert.equal((await f.docker.calls()).filter(c => c.args[0] === 'start').length, 2);
+  assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49154/);
+  await assert.rejects(lstat(f.journal), { code: 'ENOENT' });
+}));
+
+test('backup settlement failures retain evidence, distinguish snapshots and recover on the next automatic pass', async t => {
+  for (const scenario of ['missing-publication', 'non-loopback', 'invalid-port', 'not-ready', 'reload-failure', 'route-unverified', 'capture-and-resume-fail']) await t.test(scenario, () => withBackupRouteFixture(async f => {
+    const extra = scenario === 'missing-publication' ? { FAKE_DOCKER_PUBLISHED_PORT: 'missing' }
+      : scenario === 'non-loopback' ? { FAKE_DOCKER_PUBLISHED_PORT: '0.0.0.0:49154' }
+      : scenario === 'invalid-port' ? { FAKE_DOCKER_PUBLISHED_PORT: '127.0.0.1:65536' }
+      : scenario === 'not-ready' ? { FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{ status: 401 }]) }
+      : scenario === 'reload-failure' ? { FAKE_DOCKER_CADDY_RELOAD_STATUSES: '0,1,0' }
+      : scenario === 'route-unverified' ? { FAKE_HOST_ROUTE_PROBE_FAIL: '1' }
+      : { FAKE_DOCKER_PUBLISHED_PORT: 'missing' };
+    if (scenario === 'capture-and-resume-fail') await writeFile(path.join(f.data, 'data.db'), 'not a database');
+    const result = await runHostHelper(f.request, { cwd: f.dir, env: { ...f.docker.env, ...extra } });
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false, result.stdout);
+    assert.deepEqual(output.error.diagnostics.snapshotCompleted, scenario !== 'capture-and-resume-fail');
+    assert.equal(output.error.diagnostics.resumePending, true);
+    if (scenario === 'capture-and-resume-fail') assert.match(output.error.message, /database/);
+    assert.equal(JSON.parse(await readFile(f.journal, 'utf8')).id, 'b'.repeat(64));
+    assert(!result.stdout.includes('a'.repeat(64)));
+    // Docker/publication and Caddy repairs require no new backup or manual health.
+    await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49154' }));
+    const calls = (await f.docker.calls()).length;
+    const retry = await runHostHelper({ ...f.request, action: 'capsule.route.reconcile' }, { cwd: f.dir, env: f.docker.env });
+    assert.equal(JSON.parse(retry.stdout).ok, true, retry.stdout);
+    assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49154/);
+    await assert.rejects(lstat(f.journal), { code: 'ENOENT' });
+    assert(!(await f.docker.calls()).slice(calls).some(c => ['run', 'rm', 'stop', 'start'].includes(c.args[0])));
+  }));
+});
+
+test('automatic route recovery preserves stopped, unavailable, foreign and pending release boundaries', async t => {
+  for (const scenario of ['stopped', 'failed', 'unregistered', 'not-running', 'unavailable', 'unmanaged', 'release-mismatch', 'stale-backup-id', 'deploy-journal', 'restore-journal', 'pointer-mismatch', 'invalid-inspection']) await t.test(scenario, () => withBackupRouteFixture(async f => {
+    const record = { ...f.record };
+    const env = { ...f.docker.env };
+    if (['stopped', 'failed', 'unregistered'].includes(scenario)) record.status = scenario;
+    if (scenario === 'not-running') await writeFile(f.state, JSON.stringify({ running: false, port: '' }));
+    if (scenario === 'unavailable') await writeFile(f.routeFile, 'unavailable exact bytes\n');
+    if (['unmanaged', 'release-mismatch'].includes(scenario)) {
+      const container = JSON.parse(env.FAKE_DOCKER_INSPECT_JSON);
+      container.Config.Labels[scenario === 'unmanaged' ? 'com.sporades.managed' : 'com.sporades.release-id'] = 'other';
+      env.FAKE_DOCKER_INSPECT_JSON = JSON.stringify(container);
+    }
+    if (scenario === 'invalid-inspection') { delete env.FAKE_DOCKER_BACKUP_STATE; env.FAKE_DOCKER_INSPECT_JSON = 'bad-secret-inspection'; }
+    if (scenario === 'stale-backup-id') await writeFile(f.journal, JSON.stringify({ id: 'd'.repeat(64) }), { mode: 0o600 });
+    if (scenario === 'deploy-journal') {
+      await mkdir(path.join(f.capsuleDir, 'preserved-files'), { recursive: true });
+      const { attemptJournalPath } = await import('../dist/deploy-files.js');
+      await writeFile(attemptJournalPath(path.join(f.capsuleDir, 'preserved-files')), 'pending');
+    }
+    if (scenario === 'restore-journal') await writeFile(path.join(f.capsuleDir, '.backup-restore.json'), 'pending');
+    if (scenario === 'pointer-mismatch') { await rm(path.join(f.capsuleDir, 'current')); await symlink(path.join(f.capsuleDir, 'releases', 'different'), path.join(f.capsuleDir, 'current')); }
+    await writeFile(f.registryRecordPath, JSON.stringify(record));
+    const before = await readFile(f.routeFile);
+    const result = await runHostHelper({ ...f.request, action: 'capsule.route.reconcile' }, { cwd: f.dir, env });
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.data?.reconciled === true, false, result.stdout);
+    assert(!result.stdout.includes('bad-secret-inspection'));
+    assert.deepEqual(await readFile(f.routeFile), before);
+    const calls = await f.docker.calls().catch(e => { if (e.code === 'ENOENT') return []; throw e; });
+    assert(!calls.some(c => ['start', 'stop', 'rm', 'run', 'exec'].includes(c.args[0])));
+  }));
+});
+
+async function runRouteRecoveryPass(f, env = {}) {
+  return startExecutable(process.execPath, [hostHelperPath, '--reconcile-host-routes', Buffer.from(JSON.stringify(f.request.host)).toString('base64url')], {
+    cwd: f.dir, env: { ...f.docker.env, SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, 'test/support/exec-flock.py'), ...env },
+  }).result;
+}
+
+test('route worker startup, duplicate passes and recovery after missed Docker changes converge without lifecycle commands', () => withBackupRouteFixture(async f => {
+  // No event history: the first pass discovers the real publication directly.
+  await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49154' }));
+  assert.equal(JSON.parse((await runRouteRecoveryPass(f)).stdout).ok, true);
+  assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49154/);
+  const reloads = (await f.docker.caddyCalls()).filter(c => c.args[0] === 'reload').length;
+  assert.equal(JSON.parse((await runRouteRecoveryPass(f)).stdout).ok, true);
+  assert.equal((await f.docker.caddyCalls()).filter(c => c.args[0] === 'reload').length, reloads, 'duplicate scans are idempotent');
+  // A Docker outage produces an actionable aggregate failure, then a restarted
+  // worker reconciles the latest state without consuming old events or IDs.
+  const broken = await runRouteRecoveryPass(f, { FAKE_DOCKER_BACKUP_STATE: '', FAKE_DOCKER_INSPECT_STATUS: '1', FAKE_DOCKER_PS_STATUS: '1' });
+  assert.equal(JSON.parse(broken.stdout).ok, false);
+  assert.equal(JSON.parse(broken.stdout).data.pending, 1);
+  await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49155' }));
+  const start = performance.now();
+  const repaired = await runRouteRecoveryPass(f, { FAKE_DOCKER_PUBLISHED_PORT: '127.0.0.1:49155' });
+  assert.equal(JSON.parse(repaired.stdout).ok, true, repaired.stdout);
+  assert(performance.now() - start < 30_000);
+  assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49155/);
+  assert(!(await f.docker.calls()).some(c => ['start', 'stop', 'rm', 'run'].includes(c.args[0])));
+  assert(!repaired.stdout.includes('a'.repeat(64)));
+}));
+
+test('automatic route recovery cannot republish during a deliberate backup stop', () => withBackupRouteFixture(async f => {
+  const backup = startHostHelper(f.request, { cwd: f.dir, env: { ...f.docker.env, FAKE_DOCKER_CADDY_DELAY_MS: '750' } });
+  await waitForHostHelperMarker(backup, f.journal, text => JSON.parse(text).id === 'b'.repeat(64));
+  const concurrent = await runRouteRecoveryPass(f);
+  assert.equal(JSON.parse(concurrent.stdout).data.pending, 1, concurrent.stdout);
+  const output = await backup.result;
+  assert.equal(JSON.parse(output.stdout).ok, true, output.stdout);
+  assert.equal((await f.docker.calls()).filter(c => c.args[0] === 'start').length, 1);
+  await assert.rejects(lstat(f.journal), { code: 'ENOENT' });
+}));
+
+test('Host route timer retries current state on startup and after outages without restarting Docker', async () => {
+  const { hostRouteRecoveryUnits } = await import('../dist/cli/host-autostart.js');
+  const h = { alias: 'synthetic', domain: 'capsules.example.test', remoteRoot: '/srv/sporades$unit%' };
+  const units = hostRouteRecoveryUnits(h);
+  assert.match(units.timer, /OnBootSec=5s\nOnUnitInactiveSec=5s\nAccuracySec=1s/);
+  assert.match(units.service, /Requisite=docker.service caddy.service/);
+  assert.doesNotMatch(units.service, /Requires=|Wants=/);
+  assert.match(units.service, /--reconcile-host-routes/);
+  assert.match(units.service, /KillMode=control-group/);
+  assert.match(units.service, /UMask=0077/);
+  assert.match(units.service, /sporades\$\$unit%%/);
+  assert.deepEqual(hostRouteRecoveryUnits(h), units);
+  const helper = await readFile(hostHelperPath, 'utf8');
+  assert(helper.includes('--reconcile-host-routes') && helper.includes('capsule.route.reconcile'), 'shipped helper carries timer parity');
+});
+
+test('concurrent sibling route recovery isolates routes and ignores replaced container evidence', () => withBackupRouteFixture(async f => {
+  const sibling = 'sibling';
+  const siblingDir = path.join(path.dirname(f.capsuleDir), sibling);
+  const release = path.join(siblingDir, 'releases', f.record.currentRelease.id);
+  await mkdir(release, { recursive: true });
+  await symlink(release, path.join(siblingDir, 'current'));
+  const siblingRecord = { ...f.record, subname: sibling, remoteCapsuleId: `${f.domain}/${sibling}`, hostedUrl: `https://${sibling}.${f.domain}` };
+  await writeFile(path.join(path.dirname(f.registryRecordPath), `${sibling}.json`), JSON.stringify(siblingRecord));
+  const siblingRoute = path.join(path.dirname(f.routeFile), `${sibling}.caddy`);
+  await writeFile(siblingRoute, `${sibling}.${f.domain} {\n reverse_proxy 127.0.0.1:49151 {\n }\n}\n`);
+  const all = {};
+  for (const [subname, id, port] of [[f.subname, 'b'.repeat(64), '127.0.0.1:49154'], [sibling, 'd'.repeat(64), '127.0.0.1:49155']]) {
+    const container = JSON.parse(f.docker.env.FAKE_DOCKER_INSPECT_JSON);
+    container.Id = id; container.port = port; container.Config.Labels['com.sporades.capsule-subname'] = subname;
+    all[`sporades-${f.domain.replace(/[^a-z0-9]+/g, '-')}-${subname}`] = container;
+  }
+  const containers = path.join(f.dir, 'containers.json'); await writeFile(containers, JSON.stringify(all));
+  const extra = { FAKE_DOCKER_RECOVERY_CONTAINERS: containers, FAKE_HOST_ROUTE_PROBE_ROUTE: '' };
+  const pass = await runRouteRecoveryPass(f, extra);
+  assert.equal(JSON.parse(pass.stdout).ok, true, pass.stdout);
+  assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49154/);
+  assert.match(await readFile(siblingRoute, 'utf8'), /reverse_proxy 127\.0\.0\.1:49155/);
+  const siblingBefore = await readFile(siblingRoute);
+  // Replacement with an old journal must never inherit its predecessor's authority.
+  await writeFile(f.journal, JSON.stringify({ id: 'e'.repeat(64) }), { mode: 0o600 });
+  all[Object.keys(all).find(name => name.endsWith(`-${f.subname}`))].port = '127.0.0.1:49156';
+  await writeFile(containers, JSON.stringify(all));
+  const second = await runRouteRecoveryPass(f, extra);
+  assert.equal(JSON.parse(second.stdout).ok, true, second.stdout);
+  assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49154/);
+  assert.deepEqual(await readFile(siblingRoute), siblingBefore);
+  assert.equal(JSON.parse(await readFile(f.journal, 'utf8')).id, 'e'.repeat(64));
+}));
+
+test('routed settlement uses a real bounded authenticated HTTP probe and keeps failures opaque', async t => {
+  for (const scenario of ['ready', 'redirect', 'invalid', 'oversize', 'not-ready']) await t.test(scenario, () => withBackupRouteFixture(async f => {
+    let calls = 0;
+    await withHttpServer((request, response) => {
+      calls++;
+      assert.equal(request.url, '/__sporades/health/runtime');
+      assert.equal(request.headers['x-sporades-host-probe'], 'a'.repeat(64));
+      assert.equal(request.headers['user-agent'], 'Sporades-Host-Route-Probe');
+      if (scenario === 'redirect') { response.writeHead(302, { location: '/must-not-follow' }); response.end(); return; }
+      if (scenario === 'invalid') { response.end('private-response-content'); return; }
+      if (scenario === 'oversize') { response.end('private-response-content'.repeat(5000)); return; }
+      response.writeHead(scenario === 'ready' ? 200 : 503, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ok: scenario === 'ready', data: { runtime: { ready: scenario === 'ready' }, checks: { sqlite: {ok:true}, fileStorage: {ok:true} } } }));
+    }, async port => {
+      await writeFile(f.registryRecordPath, JSON.stringify({ ...f.record, hostedUrl: `http://127.0.0.1:${port}` }));
+      await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49154' }));
+      const output = await runHostHelper({ ...f.request, action: 'capsule.route.reconcile' }, { cwd: f.dir, env: { ...f.docker.env, FAKE_HOST_ROUTE_PROBE_REAL: '1' } });
+      const envelope = JSON.parse(output.stdout);
+      assert.equal(envelope.ok, scenario === 'ready', output.stdout);
+      if (scenario !== 'ready') assert.equal(envelope.error.code, 'HOSTED_ROUTE_UNVERIFIED');
+      assert(!output.stdout.includes('private-response-content') && !output.stdout.includes('a'.repeat(64)));
+      assert.equal(calls, 1, 'redirects and failed responses are never retried within a probe');
+    });
+  }));
+});
+
+test('a cold runtime remains pending and is automatically retried after readiness', () => withBackupRouteFixture(async f => {
+  await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49154' }));
+  const before = await readFile(f.routeFile);
+  const cold = await runRouteRecoveryPass(f, { FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{ status: 503,
+    body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: {ok:true}, fileStorage: {ok:true} } } } }]) });
+  assert.equal(JSON.parse(cold.stdout).ok, false, cold.stdout);
+  assert.deepEqual(await readFile(f.routeFile), before, 'readiness precedes Caddy publication');
+  const ready = await runRouteRecoveryPass(f);
+  assert.equal(JSON.parse(ready.stdout).ok, true, ready.stdout);
+  assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49154/);
+}));
+
+test('recovery reloads matching route bytes when an interrupted worker left Caddy on the old upstream', () => withBackupRouteFixture(async f => {
+  await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49154' }));
+  const route = (await readFile(f.routeFile, 'utf8')).replace('49153', '49154');
+  await writeFile(f.routeFile, route);
+  const pass = await runRouteRecoveryPass(f, { FAKE_HOST_ROUTE_PROBE_REQUIRE_RELOAD: '1' });
+  assert.equal(JSON.parse(pass.stdout).ok, true, pass.stdout);
+  assert.equal(await readFile(f.routeFile, 'utf8'), route);
+  assert.deepEqual((await f.docker.caddyCalls()).map(c => c.args[0]), ['validate', 'reload']);
+  assert(!(await f.docker.calls()).some(c => ['run','rm','start','stop'].includes(c.args[0])));
+}));
+
+test('boot recovery settles an already-running current instance without replacing it', () => withBackupRouteFixture(async f => {
+  await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49154' }));
+  const result = await runHostHelper({ ...f.request, action: 'capsule.resume' }, { cwd: f.dir, env: f.docker.env });
+  assert.equal(JSON.parse(result.stdout).data.reconciled, true, result.stdout);
+  assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49154/);
+  assert(!(await f.docker.calls()).some(c => ['run','rm','start','stop'].includes(c.args[0])));
+}));
+
+test('boot backup recovery retains exact-instance evidence through settlement and respects other journals', async t => {
+  for (const restore of [false, true]) await t.test(restore ? 'pending restore' : 'interrupted backup', () => withBackupRouteFixture(async f => {
+    const container = JSON.parse(f.docker.env.FAKE_DOCKER_INSPECT_JSON);
+    container.State = { Running: false, Status: 'exited', ExitCode: 0 }; container.RestartCount = 0;
+    await writeFile(f.state, JSON.stringify({ running: false, port: '' }));
+    await writeFile(f.journal, JSON.stringify({ id: container.Id, releaseId: f.record.currentRelease.id }), { mode: 0o600 });
+    if (restore) await writeFile(path.join(f.capsuleDir, '.backup-restore.json'), 'pending');
+    const before = await readFile(f.routeFile);
+    const result = await runHostHelper({ ...f.request, action: 'capsule.resume' }, { cwd: f.dir, env: { ...f.docker.env, FAKE_DOCKER_INSPECT_JSON: JSON.stringify(container) } });
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true, result.stdout);
+    assert.equal(output.data.resumed, !restore, result.stdout);
+    if (restore) {
+      assert.deepEqual(await readFile(f.routeFile), before);
+      assert.equal(JSON.parse(await readFile(f.journal, 'utf8')).id, container.Id);
+    } else {
+      assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49154/);
+      await assert.rejects(lstat(f.journal), { code: 'ENOENT' });
+    }
+    assert.equal((await f.docker.calls()).filter(c => c.args[0] === 'start').length, restore ? 0 : 1);
+    assert(!(await f.docker.calls()).some(c => ['run','rm','stop'].includes(c.args[0])));
+  }));
+});
+
+test('backup completion rechecks external Docker restarts during upload and retains failed final settlement', async t => {
+  for (const failed of [false, true]) await t.test(failed ? 'final probe fails' : 'second port change', () => withBackupRouteFixture(async f => {
+    await writeFile(f.uploadRestart, 'synthetic restart');
+    const result = await runHostHelper(f.request, { cwd: f.dir, env: { ...f.docker.env,
+      FAKE_HOST_ROUTE_PROBE_FAIL_FINAL: failed ? '1' : '0',
+    } });
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, !failed, result.stdout);
+    assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49155/);
+    assert.equal((await f.docker.calls()).filter(c => c.args[0] === 'start').length, 1);
+    if (failed) {
+      assert.equal(output.error.diagnostics.snapshotCompleted, true);
+      assert.equal(output.error.diagnostics.resumePending, true);
+      assert.equal(JSON.parse(await readFile(f.journal, 'utf8')).id, 'b'.repeat(64));
+      const recovered = await runRouteRecoveryPass(f);
+      assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
+    }
+    await assert.rejects(lstat(f.journal), { code: 'ENOENT' });
+  }));
+});
+
+test('recovery rebuilds a missing running route after interrupted publication without starting its container', () => withBackupRouteFixture(async f => {
+  await rm(f.routeFile);
+  await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49154' }));
+  const pass = await runRouteRecoveryPass(f);
+  assert.equal(JSON.parse(pass.stdout).ok, true, pass.stdout);
+  const route = await readFile(f.routeFile, 'utf8');
+  assert.match(route, /reverse_proxy 127\.0\.0\.1:49154/);
+  assert.match(route, /alias\.example\.test/);
+  assert.match(route, /respond @sporadesRuntimeHealth 404/);
+  assert(!(await f.docker.calls()).some(c => ['run','rm','start','stop'].includes(c.args[0])));
+}));

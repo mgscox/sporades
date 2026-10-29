@@ -20,6 +20,12 @@ export type HostBackupPolicy = {
 type Snapshot = { id: string; time: string; tags: string[] };
 export type HostBackupManifest = { version: 1; domain: string; subname: string; releaseId: string; createdAt: string; schemaHash: string; checksums: Record<string, string>; directories: string[] };
 export type BackupTarget = { host: HostHelperHost; subname: string; releaseId: string; data: string };
+/** Present on backup errors when capture/upload and application resume both need reporting. */
+export type HostBackupResumeDiagnostics = {
+  snapshotCompleted: boolean;
+  resumePending: true;
+  resumeFailure?: string;
+};
 function manifestSummary(manifest: HostBackupManifest) {
   const { checksums, directories, ...identity } = manifest;
   return { ...identity, fileCount: Object.keys(checksums).length, directoryCount: directories.length };

@@ -758,6 +758,11 @@ is installed by the common manual/automatic Host installation contract. A separa
 inert shutdown observer records healthy container-instance and release evidence
 before Docker stops. Recovery uses matching evidence for forced shutdown signals,
 never lifetime restart counts alone; OOM and stale evidence cannot authorize it.
+A separate five-second systemd timer reconciles eligible already-running instances
+after out-of-band Docker restarts. Start and backup resume settle readiness, actual
+loopback publication, Caddy and a protected routed probe together. Backup resume
+journals survive failed settlement; automatic route repair never starts stopped
+containers or overrides deployment/restore journals.
 
 **Request-admission policy generation**:
 A deployer-owned v1 JSON policy declared by one `admissionPolicy.path`, seeded and
